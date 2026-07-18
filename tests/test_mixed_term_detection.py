@@ -1,0 +1,190 @@
+"""detect_mixed_term_renderings (subtitle_translator_gui.py) — Görev 3,
+future-quality-guards-brief.md: aynı özel ismin dosya içinde tutarsız
+çevrildiğini (ör. İnka* vs Incas*) deterministik olarak tespit eder.
+
+DÜRÜSTLÜK NOTU: brief'in kanıt bölümünde "Incas'ı ↔ İnkaların (Explorer 1'de,
+ikisi de var)" iddiası vardı — gerçek-dosya doğrulaması sırasında bu YANLIŞ
+çıktı (Explorer 1'de "Incas" 28 kez geçiyor, TÜMÜ tutarlı biçimde "İnka/İnkalar"
+çevrilmiş, karışıklık yok). Fonksiyon gerçek dosyalarda (Explorer 1&2, düzeltilmiş
+Göbekli 1&2) doğru şekilde 0 bulgu veriyor (doğru-negatif) — bu dosyadaki
+sentetik testler fonksiyonun GERÇEKTEN çalıştığını (karışıklık VARSA yakaladığını)
+kanıtlar.
+"""
+import unittest
+
+import subtitle_translator_gui as gui
+
+
+def _b(*rows):
+    return [(str(i), "00:00:01,000 --> 00:00:02,000", t) for i, t in rows]
+
+
+def _s(**kw):
+    return {str(k): v for k, v in kw.items()}
+
+
+class MixedTermDetectionTest(unittest.TestCase):
+    def test_consistently_mixed_term_detected(self):
+        # Kaynakta "Incas" 5 kez, cümle-ortasında geçiyor; çeviri YARI YARIYA
+        # İnka*/Incas* arasında bölünmüş — gerçek karışıklık, tespit edilmeli.
+        blocks = _b(
+            (1, "İnkalar bunu inşa etti."),
+            (2, "Sonra İnkalar ayrıldı."),
+            (3, "Ama Incas geri döndü."),
+            (4, "Sonunda Incas kayboldu."),
+            (5, "Böylece İnkaların hikâyesi bitti."),
+        )
+        src = _s(**{
+            "1": "The Incas built this.",
+            "2": "Later the Incas left.",
+            "3": "But the Incas returned.",
+            "4": "Finally the Incas vanished.",
+            "5": "Thus the Incas' story ended.",
+        })
+        findings = gui.detect_mixed_term_renderings(blocks, src)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["term"], "Incas")
+        renderings = findings[0]["renderings"]
+        self.assertEqual(len(renderings), 2)
+        self.assertEqual(sum(renderings.values()), 5)
+
+    def test_consistently_single_rendering_not_flagged(self):
+        # Aynı senaryo ama HEP "İnkalar" — tutarlı, TETİKLEMEMELİ.
+        blocks = _b(
+            (1, "İnkalar bunu inşa etti."),
+            (2, "Sonra İnkalar ayrıldı."),
+            (3, "Ama İnkalar geri döndü."),
+            (4, "Sonunda İnkalar kayboldu."),
+            (5, "Böylece İnkaların hikâyesi bitti."),
+        )
+        src = _s(**{
+            "1": "The Incas built this.",
+            "2": "Later the Incas left.",
+            "3": "But the Incas returned.",
+            "4": "Finally the Incas vanished.",
+            "5": "Thus the Incas' story ended.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_below_frequency_threshold_not_flagged(self):
+        # Yalnızca 2 geçiş (eşik ≥3) — TETİKLEMEMELİ.
+        blocks = _b((1, "İnkalar bunu inşa etti."), (2, "Ama Incas geri döndü."))
+        src = _s(**{"1": "The Incas built this.", "2": "But the Incas returned."})
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_sentence_initial_only_not_flagged(self):
+        # Terim HER ZAMAN cümle/cue BAŞINDA — cümle-ortası kanıtı yok,
+        # TETİKLEMEMELİ (başlık/konuşmacı-adı gibi yanlış-pozitif riskini azaltır).
+        blocks = _b(
+            (1, "İnkalar bunu inşa etti."),
+            (2, "Incas ayrıldı."),
+            (3, "İnkalar geri döndü."),
+        )
+        src = _s(**{"1": "Incas built this.", "2": "Incas left.", "3": "Incas returned."})
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_single_example_cluster_not_flagged(self):
+        # Bir küme yalnızca 1 örnekse (≥2 şart) — o küme sayılmaz, tek küme kalırsa
+        # TETİKLEMEMELİ (5 tutarlı İnka* + 1 tekil Incas* → gerçek küme sayısı 1).
+        blocks = _b(
+            (1, "İnkalar bunu inşa etti."),
+            (2, "Sonra İnkalar ayrıldı."),
+            (3, "Ama İnkalar geri döndü."),
+            (4, "Sonunda İnkalar kayboldu."),
+            (5, "Böylece Incas'ın hikâyesi bitti."),
+        )
+        src = _s(**{
+            "1": "The Incas built this.",
+            "2": "Later the Incas left.",
+            "3": "But the Incas returned.",
+            "4": "Finally the Incas vanished.",
+            "5": "Thus the Incas' story ended.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_neighbor_tolerance_finds_term_in_adjacent_cue(self):
+        # Terim kaynakta cue #2'de ama SOV dağıtımıyla çeviri #1 veya #3'e
+        # kaymış olabilir — ±1 tolerans bunu bulmalı. Çeviri TUTARLI (hep
+        # İnkalar/İnkaların, hiç "Incas" aynen bırakılmamış) — TEK kümeye
+        # düşmeli, TETİKLEMEMELİ (asıl amaç: tutarlı-ama-dağınık-konumlu terim
+        # yanlış-pozitif üretmesin).
+        blocks = _b(
+            (1, "İnkaların yaptığı,"),
+            (2, "burada."),
+            (3, "Sonra İnkalar ayrıldı."),
+            (4, "İnkaların bıraktığı,"),
+            (5, "buradaydı."),
+            (6, "Ama İnkalar döndü."),
+            (7, "İnkaların"),
+            (8, "hikâyesi sürdü."),
+        )
+        src = _s(**{
+            "1": "The Incas built,", "2": "here.",
+            "3": "Later the Incas left.",
+            "4": "The Incas left,", "5": "there.",
+            "6": "But the Incas returned.",
+            "7": "The Incas'", "8": "story continued.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_all_caps_source_function_words_not_terms(self):
+        blocks = _b(
+            (1, "Bu epey ilginç."),
+            (2, "Sanırım bunu beğeneceksin."),
+            (3, "Evet, elimizde var."),
+            (4, "Bakmakta fayda var."),
+            (5, "Tabii, böyle olabilir."),
+        )
+        src = _s(**{
+            "1": "WE HAVE THIS.",
+            "2": "I THINK YOU WILL LIKE THIS.",
+            "3": "SURE, WE HAVE THAT.",
+            "4": "TAKE A LOOK AT THIS.",
+            "5": "THIS IS WHAT THEY WANT.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_all_caps_look_and_contraction_fragments_not_terms(self):
+        blocks = _b(
+            (1, "Biraz bakınıyorum."),
+            (2, "Bunu henüz yapmadım."),
+            (3, "Dükkâna bakıyorum."),
+            (4, "Bunu daha önce yapmadım."),
+        )
+        src = _s(**{
+            "1": "I AM LOOKING AT THIS.",
+            "2": "I HAVEN'T DONE THIS.",
+            "3": "HE LOOKS AT THIS.",
+            "4": "WE HAVEN'T SEEN THAT.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_empty_blocks_returns_empty(self):
+        self.assertEqual(gui.detect_mixed_term_renderings([], {}), [])
+
+
+class ScanIntegrationTest(unittest.TestCase):
+    def test_scan_reports_mixed_term_warning(self):
+        blocks = _b(
+            (1, "İnkalar bunu inşa etti."),
+            (2, "Sonra İnkalar ayrıldı."),
+            (3, "Ama Incas geri döndü."),
+            (4, "Sonunda Incas kayboldu."),
+            (5, "Böylece İnkaların hikâyesi bitti."),
+        )
+        src = _s(**{
+            "1": "The Incas built this.",
+            "2": "Later the Incas left.",
+            "3": "But the Incas returned.",
+            "4": "Finally the Incas vanished.",
+            "5": "Thus the Incas' story ended.",
+        })
+        logs = []
+        gui.scan_translation_quality("dummy.srt", blocks,
+                                     log_fn=lambda m, lvl=None: logs.append((m, lvl)),
+                                     src_clean_map=src)
+        self.assertTrue(any("karışık çevrilmiş" in m for m, _ in logs))
+
+
+if __name__ == "__main__":
+    unittest.main()

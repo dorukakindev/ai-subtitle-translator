@@ -1,0 +1,51 @@
+.credentials
+.gui_settings.json
+.gui_settings.json.bak.*
+batch_fmap_*.json
+batch_id.txt
+_batch_sessions/
+
+# Gizli anahtarlar (proje kökünde düz metin halinde bulundu — asla commit'lenmesin)
+openai.txt
+haiku.txt
+
+# Python derleme/test önbellekleri
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Çalışma zamanı / üretilen veri
+logs/
+translation_memory.db
+translation_memory.db-shm
+translation_memory.db-wal
+translation_memory.db.bak
+translation_memory.db.bak-shm
+translation_memory.db.bak-wal
+.context_cache/
+.precontext.json
+eski_batch_kurtarma_yedek/
+
+# Kullanıcı içeriği / çalışma klasörleri (kaynak kod değil)
+GİRDİ/
+ÇIKTI/
+translated/
+hybrid_batch_input.jsonl
+
+# Araç/oturum verisi (bu depoya ait değil)
+.claude/
+.codex/
+.agents/
+
+# Geçmiş oturumlardan kalma taslak/hata-ayıklama çıktıları
+compare_results_fixed.txt
+raw_diff.txt
+recovered_view.txt
+temp_audit_output.json
+quiz-tavern.zip
+smoke_test_tr.srt
+smoke_test_tr_tr.srt
+tools/old_outputs_report.txt
+retry_and_resend_restored.py
+retry_recovered.py

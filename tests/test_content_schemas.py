@@ -1,0 +1,119 @@
+"""
+İçerik türü şemaları ve otomatik tespit eşleştirme testleri.
+"""
+import unittest
+
+import subtitle_translator_gui as gui
+
+
+class ContentSchemaIntegrityTest(unittest.TestCase):
+    def test_all_schemas_have_name_and_rules(self):
+        for key, schema in gui.CONTENT_SCHEMAS.items():
+            self.assertIn("name", schema, f"{key}: name yok")
+            self.assertIn("rules", schema, f"{key}: rules yok")
+            self.assertIsInstance(schema["rules"], list)
+
+    def test_schema_names_are_unique(self):
+        names = [v["name"] for v in gui.CONTENT_SCHEMAS.values()]
+        self.assertEqual(len(names), len(set(names)), "şema adları tekrarlı")
+
+    def test_new_schemas_exist(self):
+        names = {v["name"] for v in gui.CONTENT_SCHEMAS.values()}
+        for expected in ["Bilim Kurgu / Fantastik", "Tıbbi Dram / Hastane",
+                         "Savaş / Askeri", "Spor / Maç Yayını", "Yemek / Seyahat",
+                         "Reality / Sokak Argosu", "Siyaset / Toplum Belgeseli",
+                         "Arkeoloji / Antik Tarih Belgeseli",
+                         "Komedyen Biyografisi / Stand-up Belgeseli",
+                         "Mitoloji / Antik Dünya"]:
+            self.assertIn(expected, names)
+
+    def test_2026_07_schemas_exist(self):
+        # 2026-07-08'de eklenen türler (Oddities gibi koleksiyoncu-reality içerik dahil)
+        names = {v["name"] for v in gui.CONTENT_SCHEMAS.values()}
+        for expected in ["Koleksiyoncu / Meraklı Eşya Reality",
+                         "Talk Show / Gece Programı", "Yarışma / Bilgi Yarışması",
+                         "Doğa / Yaban Hayatı Belgeseli", "Dini İçerik / Vaaz"]:
+            self.assertIn(expected, names)
+
+    def test_new_schemas_resolve_via_detection_and_match(self):
+        # Yeni türler otomatik tespit listesine girmeli ve _match_category ile çözülmeli
+        cats = gui._detect_categories()
+        for name in ["Koleksiyoncu / Meraklı Eşya Reality",
+                     "Talk Show / Gece Programı", "Yarışma / Bilgi Yarışması",
+                     "Doğa / Yaban Hayatı Belgeseli", "Dini İçerik / Vaaz"]:
+            self.assertIn(name, cats)
+            self.assertEqual(gui._match_category(name, cats), name)
+
+    def test_bare_reality_still_resolves_to_shortest(self):
+        # Yeni 'Koleksiyoncu ... Reality' adı, salt 'Reality' cevabının eski
+        # davranışını (en kısa = 'Reality Show') BOZMAMALI.
+        cats = gui._detect_categories()
+        self.assertEqual(gui._match_category("Reality", cats), "Reality Show")
+
+    def test_detect_categories_match_schemas(self):
+        # Tespit listesi şemalardan türemeli — her kategori bir şemaya çözülmeli
+        names = {v["name"] for v in gui.CONTENT_SCHEMAS.values()}
+        for cat in gui._detect_categories():
+            self.assertIn(cat, names)
+        self.assertNotIn("Otomatik", gui._detect_categories())
+
+    def test_every_nonauto_schema_has_substantial_rules(self):
+        for key, schema in gui.CONTENT_SCHEMAS.items():
+            if schema["name"] == "Otomatik":
+                continue
+            self.assertGreaterEqual(len(schema["rules"]), 7,
+                                    f"{key}: {len(schema['rules'])} kural — çok zayıf")
+
+
+class MatchCategoryTest(unittest.TestCase):
+    CATS = ["Komedi (Sitcom)", "Sketch Komedi / Absürt", "Stand-up Komedi",
+            "Bilim Kurgu / Fantastik", "Film", "Dizi"]
+
+    def test_exact_match(self):
+        self.assertEqual(gui._match_category("Film", self.CATS), "Film")
+        self.assertEqual(gui._match_category("bilim kurgu / fantastik", self.CATS),
+                         "Bilim Kurgu / Fantastik")
+
+    def test_category_inside_answer(self):
+        # Model fazladan kelime eklemiş — en spesifik (uzun) kategori kazanır
+        self.assertEqual(
+            gui._match_category("Bu içerik Stand-up Komedi kategorisine girer", self.CATS),
+            "Stand-up Komedi")
+
+    def test_partial_answer_picks_shortest_category(self):
+        # Model sadece 'Komedi' demiş — en kısa komedi kategorisi (genel sitcom) seçilir
+        self.assertEqual(gui._match_category("Komedi", self.CATS), "Komedi (Sitcom)")
+
+    def test_no_match_returns_none(self):
+        self.assertIsNone(gui._match_category("Western", self.CATS))
+        self.assertIsNone(gui._match_category("", self.CATS))
+        self.assertIsNone(gui._match_category(None, self.CATS))
+
+    def test_real_schema_list_resolves_old_detection_names(self):
+        # Eski tespit listesindeki sorunlu adlar artık gerçek şemalara çözülmeli
+        cats = gui._detect_categories()
+        self.assertEqual(gui._match_category("Komedi", cats), "Komedi (Sitcom)")
+        self.assertEqual(gui._match_category("Bilim Kurgu / Fantastik", cats),
+                         "Bilim Kurgu / Fantastik")
+        resolved = gui._match_category("Anime / Animasyon", cats)
+        self.assertIsNotNone(resolved, "'Anime / Animasyon' hiçbir şemaya çözülemedi")
+        # Çözülen ad gerçek bir şema olmalı
+        self.assertIsNotNone(gui._match_category(resolved, cats))
+
+
+class SchemaNameNormalizeTest(unittest.TestCase):
+    def test_normalizes_legacy_auto_value(self):
+        self.assertEqual(gui.normalize_schema_name("auto"), "Otomatik")
+        self.assertEqual(gui.normalize_schema_name("automatic"), "Otomatik")
+        self.assertEqual(gui.normalize_schema_name("otomatik"), "Otomatik")
+
+    def test_normalizes_case_insensitive_real_schema(self):
+        self.assertEqual(gui.normalize_schema_name("film"), "Film")
+        self.assertEqual(
+            gui.normalize_schema_name("bilim kurgu / fantastik"),
+            "Bilim Kurgu / Fantastik",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

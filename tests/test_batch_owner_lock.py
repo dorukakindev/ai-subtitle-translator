@@ -1,0 +1,122 @@
+"""Canlı batch sahiplik kilidi (_pid_alive / _live_owned_batch_ids / _write_batch_owner).
+
+NEDEN (2026-07-16 gerçek olay): `batch_id.txt` uçuştaki bir batch ile çökmüş/sahipsiz
+kalmış bir batch'i AYIRT EDEMİYOR (gönderimde yazılır, bitişte silinir). Bu yüzden bir
+batch beklenirken uygulamanın ikinci bir örneği açılınca (veya App kuran bir test
+çalışınca) açılış kontrolü CANLI batch'leri 'yarım kalmış' diye listeliyor; oradaki
+'Seçilenleri Sil' düğmesi parası ödenmiş, hâlâ işlenen bir batch'in kurtarma verisini
+siler. Kilit bunu engeller: sahibi yaşayan batch'ler pencerede gösterilmez.
+"""
+import json
+import os
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import subtitle_translator_gui as gui
+
+
+def _owner_path(pid):
+    return Path(gui.__file__).parent / f"{gui._BATCH_OWNER_PREFIX}{pid}.json"
+
+
+class PidAliveTest(unittest.TestCase):
+    def test_own_pid_is_alive(self):
+        self.assertTrue(gui._pid_alive(os.getpid()))
+
+    def test_invalid_pids_not_alive(self):
+        for bad in (0, -1, "abc", None):
+            self.assertFalse(gui._pid_alive(bad))
+
+    def test_almost_certainly_dead_pid(self):
+        # Var olmayan yüksek bir PID; Windows'ta OpenProcess başarısız olur.
+        self.assertFalse(gui._pid_alive(999_999_998))
+
+    def test_never_uses_os_kill_on_windows(self):
+        # DAVRANIŞ KİLİDİ: Windows'ta os.kill süreci GERÇEKTEN ÖLDÜRÜR. _pid_alive
+        # oraya asla düşmemeli — düşerse bu test os.kill'i yakalar ve patlar.
+        import sys
+        if sys.platform != "win32":
+            self.skipTest("yalnızca Windows semantiği")
+        with patch("os.kill", side_effect=AssertionError("os.kill Windows'ta ÇAĞRILMAMALI")):
+            gui._pid_alive(os.getpid())
+            gui._pid_alive(999_999_998)
+
+
+class LiveOwnedBatchIdsTest(unittest.TestCase):
+    def setUp(self):
+        self._made = []
+
+    def tearDown(self):
+        for p in self._made:
+            p.unlink(missing_ok=True)
+
+    def _write_owner(self, pid, ids):
+        p = _owner_path(pid)
+        p.write_text(json.dumps({"pid": pid, "ts": 1.0, "batch_ids": ids}), encoding="utf-8")
+        self._made.append(p)
+        return p
+
+    def test_live_other_process_ids_are_owned(self):
+        # Canlı bir pid (kendi pid'imizi 'başka süreç' gibi göstermek için getpid patch'lenir)
+        self._write_owner(os.getpid(), ["batch_live1", "batch_live2"])
+        with patch("os.getpid", return_value=os.getpid() + 1):  # biz 'başka' süreciz
+            owned = gui._live_owned_batch_ids()
+        self.assertEqual(owned, {"batch_live1", "batch_live2"})
+
+    def test_own_pid_lock_is_ignored(self):
+        self._write_owner(os.getpid(), ["batch_mine"])
+        self.assertEqual(gui._live_owned_batch_ids(), set())
+
+    def test_dead_pid_lock_ignored_and_cleaned(self):
+        dead = 999_999_997
+        p = self._write_owner(dead, ["batch_orphan"])
+        self.assertEqual(gui._live_owned_batch_ids(), set())
+        self.assertFalse(p.exists(), "ölü sürecin kilidi temizlenmeliydi")
+
+    def test_corrupt_lock_ignored(self):
+        p = _owner_path(999_999_996)
+        p.write_text("{bozuk json", encoding="utf-8")
+        self._made.append(p)
+        self.assertEqual(gui._live_owned_batch_ids(), set())   # patlamamalı
+
+    def test_no_lock_files_returns_empty(self):
+        # (Ortamda başka kilit olabilir; en azından patlamamalı ve set dönmeli)
+        self.assertIsInstance(gui._live_owned_batch_ids(), set)
+
+
+class CheckPendingBatchesFiltersLiveTest(unittest.TestCase):
+    """_check_pending_batches canlı sahipli id'ler için pencere AÇMAMALI.
+
+    HERMETİK: gerçek batch_id.txt'ye DOKUNULMAZ — _batch_id_path patch'lenip geçici
+    dosyaya yönlendirilir. (Eski testler gerçek dosyayı yedekleyip geri koyuyordu;
+    canlı bir batch sürerken o pencere bile kabul edilemez.)"""
+
+    def _run_check(self, bid_content, owned):
+        import tempfile
+        shown = []
+        with tempfile.TemporaryDirectory() as td:
+            bidp = Path(td) / "batch_id.txt"
+            bidp.write_text(bid_content, encoding="utf-8")
+            with patch.object(gui, "_batch_id_path", return_value=bidp), \
+                 patch.object(gui, "_live_owned_batch_ids", return_value=owned), \
+                 patch.object(gui.App, "_show_pending_batches_dialog",
+                              lambda self, ids: shown.append(list(ids))):
+                gui.App._check_pending_batches(object.__new__(gui.App))
+        return shown
+
+    def test_all_ids_live_owned_no_dialog(self):
+        shown = self._run_check("batch_aaa\nbatch_bbb\n", {"batch_aaa", "batch_bbb"})
+        self.assertEqual(shown, [], "canlı batch'ler için pencere AÇILMAMALIYDI")
+
+    def test_only_unowned_ids_shown(self):
+        shown = self._run_check("batch_aaa\nbatch_bbb\n", {"batch_aaa"})
+        self.assertEqual(shown, [["batch_bbb"]])
+
+    def test_no_owner_shows_all(self):
+        shown = self._run_check("batch_aaa\nbatch_bbb\n", set())
+        self.assertEqual(shown, [["batch_aaa", "batch_bbb"]])
+
+
+if __name__ == "__main__":
+    unittest.main()
