@@ -72,3 +72,59 @@ All subtitle reads go through `subtitle_formats.read_subtitle_text` (utf-8-sig �
 - Tests are plain `unittest`; pure module-level helpers are extracted specifically to be testable without constructing `App` or hitting the network. Prefer adding logic as a pure function + a thin App method over inline code in a flow.
 - UI strings, log messages, and comments are Turkish; code identifiers are English. Internal names like `minimax_*` are legacy (now carry the OpenAI helper config) — renaming them is out of scope, they're just identifiers.
 - `plans/` holds implementation briefs; `Architecture.md` is an older overview (predates rounds of context-aware work — verify against code).
+
+## Reviewing a pasted translation-run log (recurring task)
+
+The user runs the GUI, pastes its console log after each translation, and
+expects: real problems found and fixed, false alarms called out as such (not
+blindly trusted), and a short direct report of what changed.
+
+**Workflow for each pasted log:**
+1. Read the log for flags: `OLASI CUE HİZALAMA/KAYMA SORUNU` (alignment),
+   `X satır çevrilmemiş görünüyor` (looks untranslated), `X satırda anormal
+   uzunluk oranı` (length-ratio outlier), `'X' dosya içinde karışık çevrilmiş`
+   (term inconsistency), `Sozluk guard: ... SOZLUGUN TAMAMI atildi` (glossary
+   guard dropped everything).
+2. **Never trust a flag at face value.** Find the actual output `.srt` (next
+   to a `.ham.srt` raw pre-quality-pass backup, under the log's `Çıkış
+   klasörü:` path) and the actual English source file (usually a sibling
+   `.srt`/`.vtt` one level up), then read the specific flagged cue numbers in
+   both, side by side. **Most flags turn out to be false positives** —
+   commonly: a cue-number gap from a legitimately-dropped pure-SFX/music-only
+   cue (not a real shift); a "still untranslated" cue that's actually fine; a
+   short reactive line ("Really?" → "Gerçekten mi?") tripping a naive
+   length-ratio check; a "mixed term" warning that's really two different
+   entities mentioned near each other, not one term mistranslated; a glossary
+   whole-drop triggered by one unrelated proper noun sharing a w/q/x letter
+   with nothing else in the glossary.
+3. When a flag IS real, there are two different kinds of fix — don't conflate:
+   - **Code bug** (the detector/guard itself is wrong): fix the `.py` file,
+     add a regression test reproducing the exact real case, run
+     `python -m unittest discover -s tests` until green (one known
+     pre-existing flaky test — an API-key-redaction check with
+     nondeterministic `[REDACTED]` output — may fail on its own; rerun once,
+     don't chase it further if it's the only failure), then `git add` only
+     the touched files and commit.
+   - **Bad translation content**: retranslate the specific flagged lines from
+     the English source — never a surface patch, never touch lines that are
+     already correct. Apply the fix directly to the output `.srt` (take a
+     `.bak` copy first if it's the only copy of that file).
+4. Report back concisely: what was checked, what was false-positive (briefly
+   why), what was actually wrong and how it was fixed, whether tests still
+   pass, whether/what was committed.
+
+**Standing rules (the user's explicit, non-negotiable preferences):**
+- Retranslate flagged/wrong lines from the English source — never a surface
+  patch, never touch already-correct lines.
+- SDH/sound/speaker/language tags are always fully removed from the final
+  translation — no exceptions, don't ask.
+- Commit automatically after every real code fix, with tests, and say so in
+  the response (e.g. "Committed as `<hash>`"). Stage only the files actually
+  touched — never `git add -A`/`git add .`.
+- Never construct the GUI `App()` via a test while a real translation might be
+  running — the app and test suite share working-tree state (`batch_id.txt`,
+  `logs/`, `.gui_settings.json`); a stray test run has previously popped a
+  live "Delete?" modal and rotated away the user's translation log. If
+  unsure whether the user is mid-translation, ask first.
+- Don't add speculative abstractions, explanatory comments, or unrelated
+  cleanup — match the existing terse style.
