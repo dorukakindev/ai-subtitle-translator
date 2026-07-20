@@ -3607,6 +3607,10 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
         wl = w.lower()
         return wl in ht._CONTENT_DRIFT_STOPS or wl in _MIXED_TERM_EXTRA_STOPS
 
+    def _line_is_all_caps(text: str) -> bool:
+        letters = [ch for ch in text if ch.isalpha()]
+        return bool(letters) and all(ch.isupper() for ch in letters)
+
     total_count: dict = {}
     mid_sentence: dict = {}
     occurrences: dict = {}
@@ -3614,6 +3618,15 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
     for idx in ordered_ids:
         src_text = _mixed_term_strip_speaker(src_map.get(idx, ""))
         if not src_text:
+            continue
+        # Gerçek olay (Oddities S05E06, 2026-07-20): kaynağın %99'u ALL-CAPS
+        # closed-caption stiliydi ("YEAH", "RIGHT", "GOOD" gibi 27 sıradan
+        # kelime "hep büyük harf, hiç küçük harf görülmedi" diye özel-isim
+        # sanılıp bulguya girdi). ALL-CAPS bir satırda büyük/küçük harf hiçbir
+        # şey söylemez -- bu satırlardaki kelimeler total_count/occurrences'a
+        # HİÇ girmez, dolayısıyla asla aday olamaz. Gerçek özel isimler zaten
+        # en az bir normal-case satırda da geçtiği için işaretlenmeye devam eder.
+        if _line_is_all_caps(src_text):
             continue
         words = _MIXED_TERM_WORD_RE.findall(src_text)
         for wi, w in enumerate(words):

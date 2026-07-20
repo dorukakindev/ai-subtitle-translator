@@ -159,6 +159,53 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_all_caps_source_ordinary_words_not_in_stoplist_not_terms(self):
+        # Gerçek olay (Oddities S05E06, 2026-07-20): kaynağın %99'u ALL-CAPS
+        # closed-caption stiliydi. "YEAH"/"RIGHT"/"COOL"/"ABSOLUTELY" gibi 27
+        # sıradan kelime (mevcut stop-word listesinde OLMAYAN) "hep büyük harf,
+        # hiç küçük harf görülmedi" diye özel-isim sanılıp 27 ayrı yanlış-alarm
+        # üretti (ör. "COOL" -> "Daddy×3" -- bir karakterin lakabı, çeviri bile
+        # değil). ALL-CAPS bir satırda büyük/küçük harf ayrımı sinyal vermez.
+        blocks = _b(
+            (1, "Evet, bunu aldığımız şey."),
+            (2, "Doğru, bunu biliyorum."),
+            (3, "Kesinlikle harika bir şey."),
+            (4, "Evet, çok soğuk görünüyor."),
+            (5, "Sanırım muhtemelen doğru."),
+        )
+        src = _s(**{
+            "1": "YEAH, THAT'S THE THING WE GOT.",
+            "2": "RIGHT, I KNOW THAT.",
+            "3": "ABSOLUTELY A COOL THING.",
+            "4": "YEAH, THAT LOOKS REAL COOL.",
+            "5": "I GUESS THAT'S PROBABLY RIGHT.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_real_proper_noun_still_detected_when_file_mixes_caps_and_normal_case(self):
+        # ALL-CAPS satırları göz ardı etmek gerçek bir tutarsızlığı GİZLEMEMELİ --
+        # aynı özel isim normal-case satırlarda da yeterince (>=3, iki farklı
+        # çeviri kümesinde >=2'şer) geçiyorsa bulgu hâlâ üretilmeli.
+        blocks = _b(
+            (1, "Bunu İnkalar yaptı."),
+            (2, "SONRA BU ESER BULUNDU."),
+            (3, "Sonra İnkalar ayrıldı."),
+            (4, "Ama Incas geri döndü."),
+            (5, "BU INSANLAR BUNU BILIYORDU."),
+            (6, "Sonunda Incas kayboldu."),
+        )
+        src = _s(**{
+            "1": "The Incas built this.",
+            "2": "THEN THIS ARTIFACT WAS FOUND.",
+            "3": "Later the Incas left.",
+            "4": "But the Incas returned.",
+            "5": "THESE PEOPLE KNEW THIS.",
+            "6": "Finally the Incas vanished.",
+        })
+        findings = gui.detect_mixed_term_renderings(blocks, src)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["term"], "Incas")
+
     def test_empty_blocks_returns_empty(self):
         self.assertEqual(gui.detect_mixed_term_renderings([], {}), [])
 
