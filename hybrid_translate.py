@@ -4184,7 +4184,20 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
         return None  # tek-kelime + büyük harf: gerçek özel isim/marka olabilir
     if glossary_key is not None:
         key_tokens = {w.lower() for w in _GLOSSARY_WORD_RE.findall(str(glossary_key or ""))}
-        hits = [w for w in hits if not (w[:1].isupper() and w.lower() in key_tokens)]
+        # rstrip("s") normalizes simple English plurals so a plural source key
+        # ("Newsweeks") still exempts its Turkish-suffixed singular stem
+        # ("Newsweek'ler" -> word token "Newsweek"). Gerçek olay (rough.treatment.1978,
+        # 2026-07-20): "Newsweeks"->"Newsweek'ler" hedefi tek kelimeye bölününce
+        # ("'ler" apostrofla ayrılır) exact-match istisnası tutmadı ve 50 terimlik
+        # sözlük komple gitti.
+        hits = [
+            w for w in hits
+            if not (
+                w[:1].isupper()
+                and any(w.lower() == kt or w.lower().rstrip("s") == kt.rstrip("s")
+                        for kt in key_tokens)
+            )
+        ]
         if not hits:
             return None
     return hits[0]

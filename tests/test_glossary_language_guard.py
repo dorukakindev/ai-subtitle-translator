@@ -118,6 +118,19 @@ class WqxTargetGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {})
 
+    def test_plural_source_key_exempts_turkish_suffixed_singular_stem(self):
+        """Gerçek olay (rough.treatment.1978, 2026-07-20): "Newsweeks"->
+        "Newsweek'ler" -- İngilizce çoğul anahtar ("Newsweeks"), Türkçe ekli tekil
+        gövdeye ("Newsweek'ler", apostrof yüzünden "Newsweek"+"ler" iki token'a
+        bölünüyor) eşleşmediği için exact-match istisnası tutmuyor ve 50 terimlik
+        sözlük komple gidiyordu."""
+        real_glossary = {
+            "Newsweeks": "Newsweek'ler",
+            "trial": "dava/mahkeme süreci",
+        }
+        cleaned = ht.sanitize_glossary_for_turkish(real_glossary)
+        self.assertEqual(cleaned, real_glossary)
+
     def test_actual_foreign_drift_still_caught_even_if_key_shares_a_word(self):
         # Kaynakla hedef kelime kümesi FARKLIYSA (gerçek çeviri denenmiş ama
         # yabancı dile kaymışsa) istisna devreye girmemeli.
