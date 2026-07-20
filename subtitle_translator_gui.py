@@ -2559,6 +2559,20 @@ def _is_punct_only_translation(src_text: str, tr_text: str) -> bool:
     return not _has_wordlike_text(tr_sem)
 
 
+_NUMERIC_ONLY_SRC_RE = re.compile(r'^[\d\s.,;:!?…\-]+$')
+
+
+def _src_is_numeric_only(src_text: str) -> bool:
+    """Kaynak yalnızca sayı/noktalama mı (ör. '1, 2, 3, 4, 5...' bir sayma
+    dizisi)? Böyle satırlarda kaynakla çeviri arasında hiçbir kelime farkı
+    olamaz -- identity aynen doğru çeviridir, 'çevrilmemiş' değil. Gerçek olay
+    (A Metamorfose dos Passaros, 2026-07-20): 8 sayma-cue'su ("1, 2, 3, 4,
+    5...", "621, 622, 623, 624...") kaynakla birebir aynı kaldığı için
+    yanlışlıkla çevrilmemiş sanıldı."""
+    stripped = str(src_text or '').strip()
+    return bool(stripped) and bool(_NUMERIC_ONLY_SRC_RE.match(stripped)) and any(c.isdigit() for c in stripped)
+
+
 _MUSIC_ONLY_RE = re.compile(
     r'^[\s*♪♫\u266a\u266b]+$'
     r'|^(?=.*[*♪♫])[\*\s♪♫]*'
@@ -2603,6 +2617,8 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         # yeniden çevirmesini sağlar.
         return not _src_is_sdh_only(src_text)
     if _MUSIC_ONLY_RE.match(src_text.strip()) or _MUSIC_ONLY_RE.match(tr_text.strip()):
+        return False
+    if _src_is_numeric_only(src_text):
         return False
     _src_all_caps = _src_text_is_all_caps(src_text)
     # Gerçek olay (Louis Theroux Behind Bars, 2026-07-20): kaynak parantezsiz

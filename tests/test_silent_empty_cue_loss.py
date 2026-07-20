@@ -54,6 +54,14 @@ class IsUntranslatedEmptyTest(unittest.TestCase):
             "He said something important to her.", "[bir şey]",
         ))
 
+    def test_numeric_counting_sequence_not_flagged(self):
+        # Gerçek olay (A Metamorfose dos Passaros, 2026-07-20): "1, 2, 3, 4,
+        # 5..." gibi sayma cue'ları kaynakla birebir aynı kaldığı (sayılar
+        # çevrilmez) için 8 satır yanlışlıkla "çevrilmemiş" sanıldı.
+        self.assertFalse(gui._is_untranslated("1, 2, 3, 4, 5...", "1, 2, 3, 4, 5..."))
+        self.assertFalse(gui._is_untranslated("621, 622, 623, 624...", "621, 622, 623, 624..."))
+        self.assertFalse(gui._is_untranslated("26, 27, 28, 29, 30.", "26, 27, 28, 29, 30."))
+
     def test_existing_source_equals_target_behavior_unchanged(self):
         # Mevcut davranış (kaynak==hedef tespiti, karışık harfli gerçek cümle) regresyona uğramamalı.
         self.assertTrue(gui._is_untranslated(
