@@ -3627,10 +3627,28 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
         letters = [ch for ch in text if ch.isalpha()]
         return bool(letters) and all(ch.isupper() for ch in letters)
 
+    _SENTENCE_BOUNDARY_CHARS = ".!?…\"'-–—:"
+
+    def _is_sentence_initial(text: str, pos: int) -> bool:
+        """pos'taki kelime kendi CÜMLESİNİN/replik başındaki ilk kelime mi?
+        Gerçek olay (Indiana Jones belgeseli, 2026-07-20): 'Undskyld' (Danca
+        'pardon' - tekrar eden bir espri) çoğu cue'da SADECE ham kelime-listesi
+        pozisyonuna göre (wi>0) mid-sentence sayılıyordu -- oysa cue içindeki
+        İKİNCİ cümlenin ('Kom nu, Harry. Undskyld mig.' -> 'Undskyld' ikinci
+        cümlenin ilk kelimesi) BAŞI, önceki kelime konumu >0 olsa bile aslında
+        cümle/replik-başı. Ham konum yerine gerçek noktalama sınırına bakar."""
+        j = pos - 1
+        while j >= 0 and text[j] in " \t\n\r":
+            j -= 1
+        if j < 0:
+            return True
+        return text[j] in _SENTENCE_BOUNDARY_CHARS
+
     total_count: dict = {}
     mid_sentence: dict = {}
     occurrences: dict = {}
     lowercase_seen: set = set()
+    phrase_adjacent_count: dict = {}
     for idx in ordered_ids:
         src_text = _mixed_term_strip_speaker(src_map.get(idx, ""))
         if not src_text:
@@ -3644,22 +3662,54 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
         # en az bir normal-case satırda da geçtiği için işaretlenmeye devam eder.
         if _line_is_all_caps(src_text):
             continue
-        words = _MIXED_TERM_WORD_RE.findall(src_text)
+        matches = list(_MIXED_TERM_WORD_RE.finditer(src_text))
+        words = [m.group(0) for m in matches]
+        seen_in_this_cue: set = set()
         for wi, w in enumerate(words):
             if w[0].islower():
                 lowercase_seen.add(w.lower())
             if len(w) < 4 or not w[0].isupper() or _is_stop(w):
                 continue
             total_count[w] = total_count.get(w, 0) + 1
-            occurrences.setdefault(w, []).append(idx)
-            if wi > 0:
+            # Gerçek olay (Massacre in Rome, 2026-07-20): kaynak cue'da terim
+            # AYNI CUE İÇİNDE iki kez geçince ("Radio Rome. ... Rome One
+            # station.") occurrences aynı idx'i iki kez sayıyor, bu da tek bir
+            # yanlış-eşleşmenin kendi kendini "2 örnekli küme" diye onaylamasına
+            # yol açıyordu ("Burası"). Bir cue, bir terim için en fazla BİR
+            # occurrence'a sayılır -- tekrar sayım gerçek tutarlılık sinyali
+            # değil, gürültü.
+            if w not in seen_in_this_cue:
+                occurrences.setdefault(w, []).append(idx)
+                seen_in_this_cue.add(w)
+            if not _is_sentence_initial(src_text, matches[wi].start()):
                 mid_sentence[w] = True
+            # Gerçek olay (aynı dosya): "Command" hep "German High Command"/
+            # "High Command" içinde, bitişik başka bir büyük-harfli adayla
+            # ("High") birlikte geçiyordu -- hedefte "Komutanlığı" hiç ilk
+            # sırada olmadığı için asla kendi kümesini kuramıyor, bunun yerine
+            # yanındaki sıfatlar ("Alman"/"Yüksek") rastgele küme oluşturuyordu.
+            # Bitişik-büyük-harfli-komşu oranı YÜKSEKSE bu kelime muhtemelen
+            # çok-kelimeli bir unvanın PARÇASI, tek başına izlenebilir bir özel
+            # isim değil.
+            has_capital_neighbor = False
+            for ni in (wi - 1, wi + 1):
+                if 0 <= ni < len(words):
+                    nw = words[ni]
+                    if len(nw) >= 4 and nw[0].isupper() and not _is_stop(nw) and nw.lower() != w.lower():
+                        has_capital_neighbor = True
+                        break
+            if has_capital_neighbor:
+                phrase_adjacent_count[w] = phrase_adjacent_count.get(w, 0) + 1
 
     # Sadece HER ZAMAN büyük-harfle geçen kelimeler aday — kaynakta küçük-harfli
     # biçimi de görülmüşse (ör. 'well'/'they'/'what') bu sıradan bir İngilizce
     # kelimedir (cümle-başı/üslup kaynaklı büyük yazım), gerçek özel isim değil.
+    # phrase_adjacent_count[w] çoğunluğu geçerse (ör. "Command" hep "High"
+    # bitişiğinde) bu kelime muhtemelen çok-kelimeli bir unvanın parçasıdır,
+    # aday listesinden çıkarılır.
     candidates = [w for w, n in total_count.items()
-                 if n >= 3 and mid_sentence.get(w) and w.lower() not in lowercase_seen]
+                 if n >= 3 and mid_sentence.get(w) and w.lower() not in lowercase_seen
+                 and phrase_adjacent_count.get(w, 0) * 2 <= n]
     if not candidates:
         return {}
 
@@ -3692,9 +3742,21 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                 # o cue'da BİRDEN FAZLA özel-isim adayı olabilir (ör. hem 'Plato'
                 # hem alakasız 'Sfenks') — MEVCUT bir kümeye ait olanı tercih et,
                 # rastgele ilkini değil (yanlış-eşleştirme riskini azaltır).
-                matched = next((w for w in cand_words
-                               for cluster in clusters if ht._share_stem(w, cluster[0][1])),
-                              None)
+                # Gerçek olay (Massacre in Rome, 2026-07-20): cümle sırasında
+                # önce gelen bir söylem-sözcüğü ("Demek") küçük/yanlış bir
+                # kümeyle eşleşince, aynı cümlede SONRA gelen doğru aday
+                # ("Roma", devasa ve doğru bir kümeyle eşleşecekken) hiç
+                # denenmiyordu -- ilk-eşleşen-kazanır sırası cümle pozisyonuna
+                # göre değil, EN BÜYÜK/en yerleşik kümeye göre karar vermeli.
+                matched = None
+                matched_size = -1
+                for w in cand_words:
+                    for cluster in clusters:
+                        if ht._share_stem(w, cluster[0][1]):
+                            if len(cluster) > matched_size:
+                                matched = w
+                                matched_size = len(cluster)
+                            break
                 found_token, found_idx = (matched or cand_words[0]), cid
                 break
             if not found_token:

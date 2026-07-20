@@ -206,6 +206,93 @@ class MixedTermDetectionTest(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["term"], "Incas")
 
+    def test_same_cue_double_mention_not_double_counted(self):
+        """Gerçek olay (Massacre in Rome, 2026-07-20): kaynak cue'da terim
+        AYNI CUE içinde iki kez geçince ("Radio Rome... Rome One station"),
+        her iki geçiş de aynı (yanlış) ilk-kelime fallback'ini ("Burası")
+        seçip kendi kendini "2 örnekli küme" diye onaylıyordu. Bir cue, bir
+        terim için en fazla BİR occurrence saymalı -- diğer 3 cue'da tutarlı
+        "Roma" varken TETİKLEMEMELİ."""
+        blocks = _b(
+            (1, "Burası Roma Radyosu, Roma Bir istasyonu."),
+            (2, "Roma bombalandı."),
+            (3, "Roma yeniden inşa edildi."),
+            (4, "Sonunda Roma kurtuldu."),
+        )
+        src = _s(**{
+            "1": "This is Radio Rome, Rome One station.",
+            "2": "Rome was bombed.",
+            "3": "Rome was rebuilt.",
+            "4": "Finally Rome was saved.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_larger_established_cluster_preferred_over_sentence_position(self):
+        """Gerçek olay (Massacre in Rome, 2026-07-20): 'Demek' (söylem sözcüğü,
+        'So,') erken bir cue'da fallback ile yanlış küme kurunca, SONRAKİ bir
+        cue'da hem 'Demek' hem de doğru/devasa 'Kale' kümesiyle eşleşen 'Y'
+        birlikte geçince -- cümle sırasında ÖNCE gelen 'Demek' körlemesine
+        kazanıyordu. Artık en büyük/en yerleşik kümeyle eşleşen kazanmalı."""
+        blocks = _b(
+            (1, "Demek kale bombalandı."),
+            (2, "Kale yeniden yapıldı."),
+            (3, "Kale hâlâ ayakta."),
+            (4, "Sonunda Kale kurtarıldı."),
+            (5, "Demek Kale hâlâ oradaydı."),
+        )
+        src = _s(**{
+            "1": "So, the Castle was bombed.",
+            "2": "The Castle was rebuilt.",
+            "3": "The Castle still stands.",
+            "4": "Finally the Castle was saved.",
+            "5": "So, the Castle was still there.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_phrase_component_term_excluded_from_candidacy(self):
+        """Gerçek olay (Massacre in Rome, 2026-07-20): 'Command' hep 'German
+        High Command'/'High Command' içinde bitişik başka bir büyük-harfli
+        adayla ('High') birlikte geçiyordu -- hedefte 'Komutanlığı' hiçbir
+        cue'da ilk sırada olmadığı için asla kendi kümesini kuramıyor, bunun
+        yerine yanındaki sıfatlar ('Alman'/'Yüksek') rastgele küme
+        oluşturuyordu. Kaynakta HEP bitişik büyük-harfli komşusu olan bir
+        kelime aday listesinden çıkarılmalı."""
+        blocks = _b(
+            (1, "Alman Yüksek Komutanlığı bildiri yayınladı."),
+            (2, "Yüksek Komutanlıkta isteniyorsunuz."),
+            (3, "Bu durum Yüksek Komutanlığa bildirilmeli."),
+            (4, "Berlin'i arayın, Alman Yüksek Komutanlığını."),
+        )
+        src = _s(**{
+            "1": "The German High Command issued a communiqué.",
+            "2": "You're requested at High Command.",
+            "3": "This must be reported to the High Command.",
+            "4": "Call Berlin, High Command.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_second_sentence_in_merged_cue_not_mid_sentence_false_signal(self):
+        """Gerçek olay (Indiana Jones belgeseli, 2026-07-20): 'Undskyld' (Danca
+        'pardon', tekrar eden bir espri) çoğu cue'da ham kelime-pozisyonuna
+        göre (wi>0, cue'nun İKİNCİ cümlesinin başı) yanlışlıkla mid-sentence
+        sayılıyor, bu da sırf cümle-başı bir söz kalıbını (farklı Türkçe
+        karşılıklarla -- Affedersin/Pardon/Özür -- çevrilmiş olsa bile) aday
+        yapıyordu. Kendi cümlesinin/repliğin başında olan bir kelime, ham
+        pozisyonu >0 olsa bile mid-sentence SAYILMAMALI -- burada 'Hello' HER
+        cue'da kendi cümlesinin başında, TETİKLEMEMELİ (farklı render'lara
+        rağmen)."""
+        blocks = _b(
+            (1, "Bir şey oldu. Merhaba dedi."),
+            (2, "Başka bir şey oldu. Selam dedi."),
+            (3, "Merhaba, dedi üçüncü kez."),
+        )
+        src = _s(**{
+            "1": "Something happened. Hello he said.",
+            "2": "Something else happened. Hello he said.",
+            "3": "Hello, he said a third time.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_empty_blocks_returns_empty(self):
         self.assertEqual(gui.detect_mixed_term_renderings([], {}), [])
 
