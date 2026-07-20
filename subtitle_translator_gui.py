@@ -2567,6 +2567,15 @@ def _src_is_sdh_only(src_text: str) -> bool:
     return (not no_sdh) or bool(_SDH_ONLY_SRC_RE.match(src_text.strip()))
 
 
+def _src_text_is_all_caps(src_text: str) -> bool:
+    """Kaynak, köşeli parantez OLMADAN yazılmış BÜYÜK HARF bir SDH/SFX
+    açıklaması gibi mi (ör. 'BANGING AND LAUGHTER')? Böyle satırlar Türkçeye
+    çevrilirken çoğunlukla köşeli parantezle sarmalanıyor ('[VURMA SESLERİ VE
+    KAHKAHA]') — bu bilinçli bir biçim tercihi, içerik kaybı değil."""
+    toks = [w for w in (t.strip('.,!?;:\'"()[]…-«»“”') for t in str(src_text or '').split()) if w]
+    return bool(toks) and all(w[:1].isupper() for w in toks)
+
+
 def _is_untranslated(src_text: str, tr_text: str) -> bool:
     import re
     if not src_text:
@@ -2581,7 +2590,15 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         return not _src_is_sdh_only(src_text)
     if _MUSIC_ONLY_RE.match(src_text.strip()) or _MUSIC_ONLY_RE.match(tr_text.strip()):
         return False
-    if _is_punct_only_translation(src_text, tr_text):
+    _src_all_caps = _src_text_is_all_caps(src_text)
+    # Gerçek olay (Louis Theroux Behind Bars, 2026-07-20): kaynak parantezsiz
+    # BÜYÜK HARF bir SDH açıklaması ("BANGING AND LAUGHTER"), çeviri bunu doğru
+    # şekilde köşeli parantezle sarmalayıp çevirmiş ("[VURMA SESLERİ VE
+    # KAHKAHA]"). _is_punct_only_translation köşeli parantez içeriğini SDH-tag
+    # sayıp tamamen söküyor -- çevrilmiş metin de köşeli parantez içinde
+    # olduğu için "hiç içerik kalmadı" sanıp yanlışlıkla "çevrilmemiş" diye
+    # işaretliyordu. Kaynak zaten çıplak BÜYÜK HARF ise bu kontrol atlanır.
+    if _is_punct_only_translation(src_text, tr_text) and not _src_all_caps:
         return True
     _LOANWORDS = frozenset([
         "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah",
@@ -2593,9 +2610,7 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
     if src_norm == tr_norm and src_norm not in _LOANWORDS:
-        _toks = [w for w in (t.strip('.,!?;:\'"()[]…-«»“”') for t in src_text.split()) if w]
-        _all_caps = bool(_toks) and all(w[0].isupper() for w in _toks)
-        if not _src_is_sdh_only(src_text) and not _all_caps:
+        if not _src_is_sdh_only(src_text) and not _src_all_caps:
             return True
     return False
 

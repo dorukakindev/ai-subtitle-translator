@@ -34,6 +34,26 @@ class IsUntranslatedEmptyTest(unittest.TestCase):
         self.assertFalse(gui._is_untranslated("", ""))
         self.assertFalse(gui._is_untranslated("", "bir şey"))
 
+    def test_bare_caps_sdh_wrapped_in_brackets_not_flagged(self):
+        # Gerçek olay (Louis Theroux Behind Bars, 2026-07-20): kaynak köşeli
+        # parantezsiz BÜYÜK HARF bir SDH açıklaması, çeviri bunu doğru şekilde
+        # köşeli parantezle sarmalamış -- _is_punct_only_translation köşeli
+        # parantez içeriğini SDH-tag sayıp söktüğü için "çevrilmemiş" sanıyordu.
+        self.assertFalse(gui._is_untranslated(
+            "BANGING AND LAUGHTER",
+            '<font color="#ffffff">[VURMA SESLERİ VE KAHKAHA]</font>',
+        ))
+        self.assertFalse(gui._is_untranslated(
+            "BUZZER SOUNDS CONTINUOUSLY", "[ZİL SÜREKLİ ÇALIYOR]",
+        ))
+
+    def test_mixed_case_source_wrapped_in_brackets_still_flagged(self):
+        # Kaynak BÜYÜK HARF değilse (gerçek diyalog olma ihtimali daha yüksek)
+        # istisna uygulanmamalı -- köşeli parantez içi boşsa hâlâ yakalanmalı.
+        self.assertTrue(gui._is_untranslated(
+            "He said something important to her.", "[bir şey]",
+        ))
+
     def test_existing_source_equals_target_behavior_unchanged(self):
         # Mevcut davranış (kaynak==hedef tespiti, karışık harfli gerçek cümle) regresyona uğramamalı.
         self.assertTrue(gui._is_untranslated(

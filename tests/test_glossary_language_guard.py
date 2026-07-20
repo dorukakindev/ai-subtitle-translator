@@ -60,6 +60,48 @@ class WqxTargetGuardTest(unittest.TestCase):
         clean = {"Armed Forces": "Silahlı Kuvvetler"}
         self.assertEqual(ht.sanitize_glossary_for_turkish(clean), clean)
 
+    def test_multiword_proper_noun_kept_asis_does_not_drop_whole_glossary(self):
+        """Gerçek olay (4 Louis Theroux belgeseli art arda, 2026-07-20): dil-kodu
+        bug'ı düzeltilip R_wqx canlanınca, çok kelimeli özel isimlerin (kişi/
+        kurum/yer adı) hiç çevrilmeden aynen bırakılması ("Joe Exotic"->"Joe
+        Exotic", "Wynnewood, Oklahoma"->"Oklahoma, Wynnewood", "Daniella Weiss"->
+        "Daniella Weiss") tek-kelimelik-özel-isim istisnasını (Washington gibi)
+        tetiklemediği için TÜM sözlüğü (42-77 terim) götürüyordu. Hedef, kaynağın
+        kendi kelimelerinin AYNISIYSA (sırası değişmiş olsa da) bu yabancı-dile-
+        sürüklenme değildir -- çeviri hiç yapılmamış, bilinçli bırakılmış demektir."""
+        real_settlers_glossary = {
+            "Daniella Weiss": "Daniella Weiss",
+            "settler violence": "yerleşimci şiddeti",
+            "Palestinians": "Filistinliler",
+            "the settler dream": "yerleşimci rüyası",
+        }
+        cleaned = ht.sanitize_glossary_for_turkish(real_settlers_glossary)
+        self.assertEqual(cleaned, real_settlers_glossary)
+
+    def test_multiword_proper_noun_reordered_still_kept(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "Wynnewood, Oklahoma": "Oklahoma, Wynnewood",
+        })
+        self.assertEqual(cleaned, {"Wynnewood, Oklahoma": "Oklahoma, Wynnewood"})
+
+    def test_multiword_proper_noun_kept_asis_does_not_itself_leak(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "GW Exotic Animal Park": "GW Exotic Animal Park",
+            "West Block": "West Block",
+        })
+        self.assertEqual(cleaned, {
+            "GW Exotic Animal Park": "GW Exotic Animal Park",
+            "West Block": "West Block",
+        })
+
+    def test_actual_foreign_drift_still_caught_even_if_key_shares_a_word(self):
+        # Kaynakla hedef kelime kümesi FARKLIYSA (gerçek çeviri denenmiş ama
+        # yabancı dile kaymışsa) istisna devreye girmemeli.
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "West Bank settler": "Qawweyaha xoogga",
+        })
+        self.assertEqual(cleaned, {})
+
     def test_ascii_turkish_target_kept(self):
         clean = {"church": "kilise"}
         self.assertEqual(ht.sanitize_glossary_for_turkish(clean), clean)

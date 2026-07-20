@@ -4176,6 +4176,24 @@ def _glossary_wqx_token(value: str) -> str | None:
     return first
 
 
+def _glossary_target_is_source_kept_asis(key: str, value: str) -> bool:
+    """Hedef, kaynağın kendi kelimelerinin AYNISI mı (sırası değişmiş olsa da)?
+    Gerçek olay (2026-07-20, 4 Louis Theroux belgeseli art arda): "Joe Exotic"->
+    "Joe Exotic", "GW Exotic Animal Park"->"GW Exotic Animal Park", "Wynnewood,
+    Oklahoma"->"Oklahoma, Wynnewood", "Daniella Weiss"->"Daniella Weiss", "West
+    Block"->"West Block" gibi ÇOK KELİMELİ özel isimler (kişi/kurum/yer adı) hiç
+    çevrilmeden aynen bırakıldığı için R_wqx'i tetikleyip TÜM sözlüğü (42-77
+    terim) götürüyordu -- tek-kelimelik-özel-isim istisnası (yukarısı) çok dar,
+    yalnızca "Washington" gibi TEK kelimeyi kapsıyor. Kaynakla hedefin kelime
+    kümesi birebir aynıysa hiçbir çeviri olmamış demektir -- bu YABANCI DİLE
+    SÜRÜKLENME değil, bilinçli "bu özel ismi çevirme" kararıdır; w/q/x harfi
+    olması kaynağın kendi İngilizce harfleri olduğu için anlamsızdır."""
+    def _tokens(s):
+        return frozenset(_GLOSSARY_WORD_RE.findall(str(s or "").lower()))
+    key_tokens = _tokens(key)
+    return bool(key_tokens) and key_tokens == _tokens(value)
+
+
 def non_turkish_leak_token(text: str, *, glossary_target: bool = False) -> str | None:
     """Return the first concrete token that trips the non-Turkish-target-leak
     detector, or None if the text is clean. Single source of truth for
@@ -4324,6 +4342,12 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         verbose_reason = _glossary_verbose_meta_commentary_marker(value_s)
         if verbose_reason:
             gloss_dropped_terms[str(key)] = (value_s, verbose_reason)
+            continue
+        # Kaynağın kendi kelimeleri aynen (özel isim) kaldıysa hiçbir dil-sızıntı
+        # kontrolü çalıştırılmaz -- ne wqx ne de non_turkish_leak_token. Bkz.
+        # yukarıdaki _glossary_target_is_source_kept_asis blok yorumu.
+        if _glossary_target_is_source_kept_asis(key, value_s):
+            cleaned[str(key)] = value_s
             continue
         if _glossary_wqx_token(normalize_latin_homoglyphs(value_s)) is not None:
             wqx_hits[str(key)] = value_s
