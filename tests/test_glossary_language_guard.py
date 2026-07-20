@@ -137,6 +137,75 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         self.assertEqual(ht.sanitize_glossary_for_turkish(dirty), {})
 
 
+class GlossaryVerboseMetaCommentaryGuardTest(unittest.TestCase):
+    """bkz. hybrid_translate.py'deki '_glossary_verbose_meta_commentary_marker'
+    blok yorumu — The Shivering Truth S01E02 (2026-07-19) olayı: 'maggot' için
+    analiz geçişi ÇEVİRİ değil paragraf uzunluğunda bir NASIL-ÇEVRİLMELİ notu
+    yazdı; notun içindeki kazara "qurt" (kurt yazım kayması) R_wqx'i tetikledi
+    ve TÜM sözlük atıldı -- 'sir'->'komutanım', 'Private'->'er', 'Sergeant'->
+    'çavuş', 'church'->'kilise' gibi dört tertemiz terim de beraberinde gitti.
+    'church' çıktıda 3 kez hiç çevrilmeden kaldı.
+
+    Çözüm: uzunluk kontrolü wqx taramasından ÖNCE çalışır ve tetiklenirse
+    `continue` eder -- notun içeriği asla wqx_hits'e ulaşmaz."""
+
+    MAGGOT_NOTE = (
+        "qurt/qurtçuk değil; askerî hakaret olarak mecazi 'pislik'/'larva' "
+        "yerine doğrudan 'çürük kurt' anlamı vermeden, komik ve aşağılayıcı "
+        "askerî hakaret olarak çevrilmeli: \"çürük\" ya da bağlama göre "
+        "\"maggot\"un yerleşik karşılığı yoksa açıklamasız bırakılabilir."
+    )
+
+    def test_verbose_note_dropped_alone(self):
+        cleaned = ht.sanitize_glossary_for_turkish({"maggot": self.MAGGOT_NOTE})
+        self.assertEqual(cleaned, {})
+
+    def test_verbose_note_does_not_poison_whole_glossary(self):
+        # ASIL REGRESYON TESTİ — gerçek S01E02 sözlüğü, birebir.
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "maggot": self.MAGGOT_NOTE,
+            "sir": "komutanım",
+            "Private": "er",
+            "Sergeant": "çavuş",
+            "church": "kilise",
+        })
+        self.assertEqual(cleaned, {
+            "sir": "komutanım",
+            "Private": "er",
+            "Sergeant": "çavuş",
+            "church": "kilise",
+        })
+
+    def test_short_multiword_idiom_not_dropped_by_verbosity(self):
+        # Eşiğin altındaki gerçek çok-kelimeli bir deyim çevirisi (7 kelime)
+        # yanlışlıkla "uzun not" sayılıp atılmamalı.
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "ogling": "sarkıntılık etmek / bakışlarıyla dik dik süzmek bağlamına göre",
+        })
+        # Bu değer zaten eğik-çizgi kuralına takılıp tek-terim atılır (7 kelime,
+        # verbosity eşiğinin altında) -- burada asıl kontrol edilen, verbosity
+        # kontrolünün kısa/orta uzunluktaki değerlere DOKUNMADIĞI, iki kuralın
+        # bağımsız çalıştığıdır.
+        self.assertEqual(cleaned, {})
+
+    def test_genuinely_short_idiom_survives(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "ear-piercing ceremony": "kulak delme töreni",
+        })
+        self.assertEqual(cleaned, {"ear-piercing ceremony": "kulak delme töreni"})
+
+    def test_wqx_whole_drop_still_works_alongside_verbose_sibling(self):
+        # Bir sözlükte HEM uzun-not (tek-terim atılan) HEM gerçek kısa Somalice
+        # (whole-glossary-drop tetikleyen) varsa, kısa Somalice yine de TÜM
+        # sözlüğü düşürmeli -- uzun not bu sinyali gizlemiyor.
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "maggot": self.MAGGOT_NOTE,
+            "Armed Forces": "Qawweyaha Xoogga Dalka",
+            "church": "kilise",
+        })
+        self.assertEqual(cleaned, {})
+
+
 class PrecontextGlossaryGuardTest(unittest.TestCase):
     """KRİTİK BOŞLUK (Adım 3): precontext yolu (Yardımcı Analiz KAPALIYKEN) eskiden
     hiç sanitize edilmiyordu."""
