@@ -118,13 +118,27 @@ def _sanitize_settings_backup_text(text: str) -> str:
     return text
 
 
+def _settings_backup_suffix(path: Path) -> int:
+    """`.gui_settings.json.bak.<suffix>` adındaki sayısal kısmı döner, yoksa -1.
+    Yeni/eski sıralaması için dosyanın kendi st_mtime'ı YERİNE bu kullanılmalı:
+    art arda birden fazla yedek aynı saniye içinde yazılırsa (ör. testte 5 sahte
+    + 1 gerçek yedek üst üste oluşturuluyor) bazı dosya sistemlerinde mtime
+    çözünürlüğü bunları ayırt edemeyip aralarında rastgele bir dosyayı "en yeni"
+    seçtiriyordu — dosya adındaki sayı (epoch saniye) zaten kesin ve çakışmasız
+    bir sıralama sağlıyor."""
+    try:
+        return int(path.name.rsplit(".", 1)[-1])
+    except (ValueError, IndexError):
+        return -1
+
+
 def _write_sanitized_settings_backup(src_path: Path, keep_last: int = 3) -> Path | None:
     if not src_path.exists():
         return None
     bak = src_path.with_name(f".gui_settings.json.bak.{int(time.time())}")
     raw = src_path.read_text(encoding="utf-8", errors="replace")
     bak.write_text(_sanitize_settings_backup_text(raw), encoding="utf-8")
-    backups = sorted(src_path.parent.glob(".gui_settings.json.bak.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    backups = sorted(src_path.parent.glob(".gui_settings.json.bak.*"), key=_settings_backup_suffix, reverse=True)
     for stale in backups[keep_last:]:
         try:
             stale.unlink()

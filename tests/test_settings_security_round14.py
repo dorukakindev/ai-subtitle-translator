@@ -126,7 +126,11 @@ class SettingsBackupSecurityTest(unittest.TestCase):
 
             backups = sorted(Path(td).glob(".gui_settings.json.bak.*"))
             self.assertLessEqual(len(backups), 3)
-            newest = max(backups, key=lambda p: p.stat().st_mtime)
+            # mtime DEĞİL dosya adındaki sayısal suffix'e göre "en yeni"yi bul —
+            # bu test 5 sahte + 1 gerçek yedeği art arda, aynı saniye içinde
+            # yazıyor; bazı dosya sistemlerinde mtime çözünürlüğü bunu ayırt
+            # edemeyip flaky hale getiriyordu (bkz. gui._settings_backup_suffix).
+            newest = max(backups, key=gui._settings_backup_suffix)
             bak_text = newest.read_text(encoding="utf-8")
             self.assertNotIn("sk-secret-123", bak_text)
             self.assertNotIn("sk-helper-999", bak_text)
