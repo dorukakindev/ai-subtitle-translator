@@ -94,6 +94,30 @@ class WqxTargetGuardTest(unittest.TestCase):
             "West Block": "West Block",
         })
 
+    def test_translated_phrase_with_preserved_proper_noun_not_dropped(self):
+        """Gerçek olay (2 Louis Theroux belgeseli art arda, 2026-07-20): DÜZGÜN
+        çevrilmiş çok kelimeli hedefler ("Milwaukee'nin Kuzey Yakası", "Milwaukee
+        Polis Teşkilatı", "SWAT ekibi") içlerinde kaynaktan aynen korunmuş bir
+        özel isim (Milwaukee, SWAT) taşıdıkları için R_wqx'i tetikleyip 30-32
+        terimlik sözlükleri komple götürüyordu — tek-kelime istisnası apostrof
+        yüzünden ("Milwaukee'nin" iki token'a bölünüyor) devreye girmiyordu."""
+        real_milwaukee_glossary = {
+            "North Side of Milwaukee": "Milwaukee'nin Kuzey Yakası",
+            "Milwaukee PD": "Milwaukee Polis Teşkilatı",
+            "SWAT team": "SWAT ekibi",
+            "gun crime": "silahlı suç",
+        }
+        cleaned = ht.sanitize_glossary_for_turkish(real_milwaukee_glossary)
+        self.assertEqual(cleaned, real_milwaukee_glossary)
+
+    def test_preserved_proper_noun_must_still_be_capitalized(self):
+        # Kaynakta geçen kelime hedefte KÜÇÜK harfle çıkarsa istisna uygulanmaz
+        # (gerçek özel-isim koruması değil, tesadüfi kelime çakışması olabilir).
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "Milwaukee thing": "milwaukee gibi bir şey",
+        })
+        self.assertEqual(cleaned, {})
+
     def test_actual_foreign_drift_still_caught_even_if_key_shares_a_word(self):
         # Kaynakla hedef kelime kümesi FARKLIYSA (gerçek çeviri denenmiş ama
         # yabancı dile kaymışsa) istisna devreye girmemeli.

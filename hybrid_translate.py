@@ -4158,22 +4158,36 @@ _GLOSSARY_WQX_CHAR_RE = re.compile(r"[wqxWQX]")
 _GLOSSARY_GUARD_TURKISH_TARGETS = frozenset({"tr", "tur", "turkish", "türkçe", "turkce"})
 
 
-def _glossary_wqx_token(value: str) -> str | None:
+def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | None:
     """R_wqx: Türk alfabesinde q/w/x yoktur. `value` içindeki bu harfleri taşıyan
     ilk kelimeyi döner — TEK kelimelik + büyük-harfle-başlayan hedefler hariç
     (gerçek özel isim/marka: Washington, Xerox, WhatsApp). Çok-kelimeli bir hedefte
     w/q/x varsa özel isim değil, yabancı dil sızıntısıdır (bkz. Adım 1,
-    plans/sozluk-hedef-dil-guard-brief.md)."""
+    plans/sozluk-hedef-dil-guard-brief.md).
+
+    `glossary_key` verilirse (yalnızca sözlük sanitize yolundan çağrılınca):
+    büyük-harfle-başlayan VE kaynakta (anahtarda) aynen geçen w/q/x'li kelimeler
+    de hariç tutulur. Gerçek olay (2 Louis Theroux belgeseli, 2026-07-20):
+    "North Side of Milwaukee"->"Milwaukee'nin Kuzey Yakası", "Milwaukee PD"->
+    "Milwaukee Polis Teşkilatı", "SWAT team"->"SWAT ekibi" gibi DÜZGÜN ÇEVRİLMİŞ
+    çok kelimeli hedefler, içlerinde kaynaktan aynen korunmuş bir özel isim
+    (Milwaukee, SWAT) taşıdıkları için tek-kelime istisnasına (yukarısı, apostrof
+    kesme işareti kelime karakteri sayılmadığından "Milwaukee'nin" iki token'a
+    bölünüyor) hiç uymuyor ve TÜM sözlüğü (30-32 terim) götürüyordu."""
     words = _GLOSSARY_WORD_RE.findall(str(value or ""))
     if not words:
         return None
     hits = [w for w in words if _GLOSSARY_WQX_CHAR_RE.search(w)]
     if not hits:
         return None
-    first = hits[0]
-    if len(words) == 1 and first[:1].isupper():
+    if len(words) == 1 and hits[0][:1].isupper():
         return None  # tek-kelime + büyük harf: gerçek özel isim/marka olabilir
-    return first
+    if glossary_key is not None:
+        key_tokens = {w.lower() for w in _GLOSSARY_WORD_RE.findall(str(glossary_key or ""))}
+        hits = [w for w in hits if not (w[:1].isupper() and w.lower() in key_tokens)]
+        if not hits:
+            return None
+    return hits[0]
 
 
 def _glossary_target_is_source_kept_asis(key: str, value: str) -> bool:
@@ -4194,7 +4208,8 @@ def _glossary_target_is_source_kept_asis(key: str, value: str) -> bool:
     return bool(key_tokens) and key_tokens == _tokens(value)
 
 
-def non_turkish_leak_token(text: str, *, glossary_target: bool = False) -> str | None:
+def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
+                            glossary_key: str | None = None) -> str | None:
     """Return the first concrete token that trips the non-Turkish-target-leak
     detector, or None if the text is clean. Single source of truth for
     has_non_turkish_target_leak — also used to name the offending word in
@@ -4210,7 +4225,7 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False) -> str |
         return m.group(0)
     if not _LATIN_EXTENDED_CHAR_RE.search(value):
         if glossary_target:
-            token = _glossary_wqx_token(value)
+            token = _glossary_wqx_token(value, glossary_key=glossary_key)
             if token:
                 return token
         return None
@@ -4227,15 +4242,17 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False) -> str |
             continue
         return token
     if glossary_target:
-        token = _glossary_wqx_token(value)
+        token = _glossary_wqx_token(value, glossary_key=glossary_key)
         if token:
             return token
     return None
 
 
-def has_non_turkish_target_leak(text: str, *, glossary_target: bool = False) -> bool:
+def has_non_turkish_target_leak(text: str, *, glossary_target: bool = False,
+                                 glossary_key: str | None = None) -> bool:
     """Detect non-Turkey-Turkish leaks that should never appear in Turkish output."""
-    return non_turkish_leak_token(text, glossary_target=glossary_target) is not None
+    return non_turkish_leak_token(text, glossary_target=glossary_target,
+                                   glossary_key=glossary_key) is not None
 
 
 # ── Sözlük hedefinde gloss/talimat guard'ı (bkz. plans/sozluk-gloss-ve-half-sayi-brief.md) ──
@@ -4349,9 +4366,9 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if _glossary_target_is_source_kept_asis(key, value_s):
             cleaned[str(key)] = value_s
             continue
-        if _glossary_wqx_token(normalize_latin_homoglyphs(value_s)) is not None:
+        if _glossary_wqx_token(normalize_latin_homoglyphs(value_s), glossary_key=key) is not None:
             wqx_hits[str(key)] = value_s
-        if has_non_turkish_target_leak(value_s, glossary_target=True):
+        if has_non_turkish_target_leak(value_s, glossary_target=True, glossary_key=key):
             dropped_terms[str(key)] = value_s
             continue
         gloss_reason = _glossary_gloss_or_instruction_marker(value_s)
