@@ -5056,14 +5056,14 @@ class App(ctk.CTk):
         self.main_custom_frame.grid(row=r, column=0, sticky="ew", padx=0, pady=(0,4)); r += 1
 
         ctk.CTkLabel(self.main_custom_frame, text="Model Adı", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
-        self.main_custom_model_var = ctk.StringVar(value="gpt-5.5")
+        self.main_custom_model_var = ctk.StringVar(value="gpt-5.4")
         self.main_custom_model_entry = ctk.CTkEntry(self.main_custom_frame, textvariable=self.main_custom_model_var, height=32,
                      font=ctk.CTkFont("Segoe UI", 11),
                      fg_color=CARD, border_color=BORDER, text_color=FG)
         self.main_custom_model_entry.pack(fill="x", padx=4, pady=(0,2))
 
         ctk.CTkLabel(self.main_custom_frame, text="API URL (taban adres, /chat/completions olmadan)", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
-        self.main_custom_url_var = ctk.StringVar(value="")
+        self.main_custom_url_var = ctk.StringVar(value="https://api.shuaiapi.com/v1")
         self.main_custom_url_entry = ctk.CTkEntry(self.main_custom_frame, textvariable=self.main_custom_url_var, height=32,
                      font=ctk.CTkFont("Segoe UI", 11),
                      fg_color=CARD, border_color=BORDER, text_color=FG,
@@ -5143,11 +5143,14 @@ class App(ctk.CTk):
             fr.grid(row=0, column=col, sticky="ew",
                     padx=(0,4) if col == 0 else (4,0), pady=2, ipady=4)
             fr.grid_columnconfigure(0, weight=1)
-            ctk.CTkRadioButton(fr, text=txt, variable=self.mode_var, value=val,
+            _mode_radio = ctk.CTkRadioButton(fr, text=txt, variable=self.mode_var, value=val,
                                font=ctk.CTkFont("Segoe UI", 12),
                                fg_color=ACCENT, hover_color=ACCENT,
                                text_color=FG,
-                               command=self._on_mode_change).grid(row=0, column=0, padx=10, pady=4)
+                               command=self._on_mode_change)
+            _mode_radio.grid(row=0, column=0, padx=10, pady=4)
+            if val == "batch":
+                self._mode_batch_radio = _mode_radio
             ctk.CTkLabel(fr, text=sub, font=ctk.CTkFont("Segoe UI", 10),
                          text_color=FG2).grid(row=1, column=0)
 
@@ -7310,11 +7313,28 @@ class App(ctk.CTk):
         return self.model_var.get()
 
     def _sync_main_custom_visibility(self):
-        """Özel sağlayıcı alanlarını switch durumuna göre göster/gizler."""
-        if getattr(self, "main_custom_var", None) and self.main_custom_var.get():
+        """Özel sağlayıcı alanlarını switch durumuna göre göster/gizler.
+
+        Özel sağlayıcı (reseller) açıkken Batch modu seçilemez — gerçek
+        OpenAI Batch API'si resmi OpenAI dışında desteklenmiyor (kullanıcı
+        2026-07-20: yanlışlıkla batch seçip nasıl çalıştığını sormuştu; aslında
+        hiç batch çalışmamıştı, mode_var sadece açılışta yüklenen eski ayarı
+        gösteriyordu). Açıkken zaten Anında'ya (sync) zorlanır ve Batch radio'su
+        pasifleştirilir; kapanınca tekrar seçilebilir olur."""
+        custom_active = bool(getattr(self, "main_custom_var", None) and self.main_custom_var.get())
+        if custom_active:
             self.main_custom_frame.grid()
         else:
             self.main_custom_frame.grid_remove()
+        batch_radio = getattr(self, "_mode_batch_radio", None)
+        if batch_radio:
+            if custom_active:
+                if self.mode_var.get() == "batch":
+                    self.mode_var.set("sync")
+                    self._on_mode_change()
+                batch_radio.configure(state="disabled")
+            else:
+                batch_radio.configure(state="normal")
 
     def _on_main_custom_changed(self):
         """Switch tıklanınca: görünürlüğü güncelle + AYARLARI HEMEN KAYDET.

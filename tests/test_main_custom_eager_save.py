@@ -105,5 +105,70 @@ class MainCustomEagerSaveTest(unittest.TestCase):
         self.assertEqual(self.app.main_custom_frame.grid_info(), {})
 
 
+class MainCustomDisablesBatchTest(unittest.TestCase):
+    """Özel Sağlayıcı açıkken Batch modu seçilemez (2026-07-20): gerçek OpenAI
+    Batch API'si resmi OpenAI dışında desteklenmiyor — kullanıcı yanlışlıkla
+    batch+reseller kombinasyonuyla çeviri başlattı, aslında hiç batch
+    çalışmamıştı (mode_var açılış logunda sadece eski kayıtlı ayarı gösteriyordu,
+    gerçek çalışma zamanı sync+hybrid'e geçmişti)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if hasattr(gui.ctk, "_DummyWidget"):
+            raise unittest.SkipTest(
+                "tests/customtkinter.py stub'ı devrede — gerçek radio-button "
+                "state/grid davranışı test edilemez, atlandı")
+        cls.app = make_app(gui)
+        cls.app.update_idletasks()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.destroy()
+
+    def setUp(self):
+        self.app.main_custom_var.set(False)
+        self.app.mode_var.set("batch")
+        self.app._sync_main_custom_visibility()
+
+    def test_enabling_custom_provider_while_batch_forces_sync_and_disables_batch(self):
+        self.app.mode_var.set("batch")
+        self.app.main_custom_var.set(True)
+        self.app._sync_main_custom_visibility()
+        self.assertEqual(self.app.mode_var.get(), "sync")
+        self.assertEqual(self.app._mode_batch_radio.cget("state"), "disabled")
+
+    def test_disabling_custom_provider_reenables_batch_radio(self):
+        self.app.main_custom_var.set(True)
+        self.app._sync_main_custom_visibility()
+        self.app.main_custom_var.set(False)
+        self.app._sync_main_custom_visibility()
+        self.assertEqual(self.app._mode_batch_radio.cget("state"), "normal")
+
+    def test_custom_provider_active_with_sync_already_selected_does_not_touch_mode(self):
+        self.app.mode_var.set("sync")
+        self.app.main_custom_var.set(True)
+        self.app._sync_main_custom_visibility()
+        self.assertEqual(self.app.mode_var.get(), "sync")
+        self.assertEqual(self.app._mode_batch_radio.cget("state"), "disabled")
+
+    def test_fresh_defaults_point_at_reseller_gpt54(self):
+        # Yeni kurulumda (ayar dosyası yokken) Özel Sağlayıcı alanları boş/gpt-5.5
+        # yerine doğrudan çalışan reseller ayarlarını göstermeli (2026-07-20:
+        # kullanıcı yeniden açınca URL alanının boşaldığını fark etti — asıl
+        # neden URL'nin hiç kalıcı bir varsayılanı olmamasıydı). Gerçek proje
+        # .gui_settings.json'ı bu App örneğine karışmasın diye var-olmayan bir
+        # yola yönlendiriyoruz (make_app tek başına bunu izole etmez).
+        with tempfile.TemporaryDirectory() as td:
+            fake_path = Path(td) / ".gui_settings.json"
+            with mock.patch.object(gui.App, "_settings_path", lambda self: fake_path):
+                fresh = make_app(gui)
+                try:
+                    fresh.update_idletasks()
+                    self.assertEqual(fresh.main_custom_model_var.get(), "gpt-5.4")
+                    self.assertEqual(fresh.main_custom_url_var.get(), "https://api.shuaiapi.com/v1")
+                finally:
+                    fresh.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
