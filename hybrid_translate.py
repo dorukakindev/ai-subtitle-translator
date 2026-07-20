@@ -6444,6 +6444,34 @@ def _has_proposition_drift(old: str, new: str, source_text: str = "") -> bool:
     return False
 
 
+def _reflow_to_line_count(text: str, target_lines: int) -> str:
+    """candidate_text'i target_lines kadar satıra, kelime sınırında ve karakter
+    sayısına göre dengeli biçimde yeniden sarar. Gerçek olay (2026-07-21, 5
+    dosyalık koşu): Critic önerilerinin reddedilen bölümünün büyük çoğunluğu
+    (ör. Metamorfose'da 181 reddin 165'i) SADECE satır SAYISI orijinalden
+    farklı diye atılıyordu — içerik iyi olsa bile. Bu, atmadan ÖNCE öneriyi
+    orijinalin satır sayısına yeniden sarmayı dener."""
+    words = str(text or "").split()
+    if not words or target_lines <= 1:
+        return " ".join(words)
+    total_len = sum(len(w) for w in words) + max(0, len(words) - 1)
+    target_per_line = total_len / target_lines
+    lines: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for w in words:
+        add_len = len(w) + (1 if current else 0)
+        if current and current_len + add_len > target_per_line and len(lines) < target_lines - 1:
+            lines.append(" ".join(current))
+            current = [w]
+            current_len = len(w)
+        else:
+            current.append(w)
+            current_len += add_len
+    lines.append(" ".join(current))
+    return "\n".join(lines)
+
+
 def validate_polish_candidate(
     original_text: str,
     candidate_text: str,
@@ -7073,6 +7101,7 @@ def critic_pass_with_helper(
     log_fn=None,
     glossary: dict = None,
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
+    change_log: list | None = None,
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
@@ -7082,6 +7111,11 @@ def critic_pass_with_helper(
     Args:
         analysis_result: Optional tuple of (ContextMemory, char_examples_dict, pronoun_map)
             from analyze_with_helper() to provide context for better fixes.
+        change_log: Optional list; if given, each ACTUALLY applied fix appends
+            {"id","reason","source","before","after"} — caller can write a
+            before/after change report (bkz. QC'nin qc_degisiklikler.txt'i,
+            2026-07-20 — Critic 150-200 satır değiştirebiliyor ama hangi
+            satırın NEDEN değiştiğini kimse göremiyordu).
     """
 
     if not tr_blocks:
@@ -7258,11 +7292,22 @@ def critic_pass_with_helper(
         "mild → 'lanet/kahretsin', moderate → 'bok/göt', strong → 'sik/amk/orospu çocuğu'."
     )
 
-    # Send all suspicious lines in one shot (they're already filtered, should be small)
-    MINIMAX_CHUNK = 300
+    # Send all suspicious lines in one shot (they're already filtered, should be small).
+    # 300'den 100'e indirildi (2026-07-21): bir chunk'ın JSON'ı bozuk/kesik dönerse
+    # o chunk'taki TÜM satırlar (300'e kadar) sessizce atlanıyordu -- daha küçük
+    # chunk, bir hata olduğunda kaybı sınırlar.
+    MINIMAX_CHUNK = 100
     mm_fixed = 0
+    reflow_recovered = 0
     critic_rejected = 0
     critic_rejected_reasons: dict[str, int] = {}
+    reason_stats: dict[str, dict[str, int]] = {}
+
+    def _reason_tokens(reason_str: str) -> list[str]:
+        if not reason_str:
+            return ["PATTERN_ONLY"]
+        toks = [tok.split("(", 1)[0].strip() for tok in reason_str.split("|")]
+        return [t for t in toks if t] or ["PATTERN_ONLY"]
 
     for chunk_start in range(0, len(suspicious), MINIMAX_CHUNK):
         chunk = suspicious[chunk_start:chunk_start + MINIMAX_CHUNK]
@@ -7353,6 +7398,10 @@ def critic_pass_with_helper(
             f"ALTERNATIVE-TRANSLATION FIX: if reason includes ALT_SLASH, the {tgt_lang} text contains "
             f"two alternative translations joined by ' / ' that the source does not have. Pick the single "
             f"best translation and remove the alternative.\n\n"
+            f"LINE COUNT: the 'fixed' text must contain EXACTLY the same number of line breaks (\\n) as the "
+            f"original 'tr' field for that id — if 'tr' has 2 lines, 'fixed' must also be exactly 2 lines. "
+            f"Redistribute words across the same number of lines; never merge lines into one or split one "
+            f"line into more.\n\n"
             f"GARBLE FIX: if reason includes GARBLE_TOKEN, the listed token(s) are broken/foreign — "
             f"rewrite ONLY those tokens as natural Turkish (fix vowel harmony, remove stray letters, "
             f"join broken suffixes); do not change anything else in the line.\n\n"
@@ -7376,12 +7425,18 @@ def critic_pass_with_helper(
             )
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
+                if log_fn:
+                    log_fn(f"Critic Helper chunk boş yanıt döndü — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
             content = _extract_json_array(content)
             if not content:
+                if log_fn:
+                    log_fn(f"Critic Helper chunk JSON çıkarılamadı — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
             fixes = json.loads(content)
             if not isinstance(fixes, list):
+                if log_fn:
+                    log_fn(f"Critic Helper chunk beklenmeyen format — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
             for fix in fixes:
                 if not isinstance(fix, dict):
@@ -7403,22 +7458,52 @@ def critic_pass_with_helper(
                         or frag_tags.get(fid)
                         or "none"
                     )
+                    reason_toks = _reason_tokens(v_reasons.get(fid, ""))
+                    for tok in reason_toks:
+                        reason_stats.setdefault(tok, {"suggested": 0, "accepted": 0})
+                        reason_stats[tok]["suggested"] += 1
+                    final_text = str(ftext)
                     ok, reason = validate_polish_candidate(
                         old_text,
-                        str(ftext),
+                        final_text,
                         source_text=orig_dict.get(fid, ""),
                         neighbor_texts=neighbor_texts,
                         fragment_tag=fragment_tag,
                     )
+                    # Öneri SADECE satır sayısı yüzünden reddedildiyse atmadan önce
+                    # orijinalin satır sayısına yeniden sarmayı dene (bkz.
+                    # _reflow_to_line_count docstring — gerçek olay, 2026-07-21).
+                    if not ok and reason == "linebreak_count":
+                        reflowed = _reflow_to_line_count(final_text, old_text.count("\n") + 1)
+                        if reflowed != final_text:
+                            ok2, reason2 = validate_polish_candidate(
+                                old_text, reflowed,
+                                source_text=orig_dict.get(fid, ""),
+                                neighbor_texts=neighbor_texts,
+                                fragment_tag=fragment_tag,
+                            )
+                            if ok2:
+                                ok, reason, final_text = True, reason2, reflowed
+                                reflow_recovered += 1
                     if not ok:
                         critic_rejected += 1
                         critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
                         continue
-                    result[pos] = (old_idx, old_ts, str(ftext))
+                    result[pos] = (old_idx, old_ts, final_text)
                     mm_fixed += 1
+                    for tok in reason_toks:
+                        reason_stats[tok]["accepted"] += 1
+                    if change_log is not None:
+                        change_log.append({
+                            "id": fid,
+                            "reason": v_reasons.get(fid, "") or "pattern/local",
+                            "source": orig_dict.get(fid, ""),
+                            "before": old_text,
+                            "after": final_text,
+                        })
         except Exception as e:
             if log_fn:
-                log_fn(f"Critic Helper chunk hatası: {e}", "warn")
+                log_fn(f"Critic Helper chunk hatası ({len(chunk)} satır atlandı): {e}", "warn")
 
     if log_fn:
         if critic_rejected:
@@ -7430,9 +7515,16 @@ def critic_pass_with_helper(
                 "warn",
             )
         if mm_fixed:
-            log_fn(f"Critic Pass (Helper): {mm_fixed} satır düzeltildi ✓", "ok")
+            reflow_bit = f" ({reflow_recovered} tanesi satır-sayısı yeniden sarılarak kurtarıldı)" if reflow_recovered else ""
+            log_fn(f"Critic Pass (Helper): {mm_fixed} satır düzeltildi ✓{reflow_bit}", "ok")
         else:
             log_fn("Critic Pass (Helper): ek düzeltme gerekmedi ✓", "ok")
+        if reason_stats:
+            stats_str = ", ".join(
+                f"{tok}:{v['accepted']}/{v['suggested']}"
+                for tok, v in sorted(reason_stats.items(), key=lambda kv: -kv[1]["suggested"])
+            )
+            log_fn(f"Critic Pass (Helper): sebep-bazlı isabet — {stats_str}", "info")
 
     return result
 

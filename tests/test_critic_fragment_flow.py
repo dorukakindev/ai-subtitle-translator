@@ -134,6 +134,47 @@ class CriticFragmentFlowTest(unittest.TestCase):
 
 
 
+    def test_reflow_recovers_linebreak_count_mismatch(self):
+        # Gerçek olay (2026-07-21, 5 dosyalık koşu): Critic önerilerinin
+        # reddedilen kısmının büyük çoğunluğu (Metamorfose'da 181 reddin 165'i)
+        # SADECE satır SAYISI orijinalden farklı diye atılıyordu -- içerik iyi
+        # olsa bile. Artık atmadan önce orijinalin satır sayısına yeniden
+        # sarmayı dener.
+        cues = [Cue(1, "This is really important, okay?")]
+        blocks = [(1, "00:00:00,000 --> 00:00:02,000", "Bu gerçekten önemli,\nokay?")]
+        fixes = [{"id": "1", "fixed": "Bu gerçekten önemli, tamam mı?"}]
+        change_log = []
+        logs = []
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                change_log=change_log,
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result[0][2].count("\n"), 1)
+        self.assertNotIn("okay", result[0][2].lower())
+        self.assertTrue(any("yeniden sarılarak kurtarıldı" in msg for _, msg in logs))
+        self.assertEqual(len(change_log), 1)
+        self.assertEqual(change_log[0]["id"], "1")
+        self.assertEqual(change_log[0]["before"], "Bu gerçekten önemli,\nokay?")
+        self.assertEqual(change_log[0]["after"], result[0][2])
+
+    def test_reason_stats_logged(self):
+        cues = [Cue(1, "Are you sure?")]
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Emin misin, okay?")]
+        fixes = [{"id": "1", "fixed": "Emin misin?"}]
+        logs = []
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}):
+            ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertTrue(any("sebep-bazlı isabet" in msg for _, msg in logs))
+
     def test_critic_rejects_fix_that_breaks_source_question(self):
         cues = [Cue(1, "Are you sure?")]
         blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Emin misin, okay?")]
@@ -150,6 +191,53 @@ class CriticFragmentFlowTest(unittest.TestCase):
 
         self.assertEqual(result[0][2], "Emin misin, okay?")
         self.assertTrue(any("source_question" in msg for _, msg in logs))
+
+
+class ReflowToLineCountTest(unittest.TestCase):
+    def test_single_line_target_joins_all_words(self):
+        self.assertEqual(ht._reflow_to_line_count("Bu\nbir\ncümle.", 1), "Bu bir cümle.")
+
+    def test_empty_text_returns_empty(self):
+        self.assertEqual(ht._reflow_to_line_count("", 2), "")
+
+    def test_two_line_target_splits_at_balanced_point(self):
+        result = ht._reflow_to_line_count("Bu gerçekten önemli, tamam mı?", 2)
+        self.assertEqual(result.count("\n"), 1)
+        # Kelime kaybı olmamalı.
+        self.assertEqual(
+            "".join(result.split()),
+            "".join("Bu gerçekten önemli, tamam mı?".split()),
+        )
+
+
+class CriticChunkErrorLoggingTest(unittest.TestCase):
+    """Boş/kesik yanıt artık SESSİZCE atlanmıyor -- bkz. critic_pass_with_helper
+    docstring, 2026-07-21: bir chunk'ın JSON'ı bozuksa o chunk'taki TÜM satırlar
+    (100'e kadar) hiç log görünmeden kayboluyordu."""
+
+    def test_empty_response_logged_not_silent(self):
+        cues = [Cue(1, "Are you sure?")]
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Emin misin, okay?")]
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                return SimpleNamespace(usage=None, choices=[
+                    SimpleNamespace(message=SimpleNamespace(content=""))
+                ])
+
+        class FakeOpenAI:
+            def __init__(self, api_key=None, base_url=None):
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        logs = []
+        with patch.dict(sys.modules, {"openai": SimpleNamespace(OpenAI=FakeOpenAI)}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result[0][2], "Emin misin, okay?")
+        self.assertTrue(any("boş yanıt döndü" in msg for _, msg in logs))
 
 
 if __name__ == "__main__":

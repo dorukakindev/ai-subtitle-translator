@@ -9537,14 +9537,17 @@ class App(ctk.CTk):
                     self._update_file_progress(fp, "Critic Pass", 20)
                     self._set_phase("Critic Pass", f"{fname}  ({i+1}/{n})")
                     self._log(f"Critic Pass — {len(blocks)} satır...", "info")
+                    _critic_change_log = []
                     blocks = ht.critic_pass_with_helper(
                         cues=orig_cues, tr_blocks=blocks,
-                        helper_api_key=self._helper_api_key("critic"), 
+                        helper_api_key=self._helper_api_key("critic"),
                         helper_url=self._helper_api_base_url("critic"),
                         helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                         log_fn=self._log,
                         glossary=ht.load_glossary(self._get_file_glossary(fp)),
-                        analysis_result=analysis_result)
+                        analysis_result=analysis_result,
+                        change_log=_critic_change_log)
+                    self._write_critic_change_report(fp, _critic_change_log)
 
                 # Polish Pass
                 if do_polish:
@@ -9743,6 +9746,29 @@ class App(ctk.CTk):
             self._log(f"QC değişiklik raporu: {report_path.name}  ({len(applied_records)} satır)", "ok")
         except Exception as e:
             self._log_exc("QC değişiklik raporu yazılamadı", e)
+
+    def _write_critic_change_report(self, fp, applied_records: list):
+        """Critic Pass tarafından fiilen değiştirilen satırları TEK bir txt
+        dosyasına (kaynak/öncesi/sonrası/sebep) yazar — QC değişiklik raporuyla
+        aynı motivasyon (bkz. _write_qc_change_report yukarıda): Critic 150-200
+        satır değiştirebiliyor ama hangi satırın NEDEN değiştiğini kimse
+        göremiyordu."""
+        if not applied_records:
+            return
+        try:
+            report_path = Path(fp).with_name(Path(fp).stem + ".critic_degisiklikler.txt")
+            lines = [f"Critic Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
+            for rec in applied_records:
+                lines.append(f"#{rec['id']}  [{rec.get('reason', '')}]")
+                if rec.get("source"):
+                    lines.append(f"Kaynak : {rec['source']}")
+                lines.append(f"Önce   : {rec['before']}")
+                lines.append(f"Sonra  : {rec['after']}")
+                lines.append("")
+            report_path.write_text("\n".join(lines), encoding="utf-8")
+            self._log(f"Critic değişiklik raporu: {report_path.name}  ({len(applied_records)} satır)", "ok")
+        except Exception as e:
+            self._log_exc("Critic değişiklik raporu yazılamadı", e)
 
     def _dismiss_modal_dialog(self):
         """Worker timeout'unda hâlâ açık modal inceleme dialog'unu (QC/Glossary) kapatır.
@@ -11055,6 +11081,7 @@ class App(ctk.CTk):
                 self._update_file_progress(filepath, "Critic Pass", 89)
                 self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
+                _critic_change_log = []
                 sorted_blocks = ht.critic_pass_with_helper(
                     cues=cues,
                     tr_blocks=sorted_blocks,
@@ -11063,8 +11090,10 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     glossary=glossary,
                     analysis_result=(context, char_examples, pronoun_map),
+                    change_log=_critic_change_log,
                 )
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
+                self._write_critic_change_report(filepath, _critic_change_log)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
             if self.polish_var.get() and sorted_blocks:
@@ -11663,14 +11692,17 @@ class App(ctk.CTk):
                                 self._set_status("Critic Pass...")
                                 self._log(f"Critic Pass başlıyor ({len(pp)} satır)...", "info")
                                 _before_pass = list(pp)
+                                _critic_change_log = []
                                 pp = ht.critic_pass_with_helper(
                                     cues=_orig_cues, tr_blocks=pp,
                                     helper_api_key=self._helper_api_key("critic"),
                                     helper_url=self._helper_api_base_url("critic"),
                                     helper_model=self._helper_api_model("critic"),
                                     tgt_lang=tgt, log_fn=self._log,
-                                    analysis_result=_analysis_result)
+                                    analysis_result=_analysis_result,
+                                    change_log=_critic_change_log)
                                 _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
+                                self._write_critic_change_report(output_path, _critic_change_log)
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
                                 _before_pass = list(pp)
@@ -11980,14 +12012,17 @@ class App(ctk.CTk):
                 try:
                     self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                     _before_pass = list(sorted_blocks)
+                    _critic_change_log = []
                     sorted_blocks = ht.critic_pass_with_helper(
                         cues=_src_cues, tr_blocks=sorted_blocks,
                         helper_api_key=self._helper_api_key("critic"),
                         helper_url=self._helper_api_base_url("critic"),
                         helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
-                        analysis_result=_analysis_result)
+                        analysis_result=_analysis_result,
+                        change_log=_critic_change_log)
                     _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
+                    self._write_critic_change_report(fp, _critic_change_log)
                 except Exception as e:
                     self._log(f"Critic Pass hatası: {e}", "warn")
             if self.polish_var.get() and sorted_blocks and not self._stop_flag:
@@ -12690,12 +12725,15 @@ class App(ctk.CTk):
                             self._set_status(f"Critic Pass: {fname}")
                             self._log(f"Critic Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
+                            _critic_change_log = []
                             pp_blocks = ht.critic_pass_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                                 log_fn=self._log, glossary=glossary,
-                                analysis_result=_full_analysis)
+                                analysis_result=_full_analysis,
+                                change_log=_critic_change_log)
                             _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
+                            self._write_critic_change_report(filepath, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
                             self._set_status(f"Doğallaştırma: {fname}")
                             self._log(f"Polish Pass başlıyor ({len(pp_blocks)} satır)...", "info")
