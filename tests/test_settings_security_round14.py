@@ -20,12 +20,16 @@ class _Var:
     def insert(self, _index, value):
         self._value = str(value)
 
+    def cget(self, _key=None):
+        return self._value
+
 
 class _SecurityApp:
     def __init__(self, settings_path: Path):
         self._path = settings_path
         self.api_key_entry = _Var("")
         self.helper_key_entry = _Var("")
+        self.main_custom_key_entry = _Var("")
         self._helper_keys_cache = {}
         self.helper_roles = []
         self.helper_model_vars = {}
@@ -33,6 +37,7 @@ class _SecurityApp:
         self.helper_custom_provider_vars = {}
         self.helper_custom_key_vars = {}
         self.logs = []
+        self._file_rows_frame = _Var(148)
 
         for name, value in {
             "model_var": "gpt-5.4-mini",
@@ -64,6 +69,10 @@ class _SecurityApp:
             "review_pass_var": True,
             "term_normalize_var": False,
             "twowave_var": False,
+            "main_custom_var": False,
+            "main_custom_model_var": "",
+            "main_custom_url_var": "",
+            "same_folder_var": False,
             "merge_cues_var": True,
             "ai_segment_var": True,
             "notify_var": True,

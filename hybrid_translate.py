@@ -4254,6 +4254,36 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
     return None
 
 
+# ── Sözlük hedefinde uzun meta-yorum guard'ı (üçüncü, ayrı sınıf) ─────────────
+# Gerçek olay (The Shivering Truth S01E02, 2026-07-19): analiz geçişi 'maggot'
+# için ÇEVİRİ değil bir NASIL-ÇEVRİLMELİ notu yazdı: "qurt/qurtçuk değil; askerî
+# hakaret olarak mecazi 'pislik'/'larva' yerine doğrudan 'çürük kurt' anlamı
+# vermeden, komik ve aşağılayıcı askerî hakaret olarak çevrilmeli: ... yerleşik
+# karşılığı yoksa açıklamasız bırakılabilir." Bu notun içindeki "qurt" (muhtemelen
+# "kurt" yazım kayması) R_wqx'i tetikledi ve TÜM sözlük atıldı -- 'sir'->'komutanım',
+# 'Private'->'er', 'Sergeant'->'çavuş', 'church'->'kilise' gibi dört tertemiz terim
+# de beraberinde gitti. Sonuç: 'church' çıktıda 3 kez HİÇ ÇEVRİLMEDEN kaldı.
+#
+# Ayırt edici sinyal UZUNLUK: gerçek bir sözlük değeri (tek kelimelik terim de
+# olsa, çok-kelimeli bir deyim çevirisi de olsa) kısadır -- bugüne dek görülen
+# HİÇBİR gerçek terim (5 farklı dosyada) 7 kelimeyi geçmedi. Meta-yorumlar/notlar
+# 25-50+ kelime sürer. Bu kontrol wqx taramasından ÖNCE çalışır ve tetiklenirse
+# `continue` eder -- yani böyle bir notun içindeki kazara yabancı harf, hiçbir
+# zaman `wqx_hits`e ulaşmaz ve whole-glossary-drop'u tetikleyemez. Yalnızca O
+# terim tek-başına düşürülür (politika: bkz. yukarıdaki R_wqx/gloss ayrımı --
+# burası da "sadece bu terim" tarafında, "tüm sözlük" tarafında değil).
+_GLOSSARY_VERBOSE_WORD_THRESHOLD = 10
+
+
+def _glossary_verbose_meta_commentary_marker(value: str) -> str | None:
+    """Paragraf uzunluğunda meta-yorum/talimat mı (çeviri değil)? Varsa kısa bir
+    gerekçe etiketi, yoksa None döner."""
+    words = str(value or "").split()
+    if len(words) > _GLOSSARY_VERBOSE_WORD_THRESHOLD:
+        return "uzun açıklama/not (çeviri değil)"
+    return None
+
+
 def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = "tr",
                                    log_fn=None) -> dict:
     """Drop glossary targets that would force non-Turkish/Turkic drift into the output.
@@ -4288,6 +4318,13 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if not key or not value:
             continue
         value_s = str(value)
+        # Uzun meta-yorum kontrolü EN ÖNCE çalışır ve tetiklenirse `continue` eder --
+        # böylece notun içindeki kazara yabancı harf wqx_hits'e hiç ulaşmaz ve
+        # whole-glossary-drop'u tetikleyemez (bkz. yukarıdaki blok yorumu).
+        verbose_reason = _glossary_verbose_meta_commentary_marker(value_s)
+        if verbose_reason:
+            gloss_dropped_terms[str(key)] = (value_s, verbose_reason)
+            continue
         if _glossary_wqx_token(normalize_latin_homoglyphs(value_s)) is not None:
             wqx_hits[str(key)] = value_s
         if has_non_turkish_target_leak(value_s, glossary_target=True):

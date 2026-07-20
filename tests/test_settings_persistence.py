@@ -32,11 +32,27 @@ class _Entry:
         self._value = str(value)
 
 
+class _HeightVar:
+    def __init__(self, value=148):
+        self._value = value
+
+    def cget(self, _key=None):
+        return self._value
+
+    def configure(self, **kwargs):
+        if "height" in kwargs:
+            self._value = kwargs["height"]
+
+
 class _SettingsOnlyApp:
     def __init__(self, settings_path: Path):
         self._path = settings_path
         self.api_key_entry = _Entry()
         self.helper_key_entry = _Entry()
+        self.main_custom_key_entry = _Entry()
+        self._file_rows_frame = _HeightVar(148)
+        self._FILE_LIST_MIN_H = 40
+        self._FILE_LIST_MAX_H = 500
         self._helper_keys_cache = {}
         self.helper_roles = {}
         self.helper_model_vars = {}
@@ -81,6 +97,10 @@ class _SettingsOnlyApp:
             "review_pass_var": True,
             "term_normalize_var": False,
             "twowave_var": False,
+            "main_custom_var": False,
+            "main_custom_model_var": "",
+            "main_custom_url_var": "",
+            "same_folder_var": False,
             "notify_var": True,
         }.items():
             setattr(self, name, _Var(value))

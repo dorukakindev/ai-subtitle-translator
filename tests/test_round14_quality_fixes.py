@@ -90,6 +90,14 @@ class ReviewPassFragmentGuardTest(unittest.TestCase):
                 self.api_key_entry = _Var("sk-test")
                 self.logs = []
 
+            # Ana Model — Özel Sağlayıcı devre dışı (bu stub'da hiç ayarlanmamış) —
+            # gerçek App'in resolver'larının varsayılan (custom kapalı) davranışı.
+            def _main_api_key(self):
+                return self.api_key_entry.get()
+
+            def _main_api_base_url(self):
+                return gui._normalize_api_base_url(self.api_url_var.get())
+
             def _cached_blocks_for(self, _fp):
                 return None
 

@@ -1,0 +1,109 @@
+"""Ana Model — Özel Sağlayıcı alanları ANINDA kaydedilir (FocusOut / switch değişimi).
+
+NEDEN (2026-07-18): kullanıcı switch'i açıp Model Adı/API URL/API Anahtarı'nı
+doldurduktan sonra çeviri hiç BAŞLATMADAN veya uygulamayı düzgün KAPATMADAN ekranı
+değiştirebilir — bu iki nokta (_start/_on_close) diğer TÜM ayarların kaydedildiği
+YEGÂNE yerlerdi. "api url'yi de hatırlasın" geri bildirimi üzerine bu 3 alan için
+kasıtlı bir istisna eklendi: switch tıklanınca VE alandan çıkınca da kaydeder."""
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tests._gui_app import make_app
+import subtitle_translator_gui as gui
+
+
+class MainCustomEagerSaveTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Bu testler GERÇEK Tk odak-olayı/grid görünürlük davranışını doğrular —
+        # `discover -s tests` çalışırken tests/customtkinter.py (saf-mantık testleri
+        # için hafif stub) sys.path'te GERÇEK paketin ÖNÜNE geçip onu gölgeler; stub
+        # altında bu davranışlar anlamsız (widget'lar `_DummyWidget`, `.grid_info()`
+        # her zaman None döner). `find_spec("customtkinter") is None` KONTROLÜ BURADA
+        # İŞE YARAMAZ (stub da geçerli bir spec döner) — doğrudan stub'a özgü bir
+        # işaretçi ara.
+        if hasattr(gui.ctk, "_DummyWidget"):
+            raise unittest.SkipTest(
+                "tests/customtkinter.py stub'ı devrede (discover -s tests) — "
+                "gerçek Tk odak/görünürlük davranışı test edilemez, atlandı")
+        cls.app = make_app(gui)
+        cls.app.update_idletasks()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app.destroy()
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self._settings_path = Path(self._td.name) / ".gui_settings.json"
+        self._orig_settings_path = self.app._settings_path
+        self.app._settings_path = lambda: self._settings_path
+        # Testler arasında sızmasın diye baştan sıfırla
+        self.app.main_custom_var.set(False)
+        self.app.main_custom_model_var.set("gpt-5.5")
+        self.app.main_custom_url_var.set("")
+        self.app.main_custom_key_entry.delete(0, "end")
+
+    def tearDown(self):
+        self.app._settings_path = self._orig_settings_path
+        self._td.cleanup()
+
+    def _read_saved(self):
+        return json.loads(self._settings_path.read_text(encoding="utf-8"))
+
+    def test_toggling_switch_saves_immediately(self):
+        self.assertFalse(self._settings_path.exists())
+        self.app.main_custom_var.set(True)
+        self.app._on_main_custom_changed()
+        saved = self._read_saved()
+        self.assertTrue(saved["main_custom"])
+
+    def test_focus_out_on_url_entry_saves(self):
+        # Alan yalnızca switch AÇIKKEN görünür/odaklanabilir — gerçek kullanım sırası.
+        self.app.main_custom_var.set(True)
+        self.app._sync_main_custom_visibility()
+        self.app.update_idletasks()
+        self.app.main_custom_url_var.set("https://api.shuaiapi.com/v1")
+        self.app.update_idletasks()
+        # CTkEntry kompozit — gerçek olay iç ._entry (ham tkinter.Entry) üzerinde
+        # işlenir, dıştaki CTkEntry nesnesinde DEĞİL (bkz. üretim kodundaki not).
+        self.app.main_custom_url_entry._entry.event_generate("<FocusOut>")
+        self.app.update_idletasks()
+        saved = self._read_saved()
+        self.assertEqual(saved["main_custom_url"], "https://api.shuaiapi.com/v1")
+
+    def test_focus_out_on_key_entry_saves(self):
+        # Özel anahtar settings JSON'a DEĞİL, credential_store'a AYRI bir rol altında
+        # ("main_custom") gider — gerçek "openai" slotu (varsa) YALNIZCA KENDİ o anki
+        # değeriyle kaydedilir, özel anahtarla ASLA karışmaz/ezilmez.
+        self.app.main_custom_var.set(True)
+        self.app._sync_main_custom_visibility()
+        self.app.update_idletasks()
+        real_key_before = self.app.api_key_entry.get()
+        self.app.main_custom_key_entry.insert(0, "sk-HloolAPI-test")
+        self.app.update_idletasks()
+        with mock.patch.object(gui.credential_store, "save_key", return_value=True) as mock_save:
+            self.app.main_custom_key_entry._entry.event_generate("<FocusOut>")
+            self.app.update_idletasks()
+        calls = {c.args[:2] for c in mock_save.call_args_list}
+        self.assertIn(("main_custom", "sk-HloolAPI-test"), calls)
+        openai_calls = [c.args[1] for c in mock_save.call_args_list if c.args[0] == "openai"]
+        for saved_openai_value in openai_calls:
+            self.assertEqual(saved_openai_value, real_key_before,
+                             "gerçek 'openai' anahtarı özel anahtarla EZİLMEMELİ")
+            self.assertNotEqual(saved_openai_value, "sk-HloolAPI-test")
+
+    def test_switch_visibility_still_syncs_on_toggle(self):
+        self.app.main_custom_var.set(True)
+        self.app._on_main_custom_changed()
+        self.assertTrue(self.app.main_custom_frame.grid_info())
+        self.app.main_custom_var.set(False)
+        self.app._on_main_custom_changed()
+        self.assertEqual(self.app.main_custom_frame.grid_info(), {})
+
+
+if __name__ == "__main__":
+    unittest.main()

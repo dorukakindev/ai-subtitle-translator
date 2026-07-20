@@ -68,6 +68,41 @@ class ResolveOutputPathTest(unittest.TestCase):
         self.assertEqual(p.parent.parent.name, "x")
 
 
+class SameFolderModeTest(unittest.TestCase):
+    """same_folder=True — Giriş/Çıkış klasörü alanları YOK SAYILIR, çıktı
+    dosyanın KENDİ geldiği klasöre kaynak adıyla yazılır (2026-07-20:
+    3-4 ayrı klasörden dosya eklenip tek seferde çevrildiğinde her biri
+    kendi klasörüne geri dönsün diye eklendi)."""
+
+    def test_ignores_input_output_dir_fields(self):
+        # input_dir/output_dir dolu ve BİRBİRİNDEN FARKLI olsa bile yok sayılır
+        p = gui._resolve_output_path("/completely/unrelated/input",
+                                      "/completely/unrelated/output",
+                                      "/data/folderA/film.vtt", same_folder=True)
+        self.assertEqual(p.parent, Path("/data/folderA"))
+        self.assertEqual(p.name, "film.srt")
+
+    def test_different_files_each_return_to_own_folder(self):
+        # 3 ayrı klasörden eklenen dosyalar kendi klasörlerine gider
+        for folder in ("/x/A", "/y/B", "/z/C/deep"):
+            p = gui._resolve_output_path("", "", f"{folder}/ep.srt", same_folder=True)
+            self.assertEqual(str(p.parent).replace("\\", "/"), folder)
+
+    def test_srt_source_collision_falls_back_to_tr_srt(self):
+        # Kaynak zaten .srt ise hesaplanan yol kaynakla BİREBİR çakışır;
+        # orijinali silmemek için <isim>.tr.srt kullanılır.
+        p = gui._resolve_output_path("", "", "/data/subs/film.srt", same_folder=True)
+        self.assertEqual(p.parent, Path("/data/subs"))
+        self.assertEqual(p.name, "film.tr.srt")
+        self.assertNotEqual(str(p), str(Path("/data/subs/film.srt")))
+
+    def test_non_srt_source_no_collision_no_suffix(self):
+        # .vtt/.ass kaynaklarda uzantı zaten değiştiği için çakışma yok — düz isim
+        for ext in (".vtt", ".ass"):
+            p = gui._resolve_output_path("", "", f"/data/subs/film{ext}", same_folder=True)
+            self.assertEqual(p.name, "film.srt")
+
+
 class Rule1ReachableTest(unittest.TestCase):
     """Kural 1 GERÇEKTEN ulaşılabilir olmalı.
 

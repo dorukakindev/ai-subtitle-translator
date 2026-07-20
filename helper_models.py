@@ -11,6 +11,7 @@ class HelperModelConfig:
 
 HELPER_MODEL_OPTIONS = [
     "gpt-5.4-mini",
+    "GPT-5.4 (Reseller)",
     "gpt-5-mini",
     "gpt-4o-mini",
     "o4-mini",
@@ -53,6 +54,9 @@ _ALIASES = {
     "gemini-2.5-flash": "Gemini 2.5 Flash",
     "gemini_2.5_flash": "Gemini 2.5 Flash",
     "gpt-5.4-mini": "gpt-5.4-mini",
+    "gpt-5.4 (reseller)": "GPT-5.4 (Reseller)",
+    "gpt-5.4-reseller": "GPT-5.4 (Reseller)",
+    "reseller gpt-5.4": "GPT-5.4 (Reseller)",
     "gpt-5-mini": "gpt-5-mini",
     "gpt-4o-mini": "gpt-4o-mini",
     "o4-mini": "o4-mini",
@@ -138,6 +142,12 @@ _CONFIGS = {
         provider="openai",
         model="gpt-5.4-mini",
         base_url="https://api.openai.com/v1",
+    ),
+    "GPT-5.4 (Reseller)": HelperModelConfig(
+        label="GPT-5.4 (Reseller)",
+        provider="openai",
+        model="gpt-5.4",
+        base_url="https://api.shuaiapi.com/v1",
     ),
     "gpt-5-mini": HelperModelConfig(
         label="gpt-5-mini",

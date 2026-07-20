@@ -505,6 +505,7 @@ def src_is_sfx_only(src_text: str) -> bool:
 
 
 _DASH_ONLY_LINE_RE = re.compile(r'^[-–—]\s*$')
+_ORPHANED_LABEL_COLON_RE = re.compile(r'^(\s*[-–—]?\s*):\s*')
 
 
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
@@ -516,12 +517,20 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     '<>' içeriğini eşlemiyor — strip_sdh_line'ın aksine format-tag sökme adımı
     burada hiç çalıştırılmaz). '- ' diyalog tiresi korunur; etiket sökülünce
     satırda yalnızca '-'/'- ' kalıyorsa satır boş sayılır (tek başına tire
-    ekrana sızmasın)."""
+    ekrana sızmasın).
+
+    Model çoğu zaman '[Name]: metin' biçimini ham çeviride aynen koruyor;
+    bracket sökülünce '[Name]' gider ama ':' satır başında sarkık kalır
+    (ör. '[Caine]: Hoş geldin' -> ': Hoş geldin'). Bu artık etiketin bir
+    parçası, gerçek noktalama değil — bracket sökümünden HEMEN SONRA temizlenir
+    (dış boşluk kırpımından önce, aksi halde '- :' gibi ara boşluklu varyantlar
+    kaçar)."""
     tr_line = str(tr_line or "")
     src_line = str(src_line or "")
     if not BRACKET_OR_PAREN_RE.search(src_line):
         return tr_line
     stripped = BRACKET_OR_PAREN_RE.sub("", tr_line)
+    stripped = _ORPHANED_LABEL_COLON_RE.sub(r"\1", stripped)
     stripped = re.sub(r"\s{2,}", " ", stripped).strip()
     if _DASH_ONLY_LINE_RE.match(stripped):
         return ""

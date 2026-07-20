@@ -103,6 +103,31 @@ class SdhSourceDrivenTest(unittest.TestCase):
         result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
         self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "Merhaba dünya.")
 
+    def test_orphaned_colon_after_bracket_stripped(self):
+        # Model ham çeviride '[Name]: metin' biçimini aynen koruyor; bracket
+        # sökülünce ':' satır başında sarkık kalmamalı.
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "[Caine]: Hoş geldin!")]
+        src_map = _src(**{"1": "[Caine]: Welcome!"})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "Hoş geldin!")
+
+    def test_orphaned_colon_only_label_line_dropped(self):
+        # Etiket satırında replik hiç yoksa ('[Name]:' tek başına) satır boşalır.
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "[Zooble]:\nHayır.")]
+        src_map = _src(**{"1": "[Zooble]:\nNope."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "Hayır.")
+
+    def test_orphaned_colon_with_dash_keeps_dash(self):
+        # '-[Name]: metin' -> tire diyalog işareti olarak kalmalı, ':' gitmeli.
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "-[Kinger]: Bu şurupla dolu.")]
+        src_map = _src(**{"1": "-[Kinger]: This one's full of syrup."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "-Bu şurupla dolu.")
+
     def test_no_src_map_falls_back_to_legacy(self):
         # source_driven=True ama src_map YOK → eski beyaz-liste davranışına düşer,
         # çökmez (KRİTİK ön koşul: src_map yoksa source_driven çalışamaz).

@@ -228,6 +228,29 @@ LANGUAGES = [
     "Portuguese","Russian","Japanese","Korean","Chinese","Arabic",
     "Dutch","Polish","Swedish","Norwegian","Danish","Finnish",
 ]
+# Naive `name.lower()[:2]` guesses the ISO 639-1 code from the English language
+# name — wrong for over half of LANGUAGES (Turkish->"tu" not "tr", German->"ge"
+# not "de", Spanish->"sp" not "es", Portuguese/Polish collide on "po", Chinese
+# ->"ch" not "zh", Dutch->"du" not "nl", Swedish->"sw" not "sv"). Since
+# sanitize_glossary_for_turkish's target-language guard only recognizes "tr"/
+# "tur"/"turkish", the "tu" produced for Turkish silently disabled every
+# glossary-poisoning guard (wqx/gloss-marker/verbose-meta-commentary) in
+# production — the language name never matched, so the sanitizer always took
+# its "unrecognized target, return unmodified" early exit.
+_LANGUAGE_ISO639_1 = {
+    "turkish": "tr", "english": "en", "german": "de", "french": "fr",
+    "spanish": "es", "italian": "it", "portuguese": "pt", "russian": "ru",
+    "japanese": "ja", "korean": "ko", "chinese": "zh", "arabic": "ar",
+    "dutch": "nl", "polish": "pl", "swedish": "sv", "norwegian": "no",
+    "danish": "da", "finnish": "fi",
+}
+
+
+def _lang_iso639_1(name: str) -> str:
+    """LANGUAGES display name -> correct ISO 639-1 code (falls back to a naive
+    2-letter slice for anything not in the table above)."""
+    key = str(name or "").strip().lower()
+    return _LANGUAGE_ISO639_1.get(key) or key[:2]
 CHUNK         = 30
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 20  # preceding lines sent as rolling context
@@ -1683,9 +1706,15 @@ def _paths_equal(a, b) -> bool:
         return a.rstrip("\\/").lower() == b.rstrip("\\/").lower()
 
 
-def _resolve_output_path(input_dir: str, output_dir: str, filepath: str) -> Path:
-    """Çıktı .srt yolunu iki kurala göre çözer (bkz. plans/output-folder-rules-brief.md).
+def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
+                          same_folder: bool = False) -> Path:
+    """Çıktı .srt yolunu çözer (bkz. plans/output-folder-rules-brief.md).
 
+    same_folder=True — Giriş/Çıkış klasörü alanları YOK SAYILIR: çıktı, dosyanın
+        KENDİ geldiği klasöre kaynak adıyla yazılır. Farklı klasörlerden eklenen
+        dosyalar (tek seferde çevrilse bile) kendi klasörüne geri döner. Kaynak
+        zaten .srt ise hesaplanan yol kaynakla BİREBİR çakışır — orijinali
+        silmemek için bu tek durumda <isim>.tr.srt kullanılır.
     Kural 1 — çıktı klasörü girdiyle aynı (veya boş):
         <girdi>/ÇIKTI/<göreli-yol>.srt   (göreli substructure korunur, kaynağın yanına yazılmaz)
     Kural 2 — çıktı ayrı bir klasör:
@@ -1693,6 +1722,11 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str) -> Path
 
     Yol her zaman .srt uzantılıdır (çıktı daima SRT)."""
     src = Path(filepath)
+    if same_folder:
+        candidate = src.with_suffix(".srt")
+        if candidate.name.lower() == src.name.lower():
+            candidate = src.with_name(f"{src.stem}.tr.srt")
+        return candidate
     in_dir = (input_dir or "").strip()
     out_dir = (output_dir or "").strip()
     if not out_dir or _paths_equal(in_dir, out_dir):
@@ -4981,6 +5015,71 @@ class App(ctk.CTk):
                                           placeholder_text="Boş bırak: https://api.openai.com/v1")
         self.api_url_entry.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,2)); r += 1
 
+        # ── Ana Model — Özel Sağlayıcı (OpenAI dışı, ör. shuaiapi/gpt-5.5) ──────
+        # TASARIM KARARI (2026-07-18, kullanıcı isteği): yukarıdaki "OpenAI API Key"/
+        # "OpenAI API Base URL" alanlarına ASLA yazılmaz/dokunulmaz — kullanıcının
+        # "mevcut openai keyim gitmeden" endişesini en net karşılayan yol, o alanları
+        # hiç değiştirmemek. Bunun yerine AYRI, kendi etiketli alanlar: açıkken ana
+        # çeviri bu alanları kullanır, OpenAI alanları görünürde/bellekte AYNEN kalır.
+        # Kapatınca anında eskisi gibi OpenAI'ye döner — hiçbir şey elle geri yazılmaz.
+        self.main_custom_var = ctk.BooleanVar(value=False)
+        mc_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        mc_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        mc_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(mc_fr, text="", variable=self.main_custom_var,
+                      width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+                      command=lambda: self._on_main_custom_changed()).grid(row=0, column=0)
+        ctk.CTkLabel(mc_fr, text="Ana Model — Özel Sağlayıcı",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(sb, text="Açıkken ANA ÇEVİRİ yukarıdaki OpenAI anahtarı yerine\naşağıdaki sağlayıcıyı kullanır (ör. shuaiapi/gpt-5.5).\nOpenAI alanlarına DOKUNULMAZ — kapatınca anında\neskisi gibi OpenAI'ye döner.",
+                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+                     justify="left", wraplength=260).grid(
+                     row=r, column=0, sticky="w", padx=4, pady=(0,4)); r += 1
+
+        self.main_custom_frame = ctk.CTkFrame(sb, fg_color="transparent")
+        self.main_custom_frame.grid(row=r, column=0, sticky="ew", padx=0, pady=(0,4)); r += 1
+
+        ctk.CTkLabel(self.main_custom_frame, text="Model Adı", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
+        self.main_custom_model_var = ctk.StringVar(value="gpt-5.5")
+        self.main_custom_model_entry = ctk.CTkEntry(self.main_custom_frame, textvariable=self.main_custom_model_var, height=32,
+                     font=ctk.CTkFont("Segoe UI", 11),
+                     fg_color=CARD, border_color=BORDER, text_color=FG)
+        self.main_custom_model_entry.pack(fill="x", padx=4, pady=(0,2))
+
+        ctk.CTkLabel(self.main_custom_frame, text="API URL (taban adres, /chat/completions olmadan)", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
+        self.main_custom_url_var = ctk.StringVar(value="")
+        self.main_custom_url_entry = ctk.CTkEntry(self.main_custom_frame, textvariable=self.main_custom_url_var, height=32,
+                     font=ctk.CTkFont("Segoe UI", 11),
+                     fg_color=CARD, border_color=BORDER, text_color=FG,
+                     placeholder_text="https://api.shuaiapi.com/v1")
+        self.main_custom_url_entry.pack(fill="x", padx=4, pady=(0,2))
+
+        ctk.CTkLabel(self.main_custom_frame, text="API Anahtarı", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
+        self.main_custom_key_entry = ctk.CTkEntry(self.main_custom_frame, show="•", height=32,
+                     font=ctk.CTkFont("Consolas", 11),
+                     fg_color=CARD, border_color=BORDER, text_color=FG)
+        self.main_custom_key_entry.pack(fill="x", padx=4, pady=(0,4))
+        self.main_custom_frame.grid_remove()   # başlangıçta kapalı (default OFF)
+
+        # Bu 3 alan yalnızca _start()/_resume()/kapanışta değil, ALANDAN ÇIKINCA da
+        # kaydedilir — kullanıcı doldurup çeviri başlatmadan/uygulamayı düzgün
+        # kapatmadan ekranı değiştirse bile "hatırlasın" beklentisini karşılar
+        # (diğer ayarlardan FARKLI, kasıtlı istisna — bu alanlar başka hiçbir tetikleyici
+        # olmadan kolayca unutulabilir, örn. yalnızca deneme amaçlı doldurulup kapatılabilir).
+        # DİKKAT: CTkEntry kompozit bir widget — kendi ÜZERİNDE .bind() hiçbir şey
+        # yapmaz (sessizce yutulur). Gerçek olaylar iç ._entry (ham tkinter.Entry)
+        # üzerinde işlenir; CTk kendi odak-stil davranışı için ZATEN <FocusOut>
+        # bağlamış olduğundan add='+' ŞART — yoksa onu SESSİZCE EZER (kenarlık
+        # rengi vb. bozulur). try/except: tests/customtkinter.py (saf-mantık
+        # testleri için hafif stub) ._entry'yi sahte bir fonksiyona düşürür —
+        # gerçek Tk yoksa bu bağ isteğe bağlıdır, sessizce atlanır.
+        for _mc_w in (self.main_custom_model_entry, self.main_custom_url_entry, self.main_custom_key_entry):
+            try:
+                _mc_w._entry.bind("<FocusOut>", lambda _e: self._save_settings(), add="+")
+            except Exception:
+                pass
+
         # ── Model selection divided by token limits ──
         self.limit_class_var = ctk.StringVar(value="2.5M")
         self.model_2_5m_var = ctk.StringVar(value="gpt-5.4-mini")
@@ -5079,6 +5178,24 @@ class App(ctk.CTk):
                           fg_color=BORDER, hover_color=ACCENT,
                           command=lambda v=var, inp=is_input: self._pick_folder(v, inp)
                           ).grid(row=0, column=1, padx=(6,0))
+
+        # Aynı Klasöre Kaydet: açıksa Çıkış klasörü alanı YOK SAYILIR, her dosyanın
+        # çıktısı KENDİ geldiği klasöre kaydedilir — 3-4 ayrı klasörden dosya
+        # eklenip tek seferde çevrildiğinde her biri kendi klasörüne geri döner.
+        self.same_folder_var = ctk.BooleanVar(value=False)
+        sf_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        sf_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        sf_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(sf_fr, text="", variable=self.same_folder_var,
+                      width=44, height=22,
+                      fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
+        ctk.CTkLabel(sf_fr, text="Aynı Klasöre Kaydet",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(sb, text="Açıksa Çıkış klasörü YOK SAYILIR — her dosyanın\nçıktısı KENDİ geldiği klasöre, kendi adıyla\nyazılır. Farklı klasörlerden eklenen dosyalar\nkendi klasörüne geri döner. (Kaynak zaten .srt\nise çakışmayı önlemek için <isim>.tr.srt kullanılır.)",
+                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+                     justify="left", wraplength=260).grid(
+                     row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Dosya seç butonu (klasör yerine tek/çoklu dosya)
         pick_fr = ctk.CTkFrame(sb, fg_color="transparent")
@@ -5691,7 +5808,7 @@ class App(ctk.CTk):
         main = ctk.CTkFrame(self, fg_color="transparent")
         main.grid(row=0, column=1, sticky="nsew", padx=(6,12), pady=12)
         main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(3, weight=1)
+        main.grid_rowconfigure(4, weight=1)
 
         # ── Stats kartları ────────────────────────────────────────────────────
         sf = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
@@ -5862,9 +5979,54 @@ class App(ctk.CTk):
         self._file_rows_frame.grid_columnconfigure(0, weight=1)
         self._file_schema_vars = {}
 
+        # ── Log yeniden boyutlandırma tutamacı ──────────────────────────────────
+        # Dosya listesi ile Log arasında sürüklenebilir ince bir çubuk: yukarı
+        # çekince dosya listesi küçülür, Log büyür (Log zaten tek weight=1 satır
+        # olduğu için pencereyi büyütünce otomatik genişliyordu — bu, kullanıcının
+        # ELLE, pencereyi büyütmeden de ayarlayabilmesini sağlar).
+        self._FILE_LIST_MIN_H = 40
+        self._FILE_LIST_MAX_H = 500
+        grip = ctk.CTkFrame(main, height=8, fg_color=BORDER, corner_radius=4,
+                            cursor="sb_v_double_arrow")
+        grip.grid(row=3, column=0, sticky="ew", pady=(0,6))
+        grip.grid_propagate(False)
+
+        def _grip_enter(_e):
+            grip.configure(fg_color=ACCENT)
+
+        def _grip_leave(_e):
+            if not getattr(self, "_log_resize_dragging", False):
+                grip.configure(fg_color=BORDER)
+
+        def _grip_press(e):
+            self._log_resize_dragging = True
+            self._log_resize_start_y = e.y_root
+            self._log_resize_start_h = self._file_rows_frame.cget("height")
+
+        def _grip_drag(e):
+            delta = e.y_root - self._log_resize_start_y
+            new_h = max(self._FILE_LIST_MIN_H,
+                       min(self._FILE_LIST_MAX_H, self._log_resize_start_h + delta))
+            self._file_rows_frame.configure(height=new_h)
+
+        def _grip_release(_e):
+            self._log_resize_dragging = False
+            grip.configure(fg_color=BORDER)
+            try:
+                self._save_settings()
+            except Exception:
+                pass
+
+        grip.bind("<Enter>", _grip_enter)
+        grip.bind("<Leave>", _grip_leave)
+        grip.bind("<ButtonPress-1>", _grip_press)
+        grip.bind("<B1-Motion>", _grip_drag)
+        grip.bind("<ButtonRelease-1>", _grip_release)
+        self._log_grip = grip
+
         # ── Log ───────────────────────────────────────────────────────────────
         log_fr = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
-        log_fr.grid(row=3, column=0, sticky="nsew")
+        log_fr.grid(row=4, column=0, sticky="nsew")
         log_fr.grid_columnconfigure(0, weight=1)
         log_fr.grid_rowconfigure(1, weight=1)
 
@@ -6112,7 +6274,7 @@ class App(ctk.CTk):
 
     def _test_translate(self):
         """İlk dosyanın ilk 3 chunk'ını sync çevirip önizleme dialog'u açar."""
-        api_key = self.api_key_entry.get().strip()
+        api_key = self._main_api_key()
         if not api_key:
             messagebox.showerror("API Key", "OpenAI API key girilmemiş!")
             return
@@ -6124,7 +6286,7 @@ class App(ctk.CTk):
         fp   = files[0]
         src  = self.src_var.get()
         tgt  = self.tgt_var.get()
-        model = self.model_var.get()
+        model = self._main_model_name()
 
         self._log(f"🧪 Test çevirisi: {Path(fp).name} (ilk 3 chunk)", "info")
         self._set_running(True)
@@ -6133,7 +6295,7 @@ class App(ctk.CTk):
             try:
                 import hybrid_translate as ht
                 from openai import OpenAI as _OAI
-                b_url = _normalize_api_base_url(self.api_url_var.get())
+                b_url = self._main_api_base_url()
                 client = _OAI(api_key=api_key, base_url=b_url if b_url else None)
                 if not list(parse_subtitle(fp)):
                     try:
@@ -6548,7 +6710,7 @@ class App(ctk.CTk):
         verilmezse ana model fiyatı kullanılır; Batch API çağrıları %50 indirimli geçer.
         cached verilirse OpenAI Prompt Caching indirimi (%50) hesaba katılır."""
         if price is None:
-            price = MODEL_PRICE.get(self.model_var.get(), 0.60)
+            price = MODEL_PRICE.get(self._main_model_name(), 0.60)
         with self._token_lock:
             self._token_total += added
             self._token_cached = getattr(self, "_token_cached", 0) + cached
@@ -6580,7 +6742,7 @@ class App(ctk.CTk):
 
     def _update_batch_tokens(self, added: int):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
-        self._update_tokens(added, price=MODEL_PRICE.get(self.model_var.get(), 0.60) * 0.5)
+        self._update_tokens(added, price=MODEL_PRICE.get(self._main_model_name(), 0.60) * 0.5)
 
     def _store_tm_pairs(self, blocks, src_clean_map, model, tgt):
         """Kaynak↔çeviri çiftlerini TM'ye yazar; eksik işaretler ve kaynak==çeviri
@@ -7103,6 +7265,55 @@ class App(ctk.CTk):
             k = self.api_key_entry.get().strip()
         return k
 
+    # ── Ana Model — Özel Sağlayıcı resolver'ları ────────────────────────────
+    # "OpenAI API Key"/"OpenAI API Base URL"/model dropdown'ına ASLA yazmaz/okumaz
+    # onların dışından — yalnızca AŞAĞIDAKİ ayrı alanları okur, açık VE doluysa
+    # onu döner; kapalıysa ya da özel alan boşsa sessizce gerçek OpenAI alanına
+    # düşer (fail-safe, helper-role resolver'larıyla aynı "boş=genel" felsefesi).
+    def _main_custom_active(self) -> bool:
+        return bool(getattr(self, "main_custom_var", None) and self.main_custom_var.get())
+
+    def _main_api_key(self) -> str:
+        if self._main_custom_active():
+            k = self.main_custom_key_entry.get().strip()
+            if k:
+                return k
+        return self.api_key_entry.get().strip()
+
+    def _main_api_base_url(self):
+        if self._main_custom_active():
+            u = self.main_custom_url_var.get().strip()
+            if u:
+                return _normalize_api_base_url(u)
+        return _normalize_api_base_url(self.api_url_var.get())
+
+    def _main_model_name(self) -> str:
+        if self._main_custom_active():
+            m = self.main_custom_model_var.get().strip()
+            if m:
+                return m
+        return self.model_var.get()
+
+    def _sync_main_custom_visibility(self):
+        """Özel sağlayıcı alanlarını switch durumuna göre göster/gizler."""
+        if getattr(self, "main_custom_var", None) and self.main_custom_var.get():
+            self.main_custom_frame.grid()
+        else:
+            self.main_custom_frame.grid_remove()
+
+    def _on_main_custom_changed(self):
+        """Switch tıklanınca: görünürlüğü güncelle + AYARLARI HEMEN KAYDET.
+
+        Diğer toggle'lardan farklı olarak burada anında kaydediyoruz — kullanıcı
+        switch'i açıp alanları doldurduktan sonra çeviri hiç başlatmadan/uygulamayı
+        düzgün kapatmadan ekranı değiştirebilir; _start()/_resume()/_on_close()'a
+        kadar beklemek bu durumda dolduruşu sessizce kaybettirir."""
+        self._sync_main_custom_visibility()
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+
     def _on_helper_provider_change_role(self, role: str):
         pass
 
@@ -7136,12 +7347,17 @@ class App(ctk.CTk):
             "review_pass": self.review_pass_var.get(),
             "term_normalize": self.term_normalize_var.get(),
             "twowave": self.twowave_var.get(),
+            "same_folder": self.same_folder_var.get(),
+            "file_list_height": int(self._file_rows_frame.cget("height")),
             "merge_cues": self.merge_cues_var.get(),
             "ai_segment": self.ai_segment_var.get(),
             "merge_max_chars": self._merge_max_chars,
             "merge_max_gap_ms": self._merge_max_gap_ms,
             "notify": self.notify_var.get(),
             "api_url": _normalize_api_base_url(self.api_url_var.get()),
+            "main_custom": self.main_custom_var.get(),
+            "main_custom_model": self.main_custom_model_var.get(),
+            "main_custom_url": self.main_custom_url_var.get(),
             # Advanced settings
             "chunk_size": self._chunk_size,
             "context_lines": self._context_lines,
@@ -7199,6 +7415,13 @@ class App(ctk.CTk):
                     fallback_used = (not credential_store.save_key(f"helper_{role}_key", k)) or fallback_used
                 else:
                     credential_store.delete_key(f"helper_{role}_key")
+            # Ana model — özel sağlayıcı anahtarı (ayrı slot; gerçek 'openai' anahtarını
+            # ASLA ezmez/görmez — kendi credential_store rolü altında bağımsız saklanır).
+            _mck = self.main_custom_key_entry.get().strip()
+            if _mck:
+                fallback_used = (not credential_store.save_key("main_custom", _mck)) or fallback_used
+            else:
+                credential_store.delete_key("main_custom")
             if fallback_used:
                 self._log("keyring kullanılamıyor, anahtar obfuscated fallback dosyada saklandı", "warn")
         except Exception:
@@ -7354,7 +7577,11 @@ class App(ctk.CTk):
             _k = credential_store.load_key("openai")
             if _k and not self.api_key_entry.get():
                 self.api_key_entry.insert(0, _k)
-            
+
+            _mck = credential_store.load_key("main_custom")
+            if _mck and not self.main_custom_key_entry.get():
+                self.main_custom_key_entry.insert(0, _mck)
+
             # Tüm yardımcı model anahtarlarını önbelleğe al
             for prov in ("openai_helper", "gemini", "deepseek", "bedrock", "anthropic", "minimax"):
                 val = credential_store.load_key(prov)
@@ -7477,6 +7704,18 @@ class App(ctk.CTk):
                 self.term_normalize_var.set(bool(d["term_normalize"]))
             if "twowave" in d:
                 self.twowave_var.set(bool(d["twowave"]))
+            if "same_folder" in d:
+                self.same_folder_var.set(bool(d["same_folder"]))
+            if isinstance(d.get("file_list_height"), int):
+                _flh = max(self._FILE_LIST_MIN_H, min(self._FILE_LIST_MAX_H, d["file_list_height"]))
+                self._file_rows_frame.configure(height=_flh)
+            if "main_custom_model" in d:
+                self.main_custom_model_var.set(str(d["main_custom_model"]))
+            if "main_custom_url" in d:
+                self.main_custom_url_var.set(str(d["main_custom_url"]))
+            if "main_custom" in d:
+                self.main_custom_var.set(bool(d["main_custom"]))
+                self._sync_main_custom_visibility()
             if "merge_cues" in d:
                 self.merge_cues_var.set(bool(d["merge_cues"]))
             if "ai_segment" in d:
@@ -7810,7 +8049,7 @@ class App(ctk.CTk):
 
     # ── Kontrol ───────────────────────────────────────────────────────────────
     def _validate(self):
-        key = self.api_key_entry.get().strip()
+        key = self._main_api_key()
         if len(key) < 10:
             messagebox.showerror("Hata", "API anahtarını girin.")
             return None
@@ -7867,7 +8106,7 @@ class App(ctk.CTk):
             self._log(f"Bilinmeyen model fiyatı, fallback kullanıldı: {model_name}", "warn")
             return ESTIMATED_PRICES["gpt-4o-mini"]  # Fallback ucuz model
 
-        main_model = self.model_var.get()
+        main_model = self._main_model_name()
         main_price = get_price(main_model)
         main_cost = ((base_tokens * 1.5) / 1_000_000 * main_price["in"]) + ((base_tokens * 1.1) / 1_000_000 * main_price["out"])
 
@@ -8109,8 +8348,8 @@ class App(ctk.CTk):
 
         def _do():
             self._set_running(True)
-            api_key = self.api_key_entry.get().strip()
-            b_url = _normalize_api_base_url(self.api_url_var.get())
+            api_key = self._main_api_key()
+            b_url = self._main_api_base_url()
             src = self.src_var.get()
             tgt = self.tgt_var.get()
             self._set_status("JSONL → SRT dönüştürülüyor...")
@@ -8564,8 +8803,8 @@ class App(ctk.CTk):
         REVIEW_CHUNK = 80
         REVIEW_CTX   = 8   # önceki chunk'tan taşınan bağlam çifti sayısı
         try:
-            b_url = _normalize_api_base_url(self.api_url_var.get())
-            client = OpenAI(api_key=self.api_key_entry.get().strip(), base_url=b_url if b_url else None)
+            b_url = self._main_api_base_url()
+            client = OpenAI(api_key=self._main_api_key(), base_url=b_url if b_url else None)
         except Exception as e:
             self._log_exc("Bağlam incelemesi başlatılamadı", e)
             return sorted_blocks, 0
@@ -9275,8 +9514,8 @@ class App(ctk.CTk):
             blocks = ht.qc_auto_fix(
                 issues=auto_issues,
                 tr_blocks=blocks,
-                openai_api_key=self.api_key_entry.get().strip(),
-                model=self.model_var.get(),
+                openai_api_key=self._main_api_key(),
+                model=self._main_model_name(),
                 tgt_lang=tgt,
                 base_url=self._helper_api_base_url("qc"),
                 log_fn=self._log,
@@ -9304,8 +9543,8 @@ class App(ctk.CTk):
             blocks = ht.qc_auto_fix(
                 issues=approved_fixes,
                 tr_blocks=blocks,
-                openai_api_key=self.api_key_entry.get().strip(),
-                model=self.model_var.get(),
+                openai_api_key=self._main_api_key(),
+                model=self._main_model_name(),
                 tgt_lang=tgt,
                 base_url=self._helper_api_base_url("qc"),
                 log_fn=self._log,
@@ -9562,7 +9801,7 @@ class App(ctk.CTk):
         try:
             with self._token_lock:
                 tok = self._token_total
-            txt = build_quality_report_text(rows, self.model_var.get(),
+            txt = build_quality_report_text(rows, self._main_model_name(),
                                             self.tgt_var.get(),
                                             self.mode_var.get(), tok)
             # Rapor, çıktı .srt'lerle aynı 'efektif tabana' gider (Kural 1: <girdi>/ÇIKTI,
@@ -9805,7 +10044,7 @@ class App(ctk.CTk):
 
         def _worker():
             try:
-                b_url = _normalize_api_base_url(self.api_url_var.get())
+                b_url = self._main_api_base_url()
                 client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
                 detected = self._detect_content_types_parallel(
                     client,
@@ -9967,7 +10206,7 @@ class App(ctk.CTk):
         değiştirip yeniden çeviren kullanıcıya bayat çeviri geri yazılır."""
         try:
             return "|".join([
-                self.model_var.get(), self.tgt_var.get(), self.profanity_var.get(),
+                self._main_model_name(), self.tgt_var.get(), self.profanity_var.get(),
                 self.style_var.get(), self.content_type_var.get(),
             ])
         except Exception:
@@ -10065,11 +10304,11 @@ class App(ctk.CTk):
 
     def _run_sync(self, api_key):
         import hybrid_translate as ht
-        b_url = _normalize_api_base_url(self.api_url_var.get())
+        b_url = self._main_api_base_url()
         client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
         output_dir = self.output_var.get()
         src, tgt   = self.src_var.get(), self.tgt_var.get()
-        model      = self.model_var.get()
+        model      = self._main_model_name()
         srt_files  = self._get_srt_files()
 
         if not srt_files:
@@ -10150,7 +10389,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
         _tm_cache = self._tm.lookup_batch(_all_srcs, tgt_lang=tgt,
-                                           model=self.model_var.get(),
+                                           model=self._main_model_name(),
                                            profanity=self.profanity_var.get()) if _all_srcs else {}
 
         def _tm_fill_chunk(req: dict) -> str | None:
@@ -10165,7 +10404,7 @@ class App(ctk.CTk):
                     cached = _tm_cache.get(item["t"])
                     if cached is None:
                         fuzzy = self._tm.fuzzy_lookup(item["t"], threshold=0.95, tgt_lang=tgt,
-                                                      model=self.model_var.get(),
+                                                      model=self._main_model_name(),
                                                       profanity=self.profanity_var.get())
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
@@ -10365,7 +10604,8 @@ class App(ctk.CTk):
                     self._update_file_progress(filepath, "Atlandı", 0, "skip")
                     continue
                 # ── Çıktı dosyası zaten varsa ve tamamsa atla ───────────────
-                out_path = _resolve_output_path(input_dir, output_dir, filepath)
+                out_path = _resolve_output_path(input_dir, output_dir, filepath,
+                                                 same_folder=self.same_folder_var.get())
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
@@ -10421,8 +10661,8 @@ class App(ctk.CTk):
                         result = ht.analyze_with_helper(
                             cues=cues, helper_api_key=self._helper_api_key("analysis"), helper_url=self._helper_api_base_url("analysis"), helper_model=self._helper_api_model("analysis"),
                             style=self.style_var.get(),
-                            source_language=src.lower()[:2],
-                            target_language=tgt.lower()[:2],
+                            source_language=_lang_iso639_1(src),
+                            target_language=_lang_iso639_1(tgt),
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
@@ -10437,7 +10677,7 @@ class App(ctk.CTk):
                         else:
                             self._log(f"[{fname}] Analiz başarısız — boş bağlamla çeviri devam ediyor", "warn")
                             self._update_file_progress(filepath, "Analiz atlandı", 10, "warn")
-                            result = ht.empty_analysis_result(src.lower()[:2])
+                            result = ht.empty_analysis_result(_lang_iso639_1(src))
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
                     ht.save_context_cache(context, filepath, char_examples, pronoun_map,
                                           character_styles=character_styles,
@@ -10786,7 +11026,8 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            out_path = _resolve_output_path(input_dir, output_dir, filepath)
+            out_path = _resolve_output_path(input_dir, output_dir, filepath,
+                                             same_folder=self.same_folder_var.get())
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
@@ -10818,7 +11059,7 @@ class App(ctk.CTk):
             # TM kaydı (ortak yardımcı)
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
-                                 self.model_var.get(), tgt)
+                                 self._main_model_name(), tgt)
             if self.auto_glossary_var.get():
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
             ht.clear_context_cache(filepath)
@@ -10845,11 +11086,11 @@ class App(ctk.CTk):
     # ── Batch mod ─────────────────────────────────────────────────────────────
     def _run_batch(self, api_key):
         import hybrid_translate as ht
-        b_url = _normalize_api_base_url(self.api_url_var.get())
+        b_url = self._main_api_base_url()
         client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
         output_dir = self.output_var.get()
         src, tgt   = self.src_var.get(), self.tgt_var.get()
-        model      = self.model_var.get()
+        model      = self._main_model_name()
         srt_files  = self._get_srt_files()
 
         if not srt_files:
@@ -11018,11 +11259,11 @@ class App(ctk.CTk):
         self._set_running(False)   # #2: upload sonrası ilk poll'dan önce Stop'ta UI kilitlenmesin
 
     def _resume_batches(self, api_key, batch_ids):
-        b_url = _normalize_api_base_url(self.api_url_var.get())
+        b_url = self._main_api_base_url()
         client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
         output_dir = self.output_var.get()
         src, tgt   = self.src_var.get(), self.tgt_var.get()
-        model      = self.model_var.get()
+        model      = self._main_model_name()
 
         # Build default file_map for regular batches
         srt_files = self._get_srt_files()
@@ -11212,7 +11453,7 @@ class App(ctk.CTk):
                                     self._log(f"Bağlam incelemesi başlıyor ({len(pp)} satır)...", "info")
                                     _before_rev = list(pp)
                                     pp, _rev_fixes = self._review_pass(
-                                        str(_src_path), pp, self.model_var.get(), tgt)
+                                        str(_src_path), pp, self._main_model_name(), tgt)
                                     _record_pass_change(_pass_trace, "Review", _before_rev, pp, _pass_history)
                                 except Exception as e:
                                     self._log(f"Bağlam incelemesi hatası: {e}", "warn")
@@ -11336,7 +11577,7 @@ class App(ctk.CTk):
                                                              log_fn=self._log, src_clean_map=_src_map)
                                 except Exception:
                                     pass
-                                self._store_tm_pairs(pp, _src_map, self.model_var.get(), tgt)
+                                self._store_tm_pairs(pp, _src_map, self._main_model_name(), tgt)
                                 self._maybe_backtranslation_check(output_path, _src_map, pp)
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
@@ -11498,7 +11739,7 @@ class App(ctk.CTk):
         input_dir  = self.input_var.get()
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
         total_warnings = 0
-        model_name = self.model_var.get()
+        model_name = self._main_model_name()
         _tgt_lang  = self.tgt_var.get()
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
@@ -11626,11 +11867,11 @@ class App(ctk.CTk):
             # Çevrilemeyen satırları sync ile onarma denemesi
             try:
                 if openai_key:
-                    _repair_client = OpenAI(api_key=openai_key, base_url=_normalize_api_base_url(self.api_url_var.get()) or None)
+                    _repair_client = OpenAI(api_key=openai_key, base_url=self._main_api_base_url() or None)
                     sorted_blocks, _n_repaired = _repair_untranslated_sync(
                         sorted_blocks, _raw_map, _repair_client,
                         src_lang=src or self.src_var.get(), tgt_lang=_tgt_lang,
-                        model=self.model_var.get(),
+                        model=self._main_model_name(),
                         schema=self._get_schema(), profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens)
             except Exception as e:
@@ -11652,7 +11893,8 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            out_path = _resolve_output_path(input_dir, output_dir, fp)
+            out_path = _resolve_output_path(input_dir, output_dir, fp,
+                                             same_folder=self.same_folder_var.get())
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
@@ -11883,10 +12125,10 @@ class App(ctk.CTk):
         self._twowave_pending = {}   # B3: iki-dalgalı dosyaların Faz1'de saklanan istekleri
         import hybrid_translate as ht
         ht.set_project_path(ext_project_path)
-        b_url = _normalize_api_base_url(self.api_url_var.get())
+        b_url = self._main_api_base_url()
         output_dir  = self.output_var.get()
         src, tgt    = self.src_var.get(), self.tgt_var.get()
-        model       = self.model_var.get()
+        model       = self._main_model_name()
         profanity   = self.profanity_var.get()
         srt_files   = self._get_srt_files()
 
@@ -11945,7 +12187,7 @@ class App(ctk.CTk):
                     self._log(f"[{fname}] İçerik türü otomatik analiz ediliyor...", "info")
                     try:
                         from openai import OpenAI
-                        b_url = _normalize_api_base_url(self.api_url_var.get())
+                        b_url = self._main_api_base_url()
                         client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
                         detected_name = detect_content_type_with_ai(client, cues, model, self._log, token_callback=self._update_tokens, filename=filepath)
                         schema_dict = self._schema_by_name(detected_name)
@@ -11976,8 +12218,8 @@ class App(ctk.CTk):
                         result = ht.analyze_with_helper(
                             cues=cues, helper_api_key=self._helper_api_key("analysis"), helper_url=self._helper_api_base_url("analysis"), helper_model=self._helper_api_model("analysis"),
                             style=self.style_var.get(),
-                            source_language=src.lower()[:2],
-                            target_language=tgt.lower()[:2],
+                            source_language=_lang_iso639_1(src),
+                            target_language=_lang_iso639_1(tgt),
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
@@ -11991,7 +12233,7 @@ class App(ctk.CTk):
                             break
                         else:
                             self._log(f"[{fname}] Analiz başarısız — boş bağlamla batch devam ediyor", "warn")
-                            result = ht.empty_analysis_result(src.lower()[:2])
+                            result = ht.empty_analysis_result(_lang_iso639_1(src))
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
                     ht.save_context_cache(context, filepath, char_examples, pronoun_map,
                                           character_styles=character_styles,
@@ -12071,7 +12313,8 @@ class App(ctk.CTk):
                                                           temperature=self._temperature)
                 self._log(f"{len(requests)} istek oluşturuldu", "info")
 
-                out_path = str(_resolve_output_path(input_dir, output_dir, filepath))  # çıktı her zaman SRT
+                out_path = str(_resolve_output_path(input_dir, output_dir, filepath,
+                                                     same_folder=self.same_folder_var.get()))  # çıktı her zaman SRT
 
                 # ── B3: İki-dalgalı zincirli batch ────────────────────────────
                 # Doğası gereği "gönder-bekle-gönder-bekle" olduğundan Faz1'de GÖNDERİLMEZ;
@@ -12392,7 +12635,7 @@ class App(ctk.CTk):
                     pass
                 self._maybe_backtranslation_check(out_path, _src_map, _final_blocks)
                 # TM kaydı (ortak yardımcı)
-                self._store_tm_pairs(_final_blocks, _src_map, self.model_var.get(), tgt)
+                self._store_tm_pairs(_final_blocks, _src_map, self._main_model_name(), tgt)
                 if self.auto_glossary_var.get():
                     self._run_auto_glossary(cues, _final_blocks, filepath)
 

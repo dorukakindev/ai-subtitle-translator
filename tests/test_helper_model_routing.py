@@ -125,6 +125,20 @@ class HelperModelRoutingTest(unittest.TestCase):
         self.assertEqual(normalize_helper_model_label("gemini-3.5-flash"), "Gemini 3.5 Flash")
         self.assertEqual(normalize_helper_model_label("gemini-2.5-flash"), "Gemini 2.5 Flash")
 
+    def test_reseller_gpt54_preset_routes_to_shuaiapi(self):
+        # Kullanıcı Analiz/Polish/Critic rollerinde tek tıkla reseller'a geçebilsin
+        # diye eklenen hazır seçenek — "Özel (Custom)" alanlarını elle doldurmaya gerek yok.
+        from helper_models import HELPER_MODEL_OPTIONS, normalize_helper_model_label, resolve_helper_model
+
+        cfg = resolve_helper_model("GPT-5.4 (Reseller)")
+
+        self.assertIn("GPT-5.4 (Reseller)", HELPER_MODEL_OPTIONS)
+        self.assertEqual(cfg.provider, "openai")
+        self.assertEqual(cfg.model, "gpt-5.4")
+        self.assertEqual(cfg.base_url, "https://api.shuaiapi.com/v1")
+        self.assertEqual(normalize_helper_model_label("reseller gpt-5.4"), "GPT-5.4 (Reseller)")
+        self.assertEqual(normalize_helper_model_label("gpt-5.4-reseller"), "GPT-5.4 (Reseller)")
+
     def test_claude_haiku_routes_to_147ai_anthropic_messages(self):
         from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model
 
