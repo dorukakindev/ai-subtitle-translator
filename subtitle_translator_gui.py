@@ -9536,7 +9536,15 @@ class App(ctk.CTk):
             self._set_phase("Hazır", "Durduruldu.")
 
     def _run_quality_check_inline(self, fp, orig_cues, blocks, mm_key, mm_url, mm_model, tgt, analysis_result=None):
-        """QC kontrolü yap, dialog göster, onaylanan düzeltmeleri uygula. Güncel blocks döner."""
+        """QC kontrolü yap, dialog göster, onaylanan düzeltmeleri uygula. Güncel blocks döner.
+
+        Uygulanan TÜM düzeltmeler (otomatik + dialogdan onaylı) <dosya>.qc_degisiklikler.txt'e
+        öncesi/sonrasıyla yazılır. Neden: log sadece "X/Y satır yeniden çevrildi" özeti
+        veriyor, hangi satırın neye dönüştüğünü göstermiyor — üstelik gerçekten uygulanan
+        metin dialogdaki "Öneri" ile AYNI OLMAYABİLİR: onaylanan her satır qc_auto_fix
+        içinde kaynak+hata+öneri eşliğinde YENİDEN çevriliyor, öneri sadece bir ipucu;
+        yalnızca o yeniden-çeviri başarısız/güvenlik-filtresinden dönerse öneri metni
+        aynen uygulanıyor. Kullanıcı gerçek sonucu görmeden onaylamış oluyordu."""
         import hybrid_translate as ht
         try:
             issues = ht.quality_check_with_helper(
@@ -9557,9 +9565,25 @@ class App(ctk.CTk):
             self._log("QC: sorun bulunamadı ✓", "ok")
             return blocks
 
+        applied_records = []  # [{id, source, before, after, problem}]
+
+        def _record(applied_issues, before_map, after_blocks):
+            after_map = {str(b[0]): b[2] for b in after_blocks}
+            for iss in applied_issues:
+                iid = str(iss.get("id", ""))
+                before = before_map.get(iid, iss.get("current", ""))
+                after = after_map.get(iid, before)
+                if after != before:
+                    applied_records.append({
+                        "id": iid, "source": iss.get("original", ""),
+                        "before": before, "after": after,
+                        "problem": iss.get("problem", ""),
+                    })
+
         auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
         if auto_issues:
             self._log(f"QC auto: {len(auto_issues)} düşük/orta severity düzeltme uygulanıyor", "info")
+            before_map = {str(b[0]): b[2] for b in blocks}
             blocks = ht.qc_auto_fix(
                 issues=auto_issues,
                 tr_blocks=blocks,
@@ -9569,8 +9593,10 @@ class App(ctk.CTk):
                 base_url=self._helper_api_base_url("qc"),
                 log_fn=self._log,
             )
+            _record(auto_issues, before_map, blocks)
 
         if not review_issues:
+            self._write_qc_change_report(fp, applied_records)
             return blocks
 
         self._log(f"QC: {len(review_issues)} sorun insan onayı bekliyor — dialog açılıyor...", "warn")
@@ -9582,6 +9608,7 @@ class App(ctk.CTk):
         while not qc_event.is_set() and time.time() < deadline:
             if self._stop_flag:
                 self.after(0, self._dismiss_modal_dialog)
+                self._write_qc_change_report(fp, applied_records)
                 return blocks
             qc_event.wait(timeout=0.5)
         if not qc_event.is_set() and not self._stop_flag:
@@ -9589,6 +9616,7 @@ class App(ctk.CTk):
         self.after(0, self._dismiss_modal_dialog)
 
         if approved_fixes:
+            before_map = {str(b[0]): b[2] for b in blocks}
             blocks = ht.qc_auto_fix(
                 issues=approved_fixes,
                 tr_blocks=blocks,
@@ -9598,8 +9626,32 @@ class App(ctk.CTk):
                 base_url=self._helper_api_base_url("qc"),
                 log_fn=self._log,
             )
+            _record(approved_fixes, before_map, blocks)
 
+        self._write_qc_change_report(fp, applied_records)
         return blocks
+
+    def _write_qc_change_report(self, fp, applied_records: list):
+        """QC tarafından fiilen değiştirilen satırları TEK bir txt dosyasına
+        (kaynak/öncesi/sonrası) yazar — kullanıcı bunu paylaşıp kontrol ettirebilsin
+        diye. Değişen satır yoksa dosya hiç yazılmaz (eski bir rapor varsa da
+        silinmez — çağıran her zaman yeni bir liste ile çağırır)."""
+        if not applied_records:
+            return
+        try:
+            report_path = Path(fp).with_name(Path(fp).stem + ".qc_degisiklikler.txt")
+            lines = [f"QC Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
+            for rec in applied_records:
+                lines.append(f"#{rec['id']}  [{rec['problem']}]")
+                if rec["source"]:
+                    lines.append(f"Kaynak : {rec['source']}")
+                lines.append(f"Önce   : {rec['before']}")
+                lines.append(f"Sonra  : {rec['after']}")
+                lines.append("")
+            report_path.write_text("\n".join(lines), encoding="utf-8")
+            self._log(f"QC değişiklik raporu: {report_path.name}  ({len(applied_records)} satır)", "ok")
+        except Exception as e:
+            self._log_exc("QC değişiklik raporu yazılamadı", e)
 
     def _dismiss_modal_dialog(self):
         """Worker timeout'unda hâlâ açık modal inceleme dialog'unu (QC/Glossary) kapatır.
