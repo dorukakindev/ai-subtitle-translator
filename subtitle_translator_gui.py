@@ -10882,7 +10882,7 @@ class App(ctk.CTk):
                         out_blocks = list(parse_subtitle(str(out_path)))
                         if out_blocks and len(out_blocks) <= len(cues):
                             has_hata = any(
-                                str(blk[2]).startswith("[HATA") for blk in out_blocks)
+                                str(blk[2]).startswith("[HATA") or str(blk[2]).startswith("[ÇEVİRİ EKSİK]") for blk in out_blocks)
                             if not has_hata:
                                 self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
                                 self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
@@ -11107,8 +11107,12 @@ class App(ctk.CTk):
             # ── Retry + Birleştir ─────────────────────────────────────────────
             self._retry_hata(client, raw_map, batch_reqs, max_rounds=self._max_retry)
             srt_blocks = {}
-            for cid, raw in raw_map.items():
-                info      = fmap.get(cid, [])
+            for cid, info in fmap.items():
+                raw = raw_map.get(cid)
+                if not raw:
+                    for (idx, start, end) in info:
+                        srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    continue
                 trans_map = parse_response(raw, info)
                 for (idx, start, end) in info:
                     text = trans_map.get(str(idx), "[HATA]")

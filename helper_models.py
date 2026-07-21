@@ -12,6 +12,7 @@ class HelperModelConfig:
 HELPER_MODEL_OPTIONS = [
     "gpt-5.4-mini",
     "GPT-5.4 (Reseller)",
+    "Claude Sonnet 5 (Reseller)",
     "gpt-5-mini",
     "gpt-4o-mini",
     "o4-mini",
@@ -57,6 +58,10 @@ _ALIASES = {
     "gpt-5.4 (reseller)": "GPT-5.4 (Reseller)",
     "gpt-5.4-reseller": "GPT-5.4 (Reseller)",
     "reseller gpt-5.4": "GPT-5.4 (Reseller)",
+    "claude sonnet 5 (reseller)": "Claude Sonnet 5 (Reseller)",
+    "claude-sonnet-5-reseller": "Claude Sonnet 5 (Reseller)",
+    "claude-sonnet-5": "Claude Sonnet 5 (Reseller)",
+    "reseller claude-sonnet-5": "Claude Sonnet 5 (Reseller)",
     "gpt-5-mini": "gpt-5-mini",
     "gpt-4o-mini": "gpt-4o-mini",
     "o4-mini": "o4-mini",
@@ -147,6 +152,12 @@ _CONFIGS = {
         label="GPT-5.4 (Reseller)",
         provider="openai",
         model="gpt-5.4",
+        base_url="https://api.shuaiapi.com/v1",
+    ),
+    "Claude Sonnet 5 (Reseller)": HelperModelConfig(
+        label="Claude Sonnet 5 (Reseller)",
+        provider="openai",
+        model="claude-sonnet-5",
         base_url="https://api.shuaiapi.com/v1",
     ),
     "gpt-5-mini": HelperModelConfig(
