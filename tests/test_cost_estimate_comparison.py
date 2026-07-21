@@ -36,6 +36,7 @@ class CostEstimateComparisonTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             f = self._write_srt(td)
             self.app.model_var.set("gpt-5.4-mini")
+            if hasattr(self.app, "main_custom_var"): self.app.main_custom_var.set(False)
             with patch.object(self.app, "_get_srt_files", return_value=[str(f)]), \
                  patch("subtitle_translator_gui.messagebox.showinfo") as mock_info:
                 self.app._show_cost_estimate()
@@ -62,6 +63,7 @@ class CostEstimateComparisonTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             f = self._write_srt(td, n_lines=200)   # büyütülmüş fark net görünsün
             self.app.model_var.set("gpt-5.4-mini")
+            if hasattr(self.app, "main_custom_var"): self.app.main_custom_var.set(False)
             self.app.critic_var.set(False)
             self.app.polish_var.set(False)
             self.app.qc_var.set(False)

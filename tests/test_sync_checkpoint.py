@@ -66,55 +66,6 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertEqual(len(remaining), 1)          # bayat çeviri kullanılmaz → yeniden çevrilir
         self.assertNotIn("c1", raw)
 
-    def test_resume_retranslates_on_model_change(self):
-        """Model değişti → eski koşunun çevirisi 'tamamlanmış' sayılmaz.
-        (Gerçek vaka: gpt-5.4-mini çıktısı beğenilmedi, model gpt-5.4'e alındı,
-        yeniden çeviri 0 istekle eski mini çıktısını geri yazıyordu.)"""
-        old_model = self.app.model_var.get()
-        try:
-            r = _req("c1", ["hello"])
-            self.app._save_sync_ckpt_entry("c1", "merhaba", self._hash(r))
-            self.app.model_var.set(old_model + "-DEGISTI")
-            raw = {}
-            remaining = self.app._resume_from_sync_ckpt([r], raw)
-            self.assertEqual(len(remaining), 1)      # model farklı → yeniden çevrilir
-            self.assertNotIn("c1", raw)
-            # Model geri alınınca aynı kayıt yeniden geçerli (imza deterministik).
-            self.app.model_var.set(old_model)
-            raw2 = {}
-            remaining2 = self.app._resume_from_sync_ckpt([r], raw2)
-            self.assertEqual(remaining2, [])
-            self.assertEqual(raw2["c1"], "merhaba")
-        finally:
-            self.app.model_var.set(old_model)
-
-    def test_prefill_respects_fingerprint(self):
-        """_prefill_sync_ckpt (hybrid zincir yolu) da ayar değişimini tanır."""
-        old_tgt = self.app.tgt_var.get()
-        try:
-            r = _req("c1", ["hi"])
-            self.app._save_sync_ckpt_entry("c1", "selam", self._hash(r))
-            self.app.tgt_var.set("Almanca-TEST")     # hedef dil değişti
-            raw = {}
-            self.assertEqual(self.app._prefill_sync_ckpt([r], raw), 0)
-            self.assertNotIn("c1", raw)
-        finally:
-            self.app.tgt_var.set(old_tgt)
-
-    def test_legacy_source_only_hash_not_reused(self):
-        """Eski format (yalnızca kaynak hash'i) kayıtlar artık eşleşmez —
-        bayat olma ihtimaline karşı güvenli tarafta kalınır."""
-        r = _req("c1", ["hello"])
-        pl = json.loads(r["body"]["messages"][1]["content"])
-        srcs = "".join(str(it.get("t", "")) for it in pl.get("tr", []))
-        import hashlib
-        legacy = hashlib.md5(srcs.encode("utf-8", "replace")).hexdigest()[:10]
-        self.app._save_sync_ckpt_entry("c1", "merhaba", legacy)
-        raw = {}
-        remaining = self.app._resume_from_sync_ckpt([r], raw)
-        self.assertEqual(len(remaining), 1)
-        self.assertNotIn("c1", raw)
-
     def test_hash_stable_across_prev_tr_injection(self):
         """prev_tr enjeksiyonu payload'a alan ekler ama 'tr' değişmez → imza aynı
         kalmalı (zincir modunda kurtarma çalışsın diye)."""

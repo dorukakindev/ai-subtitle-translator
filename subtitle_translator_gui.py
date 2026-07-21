@@ -39,7 +39,7 @@ ESTIMATED_PRICES = {
 }
 
 MAX_PARALLEL = 3
-CONTENT_TYPE_DETECT_MODEL = "gpt-5.4-mini"
+CONTENT_TYPE_DETECT_MODEL = "gpt-5.4"
 API_REQUEST_TIMEOUT_SECONDS = 300
 
 
@@ -551,6 +551,30 @@ CONTENT_SCHEMAS = {
             "- [CONTEXT & TONE] Social/political commentary in comedy keeps its bite; do not neutralize satire into polite analysis.",
             "- [TERMINOLOGY] Names of venues, albums, specials, TV shows, networks, and awards stay exact unless an established Turkish title exists.",
             "- [TR_ERROR] A common TR error here is translating biographical commentary well but ruining the actual jokes; when a joke is quoted, comedy rules override documentary smoothness.",
+        ],
+    },
+    "cyberpunk_sci_fi": {
+        "name": "Siberpunk / Distopya",
+        "rules": [
+            "- [CONTEXT & TONE] Keep the grim, technological, neon-noir tone. Corporations are oppressive, tech is ubiquitous, life is cheap.",
+            "- [TERMINOLOGY] Tech jargon, implants, netrunning, corporate titles, AI, and hacking terms must sound like established sci-fi Turkish (e.g., 'Ağ' for net, 'Siber-implant' for cyberware).",
+            "- [DIALECT & CHARACTER] Street characters speak with heavy slang/AAVE equivalents; corporate elites speak in sterile, formal, high-register Turkish.",
+            "- [TONE & REGISTER] Nihilism and cynicism rule the dialogue. Do not soften cold or hopeless lines.",
+            "- [FLOW & TIMING] Quick tactical jargon during combat/hacking must stay clipped and precise.",
+            "- [PRONOUNS] Power dynamics are heavily reflected in pronouns; corporate bosses use 'sen' to underlings, street characters use casual 'sen' unless intimidated.",
+            "- [TR_ERROR] A common TR error is translating cyberpunk concepts into fantasy/magic terms. Ensure it sounds like technology, not magic.",
+        ],
+    },
+    "animation_kids": {
+        "name": "Çocuk / Çizgi Dizi",
+        "rules": [
+            "- [TONE & REGISTER] Keep the tone bright, energetic, and accessible for children. Use natural, modern Turkish without overly archaic words.",
+            "- [TERMINOLOGY] Catchphrases, magic spells, animal sounds, and character nicknames must be localized to fun, memorable Turkish equivalents.",
+            "- [FLOW & TIMING] Action lines, gasps, and reactions should be slightly exaggerated. 'Yay!', 'Whoa!', 'Oh no!' become 'Yaşasın!', 'Vay canına!', 'Olamaz!'.",
+            "- [PRONOUNS] Characters usually use 'sen' with each other; adults might use 'siz' depending on respect level.",
+            "- [TR_ERROR] A common TR error is translating literal English idioms that make no sense to kids. Find a culturally equivalent Turkish idiom or phrase.",
+            "- [DIALECT & CHARACTER] Ensure villain characters sound theatrically evil but not genuinely terrifying or profane.",
+            "- [CONTEXT & TONE] Educational or moral lessons should be stated clearly and simply, matching the pedagogical tone of kids' shows.",
         ],
     },
     "anime": {
@@ -3086,6 +3110,7 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
                 max_tokens=80,
                 temperature=0.0,
                 response_format={"type": "json_object"},
+                timeout=45.0,
             )
             if token_callback and getattr(resp, "usage", None):
                 tot, cached = _get_usage_details(resp.usage)
@@ -10488,10 +10513,26 @@ class App(ctk.CTk):
             return api_requests
         fp = self._ckpt_fingerprint()
         resumed, still = 0, []
+        import hashlib
         for req in api_requests:
             cid = req["custom_id"]
             ent = ckpt.get(cid)
-            if ent and ent[0] and ent[1] == self._chunk_src_hash(req, fp):
+            # Yeni (ayarsız) hash veya eski (ayarlı) hash ile eşleşirse kabul et
+            is_match = False
+            if ent and ent[0]:
+                h_new = self._chunk_src_hash(req)
+                if ent[1] == h_new:
+                    is_match = True
+                else:
+                    try:
+                        pl = json.loads(req["body"]["messages"][1]["content"])
+                        srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
+                        h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
+                        if ent[1] == h_old:
+                            is_match = True
+                    except:
+                        pass
+            if is_match:
                 raw_map[cid] = ent[0]
                 resumed += 1
             else:
@@ -10509,12 +10550,24 @@ class App(ctk.CTk):
             return 0
         fp = self._ckpt_fingerprint()
         n = 0
+        import hashlib
         for req in reqs:
             cid = req["custom_id"]
             ent = ckpt.get(cid)
-            if ent and ent[0] and cid not in raw_map and ent[1] == self._chunk_src_hash(req, fp):
-                raw_map[cid] = ent[0]
-                n += 1
+            if ent and ent[0] and cid not in raw_map:
+                h_new = self._chunk_src_hash(req)
+                is_match = (ent[1] == h_new)
+                if not is_match:
+                    try:
+                        pl = json.loads(req["body"]["messages"][1]["content"])
+                        srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
+                        h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
+                        is_match = (ent[1] == h_old)
+                    except:
+                        pass
+                if is_match:
+                    raw_map[cid] = ent[0]
+                    n += 1
         if n:
             self._log(f"Çökme kurtarma: {n} tamamlanmış chunk önbellekten alındı "
                       f"(yeniden çevrilmeyecek)", "ok")
