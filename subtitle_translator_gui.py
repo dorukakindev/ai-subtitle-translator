@@ -252,7 +252,8 @@ LANGUAGES = [
 # production — the language name never matched, so the sanitizer always took
 # its "unrecognized target, return unmodified" early exit.
 _LANGUAGE_ISO639_1 = {
-    "turkish": "tr", "english": "en", "german": "de", "french": "fr",
+    "turkish": "tr", "türkçe": "tr", "turkce": "tr",
+    "english": "en", "german": "de", "french": "fr",
     "spanish": "es", "italian": "it", "portuguese": "pt", "russian": "ru",
     "japanese": "ja", "korean": "ko", "chinese": "zh", "arabic": "ar",
     "dutch": "nl", "polish": "pl", "swedish": "sv", "norwegian": "no",
