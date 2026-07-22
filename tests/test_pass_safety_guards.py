@@ -5,6 +5,55 @@ import hybrid_translate as ht
 
 class PassSafetyGuardsTest(unittest.TestCase):
 
+    def test_qc_review_cross_chunk_id_not_returned(self):
+        """QC yalnızca aktif chunk içindeki ID için issue üretebilir."""
+        cues = [MagicMock(index=i, text=f"Source {i}") for i in range(1, 202)]
+        tr_blocks = [
+            (str(i), f"00:00:{i % 60:02d},000 --> 00:00:{i % 60:02d},900", f"Çeviri {i}")
+            for i in range(1, 202)
+        ]
+        first = MagicMock()
+        first.choices = [MagicMock()]
+        first.choices[0].message.content = (
+            '{"issues":[{"id":"201","original":"Source 201",'
+            '"current":"Çeviri 201","problem":"Sorun","suggestion":"Düzeltme",'
+            '"severity":"low"}]}'
+        )
+        second = MagicMock()
+        second.choices = [MagicMock()]
+        second.choices[0].message.content = '{"issues":[]}'
+
+        with patch("openai.OpenAI") as mock_openai:
+            client = MagicMock()
+            mock_openai.return_value = client
+            client.chat.completions.create.side_effect = [first, second]
+
+            issues = ht.quality_check_with_helper(cues, tr_blocks, helper_api_key="test_key")
+
+        self.assertEqual(issues, [])
+
+    def test_qc_review_binds_source_and_current_to_chunk_data(self):
+        """Geçerli issue modelin kopyaladığı alanlar yerine gerçek cue verisini taşır."""
+        cues = [MagicMock(index=1, text="Real source")]
+        tr_blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Gerçek çeviri")]
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = (
+            '{"issues":[{"id":"1","original":"Hallucinated source",'
+            '"current":"Gerçek çeviri","problem":"Sorun","suggestion":"Düzeltme",'
+            '"severity":"low"}]}'
+        )
+
+        with patch("openai.OpenAI") as mock_openai:
+            client = MagicMock()
+            mock_openai.return_value = client
+            client.chat.completions.create.return_value = response
+
+            issues = ht.quality_check_with_helper(cues, tr_blocks, helper_api_key="test_key")
+
+        self.assertEqual(issues[0]["original"], "Real source")
+        self.assertEqual(issues[0]["current"], "Gerçek çeviri")
+
     def test_critic_context_only_id_not_applied(self):
         """1. Context-only critic ID’si uygulanmaz."""
         cues = [
@@ -150,6 +199,26 @@ class PassSafetyGuardsTest(unittest.TestCase):
 
             res = ht.qc_auto_fix(issues, tr_blocks, openai_api_key="test_key", model="gpt-4o")
             self.assertEqual(res[0][2], "Text of cue 1")
+
+    def test_qc_missing_current_does_not_bypass_reconciliation(self):
+        """Eksik current alanı ID kontrolünü tek başına yeterli kılmaz."""
+        issues = [{
+            "id": "1",
+            "original": "Good morning",
+            "problem": "Unnatural",
+            "suggestion": "Günaydın",
+            "severity": "low",
+        }]
+        tr_blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Günaydın efendim")]
+
+        with patch("openai.OpenAI") as mock_openai:
+            client = MagicMock()
+            mock_openai.return_value = client
+
+            res = ht.qc_auto_fix(issues, tr_blocks, openai_api_key="test_key", model="gpt-4o")
+
+        self.assertEqual(res[0][2], "Günaydın efendim")
+        client.chat.completions.create.assert_not_called()
 
     def test_valid_qc_low_med_fix_applied(self):
         """8. Geçerli QC low/medium fix hâlâ uygulanır."""

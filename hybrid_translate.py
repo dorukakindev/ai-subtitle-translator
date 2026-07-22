@@ -3197,6 +3197,7 @@ def quality_check_with_helper(
 
         for chunk_i, cs in enumerate(range(0, len(all_pairs), QC_CHUNK)):
             chunk = all_pairs[cs:cs + QC_CHUNK]
+            chunk_by_id = {pair["id"]: pair for pair in chunk}
             chunk_num = chunk_i + 1
             if log_fn:
                 log_fn(f"QC chunk {chunk_num}/{total_chunks} ({len(chunk)} satır)...", "info")
@@ -3247,10 +3248,24 @@ def quality_check_with_helper(
                 if not content:
                     continue
                 data = _extract_json_object(content)   # prose önsöz/kod-çiti toleransı
-                chunk_issues = data.get("issues", []) if isinstance(data, dict) else []
-                for issue in chunk_issues:
-                    if isinstance(issue, dict):
-                        issue["severity"] = normalize_qc_severity(issue.get("severity"))
+                raw_issues = data.get("issues", []) if isinstance(data, dict) else []
+                chunk_issues = []
+                for raw_issue in raw_issues if isinstance(raw_issues, list) else []:
+                    if not isinstance(raw_issue, dict):
+                        continue
+                    issue_id = str(raw_issue.get("id", ""))
+                    expected = chunk_by_id.get(issue_id)
+                    if not expected:
+                        continue
+                    if (_normalize_qc_match_text(raw_issue.get("current"))
+                            != _normalize_qc_match_text(expected["tr"])):
+                        continue
+                    issue = dict(raw_issue)
+                    issue["id"] = issue_id
+                    issue["original"] = expected["orig"]
+                    issue["current"] = expected["tr"]
+                    issue["severity"] = normalize_qc_severity(issue.get("severity"))
+                    chunk_issues.append(issue)
                 all_issues.extend(chunk_issues)
                 if log_fn and chunk_issues:
                     log_fn(f"  QC chunk {chunk_num}: {len(chunk_issues)} sorun", "warn")
@@ -3285,6 +3300,12 @@ def normalize_qc_severity(value) -> str:
     if sev in {"medium", "moderate"}:
         return "med"
     return "high"
+
+
+def _normalize_qc_match_text(value) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", _clean_source_text(str(value))).strip().casefold()
 
 
 def split_qc_issues_for_review(issues: list) -> tuple[list, list]:
@@ -6975,14 +6996,13 @@ def qc_auto_fix(
         old_idx, old_ts, old_text = result[pos]
 
         # Model 'current' metni ile gerçek cue metnini reconcile et
-        if current:
-            clean_curr = _clean_source_text(current)
-            clean_old  = _clean_source_text(old_text)
-            if clean_curr and clean_old and clean_curr.strip().lower() != clean_old.strip().lower():
-                if log_fn:
-                    log_fn(f"QC Auto-Fix #{issue_id} atlandı: model 'current' metni ({repr(current[:30])}) "
-                           f"gerçek cue metni ({repr(old_text[:30])}) ile uyuşmuyor", "warn")
-                continue
+        clean_curr = _normalize_qc_match_text(current)
+        clean_old = _normalize_qc_match_text(old_text)
+        if not clean_curr or not clean_old or clean_curr != clean_old:
+            if log_fn:
+                log_fn(f"QC Auto-Fix #{issue_id} atlandı: model 'current' metni ({repr(str(current)[:30])}) "
+                       f"gerçek cue metni ({repr(str(old_text)[:30])}) ile uyuşmuyor", "warn")
+            continue
 
         seen_issue_ids.add(issue_id)
 
