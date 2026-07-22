@@ -9893,18 +9893,14 @@ class App(ctk.CTk):
         approved_fixes = []
         self.after(0, lambda i=review_issues, r=approved_fixes, e=qc_event:
                    self._show_qc_dialog(i, r, e))
-        deadline = time.time() + 300
-        while not qc_event.is_set() and time.time() < deadline:
-            if self._stop_flag:
-                self.after(0, self._dismiss_modal_dialog)
-                self._write_qc_change_report(fp, applied_records)
-                return blocks
-            qc_event.wait(timeout=0.5)
-        if not qc_event.is_set() and not self._stop_flag:
+        status = self._wait_for_dialog_event(qc_event, timeout=300)
+        if status == "stopped":
+            self._write_qc_change_report(fp, applied_records)
+            return blocks
+        if status == "timeout":
             self._set_status("QC: süre aşımı")
-        self.after(0, self._dismiss_modal_dialog)
 
-        if approved_fixes:
+        if approved_fixes and status == "completed":
             before_map = {str(b[0]): b[2] for b in blocks}
             blocks = ht.qc_auto_fix(
                 issues=approved_fixes,
@@ -9966,16 +9962,38 @@ class App(ctk.CTk):
         except Exception as e:
             self._log_exc("Critic değişiklik raporu yazılamadı", e)
 
-    def _dismiss_modal_dialog(self):
-        """Worker timeout'unda hâlâ açık modal inceleme dialog'unu (QC/Glossary) kapatır.
-        Kullanıcı zaten işlem yaptıysa referans None'dur → no-op. Ana thread'de çağrılır."""
+    def _dismiss_modal_dialog(self, target_dlg=None):
+        """Worker timeout/stop durumunda hâlâ açık olan modal inceleme dialog'unu (QC/Glossary) kapatır.
+        target_dlg verilmişse ve active modal ile eşleşmiyorsa no-op. Ana thread'de çağrılır."""
         dlg = getattr(self, "_active_modal_dlg", None)
+        if target_dlg is not None and dlg is not target_dlg:
+            return
         self._active_modal_dlg = None
         try:
             if dlg is not None and dlg.winfo_exists():
                 dlg.destroy()
         except Exception:
             pass
+
+    def _wait_for_dialog_event(self, event: threading.Event, timeout: float = 300.0, poll_interval: float = 0.5) -> str:
+        """Modal inceleme dialog event'ini self._stop_flag kontrolü ile güvenli şekilde bekler.
+
+        Returns:
+            "completed": Kullanıcı dialogu onayladı/kapattı (event set edildi).
+            "stopped":   Kullanıcı 'Durdur' düğmesine bastı (self._stop_flag True oldu).
+            "timeout":   Belirtilen süre (timeout) doldu.
+        """
+        import time
+        start = time.time()
+        while not event.is_set():
+            if getattr(self, "_stop_flag", False):
+                self.after(0, self._dismiss_modal_dialog)
+                return "stopped"
+            if time.time() - start >= timeout:
+                self.after(0, self._dismiss_modal_dialog)
+                return "timeout"
+            event.wait(timeout=poll_interval)
+        return "completed" 
 
     # ── QC Dialog ────────────────────────────────────────────────────────────
     def _show_qc_dialog(self, issues: list, result_holder: list, done_event: threading.Event):
@@ -10105,10 +10123,9 @@ class App(ctk.CTk):
         approved_list = []
         self.after(0, lambda s=suggestions, r=approved_list, e=done_event:
                    self._show_glossary_dialog(s, r, e, glossary_path))
-        done_event.wait(timeout=300)  # 5 dk sonra dialog kapanmamışsa devam et
-        self.after(0, self._dismiss_modal_dialog)   # timeout'ta kalan zombi dialog'u kapat
+        status = self._wait_for_dialog_event(done_event, timeout=300)
 
-        if approved_list and glossary_path:
+        if status == "completed" and approved_list and glossary_path:
             try:
                 with open(glossary_path, "a", encoding="utf-8") as f:
                     f.write(f"\n# Auto-Glossary — {Path(filepath).name}\n")
@@ -11438,20 +11455,17 @@ class App(ctk.CTk):
                         _qc_fixes += _n_auto
                         _qc_auto_fixes += _n_auto
                     approved_fixes = []
+                    status = "completed"
                     if review_issues:
                         qc_event      = threading.Event()
                         self.after(0, lambda i=review_issues, r=approved_fixes, e=qc_event:
                                    self._show_qc_dialog(i, r, e))
-                        deadline = time.time() + 300
-                        while not qc_event.is_set() and time.time() < deadline:
-                            if self._stop_flag:
-                                self.after(0, self._dismiss_modal_dialog)
-                                break
-                            qc_event.wait(timeout=0.5)
-                        if not qc_event.is_set() and not self._stop_flag:
+                        status = self._wait_for_dialog_event(qc_event, timeout=300)
+                        if status == "stopped":
+                            break
+                        if status == "timeout":
                             self._set_status("QC: süre aşımı")
-                        self.after(0, self._dismiss_modal_dialog)
-                    if approved_fixes:
+                    if approved_fixes and status == "completed":
                         _before_pass = list(sorted_blocks)
                         sorted_blocks = ht.qc_auto_fix(
                             issues=approved_fixes,
@@ -12052,13 +12066,17 @@ class App(ctk.CTk):
                                         _qc_fixes += _n_auto
                                         _qc_auto_fixes += _n_auto
                                     _appr = []
+                                    status = "completed"
                                     if _review_qc:
                                         _qcev = threading.Event()
                                         self.after(0, lambda i=_review_qc, r=_appr, e=_qcev:
                                                    self._show_qc_dialog(i, r, e))
-                                        _qcev.wait(timeout=300)
-                                        self.after(0, self._dismiss_modal_dialog)   # timeout'ta kalan zombi dialog'u kapat
-                                    if _appr:
+                                        status = self._wait_for_dialog_event(_qcev, timeout=300)
+                                        if status == "stopped":
+                                            self._set_status("QC: durduruldu")
+                                        elif status == "timeout":
+                                            self._set_status("QC: süre aşımı")
+                                    if _appr and status == "completed":
                                         _before_pass = list(pp)
                                         pp = ht.qc_auto_fix(
                                             issues=_appr, tr_blocks=pp,
@@ -13126,20 +13144,17 @@ class App(ctk.CTk):
                                     _qc_fixes += _n_auto
                                     _qc_auto_fixes += _n_auto
                                 approved_fixes = []
+                                status = "completed"
                                 if review_issues:
                                     qc_event = threading.Event()
                                     self.after(0, lambda i=review_issues, r=approved_fixes, e=qc_event:
                                                self._show_qc_dialog(i, r, e))
-                                    deadline = time.time() + 300
-                                    while not qc_event.is_set() and time.time() < deadline:
-                                        if self._stop_flag:
-                                            self.after(0, self._dismiss_modal_dialog)
-                                            break
-                                        qc_event.wait(timeout=0.5)
-                                    if not qc_event.is_set() and not self._stop_flag:
+                                    status = self._wait_for_dialog_event(qc_event, timeout=300)
+                                    if status == "stopped":
+                                        break
+                                    if status == "timeout":
                                         self._set_status("QC: süre aşımı")
-                                    self.after(0, self._dismiss_modal_dialog)
-                                if approved_fixes:
+                                if approved_fixes and status == "completed":
                                     _before_pass = list(pp_blocks)
                                     pp_blocks = ht.qc_auto_fix(
                                         issues=approved_fixes,

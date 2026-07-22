@@ -1,0 +1,139 @@
+"""
+Deterministic unit tests for modal dialog stop & timeout wait loops.
+Directly invokes production App._wait_for_dialog_event with stub objects.
+Does NOT instantiate App() or open actual GUI windows.
+"""
+import inspect
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import subtitle_translator_gui as gui
+
+
+class StopWaitDialogTest(unittest.TestCase):
+
+    def setUp(self):
+        self.after_calls = []
+
+    def _make_stub(self, stop_flag=False):
+        stub = SimpleNamespace(
+            _stop_flag=stop_flag,
+            _active_modal_dlg=None,
+            after=lambda ms, fn: self.after_calls.append(fn),
+            _dismiss_modal_dialog=lambda *a, **k: None,
+            _helper_api_key=lambda r: "sk-fake",
+            _helper_api_base_url=lambda r: "https://api.openai.com/v1",
+            _helper_api_model=lambda r: "gpt-5.4-mini",
+            _log=lambda *a, **k: None,
+            _log_exc=lambda *a, **k: None,
+            _show_glossary_dialog=lambda *a, **k: None,
+            src_var=SimpleNamespace(get=lambda: "English"),
+            tgt_var=SimpleNamespace(get=lambda: "Turkish"),
+            glossary_var=SimpleNamespace(get=lambda: ""),
+        )
+        return stub
+
+    def test_wait_for_dialog_event_returns_completed_when_event_set(self):
+        """Verify _wait_for_dialog_event returns 'completed' instantly if event is set."""
+        stub = self._make_stub()
+        event = threading.Event()
+        event.set()
+
+        res = gui.App._wait_for_dialog_event(stub, event, timeout=10.0, poll_interval=0.1)
+        self.assertEqual(res, "completed")
+        self.assertEqual(len(self.after_calls), 0)
+
+    def test_wait_for_dialog_event_returns_stopped_when_stop_flag_set(self):
+        """Verify _wait_for_dialog_event returns 'stopped' within ~0.2s when _stop_flag becomes True."""
+        stub = self._make_stub(stop_flag=False)
+        event = threading.Event()
+
+        def set_stop():
+            time.sleep(0.1)
+            stub._stop_flag = True
+
+        t = threading.Thread(target=set_stop)
+        t.start()
+
+        start = time.time()
+        res = gui.App._wait_for_dialog_event(stub, event, timeout=300.0, poll_interval=0.1)
+        elapsed = time.time() - start
+
+        t.join()
+        self.assertEqual(res, "stopped")
+        self.assertLess(elapsed, 2.0, f"Expected stop wait under 2s, took {elapsed:.2f}s")
+        self.assertEqual(len(self.after_calls), 1)
+
+    def test_wait_for_dialog_event_returns_timeout_on_small_timeout(self):
+        """Verify _wait_for_dialog_event returns 'timeout' deterministically when timeout expires."""
+        stub = self._make_stub()
+        event = threading.Event()
+
+        start = time.time()
+        res = gui.App._wait_for_dialog_event(stub, event, timeout=0.05, poll_interval=0.01)
+        elapsed = time.time() - start
+
+        self.assertEqual(res, "timeout")
+        self.assertLess(elapsed, 0.5, f"Expected timeout under 0.5s, took {elapsed:.2f}s")
+        self.assertEqual(len(self.after_calls), 1)
+
+    def test_no_direct_300s_event_wait_remains_in_modal_workflows(self):
+        """Verify via source code inspection that no direct .wait(timeout=300) remains in any modal workflow."""
+        methods_to_check = [
+            ("_run_quality_check_inline", gui.App._run_quality_check_inline),
+            ("_run_auto_glossary", gui.App._run_auto_glossary),
+            ("_run_batch", gui.App._run_batch),
+            ("_wait_batch_hybrid", gui.App._wait_batch_hybrid),
+            ("_run_sync_hybrid", gui.App._run_sync_hybrid),
+        ]
+
+        for name, method in methods_to_check:
+            src = inspect.getsource(method)
+            lines = src.splitlines()
+            for line in lines:
+                if ".wait(timeout=300)" in line:
+                    self.fail(f"Found unhandled direct 300s wait in {name}: '{line.strip()}'")
+
+    def test_auto_glossary_does_not_write_file_when_stopped(self):
+        """Verify _run_auto_glossary does not append to glossary file if dialog wait returns 'stopped' or 'timeout'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            glossary_file = Path(tmpdir) / "test_glossary.txt"
+            glossary_file.write_text("# Initial\n", encoding="utf-8")
+
+            stub = self._make_stub(stop_flag=True)
+            stub.glossary_var = SimpleNamespace(get=lambda: str(glossary_file))
+            stub._wait_for_dialog_event = lambda e, timeout=300: "stopped"
+
+            suggestions = [{"src": "AI", "tgt": "Yapay Zeka", "category": "technical"}]
+            with patch("hybrid_translate.build_glossary_suggestions", return_value=suggestions), \
+                 patch("hybrid_translate.load_glossary", return_value={}):
+                gui.App._run_auto_glossary(stub, [], [], "sub.srt")
+
+            content = glossary_file.read_text(encoding="utf-8")
+            self.assertEqual(content, "# Initial\n", "Glossary file must not be modified when stopped")
+
+    def test_dismiss_modal_dialog_target_guard(self):
+        """Verify _dismiss_modal_dialog with target_dlg parameter ignores late calls from older dialogs."""
+        mock_dlg1 = MagicMock()
+        mock_dlg2 = MagicMock()
+
+        stub = SimpleNamespace(_active_modal_dlg=mock_dlg2)
+        
+        # Calling dismiss with old dialog (mock_dlg1) when active is mock_dlg2 should be a no-op
+        gui.App._dismiss_modal_dialog(stub, target_dlg=mock_dlg1)
+        self.assertEqual(stub._active_modal_dlg, mock_dlg2)
+        mock_dlg2.destroy.assert_not_called()
+
+        # Calling dismiss with current active dialog (mock_dlg2) should destroy it
+        gui.App._dismiss_modal_dialog(stub, target_dlg=mock_dlg2)
+        self.assertIsNone(stub._active_modal_dlg)
+        mock_dlg2.destroy.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()
