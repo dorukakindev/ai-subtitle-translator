@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 import subtitle_translator_gui as gui
 
@@ -60,15 +61,37 @@ class UIDispatcherTest(unittest.TestCase):
         stub = self._make_dispatcher_stub()
         order = []
 
-        stub._post_ui(lambda x: order.append(x), 1)
-        stub._post_ui(lambda x: order.append(x), 2)
-        stub._post_ui(lambda x: order.append(x), 3)
+        def worker():
+            stub._post_ui(lambda x: order.append(x), 1)
+            stub._post_ui(lambda x: order.append(x), 2)
+            stub._post_ui(lambda x: order.append(x), 3)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        self.assertEqual(order, [])
+        self.assertEqual(stub._ui_queue.qsize(), 3)
 
         # Force execution on main thread
         stub._drain_ui_queue()
 
         self.assertEqual(order, [1, 2, 3], "Callbacks must be drained in FIFO order")
         self.assertEqual(stub._ui_queue.qsize(), 0)
+
+    def test_worker_without_initialized_queue_never_falls_back_to_tk(self):
+        calls = []
+        stub = SimpleNamespace(
+            _is_shutting_down=False,
+            after=lambda *args: calls.append("after"),
+        )
+        callback = lambda: calls.append("callback")
+
+        thread = threading.Thread(target=gui._post_ui, args=(stub, callback))
+        thread.start()
+        thread.join()
+
+        self.assertEqual(calls, [])
 
     def test_callback_exception_does_not_halt_queue(self):
         """3. A failing callback does not break execution of subsequent queued callbacks."""
@@ -201,8 +224,8 @@ class UIDispatcherTest(unittest.TestCase):
         self.assertEqual(status, "stopped")
         self.assertLess(elapsed, 1.0, f"Worker must unblock under 1s, took {elapsed:.2f}s")
 
-    def test_workflow_ui_updates_use_post_ui_or_snapshot(self):
-        """8. Source code inspection verifies sync/batch/hybrid flows use _post_ui or snapshot."""
+    def test_workflow_ui_updates_do_not_schedule_after_zero(self):
+        """8. Source code inspection verifies flows do not schedule Tk callbacks from workers."""
         methods = [
             ("_run_sync_hybrid", gui.App._run_sync_hybrid),
             ("_write_results", gui.App._write_results),
@@ -214,6 +237,35 @@ class UIDispatcherTest(unittest.TestCase):
             src = inspect.getsource(method)
             self.assertNotIn("self.after(0,", src, f"Direct self.after(0) found in {name}")
 
+    def test_dispatcher_state_is_initialized_before_first_poll(self):
+        src = inspect.getsource(gui.App.__init__)
+        self.assertLess(src.index("self._ui_queue"), src.index("self._drain_ui_queue)"))
+        self.assertIn("self._is_shutting_down", src)
+
+    def test_cancelled_close_keeps_dispatcher_alive(self):
+        queued = queue.Queue()
+        queued.put((lambda: None, (), {}))
+        stub = SimpleNamespace(
+            _is_running=True,
+            _is_shutting_down=False,
+            _ui_queue=queued,
+            _drain_ui_queue_id="tick",
+            after_cancel=mock.Mock(),
+            destroy=mock.Mock(),
+            _stop_elapsed_timer=mock.Mock(),
+            _save_settings=mock.Mock(),
+            _tm=None,
+            _log_file=None,
+        )
+
+        with mock.patch("subtitle_translator_gui.messagebox.askyesno", return_value=False):
+            gui.App._on_close(stub)
+
+        self.assertFalse(stub._is_shutting_down)
+        self.assertEqual(queued.qsize(), 1)
+        stub.after_cancel.assert_not_called()
+        stub.destroy.assert_not_called()
+
     def test_take_run_snapshot_produces_plain_dict(self):
         """9. _take_run_snapshot produces plain Python dict without live Tk variables."""
         stub = SimpleNamespace(
@@ -224,7 +276,7 @@ class UIDispatcherTest(unittest.TestCase):
             profanity_var=SimpleNamespace(get=lambda: False),
             same_folder_var=SimpleNamespace(get=lambda: False),
             mode_var=SimpleNamespace(get=lambda: "sync"),
-            hybrid_mode_var=SimpleNamespace(get=lambda: True),
+            hybrid_var=SimpleNamespace(get=lambda: True),
             auto_glossary_var=SimpleNamespace(get=lambda: False),
             analysis_depth_var=SimpleNamespace(get=lambda: "standard"),
             ext_project_path_var=SimpleNamespace(get=lambda: SimpleNamespace(strip=lambda: "")),
@@ -249,6 +301,19 @@ class UIDispatcherTest(unittest.TestCase):
         self.assertEqual(snap["input_dir"], "D:/in")
         self.assertEqual(snap["src_lang"], "en")
         self.assertTrue(snap["notify_desktop"])
+        self.assertTrue(snap["hybrid_mode"])
+
+    def test_start_and_resume_capture_snapshot_before_worker_launch(self):
+        start_src = inspect.getsource(gui.App._start)
+        resume_src = inspect.getsource(gui.App._resume)
+        self.assertLess(
+            start_src.index("self._active_snapshot = self._take_run_snapshot()"),
+            start_src.index("threading.Thread(target=_guarded_worker"),
+        )
+        self.assertLess(
+            resume_src.index("self._active_snapshot = self._take_run_snapshot()"),
+            resume_src.index("threading.Thread(target=_guarded_resume"),
+        )
 
     def test_no_direct_self_after_zero_calls_remain_in_gui(self):
         """10. Verify zero self.after(0) calls remain in subtitle_translator_gui.py."""

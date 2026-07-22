@@ -4258,34 +4258,15 @@ def _post_ui(self, fn, *args, **kwargs):
     """
     if getattr(self, "_is_shutting_down", False):
         return
+    if threading.current_thread() is threading.main_thread():
+        try:
+            fn(*args, **kwargs)
+        except Exception as e:
+            print(f"[UI Dispatcher Direct Error] {fn}: {e}")
+        return
     ui_q = getattr(self, "_ui_queue", None)
     if ui_q is not None:
-        if threading.current_thread() is threading.main_thread():
-            try:
-                fn(*args, **kwargs)
-            except Exception as e:
-                try:
-                    print(f"[UI Dispatcher Direct Error] {fn}: {e}")
-                except Exception:
-                    pass
-        else:
-            ui_q.put((fn, args, kwargs))
-    else:
-        aft = getattr(self, "after", None)
-        if aft is not None:
-            try:
-                zero_ms = 0
-                aft(zero_ms, lambda: fn(*args, **kwargs))
-            except Exception:
-                try:
-                    fn(*args, **kwargs)
-                except Exception:
-                    pass
-        else:
-            try:
-                fn(*args, **kwargs)
-            except Exception:
-                pass
+        ui_q.put((fn, args, kwargs))
 
 def _count_hata_cps(blocks) -> tuple:
     """(idx, ts, text) bloklarında eksik çeviri ve CPS aşımı sayısını döner."""
@@ -4778,6 +4759,10 @@ class App(ctk.CTk):
         self._start_time         = None
         self._elapsed_tick       = None
         self._is_running         = False
+        self._ui_queue           = queue.Queue()
+        self._is_shutting_down   = False
+        self._active_snapshot    = None
+        self._drain_ui_queue_id  = None
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -4811,7 +4796,7 @@ class App(ctk.CTk):
         self._setup_drag_drop()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         try:
-            self.after(20, self._drain_ui_queue)
+            self._drain_ui_queue_id = self.after(20, self._drain_ui_queue)
         except Exception:
             pass
         # Açılışta yarım kalan batch kontrolü (UI hazır olduktan sonra çalışsın)
@@ -4957,8 +4942,9 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
+        api_key = self.api_key_entry.get().strip()
+
         def _fetch_in_bg():
-            api_key = self.api_key_entry.get().strip()
             fetched = _fetch_batch_statuses(api_key, batch_ids, self._log)
             _post_ui(self, _apply_statuses, fetched)
 
@@ -5058,13 +5044,6 @@ class App(ctk.CTk):
 
     def _on_close(self):
         """Pencere kapatılırken kaynakları temizce kapat."""
-        self._is_shutting_down = True
-        if hasattr(self, "_ui_queue"):
-            while not self._ui_queue.empty():
-                try:
-                    self._ui_queue.get_nowait()
-                except Exception:
-                    break
         running = getattr(self, "_is_running", False)
         if running:
             if not messagebox.askyesno(
@@ -5072,6 +5051,18 @@ class App(ctk.CTk):
                     "Çeviri devam ediyor. Kapatırsanız batch'ler "
                     "OpenAI'de koşmaya devam eder.\n\nKapatmak ister misiniz?"):
                 return
+        self._is_shutting_down = True
+        try:
+            if self._drain_ui_queue_id is not None:
+                self.after_cancel(self._drain_ui_queue_id)
+                self._drain_ui_queue_id = None
+        except Exception:
+            pass
+        while True:
+            try:
+                self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
         self._stop_flag = True
         self._stop_elapsed_timer()
         try:
@@ -6523,7 +6514,7 @@ class App(ctk.CTk):
         while count < max_per_tick:
             try:
                 item = self._ui_queue.get_nowait()
-            except Exception:
+            except queue.Empty:
                 break
             count += 1
             fn, args, kwargs = item
@@ -6563,7 +6554,7 @@ class App(ctk.CTk):
             "profanity": self.profanity_var.get(),
             "same_folder": self.same_folder_var.get(),
             "mode": self.mode_var.get(),
-            "hybrid_mode": self.hybrid_mode_var.get(),
+            "hybrid_mode": self.hybrid_var.get(),
             "auto_glossary": self.auto_glossary_var.get(),
             "analysis_depth": self.analysis_depth_var.get(),
             "ext_project_path": self.ext_project_path_var.get().strip(),
@@ -8684,6 +8675,7 @@ class App(ctk.CTk):
             if self._start_content_type_preflight(key, srt_files):
                 return
         self._content_type_preflight_done = False
+        self._active_snapshot = self._take_run_snapshot()
 
         def _guarded_worker(target, *args):
             try:
@@ -8713,10 +8705,7 @@ class App(ctk.CTk):
             return
         self._save_settings()
         self._stop_flag = False
-        self._ui_queue = queue.Queue()
-        self._is_shutting_down = False
-        self._active_snapshot = None
-        self._drain_ui_queue_id = None
+        self._active_snapshot = self._take_run_snapshot()
         self._pause_btw_files.set()  # resume: start unpaused
         with self._batch_lock:
             self._active_batches.clear()

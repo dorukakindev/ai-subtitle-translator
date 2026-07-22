@@ -1,4 +1,5 @@
 import os
+import queue
 import tempfile
 import threading
 import unittest
@@ -44,6 +45,8 @@ def _queue_app(files, state="waiting"):
         _PHASE_COLORS={},
         stat_files_var=object(),
         logs=[], stats=[],
+        _ui_queue=queue.Queue(),
+        _is_shutting_down=False,
     )
     app._norm_path = lambda path: gui.App._norm_path(app, path)
     app._log = lambda *args: app.logs.append(args)
@@ -75,8 +78,6 @@ class ProductionPathHelperTest(unittest.TestCase):
     def test_worker_claims_row_before_main_thread_callback(self):
         path = r"C:\Subs\EP1.srt"
         app = _queue_app([path])
-        callbacks = []
-        app.after = lambda _delay, callback: callbacks.append(callback)
 
         worker = threading.Thread(
             target=gui.App._update_file_progress,
@@ -86,7 +87,7 @@ class ProductionPathHelperTest(unittest.TestCase):
         worker.join()
 
         self.assertEqual(app._job_rows[path]["state"], "running")
-        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(app._ui_queue.qsize(), 1)
         gui.App._remove_queued_file(app, path)
         self.assertIn(path, app._job_rows)
 

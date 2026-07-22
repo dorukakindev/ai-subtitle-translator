@@ -4,6 +4,7 @@ Directly invokes production App._wait_for_dialog_event with stub objects.
 Does NOT instantiate App() or open actual GUI windows.
 """
 import inspect
+import queue
 import tempfile
 import threading
 import time
@@ -23,6 +24,8 @@ class StopWaitDialogTest(unittest.TestCase):
     def _make_stub(self, stop_flag=False):
         stub = SimpleNamespace(
             _stop_flag=stop_flag,
+            _is_shutting_down=False,
+            _ui_queue=queue.Queue(),
             _active_modal_dlg=None,
             after=lambda ms, fn: self.after_calls.append(fn),
             _dismiss_modal_dialog=lambda *a, **k: None,
@@ -52,35 +55,44 @@ class StopWaitDialogTest(unittest.TestCase):
         """Verify _wait_for_dialog_event returns 'stopped' within ~0.2s when _stop_flag becomes True."""
         stub = self._make_stub(stop_flag=False)
         event = threading.Event()
+        result = {}
 
-        def set_stop():
-            time.sleep(0.1)
-            stub._stop_flag = True
+        def wait_worker():
+            start = time.time()
+            result["status"] = gui.App._wait_for_dialog_event(
+                stub, event, timeout=300.0, poll_interval=0.1)
+            result["elapsed"] = time.time() - start
 
-        t = threading.Thread(target=set_stop)
+        t = threading.Thread(target=wait_worker)
         t.start()
-
-        start = time.time()
-        res = gui.App._wait_for_dialog_event(stub, event, timeout=300.0, poll_interval=0.1)
-        elapsed = time.time() - start
-
+        time.sleep(0.1)
+        stub._stop_flag = True
         t.join()
-        self.assertEqual(res, "stopped")
-        self.assertLess(elapsed, 2.0, f"Expected stop wait under 2s, took {elapsed:.2f}s")
-        self.assertEqual(len(self.after_calls), 1)
+        self.assertEqual(result["status"], "stopped")
+        self.assertLess(result["elapsed"], 2.0)
+        self.assertEqual(stub._ui_queue.qsize(), 1)
+        self.assertEqual(len(self.after_calls), 0)
 
     def test_wait_for_dialog_event_returns_timeout_on_small_timeout(self):
         """Verify _wait_for_dialog_event returns 'timeout' deterministically when timeout expires."""
         stub = self._make_stub()
         event = threading.Event()
+        result = {}
 
-        start = time.time()
-        res = gui.App._wait_for_dialog_event(stub, event, timeout=0.05, poll_interval=0.01)
-        elapsed = time.time() - start
+        def wait_worker():
+            start = time.time()
+            result["status"] = gui.App._wait_for_dialog_event(
+                stub, event, timeout=0.05, poll_interval=0.01)
+            result["elapsed"] = time.time() - start
 
-        self.assertEqual(res, "timeout")
-        self.assertLess(elapsed, 0.5, f"Expected timeout under 0.5s, took {elapsed:.2f}s")
-        self.assertEqual(len(self.after_calls), 1)
+        thread = threading.Thread(target=wait_worker)
+        thread.start()
+        thread.join()
+
+        self.assertEqual(result["status"], "timeout")
+        self.assertLess(result["elapsed"], 0.5)
+        self.assertEqual(stub._ui_queue.qsize(), 1)
+        self.assertEqual(len(self.after_calls), 0)
 
     def test_no_direct_300s_event_wait_remains_in_modal_workflows(self):
         """Verify via source code inspection that no direct .wait(timeout=300) remains in any modal workflow."""
