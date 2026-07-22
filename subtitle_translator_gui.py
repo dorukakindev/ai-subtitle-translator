@@ -23,6 +23,7 @@ import series_memory
 import sdh_cleaner
 from app_state import atomic_write_json, mutate_batch_ids, state_dir, state_path
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
+from folder_picker import pick_multiple_folders
 
 # Tahmini 1M Token fiyatları (Input/Output $)
 ESTIMATED_PRICES = {
@@ -7454,18 +7455,16 @@ class App(ctk.CTk):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken klasör eklenemez.", "warn")
             return
-        paths = []
-        while True:
+        try:
+            paths = pick_multiple_folders(
+                owner_hwnd=self.winfo_id(), title="Altyazı Klasörlerini Seç")
+        except Exception:
+            paths = None
+        if paths is None:
             self.attributes("-topmost", True)
             path = filedialog.askdirectory(parent=self, title="Altyazı Klasörü Ekle")
             self.attributes("-topmost", False)
-            if not path:
-                break
-            paths.append(path)
-            if not messagebox.askyesno(
-                    "Klasör Ekle", "Başka bir klasör daha eklemek ister misiniz?",
-                    parent=self):
-                break
+            paths = [path] if path else []
         if not paths:
             return
 
