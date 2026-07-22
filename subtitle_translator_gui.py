@@ -4626,6 +4626,7 @@ class App(ctk.CTk):
         self._token_lock     = threading.Lock()   # _token_total multi-thread erişimi
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
         self._selected_files = []   # manually picked files; empty = use input folder
+        self._removed_queue_files = set()
         self._content_type_preflight_done = False
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
         self._batch_lock     = threading.Lock()   # _active_batches eşzamanlı erişimi
@@ -6719,6 +6720,7 @@ class App(ctk.CTk):
             for w in self._job_rows_frame.winfo_children():
                 w.destroy()
             self._job_rows.clear()
+            self._removed_queue_files.clear()
 
             for fp in files:
                 fname = Path(fp).name
@@ -6751,8 +6753,16 @@ class App(ctk.CTk):
                 pb.grid(row=0, column=3, padx=(2, 12), pady=9)
                 pb.set(0)
 
+                remove_btn = ctk.CTkButton(
+                    row_fr, text="×", width=26, height=26,
+                    font=ctk.CTkFont("Segoe UI", 15, "bold"),
+                    fg_color="transparent", hover_color=BORDER, text_color=WARN,
+                    command=lambda p=fp: self._remove_queued_file(p))
+                remove_btn.grid(row=0, column=4, padx=(0, 6), pady=4)
+
                 self._job_rows[fp] = {"dot": dot, "phase": phase_lbl,
-                                      "pb": pb, "frame": row_fr}
+                                      "pb": pb, "frame": row_fr,
+                                      "remove": remove_btn, "state": "waiting"}
 
             n = len(files)
             self._jb_title.configure(text=f"DOSYALAR — 0 / {n}")
@@ -6766,6 +6776,31 @@ class App(ctk.CTk):
                 self.after(0, _build)
             except Exception:
                 pass
+
+    def _is_queued_file_removed(self, filepath: str) -> bool:
+        return filepath in self._removed_queue_files
+
+    def _remove_queued_file(self, filepath: str):
+        """Henüz başlamamış dosyayı iş panosundaki kuyruktan çıkar."""
+        row = self._job_rows.get(filepath)
+        if not row or row.get("state") != "waiting":
+            return
+        self._removed_queue_files.add(filepath)
+        if filepath in self._selected_files:
+            self._selected_files.remove(filepath)
+        self._file_schema_vars.pop(filepath, None)
+        try:
+            row["frame"].destroy()
+        except Exception:
+            pass
+        self._job_rows.pop(filepath, None)
+        self._log(f"Kuyruktan çıkarıldı: {Path(filepath).name}", "info")
+        self._refresh_job_board_title()
+
+    def _refresh_job_board_title(self):
+        done_n = sum(1 for r in self._job_rows.values()
+                     if r["dot"].cget("text") in ("✓", "✗", "—"))
+        self._jb_title.configure(text=f"DOSYALAR — {done_n} / {len(self._job_rows)}")
 
     def _update_file_progress(self, filepath: str, phase: str,
                                pct: float, status: str = "running"):
@@ -6792,12 +6827,10 @@ class App(ctk.CTk):
                 row["phase"].configure(text=phase,  text_color=color)
                 row["pb"].configure(progress_color=color)
                 row["pb"].set(max(0.0, min(1.0, pct / 100)))
-                # Başlık sayacını güncelle
-                done_n  = sum(1 for r in self._job_rows.values()
-                              if r["dot"].cget("text") in ("✓", "✗", "—"))
-                total_n = len(self._job_rows)
-                self._jb_title.configure(
-                    text=f"DOSYALAR — {done_n} / {total_n}")
+                if status == "running":
+                    row["state"] = "running"
+                    row["remove"].configure(state="disabled")
+                self._refresh_job_board_title()
             except Exception:
                 pass
 
@@ -9552,6 +9585,8 @@ class App(ctk.CTk):
         for i, fp in enumerate(paths):
             if self._stop_flag:
                 break
+            if self._is_queued_file_removed(fp):
+                continue
             fname = Path(fp).name
             self._log(f"\n── Post-işlem [{i+1}/{n}] {fname} ──", "info")
             self._update_file_progress(fp, "Yükleniyor", 5)
@@ -10890,6 +10925,8 @@ class App(ctk.CTk):
         for fi, filepath in enumerate(srt_files):
             if self._stop_flag:
                 break
+            if self._is_queued_file_removed(filepath):
+                continue
             fname = Path(filepath).name
             self._log(f"\n── [{fi+1}/{n_files}] {fname} ──", "info")
             self._update_file_progress(filepath, "Hazırlanıyor", 2)
