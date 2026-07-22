@@ -4734,6 +4734,7 @@ class App(ctk.CTk):
         self._token_lock     = threading.Lock()   # _token_total multi-thread erişimi
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
         self._selected_files = []   # manually picked files; empty = use input folder
+        self._input_folder_explicitly_selected = False
         self._removed_queue_files = set()
         self._content_type_preflight_done = False
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
@@ -7582,6 +7583,7 @@ class App(ctk.CTk):
         if is_input:
             # Clear any manually selected files when a folder is chosen
             self._selected_files = []
+            self._input_folder_explicitly_selected = True
             self._content_type_preflight_done = False
             self.clear_files_btn.grid_remove()
             self.clear_info_btn.grid_remove()
@@ -7627,6 +7629,7 @@ class App(ctk.CTk):
         if not paths:
             return
         self._content_type_preflight_done = False
+        self._input_folder_explicitly_selected = False
         self._selected_files = self._dedupe_paths(list(paths))
         n = len(self._selected_files)
         self._refresh_selected_files_ui(
@@ -7658,7 +7661,9 @@ class App(ctk.CTk):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken klasör eklenemez.", "warn")
             return 0
-        if not self._selected_files and self.input_var.get():
+        if (not self._selected_files
+                and getattr(self, "_input_folder_explicitly_selected", False)
+                and self.input_var.get()):
             self._selected_files = self._get_srt_files()
         files = []
         empty = []
@@ -7975,6 +7980,7 @@ class App(ctk.CTk):
 
     def _clear_selected_files(self):
         self._selected_files = []
+        self._input_folder_explicitly_selected = True
         self._content_type_preflight_done = False
         self.file_info_var.set("")
         self.clear_files_btn.grid_remove()

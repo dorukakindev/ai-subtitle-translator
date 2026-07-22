@@ -93,9 +93,10 @@ class ProductionPathHelperTest(unittest.TestCase):
 
 
 class ProductionFolderAppendTest(unittest.TestCase):
-    def _app(self, input_dir=""):
+    def _app(self, input_dir="", input_selected=False):
         app = SimpleNamespace(
             _selected_files=[], _content_type_preflight_done=True,
+            _input_folder_explicitly_selected=input_selected,
             _is_running=False, input_var=SimpleNamespace(get=lambda: input_dir),
             logs=[], refreshes=[],
         )
@@ -129,11 +130,27 @@ class ProductionFolderAppendTest(unittest.TestCase):
             extra.mkdir()
             (base / "one.srt").write_text("", encoding="utf-8")
             (extra / "two.ass").write_text("", encoding="utf-8")
-            app = self._app(str(base))
+            app = self._app(str(base), input_selected=True)
 
             gui.App._append_folder_files(app, [str(extra)])
 
             self.assertEqual({Path(p).name for p in app._selected_files}, {"one.srt", "two.ass"})
+
+    def test_saved_input_folder_is_not_implicitly_added_to_explicit_folders(self):
+        with tempfile.TemporaryDirectory() as root:
+            saved = Path(root, "saved-home")
+            chosen = Path(root, "chosen")
+            saved.mkdir()
+            chosen.mkdir()
+            for index in range(20):
+                (saved / f"old-{index}.srt").write_text("", encoding="utf-8")
+            (chosen / "wanted.srt").write_text("", encoding="utf-8")
+            app = self._app(str(saved), input_selected=False)
+
+            added = gui.App._append_folder_files(app, [str(chosen)])
+
+            self.assertEqual(added, 1)
+            self.assertEqual([Path(p).name for p in app._selected_files], ["wanted.srt"])
 
     def test_append_is_blocked_while_running(self):
         app = self._app()
