@@ -61,6 +61,22 @@ class YokCopulaNegationTest(unittest.TestCase):
 
 
 class PolishValidatorEndToEndTest(unittest.TestCase):
+    def test_french_oui_to_hayir_is_rejected(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Evet, Paul, mümkün.",
+            "Hayır, Paul, mümkün.",
+            source_text="Oui, Paul, c'est possible.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_polarity")
+
+    def test_french_oui_to_hayir_is_flagged_for_critic(self):
+        reasons = ht._common_term_mistranslation_reasons(
+            "Oui, Paul, c'est possible.",
+            "Hayır, Paul, mümkün.",
+        )
+        self.assertIn("EXPLICIT_ANSWER_POLARITY_FLIP", reasons)
+
     def test_do_not_look_suggestion_accepted(self):
         # Polish "Ona bak." -> "Ona bakma." önerisini artık source_negation ile
         # reddetmemeli — çıplak emir artık tanınıyor.

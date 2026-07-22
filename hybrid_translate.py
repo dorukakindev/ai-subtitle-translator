@@ -4511,10 +4511,27 @@ def quality_glossary_for_source(text: str) -> dict:
     }
 
 
+_EXPLICIT_SOURCE_YES_RE = re.compile(r"^\s*(?:[-–—]\s*)?(?:yes|oui|ja|sí|sì)\b", re.IGNORECASE)
+_EXPLICIT_SOURCE_NO_RE = re.compile(r"^\s*(?:[-–—]\s*)?(?:no|non|nein)\b", re.IGNORECASE)
+_EXPLICIT_TURKISH_YES_RE = re.compile(r"^\s*(?:[-–—]\s*)?evet\b", re.IGNORECASE)
+_EXPLICIT_TURKISH_NO_RE = re.compile(r"^\s*(?:[-–—]\s*)?hayır\b", re.IGNORECASE)
+
+
+def _has_explicit_answer_polarity_flip(source_text: str, translated_text: str) -> bool:
+    src = str(source_text or "")
+    tr = str(translated_text or "")
+    return bool(
+        (_EXPLICIT_SOURCE_YES_RE.search(src) and _EXPLICIT_TURKISH_NO_RE.search(tr))
+        or (_EXPLICIT_SOURCE_NO_RE.search(src) and _EXPLICIT_TURKISH_YES_RE.search(tr))
+    )
+
+
 def _common_term_mistranslation_reasons(source_text: str, translated_text: str) -> list[str]:
     src = str(source_text or "").lower()
     tr = str(translated_text or "").lower()
     reasons = []
+    if _has_explicit_answer_polarity_flip(source_text, translated_text):
+        reasons.append("EXPLICIT_ANSWER_POLARITY_FLIP")
     if re.search(r"\b(?:holiday|holidays)\b", src) and re.search(r"holidaý|bäýram|oturyly", tr):
         reasons.append("TERM_MISTRANSLATION:holiday")
     if re.search(r"\bcenterpiece\b", src) and re.search(r"ortadagy|bezeg", tr):
@@ -6619,6 +6636,8 @@ def validate_polish_candidate(
         return False, "to_name_reimport"
     if src and _source_negation_requires_turkish_negation(src) and not _has_turkish_negation(new):
         return False, "source_negation"
+    if src and _has_explicit_answer_polarity_flip(src, new):
+        return False, "source_polarity"
     if src and _question_mark_mismatch(src, new):
         return False, "source_question"
     if src and _numeric_token_mismatch(src, new):
