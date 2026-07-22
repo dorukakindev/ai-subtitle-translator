@@ -61,6 +61,29 @@ class RestoreFormatTagsTest(unittest.TestCase):
         self.assertEqual(restore_format_tags("", "Çeviri."), "Çeviri.")
         self.assertEqual(restore_format_tags("<i>Hi.</i>", ""), "")
 
+    def test_vtt_class_voice_lang_tags_restored(self):
+        self.assertEqual(restore_format_tags("<c.yellow>Yellow text</c>", "Sarı metin"),
+                         "<c.yellow>Sarı metin</c>")
+        self.assertEqual(restore_format_tags("<v Roger>Voice text</v>", "Ses metni"),
+                         "<v Roger>Ses metni</v>")
+        self.assertEqual(restore_format_tags("<lang en>English text</lang>", "İngilizce metin"),
+                         "<lang en>İngilizce metin</lang>")
+
+    def test_math_operators_inside_and_outside_tags(self):
+        # Etiket içindeki matematiksel < / > operatörleri
+        self.assertEqual(restore_format_tags("<i>x < 5 and y > 3</i>", "x < 5 ve y > 3"),
+                         "<i>x < 5 ve y > 3</i>")
+        # Düz metindeki matematiksel < / > etiket sayılmamalı
+        self.assertEqual(restore_format_tags("If x < 5 and y > 3", "x < 5 ve y > 3 ise"),
+                         "x < 5 ve y > 3 ise")
+
+    def test_ass_override_tags_restored(self):
+        self.assertEqual(restore_format_tags(r"{\an8}{\c&H00FFFF&}Top text", "Üst metin"),
+                         r"{\an8}{\c&H00FFFF&}Üst metin")
+        self.assertEqual(restore_format_tags(r"{\i1}Italic ASS{\i0}", "İtalik ASS"),
+                         r"{\i1}İtalik ASS")
+
+
 
 class RestoreTagsBlocksTest(unittest.TestCase):
     def test_blocks_helper(self):

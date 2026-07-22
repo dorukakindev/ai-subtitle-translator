@@ -84,17 +84,28 @@ def _ass_ts_to_srt(ts: str) -> str:
 # tam-blok/tam-satır sarmalama (italik iç ses, şarkı sözü) burada geri gelir.
 
 _LEAD_OVERRIDE_RE = re.compile(r'^(?:\{[^}]*\})+')                       # {\an8}{\c&H..}
-_FULL_WRAP_RE     = re.compile(
-    r'^\s*((?:<[a-zA-Z][^>]*>)+)([^<]*?)((?:</[a-zA-Z][^>]*>)+)\s*$', re.DOTALL)
+
+
+def _match_full_wrap(src_body: str):
+    """Metin tam bir açılış/kapanış etiket çiftiyle sarmalanmış mı?
+    İçeride matematiksel '<' veya '>' karakterleri bulunabilir, ancak ek kapanış
+    etiketleri (</...) olmamalıdır."""
+    m = re.match(r'^\s*((?:<[a-zA-Z][^>]*>)+)(.*?)((?:</[a-zA-Z][^>]*>)+)\s*$', src_body, re.DOTALL)
+    if not m:
+        return None
+    open_run, inner, close_run = m.groups()
+    if re.search(r'</[a-zA-Z]', inner):
+        return None
+    return open_run, inner, close_run
 
 
 def restore_format_tags(src_text: str, tr_text: str) -> str:
     """Kaynak satırın biçim etiketlerini çeviriye geri uygular.
 
     Desteklenen durumlar (güvenli olanlar):
-    - Satır başındaki ASS override blokları ({\\an8} gibi konum etiketleri)
+    - Satır başındaki ASS override etiketleri ({\\an8} gibi konum etiketleri)
     - Tam blok sarmalama: <i>...</i>, <b><i>...</i></b>, <font ...>...</font>
-    - Tam satır sarmalama: kaynağın her satırı aynı etiketle sarılıysa
+    - Tam satır sarmalama: kaynağın TÜM dolu satırları aynı etiketle sarılı mı?
       çevirinin her satırı da sarılır
     Kısmi/satır-içi etiketler ('he said <i>no</i>') güvenle geri konamaz — atlanır.
     Çeviri zaten etiket içeriyorsa (idempotenlik) dokunulmaz."""
@@ -109,20 +120,19 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
     lead = m_lead.group(0) if m_lead else ""
     src_body = src[len(lead):].strip() if lead else src
 
-    # 2) Sarmalama — çeviri zaten BAŞTAN etiketliyse dokunma. (Eskiden "metnin herhangi
-    # bir yerinde '<' varsa" diye bakıyordu; çeviride düz '<' geçince italik/bold düşüyordu.)
+    # 2) Sarmalama — çeviri zaten BAŞTAN etiketliyse dokunma.
     if not re.match(r'^\s*<[a-zA-Z]', out):
-        wm = _FULL_WRAP_RE.match(src_body)
+        wm = _match_full_wrap(src_body)
         if wm:
-            open_run, _inner, close_run = wm.groups()
+            open_run, _inner, close_run = wm
             out = f"{open_run}{out}{close_run}"
         else:
             # Tam satır sarmalama: kaynağın TÜM dolu satırları aynı etiketle sarılı mı?
             src_lines = [ln.strip() for ln in src_body.split("\n") if ln.strip()]
             if len(src_lines) > 1:
-                wraps = [_FULL_WRAP_RE.match(ln) for ln in src_lines]
-                if all(wraps) and len({(w.group(1), w.group(3)) for w in wraps}) == 1:
-                    o, c = wraps[0].group(1), wraps[0].group(3)
+                wraps = [_match_full_wrap(ln) for ln in src_lines]
+                if all(wraps) and len({(w[0], w[2]) for w in wraps if w}) == 1:
+                    o, c = wraps[0][0], wraps[0][2]
                     out = "\n".join(f"{o}{ln}{c}" if ln.strip() else ln
                                     for ln in out.split("\n"))
 
@@ -148,6 +158,16 @@ def _clean_ass_text(text: str) -> str:
     text = _ASS_HARDLINE.sub('\n', text)
     text = _ASS_HSPACE.sub(' ', text)
     return text.strip()
+
+
+def _format_ass_text(text: str) -> str:
+    """ASS satır kırma karakterlerini dönüştür ve yorumları kaldır, ancak biçim/konum etiketlerini (\\an8 vb.) koru."""
+    text = _ASS_COMMENT.sub('', text)
+    text = _ASS_SOFTLINE.sub('\n', text)
+    text = _ASS_HARDLINE.sub('\n', text)
+    text = _ASS_HSPACE.sub(' ', text)
+    return text.strip()
+
 
 
 # ── VTT tag temizleme ─────────────────────────────────────────────────────────
@@ -220,12 +240,10 @@ def parse_vtt(filepath: str) -> list:
         end_srt   = _vtt_ts_to_srt(end_raw)
         timestamp  = f'{start_srt} --> {end_srt}'
 
-        # Metin satırları — ÖNCE temizle, SONRA boşları at (yalnızca etiket içeren
-        # satırlar temizlenince boşalır; eskiden hayalet '\n' cue üretiyordu)
+        # Metin satırları — ham etiketleri koru, ancak etiketler söküldüğünde tamamen boşalan hayalet cue'ları atla
         text_lines = lines[ts_idx + 1:]
-        _cleaned = [_clean_vtt_text(l) for l in text_lines]
-        text = '\n'.join(c for c in _cleaned if c.strip())
-        if not text.strip():
+        text = '\n'.join(l.strip() for l in text_lines if l.strip())
+        if not _clean_vtt_text(text).strip():
             continue
 
         blocks.append((cue_id, timestamp, text))
@@ -287,8 +305,8 @@ def parse_ass(filepath: str) -> list:
         start_ts = _ass_ts_to_srt(parts[start_i])
         end_ts   = _ass_ts_to_srt(parts[end_i])
         timestamp = f'{start_ts} --> {end_ts}'
-        text = _clean_ass_text(parts[text_i])
-        if not text:
+        text = _format_ass_text(parts[text_i])
+        if not _clean_ass_text(text).strip():
             continue
 
         blocks.append((str(idx), timestamp, text))

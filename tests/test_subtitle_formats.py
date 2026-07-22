@@ -77,14 +77,15 @@ class ParseVttTest(unittest.TestCase):
         self.assertIn(",", ts)
         os.unlink(path)
 
-    def test_vtt_inline_tags_stripped(self):
+    def test_vtt_inline_tags_preserved_for_restoration(self):
         vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\n<b>Bold</b> text\n\n"
         path = _write_temp(vtt, ".vtt")
-        from subtitle_formats import parse_any
+        from subtitle_formats import parse_any, _clean_vtt_text
         blocks = parse_any(path)
         _, _, text = blocks[0]
-        self.assertNotIn("<b>", text)
+        self.assertIn("<b>", text)
         self.assertIn("Bold", text)
+        self.assertEqual(_clean_vtt_text(text), "Bold text")
         os.unlink(path)
 
     def test_vtt_math_angle_brackets_preserved(self):
@@ -147,17 +148,18 @@ class ParseAssTest(unittest.TestCase):
         self.assertEqual(text, "Long content")
         os.unlink(path)
 
-    def test_ass_override_tags_removed(self):
+    def test_ass_override_tags_preserved_for_restoration(self):
         content = (
             self._HEADER +
             r"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\i1}Italic{\i0}" + "\n"
         )
         path = _write_temp(content, ".ass")
-        from subtitle_formats import parse_any
+        from subtitle_formats import parse_any, _clean_ass_text
         blocks = parse_any(path)
         _, _, text = blocks[0]
-        self.assertNotIn("{", text)
+        self.assertIn("{\\i1}", text)
         self.assertIn("Italic", text)
+        self.assertEqual(_clean_ass_text(text), "Italic")
         os.unlink(path)
 
     def test_ass_single_digit_fraction_and_hard_space(self):
