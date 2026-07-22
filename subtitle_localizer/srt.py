@@ -35,10 +35,9 @@ def parse_srt(text: str) -> list[Cue]:
 
         idx = auto_index
         time_line_pos = 0
-        if lines and re.fullmatch(r"\d+", lines[0].strip()):
-            idx = int(lines[0].strip())
+        if len(lines) >= 2 and _TIME_RE.match(lines[1].strip()):
             time_line_pos = 1
-        if time_line_pos >= len(lines):
+        elif not _TIME_RE.match(lines[0].strip()):
             continue
 
         m = _TIME_RE.match(lines[time_line_pos].strip())
@@ -47,7 +46,7 @@ def parse_srt(text: str) -> list[Cue]:
 
         body = "\n".join(lines[time_line_pos + 1:]).strip()
         cues.append(Cue(idx, m.group("start").replace(".", ","), m.group("end").replace(".", ","), body))
-        auto_index = max(auto_index + 1, idx + 1)
+        auto_index += 1
 
     return cues
 

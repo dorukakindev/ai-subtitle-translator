@@ -1563,7 +1563,7 @@ def parse_srt(filepath):
         if len(lines) < 3:
             continue
         auto_idx += 1
-        blocks.append((lines[0].strip(), lines[1].strip(), "\n".join(lines[2:]).strip()))
+        blocks.append((str(auto_idx), lines[1].strip(), "\n".join(lines[2:]).strip()))
     return blocks
 
 def parse_subtitle(filepath: str) -> list:
