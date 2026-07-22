@@ -6,6 +6,7 @@ import os
 import re
 import time
 import hashlib
+import queue
 import threading
 import traceback
 import unicodedata
@@ -4250,6 +4251,42 @@ def summarize_file_outcomes(
         "title_text": title_text,
     }
 
+# ── UI Dispatcher & Thread Safety Helper ────────────────────────────────────
+def _post_ui(self, fn, *args, **kwargs):
+    """Worker thread'lerden veya ana thread'den UI callback'lerini güvenli şekilde kuyruğa ekler.
+    Worker thread'deyse Tcl/Tk çağrısı YAPMAZ; sadece Python queue.Queue'ya koyar.
+    """
+    if getattr(self, "_is_shutting_down", False):
+        return
+    ui_q = getattr(self, "_ui_queue", None)
+    if ui_q is not None:
+        if threading.current_thread() is threading.main_thread():
+            try:
+                fn(*args, **kwargs)
+            except Exception as e:
+                try:
+                    print(f"[UI Dispatcher Direct Error] {fn}: {e}")
+                except Exception:
+                    pass
+        else:
+            ui_q.put((fn, args, kwargs))
+    else:
+        aft = getattr(self, "after", None)
+        if aft is not None:
+            try:
+                zero_ms = 0
+                aft(zero_ms, lambda: fn(*args, **kwargs))
+            except Exception:
+                try:
+                    fn(*args, **kwargs)
+                except Exception:
+                    pass
+        else:
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                pass
+
 def _count_hata_cps(blocks) -> tuple:
     """(idx, ts, text) bloklarında eksik çeviri ve CPS aşımı sayısını döner."""
     hata = cps_n = 0
@@ -4773,6 +4810,10 @@ class App(ctk.CTk):
                 pass
         self._setup_drag_drop()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        try:
+            self.after(20, self._drain_ui_queue)
+        except Exception:
+            pass
         # Açılışta yarım kalan batch kontrolü (UI hazır olduktan sonra çalışsın)
         self.after(500, self._check_pending_batches)
 
@@ -4919,10 +4960,7 @@ class App(ctk.CTk):
         def _fetch_in_bg():
             api_key = self.api_key_entry.get().strip()
             fetched = _fetch_batch_statuses(api_key, batch_ids, self._log)
-            try:
-                self.after(0, lambda: _apply_statuses(fetched))
-            except Exception:
-                pass
+            _post_ui(self, _apply_statuses, fetched)
 
         threading.Thread(target=_fetch_in_bg, daemon=True).start()
 
@@ -5020,6 +5058,13 @@ class App(ctk.CTk):
 
     def _on_close(self):
         """Pencere kapatılırken kaynakları temizce kapat."""
+        self._is_shutting_down = True
+        if hasattr(self, "_ui_queue"):
+            while not self._ui_queue.empty():
+                try:
+                    self._ui_queue.get_nowait()
+                except Exception:
+                    break
         running = getattr(self, "_is_running", False)
         if running:
             if not messagebox.askyesno(
@@ -6463,6 +6508,80 @@ class App(ctk.CTk):
         name = normalize_schema_name(var.get() if var else self.content_type_var.get())
         return self._schema_by_name(name)
 
+    # ── UI Dispatcher & Thread Safety ─────────────────────────────────────────
+    _post_ui = _post_ui
+
+    def _drain_ui_queue(self):
+        """Ana thread'de çalışır ve UI kuyruğundaki callback'leri FIFO sırasıyla tüketir.
+        Kapanış durumunu kontrol eder, bir turda sınırlı sayıda callback çalıştırır.
+        """
+        if getattr(self, "_is_shutting_down", False):
+            return
+
+        max_per_tick = 50
+        count = 0
+        while count < max_per_tick:
+            try:
+                item = self._ui_queue.get_nowait()
+            except Exception:
+                break
+            count += 1
+            fn, args, kwargs = item
+            try:
+                if not getattr(self, "_is_shutting_down", False):
+                    fn(*args, **kwargs)
+            except Exception as e:
+                try:
+                    print(f"[UI Dispatcher Error] {fn}: {e}")
+                except Exception:
+                    pass
+
+        if not getattr(self, "_is_shutting_down", False):
+            try:
+                self._drain_ui_queue_id = self.after(20, self._drain_ui_queue)
+            except Exception:
+                pass
+
+    def _take_run_snapshot(self) -> dict:
+        """Ana thread'de çalışarak çeviri oturumu için gereken tüm UI ayarlarının
+        saf Python nesnesi olarak kopyasını oluşturur."""
+        srt_files = self._get_srt_files()
+        file_schemas = {}
+        file_glossaries = {}
+        for fp in srt_files:
+            try:
+                file_schemas[fp] = self._get_file_schema(fp)
+                file_glossaries[fp] = self._get_file_glossary(fp)
+            except Exception:
+                pass
+
+        return {
+            "input_dir": self.input_var.get(),
+            "output_dir": self.output_var.get(),
+            "src_lang": self.src_var.get(),
+            "tgt_lang": self.tgt_var.get(),
+            "profanity": self.profanity_var.get(),
+            "same_folder": self.same_folder_var.get(),
+            "mode": self.mode_var.get(),
+            "hybrid_mode": self.hybrid_mode_var.get(),
+            "auto_glossary": self.auto_glossary_var.get(),
+            "analysis_depth": self.analysis_depth_var.get(),
+            "ext_project_path": self.ext_project_path_var.get().strip(),
+            "notify_desktop": self.notify_var.get(),
+            "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
+            "critic": self.critic_var.get(),
+            "polish": self.polish_var.get(),
+            "native": self.native_var.get(),
+            "qc": self.qc_var.get(),
+            "condense": self.condense_var.get(),
+            "review": self.review_pass_var.get(),
+            "twowave": self.twowave_var.get(),
+            "clean_sdh": self.clean_sdh_var.get(),
+            "linebreak": self.linebreak_var.get(),
+            "file_schemas": file_schemas,
+            "file_glossaries": file_glossaries,
+        }
+
     # ── Log yardımcıları ──────────────────────────────────────────────────────
     def _log(self, msg, tag=""):
         import datetime
@@ -6491,13 +6610,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        if threading.current_thread() is threading.main_thread():
-            _write()
-        else:
-            try:
-                self.after(0, _write)
-            except Exception:
-                pass
+        _post_ui(self, _write)
 
     def _log_exc(self, label: str, exc: Exception):
         """Hata mesajını + kısa traceback'i loga yazar."""
@@ -6509,7 +6622,15 @@ class App(ctk.CTk):
 
     def _notify(self, title: str, msg: str):
         """Windows masaüstü bildirimi (ek bağımlılık gerektirmez)."""
-        if not self.notify_var.get():
+        enabled = False
+        if threading.current_thread() is threading.main_thread():
+            try:
+                enabled = bool(self.notify_var.get())
+            except Exception:
+                enabled = False
+        elif hasattr(self, "_active_snapshot") and self._active_snapshot:
+            enabled = bool(self._active_snapshot.get("notify_desktop"))
+        if not enabled:
             return
         try:
             import subprocess
@@ -6558,7 +6679,7 @@ class App(ctk.CTk):
                 client = _OAI(api_key=api_key, base_url=b_url if b_url else None)
                 if not list(parse_subtitle(fp)):
                     try:
-                        self.after(0, lambda: messagebox.showwarning("Test", "Dosyada geçerli SRT bloğu yok."))
+                        _post_ui(self, messagebox.showwarning, "Test", "Dosyada geçerli SRT bloğu yok.")
                     except Exception:
                         pass
                     return
@@ -6608,7 +6729,7 @@ class App(ctk.CTk):
                             results.append((it.get("t", ""), f"[HATA: {e}]"))
 
                 try:
-                    self.after(0, lambda r=results: self._show_test_dialog(r, Path(fp).name))
+                    _post_ui(self, self._show_test_dialog, results, Path(fp).name)
                 except Exception:
                     pass
             except Exception as e:
@@ -6719,13 +6840,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _set_status(self, msg):
         def _upd():
@@ -6733,13 +6848,7 @@ class App(ctk.CTk):
                 self.progress_lbl.configure(text=msg)
             except Exception:
                 pass
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _set_progress(self, pct):
         val = pct / 100
@@ -6748,13 +6857,7 @@ class App(ctk.CTk):
                 self.progress.set(v)
             except Exception:
                 pass
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _set_eta(self, text: str):
         """ETA etiketini thread-safe günceller."""
@@ -6763,13 +6866,7 @@ class App(ctk.CTk):
                 self.eta_lbl.configure(text=t)
             except Exception:
                 pass
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _set_stat(self, var, value):
         """Stat sayacı Tk değişkenini thread-safe ayarlar (worker thread'den de güvenli —
@@ -6779,22 +6876,13 @@ class App(ctk.CTk):
                 var.set(v)
             except Exception:
                 pass
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _set_running(self, running):
         # Worker thread'lerden çağrılabilir; Tk widget .configure()/after_cancel YALNIZCA
         # ana thread'de güvenli (Tcl thread-safe değil). Ana thread'de değilsek marshal et.
         if threading.current_thread() is not threading.main_thread():
-            try:
-                self.after(0, lambda: self._set_running(running))
-            except Exception:
-                pass
+            _post_ui(self, self._set_running, running)
             return
         s = "disabled" if running else "normal"
         self.start_btn.configure(state=s)
@@ -6877,7 +6965,7 @@ class App(ctk.CTk):
                 finally:
                     ready.set()
             try:
-                self.after(0, _build_ready)
+                _post_ui(self, _build_ready)
                 ready.wait(timeout=5)
             except Exception:
                 pass
@@ -6947,13 +7035,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _maybe_condense(self, blocks, mm_k, mm_u, mm_m, tgt, src_map=None):
         """condense_var açıksa CPS sınırını aşan satırları kısaltır. Aksi halde blocks aynen döner."""
@@ -7038,13 +7120,7 @@ class App(ctk.CTk):
                     self.stat_tokens_sub_var.set(f"Token  ~${c:.4f}")
             except Exception:
                 pass
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _update_batch_tokens(self, added: int):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
@@ -7079,13 +7155,7 @@ class App(ctk.CTk):
                 self.stat_tm_var.set(str(hits))
             except Exception:
                 pass
-        if threading.current_thread() is threading.main_thread():
-            _upd()
-        else:
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+        _post_ui(self, _upd)
 
     def _json_repair_pass(self, client, raw_map: dict, requests_list: list):
         """Before full retry, try to repair malformed JSON responses.
@@ -8267,13 +8337,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        if threading.current_thread() is threading.main_thread():
-            update()
-        else:
-            try:
-                self.after(0, update)
-            except Exception:
-                pass
+        _post_ui(self, update)
 
         self._elapsed_tick = self.after(1000, self._update_elapsed_display)
 
@@ -8298,13 +8362,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        if threading.current_thread() is threading.main_thread():
-            update()
-        else:
-            try:
-                self.after(0, update)
-            except Exception:
-                pass
+        _post_ui(self, update)
 
     def _calculate_eta(self, total_processed: int, total_items: int) -> str:
         """Calculate ETA based on current speed."""
@@ -8655,6 +8713,10 @@ class App(ctk.CTk):
             return
         self._save_settings()
         self._stop_flag = False
+        self._ui_queue = queue.Queue()
+        self._is_shutting_down = False
+        self._active_snapshot = None
+        self._drain_ui_queue_id = None
         self._pause_btw_files.set()  # resume: start unpaused
         with self._batch_lock:
             self._active_batches.clear()
@@ -8825,22 +8887,15 @@ class App(ctk.CTk):
 
                 write_srt(out_path, self._maybe_merge_cues(blocks))
                 self._log(f"Kaydedildi: {out_path}  ({len(blocks)} satır, {missing} eksik)", "ok")
-                try:
-                    self.after(0, lambda: messagebox.showinfo(
-                        "Tamamlandı",
-                        f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
-                        f"{missing} satır eksik (orijinalde vardı ama çeviri yok)\n\n"
-                        f"Konum:\n{out_path}"))
-                except Exception:
-                    pass
+                _post_ui(self, messagebox.showinfo, "Tamamlandı",
+                              f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
+                              f"{missing} satır eksik (orijinalde vardı ama çeviri yok)\n\n"
+                              f"Konum:\n{out_path}")
             except Exception as e:
                 self._log(f"Dönüştürme hatası: {e}", "err")
                 # 'e' except bloğu bitince silinir; after() lambda'yı SONRA çalıştırır —
                 # mesajı default argümana bağla, yoksa lambda NameError verir
-                try:
-                    self.after(0, lambda msg=str(e): messagebox.showerror("Hata", msg))
-                except Exception:
-                    pass
+                _post_ui(self, messagebox.showerror, "Hata", str(e))
             finally:
                 self._set_running(False)
                 self._set_status("Hazır.")
@@ -9029,10 +9084,7 @@ class App(ctk.CTk):
                     self._set_stat(self.stat_blocks_var, str(total_blocks))
                 except Exception:
                     pass
-            try:
-                self.after(0, _upd)
-            except Exception:
-                pass
+            _post_ui(self, _upd)
         threading.Thread(target=_work, daemon=True).start()
 
     # ── Bağlam İncelemesi (Batch sonrası ikinci geçiş) ────────────────────────
@@ -9982,8 +10034,7 @@ class App(ctk.CTk):
         self._log(f"QC: {len(review_issues)} sorun insan onayı bekliyor — dialog açılıyor...", "warn")
         qc_event       = threading.Event()
         approved_fixes = []
-        self.after(0, lambda i=review_issues, r=approved_fixes, e=qc_event:
-                   self._show_qc_dialog(i, r, e))
+        _post_ui(self, self._show_qc_dialog, review_issues, approved_fixes, qc_event)
         status = self._wait_for_dialog_event(qc_event, timeout=300)
         if status == "stopped":
             self._write_qc_change_report(fp, applied_records)
@@ -10082,11 +10133,11 @@ class App(ctk.CTk):
         while not event.is_set():
             if getattr(self, "_stop_flag", False):
                 event._dialog_cancelled = True
-                self.after(0, lambda e=event: self._dismiss_modal_dialog(target_event=e))
+                _post_ui(self, self._dismiss_modal_dialog, target_event=event)
                 return "stopped"
             if time.monotonic() - start >= timeout:
                 event._dialog_cancelled = True
-                self.after(0, lambda e=event: self._dismiss_modal_dialog(target_event=e))
+                _post_ui(self, self._dismiss_modal_dialog, target_event=event)
                 return "timeout"
             event.wait(timeout=poll_interval)
         return "completed"
@@ -10222,8 +10273,7 @@ class App(ctk.CTk):
 
         done_event    = threading.Event()
         approved_list = []
-        self.after(0, lambda s=suggestions, r=approved_list, e=done_event:
-                   self._show_glossary_dialog(s, r, e, glossary_path))
+        _post_ui(self, self._show_glossary_dialog, suggestions, approved_list, done_event, glossary_path)
         status = self._wait_for_dialog_event(done_event, timeout=300)
 
         if status == "completed" and approved_list and glossary_path:
@@ -10605,10 +10655,7 @@ class App(ctk.CTk):
                     self._set_status("İçerik türü seçimi bekleniyor.")
                     self._log("İçerik türü ön analizi uygulandı; çeviri başlatılmadı.", "info")
 
-            try:
-                self.after(0, _finish)
-            except Exception:
-                pass
+            _post_ui(self, _finish)
 
         threading.Thread(target=_worker, daemon=True).start()
         return True
@@ -11572,8 +11619,7 @@ class App(ctk.CTk):
                     status = "completed"
                     if review_issues:
                         qc_event      = threading.Event()
-                        self.after(0, lambda i=review_issues, r=approved_fixes, e=qc_event:
-                                   self._show_qc_dialog(i, r, e))
+                        _post_ui(self, self._show_qc_dialog, review_issues, approved_fixes, qc_event)
                         status = self._wait_for_dialog_event(qc_event, timeout=300)
                         if status == "stopped":
                             break
@@ -11678,8 +11724,7 @@ class App(ctk.CTk):
             self._notify(summary["title_text"], f"{summary['summary_text']} → {output_dir}")
             if summary["completed_count"] > 0:
                 try:
-                    self.after(0, lambda s=summary['summary_text'], t=summary['title_text']: messagebox.showinfo(
-                        t, f"{s}!\n\nKonum:\n{output_dir}"))
+                    _post_ui(self, messagebox.showinfo, summary['title_text'], f"{summary['summary_text']}!\n\nKonum:\n{output_dir}")
                 except Exception:
                     pass
         else:
@@ -11844,7 +11889,7 @@ class App(ctk.CTk):
                        f"'↺ Batch'i Devam Ettir' ile tamamlayabilir veya Durdur ile iptal edebilirsiniz.")
                 self._log(msg, "err")
                 try:
-                    self.after(0, lambda m=msg: messagebox.showerror("Batch Upload Hatası", m))
+                    _post_ui(self, messagebox.showerror, "Batch Upload Hatası", msg)
                 except Exception:
                     pass
                 return
@@ -12193,8 +12238,7 @@ class App(ctk.CTk):
                                     status = "completed"
                                     if _review_qc:
                                         _qcev = threading.Event()
-                                        self.after(0, lambda i=_review_qc, r=_appr, e=_qcev:
-                                                   self._show_qc_dialog(i, r, e))
+                                        _post_ui(self, self._show_qc_dialog, _review_qc, _appr, _qcev)
                                         status = self._wait_for_dialog_event(_qcev, timeout=300)
                                         if status == "stopped":
                                             self._set_status("QC: durduruldu")
@@ -12631,7 +12675,7 @@ class App(ctk.CTk):
                     pairs.append((_clean_src(src_t), tr_t))
                 self._show_diff_dialog(pairs, fname, output_dir)
         try:
-            self.after(0, _show_done)
+            _post_ui(self, _show_done)
         except Exception:
             pass
         return True
@@ -13287,8 +13331,7 @@ class App(ctk.CTk):
                                 status = "completed"
                                 if review_issues:
                                     qc_event = threading.Event()
-                                    self.after(0, lambda i=review_issues, r=approved_fixes, e=qc_event:
-                                               self._show_qc_dialog(i, r, e))
+                                    _post_ui(self, self._show_qc_dialog, review_issues, approved_fixes, qc_event)
                                     status = self._wait_for_dialog_event(qc_event, timeout=300)
                                     if status == "stopped":
                                         break
@@ -13404,12 +13447,8 @@ class App(ctk.CTk):
                 self._log("Oturum dosyası temizlendi (tüm dosyalar tamamlandı).", "info")
             self._notify(_outcome["title_text"], f"{_outcome['summary_text']} → {output_dir}")
             if _outcome["completed_count"] > 0:
-                try:
-                    self.after(0, lambda: messagebox.showinfo(
-                        _outcome["title_text"],
-                        f"{_outcome['summary_text']}!\n\nKonum:\n{output_dir}"))
-                except Exception:
-                    pass
+                _post_ui(self, messagebox.showinfo, _outcome["title_text"],
+                              f"{_outcome['summary_text']}!\n\nKonum:\n{output_dir}")
         else:
             self._set_status("Durduruldu.")
             self._log(
