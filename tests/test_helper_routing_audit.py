@@ -29,9 +29,9 @@ class HelperRoutingAuditTests(unittest.TestCase):
         self.assertIn('fix_key = self._helper_api_key("qc")', src,
                       "_maybe_backtranslation_check fix mode must use _helper_api_key('qc')")
 
-    def test_claim2_helper_api_key_does_not_leak_openai_key_to_anthropic(self):
-        """Claim 2 & 11: _helper_api_key must not leak general OpenAI key to Anthropic/Bedrock."""
-        helper_entry = SimpleNamespace(get=lambda: "sk-proj-openai-key")
+    def test_helper_api_key_uses_general_helper_key_for_non_openai_provider(self):
+        """The shared helper key is the documented fallback for every helper provider."""
+        helper_entry = SimpleNamespace(get=lambda: "shared-helper-key")
         api_entry = SimpleNamespace(get=lambda: "sk-proj-main-key")
         
         stub = SimpleNamespace(
@@ -44,10 +44,24 @@ class HelperRoutingAuditTests(unittest.TestCase):
         )
         
         anthropic_key = gui.App._helper_api_key(stub, "critic")
-        self.assertEqual(anthropic_key, "", "Anthropic role must not inherit OpenAI key from helper_key_entry")
+        self.assertEqual(anthropic_key, "shared-helper-key")
 
         openai_key = gui.App._helper_api_key(stub, "analysis")
-        self.assertEqual(openai_key, "sk-proj-openai-key")
+        self.assertEqual(openai_key, "shared-helper-key")
+
+    def test_helper_api_key_does_not_leak_main_openai_key_to_anthropic(self):
+        """Only an OpenAI helper role may fall back to the main OpenAI key."""
+        stub = SimpleNamespace(
+            helper_role_key_vars={},
+            helper_custom_key_vars={},
+            _helper_keys_cache={},
+            helper_key_entry=SimpleNamespace(get=lambda: ""),
+            api_key_entry=SimpleNamespace(get=lambda: "sk-proj-main-key"),
+            _get_current_helper_provider=lambda role: "anthropic" if role == "critic" else "openai",
+        )
+
+        self.assertEqual(gui.App._helper_api_key(stub, "critic"), "")
+        self.assertEqual(gui.App._helper_api_key(stub, "analysis"), "sk-proj-main-key")
 
     def test_claim3_native_reader_call_sites_use_critic_role_consistently(self):
         """Claim 3: All native_reader_pass calls in GUI must use 'critic' role."""
@@ -63,19 +77,25 @@ class HelperRoutingAuditTests(unittest.TestCase):
 
     def test_claim7_8_safe_chat_create_respects_explicit_openai_provider(self):
         """Claim 7 & 8: Reseller OpenAI model with 'claude' name or /messages URL must not be forced to Anthropic."""
-        mock_client = MagicMock()
-        mock_client.base_url = "https://api.shuaiapi.com/v1/messages"
-        mock_client.api_key = "sk-reseller-key"
-        
-        with patch.object(mock_client.chat.completions, "create") as mock_create:
-            mock_create.return_value = SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
-                usage=None
-            )
-            resp = ht._safe_chat_create(mock_client, model="Claude Sonnet 5 (Reseller)", messages=[{"role": "user", "content": "Hi"}])
-            
-            mock_create.assert_called_once()
-            self.assertEqual(resp.choices[0].message.content, "OK")
+        for safe_create in (ht._safe_chat_create, gui._safe_chat_create):
+            with self.subTest(safe_create=safe_create.__module__):
+                mock_client = MagicMock()
+                mock_client.base_url = "https://api.shuaiapi.com/v1/messages"
+                mock_client.api_key = "sk-reseller-key"
+
+                with patch.object(mock_client.chat.completions, "create") as mock_create:
+                    mock_create.return_value = SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
+                        usage=None
+                    )
+                    resp = safe_create(
+                        mock_client,
+                        model="claude-sonnet-5",
+                        messages=[{"role": "user", "content": "Hi"}],
+                    )
+
+                    mock_create.assert_called_once()
+                    self.assertEqual(resp.choices[0].message.content, "OK")
 
     def test_claim9_call_anthropic_messages_strips_chat_completions_suffix(self):
         """Claim 9: base_url ending with /chat/completions must be properly formatted to /messages."""
