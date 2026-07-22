@@ -179,6 +179,22 @@ class SettingsPersistenceTest(unittest.TestCase):
                 self.assertFalse(getattr(app, attr).get(), attr)
             self.assertEqual(app._toggle_hybrid_calls, 1)
 
+    def test_legacy_input_and_output_paths_are_session_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / ".gui_settings.json"
+            settings_path.write_text(json.dumps({
+                "input": r"C:\Users\K",
+                "output": r"C:\old-output",
+            }), encoding="utf-8")
+            app = _SettingsOnlyApp(settings_path)
+
+            with mock.patch.object(gui.credential_store, "migrate_from_settings"), \
+                 mock.patch.object(gui.credential_store, "load_key", return_value=None):
+                gui.App._load_settings(app)
+
+            self.assertEqual(app.input_var.get(), "")
+            self.assertEqual(app.output_var.get(), "")
+
 
 class ContextLinesClampTest(unittest.TestCase):
     def test_context_lines_and_lookahead_clamped_to_at_least_one(self):

@@ -5455,8 +5455,8 @@ class App(ctk.CTk):
         sep()
         section("KLASÖRLER")
         for lbl_txt, attr, default in [
-            ("Giriş klasörü (.srt)", "input_var",  "./subtitles"),
-            ("Çıkış klasörü",        "output_var", "./translated"),
+            ("Giriş klasörü (.srt)", "input_var",  ""),
+            ("Çıkış klasörü",        "output_var", ""),
         ]:
             is_input = "input" in attr
             lbl(lbl_txt)
@@ -7827,8 +7827,7 @@ class App(ctk.CTk):
     def _save_settings(self):
         data = {
             "model": self.model_var.get(), "src_lang": self.src_var.get(),
-            "tgt_lang": self.tgt_var.get(), "input": self.input_var.get(),
-            "output": self.output_var.get(), "mode": self.mode_var.get(),
+            "tgt_lang": self.tgt_var.get(), "mode": self.mode_var.get(),
             "hybrid": self.hybrid_var.get(),
             "style": self.style_var.get(), "glossary": self.glossary_var.get(),
             "analysis_depth": self.analysis_depth_var.get(),
@@ -8126,8 +8125,6 @@ class App(ctk.CTk):
             if "api_url" in d:                     self.api_url_var.set(_normalize_api_base_url(d["api_url"]))
             if d.get("src_lang") in LANGUAGES:     self.src_var.set(d["src_lang"])
             if d.get("tgt_lang") in LANGUAGES:     self.tgt_var.set(d["tgt_lang"])
-            if d.get("input"):                     self.input_var.set(d["input"])
-            if d.get("output"):                    self.output_var.set(d["output"])
             if d.get("mode") in ("batch","sync"):  self.mode_var.set(d["mode"])
             if d.get("hybrid"):
                 self.hybrid_var.set(True)
