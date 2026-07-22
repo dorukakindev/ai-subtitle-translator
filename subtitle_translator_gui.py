@@ -6456,6 +6456,11 @@ class App(ctk.CTk):
         """Dosyanın şemasına göre glossary yolunu döndür.
         Glossary alanı klasör ise: <klasör>/<schema_key>.{json,txt,tsv,csv}
         Glossary alanı dosya ise: doğrudan o dosyayı kullan (tüm şemalar için)."""
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            fg = self._active_snapshot.get("file_glossaries", {}).get(filepath)
+            if fg is not None:
+                return fg
+            return self._active_snapshot.get("global_glossary_path", "")
         glossary_path = self.glossary_var.get().strip()
         if not glossary_path:
             return ""
@@ -6495,6 +6500,11 @@ class App(ctk.CTk):
 
     def _get_file_schema(self, filepath: str) -> dict:
         """Dosyaya özgü şema varsa onu, yoksa global şemayı döndür."""
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            fs = self._active_snapshot.get("file_schemas", {}).get(filepath)
+            if fs:
+                return fs
+            return self._active_snapshot.get("schema") or self._schema_by_name("Otomatik")
         var = self._file_schema_vars.get(filepath)
         name = normalize_schema_name(var.get() if var else self.content_type_var.get())
         return self._schema_by_name(name)
@@ -6533,16 +6543,40 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+    def _snap_get(self, key: str, default=None):
+        """Snapshot'tan ayar değerini güvenli şekilde döndürür."""
+        if hasattr(self, "_active_snapshot") and isinstance(self._active_snapshot, dict) and key in self._active_snapshot:
+            return self._active_snapshot[key]
+        return default
+
     def _take_run_snapshot(self) -> dict:
         """Ana thread'de çalışarak çeviri oturumu için gereken tüm UI ayarlarının
-        saf Python nesnesi olarak kopyasını oluşturur."""
+        saf Python nesnesi olarak kopyasını oluşturur. Worker thread'ler Tk variable .get()
+        veya widget okumaları yapmak yerine bu snapshot'ı kullanır.
+        """
         srt_files = self._get_srt_files()
         file_schemas = {}
         file_glossaries = {}
         for fp in srt_files:
             try:
-                file_schemas[fp] = self._get_file_schema(fp)
+                var_s = getattr(self, "_file_schema_vars", {}).get(fp)
+                name_s = normalize_schema_name(var_s.get() if var_s else self.content_type_var.get())
+                file_schemas[fp] = self._schema_by_name(name_s)
+            except Exception:
+                pass
+            try:
                 file_glossaries[fp] = self._get_file_glossary(fp)
+            except Exception:
+                pass
+
+        helper_keys = {}
+        helper_urls = {}
+        helper_models = {}
+        for role in ["analysis", "critic", "polish", "qc", "native", "condense", "review"]:
+            try:
+                helper_keys[role] = self._helper_api_key(role)
+                helper_urls[role] = self._helper_api_base_url(role)
+                helper_models[role] = self._helper_api_model(role)
             except Exception:
                 pass
 
@@ -6569,6 +6603,19 @@ class App(ctk.CTk):
             "twowave": self.twowave_var.get(),
             "clean_sdh": self.clean_sdh_var.get(),
             "linebreak": self.linebreak_var.get(),
+            "ai_segment": bool(getattr(self, "ai_segment_var", None) and self.ai_segment_var.get()),
+            "merge_cues": bool(getattr(self, "merge_cues_var", None) and self.merge_cues_var.get()),
+            "chain_ctx": bool(getattr(self, "chain_ctx_var", None) and self.chain_ctx_var.get()),
+            "precontext": bool(getattr(self, "precontext_var", None) and self.precontext_var.get()),
+            "series_memory": bool(getattr(self, "series_memory_var", None) and self.series_memory_var.get()),
+            "main_api_key": self._main_api_key(),
+            "main_api_base_url": self._main_api_base_url(),
+            "main_model_name": self._main_model_name(),
+            "schema": self._get_schema(),
+            "global_glossary_path": self.glossary_var.get().strip(),
+            "helper_keys": helper_keys,
+            "helper_urls": helper_urls,
+            "helper_models": helper_models,
             "file_schemas": file_schemas,
             "file_glossaries": file_glossaries,
         }
@@ -7052,8 +7099,12 @@ class App(ctk.CTk):
         """ai_segment_var açıksa AI destekli akıllı segmentasyon, değilse merge_cues_var
         açıksa hızlı parçalı birleştirme uygular. ÇIKTI biçimlendirmesidir — TM/scan
         PRE-merge bloklarla çalıştığı için bu yalnızca write_srt'e giden son adımda uygulanır."""
-        ai_on   = bool(getattr(self, "ai_segment_var", None) and self.ai_segment_var.get())
-        fast_on = bool(getattr(self, "merge_cues_var", None) and self.merge_cues_var.get())
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            ai_on = bool(self._active_snapshot.get("ai_segment"))
+            fast_on = bool(self._active_snapshot.get("merge_cues"))
+        else:
+            ai_on   = bool(getattr(self, "ai_segment_var", None) and self.ai_segment_var.get())
+            fast_on = bool(getattr(self, "merge_cues_var", None) and self.merge_cues_var.get())
         if not (ai_on or fast_on):
             return blocks
         try:
@@ -7650,6 +7701,10 @@ class App(ctk.CTk):
         return resolve_helper_model(lbl)
 
     def _helper_api_base_url(self, role: str):
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            urls = self._active_snapshot.get("helper_urls") or {}
+            if role in urls:
+                return urls[role]
         cfg = self._helper_model_config(role)
         url = cfg.base_url
         if url:
@@ -7657,9 +7712,17 @@ class App(ctk.CTk):
         return url
 
     def _helper_api_model(self, role: str):
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            models = self._active_snapshot.get("helper_models") or {}
+            if role in models:
+                return models[role]
         return self._helper_model_config(role).model
 
     def _helper_api_key(self, role: str):
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            keys = self._active_snapshot.get("helper_keys") or {}
+            if role in keys:
+                return keys[role]
         k = ""
         if role in self.helper_role_key_vars:
             k = self.helper_role_key_vars[role].get().strip()
@@ -7685,6 +7748,8 @@ class App(ctk.CTk):
         return bool(getattr(self, "main_custom_var", None) and self.main_custom_var.get())
 
     def _main_api_key(self) -> str:
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            return self._active_snapshot.get("main_api_key", "")
         if self._main_custom_active():
             k = self.main_custom_key_entry.get().strip()
             if k:
@@ -7692,6 +7757,8 @@ class App(ctk.CTk):
         return self.api_key_entry.get().strip()
 
     def _main_api_base_url(self):
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            return self._active_snapshot.get("main_api_base_url", None)
         if self._main_custom_active():
             u = self.main_custom_url_var.get().strip()
             if u:
@@ -7699,6 +7766,8 @@ class App(ctk.CTk):
         return _normalize_api_base_url(self.api_url_var.get())
 
     def _main_model_name(self) -> str:
+        if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
+            return self._active_snapshot.get("main_model_name", "")
         if self._main_custom_active():
             m = self.main_custom_model_var.get().strip()
             if m:

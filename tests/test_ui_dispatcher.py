@@ -291,7 +291,22 @@ class UIDispatcherTest(unittest.TestCase):
             twowave_var=SimpleNamespace(get=lambda: False),
             clean_sdh_var=SimpleNamespace(get=lambda: True),
             linebreak_var=SimpleNamespace(get=lambda: True),
+            ai_segment_var=SimpleNamespace(get=lambda: False),
+            merge_cues_var=SimpleNamespace(get=lambda: False),
+            chain_ctx_var=SimpleNamespace(get=lambda: True),
+            precontext_var=SimpleNamespace(get=lambda: False),
+            series_memory_var=SimpleNamespace(get=lambda: False),
+            content_type_var=SimpleNamespace(get=lambda: "Otomatik"),
+            glossary_var=SimpleNamespace(get=lambda: SimpleNamespace(strip=lambda: "")),
             _get_srt_files=lambda: [],
+            _main_api_key=lambda: "sk-test",
+            _main_api_base_url=lambda: "https://api.openai.com/v1",
+            _main_model_name=lambda: "gpt-4o",
+            _get_schema=lambda: {"name": "Otomatik"},
+            _helper_api_key=lambda role: "hk-test",
+            _helper_api_base_url=lambda role: "https://api.openai.com/v1",
+            _helper_api_model=lambda role: "gpt-4o-mini",
+            _file_schema_vars={},
         )
 
         stub._take_run_snapshot = gui.App._take_run_snapshot.__get__(stub, gui.App)
@@ -302,6 +317,60 @@ class UIDispatcherTest(unittest.TestCase):
         self.assertEqual(snap["src_lang"], "en")
         self.assertTrue(snap["notify_desktop"])
         self.assertTrue(snap["hybrid_mode"])
+        # New fields
+        self.assertEqual(snap["main_api_key"], "sk-test")
+        self.assertEqual(snap["main_model_name"], "gpt-4o")
+        self.assertIn("helper_keys", snap)
+        self.assertEqual(snap["helper_keys"]["critic"], "hk-test")
+        self.assertFalse(snap["ai_segment"])
+        self.assertTrue(snap["chain_ctx"])
+
+    def test_worker_thread_reads_snapshot_not_tk_vars(self):
+        """Worker-called methods read from snapshot when on background thread."""
+        stub = SimpleNamespace(
+            _active_snapshot={
+                "main_api_key": "snap-key",
+                "main_api_base_url": "https://snap.example.com/v1",
+                "main_model_name": "snap-model",
+                "helper_keys": {"critic": "snap-hk"},
+                "helper_urls": {"critic": "https://snap-helper.example.com/v1"},
+                "helper_models": {"critic": "snap-helper-model"},
+                "file_schemas": {"/test.srt": {"name": "Anime"}},
+                "file_glossaries": {"/test.srt": "/glossary.json"},
+                "global_glossary_path": "/global.json",
+                "schema": {"name": "Otomatik"},
+                "ai_segment": True,
+                "merge_cues": False,
+            },
+            _file_schema_vars={},
+            _main_custom_active=lambda: False,
+            api_key_entry=SimpleNamespace(get=lambda: "SHOULD-NOT-READ"),
+            main_custom_key_entry=SimpleNamespace(get=lambda: "SHOULD-NOT-READ"),
+            api_url_var=SimpleNamespace(get=lambda: "SHOULD-NOT-READ"),
+            model_var=SimpleNamespace(get=lambda: "SHOULD-NOT-READ"),
+            glossary_var=SimpleNamespace(get=lambda: SimpleNamespace(strip=lambda: "SHOULD-NOT-READ")),
+            content_type_var=SimpleNamespace(get=lambda: "SHOULD-NOT-READ"),
+        )
+        results = {}
+
+        def worker():
+            results["api_key"] = gui.App._main_api_key(stub)
+            results["base_url"] = gui.App._main_api_base_url(stub)
+            results["model"] = gui.App._main_model_name(stub)
+            results["helper_key"] = gui.App._helper_api_key(stub, "critic")
+            results["file_schema"] = gui.App._get_file_schema(stub, "/test.srt")
+            results["file_glossary"] = gui.App._get_file_glossary(stub, "/test.srt")
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        self.assertEqual(results["api_key"], "snap-key")
+        self.assertEqual(results["base_url"], "https://snap.example.com/v1")
+        self.assertEqual(results["model"], "snap-model")
+        self.assertEqual(results["helper_key"], "snap-hk")
+        self.assertEqual(results["file_schema"]["name"], "Anime")
+        self.assertEqual(results["file_glossary"], "/glossary.json")
 
     def test_start_and_resume_capture_snapshot_before_worker_launch(self):
         start_src = inspect.getsource(gui.App._start)
