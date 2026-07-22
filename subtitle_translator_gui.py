@@ -9876,8 +9876,8 @@ class App(ctk.CTk):
             blocks = ht.qc_auto_fix(
                 issues=auto_issues,
                 tr_blocks=blocks,
-                openai_api_key=self._main_api_key(),
-                model=self._main_model_name(),
+                helper_api_key=self._helper_api_key("qc"),
+                model=self._helper_api_model("qc"),
                 tgt_lang=tgt,
                 base_url=self._helper_api_base_url("qc"),
                 log_fn=self._log,
@@ -9909,8 +9909,8 @@ class App(ctk.CTk):
             blocks = ht.qc_auto_fix(
                 issues=approved_fixes,
                 tr_blocks=blocks,
-                openai_api_key=self._main_api_key(),
-                model=self._main_model_name(),
+                helper_api_key=self._helper_api_key("qc"),
+                model=self._helper_api_model("qc"),
                 tgt_lang=tgt,
                 base_url=self._helper_api_base_url("qc"),
                 log_fn=self._log,
@@ -11428,8 +11428,8 @@ class App(ctk.CTk):
                         sorted_blocks = ht.qc_auto_fix(
                             issues=auto_issues,
                             tr_blocks=sorted_blocks,
-                            openai_api_key=api_key,
-                            model=model,
+                            helper_api_key=self._helper_api_key("qc"),
+                            model=self._helper_api_model("qc"),
                             tgt_lang=tgt,
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
@@ -11456,8 +11456,8 @@ class App(ctk.CTk):
                         sorted_blocks = ht.qc_auto_fix(
                             issues=approved_fixes,
                             tr_blocks=sorted_blocks,
-                            openai_api_key=api_key,
-                            model=model,
+                            helper_api_key=self._helper_api_key("qc"),
+                            model=self._helper_api_model("qc"),
                             tgt_lang=tgt,
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
@@ -12044,8 +12044,9 @@ class App(ctk.CTk):
                                         _before_pass = list(pp)
                                         self._log(f"QC auto: {len(_auto_qc)} düşük/orta severity düzeltme uygulanıyor", "info")
                                         pp = ht.qc_auto_fix(
-                                            issues=_auto_qc, tr_blocks=pp, openai_api_key=openai_key,
-                                            model="gpt-5.4-mini",
+                                            issues=_auto_qc, tr_blocks=pp,
+                                            helper_api_key=self._helper_api_key("qc"),
+                                            model=self._helper_api_model("qc"),
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"), log_fn=self._log)
                                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_auto
@@ -12060,8 +12061,9 @@ class App(ctk.CTk):
                                     if _appr:
                                         _before_pass = list(pp)
                                         pp = ht.qc_auto_fix(
-                                            issues=_appr, tr_blocks=pp, openai_api_key=openai_key,
-                                            model="gpt-5.4-mini", # Kullanıcı isteği üzerine hep gpt-5.4-mini
+                                            issues=_appr, tr_blocks=pp,
+                                            helper_api_key=self._helper_api_key("qc"),
+                                            model=self._helper_api_model("qc"),
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"), log_fn=self._log)
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
@@ -13114,8 +13116,8 @@ class App(ctk.CTk):
                                     pp_blocks = ht.qc_auto_fix(
                                         issues=auto_issues,
                                         tr_blocks=pp_blocks,
-                                        openai_api_key=openai_key,
-                                        model=model,
+                                        helper_api_key=self._helper_api_key("qc"),
+                                        model=self._helper_api_model("qc"),
                                         tgt_lang=tgt,
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
@@ -13142,8 +13144,8 @@ class App(ctk.CTk):
                                     pp_blocks = ht.qc_auto_fix(
                                         issues=approved_fixes,
                                         tr_blocks=pp_blocks,
-                                        openai_api_key=openai_key,
-                                        model=model,
+                                        helper_api_key=self._helper_api_key("qc"),
+                                        model=self._helper_api_model("qc"),
                                         tgt_lang=tgt,
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,

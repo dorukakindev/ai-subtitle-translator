@@ -6997,14 +6997,15 @@ def final_consistency_sweep(
 def qc_auto_fix(
     issues: list,
     tr_blocks: list,
-    openai_api_key: str,
-    model: str,
+    openai_api_key: str = None,
+    model: str = "",
     tgt_lang: str = "Turkish",
     base_url: str = "",
     helper_url: str = "",
     log_fn=None,
+    helper_api_key: str = None,
 ) -> list:
-    """Re-translate QC-flagged blocks with explicit error feedback via OpenAI.
+    """Re-translate QC-flagged blocks with explicit error feedback via OpenAI / Helper LLM.
 
     Each approved issue is re-sent to the translator with the problem description
     and suggestion as guidance — producing a proper re-translation instead of
@@ -7021,9 +7022,10 @@ def qc_auto_fix(
     if not issues:
         return tr_blocks
 
+    api_key = helper_api_key or openai_api_key
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=openai_api_key, base_url=(helper_url or base_url or None))
+        client = OpenAI(api_key=api_key, base_url=(helper_url or base_url or None))
     except Exception as e:
         if log_fn:
             log_fn(f"QC Auto-Fix bağlantı hatası: {e}", "err")
