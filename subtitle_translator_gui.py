@@ -2,6 +2,7 @@ import json
 import copy
 import difflib
 import math
+import os
 import re
 import time
 import hashlib
@@ -1764,6 +1765,8 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
         <girdi>/ÇIKTI/<göreli-yol>.srt   (göreli substructure korunur, kaynağın yanına yazılmaz)
     Kural 2 — çıktı ayrı bir klasör:
         <çıktı>/<dosya-adı-uzantısız>/<dosya-adı>.srt   (her dosya kendi klasöründe)
+        Girdi kökü dışından eklenen dosyalarda kaynak klasör adı + kararlı kısa
+        yol özeti kullanılır; aynı adlı farklı klasörler birbirine çarpmaz.
 
     Yol her zaman .srt uzantılıdır (çıktı daima SRT)."""
     src = Path(filepath)
@@ -1789,7 +1792,10 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
         except Exception:
             pass
     if src.parent and src.parent.name and not _paths_equal(str(src.parent), out_dir) and not (in_dir and _paths_equal(str(src.parent), in_dir)):
-        return (Path(out_dir) / src.parent.name / src.stem / src.name).with_suffix(".srt")
+        parent_key = os.path.normcase(os.path.abspath(str(src.parent)))
+        digest = hashlib.sha1(parent_key.encode("utf-8", errors="surrogatepass")).hexdigest()[:8]
+        bucket = f"{src.parent.name}-{digest}"
+        return (Path(out_dir) / bucket / src.stem / src.name).with_suffix(".srt")
     return (Path(out_dir) / src.stem / src.name).with_suffix(".srt")
 
 
@@ -6794,8 +6800,15 @@ class App(ctk.CTk):
         if threading.current_thread() is threading.main_thread():
             _build()
         else:
+            ready = threading.Event()
+            def _build_ready():
+                try:
+                    _build()
+                finally:
+                    ready.set()
             try:
-                self.after(0, _build)
+                self.after(0, _build_ready)
+                ready.wait(timeout=5)
             except Exception:
                 pass
 
@@ -6836,6 +6849,9 @@ class App(ctk.CTk):
         row = self._job_rows.get(filepath)
         if not row:
             return
+
+        if status == "running":
+            row["state"] = "running"
 
         if status == "done":
             color, dot_text = GREEN,  "✓"
@@ -7370,13 +7386,13 @@ class App(ctk.CTk):
             self._toggle_hybrid()
 
     def _pick_folder(self, var, is_input):
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken klasör değiştirilemez.", "warn")
+            return
         self.attributes("-topmost", True)
         path = filedialog.askdirectory(parent=self, title="Klasör Seç")
         self.attributes("-topmost", False)
         if not path:
-            return
-        if is_input and getattr(self, "_is_running", False):
-            self._log("Çeviri çalışırken giriş klasörü değiştirilemez.", "warn")
             return
         var.set(path)
         if is_input:
