@@ -25,6 +25,24 @@ from pathlib import Path
 import hybrid_translate as ht
 
 
+class RomanNumeralGlossaryGuardTest(unittest.TestCase):
+    def test_wrong_roman_numeral_conversion_is_corrected(self):
+        logs = []
+        cleaned = ht.sanitize_glossary_for_turkish(
+            {"MCMLXXVII": "1877", "Fritz": "Fritz"},
+            log_fn=lambda msg, level="": logs.append((level, msg)),
+        )
+        self.assertEqual(cleaned["MCMLXXVII"], "1977")
+        self.assertEqual(cleaned["Fritz"], "Fritz")
+        self.assertTrue(any("Roma rakami" in msg for _, msg in logs))
+
+    def test_correct_roman_numeral_conversion_is_kept(self):
+        self.assertEqual(
+            ht.sanitize_glossary_for_turkish({"MCMLXXVII": "1977"}),
+            {"MCMLXXVII": "1977"},
+        )
+
+
 class WqxTargetGuardTest(unittest.TestCase):
     def test_wqx_target_rejected(self):
         cleaned = ht.sanitize_glossary_for_turkish({

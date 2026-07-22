@@ -4379,6 +4379,9 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
 # terim tek-başına düşürülür (politika: bkz. yukarıdaki R_wqx/gloss ayrımı --
 # burası da "sadece bu terim" tarafında, "tüm sözlük" tarafında değil).
 _GLOSSARY_VERBOSE_WORD_THRESHOLD = 10
+_ROMAN_NUMERAL_RE = re.compile(
+    r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+)
 
 
 def _glossary_verbose_meta_commentary_marker(value: str) -> str | None:
@@ -4388,6 +4391,18 @@ def _glossary_verbose_meta_commentary_marker(value: str) -> str | None:
     if len(words) > _GLOSSARY_VERBOSE_WORD_THRESHOLD:
         return "uzun açıklama/not (çeviri değil)"
     return None
+
+
+def _roman_numeral_value(value: str) -> int | None:
+    text = str(value or "").strip().upper()
+    if len(text) < 4 or not _ROMAN_NUMERAL_RE.fullmatch(text):
+        return None
+    values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    total = 0
+    for pos, char in enumerate(text):
+        number = values[char]
+        total += -number if pos + 1 < len(text) and number < values[text[pos + 1]] else number
+    return total
 
 
 def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = "tr",
@@ -4424,6 +4439,15 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if not key or not value:
             continue
         value_s = str(value)
+        roman_value = _roman_numeral_value(str(key))
+        if roman_value is not None and value_s.strip().isdigit() and int(value_s.strip()) != roman_value:
+            if log_fn:
+                log_fn(
+                    f"Sozluk guard: yanlis Roma rakami donusumu duzeltildi: "
+                    f"{key}->{value_s} yerine {roman_value}",
+                    "warn",
+                )
+            value_s = str(roman_value)
         # Uzun meta-yorum kontrolü EN ÖNCE çalışır ve tetiklenirse `continue` eder --
         # böylece notun içindeki kazara yabancı harf wqx_hits'e hiç ulaşmaz ve
         # whole-glossary-drop'u tetikleyemez (bkz. yukarıdaki blok yorumu).
