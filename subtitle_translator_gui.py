@@ -4190,6 +4190,57 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     return warnings
 
 
+def summarize_file_outcomes(
+    completed_files: list,
+    failed_files: list = None,
+    skipped_files: list = None,
+    total_files: int = 0,
+    stop_flag: bool = False
+) -> dict:
+    """Accurately calculates file completion status, failure counts, skipped counts,
+    and determines whether full success or partial completion occurred."""
+    nc = len(completed_files)
+    nf = len(failed_files or [])
+    nk = len(skipped_files or [])
+    total = max(total_files, nc + nf + nk)
+
+    is_full_success = (nc == total) and (nf == 0) and (nk == 0) and (nc > 0) and not stop_flag
+    is_partial_success = (nc > 0) and not is_full_success and not stop_flag
+    is_failure = (nc == 0) and not stop_flag
+
+    details = []
+    if nf > 0:
+        details.append(f"{nf} hata")
+    if nk > 0:
+        details.append(f"{nk} atlandı/silindi")
+
+    det_str = f" ({', '.join(details)})" if details else ""
+
+    if is_full_success:
+        summary_text = f"{nc} dosya çevrildi"
+        title_text = "Çeviri Tamamlandı ✓"
+    elif is_partial_success:
+        summary_text = f"{nc}/{total} dosya çevrildi{det_str}"
+        title_text = "Çeviri Kısmen Tamamlandı ⚠️"
+    elif stop_flag:
+        summary_text = f"Durduruldu — {nc}/{total} dosya yazıldı{det_str}"
+        title_text = "İşlem Durduruldu"
+    else:
+        summary_text = f"Çeviri başarısız ({total} dosya işlenemedi){det_str}"
+        title_text = "Çeviri Başarısız ❌"
+
+    return {
+        "completed_count": nc,
+        "failed_count": nf,
+        "skipped_count": nk,
+        "total_count": total,
+        "is_full_success": is_full_success,
+        "is_partial_success": is_partial_success,
+        "is_failure": is_failure,
+        "summary_text": summary_text,
+        "title_text": title_text,
+    }
+
 def _count_hata_cps(blocks) -> tuple:
     """(idx, ts, text) bloklarında eksik çeviri ve CPS aşımı sayısını döner."""
     hata = cps_n = 0
@@ -11091,6 +11142,9 @@ class App(ctk.CTk):
         self._set_stat(self.stat_files_var, str(len(srt_files)))
         n_files = len(srt_files)
         report_rows = []   # kalite raporu satırları (dosya başına)
+        completed_files = []
+        failed_files = []
+        skipped_files = []
 
         def send_one(req):
             body = req["body"]
@@ -11110,6 +11164,7 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             if self._is_queued_file_removed(filepath):
+                skipped_files.append(filepath)
                 continue
             fname = Path(filepath).name
             self._log(f"\n── [{fi+1}/{n_files}] {fname} ──", "info")
@@ -11556,6 +11611,7 @@ class App(ctk.CTk):
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                              same_folder=self.same_folder_var.get())
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
+            completed_files.append(filepath)
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
@@ -11595,20 +11651,25 @@ class App(ctk.CTk):
             if self._wait_between_files(fi, n_files, fname) == "stopped":
                 break
 
-        if not self._stop_flag:
-            self._clear_sync_ckpt()   # tüm dosyalar tamamlandı — kurtarma kaydı silinir
+        summary = summarize_file_outcomes(
+            completed_files, failed_files, skipped_files, total_files=n_files, stop_flag=self._stop_flag
+        )
+        if summary["is_full_success"]:
+            self._clear_sync_ckpt()   # tüm dosyalar eksiksiz tamamlandı — kurtarma kaydı silinir
         self._save_quality_report(report_rows, output_dir)
         self._set_running(False)
         self._set_eta("")
         if not self._stop_flag:
             self._set_progress(100)
-            self._set_phase("Tamamlandı", f"{n_files} dosya çevrildi → {output_dir}")
-            self._notify("Çeviri Tamamlandı ✓", f"{n_files} dosya çevrildi → {output_dir}")
-            try:
-                self.after(0, lambda: messagebox.showinfo(
-                    "Tamamlandı", f"{n_files} dosya çevrildi!\n\nKonum:\n{output_dir}"))
-            except Exception:
-                pass
+            self._set_phase("Tamamlandı" if summary["is_full_success"] else "Kısmen Tamamlandı",
+                            f"{summary['summary_text']} → {output_dir}")
+            self._notify(summary["title_text"], f"{summary['summary_text']} → {output_dir}")
+            if summary["completed_count"] > 0:
+                try:
+                    self.after(0, lambda s=summary['summary_text'], t=summary['title_text']: messagebox.showinfo(
+                        t, f"{s}!\n\nKonum:\n{output_dir}"))
+                except Exception:
+                    pass
         else:
             self._set_phase("Hazır", "Durduruldu.")
 
@@ -12335,8 +12396,11 @@ class App(ctk.CTk):
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
         _written_files = []
+        _skipped_files = []
+        _failed_files = []
         for fi, (fp, blocks_dict) in enumerate(file_blocks.items()):
             if self._is_queued_file_removed(fp):
+                _skipped_files.append(fp)
                 continue
             saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
             out_path = (Path(saved_out) if saved_out else
@@ -12520,15 +12584,16 @@ class App(ctk.CTk):
                 break
         # ── Kalite Raporu (ceviri_raporu.txt) ────────────────────────────────
         _report_path = self._save_quality_report(report_rows, output_dir)
-        n = len(_written_files)
-        expected = sum(1 for fp in file_blocks if not self._is_queued_file_removed(fp))
-        all_written = not self._stop_flag and n >= expected
+        total_candidate = len(file_blocks)
+        summary = summarize_file_outcomes(
+            _written_files, _failed_files, _skipped_files, total_files=total_candidate, stop_flag=self._stop_flag
+        )
         warn_txt = f"  ({total_warnings} kalite uyarısı)" if total_warnings else ""
-        if not all_written:
-            self._log(f"\nDurduruldu: {n}/{expected} dosya yazıldı → {output_dir}{warn_txt}", "warn")
+        if not summary["is_full_success"]:
+            self._log(f"\n{summary['summary_text']} → {output_dir}{warn_txt}", "warn")
             return False
-        self._log(f"\n{n} dosya çevrildi → {output_dir}{warn_txt}", "ok")
-        self._notify("Çeviri Tamamlandı ✓", f"{n} dosya çevrildi → {output_dir}")
+        self._log(f"\n{summary['summary_text']} → {output_dir}{warn_txt}", "ok")
+        self._notify(summary["title_text"], f"{summary['summary_text']} → {output_dir}")
         # Diff penceresi için son dosyanın sonuçlarını hazırla (döngüde parse edilen
         # kaynağı yeniden kullan — tekrar disk okuması yok)
         _last_fp    = _written_files[-1] if _written_files else None
@@ -12540,8 +12605,8 @@ class App(ctk.CTk):
         def _show_done():
             _rapor_line = "\nRapor: ceviri_raporu.txt\n" if _report_path else "\n"
             ans = messagebox.askyesno(
-                "Tamamlandı",
-                f"{n} dosya çevrildi!\n\nKonum: {output_dir}{_rapor_line}\n"
+                summary["title_text"],
+                f"{summary['summary_text']}!\n\nKonum: {output_dir}{_rapor_line}\n"
                 f"Çeviriyi incelemek ister misiniz?")
             if ans and _last_orig and _last_trans:
                 fname = Path(_last_fp).name if _last_fp else ""
