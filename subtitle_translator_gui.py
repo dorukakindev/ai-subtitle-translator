@@ -2639,6 +2639,12 @@ _MUSIC_ONLY_RE = re.compile(
 
 _SDH_ONLY_SRC_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
 _PARTIAL_ENGLISH_LEAK_RE = re.compile(r'\b(?:Egyptian|creation|mythology)\b', re.I)
+_PARTIAL_ENGLISH_LEAK_PHRASE_RE = re.compile(
+    r"\bIn\s+(?:18|19|20)\d{2}\b"
+    r"|\bInstitute\s+for\s+Learning\s+and\s+Brain(?:\s+Sciences)?\b"
+    r"|\bmedical\s+student(?:['’]s)?\s+disease\b",
+    re.I,
+)
 
 
 def _src_is_sdh_only(src_text: str) -> bool:
@@ -2676,6 +2682,9 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         return False
     leaked = {word.lower() for word in _PARTIAL_ENGLISH_LEAK_RE.findall(src_text)}
     if any(re.search(rf'\b{re.escape(word)}\b', tr_text, re.I) for word in leaked):
+        return True
+    if any(match.group(0).lower() in tr_text.lower()
+           for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text)):
         return True
     _src_all_caps = _src_text_is_all_caps(src_text)
     # Gerçek olay (Louis Theroux Behind Bars, 2026-07-20): kaynak parantezsiz

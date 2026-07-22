@@ -81,6 +81,30 @@ class IsUntranslatedEmptyTest(unittest.TestCase):
             "Egyptian mythology.", "Mısır mitolojisi.",
         ))
 
+    def test_partial_english_phrase_leaks_are_flagged(self):
+        self.assertTrue(gui._is_untranslated(
+            "In 1848, a young railroad foreman named Phineas Gage",
+            "In 1848, Phineas Gage adli genc bir demiryolu ustabasi",
+        ))
+        self.assertTrue(gui._is_untranslated(
+            "researchers at the Institute for Learning and Brain Sciences",
+            "Institute for Learning and Brain Sciences arastirmacilari",
+        ))
+        self.assertTrue(gui._is_untranslated(
+            "This is sometimes called medical student's disease.",
+            "Buna bazen medical student's disease denir.",
+        ))
+
+    def test_intentional_english_names_and_acronyms_are_not_flagged(self):
+        self.assertFalse(gui._is_untranslated(
+            "According to The Princeton Review,",
+            "The Princeton Review'a gore,",
+        ))
+        self.assertFalse(gui._is_untranslated(
+            "ENduring Happiness ANd Continued self-Enhancement, or ENHANCE.",
+            "ENduring Happiness ANd Continued self-Enhancement, yani ENHANCE.",
+        ))
+
 
 class CleanSdhPreservesRealDialogueGapsTest(unittest.TestCase):
     # NOT: clean_sdh_blocks KAYNAK-FARKINDA. src_map verilirse boş çeviri yalnızca
