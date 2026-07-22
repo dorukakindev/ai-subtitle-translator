@@ -2632,6 +2632,7 @@ _MUSIC_ONLY_RE = re.compile(
 
 
 _SDH_ONLY_SRC_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
+_PARTIAL_ENGLISH_LEAK_RE = re.compile(r'\b(?:Egyptian|creation|mythology)\b', re.I)
 
 
 def _src_is_sdh_only(src_text: str) -> bool:
@@ -2667,6 +2668,9 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         return False
     if _src_is_numeric_only(src_text):
         return False
+    leaked = {word.lower() for word in _PARTIAL_ENGLISH_LEAK_RE.findall(src_text)}
+    if any(re.search(rf'\b{re.escape(word)}\b', tr_text, re.I) for word in leaked):
+        return True
     _src_all_caps = _src_text_is_all_caps(src_text)
     # Gerçek olay (Louis Theroux Behind Bars, 2026-07-20): kaynak parantezsiz
     # BÜYÜK HARF bir SDH açıklaması ("BANGING AND LAUGHTER"), çeviri bunu doğru

@@ -58,6 +58,13 @@ class WqxTargetGuardTest(unittest.TestCase):
         cleaned = ht.sanitize_glossary_for_turkish({"Washington": "Washington"})
         self.assertEqual(cleaned, {"Washington": "Washington"})
 
+    def test_title_case_show_name_does_not_drop_glossary(self):
+        glossary = {
+            "the Cosby's": "The Cosby Show",
+            "Greek mythology": "Yunan mitolojisi",
+        }
+        self.assertEqual(ht.sanitize_glossary_for_turkish(glossary), glossary)
+
     def test_whole_glossary_dropped_on_one_leak(self):
         # Gerçek olay: The Blood of Hussain analiz sözlüğü (bkz. brief).
         dirty = {

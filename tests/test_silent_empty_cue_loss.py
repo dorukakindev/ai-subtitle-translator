@@ -71,6 +71,16 @@ class IsUntranslatedEmptyTest(unittest.TestCase):
         # ALL CAPS başlık/tabela metni hâlâ muaf.
         self.assertFalse(gui._is_untranslated("ODDITIES SEASON FOUR", "ODDITIES SEASON FOUR"))
 
+    def test_partial_english_mythology_leak_is_flagged(self):
+        self.assertTrue(gui._is_untranslated(
+            "In the last lecture we talked about Egyptian creation",
+            "Geçen derste Egyptian creation",
+        ))
+        self.assertTrue(gui._is_untranslated("mythology.", "mythology konuşmuştuk."))
+        self.assertFalse(gui._is_untranslated(
+            "Egyptian mythology.", "Mısır mitolojisi.",
+        ))
+
 
 class CleanSdhPreservesRealDialogueGapsTest(unittest.TestCase):
     # NOT: clean_sdh_blocks KAYNAK-FARKINDA. src_map verilirse boş çeviri yalnızca
