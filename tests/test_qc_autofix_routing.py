@@ -99,14 +99,15 @@ class QCAutoFixRoutingTest(unittest.TestCase):
             self.assertNotEqual(rec.get("helper_api_key"), "sk-MAIN-MODEL-KEY-MUST-NOT-LEAK")
             self.assertNotEqual(rec.get("model"), "main-model-must-not-leak")
 
-    def test_main_key_never_leaks_in_batch_or_sync_hybrid_flows(self):
-        """Verify in source code that main model key/model are not passed to ht.qc_auto_fix across any flow."""
+    def test_main_key_never_leaks_in_any_qc_autofix_flow(self):
+        """Verify main model credentials are absent from every QC auto-fix call site."""
         import inspect
 
         methods_to_check = [
             ("_run_quality_check_inline", gui.App._run_quality_check_inline),
             ("_wait_batch_hybrid", gui.App._wait_batch_hybrid),
             ("_run_sync_hybrid", gui.App._run_sync_hybrid),
+            ("_run_hybrid", gui.App._run_hybrid),
         ]
 
         total_qc_calls_checked = 0
@@ -132,7 +133,7 @@ class QCAutoFixRoutingTest(unittest.TestCase):
                     self.assertIn("model=self._helper_api_model(\"qc\")", block,
                                   f"QC helper model missing in {name}")
 
-        self.assertEqual(total_qc_calls_checked, 6, "Expected exactly 6 ht.qc_auto_fix calls across execution flows")
+        self.assertEqual(total_qc_calls_checked, 8, "Expected exactly 8 ht.qc_auto_fix calls across execution flows")
 
 
 if __name__ == "__main__":
