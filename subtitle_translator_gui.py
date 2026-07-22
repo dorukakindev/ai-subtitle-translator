@@ -11069,9 +11069,10 @@ class App(ctk.CTk):
 
         if not self._stop_flag:
             self._retry_hata(client, raw_map, requests, max_rounds=self._max_retry)
-            self._write_results(raw_map, file_map, output_dir,
-                                openai_key=api_key, src=src)
-            self._clear_sync_ckpt()   # başarılı tam koşu — kurtarma kaydı silinir
+            _all_written = self._write_results(raw_map, file_map, output_dir,
+                                               openai_key=api_key, src=src)
+            if _all_written:
+                self._clear_sync_ckpt()   # başarılı tam koşu — kurtarma kaydı silinir
 
         self._set_running(False)
         self._set_status("Tamamlandı." if not self._stop_flag else "Durduruldu.")
@@ -11589,10 +11590,10 @@ class App(ctk.CTk):
             if self.auto_glossary_var.get():
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
             ht.clear_context_cache(filepath)
-            if self._wait_between_files(fi, n_files, fname) == "stopped":
-                break
             self._update_file_progress(filepath,
                 f"Tamamlandı  {len(sorted_blocks)} satır", 100, "done")
+            if self._wait_between_files(fi, n_files, fname) == "stopped":
+                break
 
         if not self._stop_flag:
             self._clear_sync_ckpt()   # tüm dosyalar tamamlandı — kurtarma kaydı silinir
@@ -11800,9 +11801,9 @@ class App(ctk.CTk):
             if missing_ids:
                 self._log(f"{len(missing_ids)} batch sonucu eksik; final dosya yazılmadı.", "warn")
             else:
-                self._write_results(accumulated_raw_map, file_map, output_dir,
-                                    openai_key=api_key, src=src, output_paths=output_paths)
-                final_written = True
+                final_written = self._write_results(
+                    accumulated_raw_map, file_map, output_dir,
+                    openai_key=api_key, src=src, output_paths=output_paths)
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -11914,10 +11915,10 @@ class App(ctk.CTk):
             if missing_ids:
                 self._log(f"{len(missing_ids)} kurtarılmış batch sonucu eksik; final yazılmadı.", "warn")
             else:
-                self._write_results(accumulated_raw_map, accumulated_file_map, last_output_dir,
-                                    openai_key=api_key, src=src,
-                                    output_paths=accumulated_output_paths)
-                regular_written = True
+                regular_written = self._write_results(
+                    accumulated_raw_map, accumulated_file_map, last_output_dir,
+                    openai_key=api_key, src=src,
+                    output_paths=accumulated_output_paths)
         elif not self._stop_flag and (accumulated_raw_map or regular_groups):
             self._log("Regular batch parçalarının tümü hazır değil; eksik final yazılmadı.", "warn")
         # Hybrid resume yolunda işlenen dosyalar için kalite raporu yaz
@@ -12333,6 +12334,7 @@ class App(ctk.CTk):
         _tgt_lang  = self.tgt_var.get()
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
+        _written_files = []
         for fi, (fp, blocks_dict) in enumerate(file_blocks.items()):
             if self._is_queued_file_removed(fp):
                 continue
@@ -12513,17 +12515,23 @@ class App(ctk.CTk):
                     self._run_auto_glossary(ht.load_subtitle(fp), sorted_blocks, fp)
                 except Exception as _ag_e:
                     self._log(f"Auto-Glossary atlandı: {_ag_e}", "warn")
+            _written_files.append(fp)
             if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
                 break
         # ── Kalite Raporu (ceviri_raporu.txt) ────────────────────────────────
         _report_path = self._save_quality_report(report_rows, output_dir)
-        n = len(file_blocks)
+        n = len(_written_files)
+        expected = sum(1 for fp in file_blocks if not self._is_queued_file_removed(fp))
+        all_written = not self._stop_flag and n >= expected
         warn_txt = f"  ({total_warnings} kalite uyarısı)" if total_warnings else ""
+        if not all_written:
+            self._log(f"\nDurduruldu: {n}/{expected} dosya yazıldı → {output_dir}{warn_txt}", "warn")
+            return False
         self._log(f"\n{n} dosya çevrildi → {output_dir}{warn_txt}", "ok")
         self._notify("Çeviri Tamamlandı ✓", f"{n} dosya çevrildi → {output_dir}")
         # Diff penceresi için son dosyanın sonuçlarını hazırla (döngüde parse edilen
         # kaynağı yeniden kullan — tekrar disk okuması yok)
-        _last_fp    = list(file_blocks.keys())[-1] if file_blocks else None
+        _last_fp    = _written_files[-1] if _written_files else None
         _last_orig  = _last_src_cues if _last_fp else []
         _last_trans = [file_blocks[_last_fp][k] for k in sorted(
             file_blocks[_last_fp],
@@ -12547,6 +12555,7 @@ class App(ctk.CTk):
             self.after(0, _show_done)
         except Exception:
             pass
+        return True
 
     # ── Post-translation Diff Dialog ──────────────────────────────────────────
     def _show_diff_dialog(self, pairs: list, fname: str, output_dir: str):

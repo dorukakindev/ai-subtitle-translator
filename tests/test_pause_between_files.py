@@ -172,6 +172,26 @@ class PauseBetweenFilesTest(unittest.TestCase):
             src = inspect.getsource(method)
             self.assertIn("_wait_between_files", src, f"Missing _wait_between_files checkpoint in {name}")
 
+    def test_partial_write_does_not_clear_recovery_or_report_success(self):
+        """A stop at the pause boundary must remain recoverable and suppress completion UI."""
+        run_sync = inspect.getsource(gui.App._run_sync)
+        run_batch = inspect.getsource(gui.App._run_batch)
+        resume = inspect.getsource(gui.App._resume_batches)
+        write_results = inspect.getsource(gui.App._write_results)
+
+        self.assertIn("if _all_written:", run_sync)
+        self.assertIn("final_written = self._write_results(", run_batch)
+        self.assertIn("regular_written = self._write_results(", resume)
+        self.assertIn("if not all_written:", write_results)
+        self.assertIn("return False", write_results)
+
+    def test_sync_hybrid_marks_file_done_before_pause_checkpoint(self):
+        """A fully written file stays visibly complete if Stop is pressed while paused."""
+        src = inspect.getsource(gui.App._run_sync_hybrid)
+        done_at = src.index('f"Tamamlandı  {len(sorted_blocks)} satır"')
+        pause_at = src.index("self._wait_between_files(fi, n_files, fname)")
+        self.assertLess(done_at, pause_at)
+
 
 if __name__ == "__main__":
     unittest.main()
