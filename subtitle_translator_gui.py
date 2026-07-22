@@ -9649,83 +9649,113 @@ class App(ctk.CTk):
 
                 # Critic Pass
                 if do_critic:
-                    self._update_file_progress(fp, "Critic Pass", 20)
-                    self._set_phase("Critic Pass", f"{fname}  ({i+1}/{n})")
-                    self._log(f"Critic Pass — {len(blocks)} satır...", "info")
-                    _critic_change_log = []
-                    blocks = ht.critic_pass_with_helper(
-                        cues=orig_cues, tr_blocks=blocks,
-                        helper_api_key=self._helper_api_key("critic"),
-                        helper_url=self._helper_api_base_url("critic"),
-                        helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
-                        log_fn=self._log,
-                        glossary=ht.load_glossary(self._get_file_glossary(fp)),
-                        analysis_result=analysis_result,
-                        change_log=_critic_change_log)
-                    self._write_critic_change_report(fp, _critic_change_log)
+                    try:
+                        self._update_file_progress(fp, "Critic Pass", 20)
+                        self._set_phase("Critic Pass", f"{fname}  ({i+1}/{n})")
+                        self._log(f"Critic Pass — {len(blocks)} satır...", "info")
+                        _critic_change_log = []
+                        blocks = ht.critic_pass_with_helper(
+                            cues=orig_cues, tr_blocks=blocks,
+                            helper_api_key=self._helper_api_key("critic"),
+                            helper_url=self._helper_api_base_url("critic"),
+                            helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
+                            log_fn=self._log,
+                            glossary=ht.load_glossary(self._get_file_glossary(fp)),
+                            analysis_result=analysis_result,
+                            change_log=_critic_change_log)
+                        self._write_critic_change_report(fp, _critic_change_log)
+                    except Exception as e:
+                        self._log(f"Critic Pass hatası: {e}", "warn")
 
                 # Polish Pass
                 if do_polish:
-                    self._update_file_progress(fp, "Polish Pass", 55)
-                    self._set_phase("Polish Pass", f"{fname}  ({i+1}/{n})")
-                    self._log(f"Polish Pass — {len(blocks)} satır...", "info")
-                    blocks = self._polish_pass(
-                        blocks, tgt,
-                        self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
-                        src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
-                        analysis_result=analysis_result)
+                    try:
+                        self._update_file_progress(fp, "Polish Pass", 55)
+                        self._set_phase("Polish Pass", f"{fname}  ({i+1}/{n})")
+                        self._log(f"Polish Pass — {len(blocks)} satır...", "info")
+                        blocks = self._polish_pass(
+                            blocks, tgt,
+                            self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
+                            src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
+                            analysis_result=analysis_result)
+                    except Exception as e:
+                        self._log(f"Polish Pass hatası: {e}", "warn")
 
                 # Native Okuyucu Pass
                 if do_native:
-                    self._update_file_progress(fp, "Native Okuyucu", 65)
-                    self._set_phase("Native Okuyucu", f"{fname}  ({i+1}/{n})")
-                    self._log(f"Native Okuyucu Pass — {len(blocks)} satır...", "info")
-                    blocks = ht.native_reader_pass(
-                        tr_blocks=blocks,
-                        helper_api_key=self._helper_api_key("qc"), 
-                        helper_url=self._helper_api_base_url("qc"),
-                        helper_model=self._helper_api_model("qc"), tgt_lang=tgt,
-                        log_fn=self._log, analysis_result=analysis_result,
-                        token_callback=self._update_tokens,
-                        src_map=_src_map_from_cues(orig_cues) if orig_cues else None)
-
-                # QC Kontrolü
-                if do_qc:
-                    self._update_file_progress(fp, "QC Kontrolü", 72)
-                    self._set_phase("QC Kontrolü", f"{fname}  ({i+1}/{n})")
-                    self._log(f"QC Kontrolü — {len(blocks)} satır...", "info")
-                    blocks = self._run_quality_check_inline(
-                        fp, orig_cues, blocks, 
-                        self._helper_api_key("qc"), self._helper_api_base_url("qc"), self._helper_api_model("qc"), tgt, analysis_result=analysis_result)
+                    try:
+                        self._update_file_progress(fp, "Native Okuyucu", 65)
+                        self._set_phase("Native Okuyucu", f"{fname}  ({i+1}/{n})")
+                        self._log(f"Native Okuyucu Pass — {len(blocks)} satır...", "info")
+                        blocks = ht.native_reader_pass(
+                            tr_blocks=blocks,
+                            helper_api_key=self._helper_api_key("qc"), 
+                            helper_url=self._helper_api_base_url("qc"),
+                            helper_model=self._helper_api_model("qc"), tgt_lang=tgt,
+                            log_fn=self._log, analysis_result=analysis_result,
+                            token_callback=self._update_tokens,
+                            src_map=_src_map_from_cues(orig_cues) if orig_cues else None)
+                    except Exception as e:
+                        self._log(f"Native Pass hatası: {e}", "warn")
 
                 # SDH temizle
                 if do_sdh:
-                    self._update_file_progress(fp, "SDH Temizle", 85)
-                    blocks = clean_sdh(blocks)
+                    try:
+                        self._update_file_progress(fp, "SDH Temizle", 85)
+                        blocks = clean_sdh(blocks, src_map=_src_map_from_cues(orig_cues) if orig_cues else None, source_driven=True)
+                    except Exception as e:
+                        self._log(f"SDH temizleme hatası: {e}", "warn")
 
                 # Satır kırma
                 if do_linebrk:
-                    self._update_file_progress(fp, "Satır Kırma", 92)
-                    blocks = apply_line_breaks(blocks)
+                    try:
+                        self._update_file_progress(fp, "Satır Kırma", 92)
+                        blocks = apply_line_breaks(blocks)
+                    except Exception as e:
+                        self._log(f"Satır kırma hatası: {e}", "warn")
+
+                # QC Kontrolü
+                if do_qc:
+                    try:
+                        self._update_file_progress(fp, "QC Kontrolü", 72)
+                        self._set_phase("QC Kontrolü", f"{fname}  ({i+1}/{n})")
+                        self._log(f"QC Kontrolü — {len(blocks)} satır...", "info")
+                        blocks = self._run_quality_check_inline(
+                            fp, orig_cues, blocks, 
+                            self._helper_api_key("qc"), self._helper_api_base_url("qc"), self._helper_api_model("qc"), tgt, analysis_result=analysis_result)
+                    except Exception as e:
+                        self._log(f"QC hatası: {e}", "warn")
 
                 # Parçalı cue birleştirme (en son — dengeli 2 satır, senkron korunur)
                 # AI segmentasyon seçiliyse onun (anlamsal) sürümü, değilse hızlı algoritma.
                 if do_ai_merge and mm_key:
-                    self._update_file_progress(fp, "AI Segmentasyon", 96)
-                    _before = len(blocks)
-                    blocks = ai_resegment_cues(
-                        blocks, mm_key, mm_url, mm_model, log_fn=self._log,
-                        max_chars=self._merge_max_chars, max_gap_ms=self._merge_max_gap_ms,
-                        token_callback=self._update_tokens)
-                    self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
+                    try:
+                        self._update_file_progress(fp, "AI Segmentasyon", 96)
+                        _before = len(blocks)
+                        blocks = ai_resegment_cues(
+                            blocks, mm_key, mm_url, mm_model, log_fn=self._log,
+                            max_chars=self._merge_max_chars, max_gap_ms=self._merge_max_gap_ms,
+                            token_callback=self._update_tokens)
+                        self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
+                    except Exception as e:
+                        self._log(f"AI segmentasyon hatası: {e}", "warn")
                 elif do_merge or (do_ai_merge and not mm_key):
-                    if do_ai_merge and not mm_key:
-                        self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
-                    self._update_file_progress(fp, "Cue Birleştirme", 96)
-                    _before = len(blocks)
-                    blocks = merge_fragmented_cues(
-                        blocks, max_chars=self._merge_max_chars, max_gap_ms=self._merge_max_gap_ms)
-                    self._log(f"Parçalı cue birleştirme: {_before} → {len(blocks)} blok", "ok")
+                    try:
+                        if do_ai_merge and not mm_key:
+                            self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
+                        self._update_file_progress(fp, "Cue Birleştirme", 96)
+                        _before = len(blocks)
+                        blocks = merge_fragmented_cues(
+                            blocks, max_chars=self._merge_max_chars, max_gap_ms=self._merge_max_gap_ms)
+                        self._log(f"Parçalı cue birleştirme: {_before} → {len(blocks)} blok", "ok")
+                    except Exception as e:
+                        self._log(f"Cue birleştirme hatası: {e}", "warn")
+
+                if orig_cues:
+                    _raw_map = _raw_src_map_from_cues(orig_cues)
+                    blocks, _ = _fill_hata_with_source(blocks, _raw_map, log_fn=self._log)
+                    blocks = _restore_tags_blocks(blocks, _raw_map)
+                    self._store_tm_pairs(blocks, _src_map_from_cues(orig_cues), self._main_model_name(), tgt)
 
                 write_srt(fp, blocks)
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
@@ -11338,8 +11368,6 @@ class App(ctk.CTk):
                 if issues:
                     auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
                     if auto_issues:
-                        _qc_fixes += len(auto_issues)
-                        _qc_auto_fixes += len(auto_issues)
                         _before_pass = list(sorted_blocks)
                         self._log(f"QC auto: {len(auto_issues)} düşük/orta severity düzeltme uygulanıyor", "info")
                         sorted_blocks = ht.qc_auto_fix(
@@ -11351,7 +11379,9 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
                         )
-                        _record_pass_change(_pass_trace, "QC auto", _before_pass, sorted_blocks, _pass_history)
+                        _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, sorted_blocks, _pass_history)
+                        _qc_fixes += _n_auto
+                        _qc_auto_fixes += _n_auto
                     approved_fixes = []
                     if review_issues:
                         qc_event      = threading.Event()
@@ -11367,7 +11397,6 @@ class App(ctk.CTk):
                             self._set_status("QC: süre aşımı")
                         self.after(0, self._dismiss_modal_dialog)
                     if approved_fixes:
-                        _qc_fixes += len(approved_fixes)
                         _before_pass = list(sorted_blocks)
                         sorted_blocks = ht.qc_auto_fix(
                             issues=approved_fixes,
@@ -11378,7 +11407,8 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
                         )
-                        _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
+                        _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
+                        _qc_fixes += _n_approved
 
             # Çevrilemeyen satırları sync ile onarma denemesi
             try:
@@ -12214,12 +12244,6 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks, _rev_fixes = self._review_pass(fp, sorted_blocks, model_name, _tgt_lang)
                 _record_pass_change(_pass_trace, "Review", _before_pass, sorted_blocks, _pass_history)
-            _before_pass = list(sorted_blocks)
-            _before_pass = list(sorted_blocks)
-            sorted_blocks = self._maybe_condense(
-                sorted_blocks, self._helper_api_key("qc"),
-                self._helper_api_base_url("qc"), self._helper_api_model("qc"), _tgt_lang, src_map=src_blocks)
-            _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
             # ── Kalite geçişleri (tüm modlarda, toggle açıksa) ──────────────
             if self.critic_var.get() and sorted_blocks and not self._stop_flag:
                 try:
@@ -12271,6 +12295,12 @@ class App(ctk.CTk):
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Final consistency sweep hatası: {e}", "warn")
+            if sorted_blocks and not self._stop_flag:
+                _before_pass = list(sorted_blocks)
+                sorted_blocks = self._maybe_condense(
+                    sorted_blocks, self._helper_api_key("qc"),
+                    self._helper_api_base_url("qc"), self._helper_api_model("qc"), _tgt_lang, src_map=src_blocks)
+                _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
             if self.qc_var.get() and sorted_blocks and not self._stop_flag:
                 try:
                     _before_pass = list(sorted_blocks)
@@ -12909,6 +12939,13 @@ class App(ctk.CTk):
                     if str(_txt or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(_txt or "")
                 )
                 if _unresolved_missing:
+                    try:
+                        _raw_map = _raw_src_map_from_cues(cues)
+                        _interim_blocks, _n_filled_save = _fill_hata_with_source(list(_final_blocks), _raw_map, log_fn=self._log)
+                        _interim_blocks = _restore_tags_blocks(_interim_blocks, _raw_map)
+                        write_srt(out_path, self._maybe_merge_cues(_interim_blocks))
+                    except Exception:
+                        pass
                     self._log(
                         f"{fname}: {_unresolved_missing} eksik çeviri kaldı; "
                         "Critic/Polish atlandı, dosya tamamlandı sayılmayacak.",
@@ -12918,7 +12955,7 @@ class App(ctk.CTk):
                     _cps_avg, _cps_max = _cps_stats(_final_blocks)
                     report_rows.append({
                         "name": fname, "total": len(_final_blocks),
-                        "hata": max(_hata_n + _n_filled_save, _unresolved_missing), "cps": _cps_n,
+                        "hata": max(_hata_n, _unresolved_missing), "cps": _cps_n,
                         "cps_avg": _cps_avg, "cps_max": _cps_max,
                         "cons": 0, "pass_fix": 0,
                         "qc_auto": 0, "qc": 0, "warn": _unresolved_missing,
@@ -13030,8 +13067,6 @@ class App(ctk.CTk):
                             if issues:
                                 auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
                                 if auto_issues:
-                                    _qc_fixes += len(auto_issues)
-                                    _qc_auto_fixes += len(auto_issues)
                                     _before_pass = list(pp_blocks)
                                     self._log(f"QC auto: {len(auto_issues)} düşük/orta severity düzeltme uygulanıyor", "info")
                                     pp_blocks = ht.qc_auto_fix(
@@ -13043,7 +13078,9 @@ class App(ctk.CTk):
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
                                     )
-                                    _record_pass_change(_pass_trace, "QC auto", _before_pass, pp_blocks, _pass_history)
+                                    _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp_blocks, _pass_history)
+                                    _qc_fixes += _n_auto
+                                    _qc_auto_fixes += _n_auto
                                 approved_fixes = []
                                 if review_issues:
                                     qc_event = threading.Event()
@@ -13059,7 +13096,6 @@ class App(ctk.CTk):
                                         self._set_status("QC: süre aşımı")
                                     self.after(0, self._dismiss_modal_dialog)
                                 if approved_fixes:
-                                    _qc_fixes += len(approved_fixes)
                                     _before_pass = list(pp_blocks)
                                     pp_blocks = ht.qc_auto_fix(
                                         issues=approved_fixes,
@@ -13070,7 +13106,8 @@ class App(ctk.CTk):
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
                                     )
-                                    _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
+                                    _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
+                                    _qc_fixes += _n_approved
                         # Kalite geçişi düzeltmeleri (etiketten bağımsız karşılaştır)
                         _pass_fix = sum(
                             1 for b in pp_blocks
