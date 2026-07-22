@@ -5059,17 +5059,19 @@ class App(ctk.CTk):
             from tkinterdnd2 import DND_FILES
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self._on_drop)
+            self._drag_drop_available = True
             self._log("Sürükle-bırak aktif (.srt/.vtt/.ass)", "ok")
         except Exception:
-            pass  # tkinterdnd2 kurulu değil — sorun yok
+            self._drag_drop_available = False
 
     def _on_drop(self, event):
-        """Sürüklenen dosyaları al ve işle."""
-        raw = event.data
-        # Windows: {C:/path/file.srt} {C:/path/file2.srt} formatında gelir
-        import re as _re
-        paths = _re.findall(r'\{([^}]+)\}|(\S+)', raw)
-        files = [p[0] or p[1] for p in paths]
+        """Sürüklenen dosya/klasörleri mevcut seçime ekle."""
+        try:
+            files = list(self.tk.splitlist(event.data))
+        except Exception:
+            import re as _re
+            paths = _re.findall(r'\{([^}]+)\}|(\S+)', event.data)
+            files = [p[0] or p[1] for p in paths]
         # Sadece altyazı dosyalarını al
         subtitle_exts = {'.srt', '.vtt', '.ass', '.ssa'}
         valid = []
@@ -5082,12 +5084,15 @@ class App(ctk.CTk):
         if not valid:
             self._log("Sürüklenen dosyalarda geçerli altyazı yok.", "warn")
             return
+        before = len(self._selected_files)
+        self._content_type_preflight_done = False
         self._selected_files = self._dedupe_paths(list(self._selected_files) + valid)
-        n = len(valid)
+        added = len(self._selected_files) - before
+        total = len(self._selected_files)
         self._refresh_selected_files_ui(
-            f"Sürükle-bırak: {n} dosya eklendi — "
+            f"Sürükle-bırak: +{added} yeni, toplam {total} dosya — "
             + ", ".join(Path(f).name for f in valid[:5])
-            + ("…" if n > 5 else ""))
+            + ("…" if len(valid) > 5 else ""))
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
