@@ -9948,6 +9948,7 @@ class App(ctk.CTk):
             return
         try:
             report_path = Path(fp).with_name(Path(fp).stem + ".critic_degisiklikler.txt")
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [f"Critic Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
             for rec in applied_records:
                 lines.append(f"#{rec['id']}  [{rec.get('reason', '')}]")

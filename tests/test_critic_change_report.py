@@ -59,6 +59,21 @@ class WriteCriticChangeReportTest(unittest.TestCase):
             self.assertIn("Toplam: 2 satır", text)
             self.assertTrue(any("Critic değişiklik raporu" in msg for _, msg in app.logs))
 
+    def test_creates_output_parent_before_writing_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            fp = str(Path(td) / "output" / "episode" / "episode.srt")
+            app = _StubApp()
+            records = [
+                {"id": "7", "source": "Hello.", "before": "Selam.",
+                 "after": "Merhaba.", "reason": "pattern/local"},
+            ]
+
+            gui.App._write_critic_change_report(app, fp, records)
+
+            report_path = Path(td) / "output" / "episode" / "episode.critic_degisiklikler.txt"
+            self.assertTrue(report_path.exists())
+            self.assertFalse(any(level == "err" for level, _ in app.logs))
+
 
 if __name__ == "__main__":
     unittest.main()
