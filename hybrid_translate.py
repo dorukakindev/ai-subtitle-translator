@@ -1628,18 +1628,23 @@ def _safe_chat_create(client, **kwargs):
     # Bedrock and Anthropic provider check
     is_bedrock = False
     is_anthropic = False
+    explicit_openai = False
     try:
-        from helper_models import normalize_helper_model_label, resolve_helper_model
-        cfg = resolve_helper_model(normalize_helper_model_label(model))
+        from helper_models import normalize_helper_model_label, resolve_helper_model, _CONFIGS, _ALIASES
+        norm_label = normalize_helper_model_label(model)
+        is_known_model = (model in _CONFIGS) or (model.lower() in _ALIASES) or (norm_label in _CONFIGS and norm_label != "gpt-5.4-mini")
+        cfg = resolve_helper_model(norm_label)
         if cfg.provider == "bedrock":
             is_bedrock = True
         elif cfg.provider == "anthropic":
             is_anthropic = True
+        elif cfg.provider == "openai" and is_known_model:
+            explicit_openai = True
     except Exception:
         pass
 
     # Fallback/dynamic detection based on URL or model name
-    if not is_bedrock and not is_anthropic:
+    if not is_bedrock and not is_anthropic and not explicit_openai:
         if "bedrock" in base_url or "bedrock" in model_lower:
             is_bedrock = True
         elif ("anthropic" in base_url or base_url.endswith("/messages")

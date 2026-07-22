@@ -417,6 +417,8 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
         def __init__(self, in_t, out_t, tot_t):
             self.input_tokens = in_t
             self.output_tokens = out_t
+            self.prompt_tokens = in_t
+            self.completion_tokens = out_t
             self.total_tokens = tot_t
 
     class DummyChoice:
@@ -483,6 +485,8 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
 
     url = base_url or "https://api.anthropic.com/v1"
     url_stripped = url.rstrip("/")
+    if url_stripped.endswith("/chat/completions"):
+        url_stripped = url_stripped[:-17].rstrip("/")
     # /v1 eksikse ekle (proxy'lerde sıklıkla kullanıcı sadece host giriyor)
     if "/v1" not in url_stripped and "api.anthropic.com" not in url_stripped:
         url_stripped = url_stripped + "/v1"
@@ -519,6 +523,8 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
         def __init__(self, in_t, out_t, tot_t):
             self.input_tokens = in_t
             self.output_tokens = out_t
+            self.prompt_tokens = in_t
+            self.completion_tokens = out_t
             self.total_tokens = tot_t
 
     class DummyChoice:

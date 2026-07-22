@@ -54,18 +54,23 @@ def _safe_chat_create(client, **kwargs):
     # Bedrock and Anthropic provider check
     is_bedrock = False
     is_anthropic = False
+    explicit_openai = False
     try:
-        from helper_models import normalize_helper_model_label, resolve_helper_model
-        cfg = resolve_helper_model(normalize_helper_model_label(model))
+        from helper_models import normalize_helper_model_label, resolve_helper_model, _CONFIGS, _ALIASES
+        norm_label = normalize_helper_model_label(model)
+        is_known_model = (model in _CONFIGS) or (model.lower() in _ALIASES) or (norm_label in _CONFIGS and norm_label != "gpt-5.4-mini")
+        cfg = resolve_helper_model(norm_label)
         if cfg.provider == "bedrock":
             is_bedrock = True
         elif cfg.provider == "anthropic":
             is_anthropic = True
+        elif cfg.provider == "openai" and is_known_model:
+            explicit_openai = True
     except Exception:
         pass
 
     # Fallback/dynamic detection based on URL or model name
-    if not is_bedrock and not is_anthropic:
+    if not is_bedrock and not is_anthropic and not explicit_openai:
         if "bedrock" in base_url or "bedrock" in model_lower:
             is_bedrock = True
         elif ("anthropic" in base_url or base_url.endswith("/messages")
@@ -7543,7 +7548,7 @@ class App(ctk.CTk):
         if not k:
             cache_key = "openai_helper" if provider == "openai" else provider
             k = self._helper_keys_cache.get(cache_key, "").strip()
-        if not k and hasattr(self, "helper_key_entry") and self.helper_key_entry:
+        if not k and provider in {"openai", "openai_helper"} and hasattr(self, "helper_key_entry") and self.helper_key_entry:
             k = self.helper_key_entry.get().strip()
         if (not k and provider in {"openai", "openai_helper"}
                 and hasattr(self, "api_key_entry") and self.api_key_entry):
@@ -8722,7 +8727,7 @@ class App(ctk.CTk):
                 if self.polish_var.get() and blocks:
                     self._set_status("Doğallaştırma...")
                     self._log(f"Polish Pass başlıyor ({len(blocks)} satır)...", "info")
-                    _mm_key = self._helper_api_key("analysis")
+                    _mm_key = self._helper_api_key("polish")
                     _mm_url = self._helper_api_base_url("polish")
                     _mm_mdl = self._helper_api_model("polish")
                     blocks = self._polish_pass(
@@ -8992,13 +8997,9 @@ class App(ctk.CTk):
                 return
             # Fix mode: flagged satırları helper ile düzelt
             fix_client = None
-            fix_key = self._helper_api_key("analysis")
-            fix_url = self._helper_api_base_url("analysis")
-            fix_model = self._helper_api_model("analysis")
-            if not fix_key:
-                fix_key = self._helper_api_key("qc")
-                fix_url = self._helper_api_base_url("qc")
-                fix_model = self._helper_api_model("qc")
+            fix_key = self._helper_api_key("qc")
+            fix_url = self._helper_api_base_url("qc")
+            fix_model = self._helper_api_model("qc")
             n_fixed = 0
             for f in flags:
                 try:
@@ -9739,9 +9740,9 @@ class App(ctk.CTk):
                         self._log(f"Native Okuyucu Pass — {len(blocks)} satır...", "info")
                         blocks = ht.native_reader_pass(
                             tr_blocks=blocks,
-                            helper_api_key=self._helper_api_key("qc"), 
-                            helper_url=self._helper_api_base_url("qc"),
-                            helper_model=self._helper_api_model("qc"), tgt_lang=tgt,
+                            helper_api_key=self._helper_api_key("critic"), 
+                            helper_url=self._helper_api_base_url("critic"),
+                            helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                             log_fn=self._log, analysis_result=analysis_result,
                             token_callback=self._update_tokens,
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None)
@@ -12336,9 +12337,9 @@ class App(ctk.CTk):
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = ht.native_reader_pass(
                         tr_blocks=sorted_blocks,
-                        helper_api_key=self._helper_api_key("qc"),
-                        helper_url=self._helper_api_base_url("qc"),
-                        helper_model=self._helper_api_model("qc"),
+                        helper_api_key=self._helper_api_key("critic"),
+                        helper_url=self._helper_api_base_url("critic"),
+                        helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
                         analysis_result=_analysis_result,
                         src_map=src_blocks)
