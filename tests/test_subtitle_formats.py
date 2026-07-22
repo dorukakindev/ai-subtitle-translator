@@ -78,14 +78,15 @@ class ParseVttTest(unittest.TestCase):
         os.unlink(path)
 
     def test_vtt_inline_tags_preserved_for_restoration(self):
-        vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\n<b>Bold</b> text\n\n"
+        vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\n<b>Bold text</b>\n\n"
         path = _write_temp(vtt, ".vtt")
-        from subtitle_formats import parse_any, _clean_vtt_text
+        from subtitle_formats import parse_any, _clean_vtt_text, restore_format_tags
         blocks = parse_any(path)
         _, _, text = blocks[0]
         self.assertIn("<b>", text)
         self.assertIn("Bold", text)
         self.assertEqual(_clean_vtt_text(text), "Bold text")
+        self.assertEqual(restore_format_tags(text, "Kalın metin"), "<b>Kalın metin</b>")
         os.unlink(path)
 
     def test_vtt_math_angle_brackets_preserved(self):
@@ -160,6 +161,18 @@ class ParseAssTest(unittest.TestCase):
         self.assertIn("{\\i1}", text)
         self.assertIn("Italic", text)
         self.assertEqual(_clean_ass_text(text), "Italic")
+        os.unlink(path)
+
+    def test_ass_parser_to_restore_keeps_open_and_reset_tags(self):
+        content = (
+            self._HEADER +
+            r"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\i1}Italic{\i0}" + "\n"
+        )
+        path = _write_temp(content, ".ass")
+        from subtitle_formats import parse_any, restore_format_tags
+        blocks = parse_any(path)
+        self.assertEqual(restore_format_tags(blocks[0][2], "İtalik"),
+                         r"{\i1}İtalik{\i0}")
         os.unlink(path)
 
     def test_ass_single_digit_fraction_and_hard_space(self):

@@ -81,7 +81,7 @@ class RestoreFormatTagsTest(unittest.TestCase):
         self.assertEqual(restore_format_tags(r"{\an8}{\c&H00FFFF&}Top text", "Üst metin"),
                          r"{\an8}{\c&H00FFFF&}Üst metin")
         self.assertEqual(restore_format_tags(r"{\i1}Italic ASS{\i0}", "İtalik ASS"),
-                         r"{\i1}İtalik ASS")
+                         r"{\i1}İtalik ASS{\i0}")
 
 
 

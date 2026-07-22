@@ -84,6 +84,7 @@ def _ass_ts_to_srt(ts: str) -> str:
 # tam-blok/tam-satır sarmalama (italik iç ses, şarkı sözü) burada geri gelir.
 
 _LEAD_OVERRIDE_RE = re.compile(r'^(?:\{[^}]*\})+')                       # {\an8}{\c&H..}
+_TRAIL_OVERRIDE_RE = re.compile(r'(?:\{[^}]*\})+$')                     # {\i0}{\b0}
 
 
 def _match_full_wrap(src_body: str):
@@ -119,6 +120,10 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
     m_lead = _LEAD_OVERRIDE_RE.match(src)
     lead = m_lead.group(0) if m_lead else ""
     src_body = src[len(lead):].strip() if lead else src
+    m_tail = _TRAIL_OVERRIDE_RE.search(src_body)
+    tail = m_tail.group(0) if m_tail else ""
+    if tail:
+        src_body = src_body[:-len(tail)].rstrip()
 
     # 2) Sarmalama — çeviri zaten BAŞTAN etiketliyse dokunma.
     if not re.match(r'^\s*<[a-zA-Z]', out):
@@ -139,6 +144,8 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
     # 3) Konum etiketini başa ekle
     if lead and not out.startswith(lead):
         out = lead + out
+    if tail and not out.endswith(tail):
+        out += tail
     return out
 
 
