@@ -1781,6 +1781,15 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
         except Exception:
             rel = Path(src.name)
         return (base / "ÇIKTI" / rel).with_suffix(".srt")
+    if in_dir:
+        try:
+            rel = src.relative_to(Path(in_dir))
+            if len(rel.parts) > 1:
+                return (Path(out_dir) / rel.parent / src.stem / src.name).with_suffix(".srt")
+        except Exception:
+            pass
+    if src.parent and src.parent.name and not _paths_equal(str(src.parent), out_dir) and not (in_dir and _paths_equal(str(src.parent), in_dir)):
+        return (Path(out_dir) / src.parent.name / src.stem / src.name).with_suffix(".srt")
     return (Path(out_dir) / src.stem / src.name).with_suffix(".srt")
 
 
@@ -5071,6 +5080,9 @@ class App(ctk.CTk):
 
     def _on_drop(self, event):
         """Sürüklenen dosya/klasörleri mevcut seçime ekle."""
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken sürükle-bırak yapılamaz.", "warn")
+            return
         try:
             files = list(self.tk.splitlist(event.data))
         except Exception:
@@ -6787,17 +6799,21 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+    def _norm_path(self, filepath: str) -> str:
+        import os
+        return os.path.normcase(os.path.abspath(str(filepath)))
+
     def _is_queued_file_removed(self, filepath: str) -> bool:
-        return filepath in self._removed_queue_files
+        return self._norm_path(filepath) in self._removed_queue_files
 
     def _remove_queued_file(self, filepath: str):
         """Henüz başlamamış dosyayı iş panosundaki kuyruktan çıkar."""
         row = self._job_rows.get(filepath)
         if not row or row.get("state") != "waiting":
             return
-        self._removed_queue_files.add(filepath)
-        if filepath in self._selected_files:
-            self._selected_files.remove(filepath)
+        norm_fp = self._norm_path(filepath)
+        self._removed_queue_files.add(norm_fp)
+        self._selected_files = [p for p in self._selected_files if self._norm_path(p) != norm_fp]
         self._file_schema_vars.pop(filepath, None)
         try:
             row["frame"].destroy()
@@ -6806,6 +6822,7 @@ class App(ctk.CTk):
         self._job_rows.pop(filepath, None)
         self._log(f"Kuyruktan çıkarıldı: {Path(filepath).name}", "info")
         self._refresh_job_board_title()
+        self._set_stat(self.stat_files_var, str(len(self._job_rows)))
 
     def _refresh_job_board_title(self):
         done_n = sum(1 for r in self._job_rows.values()
@@ -7358,6 +7375,9 @@ class App(ctk.CTk):
         self.attributes("-topmost", False)
         if not path:
             return
+        if is_input and getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken giriş klasörü değiştirilemez.", "warn")
+            return
         var.set(path)
         if is_input:
             # Clear any manually selected files when a folder is chosen
@@ -7390,6 +7410,9 @@ class App(ctk.CTk):
             self._log(f"Çıkış klasörü: {path}", "info")
 
     def _pick_files(self):
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken dosya seçilemez.", "warn")
+            return
         self.attributes("-topmost", True)
         paths = filedialog.askopenfilenames(
             parent=self, title="Altyazı Dosyaları Seç",
@@ -7412,6 +7435,9 @@ class App(ctk.CTk):
             + ("…" if n > 5 else ""))
 
     def _add_folder_files(self):
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken klasör eklenemez.", "warn")
+            return
         paths = []
         while True:
             self.attributes("-topmost", True)
@@ -7431,6 +7457,11 @@ class App(ctk.CTk):
 
     def _append_folder_files(self, paths: list[str]):
         """Bir veya daha fazla klasörün altyazılarını mevcut seçime ekle."""
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken klasör eklenemez.", "warn")
+            return 0
+        if not self._selected_files and self.input_var.get():
+            self._selected_files = self._get_srt_files()
         files = []
         empty = []
         for path in self._dedupe_paths(paths):
@@ -8839,6 +8870,7 @@ class App(ctk.CTk):
             if not root:
                 return []
             files = get_subtitle_files(root, recursive=True)
+        files = self._dedupe_paths(files)
         # Dizi hafızası açıkken bölüm sırasına diz (E01 kararları E02'ye aksın)
         if getattr(self, "series_memory_var", None) and self.series_memory_var.get():
             files = series_memory.sort_files_by_episode(files)
@@ -10717,6 +10749,8 @@ class App(ctk.CTk):
         self._block_cache: dict = {}
         valid_files = []
         for fp in srt_files:
+            if self._is_queued_file_removed(fp):
+                continue
             blocks = list(parse_subtitle(fp))
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
@@ -10879,6 +10913,8 @@ class App(ctk.CTk):
                       f"dosya içi chunk'lar sıralı (önceki çeviriler bağlama eklenir)", "info")
 
             def chain_file(fp):
+                if self._is_queued_file_removed(fp):
+                    return
                 prev_pairs = []
                 for req in file_groups[fp]:
                     if self._stop_flag:
@@ -11513,6 +11549,8 @@ class App(ctk.CTk):
         self._block_cache: dict = {}
         valid_files = []
         for fp in srt_files:
+            if self._is_queued_file_removed(fp):
+                continue
             blocks = list(parse_subtitle(fp))
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
@@ -12205,6 +12243,8 @@ class App(ctk.CTk):
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
         for fp, blocks_dict in file_blocks.items():
+            if self._is_queued_file_removed(fp):
+                continue
             saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
             out_path = (Path(saved_out) if saved_out else
                         _resolve_output_path(input_dir, output_dir, fp,
@@ -12636,6 +12676,8 @@ class App(ctk.CTk):
         for fi, filepath in enumerate(srt_files):
             if self._stop_flag:
                 break
+            if self._is_queued_file_removed(filepath):
+                continue
             fname = Path(filepath).name
             file_status = session["files"].get(str(filepath), {}).get("status", "pending")
 

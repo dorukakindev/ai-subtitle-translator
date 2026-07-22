@@ -17,7 +17,9 @@ class MultiFolderAddTest(unittest.TestCase):
             (second / "two.vtt").write_text("", encoding="utf-8")
             app = SimpleNamespace(
                 _selected_files=[], _content_type_preflight_done=True,
+                _is_running=False,
                 logs=[], refreshes=[])
+            app.input_var = SimpleNamespace(get=lambda: "")
             app._dedupe_paths = lambda paths: gui.App._dedupe_paths(app, paths)
             app._log = lambda *args: app.logs.append(args)
             app._refresh_selected_files_ui = lambda text: app.refreshes.append(text)

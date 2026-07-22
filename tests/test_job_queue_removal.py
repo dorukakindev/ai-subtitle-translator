@@ -27,19 +27,25 @@ class JobQueueRemovalTest(unittest.TestCase):
         dot, frame = _Widget("○"), _Widget()
         title = _Widget()
         path = r"C:\work\waiting.srt"
+        import os
         app = SimpleNamespace(
             _job_rows={path: {"dot": dot, "frame": frame, "state": state}},
             _removed_queue_files=set(), _selected_files=[path],
             _file_schema_vars={path: object()}, _jb_title=title,
             _log=lambda *args: None,
+            stat_files_var="stat_files_var",
         )
+        app._norm_path = lambda fp: os.path.normcase(os.path.abspath(str(fp)))
+        app._set_stat = lambda var, val: None
         app._refresh_job_board_title = lambda: gui.App._refresh_job_board_title(app)
         return app, path, frame
 
     def test_waiting_file_is_removed_from_queue_and_selection(self):
         app, path, frame = self._app()
         gui.App._remove_queued_file(app, path)
-        self.assertIn(path, app._removed_queue_files)
+        import os
+        norm = os.path.normcase(os.path.abspath(path))
+        self.assertIn(norm, app._removed_queue_files)
         self.assertNotIn(path, app._job_rows)
         self.assertNotIn(path, app._selected_files)
         self.assertTrue(frame.destroyed)
