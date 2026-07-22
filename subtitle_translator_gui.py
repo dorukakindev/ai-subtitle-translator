@@ -8870,8 +8870,39 @@ class App(ctk.CTk):
             self._log("Devam ediliyor...", "ok")
 
 
+    def _wait_between_files(self, file_index: int, total_files: int, current_filename: str = "") -> str:
+        """Dosya tamamlandıktan sonra, eğer sonraki dosya varsa ve 'Duraklat' düğmesine basılmışsa
+        worker iş parçacığını duraklatır.
+
+        Returns:
+            "continue": Bir sonraki dosyaya geçilebilir (duraklatılmamış veya kullanıcı Devam'a bastı).
+            "stopped":  Kullanıcı 'Durdur' düğmesine bastı (self._stop_flag True oldu).
+        """
+        import time
+        if getattr(self, "_stop_flag", False) or file_index >= total_files - 1:
+            return "stopped" if getattr(self, "_stop_flag", False) else "continue"
+
+        if not self._pause_btw_files.is_set():
+            fn_label = f" — '{current_filename}' tamamlandı." if current_filename else "."
+            self._log(f"Duraklatıldı{fn_label} Devam bekleniyor...", "warn")
+            self._set_status("Duraklatıldı — Devam bekleniyor...")
+
+            while not self._pause_btw_files.is_set():
+                if getattr(self, "_stop_flag", False):
+                    return "stopped"
+                self._pause_btw_files.wait(timeout=0.2)
+
+            if getattr(self, "_stop_flag", False):
+                return "stopped"
+
+            self._log("Devam ediliyor...", "ok")
+            self._set_status("Çeviriliyor...")
+
+        return "continue"
+
     def _stop(self):
         self._stop_flag = True
+        self._pause_btw_files.set()
         self._log("Durduruluyor...", "warn")
         self._set_status("Durduruluyor...")
         with self._batch_lock:
@@ -11558,6 +11589,8 @@ class App(ctk.CTk):
             if self.auto_glossary_var.get():
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
             ht.clear_context_cache(filepath)
+            if self._wait_between_files(fi, n_files, fname) == "stopped":
+                break
             self._update_file_progress(filepath,
                 f"Tamamlandı  {len(sorted_blocks)} satır", 100, "done")
 
@@ -11838,6 +11871,8 @@ class App(ctk.CTk):
                                                 source_path=_saved_src)
                         if _terminal:
                             hybrid_completed_bids.append(bid)
+                        if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
+                            break
                     else:
                         saved_out = fmap_data.get("output_dir", output_dir)
                         last_output_dir = saved_out
@@ -12298,7 +12333,7 @@ class App(ctk.CTk):
         _tgt_lang  = self.tgt_var.get()
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
-        for fp, blocks_dict in file_blocks.items():
+        for fi, (fp, blocks_dict) in enumerate(file_blocks.items()):
             if self._is_queued_file_removed(fp):
                 continue
             saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
@@ -12478,6 +12513,8 @@ class App(ctk.CTk):
                     self._run_auto_glossary(ht.load_subtitle(fp), sorted_blocks, fp)
                 except Exception as _ag_e:
                     self._log(f"Auto-Glossary atlandı: {_ag_e}", "warn")
+            if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
+                break
         # ── Kalite Raporu (ceviri_raporu.txt) ────────────────────────────────
         _report_path = self._save_quality_report(report_rows, output_dir)
         n = len(file_blocks)
