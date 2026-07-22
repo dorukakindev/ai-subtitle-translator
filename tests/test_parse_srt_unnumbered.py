@@ -48,6 +48,14 @@ class ParseSrtTest(unittest.TestCase):
         self.assertEqual(len(b), 1)
         self.assertEqual(b[0][2], "ilk satır\nikinci satır")
 
+    def test_whitespace_only_separator_starts_new_cue(self):
+        p = _write(self.d, "space.srt",
+                   "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n \t\n"
+                   "2\n00:00:02,000 --> 00:00:03,000\nDunya\n")
+        b = gui.parse_srt(p)
+        self.assertEqual(len(b), 2)
+        self.assertEqual([x[2] for x in b], ["Merhaba", "Dunya"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -70,10 +70,10 @@ def _ass_ts_to_srt(ts: str) -> str:
     """ASS zaman damgasını (H:MM:SS.cc) SRT formatına çevirir."""
     ts = ts.strip()
     # H:MM:SS.cc → HH:MM:SS,mmm (centi-secs → milisecs)
-    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.(\d{2})', ts)
+    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.(\d{1,2})$', ts)
     if m:
         h, mm, s, cs = m.groups()
-        ms = int(cs) * 10
+        ms = int(cs.ljust(2, '0')) * 10
         return f'{int(h):02d}:{mm}:{s},{ms:03d}'
     return ts
 
@@ -137,6 +137,7 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
 _ASS_OVERRIDE = re.compile(r'\{[^}]*\}')
 _ASS_SOFTLINE = re.compile(r'\\N', re.IGNORECASE)
 _ASS_HARDLINE = re.compile(r'\\n', re.IGNORECASE)
+_ASS_HSPACE   = re.compile(r'\\h', re.IGNORECASE)
 _ASS_COMMENT  = re.compile(r'\{=[^}]*\}')
 
 def _clean_ass_text(text: str) -> str:
@@ -145,12 +146,15 @@ def _clean_ass_text(text: str) -> str:
     text = _ASS_OVERRIDE.sub('', text)
     text = _ASS_SOFTLINE.sub('\n', text)
     text = _ASS_HARDLINE.sub('\n', text)
+    text = _ASS_HSPACE.sub(' ', text)
     return text.strip()
 
 
 # ── VTT tag temizleme ─────────────────────────────────────────────────────────
 
-_VTT_TAG      = re.compile(r'<[^>]+>')
+_VTT_TAG = re.compile(
+    r'</?(?:b|i|u|c(?:\.[^\s>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?|ruby|rt)\s*>',
+    re.IGNORECASE)
 
 def _clean_vtt_text(text: str) -> str:
     """WebVTT inline tag'lerini ve position bilgisini kaldır."""

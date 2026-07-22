@@ -87,6 +87,14 @@ class ParseVttTest(unittest.TestCase):
         self.assertIn("Bold", text)
         os.unlink(path)
 
+    def test_vtt_math_angle_brackets_preserved(self):
+        vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n2 < 3 and 5 > 4\n"
+        path = _write_temp(vtt, ".vtt")
+        from subtitle_formats import parse_any
+        blocks = parse_any(path)
+        self.assertEqual(blocks[0][2], "2 < 3 and 5 > 4")
+        os.unlink(path)
+
 
 class ParseAssTest(unittest.TestCase):
     # parse_ass ilk Format: satırını Events kolonları olarak alır;
@@ -150,6 +158,18 @@ class ParseAssTest(unittest.TestCase):
         _, _, text = blocks[0]
         self.assertNotIn("{", text)
         self.assertIn("Italic", text)
+        os.unlink(path)
+
+    def test_ass_single_digit_fraction_and_hard_space(self):
+        content = (
+            self._HEADER +
+            r"Dialogue: 0,0:00:01.5,0:00:03.0,Default,,0,0,0,,Hello\hworld" + "\n"
+        )
+        path = _write_temp(content, ".ass")
+        from subtitle_formats import parse_any
+        blocks = parse_any(path)
+        self.assertEqual(blocks[0][1], "00:00:01,500 --> 00:00:03,000")
+        self.assertEqual(blocks[0][2], "Hello world")
         os.unlink(path)
 
     def test_ass_sign_style_skipped(self):

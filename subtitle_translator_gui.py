@@ -1553,7 +1553,7 @@ def parse_srt(filepath):
     blocks = []
     content = read_subtitle_text(filepath).strip()
     auto_idx = 0
-    for block in content.split("\n\n"):
+    for block in re.split(r"\n[ \t]*\n+", content):
         lines = block.strip().splitlines()
         # Numarasız SRT (ilk satır doğrudan zaman damgası) → sıralı index uydur
         if len(lines) >= 2 and "-->" in lines[0]:
@@ -7222,8 +7222,10 @@ class App(ctk.CTk):
                 break
             sub = missing[s:s + max_sub]
             sub_payload = {"tr": sub}
-            if payload.get("ctx"):      sub_payload["ctx"]      = payload["ctx"]
-            if payload.get("glossary"): sub_payload["glossary"] = payload["glossary"]
+            for key in ("ctx", "next_ctx", "prev_scene", "scene", "sentence_groups",
+                        "idioms", "prev_tr", "glossary"):
+                if payload.get(key):
+                    sub_payload[key] = payload[key]
             body = {
                 "model": model,
                 "messages": [sys_msg,
@@ -8765,7 +8767,10 @@ class App(ctk.CTk):
         if self._selected_files:
             files = list(self._selected_files)
         else:
-            files = get_subtitle_files(self.input_var.get(), recursive=True)
+            root = (self.input_var.get() or "").strip()
+            if not root:
+                return []
+            files = get_subtitle_files(root, recursive=True)
         # Dizi hafızası açıkken bölüm sırasına diz (E01 kararları E02'ye aksın)
         if getattr(self, "series_memory_var", None) and self.series_memory_var.get():
             files = series_memory.sort_files_by_episode(files)
@@ -11176,7 +11181,7 @@ class App(ctk.CTk):
                     change_log=_critic_change_log,
                 )
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
-                self._write_critic_change_report(filepath, _critic_change_log)
+                self._write_critic_change_report(out_path, _critic_change_log)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
             if self.polish_var.get() and sorted_blocks:
@@ -12100,6 +12105,10 @@ class App(ctk.CTk):
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
         for fp, blocks_dict in file_blocks.items():
+            saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
+            out_path = (Path(saved_out) if saved_out else
+                        _resolve_output_path(input_dir, output_dir, fp,
+                                             same_folder=self.same_folder_var.get()))
             sorted_blocks = [blocks_dict[k] for k in sorted(blocks_dict, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k)))]
             _raw_backup_blocks = list(sorted_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
             _cons_fixes, _rev_fixes = 0, 0
@@ -12154,7 +12163,7 @@ class App(ctk.CTk):
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log)
                     _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
-                    self._write_critic_change_report(fp, _critic_change_log)
+                    self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
                     self._log(f"Critic Pass hatası: {e}", "warn")
             if self.polish_var.get() and sorted_blocks and not self._stop_flag:
@@ -12252,10 +12261,6 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
-            out_path = (Path(saved_out) if saved_out else
-                        _resolve_output_path(input_dir, output_dir, fp,
-                                             same_folder=self.same_folder_var.get()))
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
@@ -12900,7 +12905,7 @@ class App(ctk.CTk):
                                 analysis_result=_full_analysis,
                                 change_log=_critic_change_log)
                             _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
-                            self._write_critic_change_report(filepath, _critic_change_log)
+                            self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
                             self._set_status(f"Doğallaştırma: {fname}")
                             self._log(f"Polish Pass başlıyor ({len(pp_blocks)} satır)...", "info")
