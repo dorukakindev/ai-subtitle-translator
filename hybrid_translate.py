@@ -2677,6 +2677,7 @@ def native_reader_pass(
 
     for chunk_i in range(0, len(result), CHUNK_SIZE):
         chunk = result[chunk_i:chunk_i + CHUNK_SIZE]
+        chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         chunk_num = chunk_i // CHUNK_SIZE + 1
 
         if log_fn:
@@ -2777,7 +2778,7 @@ def native_reader_pass(
                     continue
                 fid   = str(fix.get("id", ""))
                 ftext = fix.get("fixed", "")
-                if fid and ftext and fid in idx_to_pos:
+                if fid and ftext and fid in chunk_ids and fid in idx_to_pos:
                     if total_fixed >= max_total_fixes:
                         total_cap_rejected += 1
                         continue
@@ -6957,24 +6958,43 @@ def qc_auto_fix(
     )
 
     fixed = 0
+    seen_issue_ids = set()
     for issue in issues:
+        if not isinstance(issue, dict):
+            continue
         issue_id   = str(issue.get("id", ""))
         problem    = issue.get("problem", "")
         current    = issue.get("current", "")
         suggestion = issue.get("suggestion", "")
         source     = issue.get("original", "")
 
-        if issue_id not in idx_to_pos:
+        if not issue_id or issue_id in seen_issue_ids or issue_id not in idx_to_pos:
             continue
+
+        pos = idx_to_pos[issue_id]
+        old_idx, old_ts, old_text = result[pos]
+
+        # Model 'current' metni ile gerçek cue metnini reconcile et
+        if current:
+            clean_curr = _clean_source_text(current)
+            clean_old  = _clean_source_text(old_text)
+            if clean_curr and clean_old and clean_curr.strip().lower() != clean_old.strip().lower():
+                if log_fn:
+                    log_fn(f"QC Auto-Fix #{issue_id} atlandı: model 'current' metni ({repr(current[:30])}) "
+                           f"gerçek cue metni ({repr(old_text[:30])}) ile uyuşmuyor", "warn")
+                continue
+
+        seen_issue_ids.add(issue_id)
 
         user_msg = (
             f"Source: {source}\n"
-            f"Wrong translation: {current}\n"
+            f"Wrong translation: {current or old_text}\n"
             f"Problem: {problem}\n"
             f"Hint: {suggestion}\n\n"
             f"Provide the corrected {tgt_lang} translation:"
         )
 
+        api_applied = False
         try:
             resp = _safe_chat_create(
                 client,
@@ -6986,26 +7006,32 @@ def qc_auto_fix(
                 max_completion_tokens=300,
                 temperature=0.2,
             )
-            new_text = (resp.choices[0].message.content or "").strip()
+            new_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if new_text and new_text != "[HATA]":
-                ok, _reason = validate_polish_candidate(current, new_text, source_text=source)
+                ok, _reason = validate_polish_candidate(old_text, new_text, source_text=source)
                 if ok:
-                    pos = idx_to_pos[issue_id]
-                    old_idx, old_ts, _ = result[pos]
                     result[pos] = (old_idx, old_ts, new_text)
                     fixed += 1
-                    continue
-                if log_fn:
+                    api_applied = True
+                elif log_fn:
                     log_fn(f"QC Auto-Fix #{issue_id} güvenlik filtresinden döndü ({_reason}) — öneri denecek", "warn")
         except Exception as e:
             if log_fn:
-                log_fn(f"QC Auto-Fix #{issue_id} hatası: {e} — öneri uygulandı", "warn")
+                log_fn(f"QC Auto-Fix #{issue_id} hatası: {e} — öneri denecek", "warn")
 
-        # Fallback: apply suggestion text directly
-        if suggestion and issue_id in idx_to_pos:
-            pos = idx_to_pos[issue_id]
-            old_idx, old_ts, _ = result[pos]
-            result[pos] = (old_idx, old_ts, suggestion)
+        if api_applied:
+            continue
+
+        # Fallback öneri metni de mutlaka validator'dan geçmeli
+        if suggestion:
+            sugg_text = str(suggestion).strip()
+            if sugg_text and sugg_text != "[HATA]":
+                ok_sugg, _reason_sugg = validate_polish_candidate(old_text, sugg_text, source_text=source)
+                if ok_sugg:
+                    result[pos] = (old_idx, old_ts, sugg_text)
+                    fixed += 1
+                elif log_fn:
+                    log_fn(f"QC Auto-Fix #{issue_id} öneri metni güvenlik filtresinden reddedildi ({_reason_sugg}) — atlandı", "warn")
 
     if log_fn:
         log_fn(f"QC Auto-Fix: {fixed}/{len(issues)} satır yeniden çevrildi ✓", "ok")
@@ -7355,6 +7381,7 @@ def critic_pass_with_helper(
 
     for chunk_start in range(0, len(suspicious), MINIMAX_CHUNK):
         chunk = suspicious[chunk_start:chunk_start + MINIMAX_CHUNK]
+        chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         pairs = []
         for idx, ts, text in chunk:
             pair = {"id": str(idx), "orig": orig_dict.get(str(idx), ""), "tr": text}
@@ -7485,14 +7512,14 @@ def critic_pass_with_helper(
             proposed_ids = {
                 str(fix.get("id", ""))
                 for fix in fixes
-                if isinstance(fix, dict) and str(fix.get("id", "")) in idx_to_pos
+                if isinstance(fix, dict) and str(fix.get("id", "")) in chunk_ids and str(fix.get("id", "")) in idx_to_pos
             }
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
                 fid   = str(fix.get("id", ""))
                 ftext = fix.get("fixed", "")
-                if fid and ftext and fid in idx_to_pos:
+                if fid and ftext and fid in chunk_ids and fid in idx_to_pos:
                     pos = idx_to_pos[fid]
                     old_idx, old_ts, old_text = result[pos]
                     neighbor_start = max(0, pos - 2)
