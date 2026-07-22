@@ -9962,13 +9962,17 @@ class App(ctk.CTk):
         except Exception as e:
             self._log_exc("Critic değişiklik raporu yazılamadı", e)
 
-    def _dismiss_modal_dialog(self, target_dlg=None):
+    def _dismiss_modal_dialog(self, target_dlg=None, target_event=None):
         """Worker timeout/stop durumunda hâlâ açık olan modal inceleme dialog'unu (QC/Glossary) kapatır.
-        target_dlg verilmişse ve active modal ile eşleşmiyorsa no-op. Ana thread'de çağrılır."""
+        Hedef dialog/event aktif modal ile eşleşmiyorsa no-op. Ana thread'de çağrılır."""
         dlg = getattr(self, "_active_modal_dlg", None)
+        active_event = getattr(self, "_active_modal_event", None)
         if target_dlg is not None and dlg is not target_dlg:
             return
+        if target_event is not None and active_event is not target_event:
+            return
         self._active_modal_dlg = None
+        self._active_modal_event = None
         try:
             if dlg is not None and dlg.winfo_exists():
                 dlg.destroy()
@@ -9983,21 +9987,24 @@ class App(ctk.CTk):
             "stopped":   Kullanıcı 'Durdur' düğmesine bastı (self._stop_flag True oldu).
             "timeout":   Belirtilen süre (timeout) doldu.
         """
-        import time
-        start = time.time()
+        start = time.monotonic()
         while not event.is_set():
             if getattr(self, "_stop_flag", False):
-                self.after(0, self._dismiss_modal_dialog)
+                event._dialog_cancelled = True
+                self.after(0, lambda e=event: self._dismiss_modal_dialog(target_event=e))
                 return "stopped"
-            if time.time() - start >= timeout:
-                self.after(0, self._dismiss_modal_dialog)
+            if time.monotonic() - start >= timeout:
+                event._dialog_cancelled = True
+                self.after(0, lambda e=event: self._dismiss_modal_dialog(target_event=e))
                 return "timeout"
             event.wait(timeout=poll_interval)
-        return "completed" 
+        return "completed"
 
     # ── QC Dialog ────────────────────────────────────────────────────────────
     def _show_qc_dialog(self, issues: list, result_holder: list, done_event: threading.Event):
         """Show QC review dialog. Must be called on main thread."""
+        if getattr(done_event, "_dialog_cancelled", False):
+            return
         if not issues:
             done_event.set()
             return
@@ -10018,6 +10025,7 @@ class App(ctk.CTk):
         dlg.lift()
         dlg.focus_force()
         self._active_modal_dlg = dlg   # worker timeout'unda kapatabilmek için referans tut
+        self._active_modal_event = done_event
 
         ctk.CTkLabel(dlg,
                      text=f"{len(issues)} potansiyel çeviri sorunu tespit edildi. "
@@ -10065,11 +10073,13 @@ class App(ctk.CTk):
                 if v.get():
                     result_holder.append(issues[i])
             self._active_modal_dlg = None
+            self._active_modal_event = None
             dlg.destroy()
             done_event.set()
 
         def cancel():
             self._active_modal_dlg = None
+            self._active_modal_event = None
             dlg.destroy()
             done_event.set()
 
@@ -10138,6 +10148,8 @@ class App(ctk.CTk):
     def _show_glossary_dialog(self, suggestions: list, result_holder: list,
                                done_event: threading.Event, glossary_path: str):
         """Show glossary suggestion review dialog. Must be called on main thread."""
+        if getattr(done_event, "_dialog_cancelled", False):
+            return
         if not suggestions:
             done_event.set()
             return
@@ -10157,6 +10169,7 @@ class App(ctk.CTk):
         dlg.lift()
         dlg.focus_force()
         self._active_modal_dlg = dlg   # worker timeout'unda kapatabilmek için referans tut
+        self._active_modal_event = done_event
 
         dest_label = Path(glossary_path).name if glossary_path else "sözlük seçilmedi"
         ctk.CTkLabel(dlg,
@@ -10204,11 +10217,13 @@ class App(ctk.CTk):
                 if v.get():
                     result_holder.append(suggestions[i])
             self._active_modal_dlg = None
+            self._active_modal_event = None
             dlg.destroy()
             done_event.set()
 
         def cancel():
             self._active_modal_dlg = None
+            self._active_modal_event = None
             dlg.destroy()
             done_event.set()
 

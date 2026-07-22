@@ -121,8 +121,18 @@ class StopWaitDialogTest(unittest.TestCase):
         """Verify _dismiss_modal_dialog with target_dlg parameter ignores late calls from older dialogs."""
         mock_dlg1 = MagicMock()
         mock_dlg2 = MagicMock()
+        old_event = threading.Event()
+        current_event = threading.Event()
 
-        stub = SimpleNamespace(_active_modal_dlg=mock_dlg2)
+        stub = SimpleNamespace(
+            _active_modal_dlg=mock_dlg2,
+            _active_modal_event=current_event,
+        )
+
+        # An old worker must not close the current dialog even without its dialog reference.
+        gui.App._dismiss_modal_dialog(stub, target_event=old_event)
+        self.assertEqual(stub._active_modal_dlg, mock_dlg2)
+        mock_dlg2.destroy.assert_not_called()
         
         # Calling dismiss with old dialog (mock_dlg1) when active is mock_dlg2 should be a no-op
         gui.App._dismiss_modal_dialog(stub, target_dlg=mock_dlg1)
@@ -132,7 +142,30 @@ class StopWaitDialogTest(unittest.TestCase):
         # Calling dismiss with current active dialog (mock_dlg2) should destroy it
         gui.App._dismiss_modal_dialog(stub, target_dlg=mock_dlg2)
         self.assertIsNone(stub._active_modal_dlg)
+        self.assertIsNone(stub._active_modal_event)
         mock_dlg2.destroy.assert_called_once()
+
+    def test_cancelled_event_does_not_open_late_qc_dialog(self):
+        """A GUI callback queued before timeout must not create a dialog afterwards."""
+        stub = self._make_stub()
+        event = threading.Event()
+        event._dialog_cancelled = True
+        stub._build_qc_dialog = MagicMock()
+
+        gui.App._show_qc_dialog(stub, [{"id": "1"}], [], event)
+
+        stub._build_qc_dialog.assert_not_called()
+
+    @patch("subtitle_translator_gui.ctk.CTkToplevel")
+    def test_cancelled_event_does_not_open_late_glossary_dialog(self, toplevel):
+        """A timed-out glossary callback must not create an orphaned window."""
+        stub = self._make_stub()
+        event = threading.Event()
+        event._dialog_cancelled = True
+
+        gui.App._show_glossary_dialog(stub, [{"src": "AI", "tgt": "YZ"}], [], event, "")
+
+        toplevel.assert_not_called()
 
 
 if __name__ == "__main__":
