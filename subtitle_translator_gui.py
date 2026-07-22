@@ -7407,22 +7407,47 @@ class App(ctk.CTk):
             + ("…" if n > 5 else ""))
 
     def _add_folder_files(self):
-        self.attributes("-topmost", True)
-        path = filedialog.askdirectory(parent=self, title="Altyazı Klasörü Ekle")
-        self.attributes("-topmost", False)
-        if not path:
+        paths = []
+        while True:
+            self.attributes("-topmost", True)
+            path = filedialog.askdirectory(parent=self, title="Altyazı Klasörü Ekle")
+            self.attributes("-topmost", False)
+            if not path:
+                break
+            paths.append(path)
+            if not messagebox.askyesno(
+                    "Klasör Ekle", "Başka bir klasör daha eklemek ister misiniz?",
+                    parent=self):
+                break
+        if not paths:
             return
-        files = get_subtitle_files(path, recursive=True)
+
+        self._append_folder_files(paths)
+
+    def _append_folder_files(self, paths: list[str]):
+        """Bir veya daha fazla klasörün altyazılarını mevcut seçime ekle."""
+        files = []
+        empty = []
+        for path in self._dedupe_paths(paths):
+            found = get_subtitle_files(path, recursive=True)
+            if found:
+                files.extend(found)
+            else:
+                empty.append(path)
         if not files:
-            self._log(f"'{path}' içinde altyazı yok.", "warn")
-            return
+            for path in empty:
+                self._log(f"'{path}' içinde altyazı yok.", "warn")
+            return 0
         before = len(self._selected_files)
         self._content_type_preflight_done = False
         self._selected_files = self._dedupe_paths(list(self._selected_files) + files)
         added = len(self._selected_files) - before
         total = len(self._selected_files)
+        for path in empty:
+            self._log(f"'{path}' içinde altyazı yok.", "warn")
         self._refresh_selected_files_ui(
-            f"Klasör eklendi: {path}  (+{added} yeni, toplam {total} dosya)")
+            f"{len(paths)} klasör eklendi: +{added} yeni, toplam {total} dosya")
+        return added
 
     def _helper_model_config(self, role: str):
         if role not in self.helper_model_vars:
