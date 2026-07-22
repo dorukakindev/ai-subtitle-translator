@@ -3135,9 +3135,13 @@ def quality_check_with_helper(
 
         all_pairs = []
         for c in cues:
-            tr_text = tr_dict.get(str(c.index), "")
+            if hasattr(c, "text"):
+                cue_id, cue_text = c.index, c.text
+            else:
+                cue_id, cue_text = c[0], c[2]
+            tr_text = tr_dict.get(str(cue_id), "")
             if tr_text and tr_text != "[HATA]":
-                all_pairs.append({"id": str(c.index), "orig": c.text, "tr": tr_text})
+                all_pairs.append({"id": str(cue_id), "orig": cue_text, "tr": tr_text})
 
         if not all_pairs:
             return []

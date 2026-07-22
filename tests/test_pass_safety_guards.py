@@ -5,6 +5,27 @@ import hybrid_translate as ht
 
 class PassSafetyGuardsTest(unittest.TestCase):
 
+    def test_qc_review_accepts_tuple_cues_from_plain_pipeline(self):
+        cues = [("1", "00:00:01,000 --> 00:00:02,000", "Real source")]
+        tr_blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Gerçek çeviri")]
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = (
+            '{"issues":[{"id":"1","original":"Real source",'
+            '"current":"Gerçek çeviri","problem":"Sorun","suggestion":"Düzeltme",'
+            '"severity":"low"}]}'
+        )
+
+        with patch("openai.OpenAI") as mock_openai:
+            client = MagicMock()
+            mock_openai.return_value = client
+            client.chat.completions.create.return_value = response
+
+            issues = ht.quality_check_with_helper(cues, tr_blocks, helper_api_key="test_key")
+
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["original"], "Real source")
+
     def test_qc_review_cross_chunk_id_not_returned(self):
         """QC yalnızca aktif chunk içindeki ID için issue üretebilir."""
         cues = [MagicMock(index=i, text=f"Source {i}") for i in range(1, 202)]

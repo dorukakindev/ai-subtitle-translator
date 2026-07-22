@@ -9636,11 +9636,10 @@ class App(ctk.CTk):
                 # Kaynağı + analiz önbelleğini DOSYA BAŞINA BİR KEZ yükle (critic/native/qc
                 # paylaşır) — eskiden her geçiş dosyayı yeniden parse edip önbelleği tekrar okuyordu.
                 orig_cues = None
-                if do_critic or do_qc or do_native:
-                    try:
-                        orig_cues = ht.load_subtitle(fp)
-                    except Exception:
-                        orig_cues = None
+                try:
+                    orig_cues = ht.load_subtitle(fp)
+                except Exception:
+                    orig_cues = None
                 analysis_result = (ht.load_context_cache(
                     fp,
                     expected_target=self.tgt_var.get(),
@@ -9755,7 +9754,6 @@ class App(ctk.CTk):
                     _raw_map = _raw_src_map_from_cues(orig_cues)
                     blocks, _ = _fill_hata_with_source(blocks, _raw_map, log_fn=self._log)
                     blocks = _restore_tags_blocks(blocks, _raw_map)
-                    self._store_tm_pairs(blocks, _src_map_from_cues(orig_cues), self._main_model_name(), tgt)
 
                 write_srt(fp, blocks)
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
@@ -11984,15 +11982,15 @@ class App(ctk.CTk):
                                 if _issues:
                                     _auto_qc, _review_qc = ht.split_qc_issues_for_review(_issues)
                                     if _auto_qc:
-                                        _qc_fixes += len(_auto_qc)
-                                        _qc_auto_fixes += len(_auto_qc)
                                         _before_pass = list(pp)
                                         self._log(f"QC auto: {len(_auto_qc)} düşük/orta severity düzeltme uygulanıyor", "info")
                                         pp = ht.qc_auto_fix(
                                             issues=_auto_qc, tr_blocks=pp, openai_api_key=openai_key,
                                             model="gpt-5.4-mini",
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"), log_fn=self._log)
-                                        _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
+                                        _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
+                                        _qc_fixes += _n_auto
+                                        _qc_auto_fixes += _n_auto
                                     _appr = []
                                     if _review_qc:
                                         _qcev = threading.Event()
@@ -12001,13 +11999,13 @@ class App(ctk.CTk):
                                         _qcev.wait(timeout=300)
                                         self.after(0, self._dismiss_modal_dialog)   # timeout'ta kalan zombi dialog'u kapat
                                     if _appr:
-                                        _qc_fixes += len(_appr)
                                         _before_pass = list(pp)
                                         pp = ht.qc_auto_fix(
                                             issues=_appr, tr_blocks=pp, openai_api_key=openai_key,
                                             model="gpt-5.4-mini", # Kullanıcı isteği üzerine hep gpt-5.4-mini
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"), log_fn=self._log)
-                                        _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
+                                        _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
+                                        _qc_fixes += _n_approved
                             # CPS uyarısı — diğer akışlarla paritede
                             _log_cps_warning(pp, self._log)
                             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
@@ -12301,27 +12299,6 @@ class App(ctk.CTk):
                     sorted_blocks, self._helper_api_key("qc"),
                     self._helper_api_base_url("qc"), self._helper_api_model("qc"), _tgt_lang, src_map=src_blocks)
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
-            if self.qc_var.get() and sorted_blocks and not self._stop_flag:
-                try:
-                    _before_pass = list(sorted_blocks)
-                    _qc_issues = ht.quality_check_with_helper(
-                        cues=_src_cues, tr_blocks=sorted_blocks,
-                        helper_api_key=self._helper_api_key("qc"),
-                        helper_url=self._helper_api_base_url("qc"),
-                        helper_model=self._helper_api_model("qc"),
-                        tgt_lang=_tgt_lang, log_fn=self._log)
-                    if _qc_issues:
-                        sorted_blocks = ht.qc_auto_fix(
-                            issues=_qc_issues,
-                            tr_blocks=sorted_blocks,
-                            openai_api_key=openai_key,
-                            model=model_name,
-                            tgt_lang=_tgt_lang,
-                            base_url=self._helper_api_base_url("qc"),
-                            log_fn=self._log)
-                    _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
-                except Exception as e:
-                    self._log(f"QC hatası: {e}", "warn")
             if self.clean_sdh_var.get():
                 _before_pass = list(sorted_blocks)
                 # src_map=src_blocks: sync/batch akışları (bu fonksiyon) eskiden clean_sdh'ye
@@ -12334,6 +12311,17 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = apply_line_breaks(sorted_blocks)
                 _record_pass_change(_pass_trace, "Line-break", _before_pass, sorted_blocks, _pass_history)
+            if self.qc_var.get() and sorted_blocks and not self._stop_flag:
+                try:
+                    _before_pass = list(sorted_blocks)
+                    sorted_blocks = self._run_quality_check_inline(
+                        str(out_path), _src_cues, sorted_blocks,
+                        self._helper_api_key("qc"), self._helper_api_base_url("qc"),
+                        self._helper_api_model("qc"), _tgt_lang,
+                        analysis_result=_analysis_result)
+                    _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
+                except Exception as e:
+                    self._log(f"QC hatası: {e}", "warn")
             # Çevrilemeyen satırları sync ile onarma denemesi
             try:
                 if openai_key:
@@ -12924,16 +12912,7 @@ class App(ctk.CTk):
                 except Exception:
                     pass
                 
-                # [HATA] sat?rlar?n? g?r?n?r i?aretle b?rak + etiketleri geri uygula
                 _n_filled_save = 0
-                try:
-                    _raw_map = _raw_src_map_from_cues(cues)
-                    _final_blocks, _n_filled_save = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
-                    _final_blocks = _restore_tags_blocks(_final_blocks, _raw_map)
-                    write_srt(out_path, self._maybe_merge_cues(_final_blocks))
-                except Exception:
-                    pass
-
                 _unresolved_missing = sum(
                     1 for _idx, _ts, _txt in _final_blocks
                     if str(_txt or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(_txt or "")
