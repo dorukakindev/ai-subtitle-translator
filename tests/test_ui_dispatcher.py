@@ -384,6 +384,40 @@ class UIDispatcherTest(unittest.TestCase):
             resume_src.index("threading.Thread(target=_guarded_resume"),
         )
 
+    def test_set_running_refreshes_and_clears_snapshot_on_main_thread(self):
+        button = SimpleNamespace(configure=lambda **kwargs: None)
+        snapshot = {"notify_desktop": True, "marker": "fresh"}
+        stub = SimpleNamespace(
+            start_btn=button,
+            resume_btn=button,
+            jsonl_btn=button,
+            postprocess_btn=button,
+            stop_btn=button,
+            pause_btn=button,
+            _active_snapshot={"marker": "stale"},
+            _take_run_snapshot=lambda: snapshot,
+            _start_elapsed_timer=lambda: None,
+            _stop_elapsed_timer=lambda: None,
+            _job_rows={},
+        )
+
+        gui.App._set_running(stub, True)
+        self.assertIs(stub._active_snapshot, snapshot)
+        gui.App._set_running(stub, False)
+        self.assertIsNone(stub._active_snapshot)
+
+    def test_jsonl_worker_uses_values_captured_before_thread_launch(self):
+        src = inspect.getsource(gui.App._import_jsonl)
+        worker_at = src.index("def _do():")
+        for assignment in (
+            "src = self.src_var.get()",
+            "tgt = self.tgt_var.get()",
+            "clean_sdh_on = self.clean_sdh_var.get()",
+            "polish_on = self.polish_var.get()",
+            "profanity = self.profanity_var.get()",
+        ):
+            self.assertLess(src.index(assignment), worker_at)
+
     def test_no_direct_self_after_zero_calls_remain_in_gui(self):
         """10. Verify zero self.after(0) calls remain in subtitle_translator_gui.py."""
         src = inspect.getsource(gui)

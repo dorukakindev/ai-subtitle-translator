@@ -6931,8 +6931,10 @@ class App(ctk.CTk):
         self.pause_btn.configure(state="normal" if running else "disabled")
         self._is_running = running
         if running:
+            self._active_snapshot = self._take_run_snapshot()
             self._start_elapsed_timer()
         else:
+            self._active_snapshot = None
             self._stop_elapsed_timer()
             if self._job_rows:
                 self._set_phase("Hazır", "")
@@ -8833,12 +8835,17 @@ class App(ctk.CTk):
         if not out_path:
             return
 
+        self._set_running(True)
+        src = self.src_var.get()
+        tgt = self.tgt_var.get()
+        clean_sdh_on = self.clean_sdh_var.get()
+        polish_on = self.polish_var.get()
+        profanity = self.profanity_var.get()
+        schema = self._get_schema()
+
         def _do():
-            self._set_running(True)
             api_key = self._main_api_key()
             b_url = self._main_api_base_url()
-            src = self.src_var.get()
-            tgt = self.tgt_var.get()
             self._set_status("JSONL → SRT dönüştürülüyor...")
             try:
                 # Timestamps from original SRT
@@ -8900,18 +8907,18 @@ class App(ctk.CTk):
                     blocks.append((idx_str, ts, txt))
 
                 # Apply SDH cleaning if enabled
-                if self.clean_sdh_var.get():
+                if clean_sdh_on:
                     blocks = clean_sdh(blocks)
 
                 # Apply Polish Pass if enabled
-                if self.polish_var.get() and blocks:
+                if polish_on and blocks:
                     self._set_status("Doğallaştırma...")
                     self._log(f"Polish Pass başlıyor ({len(blocks)} satır)...", "info")
                     _mm_key = self._helper_api_key("polish")
                     _mm_url = self._helper_api_base_url("polish")
                     _mm_mdl = self._helper_api_model("polish")
                     blocks = self._polish_pass(
-                        blocks, self.tgt_var.get(), _mm_key, _mm_url, _mm_mdl,
+                        blocks, tgt, _mm_key, _mm_url, _mm_mdl,
                         src_map=_src_map_from_cues(cues))
                     self._log("Polish Pass tamamlandı", "ok")
                     blocks, _ = ht.final_consistency_sweep(cues, blocks, log_fn=self._log)
@@ -8925,7 +8932,7 @@ class App(ctk.CTk):
                             blocks, _raw_map_pre, _repair_client,
                             src_lang=src, tgt_lang=tgt,
                             model="gpt-5.4-mini", # Kullanıcı isteği üzerine hep gpt-5.4-mini
-                            schema=self._get_schema(), profanity=self.profanity_var.get(),
+                            schema=schema, profanity=profanity,
                             log_fn=self._log, token_cb=self._update_tokens)
                     except Exception:
                         pass
