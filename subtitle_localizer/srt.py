@@ -25,17 +25,17 @@ def parse_srt(text: str) -> list[Cue]:
     if not normalized:
         return []
 
-    cues: list[Cue] = []
+    parsed = []
     blocks = re.split(r"\n\s*\n", normalized)
-    auto_index = 1
     for block in blocks:
         lines = [line.rstrip() for line in block.split("\n") if line.strip()]
         if not lines:
             continue
 
-        idx = auto_index
+        idx = None
         time_line_pos = 0
         if len(lines) >= 2 and _TIME_RE.match(lines[1].strip()):
+            idx = int(lines[0].strip()) if re.fullmatch(r"\d+", lines[0].strip()) else None
             time_line_pos = 1
         elif not _TIME_RE.match(lines[0].strip()):
             continue
@@ -45,8 +45,12 @@ def parse_srt(text: str) -> list[Cue]:
             continue
 
         body = "\n".join(lines[time_line_pos + 1:]).strip()
-        cues.append(Cue(idx, m.group("start").replace(".", ","), m.group("end").replace(".", ","), body))
-        auto_index += 1
+        parsed.append((idx, m.group("start").replace(".", ","),
+                       m.group("end").replace(".", ","), body))
 
-    return cues
-
+    raw_ids = [idx for idx, _start, _end, _body in parsed]
+    valid_ids = bool(raw_ids) and all(idx is not None for idx in raw_ids)
+    if valid_ids:
+        valid_ids = all(a < b for a, b in zip(raw_ids, raw_ids[1:]))
+    return [Cue(idx if valid_ids else pos, start, end, body)
+            for pos, (idx, start, end, body) in enumerate(parsed, 1)]

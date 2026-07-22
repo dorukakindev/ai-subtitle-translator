@@ -314,7 +314,7 @@ class ParseSrtEdgeCasesTest(unittest.TestCase):
         import subtitle_translator_gui as gui
         blocks = gui.parse_srt(path)
         self.assertEqual(len(blocks), 3)
-        self.assertEqual([b[0] for b in blocks], ["1", "2", "3"])
+        self.assertEqual([b[0] for b in blocks], ["1", "3", "7"])
         os.unlink(path)
 
     def test_localizer_srt_duplicate_handling(self):
@@ -323,6 +323,12 @@ class ParseSrtEdgeCasesTest(unittest.TestCase):
         cues = localizer_srt.parse_srt(srt)
         self.assertEqual(len(cues), 2)
         self.assertEqual([c.index for c in cues], [1, 2])
+
+    def test_localizer_preserves_unique_increasing_gaps(self):
+        srt = "1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n3\n00:00:03,000 --> 00:00:04,000\nSecond\n"
+        import subtitle_localizer.srt as localizer_srt
+        cues = localizer_srt.parse_srt(srt)
+        self.assertEqual([c.index for c in cues], [1, 3])
 
 
 if __name__ == "__main__":

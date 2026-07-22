@@ -1550,21 +1550,26 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
 
 # ── SRT yardımcıları ──────────────────────────────────────────────────────────
 def parse_srt(filepath):
-    blocks = []
+    parsed = []
     content = read_subtitle_text(filepath).strip()
-    auto_idx = 0
     for block in re.split(r"\n[ \t]*\n+", content):
         lines = block.strip().splitlines()
         # Numarasız SRT (ilk satır doğrudan zaman damgası) → sıralı index uydur
         if len(lines) >= 2 and "-->" in lines[0]:
-            auto_idx += 1
-            blocks.append((str(auto_idx), lines[0].strip(), "\n".join(lines[1:]).strip()))
+            parsed.append((None, lines[0].strip(), "\n".join(lines[1:]).strip()))
             continue
         if len(lines) < 3:
             continue
-        auto_idx += 1
-        blocks.append((str(auto_idx), lines[1].strip(), "\n".join(lines[2:]).strip()))
-    return blocks
+        parsed.append((lines[0].strip(), lines[1].strip(), "\n".join(lines[2:]).strip()))
+    raw_ids = [idx for idx, _ts, _text in parsed]
+    valid_ids = bool(raw_ids) and all(idx is not None and re.fullmatch(r"\d+", idx)
+                                      for idx in raw_ids)
+    if valid_ids:
+        numeric_ids = [int(idx) for idx in raw_ids]
+        valid_ids = all(a < b for a, b in zip(numeric_ids, numeric_ids[1:]))
+    if valid_ids:
+        return [(idx, ts, text) for idx, ts, text in parsed]
+    return [(str(i), ts, text) for i, (_idx, ts, text) in enumerate(parsed, 1)]
 
 def parse_subtitle(filepath: str) -> list:
     """Uzantıya göre uygun parser'ı seçer: .srt, .vtt, .ass, .ssa"""
