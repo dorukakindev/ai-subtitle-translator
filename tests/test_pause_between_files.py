@@ -182,8 +182,8 @@ class PauseBetweenFilesTest(unittest.TestCase):
         self.assertIn("if _all_written:", run_sync)
         self.assertIn("final_written = self._write_results(", run_batch)
         self.assertIn("regular_written = self._write_results(", resume)
-        self.assertIn("if not all_written:", write_results)
-        self.assertIn("return False", write_results)
+        self.assertIn('if not summary["is_full_success"]:', write_results)
+        self.assertIn('return summary["is_recovery_complete"]', write_results)
 
     def test_sync_hybrid_marks_file_done_before_pause_checkpoint(self):
         """A fully written file stays visibly complete if Stop is pressed while paused."""

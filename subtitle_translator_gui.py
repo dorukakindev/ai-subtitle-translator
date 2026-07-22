@@ -4203,16 +4203,20 @@ def summarize_file_outcomes(
     nf = len(failed_files or [])
     nk = len(skipped_files or [])
     total = max(total_files, nc + nf + nk)
+    pending = max(0, total - nc - nf - nk)
 
     is_full_success = (nc == total) and (nf == 0) and (nk == 0) and (nc > 0) and not stop_flag
     is_partial_success = (nc > 0) and not is_full_success and not stop_flag
-    is_failure = (nc == 0) and not stop_flag
+    is_failure = (nc == 0) and (nf > 0 or pending > 0) and not stop_flag
+    is_recovery_complete = (pending == 0) and (nf == 0) and not stop_flag
 
     details = []
     if nf > 0:
         details.append(f"{nf} hata")
     if nk > 0:
         details.append(f"{nk} atlandı/silindi")
+    if pending > 0:
+        details.append(f"{pending} bekliyor")
 
     det_str = f" ({', '.join(details)})" if details else ""
 
@@ -4225,6 +4229,9 @@ def summarize_file_outcomes(
     elif stop_flag:
         summary_text = f"Durduruldu — {nc}/{total} dosya yazıldı{det_str}"
         title_text = "İşlem Durduruldu"
+    elif nk == total and total > 0:
+        summary_text = f"0/{total} dosya çevrildi{det_str}"
+        title_text = "İşlem Tamamlandı"
     else:
         summary_text = f"Çeviri başarısız ({total} dosya işlenemedi){det_str}"
         title_text = "Çeviri Başarısız ❌"
@@ -4233,10 +4240,12 @@ def summarize_file_outcomes(
         "completed_count": nc,
         "failed_count": nf,
         "skipped_count": nk,
+        "pending_count": pending,
         "total_count": total,
         "is_full_success": is_full_success,
         "is_partial_success": is_partial_success,
         "is_failure": is_failure,
+        "is_recovery_complete": is_recovery_complete,
         "summary_text": summary_text,
         "title_text": title_text,
     }
@@ -11175,6 +11184,7 @@ class App(ctk.CTk):
                 if not cues:
                     self._log(f"{fname}: geçerli SRT bloğu yok, atlandı", "warn")
                     self._update_file_progress(filepath, "Atlandı", 0, "skip")
+                    skipped_files.append(filepath)
                     continue
                 # ── Çıktı dosyası zaten varsa ve tamamsa atla ───────────────
                 out_path = _resolve_output_path(input_dir, output_dir, filepath,
@@ -11188,6 +11198,7 @@ class App(ctk.CTk):
                             if not has_hata:
                                 self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
                                 self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
+                                completed_files.append(filepath)
                                 file_pct = int((fi + 1) / n_files * 100)
                                 self._set_progress(file_pct)
                                 continue
@@ -11284,6 +11295,7 @@ class App(ctk.CTk):
             except Exception as e:
                 self._log_exc(f"[{fname}] Yardimci analiz hatası — dosya atlanıyor", e)
                 self._update_file_progress(filepath, "Analiz hatası", 10, "error")
+                failed_files.append(filepath)
                 continue
 
             # ── OpenAI sync ───────────────────────────────────────────────────
@@ -11654,8 +11666,8 @@ class App(ctk.CTk):
         summary = summarize_file_outcomes(
             completed_files, failed_files, skipped_files, total_files=n_files, stop_flag=self._stop_flag
         )
-        if summary["is_full_success"]:
-            self._clear_sync_ckpt()   # tüm dosyalar eksiksiz tamamlandı — kurtarma kaydı silinir
+        if summary["is_recovery_complete"]:
+            self._clear_sync_ckpt()   # tamamlanan veya bilinçli atlanan tüm dosyalar muhasebeleştirildi
         self._save_quality_report(report_rows, output_dir)
         self._set_running(False)
         self._set_eta("")
@@ -12591,7 +12603,9 @@ class App(ctk.CTk):
         warn_txt = f"  ({total_warnings} kalite uyarısı)" if total_warnings else ""
         if not summary["is_full_success"]:
             self._log(f"\n{summary['summary_text']} → {output_dir}{warn_txt}", "warn")
-            return False
+            if not self._stop_flag and summary["completed_count"] > 0:
+                self._notify(summary["title_text"], f"{summary['summary_text']} → {output_dir}")
+            return summary["is_recovery_complete"]
         self._log(f"\n{summary['summary_text']} → {output_dir}{warn_txt}", "ok")
         self._notify(summary["title_text"], f"{summary['summary_text']} → {output_dir}")
         # Diff penceresi için son dosyanın sonuçlarını hazırla (döngüde parse edilen
@@ -13363,22 +13377,39 @@ class App(ctk.CTk):
         self._set_running(False)
         if not self._stop_flag:
             self._set_progress(100)
-            self._set_status("Tamamlandı.")
-            # Tüm dosyalar tamamlandıysa oturum dosyasını + batch kurtarma kaydını temizle
-            # (yoksa Resume bu hybrid batch'leri tekrar indirip işlenmiş çıktının
-            #  üzerine yazardı)
-            _final_summary = ht.batch_session_summary(session, srt_files)
-            if _final_summary["pending"] == 0 and _final_summary["submitted"] == 0:
+            _completed_files = []
+            _failed_files = []
+            _skipped_files = []
+            for _filepath in srt_files:
+                _file_status = session["files"].get(str(_filepath), {}).get("status", "pending")
+                if _file_status == "completed":
+                    _completed_files.append(_filepath)
+                elif self._is_queued_file_removed(_filepath):
+                    _skipped_files.append(_filepath)
+                elif _file_status == "failed":
+                    _failed_files.append(_filepath)
+            _outcome = summarize_file_outcomes(
+                _completed_files, _failed_files, _skipped_files, n_files)
+            if _outcome["is_full_success"]:
+                self._set_status("Tamamlandı.")
+            elif _outcome["is_partial_success"]:
+                self._set_status("Kısmen tamamlandı.")
+            elif _outcome["is_failure"]:
+                self._set_status("Başarısız.")
+            else:
+                self._set_status("Tamamlandı.")
+            if _outcome["is_recovery_complete"]:
                 ht.clear_batch_session(input_dir)
                 self._clear_batch_recovery([s[4] for s in submitted])
                 self._log("Oturum dosyası temizlendi (tüm dosyalar tamamlandı).", "info")
-            _done_count = _final_summary["completed"]
-            self._notify("Çeviri Tamamlandı ✓", f"{_done_count} dosya çevrildi → {output_dir}")
-            try:
-                self.after(0, lambda: messagebox.showinfo(
-                    "Tamamlandı", f"{_done_count} dosya çevrildi!\n\nKonum:\n{output_dir}"))
-            except Exception:
-                pass
+            self._notify(_outcome["title_text"], f"{_outcome['summary_text']} → {output_dir}")
+            if _outcome["completed_count"] > 0:
+                try:
+                    self.after(0, lambda: messagebox.showinfo(
+                        _outcome["title_text"],
+                        f"{_outcome['summary_text']}!\n\nKonum:\n{output_dir}"))
+                except Exception:
+                    pass
         else:
             self._set_status("Durduruldu.")
             self._log(

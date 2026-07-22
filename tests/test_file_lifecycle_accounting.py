@@ -44,6 +44,8 @@ class FileLifecycleAccountingTest(unittest.TestCase):
         self.assertIn("2/3 dosya çevrildi", summary["summary_text"])
         self.assertIn("1 atlandı/silindi", summary["summary_text"])
         self.assertEqual(summary["title_text"], "Çeviri Kısmen Tamamlandı ⚠️")
+        self.assertTrue(summary["is_recovery_complete"],
+                        "Intentionally removed files must not keep recovery state alive")
 
     def test_scenario_3_partial_success_one_completed_one_failed_one_skipped(self):
         """Scenario 3: 1 completed + 1 failed + 1 skipped -> partial success."""
@@ -63,6 +65,7 @@ class FileLifecycleAccountingTest(unittest.TestCase):
         self.assertIn("1 hata", summary["summary_text"])
         self.assertIn("1 atlandı/silindi", summary["summary_text"])
         self.assertEqual(summary["title_text"], "Çeviri Kısmen Tamamlandı ⚠️")
+        self.assertFalse(summary["is_recovery_complete"])
 
     def test_scenario_4_stopped_run_no_full_success(self):
         """Scenario 4: 1 completed, then stopped by user -> not full success, stop summary."""
@@ -77,6 +80,7 @@ class FileLifecycleAccountingTest(unittest.TestCase):
         self.assertFalse(summary["is_partial_success"])
         self.assertIn("Durduruldu", summary["summary_text"])
         self.assertEqual(summary["title_text"], "İşlem Durduruldu")
+        self.assertFalse(summary["is_recovery_complete"])
 
     def test_scenario_5_all_failed_run(self):
         """Scenario 5: 0 completed + 3 failed -> failure."""
@@ -92,6 +96,32 @@ class FileLifecycleAccountingTest(unittest.TestCase):
         self.assertTrue(summary["is_failure"])
         self.assertIn("Çeviri başarısız", summary["summary_text"])
         self.assertEqual(summary["title_text"], "Çeviri Başarısız ❌")
+        self.assertFalse(summary["is_recovery_complete"])
+
+    def test_all_intentionally_removed_is_not_failure_and_can_clear_recovery(self):
+        summary = gui.summarize_file_outcomes(
+            completed_files=[],
+            failed_files=[],
+            skipped_files=["f1.srt", "f2.srt"],
+            total_files=2,
+            stop_flag=False,
+        )
+        self.assertFalse(summary["is_failure"])
+        self.assertTrue(summary["is_recovery_complete"])
+        self.assertEqual(summary["pending_count"], 0)
+        self.assertEqual(summary["title_text"], "İşlem Tamamlandı")
+
+    def test_unaccounted_file_is_pending_and_preserves_recovery(self):
+        summary = gui.summarize_file_outcomes(
+            completed_files=["f1.srt"],
+            failed_files=[],
+            skipped_files=[],
+            total_files=2,
+            stop_flag=False,
+        )
+        self.assertEqual(summary["pending_count"], 1)
+        self.assertFalse(summary["is_recovery_complete"])
+        self.assertIn("1 bekliyor", summary["summary_text"])
 
     def test_diff_preview_uses_last_written_file(self):
         """Verify _write_results selects the last written file for diff preview instead of unwritten files."""
@@ -100,16 +130,19 @@ class FileLifecycleAccountingTest(unittest.TestCase):
                       "Diff preview must select from _written_files[-1] rather than file_blocks.keys()")
 
     def test_source_code_inspection_for_outcome_summary_integration(self):
-        """Verify summarize_file_outcomes is integrated across _run_sync_hybrid and _write_results."""
+        """Verify outcome accounting is integrated across every final write flow."""
         methods_to_check = [
             ("_run_sync_hybrid", gui.App._run_sync_hybrid),
             ("_write_results", gui.App._write_results),
+            ("_run_hybrid", gui.App._run_hybrid),
         ]
 
         for name, method in methods_to_check:
             src = inspect.getsource(method)
             self.assertIn("summarize_file_outcomes", src,
                           f"Missing summarize_file_outcomes call in {name}")
+            self.assertIn('is_recovery_complete', src,
+                          f"Recovery cleanup is not tied to terminal outcomes in {name}")
 
 
 if __name__ == "__main__":
