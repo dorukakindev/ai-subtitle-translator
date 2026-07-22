@@ -13,6 +13,7 @@ import traceback
 import unicodedata
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+from app_state import atomic_write_json, mutate_batch_ids, state_dir, state_path
 
 _SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -689,12 +690,40 @@ def clear_context_cache(filepath: str):
 #   "failed"    — Phase 1 or Phase 2 error (will retry on next run)
 
 def _session_dir() -> Path:
-    return Path(__file__).parent / "_batch_sessions"
+    return state_path(__file__, "_batch_sessions")
+
+
+def _batch_id_path() -> Path:
+    return state_path(__file__, "batch_id.txt")
+
+
+def _batch_fmap_path(batch_id: str) -> Path:
+    return state_path(__file__, f"batch_fmap_{batch_id}.json")
 
 
 def _session_path(input_dir: str) -> Path:
     h = hashlib.md5(str(input_dir).encode("utf-8")).hexdigest()[:12]
     return _session_dir() / f"{h}_session.json"
+
+
+def batch_session_fingerprint(input_dir: str, output_dir: str, filepaths: list,
+                              settings: dict) -> str:
+    files = []
+    for fp in filepaths or []:
+        p = Path(fp)
+        try:
+            st = p.stat()
+            files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
+        except OSError:
+            files.append((str(p), None, None))
+    payload = {
+        "input_dir": str(input_dir),
+        "output_dir": str(output_dir),
+        "files": files,
+        "settings": settings or {},
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
 def load_batch_session(input_dir: str) -> dict | None:
@@ -713,7 +742,8 @@ def load_batch_session(input_dir: str) -> dict | None:
         return None
 
 
-def create_batch_session(input_dir: str, output_dir: str, filepaths: list) -> dict:
+def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
+                         fingerprint: str = "") -> dict:
     """Create or merge a batch session for the given file list.
 
     If a session already exists for this input_dir, completed/submitted statuses
@@ -724,6 +754,9 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list) -> di
     """
     existing = load_batch_session(input_dir)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    if existing and fingerprint and existing.get("fingerprint") != fingerprint:
+        existing = None
 
     if existing:
         session = existing
@@ -744,6 +777,7 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list) -> di
             "updated_at": now,
             "input_dir": str(input_dir),
             "output_dir": output_dir,
+            "fingerprint": fingerprint,
             "files": {str(fp): {"status": "pending"} for fp in filepaths},
         }
 
@@ -755,10 +789,7 @@ def _save_batch_session(session: dict):
     session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     p = _session_path(session["input_dir"])
     p.parent.mkdir(exist_ok=True)
-    _tmp = p.with_suffix(".tmp")
-    with open(_tmp, "w", encoding="utf-8") as f:
-        json.dump(session, f, ensure_ascii=False, indent=2)
-    _tmp.replace(p)
+    atomic_write_json(p, session)
 
 
 def update_batch_session(session: dict, filepath: str, status: str,
@@ -801,7 +832,7 @@ def batch_session_summary(session: dict, filepaths: list) -> dict:
 def load_fmap_for_batch(batch_id: str) -> dict | None:
     """Load the saved file_map for a hybrid batch (stored by submit_batch)."""
     try:
-        fmap_path = Path(__file__).parent / f"batch_fmap_{batch_id}.json"
+        fmap_path = _batch_fmap_path(batch_id)
         if not fmap_path.exists():
             return None
         with open(fmap_path, encoding="utf-8") as f:
@@ -1611,7 +1642,8 @@ def _safe_chat_create(client, **kwargs):
     if not is_bedrock and not is_anthropic:
         if "bedrock" in base_url or "bedrock" in model_lower:
             is_bedrock = True
-        elif "anthropic" in base_url or ("claude" in model_lower and "anthropic" in base_url):
+        elif ("anthropic" in base_url or base_url.endswith("/messages")
+              or ("claude" in model_lower and "/messages" in base_url)):
             if "bedrock" not in base_url and "bedrock" not in model_lower:
                 is_anthropic = True
 
@@ -7750,6 +7782,7 @@ def submit_batch(
     output_path: str = None,
     source_path: str = None,
     output_dir: str = None,
+    base_url: str = "",
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
 
@@ -7760,12 +7793,16 @@ def submit_batch(
     _resolve_output_path: Kural 2'de araya dosya-adı alt-klasörü girer, ayrıca çıktı
     her zaman .srt iken kaynak .vtt/.ass olabilir)."""
     from openai import OpenAI
-    client = OpenAI(api_key=openai_api_key)
+    client = OpenAI(api_key=openai_api_key, base_url=base_url or None)
 
-    # Use a unique temp file so concurrent/sequential calls don't collide
-    jsonl_path = Path(__file__).parent / f"_batch_upload_{int(time.time()*1000)}.jsonl"
+    import tempfile
+    state_dir(__file__).mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".jsonl", prefix="_batch_upload_",
+        dir=state_dir(__file__), delete=False)
+    jsonl_path = Path(tmp.name)
     try:
-        with open(jsonl_path, "w", encoding="utf-8") as f:
+        with tmp as f:
             for req in requests:
                 f.write(json.dumps(req, ensure_ascii=False) + "\n")
 
@@ -7787,13 +7824,11 @@ def submit_batch(
     )
 
     # Append to batch_id.txt for resume (overwrite, batch_ids collected by caller)
-    bid_path = Path(__file__).parent / "batch_id.txt"
-    with open(bid_path, "a", encoding="utf-8") as f:
-        f.write(batch.id + "\n")
+    mutate_batch_ids(_batch_id_path(), add=[batch.id])
 
     # Save file_map for resume/recovery
     if file_map is not None:
-        fmap_path = Path(__file__).parent / f"batch_fmap_{batch.id}.json"
+        fmap_path = _batch_fmap_path(batch.id)
         fmap_data = {
             "type": "hybrid",
             "output_path": output_path or "",
@@ -7801,10 +7836,7 @@ def submit_batch(
             "output_dir": output_dir or "",     # resume: raporu doğru klasöre yaz
             "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
         }
-        _tmp = fmap_path.with_suffix(".json.tmp")
-        with open(_tmp, "w", encoding="utf-8") as f:
-            json.dump(fmap_data, f, ensure_ascii=False)
-        _tmp.replace(fmap_path)
+        atomic_write_json(fmap_path, fmap_data)
 
     if log_fn:
         log_fn(f"Batch gönderildi: {batch.id}", "ok")
@@ -7818,16 +7850,19 @@ def wait_for_batch(
     log_fn=None,
     stop_flag_fn=None,
     progress_fn=None,
-) -> str | None:
-    """Poll a batch until complete. Returns output_file_id or None."""
+    base_url: str = "",
+    detailed: bool = False,
+):
+    """Poll a batch. detailed=True terminal ve polling-abort durumlarını ayırır."""
     from openai import OpenAI
-    client = OpenAI(api_key=openai_api_key)
+    client = OpenAI(api_key=openai_api_key, base_url=base_url or None)
     consecutive_errors = 0
     max_consecutive_errors = 10
 
     while True:
         if stop_flag_fn and stop_flag_fn():
-            return None
+            return ({"output_file_id": None, "terminal": False, "status": "stopped"}
+                    if detailed else None)
 
         try:
             batch     = client.batches.retrieve(batch_id)
@@ -7843,10 +7878,12 @@ def wait_for_batch(
             if consecutive_errors >= max_consecutive_errors:
                 if log_fn:
                     log_fn(f"Batch sorgulama çok fazla hata verdi, iptal ediliyor: {batch_id}", "err")
-                return None
+                return ({"output_file_id": None, "terminal": False,
+                         "status": "polling_aborted"} if detailed else None)
             for _ in range(5):
                 if stop_flag_fn and stop_flag_fn():
-                    return None
+                    return ({"output_file_id": None, "terminal": False, "status": "stopped"}
+                            if detailed else None)
                 time.sleep(1)
             continue
 
@@ -7882,6 +7919,9 @@ def wait_for_batch(
                 except Exception as e:
                     if log_fn:
                         log_fn(f"Hata dosyası okunamadı: {e}", "err")
+            if detailed:
+                return {"output_file_id": batch.output_file_id,
+                        "terminal": True, "status": "completed"}
             return batch.output_file_id
         elif batch.status in ("failed", "expired", "cancelled"):
             if log_fn:
@@ -7910,11 +7950,13 @@ def wait_for_batch(
                 except Exception as e:
                     if log_fn:
                         log_fn(f"Hata dosyası okunamadı: {e}", "err")
-            return None
+            return ({"output_file_id": None, "terminal": True, "status": batch.status}
+                    if detailed else None)
 
         for _ in range(30):
             if stop_flag_fn and stop_flag_fn():
-                return None
+                return ({"output_file_id": None, "terminal": False, "status": "stopped"}
+                        if detailed else None)
             time.sleep(1)
 
 
@@ -7926,12 +7968,15 @@ def submit_and_wait(
     progress_fn=None,
     file_map: dict = None,
     output_path: str = None,
+    base_url: str = "",
 ) -> str | None:
     """Legacy wrapper: submit then wait. Use submit_batch+wait_for_batch for multi-file."""
-    batch_id = submit_batch(openai_api_key, requests, log_fn, file_map, output_path)
+    batch_id = submit_batch(openai_api_key, requests, log_fn, file_map, output_path,
+                            base_url=base_url)
     if batch_id is None:
         return None
-    return wait_for_batch(openai_api_key, batch_id, log_fn, stop_flag_fn, progress_fn)
+    return wait_for_batch(openai_api_key, batch_id, log_fn, stop_flag_fn, progress_fn,
+                          base_url=base_url)
 
 
 # ── Sonuçları kaydet ──────────────────────────────────────────────────────────
@@ -7960,6 +8005,7 @@ def save_results(
     log_fn=None,
     token_callback=None,
     src_cues: list = None,
+    base_url: str = "",
 ) -> tuple:
     """Returns (yazılan_satır_sayısı, eksik-çeviri işaretleme_sayısı).
 
@@ -7967,7 +8013,7 @@ def save_results(
     dosyasının içeriğini TEK birleşik SRT'ye yazmak için liste geçer. file_map her
     iki dalganın custom_id'lerini de kapsamalı (birleşik fmap)."""
     from openai import OpenAI
-    client  = OpenAI(api_key=openai_api_key)
+    client  = OpenAI(api_key=openai_api_key, base_url=base_url or None)
     _ids = output_file_id if isinstance(output_file_id, (list, tuple)) else [output_file_id]
     content = "\n".join(client.files.content(_id).text for _id in _ids if _id)
 
@@ -8003,12 +8049,14 @@ def save_results(
             finish_reason = body.get("choices", [{}])[0].get("finish_reason", "")
         except (IndexError, AttributeError, TypeError):
             pass
-        if finish_reason in ("length", "content_filter"):
+        if finish_reason == "content_filter":
             if log_fn:
                 log_fn(f"{cid}: yanıt kesildi (finish_reason={finish_reason})", "err")
             for (idx, start, end) in info:
                 srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
             continue
+        if finish_reason == "length" and log_fn:
+            log_fn(f"{cid}: yanıt kesildi; tamamlanan JSON öğeleri kurtarılıyor", "warn")
 
         if body.get("usage"):
             token_sum += body["usage"].get("total_tokens", 0)

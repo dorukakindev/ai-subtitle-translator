@@ -9,15 +9,17 @@ siler. Kilit bunu engeller: sahibi yaşayan batch'ler pencerede gösterilmez.
 """
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import subtitle_translator_gui as gui
+from app_state import STATE_DIR_ENV, state_path
 
 
 def _owner_path(pid):
-    return Path(gui.__file__).parent / f"{gui._BATCH_OWNER_PREFIX}{pid}.json"
+    return state_path(gui.__file__, f"{gui._BATCH_OWNER_PREFIX}{pid}.json")
 
 
 class PidAliveTest(unittest.TestCase):
@@ -45,11 +47,16 @@ class PidAliveTest(unittest.TestCase):
 
 class LiveOwnedBatchIdsTest(unittest.TestCase):
     def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {STATE_DIR_ENV: self._state.name})
+        self._env.start()
         self._made = []
 
     def tearDown(self):
         for p in self._made:
             p.unlink(missing_ok=True)
+        self._env.stop()
+        self._state.cleanup()
 
     def _write_owner(self, pid, ids):
         p = _owner_path(pid)

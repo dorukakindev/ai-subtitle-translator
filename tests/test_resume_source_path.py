@@ -19,14 +19,26 @@ KÖK SORUN (2026-07-17): resume, kaynak dosyayı ÇIKTI YOLUNDAN GERİYE HESAPLI
 bunları kullanıyor. Eski (source_path'siz) fmap'ler için eski yönteme düşülür.
 """
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import hybrid_translate as ht
+from app_state import STATE_DIR_ENV
 
 
 class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {STATE_DIR_ENV: self._state.name})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._state.cleanup()
+
     def _fake_client(self):
         from types import SimpleNamespace
 
@@ -41,9 +53,8 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
         return SimpleNamespace(files=_Files(), batches=_Batches())
 
     def test_fmap_stores_source_path_and_output_dir(self):
-        root = Path(ht.__file__).parent
-        fmap_path = root / "batch_fmap_batch_srcpath_test.json"
-        bid_path = root / "batch_id.txt"
+        fmap_path = ht._batch_fmap_path("batch_srcpath_test")
+        bid_path = ht._batch_id_path()
         # Kullanıcının GERÇEK batch_id.txt'si varsa test onu ezmesin/silmesin.
         saved_bid = bid_path.read_text(encoding="utf-8") if bid_path.exists() else None
         try:
@@ -66,9 +77,8 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
 
     def test_missing_optional_args_default_to_empty(self):
         # Geriye uyum: eski çağrı biçimi (source_path/output_dir verilmeden) patlamamalı
-        root = Path(ht.__file__).parent
-        fmap_path = root / "batch_fmap_batch_srcpath_test.json"
-        bid_path = root / "batch_id.txt"
+        fmap_path = ht._batch_fmap_path("batch_srcpath_test")
+        bid_path = ht._batch_id_path()
         saved_bid = bid_path.read_text(encoding="utf-8") if bid_path.exists() else None
         try:
             with patch("openai.OpenAI", return_value=self._fake_client()):

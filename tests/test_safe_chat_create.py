@@ -133,6 +133,15 @@ class SafeChatCreateModelCompatTest(unittest.TestCase):
             self.assertEqual(result, "bedrock_ok")
             mock_bedrock.assert_called_once()
 
+    def test_custom_messages_url_routes_to_anthropic(self):
+        client = mock.MagicMock()
+        client.base_url = "https://proxy.example/v1/messages"
+        client.api_key = "fake"
+        with mock.patch("helper_models.call_anthropic_messages", return_value="ok") as call:
+            self.assertEqual(
+                ht._safe_chat_create(client, model="custom-claude", messages=[]), "ok")
+            call.assert_called_once()
+
     def test_gui_version_identical_behavior(self):
         client = self._make_client()
         create = self._call(

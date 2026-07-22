@@ -113,6 +113,15 @@ class _SecurityApp:
 
 
 class SettingsBackupSecurityTest(unittest.TestCase):
+    def test_sanitizer_redacts_non_sk_custom_fields(self):
+        raw = ('{"main_custom_key":"AIza-value",'
+               '"openai_helper_key":"plain-provider-token",'
+               '"helper_analysis_key":"aws-value"}')
+        cleaned = gui._sanitize_settings_backup_text(raw)
+        self.assertNotIn("AIza-value", cleaned)
+        self.assertNotIn("plain-provider-token", cleaned)
+        self.assertNotIn("aws-value", cleaned)
+
     def test_broken_settings_backup_redacts_keys_and_keeps_last_three(self):
         with tempfile.TemporaryDirectory() as td:
             settings_path = Path(td) / ".gui_settings.json"

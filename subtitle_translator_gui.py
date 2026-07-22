@@ -20,6 +20,7 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
 import credential_store
 import series_memory
 import sdh_cleaner
+from app_state import atomic_write_json, mutate_batch_ids, state_dir, state_path
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
 
 # Tahmini 1M Token fiyatları (Input/Output $)
@@ -65,7 +66,8 @@ def _safe_chat_create(client, **kwargs):
     if not is_bedrock and not is_anthropic:
         if "bedrock" in base_url or "bedrock" in model_lower:
             is_bedrock = True
-        elif "anthropic" in base_url or ("claude" in model_lower and "anthropic" in base_url):
+        elif ("anthropic" in base_url or base_url.endswith("/messages")
+              or ("claude" in model_lower and "/messages" in base_url)):
             if "bedrock" not in base_url and "bedrock" not in model_lower:
                 is_anthropic = True
 
@@ -104,8 +106,7 @@ def _safe_chat_create(client, **kwargs):
 
 
 _SETTINGS_SECRET_KEY_RE = re.compile(
-    r'("(?:api_key|helper_key|minimax_key|gemini_key|deepseek_key|bedrock_key|anthropic_key|openai_key|'
-    r'helper_role_key_[^"]+|helper_custom_key_[^"]+)"\s*:\s*")([^"]*)(")',
+    r'("(?:[^"]*(?:api[_-]?key|secret|token|_key)[^"]*)"\s*:\s*")([^"]*)(")',
     re.I,
 )
 _SETTINGS_TOKEN_RE = re.compile(r"\b(?:sk|mk)-[A-Za-z0-9._\-]+\b")
@@ -3339,6 +3340,19 @@ def collect_results(raw_map, file_map, log_fn=None):
     return file_blocks
 
 
+def _slice_file_map(file_map: dict, requests: list) -> dict:
+    ids = {req.get("custom_id") for req in requests or []}
+    return {cid: info for cid, info in (file_map or {}).items() if cid in ids}
+
+
+def _regular_batch_groups_ready(groups: dict, recovery_safe: bool = True) -> bool:
+    return bool(recovery_safe and groups and all(
+        group.get("terminal")
+        and set(group.get("seen") or ()) == set(range(int(group.get("expected", 0))))
+        for group in groups.values()
+    ))
+
+
 _ALIGN_SDH_ONLY_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪*_\s]+)+$')
 _ALIGN_NUMBER_RE = re.compile(r'\d{2,}')
 # Özel-isim anchor'ı: Baş harf büyük + ardından ≥3 küçük harf (Ptahshepses, Abusir, Giza).
@@ -4466,7 +4480,7 @@ def _batch_id_path() -> Path:
     """batch_id.txt'nin yolu. Tek nokta olması testlerin GERÇEK dosyaya dokunmadan
     (patch'leyerek) çalışabilmesi içindir — canlı bir batch sürerken testin gerçek
     kurtarma dosyasını geçici de olsa ezmesi kabul edilemez."""
-    return Path(__file__).parent / "batch_id.txt"
+    return state_path(__file__, "batch_id.txt")
 
 
 def _pid_alive(pid: int) -> bool:
@@ -4525,7 +4539,7 @@ def _live_owned_batch_ids() -> set:
     import os as _os
     owned: set = set()
     try:
-        base = Path(__file__).parent
+        base = state_dir(__file__)
         my_pid = _os.getpid()
         for p in base.glob(_BATCH_OWNER_GLOB):
             try:
@@ -4643,7 +4657,7 @@ class App(ctk.CTk):
         # ── Log dosyası ───────────────────────────────────────────────────────
         import datetime
         import os as _os
-        _log_dir = Path(__file__).parent / "logs"
+        _log_dir = state_path(__file__, "logs")
         _log_dir.mkdir(exist_ok=True)
         rotate_logs(_log_dir)   # canlı oturumlar korunur; kalan en yeni 100 tutulur
         _stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -4653,7 +4667,7 @@ class App(ctk.CTk):
 
         # ── Translation Memory ────────────────────────────────────────────────
         from translation_memory import TranslationMemory
-        self._tm = TranslationMemory()
+        self._tm = TranslationMemory(state_path(__file__, "translation_memory.db"))
 
         # ── Project Memory ────────────────────────────────────────────────────
         from project_memory import ProjectMemory
@@ -4735,7 +4749,7 @@ class App(ctk.CTk):
         check_vars = {}
         status_labels = {}
         status_map = {}   # bid -> OpenAI status (arka plan sorgusu doldurur)
-        base = Path(__file__).parent
+        base = state_dir(__file__)
 
         for i, bid in enumerate(batch_ids):
             fmap_path = base / f"batch_fmap_{bid}.json"
@@ -4844,9 +4858,9 @@ class App(ctk.CTk):
             if unselected:
                 self._clear_batch_recovery(unselected)
             # batch_id.txt'yi sadece seçilenlerle güncelle
-            bid_path = Path(__file__).parent / "batch_id.txt"
+            bid_path = _batch_id_path()
             try:
-                bid_path.write_text("\n".join(selected), encoding="utf-8")
+                mutate_batch_ids(bid_path, replace=selected)
             except Exception:
                 pass
             self._resume()
@@ -4885,12 +4899,9 @@ class App(ctk.CTk):
             self._clear_batch_recovery(selected)
             # Kalan batch'ler
             remaining = [bid for bid, v in check_vars.items() if not v.get()]
-            bid_path = Path(__file__).parent / "batch_id.txt"
+            bid_path = _batch_id_path()
             try:
-                if remaining:
-                    bid_path.write_text("\n".join(remaining), encoding="utf-8")
-                else:
-                    bid_path.unlink(missing_ok=True)
+                mutate_batch_ids(bid_path, replace=remaining)
             except Exception:
                 pass
             dlg.destroy()
@@ -6963,7 +6974,7 @@ class App(ctk.CTk):
             try:
                 resp = _safe_chat_create(
                     client,
-                    model="gpt-5.4-mini", # Kullanıcı isteği üzerine hep gpt-5.4-mini
+                    model=req.get("body", {}).get("model") or self._main_model_name(),
                     messages=[
                         {"role": "system", "content": "You are a JSON repair assistant. Return only valid JSON."},
                         {"role": "user",   "content": json.dumps(repair_payload, ensure_ascii=False)},
@@ -7408,9 +7419,14 @@ class App(ctk.CTk):
             k = self.helper_role_key_vars[role].get().strip()
         if role in self.helper_custom_key_vars:
             k = k or self.helper_custom_key_vars[role].get().strip()
+        provider = self._get_current_helper_provider(role)
+        if not k:
+            cache_key = "openai_helper" if provider == "openai" else provider
+            k = self._helper_keys_cache.get(cache_key, "").strip()
         if not k and hasattr(self, "helper_key_entry") and self.helper_key_entry:
             k = self.helper_key_entry.get().strip()
-        if not k and hasattr(self, "api_key_entry") and self.api_key_entry:
+        if (not k and provider in {"openai", "openai_helper"}
+                and hasattr(self, "api_key_entry") and self.api_key_entry):
             k = self.api_key_entry.get().strip()
         return k
 
@@ -7668,7 +7684,7 @@ class App(ctk.CTk):
 
     # ── Ayarlar ───────────────────────────────────────────────────────────────
     def _settings_path(self):
-        return Path(__file__).parent / ".gui_settings.json"
+        return state_path(__file__, ".gui_settings.json")
 
 
     def _is_custom_helper_label(self, value: str) -> bool:
@@ -8226,7 +8242,7 @@ class App(ctk.CTk):
             if hybrid:                                  roles.append("analysis")
             if self.critic_var.get():                  roles.append("critic")
             if self.polish_var.get():                  roles.append("polish")
-            if self.native_var.get():                  roles.append("native")
+            if self.native_var.get():                  roles.append("qc")
             if self.qc_var.get():                      roles.append("qc")
             for role in roles:
                 hkey = self._helper_api_key(role)
@@ -8448,7 +8464,7 @@ class App(ctk.CTk):
         key = self._validate()
         if not key:
             return
-        bid_path = Path(__file__).parent / "batch_id.txt"
+        bid_path = _batch_id_path()
         if not bid_path.exists():
             messagebox.showerror("Hata", "batch_id.txt bulunamadı.")
             return
@@ -8647,11 +8663,11 @@ class App(ctk.CTk):
         threading.Thread(target=_do, daemon=True).start()
 
     # ── Aktif batch muhasebesi (durdururken uzak iptal için) ──────────────────
-    def _register_batch(self, batch_id: str, api_key: str):
+    def _register_batch(self, batch_id: str, api_key: str, base_url: str = ""):
         if not batch_id:
             return
         with self._batch_lock:
-            self._active_batches[batch_id] = api_key
+            self._active_batches[batch_id] = (api_key, base_url or "")
         self._write_batch_owner()
 
     def _unregister_batch(self, batch_id: str):
@@ -8668,15 +8684,14 @@ class App(ctk.CTk):
         kilidi asla ezilmez/silinmez. Aktif batch kalmayınca kendi dosyamız silinir."""
         import os as _os
         try:
-            p = Path(__file__).parent / f"{_BATCH_OWNER_PREFIX}{_os.getpid()}.json"
+            p = state_path(__file__, f"{_BATCH_OWNER_PREFIX}{_os.getpid()}.json")
             with self._batch_lock:
                 ids = sorted(self._active_batches.keys())
             if not ids:
                 p.unlink(missing_ok=True)
                 return
-            p.write_text(json.dumps({"pid": _os.getpid(), "ts": time.time(),
-                                     "batch_ids": ids}, ensure_ascii=False),
-                         encoding="utf-8")
+            atomic_write_json(p, {"pid": _os.getpid(), "ts": time.time(),
+                                  "batch_ids": ids})
         except Exception:
             pass   # kilit yazılamazsa eski davranışa düşülür (fail-open)
 
@@ -8686,7 +8701,7 @@ class App(ctk.CTk):
 
         Tamamlanan işten sonra çağrılır — yoksa '↺ Batch'i Devam Ettir' zaten biten
         işi yeniden indirip (hybrid'de) işlenmiş çıktının üzerine yazardı."""
-        base = Path(__file__).parent
+        base = state_dir(__file__)
         done = {str(b).strip() for b in (batch_ids or []) if str(b).strip()}
         if not done:
             return
@@ -8696,14 +8711,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
         try:
-            bid_path = base / "batch_id.txt"
-            if bid_path.exists():
-                remaining = [ln for ln in bid_path.read_text(encoding="utf-8").splitlines()
-                             if ln.strip() and ln.strip() not in done]
-                if remaining:
-                    bid_path.write_text("\n".join(remaining), encoding="utf-8")
-                else:
-                    bid_path.unlink(missing_ok=True)
+            mutate_batch_ids(_batch_id_path(), remove=done)
         except Exception:
             pass
 
@@ -8713,13 +8721,19 @@ class App(ctk.CTk):
         with self._batch_lock:
             items = list(self._active_batches.items())
             self._active_batches.clear()
-        for bid, key in items:
+        cancelled = []
+        for bid, auth in items:
+            if isinstance(auth, (tuple, list)):
+                key, base_url = auth[0], auth[1] if len(auth) > 1 else ""
+            else:
+                key, base_url = auth, ""
             try:
-                OpenAI(api_key=key).batches.cancel(bid)
+                OpenAI(api_key=key, base_url=base_url or None).batches.cancel(bid)
                 self._log(f"Batch iptal edildi: {bid}", "ok")
+                cancelled.append(bid)
             except Exception as e:
                 self._log(f"Batch iptal edilemedi ({bid}): {e}", "warn")
-        self._clear_batch_recovery([bid for bid, _ in items])
+        self._clear_batch_recovery(cancelled)
     def _toggle_pause_between_files(self):
         if self._pause_btw_files.is_set():
             self._pause_btw_files.clear()
@@ -10279,10 +10293,11 @@ class App(ctk.CTk):
 
         self._set_running(True)
         self._set_phase("İçerik Türü", f"{len(auto_files)} dosya ön analiz ediliyor")
-        self._set_status(f"İçerik türü ön analizi: {CONTENT_TYPE_DETECT_MODEL}")
+        detect_model = self._main_model_name() if self._main_custom_active() else CONTENT_TYPE_DETECT_MODEL
+        self._set_status(f"İçerik türü ön analizi: {detect_model}")
         self._log(
             f"{len(auto_files)} dosya çeviri başlamadan önce içerik türü için analiz ediliyor "
-            f"({CONTENT_TYPE_DETECT_MODEL})...",
+            f"({detect_model})...",
             "info",
         )
 
@@ -10293,7 +10308,7 @@ class App(ctk.CTk):
                 detected = self._detect_content_types_parallel(
                     client,
                     auto_files,
-                    CONTENT_TYPE_DETECT_MODEL,
+                    detect_model,
                 )
             except Exception as e:
                 self._log(f"İçerik türü ön analizi başarısız: {e}", "warn")
@@ -10442,7 +10457,7 @@ class App(ctk.CTk):
     # aynı işi tekrar başlatınca o chunk'lar API'ye GÖNDERİLMEZ (token/para tasarrufu).
     # JSONL append (O(1)/chunk). Başarılı tam koşudan sonra silinir.
     def _sync_ckpt_path(self) -> Path:
-        return Path(__file__).parent / ".sync_checkpoint.jsonl"
+        return state_path(__file__, ".sync_checkpoint.jsonl")
 
     def _ckpt_fingerprint(self) -> str:
         """Checkpoint imzasına giren ayar parmak izi. Model/hedef dil/üslup/küfür/tür
@@ -10457,7 +10472,7 @@ class App(ctk.CTk):
             return ""
 
     @staticmethod
-    def _chunk_src_hash(req, fingerprint: str = "") -> str:
+    def _chunk_src_hash(req, fingerprint: str = "", scope: str = "") -> str:
         """Chunk'ın çevrilecek KAYNAK satırları + ayar parmak izinin (fingerprint)
         imzası — kaynak içeriği YA DA model/ayarlar değişirse checkpoint eşleşmesin
         (bayat çeviri sunulmasın). 'tr' dışındaki alanlar (prev_tr enjeksiyonu vb.)
@@ -10465,7 +10480,10 @@ class App(ctk.CTk):
         try:
             pl = json.loads(req["body"]["messages"][1]["content"])
             srcs = "".join(str(it.get("t", "")) for it in pl.get("tr", []))
-            data = fingerprint + "\x1f" + srcs
+            scoped_fp = fingerprint
+            if scope:
+                scoped_fp += "\x1e" + str(scope)
+            data = scoped_fp + "\x1f" + srcs
             return hashlib.md5(data.encode("utf-8", "replace")).hexdigest()[:10]
         except Exception:
             return ""
@@ -10521,7 +10539,7 @@ class App(ctk.CTk):
             # Yeni (ayarsız) hash veya eski (ayarlı) hash ile eşleşirse kabul et
             is_match = False
             if ent and ent[0]:
-                h_new = self._chunk_src_hash(req)
+                h_new = self._chunk_src_hash(req, fp)
                 if ent[1] == h_new:
                     is_match = True
                 else:
@@ -10543,7 +10561,7 @@ class App(ctk.CTk):
                       f"yeniden çevrilmeyecek (kalan {len(still)} istek API'ye)", "ok")
         return still
 
-    def _prefill_sync_ckpt(self, reqs, raw_map) -> int:
+    def _prefill_sync_ckpt(self, reqs, raw_map, scope: str = "") -> int:
         """Checkpoint'teki (imzası eşleşen) tamamlanmış chunk'ları raw_map'e koyar; döngüler
         `cid in raw_map` ile atlar. (raw_map'i filtrelemez — chain prev_pairs için uygun.)"""
         ckpt = self._load_sync_ckpt()
@@ -10556,9 +10574,9 @@ class App(ctk.CTk):
             cid = req["custom_id"]
             ent = ckpt.get(cid)
             if ent and ent[0] and cid not in raw_map:
-                h_new = self._chunk_src_hash(req)
+                h_new = self._chunk_src_hash(req, fp, scope)
                 is_match = (ent[1] == h_new)
-                if not is_match:
+                if not is_match and not scope:
                     try:
                         pl = json.loads(req["body"]["messages"][1]["content"])
                         srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
@@ -10764,6 +10782,8 @@ class App(ctk.CTk):
                         return
                     cid      = req["custom_id"]
                     user_msg = req["body"]["messages"][1]
+                    if not _req_has_ctx(req):
+                        prev_pairs = []
                     if cid not in api_ids:
                         # TM önbellekten doldu — API çağrısı yok, sadece zinciri besle
                         tmap  = parse_response(raw_map.get(cid, ""), file_map[cid])
@@ -10881,7 +10901,7 @@ class App(ctk.CTk):
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
-                        if out_blocks and len(out_blocks) <= len(cues):
+                        if out_blocks and len(out_blocks) == len(cues):
                             has_hata = any(
                                 str(blk[2]).startswith("[HATA") or str(blk[2]).startswith("[ÇEVİRİ EKSİK]") for blk in out_blocks)
                             if not has_hata:
@@ -11016,7 +11036,8 @@ class App(ctk.CTk):
             completed = [0]
             failed    = [0]
             raw_map   = {}
-            self._prefill_sync_ckpt(batch_reqs, raw_map)   # çökme kurtarma: tamamlanmış chunk'lar
+            _ckpt_scope = str(Path(filepath).resolve())
+            self._prefill_sync_ckpt(batch_reqs, raw_map, scope=_ckpt_scope)
             start_ts  = time.time()
             lock      = threading.Lock()
             base_pct  = int((fi + 0.4) / n_files * 100)
@@ -11047,6 +11068,8 @@ class App(ctk.CTk):
                     if self._stop_flag:
                         break
                     cid_hint = req.get("custom_id", "?")
+                    if not _req_has_ctx(req):
+                        prev_pairs = []
                     # Çökme kurtarma: bu chunk önceki koşuda tamamlanmış → API'ye gönderme,
                     # yalnızca zinciri (prev_pairs) besle.
                     if cid_hint in raw_map:
@@ -11067,7 +11090,8 @@ class App(ctk.CTk):
                             completed[0] += 1
                         self._update_tokens(tok, cached=cached_tok)
                         self._save_sync_ckpt_entry(
-                            cid, text, self._chunk_src_hash(req, self._ckpt_fingerprint()))
+                            cid, text, self._chunk_src_hash(
+                                req, self._ckpt_fingerprint(), _ckpt_scope))
                         tmap  = parse_response(text, fmap.get(cid, []))
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
                         if pairs:
@@ -11095,7 +11119,8 @@ class App(ctk.CTk):
                                 completed[0] += 1
                             self._update_tokens(tok, cached=cached_tok)
                             self._save_sync_ckpt_entry(
-                            cid, text, self._chunk_src_hash(req, self._ckpt_fingerprint()))
+                            cid, text, self._chunk_src_hash(
+                                req, self._ckpt_fingerprint(), _ckpt_scope))
                         except Exception as e:
                             with lock:
                                 failed[0] += 1
@@ -11450,12 +11475,26 @@ class App(ctk.CTk):
         if len(chunks) > 1:
             self._log(f"50.000 limit — {len(chunks)} batch'e bölünüyor.", "warn")
 
+        import tempfile
+        import uuid
+        run_id = uuid.uuid4().hex
+        input_dir = self.input_var.get()
+        output_paths = {
+            fp: str(_resolve_output_path(
+                input_dir, output_dir, fp, same_folder=self.same_folder_var.get()))
+            for fp in valid_files
+        }
         batch_ids = []
+        batch_runs = []
         for ci, chunk in enumerate(chunks):
             if self._stop_flag:
                 break
-            jpath = Path(__file__).parent / f"batch_input_{ci}.jsonl"
-            with open(jpath, "w", encoding="utf-8") as f:
+            state_dir(__file__).mkdir(parents=True, exist_ok=True)
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".jsonl", prefix="batch_input_",
+                dir=state_dir(__file__), delete=False)
+            jpath = Path(tmp.name)
+            with tmp as f:
                 for req in chunk:
                     f.write(json.dumps(req, ensure_ascii=False) + "\n")
             _upload_failed = False
@@ -11468,18 +11507,22 @@ class App(ctk.CTk):
                     endpoint="/v1/chat/completions",
                     completion_window="24h")
                 batch_ids.append(batch.id)
-                self._register_batch(batch.id, api_key)
-                # Save file_map for resume
-                fmap_path = Path(__file__).parent / f"batch_fmap_{batch.id}.json"
+                mutate_batch_ids(_batch_id_path(), add=[batch.id])
+                self._register_batch(batch.id, api_key, b_url)
+                slice_fmap = _slice_file_map(file_map, chunk)
+                batch_runs.append((batch.id, slice_fmap, chunk))
+                fmap_path = state_path(__file__, f"batch_fmap_{batch.id}.json")
                 fmap_data = {
                     "type": "regular",
                     "output_dir": output_dir,
-                    "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
+                    "run_id": run_id,
+                    "part_index": ci,
+                    "part_count": len(chunks),
+                    "output_paths": output_paths,
+                    "requests": chunk,
+                    "fmap": {cid: [list(x) for x in info] for cid, info in slice_fmap.items()},
                 }
-                fmap_tmp = fmap_path.with_suffix(".json.tmp")
-                with open(fmap_tmp, "w", encoding="utf-8") as fmf:
-                    json.dump(fmap_data, fmf, ensure_ascii=False)
-                fmap_tmp.replace(fmap_path)
+                atomic_write_json(fmap_path, fmap_data)
                 self._log(f"Batch oluşturuldu: {batch.id}", "ok")
             except Exception as e:
                 self._log_exc("Hata", e)
@@ -11493,14 +11536,9 @@ class App(ctk.CTk):
                     pass
             if _upload_failed:
                 if batch_ids:
-                    try:
-                        Path(__file__).parent.joinpath("batch_id.txt").write_text(
-                            "\n".join(batch_ids), encoding="utf-8")
-                        self._log(f"{len(batch_ids)} batch gönderilmişti — "
-                                  f"'↺ Batch'i Devam Ettir' ile alınabilir veya "
-                                  f"Durdur ile iptal edilebilir.", "warn")
-                    except Exception:
-                        pass
+                    self._log(f"{len(batch_ids)} batch gönderilmişti — "
+                              f"'↺ Batch'i Devam Ettir' ile alınabilir veya "
+                              f"Durdur ile iptal edilebilir.", "warn")
                 msg = (f"Batch yükleme hatası (chunk {ci+1}/{len(chunks)}).\n"
                        f"{len(batch_ids)} batch OpenAI'ye teslim edildi — ücretlendirilebilir.\n"
                        f"'↺ Batch'i Devam Ettir' ile tamamlayabilir veya Durdur ile iptal edebilirsiniz.")
@@ -11511,29 +11549,39 @@ class App(ctk.CTk):
                     pass
                 return
 
-        Path(__file__).parent.joinpath("batch_id.txt").write_text("\n".join(batch_ids), encoding="utf-8")
         accumulated_raw_map = {}
         completed_bids = []   # YALNIZCA OpenAI'nin bitirdiği (terminal) batch'ler
-        for i, bid in enumerate(batch_ids):
+        all_terminal = len(batch_runs) == len(chunks)
+        for i, (bid, slice_fmap, _chunk) in enumerate(batch_runs):
             if self._stop_flag:
                 break
             if len(batch_ids) > 1:
                 self._log(f"\n── Batch {i+1}/{len(batch_ids)} ──", "info")
-            batch_raw_map, terminal = self._wait_batch(client, bid, file_map, output_dir,
+            batch_raw_map, terminal = self._wait_batch(client, bid, slice_fmap, output_dir,
                                                        requests_list=None,
                                                        is_last=(i == len(batch_ids)-1))
             if terminal:
                 completed_bids.append(bid)
+            else:
+                all_terminal = False
             if batch_raw_map:
                 accumulated_raw_map.update(batch_raw_map)
 
-        if not self._stop_flag and accumulated_raw_map:
+        final_written = False
+        if not self._stop_flag and accumulated_raw_map and all_terminal:
             self._retry_hata(client, accumulated_raw_map, requests, max_rounds=self._max_retry)
-            self._write_results(accumulated_raw_map, file_map, output_dir,
-                                openai_key=api_key, src=src)
+            missing_ids = set(file_map) - set(accumulated_raw_map)
+            if missing_ids:
+                self._log(f"{len(missing_ids)} batch sonucu eksik; final dosya yazılmadı.", "warn")
+            else:
+                self._write_results(accumulated_raw_map, file_map, output_dir,
+                                    openai_key=api_key, src=src, output_paths=output_paths)
+                final_written = True
+        elif not self._stop_flag:
+            self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
         # polling hatasıyla yarıda kalan ÖDENMİŞ batch'ler Resume için KORUNUR (kalıcı kayıp önlenir).
-        if not self._stop_flag and completed_bids:
+        if not self._stop_flag and completed_bids and final_written:
             self._clear_batch_recovery(completed_bids)
         self._set_running(False)   # #2: upload sonrası ilk poll'dan önce Stop'ta UI kilitlenmesin
 
@@ -11558,16 +11606,21 @@ class App(ctk.CTk):
 
         accumulated_raw_map = {}
         accumulated_file_map = {}
+        accumulated_requests = []
+        accumulated_output_paths = {}
+        regular_groups = {}
+        regular_recovery_safe = True
         last_output_dir = output_dir
         _resume_report_rows = []   # hybrid resume kalite raporu
-        completed_bids = []        # yalnızca OpenAI'nin bitirdiği (terminal) batch'ler
+        hybrid_completed_bids = []
+        regular_terminal_bids = []
 
         for i, bid in enumerate(batch_ids):
             if self._stop_flag:
                 break
             bid = bid.strip()
-            self._register_batch(bid, api_key)   # durdururken iptal edilebilsin
-            fmap_path = Path(__file__).parent / f"batch_fmap_{bid}.json"
+            self._register_batch(bid, api_key, b_url)   # durdururken iptal edilebilsin
+            fmap_path = state_path(__file__, f"batch_fmap_{bid}.json")
 
             if fmap_path.exists():
                 try:
@@ -11591,47 +11644,64 @@ class App(ctk.CTk):
                                                 report_rows=_resume_report_rows,
                                                 source_path=_saved_src)
                         if _terminal:
-                            completed_bids.append(bid)
+                            hybrid_completed_bids.append(bid)
                     else:
                         saved_out = fmap_data.get("output_dir", output_dir)
                         last_output_dir = saved_out
                         accumulated_file_map.update(saved_fmap)
+                        accumulated_requests.extend(fmap_data.get("requests") or [])
+                        accumulated_output_paths.update(fmap_data.get("output_paths") or {})
+                        run_id = str(fmap_data.get("run_id") or bid)
+                        part_index = int(fmap_data.get("part_index", 0))
+                        part_count = max(1, int(fmap_data.get("part_count", 1)))
+                        group = regular_groups.setdefault(
+                            run_id, {"expected": part_count, "seen": set(), "terminal": True})
+                        group["expected"] = max(group["expected"], part_count)
+                        group["seen"].add(part_index)
                         batch_raw_map, _terminal = self._wait_batch(client, bid, saved_fmap, saved_out,
                                                          requests_list=None,
                                                          is_last=(i == len(batch_ids)-1))
                         if _terminal:
-                            completed_bids.append(bid)
+                            regular_terminal_bids.append(bid)
+                        else:
+                            group["terminal"] = False
                         if batch_raw_map:
                             accumulated_raw_map.update(batch_raw_map)
                     continue
                 except Exception as e:
                     self._log(f"Kaydedilmiş file_map yüklenemedi ({bid}): {e} — yeniden oluşturuluyor", "warn")
 
-            # Fallback: rebuild from SRT files (regular batch)
-            self._log(f"[UYARI] {bid}: batch_fmap_{bid}.json yok — DÜZ batch varsayılarak yeniden "
-                      "kuruluyor. Bu batch HYBRID idiyse sonuç hatalı olabilir (fmap olmadan "
-                      "hybrid eşlemesi güvenle kurulamaz).", "warn")
-            accumulated_file_map.update(default_file_map)
-            batch_raw_map, _terminal = self._wait_batch(client, bid, default_file_map, output_dir,
-                                             requests_list=None,
-                                             is_last=(i == len(batch_ids)-1))
-            if _terminal:
-                completed_bids.append(bid)
-            if batch_raw_map:
-                accumulated_raw_map.update(batch_raw_map)
+            self._log(f"[HATA] {bid}: batch_fmap_{bid}.json yok; yanlış/boş final "
+                      "yazmamak için resume durduruldu.", "err")
+            regular_recovery_safe = False
 
-        if not self._stop_flag and accumulated_raw_map:
-            retry_list = [r for r in default_requests if r["custom_id"] in accumulated_file_map]
+        regular_ready = _regular_batch_groups_ready(
+            regular_groups, recovery_safe=regular_recovery_safe)
+        regular_written = False
+        if not self._stop_flag and accumulated_raw_map and regular_ready:
+            retry_source = accumulated_requests or default_requests
+            retry_list = [r for r in retry_source if r["custom_id"] in accumulated_file_map]
             self._retry_hata(client, accumulated_raw_map, retry_list, max_rounds=self._max_retry)
-            self._write_results(accumulated_raw_map, accumulated_file_map, last_output_dir,
-                                openai_key=api_key, src=src)
+            missing_ids = set(accumulated_file_map) - set(accumulated_raw_map)
+            if missing_ids:
+                self._log(f"{len(missing_ids)} kurtarılmış batch sonucu eksik; final yazılmadı.", "warn")
+            else:
+                self._write_results(accumulated_raw_map, accumulated_file_map, last_output_dir,
+                                    openai_key=api_key, src=src,
+                                    output_paths=accumulated_output_paths)
+                regular_written = True
+        elif not self._stop_flag and (accumulated_raw_map or regular_groups):
+            self._log("Regular batch parçalarının tümü hazır değil; eksik final yazılmadı.", "warn")
         # Hybrid resume yolunda işlenen dosyalar için kalite raporu yaz
         if _resume_report_rows:
             self._save_quality_report(_resume_report_rows, last_output_dir)
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
         # polling hatasıyla yarıda kalan ÖDENMİŞ batch'ler Resume için KORUNUR.
-        if not self._stop_flag and completed_bids:
-            self._clear_batch_recovery(completed_bids)
+        clear_ids = list(hybrid_completed_bids)
+        if regular_written:
+            clear_ids.extend(regular_terminal_bids)
+        if not self._stop_flag and clear_ids:
+            self._clear_batch_recovery(clear_ids)
         self._set_running(False)   # erken-stop / hiç-poll-yok durumunda UI kilitlenmesin
 
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
@@ -11671,7 +11741,8 @@ class App(ctk.CTk):
                         try:
                             ht.save_results(openai_key, b.output_file_id, file_map,
                                             output_path, self._log,
-                                            token_callback=self._update_batch_tokens)
+                                            token_callback=self._update_batch_tokens,
+                                            base_url=str(getattr(client, "base_url", "")))
                         except Exception as e:
                             self._log(f"Sonuçlar kaydedilemedi: {e}", "err")
                     else:
@@ -12000,10 +12071,12 @@ class App(ctk.CTk):
                 body    = res["response"]["body"]
                 choices = body.get("choices") or []
                 fr = choices[0].get("finish_reason", "") if choices else ""
-                if fr in ("length", "content_filter"):
+                if fr == "content_filter":
                     self._log(f"{cid}: yanıt kesildi (finish_reason={fr})", "err")
                     continue
                 raw     = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+                if fr == "length" and raw:
+                    self._log(f"{cid}: yanıt kesildi; tamamlanan JSON öğeleri korunuyor", "warn")
                 if not raw:
                     self._log(f"{cid}: boş yanıt", "err")
                 else:
@@ -12016,7 +12089,8 @@ class App(ctk.CTk):
         self._update_batch_tokens(token_sum)   # Batch API %50 indirimli
         return raw_map
 
-    def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None):
+    def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,
+                       output_paths=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
@@ -12178,8 +12252,10 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            out_path = _resolve_output_path(input_dir, output_dir, fp,
-                                             same_folder=self.same_folder_var.get())
+            saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
+            out_path = (Path(saved_out) if saved_out else
+                        _resolve_output_path(input_dir, output_dir, fp,
+                                             same_folder=self.same_folder_var.get()))
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
@@ -12343,18 +12419,20 @@ class App(ctk.CTk):
         Chunk çok azsa (bkz. _split_waves) tek batch'e düşer — zincirsiz ama çalışır."""
         import hybrid_translate as ht
         from openai import OpenAI as _OAI
+        b_url = self._main_api_base_url()
 
         wave_a, wave_b = _split_waves(requests)
 
         def _submit_wait(reqs, this_fmap, this_out):
             bid = ht.submit_batch(openai_key, reqs, self._log, this_fmap, this_out,
-                                  source_path=source_path, output_dir=output_dir)
+                                  source_path=source_path, output_dir=output_dir,
+                                  base_url=b_url)
             if not bid:
                 return None, None
-            self._register_batch(bid, openai_key)
+            self._register_batch(bid, openai_key, b_url)
             oid = ht.wait_for_batch(openai_key, bid, self._log,
                                     stop_flag_fn=lambda: self._stop_flag,
-                                    progress_fn=progress_fn)
+                                    progress_fn=progress_fn, base_url=b_url)
             if not self._stop_flag:
                 self._unregister_batch(bid)
             return bid, oid
@@ -12366,7 +12444,8 @@ class App(ctk.CTk):
             if not bid or oid is None or self._stop_flag:
                 return False
             ht.save_results(openai_key, oid, fmap, out_path, self._log,
-                            token_callback=self._update_batch_tokens, src_cues=None)
+                            token_callback=self._update_batch_tokens, src_cues=None,
+                            base_url=b_url)
             self._clear_batch_recovery([bid])
             return True
 
@@ -12384,7 +12463,7 @@ class App(ctk.CTk):
 
         # A'nın ham çevirisini al → B'ye zincir enjekte et (başarısızsa zincirsiz devam)
         try:
-            client = _OAI(api_key=openai_key)
+            client = _OAI(api_key=openai_key, base_url=b_url or None)
             raw_a = _raw_map_from_batch_content(client.files.content(oid_a).text)
             wave_b = _chain_waves(wave_a, wave_b, raw_a, fmap_a, max_pairs=self._context_lines)
             self._log(f"{fname}: A tamamlandı → B'ye zincir bağlamı enjekte edildi", "ok")
@@ -12400,7 +12479,8 @@ class App(ctk.CTk):
 
         # ── Birleşik yazım + recovery temizliği ───────────────────────────────
         ht.save_results(openai_key, [oid_a, oid_b], {**fmap_a, **fmap_b}, out_path,
-                        self._log, token_callback=self._update_batch_tokens, src_cues=None)
+                        self._log, token_callback=self._update_batch_tokens, src_cues=None,
+                        base_url=b_url)
         self._clear_batch_recovery([bid_a, bid_b])
         return True
 
@@ -12427,7 +12507,19 @@ class App(ctk.CTk):
         self._set_stat(self.stat_files_var, str(n_files))
 
         # ── Batch session: resume tracking ────────────────────────────────────
-        session = ht.create_batch_session(input_dir, output_dir, srt_files)
+        session_fp = ht.batch_session_fingerprint(input_dir, output_dir, srt_files, {
+            "target": tgt,
+            "model": model,
+            "style": self.style_var.get(),
+            "profanity": profanity,
+            "content_type": self.content_type_var.get(),
+            "same_folder": bool(self.same_folder_var.get()),
+            "chunk_size": self._chunk_size,
+            "context_lines": self._context_lines,
+            "lookahead_lines": self._lookahead_lines,
+        })
+        session = ht.create_batch_session(
+            input_dir, output_dir, srt_files, fingerprint=session_fp)
         _summary = ht.batch_session_summary(session, srt_files)
         if _summary["completed"] > 0 or _summary["submitted"] > 0:
             self._log(
@@ -12557,11 +12649,17 @@ class App(ctk.CTk):
                     existing_bid = sess_entry.get("batch_id")
                     existing_out = sess_entry.get("out_path", "")
                     if existing_bid:
-                        fmap = ht.load_fmap_for_batch(existing_bid) or {}
+                        fmap = ht.load_fmap_for_batch(existing_bid)
+                        if not fmap:
+                            self._log(
+                                f"{fname} — batch kurtarma eşlemesi yok/boş ({existing_bid}); "
+                                "boş çıktı yazılmayacak.", "err")
+                            ht.update_batch_session(session, filepath, "failed")
+                            continue
                         self._log(
                             f"{fname} — zaten gönderildi ({existing_bid}), yeniden bağlanılıyor",
                             "info")
-                        self._register_batch(existing_bid, openai_key)
+                        self._register_batch(existing_bid, openai_key, b_url)
                         submitted.append((filepath, fname, existing_out, fmap,
                                           existing_bid, cues, analysis_tuple))
                         self._set_progress(int((fi + 1) / n_files * 40))
@@ -12615,10 +12713,11 @@ class App(ctk.CTk):
                     continue
 
                 self._set_status(f"Batch gönderiliyor: {fname}")
-                batch_id = ht.submit_batch(openai_key, requests, self._log, fmap, out_path,
-                                           source_path=str(filepath), output_dir=output_dir)
+                batch_id = ht.submit_batch(
+                    openai_key, requests, self._log, fmap, out_path,
+                    source_path=str(filepath), output_dir=output_dir, base_url=b_url)
                 if batch_id:
-                    self._register_batch(batch_id, openai_key)
+                    self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",
                                             batch_id=batch_id, out_path=out_path)
                     submitted.append((filepath, fname, out_path, fmap, batch_id, cues, analysis_tuple))
@@ -12675,16 +12774,22 @@ class App(ctk.CTk):
                         continue
                     # out_path yazıldı — normal post-processing'e aynen düş.
                 else:
-                    out_id = ht.wait_for_batch(
+                    wait_result = ht.wait_for_batch(
                         openai_key, batch_id, self._log,
                         stop_flag_fn=lambda: self._stop_flag,
-                        progress_fn=_pfn)
+                        progress_fn=_pfn, base_url=b_url, detailed=True)
+                    out_id = wait_result["output_file_id"]
                     # Batch polling sonuçlandı (terminal durum) — iptal listesinden çıkar
                     if not self._stop_flag:
                         self._unregister_batch(batch_id)
                     if out_id is None:
-                        self._log(f"[{fname}] Batch çıktısı alınamadı (istekler başarısız olmuş olabilir).", "err")
-                        ht.update_batch_session(session, filepath, "failed")
+                        if not wait_result["terminal"]:
+                            self._log(
+                                f"[{fname}] Polling kesildi; batch sunucuda çalışıyor olabilir. "
+                                "Oturum submitted bırakıldı.", "warn")
+                        else:
+                            self._log(f"[{fname}] Batch çıktısı alınamadı ({wait_result['status']}).", "err")
+                            ht.update_batch_session(session, filepath, "failed")
                         continue
 
                     # save_results [HATA] satırlarını görünür eksik-çeviri işaretiyle bırakır;
@@ -12692,8 +12797,12 @@ class App(ctk.CTk):
                     # save_results'i src_cues=None vererek bu akışta işaretleme yapmadan bırakıyoruz.
                     _save_ret = ht.save_results(openai_key, out_id, fmap, out_path, self._log,
                                                 token_callback=self._update_batch_tokens,
-                                                src_cues=None)
+                                                src_cues=None, base_url=b_url)
                 _final_blocks = list(parse_srt(out_path))
+                if cues and not _final_blocks:
+                    self._log(f"{fname}: kaynak dolu ama batch çıktısı boş; tamamlandı sayılmayacak.", "err")
+                    ht.update_batch_session(session, filepath, "failed")
+                    continue
                 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 try:

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import hybrid_translate as ht
+import subtitle_translator_gui as gui
 
 
 class BatchRecoveryLostPersiaTests(unittest.TestCase):
@@ -33,7 +34,8 @@ class BatchRecoveryLostPersiaTests(unittest.TestCase):
             "custom_id": "chunk_513",
             "response": {
                 "body": {
-                    "choices": [{"message": {"content": raw_translation}}],
+                    "choices": [{"message": {"content": raw_translation},
+                                 "finish_reason": "length"}],
                     "usage": {"total_tokens": 10},
                 }
             },
@@ -90,6 +92,19 @@ class BatchRecoveryLostPersiaTests(unittest.TestCase):
         ]
         hits = ht.run_validators(blocks)
         self.assertTrue(any(reason == "NEIGHBOR_PREFIX_ECHO" for *_rest, reason in hits))
+
+    def test_split_file_map_contains_only_part_requests(self):
+        fmap = {"a": [(1, "s", "e")], "b": [(2, "s", "e")]}
+        self.assertEqual(gui._slice_file_map(fmap, [{"custom_id": "b"}]), {"b": fmap["b"]})
+
+    def test_regular_group_not_ready_until_every_part_terminal(self):
+        groups = {"run": {"expected": 2, "seen": {0}, "terminal": True}}
+        self.assertFalse(gui._regular_batch_groups_ready(groups))
+        groups["run"]["seen"].add(1)
+        groups["run"]["terminal"] = False
+        self.assertFalse(gui._regular_batch_groups_ready(groups))
+        groups["run"]["terminal"] = True
+        self.assertTrue(gui._regular_batch_groups_ready(groups))
 
 
 if __name__ == "__main__":

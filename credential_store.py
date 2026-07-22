@@ -215,12 +215,15 @@ def migrate_from_settings(settings_path: str | Path) -> None:
         "bedrock": "bedrock",
         "groq": "groq",
         "mistral": "mistral",
+        "main_custom": "main_custom",
+        "openai_helper": "openai_helper",
     }
     key_pattern = re.compile(r"^(.+?)_(key|secret|token)$", re.IGNORECASE)
 
     changed = False
     # Rol özel yardımcı anahtarları: helper_role_key_<role> -> helper_role_<role>_key
     role_key_pattern = re.compile(r"^helper_role_key_(.+)$", re.IGNORECASE)
+    custom_role_key_pattern = re.compile(r"^helper_custom_key_(.+)$", re.IGNORECASE)
     for key_name in list(data.keys()):
         # .get(.., "") yalnızca eksik anahtarı korur; JSON null (None) gelirse
         # .strip() patlar — `or ""` ile None/yanlış-tip güvenli
@@ -231,6 +234,14 @@ def migrate_from_settings(settings_path: str | Path) -> None:
         rk_match = role_key_pattern.match(key_name)
         if rk_match:
             role = rk_match.group(1).lower()
+            save_key(f"helper_role_{role}_key", val)
+            del data[key_name]
+            changed = True
+            continue
+
+        custom_match = custom_role_key_pattern.match(key_name)
+        if custom_match:
+            role = custom_match.group(1).lower()
             save_key(f"helper_role_{role}_key", val)
             del data[key_name]
             changed = True

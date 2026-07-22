@@ -88,6 +88,19 @@ class FallbackRoundtripTest(unittest.TestCase):
         self.assertEqual(cs.load_key("helper_role_polish_key"), "sk-polish-role-key")
         self.assertEqual(cs.load_key("helper_role_critic_key"), "sk-critic-role-key")
 
+    def test_migrate_custom_and_openai_helper_keys(self):
+        settings = Path(self._tmp.name) / ".gui_settings.json"
+        settings.write_text(json.dumps({
+            "main_custom_key": "provider-secret-value",
+            "openai_helper_key": "helper-secret-value",
+            "helper_custom_key_qc": "qc-secret-value",
+        }), encoding="utf-8")
+        cs.migrate_from_settings(settings)
+        self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {})
+        self.assertEqual(cs.load_key("main_custom"), "provider-secret-value")
+        self.assertEqual(cs.load_key("openai_helper"), "helper-secret-value")
+        self.assertEqual(cs.load_key("helper_role_qc_key"), "qc-secret-value")
+
 
 if __name__ == "__main__":
     unittest.main()

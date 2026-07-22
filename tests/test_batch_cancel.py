@@ -4,8 +4,10 @@ Gerçek GUI/ağ kurulmadan App örneği headless açılır; cancel ağ çağrıs
 (boş sözlük) sadece muhasebe doğrulanır.
 """
 import unittest
+from unittest.mock import patch
 
 import subtitle_translator_gui as gui
+from app_state import state_path
 from tests._gui_app import make_app
 
 
@@ -45,10 +47,23 @@ class BatchAccountingTest(unittest.TestCase):
         self.assertEqual(len(self.app._active_batches), 0)
 
     def test_cancel_clears_dict_even_if_api_fails(self):
-        # Geçersiz key → batches.cancel hata verir ama sözlük yine temizlenmeli
+        # Ağ çağrısı yok: production sembolü doğrudan patch'lenir.
         self.app._register_batch("batch_x", "sk-invalid-key-xxxxx")
-        self.app._cancel_active_batches()
+        with patch.object(gui, "OpenAI", side_effect=RuntimeError("cancel failed")):
+            self.app._cancel_active_batches()
         self.assertEqual(len(self.app._active_batches), 0)
+
+    def test_cancel_failure_keeps_recovery_files(self):
+        bid = "batch_keep"
+        bid_path = gui._batch_id_path()
+        fmap_path = state_path(gui.__file__, f"batch_fmap_{bid}.json")
+        bid_path.write_text(bid, encoding="utf-8")
+        fmap_path.write_text("{}", encoding="utf-8")
+        self.app._register_batch(bid, "sk-invalid-key-xxxxx")
+        with patch.object(gui, "OpenAI", side_effect=RuntimeError("cancel failed")):
+            self.app._cancel_active_batches()
+        self.assertTrue(bid_path.exists())
+        self.assertTrue(fmap_path.exists())
 
 
 if __name__ == "__main__":

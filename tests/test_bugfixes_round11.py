@@ -5,7 +5,8 @@ Round 11 bug-fix regresyon testleri:
 - scene-emotion start/end string→int güvenli karşılaştırma
 """
 import unittest
-from pathlib import Path
+
+from app_state import state_dir
 
 
 class ClearBatchRecoveryTest(unittest.TestCase):
@@ -22,7 +23,7 @@ class ClearBatchRecoveryTest(unittest.TestCase):
         cls.app.destroy()
 
     def test_removes_fmap_and_prunes_batch_id_txt(self):
-        base = Path(self.gui.__file__).parent
+        base = state_dir(self.gui.__file__)
         bidp = base / "batch_id.txt"
         # Kullanıcının GERÇEK bekleyen batch_id.txt'si varsa test onu ezmesin/silmesin.
         _saved = bidp.read_text(encoding="utf-8") if bidp.exists() else None
@@ -51,7 +52,7 @@ class ClearBatchRecoveryTest(unittest.TestCase):
                 bidp.unlink(missing_ok=True)
 
     def test_deletes_batch_id_txt_when_all_cleared(self):
-        base = Path(self.gui.__file__).parent
+        base = state_dir(self.gui.__file__)
         bidp = base / "batch_id.txt"
         _saved = bidp.read_text(encoding="utf-8") if bidp.exists() else None
         try:

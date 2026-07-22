@@ -57,6 +57,13 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertEqual(remaining, [])              # API'ye gitmeyecek
         self.assertEqual(raw["c1"], "merhaba")
 
+    def test_resume_skips_matching_multiline_chunk(self):
+        r = _req("c1", ["hello", "world"])
+        self.app._save_sync_ckpt_entry("c1", "merhaba\ndünya", self._hash(r))
+        raw = {}
+        self.assertEqual(self.app._resume_from_sync_ckpt([r], raw), [])
+        self.assertEqual(raw["c1"], "merhaba\ndünya")
+
     def test_resume_retranslates_on_content_change(self):
         r_old = _req("c1", ["hello"])
         self.app._save_sync_ckpt_entry("c1", "merhaba", self._hash(r_old))
@@ -83,6 +90,15 @@ class SyncCheckpointTest(unittest.TestCase):
         n = self.app._prefill_sync_ckpt([r], raw)
         self.assertEqual(n, 1)
         self.assertEqual(raw["c1"], "selam")
+
+    def test_prefill_scope_prevents_cross_file_reuse(self):
+        r = _req("chunk_0", ["Previously on..."])
+        fp = self.app._ckpt_fingerprint()
+        saved = gui.App._chunk_src_hash(r, fp, scope="A.srt")
+        self.app._save_sync_ckpt_entry("chunk_0", "Önceki bölümde...", saved)
+        raw = {}
+        self.assertEqual(self.app._prefill_sync_ckpt([r], raw, scope="B.srt"), 0)
+        self.assertNotIn("chunk_0", raw)
 
     def test_clear_removes_checkpoint(self):
         self.app._save_sync_ckpt_entry("c1", "x", "h")

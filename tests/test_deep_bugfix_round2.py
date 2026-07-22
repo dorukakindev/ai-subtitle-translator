@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 import hybrid_translate as ht
 import subtitle_formats as sf
+from app_state import STATE_DIR_ENV
 
 
 class LoadGlossaryTest(unittest.TestCase):
@@ -94,7 +95,7 @@ class FinishReasonGuardTest(unittest.TestCase):
         fake_client.files.content.return_value.text = line
         logs = []
         src_cues = [self._make_src_cue(0)]
-        with patch("openai.OpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client), patch("hybrid_translate.time.sleep"):
             written, marked = ht.save_results(
                 "dummy_key", "fid", fake_fmap, str(fp),
                 log_fn=lambda msg, lvl="": logs.append(msg),
@@ -111,7 +112,7 @@ class FinishReasonGuardTest(unittest.TestCase):
         fake_client.files.content.return_value.text = line
         logs = []
         src_cues = [self._make_src_cue(1)]
-        with patch("openai.OpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client), patch("hybrid_translate.time.sleep"):
             written, marked = ht.save_results(
                 "dummy_key", "fid", fake_fmap, str(fp),
                 log_fn=lambda msg, lvl="": logs.append(msg),
@@ -155,6 +156,15 @@ class MojibakePromptTest(unittest.TestCase):
 
 
 class AtomicBatchWriteTest(unittest.TestCase):
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {STATE_DIR_ENV: self._state.name})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._state.cleanup()
+
     def test_save_batch_session_atomic(self):
         session = {"version": 1, "input_dir": str(Path.cwd()), "files": {}}
         ht._save_batch_session(session)
@@ -174,15 +184,14 @@ class AtomicBatchWriteTest(unittest.TestCase):
         # Test kirliliği: eskiden yalnız fmap temizleniyordu, batch_id.txt kalıp her uygulama
         # açılışında "Yarım Kalan Batch" hayalet dialog'unu tetikliyordu. Ayrıca kullanıcının
         # GERÇEK bekleyen batch'i varsa üzerine yazılmasın diye yedekle-geri-yükle.
-        root = Path(ht.__file__).parent
-        bid_path = root / "batch_id.txt"
+        bid_path = ht._batch_id_path()
         _saved = bid_path.read_text(encoding="utf-8") if bid_path.exists() else None
         fmap_path = None
         try:
             with patch("openai.OpenAI", return_value=fake_client):
                 bid = ht.submit_batch("dummy_key", requests, file_map=file_map)
             self.assertEqual(bid, "batch_test_atomic")
-            fmap_path = root / f"batch_fmap_{bid}.json"
+            fmap_path = ht._batch_fmap_path(bid)
             self.assertTrue(fmap_path.exists())
             self.assertFalse(fmap_path.with_suffix(".json.tmp").exists())
         finally:
@@ -205,7 +214,7 @@ class WaitForBatchPollingTest(unittest.TestCase):
         completed.output_file_id = "out_123"
         fake_client.batches.retrieve.side_effect = [Exception("geçici hata"), completed]
         logs = []
-        with patch("openai.OpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client), patch("hybrid_translate.time.sleep"):
             result = ht.wait_for_batch(
                 "dummy_key", "batch_test",
                 log_fn=lambda msg, lvl="": logs.append(msg),
@@ -217,12 +226,25 @@ class WaitForBatchPollingTest(unittest.TestCase):
         fake_client = MagicMock()
         fake_client.batches.retrieve.side_effect = Exception("kalıcı hata")
         logs = []
-        with patch("openai.OpenAI", return_value=fake_client):
+        with patch("openai.OpenAI", return_value=fake_client), patch("hybrid_translate.time.sleep"):
             result = ht.wait_for_batch(
                 "dummy_key", "batch_test",
                 log_fn=lambda msg, lvl="": logs.append(msg),
             )
         self.assertIsNone(result)
+
+    def test_polling_abort_is_nonterminal_in_detailed_mode(self):
+        fake_client = MagicMock()
+        fake_client.batches.retrieve.side_effect = Exception("kalıcı hata")
+        with patch("openai.OpenAI", return_value=fake_client) as factory, patch("hybrid_translate.time.sleep"):
+            result = ht.wait_for_batch(
+                "dummy_key", "batch_test", detailed=True,
+                base_url="https://batch.example/v1")
+        factory.assert_called_once_with(
+            api_key="dummy_key", base_url="https://batch.example/v1")
+        self.assertEqual(result["status"], "polling_aborted")
+        self.assertFalse(result["terminal"])
+        self.assertIsNone(result["output_file_id"])
 
 
 class TMIdentityFilterTest(unittest.TestCase):
