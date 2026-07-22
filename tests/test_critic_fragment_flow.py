@@ -115,6 +115,29 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertIn("DANGLING_TURKISH_FRAGMENT", prompts[0])
         self.assertIn('"must_fix_flow": true', prompts[0])
 
+    def test_critic_rejects_dangling_fragment_fix_that_deletes_words(self):
+        cues = [
+            Cue(1, "He has had the same dream again,"),
+            Cue(2, "a dream that haunts him,"),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:02,000", "Yine aynı rüyayı görmüştür,"),
+            (2, "00:00:02,000 --> 00:00:04,000", "peşini bırakmayan o rüyayı,"),
+        ]
+        fixes = [{"id": "2", "fixed": "peşini bırakmayan,"}]
+        logs = []
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues,
+                tr_blocks=blocks,
+                helper_api_key="test",
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result[1][2], "peşini bırakmayan o rüyayı,")
+        self.assertTrue(any("dangling_fragment_word_deletion" in msg for _, msg in logs))
+
     def test_validator_flags_dominates_without_turkish_predicate(self):
         cues = [Cue(1, "Saturn dominates the Hebrew religion.")]
         blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Saturn, Ibranice dini")]

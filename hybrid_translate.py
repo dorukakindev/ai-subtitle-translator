@@ -5832,6 +5832,12 @@ def _has_destructive_shorten(original_text: str, candidate_text: str) -> bool:
     return len(new) < len(old) * 0.45
 
 
+def _has_dangling_fragment_word_deletion(original_text: str, candidate_text: str) -> bool:
+    old_words = re.findall(r"[A-Za-zÇĞİÖŞÜçğıöşü]+", _canonical_polish_guard_text(original_text))
+    new_words = re.findall(r"[A-Za-zÇĞİÖŞÜçğıöşü]+", _canonical_polish_guard_text(candidate_text))
+    return len(old_words) >= 3 and len(new_words) < len(old_words)
+
+
 def _has_question_regression(original_text: str, candidate_text: str) -> bool:
     """Reject polish that scrambles a natural Turkish question structure."""
     if not original_text or not candidate_text:
@@ -7183,9 +7189,15 @@ def critic_pass_with_helper(
         "SHORT_SOURCE_OVEREXPANSION",
         "BROKEN_FRAGMENT_FLOW",
     )
+    flow_reasons_by_id: dict[str, set[str]] = {}
     for sid, reason in v_reasons.items():
         if any(token in reason for token in flow_group_reason_tokens):
-            helper_ids.update(frag_group_by_id.get(sid, [sid]))
+            group_ids = frag_group_by_id.get(sid, [sid])
+            helper_ids.update(group_ids)
+            for gid in group_ids:
+                flow_reasons_by_id.setdefault(str(gid), set()).update(
+                    token.strip() for token in re.split(r"[;,|]", reason) if token.strip()
+                )
         if "SPEAKER_LABEL_ABSORBED_TEXT" in reason:
             helper_ids.add(sid)
             pos = idx_to_pos.get(sid)
@@ -7438,6 +7450,11 @@ def critic_pass_with_helper(
                 if log_fn:
                     log_fn(f"Critic Helper chunk beklenmeyen format — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
+            proposed_ids = {
+                str(fix.get("id", ""))
+                for fix in fixes
+                if isinstance(fix, dict) and str(fix.get("id", "")) in idx_to_pos
+            }
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
@@ -7458,11 +7475,26 @@ def critic_pass_with_helper(
                         or frag_tags.get(fid)
                         or "none"
                     )
-                    reason_toks = _reason_tokens(v_reasons.get(fid, ""))
+                    reason_toks = list(dict.fromkeys(
+                        _reason_tokens(v_reasons.get(fid, ""))
+                        + list(flow_reasons_by_id.get(fid, set()))
+                    ))
                     for tok in reason_toks:
                         reason_stats.setdefault(tok, {"suggested": 0, "accepted": 0})
                         reason_stats[tok]["suggested"] += 1
                     final_text = str(ftext)
+                    if (
+                        any(token in flow_group_reason_tokens for token in reason_toks)
+                        and _has_dangling_fragment_word_deletion(old_text, final_text)
+                        and not all(
+                            str(group_id) in proposed_ids
+                            for group_id in frag_group_by_id.get(fid, [fid])
+                        )
+                    ):
+                        critic_rejected += 1
+                        reason = "dangling_fragment_word_deletion"
+                        critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
+                        continue
                     ok, reason = validate_polish_candidate(
                         old_text,
                         final_text,
