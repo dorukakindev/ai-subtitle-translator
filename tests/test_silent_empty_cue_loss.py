@@ -11,6 +11,8 @@ Kök neden iki parçalıydı:
 girmiyor hem de final dosyadan iz bırakmadan siliniyordu.
 """
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import subtitle_translator_gui as gui
 import sdh_cleaner as sdh
@@ -236,6 +238,21 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
             blocks, {"1": "FINE."}, client=None, src_lang="English", tgt_lang="Turkish")
         self.assertEqual(out, blocks)
         self.assertEqual(repaired, 0)
+
+    def test_repaired_dialogue_does_not_reintroduce_chevron_marker(self):
+        blocks = [("150", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
+        raw_src_map = {"150": "&gt;&gt; Rapé and hapé--"}
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"150","t":">> Rapé ve hapé--"}]'))],
+            usage=None,
+        )
+        with mock.patch("subtitle_translator_gui._safe_chat_create", return_value=response):
+            out, repaired = gui._repair_untranslated_sync(
+                blocks, raw_src_map, client=object(),
+                src_lang="English", tgt_lang="Turkish")
+        self.assertEqual(repaired, 1)
+        self.assertEqual(out[0][2], "Rapé ve hapé--")
 
 
 if __name__ == "__main__":

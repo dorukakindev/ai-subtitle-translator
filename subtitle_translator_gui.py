@@ -2816,8 +2816,14 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     for (block_pos, idx, ts, _src) in batch:
                         translated = result_map.get(idx)
                         if translated and translated.strip():
-                            out[block_pos] = (idx, ts, translated)
-                            repaired += 1
+                            cleaned_lines = [
+                                sdh_cleaner.strip_labels_by_source(line, _src)
+                                for line in str(translated).splitlines()
+                            ]
+                            translated = "\n".join(line for line in cleaned_lines if line)
+                            if translated.strip():
+                                out[block_pos] = (idx, ts, translated)
+                                repaired += 1
                     break  # success
                 except Exception as e:
                     if log_fn:
