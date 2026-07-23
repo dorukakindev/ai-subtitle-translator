@@ -7301,13 +7301,23 @@ class App(ctk.CTk):
                     return "hata_line"
                 if any(ht.has_non_turkish_target_leak(str(it.get("t", ""))) for it in items):
                     return "non_turkish_target"
+                req = req_by_id.get(cid)
+                chunk_src_map = _chunk_src_map_from_request(req) if req else {}
+                if chunk_src_map:
+                    expected_ids = list(chunk_src_map)
+                    actual_ids = [str(it.get("i")) for it in items if "i" in it]
+                    if actual_ids != expected_ids:
+                        return "id_integrity"
+                    for it in items:
+                        idx = str(it.get("i"))
+                        if (not str(it.get("t", "")).strip()
+                                and not _align_is_sfx_only(chunk_src_map.get(idx, ""))):
+                            return "empty_dialogue"
                 # Chunk içi komşu-tekrar: mini içeriği öne kaydırıp aynı satırı iki
                 # id'ye yazdıysa, dosya yazılmadan ÖNCE burada yakala (bkz.
                 # detect_alignment_issues'in adjacent_duplicate sinyali — aynı
                 # paylaşılan mantık, tek bir chunk'a daraltılmış).
-                req = req_by_id.get(cid)
                 if req:
-                    chunk_src_map = _chunk_src_map_from_request(req)
                     if chunk_src_map:
                         seq = [(str(it.get("i")), _align_visible(str(it.get("t", ""))))
                                for it in items if isinstance(it, dict) and "i" in it]
@@ -7335,6 +7345,30 @@ class App(ctk.CTk):
 
         def _retry_body_for(req, reason: str):
             body = copy.deepcopy(req["body"])
+            if reason in {"adjacent_duplicate", "id_integrity", "empty_dialogue"}:
+                for msg in body.get("messages", []):
+                    if msg.get("role") != "user":
+                        continue
+                    try:
+                        payload = json.loads(msg.get("content", ""))
+                        payload.pop("sentence_groups", None)
+                        for it in payload.get("tr", []):
+                            if isinstance(it, dict):
+                                it.pop("frag", None)
+                                it.pop("frag_group", None)
+                        msg["content"] = json.dumps(payload, ensure_ascii=False)
+                    except Exception:
+                        pass
+                    break
+                guard_msg = (
+                    "STRICT ID RETRY — ID INTEGRITY: Retry the whole chunk and output ONLY valid JSON. "
+                    "Translate every tr item independently into its own id. Context may clarify meaning, "
+                    "but NEVER move, borrow, merge, or redistribute words or clauses between ids. "
+                    "Return every input id exactly once, in the same order. No id may be missing and no "
+                    "dialogue translation may be empty."
+                )
+                role = "developer" if any(m.get("role") == "developer" for m in body.get("messages", [])) else "system"
+                body.setdefault("messages", []).insert(1, {"role": role, "content": guard_msg})
             if reason == "non_turkish_target":
                 guard_msg = (
                     "QUALITY RETRY: The previous JSON parsed, but at least one translation contained "
@@ -7342,17 +7376,6 @@ class App(ctk.CTk):
                     "JSON. Use natural Turkey Turkish only. Do not output Turkmen/Uzbek/Azeri-looking "
                     "forms such as bäýram, holidaý, oturylyşyğı, ortadagy, geň, taksidermiya, bäseke, "
                     "qora, yuqori, pichoq, shaxs, xavf, daraj, haqli. Keep the same ids and line breaks."
-                )
-                role = "developer" if any(m.get("role") == "developer" for m in body.get("messages", [])) else "system"
-                body.setdefault("messages", []).insert(1, {"role": role, "content": guard_msg})
-            if reason == "adjacent_duplicate":
-                guard_msg = (
-                    "QUALITY RETRY: The previous response repeated the same or near-identical "
-                    "Turkish sentence across two different ids — content drifted onto the wrong id. "
-                    "Retry the whole chunk. ID INTEGRITY: map EACH id strictly to the translation of "
-                    "THAT id's own source text \"t\"; do not run ahead by translating a later sentence "
-                    "early, and do not shift a line's content onto a neighbouring id. Keep the same ids "
-                    "and line breaks."
                 )
                 role = "developer" if any(m.get("role") == "developer" for m in body.get("messages", [])) else "system"
                 body.setdefault("messages", []).insert(1, {"role": role, "content": guard_msg})
@@ -7420,7 +7443,29 @@ class App(ctk.CTk):
         # Kurtarma adımı
         if self._stop_flag:
             return
-        for cid in [c for c in req_by_id if _needs_retry(c)]:
+        strict_fallback = set()
+        for cid, req in req_by_id.items():
+            reason = _retry_reason(cid)
+            if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue"}:
+                continue
+            try:
+                messages = req.get("body", {}).get("messages", [])
+                user_msg = next(m for m in messages if m.get("role") == "user")
+                payload = json.loads(user_msg.get("content", ""))
+                tr_items = payload.get("tr", [])
+                raw_map[cid] = json.dumps(
+                    [{"i": it["i"], "t": "[HATA]"} for it in tr_items
+                     if isinstance(it, dict) and "i" in it],
+                    ensure_ascii=False,
+                )
+                strict_fallback.add(cid)
+                self._log(
+                    f"  ↪ {cid}: katı ID denemesi başarısız; tüm chunk satır bazlı onarıma bırakıldı",
+                    "warn",
+                )
+            except Exception:
+                pass
+        for cid in [c for c in req_by_id if c not in strict_fallback and _needs_retry(c)]:
             if self._stop_flag:
                 break
             try:
