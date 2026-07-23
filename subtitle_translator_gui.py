@@ -2849,13 +2849,16 @@ PRECONTEXT_CACHE_VER   = 2   # +1: _sig alanı eklendi
 
 def _precontext_cache_path(filepath: str) -> Path:
     p = Path(filepath)
-    return p.parent / ".context_cache" / (p.stem + ".precontext.json")
+    return p.parent / ".context_cache" / (p.name + ".precontext.json")
 
 
 def _precontext_cache_sig(filepath: str) -> str:
     try:
-        st = Path(filepath).stat()
-        return f"{st.st_size}:{int(st.st_mtime)}"
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return f"sha256:{h.hexdigest()}"
     except Exception:
         return ""
 
@@ -10928,11 +10931,12 @@ class App(ctk.CTk):
                     data_by_fp[fp] = data
                     try:
                         cpath = _precontext_cache_path(fp)
-                        cpath.parent.mkdir(parents=True, exist_ok=True)
-                        cpath.write_text(json.dumps(
-                            {"_ver": PRECONTEXT_CACHE_VER, "_tgt": tgt, "data": data,
-                             "_sig": _precontext_cache_sig(fp)},
-                            ensure_ascii=False), encoding="utf-8")
+                        atomic_write_json(cpath, {
+                            "_ver": PRECONTEXT_CACHE_VER,
+                            "_tgt": tgt,
+                            "data": data,
+                            "_sig": _precontext_cache_sig(fp),
+                        })
                     except Exception as e:
                         # Önceden sessizce yutuluyordu (except: pass) — disk/izin hatası
                         # hiç görünmüyordu; artık en azından uyarı olarak loglanıyor

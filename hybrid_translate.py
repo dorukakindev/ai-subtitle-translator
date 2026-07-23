@@ -576,15 +576,22 @@ def load_glossary(filepath: str) -> dict:
 
 def _cache_path(filepath: str) -> Path:
     p = Path(filepath)
+    return p.parent / ".context_cache" / (p.name + ".json")
+
+
+def _legacy_cache_path(filepath: str) -> Path:
+    p = Path(filepath)
     return p.parent / ".context_cache" / (p.stem + ".json")
 
 
 def _cache_sig(filepath: str) -> str:
-    """Kaynak dosyanın hafif imzası (boyut + mtime). Dosya düzenlenince değişir →
-    bayat analiz önbelleğinin sessizce yeniden kullanılmasını engeller."""
+    """Kaynak dosyanın SHA-256 tabanlı akış imzası (sha256:<hex>). Dosya içeriği değişince değişir."""
     try:
-        st = Path(filepath).stat()
-        return f"{st.st_size}:{int(st.st_mtime)}"
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        return f"sha256:{h.hexdigest()}"
     except Exception:
         return ""
 
@@ -596,7 +603,6 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
                        analysis_depth: str = "standard"):
     _ensure_path()
     path = _cache_path(filepath)
-    path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "source_language":    context.source_language,
         "summary":            context.summary,
@@ -618,10 +624,10 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
         "target_language":    target_language or "",  # hedef dil değişirse analizi yeniden kullanma
     }
     # Atomik yazım: yarım kalan dosya bozuk önbellek bırakmasın
-    _tmp = path.with_suffix(".json.tmp")
-    with open(_tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    _tmp.replace(path)
+    try:
+        atomic_write_json(path, data)
+    except Exception:
+        pass
 
 
 def _scene_plan_cache_is_stale(scenes) -> bool:
@@ -695,7 +701,16 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
 def clear_context_cache(filepath: str):
     path = _cache_path(filepath)
     if path.exists():
-        path.unlink()
+        try:
+            path.unlink()
+        except Exception:
+            pass
+    legacy_path = _legacy_cache_path(filepath)
+    if legacy_path != path and legacy_path.exists():
+        try:
+            legacy_path.unlink()
+        except Exception:
+            pass
 
 
 # ── Batch Session State ───────────────────────────────────────────────────────
