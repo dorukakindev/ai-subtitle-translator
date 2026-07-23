@@ -166,6 +166,53 @@ class ProductionFolderAppendTest(unittest.TestCase):
         gui.App._pick_folder(app, var, False)
         self.assertEqual(len(app.logs), 2)
 
+    def test_manually_entered_valid_input_folder_is_recognized(self):
+        with tempfile.TemporaryDirectory() as root:
+            manual_folder = Path(root, "typed")
+            manual_folder.mkdir()
+            (manual_folder / "file.srt").write_text("", encoding="utf-8")
+            app = self._app(str(manual_folder), input_selected=False)
+
+            gui.App._on_input_entry_edited(app)
+
+            self.assertTrue(app._input_folder_explicitly_selected)
+            files = gui.App._get_srt_files(app)
+            self.assertEqual([Path(p).name for p in files], ["file.srt"])
+
+    def test_saved_unselected_input_folder_returns_empty_srt_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            saved_folder = Path(root, "saved")
+            saved_folder.mkdir()
+            (saved_folder / "old.srt").write_text("", encoding="utf-8")
+            app = self._app(str(saved_folder), input_selected=False)
+
+            files = gui.App._get_srt_files(app)
+            self.assertEqual(files, [])
+
+    def test_explicit_selected_files_queue_overrides_input_var(self):
+        with tempfile.TemporaryDirectory() as root:
+            input_dir = Path(root, "input_dir")
+            queue_file = Path(root, "queue.vtt")
+            input_dir.mkdir()
+            (input_dir / "ignored.srt").write_text("", encoding="utf-8")
+            queue_file.write_text("", encoding="utf-8")
+            app = self._app(str(input_dir), input_selected=True)
+            app._selected_files = [str(queue_file)]
+
+            files = gui.App._get_srt_files(app)
+            self.assertEqual([Path(p).name for p in files], ["queue.vtt"])
+
+    def test_empty_or_invalid_manual_input_returns_empty(self):
+        app = self._app("", input_selected=False)
+        gui.App._on_input_entry_edited(app)
+        self.assertTrue(app._input_folder_explicitly_selected)
+        self.assertEqual(gui.App._get_srt_files(app), [])
+
+        app_invalid = self._app(r"C:\non_existent_folder_xyz_123", input_selected=False)
+        gui.App._on_input_entry_edited(app_invalid)
+        self.assertTrue(app_invalid._input_folder_explicitly_selected)
+        self.assertEqual(gui.App._get_srt_files(app_invalid), [])
+
 
 class ProductionOutputPathTest(unittest.TestCase):
     def test_external_same_named_folders_do_not_collide(self):

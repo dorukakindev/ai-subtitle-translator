@@ -5505,10 +5505,16 @@ class App(ctk.CTk):
             row_fr = ctk.CTkFrame(sb, fg_color="transparent")
             row_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,2)); r += 1
             row_fr.grid_columnconfigure(0, weight=1)
-            ctk.CTkEntry(row_fr, textvariable=var, height=36,
+            entry = ctk.CTkEntry(row_fr, textvariable=var, height=36,
                          font=ctk.CTkFont("Segoe UI", 11),
                          fg_color=CARD, border_color=BORDER,
-                         text_color=FG).grid(row=0, column=0, sticky="ew")
+                         text_color=FG)
+            entry.grid(row=0, column=0, sticky="ew")
+            if is_input:
+                self.input_entry = entry
+                entry.bind("<FocusOut>", lambda _e: self._on_input_entry_edited())
+                entry.bind("<Return>", lambda _e: self._on_input_entry_edited())
+                entry.bind("<KeyRelease>", lambda _e: self._on_input_entry_edited())
             ctk.CTkButton(row_fr, text="…", width=36, height=36,
                           font=ctk.CTkFont("Segoe UI", 13),
                           fg_color=BORDER, hover_color=ACCENT,
@@ -7667,6 +7673,19 @@ class App(ctk.CTk):
         if self.precontext_var.get():
             self.hybrid_var.set(False)
             self._toggle_hybrid()
+
+    def _on_input_entry_edited(self):
+        """Kullanıcı girdi klasör kutusuna el ile yol yazdığında bu seçimi açık olarak işaretler."""
+        if getattr(self, "_is_running", False):
+            return
+        self._input_folder_explicitly_selected = True
+        path = (self.input_var.get() or "").strip()
+        if not self._selected_files and path and os.path.isdir(path):
+            try:
+                from project_memory import ProjectMemory
+                self._pm = ProjectMemory(path)
+            except Exception:
+                self._pm = None
 
     def _pick_folder(self, var, is_input):
         if getattr(self, "_is_running", False):
