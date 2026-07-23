@@ -97,5 +97,51 @@ class TestJsonlRobustness(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     resolve_standalone_provider(settings_path)
 
+    @patch("repair_batches._get_client")
+    def test_repair_batches_main_loop_and_srt_newlines(self, mock_get_client):
+        import tempfile
+        import repair_batches
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = Path(tmpdir) / "out.srt"
+            fmap_file = Path(tmpdir) / "batch_fmap_b123.json"
+
+            fmap_data = {
+                "output_path": str(out_file),
+                "fmap": {
+                    "cid1": [[1, "00:00:00,000", "00:00:02,000"]],
+                    "cid2": [[2, "00:00:02,000", "00:00:04,000"]],
+                }
+            }
+            fmap_file.write_text(json.dumps(fmap_data), encoding="utf-8")
+
+            mock_batch = MagicMock()
+            mock_batch.status = "completed"
+            mock_batch.output_file_id = "out_123"
+            mock_client.batches.retrieve.return_value = mock_batch
+
+            jsonl_content = (
+                '{"custom_id": "cid1"}\n'
+                '{"custom_id": "cid2", "response": {"body": {"choices": [{"message": {"content": "[{\\"i\\": 2, \\"t\\": \\"Satir 2\\"}]"}}]}}}\n'
+            )
+            mock_client.files.content.return_value.text = jsonl_content
+
+            with patch("repair_batches.FMAP_FILES", [str(fmap_file)]):
+                repair_batches.main()
+
+            self.assertTrue(out_file.exists())
+            written_text = out_file.read_text(encoding="utf-8")
+
+            # 1. Must contain real newlines
+            self.assertIn("\n", written_text)
+            # 2. Must NOT contain literal "\\n" string
+            self.assertNotIn("\\n", written_text)
+            # 3. Missing record yielded [HATA], valid record processed successfully
+            self.assertIn("[HATA]", written_text)
+            self.assertIn("Satir 2", written_text)
+
 if __name__ == '__main__':
     unittest.main()

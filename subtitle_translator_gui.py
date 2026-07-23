@@ -4595,6 +4595,22 @@ def rotate_logs(log_dir: Path, keep: int = 100) -> int:
 
 
 
+# ── Canlı batch sahipliği (yarım-batch penceresi için) ────────────────────────
+# SORUN (2026-07-16 gerçek olay): `batch_id.txt` gönderim anında yazılır ve iş bitince
+# temizlenir — yani UÇUŞTAKİ bir batch ile ÇÖKMÜŞ/sahipsiz kalmış bir batch dosyada
+# BİREBİR aynı görünür. Bu yüzden bir batch beklenirken uygulamanın İKİNCİ bir örneği
+# açılırsa (ya da kapatılıp yeniden açılırsa), açılış kontrolü canlı batch'leri "yarım
+# kalmış" diye listeler. Oradaki "Seçilenleri Sil" düğmesi, parası ödenmiş ve hâlâ
+# işlenen bir batch'in kurtarma verisini (fmap + id) siler.
+# ÇÖZÜM: batch'leri işleyen süreç sahipliğini `batch_owner_<pid>.json`'a yazar; açılış
+# kontrolü, sahibi HÂLÂ YAŞAYAN süreç olan id'leri pencerede göstermez. Süreç gerçekten
+# çöktüyse pid ölüdür → kilit yok sayılır → pencere amaçlandığı gibi çıkar (kurtarma
+# yine çalışır).
+# NEDEN SÜREÇ-BAŞINA DOSYA (tek ortak dosya DEĞİL): tek dosya tek sahipli olurdu —
+# ikinci bir süreç (ya da App kuran bir test) kendi kilidini yazarken canlı sahibin
+# kaydını EZER, aktif batch'i kalmayınca da dosyayı SİLERDİ; yani korumanın kendisi
+# çözmeye çalıştığı kirlenmeyi yeniden üretirdi. Her süreç yalnızca KENDİ dosyasını
+# yazar/siler; okuyucu hepsini tarayıp ölü pid'lerinkini yok sayar.
 _BATCH_OWNER_PREFIX = "batch_owner_"
 _BATCH_OWNER_GLOB = "batch_owner_*.json"
 
@@ -4961,11 +4977,16 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
-        api_key = self.api_key_entry.get().strip()
+        api_key = self._main_api_key()
         base_url = self._main_api_base_url()
 
         def _fetch_in_bg():
-            fetched = _fetch_batch_statuses(api_key, batch_ids, base_url, self._log)
+            fetched = _fetch_batch_statuses(
+                api_key=api_key,
+                batch_ids=batch_ids,
+                log_fn=self._log,
+                base_url=base_url,
+            )
             _post_ui(self, _apply_statuses, fetched)
 
         threading.Thread(target=_fetch_in_bg, daemon=True).start()

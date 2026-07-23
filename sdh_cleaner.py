@@ -169,26 +169,37 @@ def _descriptor_key(value: str) -> str:
     return value
 
 
-_NON_SDH_BRACKET_PHRASES = {
-    "breaking news", "new york", "chapter one", "no entry",
-}
-
-
 def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     key = _descriptor_key(content)
     if not key:
         return True
-    if key in _NON_SDH_BRACKET_PHRASES:
-        return False
     if key in _SDH_KEYWORDS or key in _SPEAKER_WORDS:
         return True
+
     words = key.split()
-    if bare_text:
-        # bracket yok -> sert: yalnızca tüm kelimeler biliniyorsa SDH
-        return len(words) <= 4 and all(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words)
-    # bracket içerik -> ANY keyword varlığı SDH işareti
-    if len(words) <= 6 and any(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words):
+    if not words:
         return True
+
+    words_no_digits = [w for w in words if not w.isdigit()]
+    if not words_no_digits:
+        return True
+
+    if len(words_no_digits) == 1:
+        return words_no_digits[0] in _SDH_KEYWORDS or words_no_digits[0] in _SPEAKER_WORDS
+
+    if all(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words_no_digits):
+        return True
+
+    raw_words = content.strip().split()
+    is_title_case = len(raw_words) >= 2 and all(w[0].isupper() for w in raw_words if w and w[0].isalpha())
+
+    if is_title_case:
+        return False
+
+    if not bare_text and not is_title_case:
+        if any(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words_no_digits):
+            return True
+
     return False
 
 
