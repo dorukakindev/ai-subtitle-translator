@@ -213,6 +213,53 @@ class ProductionFolderAppendTest(unittest.TestCase):
         self.assertTrue(app_invalid._input_folder_explicitly_selected)
         self.assertEqual(gui.App._get_srt_files(app_invalid), [])
 
+    def test_focus_in_without_change_does_not_set_explicit_flag(self):
+        app = self._app(r"C:\Users\K", input_selected=False)
+        gui.App._on_input_entry_focus_in(app)
+        self.assertEqual(app._input_entry_focus_val, r"C:\Users\K")
+
+        # FocusOut without changing text
+        gui.App._on_input_entry_edited(app)
+        self.assertFalse(app._input_folder_explicitly_selected)
+        self.assertEqual(gui.App._get_srt_files(app), [])
+
+    def test_focus_in_value_changes_on_focus_out(self):
+        with tempfile.TemporaryDirectory() as root:
+            new_folder = Path(root, "new_folder")
+            new_folder.mkdir()
+            (new_folder / "sub.srt").write_text("", encoding="utf-8")
+            val_ref = [r"C:\Users\K"]
+            app = self._app(r"C:\Users\K", input_selected=False)
+            app.input_var.get = lambda: val_ref[0]
+
+            gui.App._on_input_entry_focus_in(app)
+            val_ref[0] = str(new_folder)
+            gui.App._on_input_entry_edited(app)
+
+            self.assertTrue(app._input_folder_explicitly_selected)
+            files = gui.App._get_srt_files(app)
+            self.assertEqual([Path(p).name for p in files], ["sub.srt"])
+
+    def test_focus_in_value_changed_and_restored_keeps_flag_false(self):
+        val_ref = [r"C:\Users\K"]
+        app = self._app(r"C:\Users\K", input_selected=False)
+        app.input_var.get = lambda: val_ref[0]
+
+        gui.App._on_input_entry_focus_in(app)
+        val_ref[0] = r"C:\Temp"
+        val_ref[0] = r"C:\Users\K"  # restored
+        gui.App._on_input_entry_edited(app)
+
+        self.assertFalse(app._input_folder_explicitly_selected)
+
+    def test_programmatic_set_does_not_set_explicit_flag(self):
+        app = self._app("", input_selected=False)
+        app.input_var = SimpleNamespace(get=lambda: r"C:\LoadedFromSettings")
+
+        # Programmatic set without FocusIn/FocusOut
+        self.assertFalse(app._input_folder_explicitly_selected)
+        self.assertEqual(gui.App._get_srt_files(app), [])
+
 
 class ProductionOutputPathTest(unittest.TestCase):
     def test_external_same_named_folders_do_not_collide(self):

@@ -4769,6 +4769,7 @@ class App(ctk.CTk):
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
         self._selected_files = []   # manually picked files; empty = use input folder
         self._input_folder_explicitly_selected = False
+        self._input_entry_focus_val = None
         self._removed_queue_files = set()
         self._content_type_preflight_done = False
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
@@ -5512,9 +5513,9 @@ class App(ctk.CTk):
             entry.grid(row=0, column=0, sticky="ew")
             if is_input:
                 self.input_entry = entry
+                entry.bind("<FocusIn>", lambda _e: self._on_input_entry_focus_in())
                 entry.bind("<FocusOut>", lambda _e: self._on_input_entry_edited())
                 entry.bind("<Return>", lambda _e: self._on_input_entry_edited())
-                entry.bind("<KeyRelease>", lambda _e: self._on_input_entry_edited())
             ctk.CTkButton(row_fr, text="…", width=36, height=36,
                           font=ctk.CTkFont("Segoe UI", 13),
                           fg_color=BORDER, hover_color=ACCENT,
@@ -7674,12 +7675,23 @@ class App(ctk.CTk):
             self.hybrid_var.set(False)
             self._toggle_hybrid()
 
-    def _on_input_entry_edited(self):
-        """Kullanıcı girdi klasör kutusuna el ile yol yazdığında bu seçimi açık olarak işaretler."""
+    def _on_input_entry_focus_in(self):
+        """Kullanıcı girdi klasör kutusuna tıkladığında odak anındaki ilk değeri kaydeder."""
         if getattr(self, "_is_running", False):
             return
+        self._input_entry_focus_val = self.input_var.get()
+
+    def _on_input_entry_edited(self):
+        """Kullanıcı odak kaybettiğinde veya Enter bastığında değer gerçekten değiştiyse açık seçim olarak işaretler."""
+        if getattr(self, "_is_running", False):
+            return
+        cur_val = self.input_var.get()
+        if getattr(self, "_input_entry_focus_val", None) is not None:
+            if cur_val == self._input_entry_focus_val:
+                return
+        self._input_entry_focus_val = cur_val
         self._input_folder_explicitly_selected = True
-        path = (self.input_var.get() or "").strip()
+        path = (cur_val or "").strip()
         if not self._selected_files and path and os.path.isdir(path):
             try:
                 from project_memory import ProjectMemory
