@@ -217,6 +217,15 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         cleaned = ht.sanitize_glossary_for_turkish({"X": "Y [açıklama]"})
         self.assertEqual(cleaned, {})
 
+    def test_semicolon_instruction_targets_dropped(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "psychedelics": "psikedelikler; bağlama göre 'psikedelik maddeler'",
+            "plant medicines": "bitki ilaçları; spiritüel bağlamda 'şifa bitkileri' olabilir",
+            "ayahuasca": "ayahuasca; italik/çeviri yok",
+            "DMT": "DMT",
+        })
+        self.assertEqual(cleaned, {"DMT": "DMT"})
+
     def test_clean_terms_survive_alongside(self):
         # POLİTİKA TESTİ: bir terim gloss nedeniyle atılırken TÜM sözlük atılmamalı.
         cleaned = ht.sanitize_glossary_for_turkish({

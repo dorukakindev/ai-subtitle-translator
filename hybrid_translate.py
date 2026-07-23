@@ -4437,6 +4437,10 @@ _GLOSSARY_GLOSS_BRACKET_RE = re.compile(r"[()\[\]]")
 # Eğik çizgi kuralı yalnızca BOŞLUKLU " / " biçimini yakalar (seçenek ayırıcısı);
 # bitişik "AC/DC", "24/7" gibi gerçek terimler yanlış-pozitif almasın diye.
 _GLOSSARY_GLOSS_SLASH_RE = re.compile(r"\s/\s")
+_GLOSSARY_META_CLAUSE_RE = re.compile(
+    r";\s*(?:bağlama\s+göre|spiritüel\s+bağlamda|italik\b|çeviri\s+yok\b)",
+    re.IGNORECASE,
+)
 
 
 def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
@@ -4448,6 +4452,8 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
         return "parantez/köşeli-parantez gloss"
     if _GLOSSARY_GLOSS_SLASH_RE.search(value_s):
         return "eğik çizgili seçenek"
+    if _GLOSSARY_META_CLAUSE_RE.search(value_s):
+        return "noktalı virgüllü talimat"
     return None
 
 
