@@ -3507,6 +3507,7 @@ def _align_is_sfx_only(text: str) -> bool:
     """Kaynak satır yalnızca ses efekti / müzik etiketi mi ([...], (...), ♪).
     SDH temizliğiyle SİLİNMESİ meşru olan cue'ları, gerçek diyalogdan ayırır."""
     t = _align_visible(text)
+    t = re.sub(r'^(?:(?:&gt;|>){1,2})\s*', '', t)
     return bool(t) and bool(_ALIGN_SDH_ONLY_RE.match(t))
 
 
@@ -3580,7 +3581,13 @@ def detect_alignment_issues(blocks: list, src_map: dict, window: int = 6) -> lis
         for d in (-2, -1, 1, 2):
             j = pos + d
             if 0 <= j < len(seq) and not _same_continuous_sentence(pos, j):
-                displaced |= src_nums & set(_ALIGN_NUMBER_RE.findall(seq[j][1]))
+                neighbor_tr_nums = set(_ALIGN_NUMBER_RE.findall(seq[j][1]))
+                neighbor_sentence_nums = set()
+                for k in range(max(0, j - window), min(len(seq), j + window + 1)):
+                    if _same_continuous_sentence(j, k):
+                        neighbor_sentence_nums |= set(_ALIGN_NUMBER_RE.findall(
+                            src_map.get(seq[k][0], "")))
+                displaced |= (src_nums & neighbor_tr_nums) - neighbor_sentence_nums
         if displaced:
             findings.append({"type": "number_shift", "idx": idx,
                              "detail": sorted(displaced)})
@@ -3624,6 +3631,18 @@ def detect_alignment_issues(blocks: list, src_map: dict, window: int = 6) -> lis
         has_extreme = any(m[2] for m in win)
         if has_extreme and (("low" in kinds and "high" in kinds) or len(win) >= 3):
             flagged_pos.update(m[0] for m in win)
+    remaining_pos = set(flagged_pos)
+    for p in sorted(flagged_pos):
+        same_sentence = {q for q in flagged_pos if _same_continuous_sentence(p, q)}
+        if len(same_sentence) < 2:
+            continue
+        lo, hi = min(same_sentence), max(same_sentence)
+        joined_src = " ".join(src_map.get(seq[q][0], "") for q in range(lo, hi + 1))
+        joined_tr = " ".join(seq[q][1] for q in range(lo, hi + 1))
+        joined_ratio = len(joined_tr) / max(1, len(joined_src))
+        if 0.4 <= joined_ratio <= 2.5:
+            remaining_pos.difference_update(same_sentence)
+    flagged_pos = remaining_pos
     if flagged_pos:
         ids = sorted({seq[p][0] for p in flagged_pos}, key=_key)
         findings.append({"type": "outlier_cluster", "ids": ids,

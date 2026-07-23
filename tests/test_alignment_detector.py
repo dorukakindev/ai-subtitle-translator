@@ -43,6 +43,22 @@ class NumberShiftTest(unittest.TestCase):
         src = _s(**{"1": "$265.", "2": "IT'S A DEAL."})
         self.assertEqual(gui.detect_alignment_issues(blocks, src), [])
 
+    def test_same_number_belongs_to_neighbor_source_is_not_shift(self):
+        blocks = _b(
+            (656, "Bu 10 günlük proje boyunca hiçbir şey almadı."),
+            (657, "Ne sıvı, ne su, ne de yiyecek tüketti."),
+            (658, "Bu 10 gün boyunca idrar ya da dışkı çıkarmadı."),
+            (659, "Gerçi mesanesinde idrar oluştu."),
+        )
+        src = _s(**{
+            "656": "HE DID NOT TAKE ANYTHING ORALLY, NEITHER FLUID,",
+            "657": "NOR WATER, NOR FOOD DURING THESE 10 DAYS.",
+            "658": "SECOND, HE DID NOT PASS URINE OR STOOL",
+            "659": "DURING THESE 10 DAYS.",
+        })
+        findings = gui.detect_alignment_issues(blocks, src)
+        self.assertFalse(any(f["type"] == "number_shift" for f in findings))
+
 
 class MissingDialogueTest(unittest.TestCase):
     def test_real_dialogue_absent_from_output_fires(self):
@@ -58,6 +74,16 @@ class MissingDialogueTest(unittest.TestCase):
         # SFX-only cue'nun SDH temizliğiyle silinmesi meşru — TETİKLEMEMELİ.
         blocks = _b((10, "Merhaba."), (12, "Nasılsın?"))
         src = _s(**{"10": "HELLO.", "11": "[ LAUGHS ]", "12": "HOW ARE YOU?"})
+        findings = gui.detect_alignment_issues(blocks, src)
+        self.assertFalse(any(f["type"] == "missing_dialogue" for f in findings))
+
+    def test_html_escaped_speaker_marker_plus_language_tag_is_sdh_only(self):
+        blocks = _b((10, "Merhaba."), (12, "Nasılsın?"))
+        src = _s(**{
+            "10": "HELLO.",
+            "11": "&gt;&gt; [non-english speech]",
+            "12": "HOW ARE YOU?",
+        })
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "missing_dialogue" for f in findings))
 
@@ -93,6 +119,18 @@ class OutlierClusterTest(unittest.TestCase):
                     "245": "FOR WHEN THEY'RE DOING AN OPEN-CASKET FUNERAL",
                     "246": "AND THE FACE HAS BEEN DEFORMED",
                     "247": "AND THEY TRY TO RECREATE THE FACE POST-MORTEM."})
+        findings = gui.detect_alignment_issues(blocks, src)
+        self.assertFalse(any(f["type"] == "outlier_cluster" for f in findings))
+
+    def test_extreme_ratios_within_one_complete_sentence_are_benign(self):
+        blocks = _b(
+            (1043, "Bu görüntü, biatlon"),
+            (1044, "şampiyonu bir sporcunun ideal alanını gösteriyor."),
+        )
+        src = _s(**{
+            "1043": "THIS IMAGE SHOWS THE IDEAL FIELD OF AN ATHLETE, BIATHLON",
+            "1044": "CHAMPION.",
+        })
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "outlier_cluster" for f in findings))
 
