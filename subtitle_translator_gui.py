@@ -7325,12 +7325,19 @@ class App(ctk.CTk):
                 if chunk_src_map:
                     expected_ids = list(chunk_src_map)
                     actual_ids = [str(it.get("i")) for it in items if "i" in it]
-                    if actual_ids != expected_ids:
+                    required_ids = [
+                        idx for idx in expected_ids
+                        if len(_align_visible(chunk_src_map.get(idx, ""))) >= 3
+                        and not _align_is_sfx_only(chunk_src_map.get(idx, ""))
+                    ]
+                    required_set = set(required_ids)
+                    if (len(actual_ids) != len(set(actual_ids))
+                            or not set(actual_ids) <= set(expected_ids)
+                            or [idx for idx in actual_ids if idx in required_set] != required_ids):
                         return "id_integrity"
                     for it in items:
                         idx = str(it.get("i"))
-                        if (not str(it.get("t", "")).strip()
-                                and not _align_is_sfx_only(chunk_src_map.get(idx, ""))):
+                        if not str(it.get("t", "")).strip() and idx in required_set:
                             return "empty_dialogue"
                 # Chunk içi komşu-tekrar: mini içeriği öne kaydırıp aynı satırı iki
                 # id'ye yazdıysa, dosya yazılmadan ÖNCE burada yakala (bkz.

@@ -249,6 +249,25 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
                           side_effect=AssertionError("SFX boşluğu yeniden denenmemeli")):
             app._retry_hata(object(), raw_map, requests, max_rounds=1)
 
+    def test_omitted_sfx_id_does_not_retry_real_dialogue_chunk(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._log = lambda *args, **kwargs: None
+        app._update_tokens = lambda *args, **kwargs: None
+        raw_map = {"chunk_1": json.dumps([
+            {"i": 1, "t": "Merhaba."},
+            {"i": 3, "t": "Nasılsın?"},
+        ], ensure_ascii=False)}
+        requests = [self._req("chunk_1", [
+            {"i": 1, "t": "HELLO.", "d": 1.0},
+            {"i": 2, "t": "[MUSIC PLAYING]", "d": 1.0},
+            {"i": 3, "t": "HOW ARE YOU?", "d": 1.0},
+        ])]
+
+        with patch.object(gui, "_safe_chat_create",
+                          side_effect=AssertionError("atlanmış SFX id yeniden denenmemeli")):
+            app._retry_hata(object(), raw_map, requests, max_rounds=1)
+
     def test_failed_strict_retry_does_not_merge_partial_shifted_output(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
