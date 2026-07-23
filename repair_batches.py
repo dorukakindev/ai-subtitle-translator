@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from subtitle_batch_translate import _get_client
+from app_state import atomic_write_text
 
 FMAP_FILES = [
     r"C:\Users\T\Downloads\Batch\batch_fmap_batch_69ea30a7134c8190aac14a89f717393f.json",
@@ -170,11 +171,11 @@ def main():
             print(f"  [ATLA] Hiç blok yok.")
             continue
 
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
-                idx, ts, text = srt_blocks[key]
-                f.write(f"{idx}\n{ts}\n{text}\n\n")
+        lines = []
+        for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
+            idx, ts, text = srt_blocks[key]
+            lines.append(f"{idx}\n{ts}\n{text}\n\n")
+        atomic_write_text(output_path, "".join(lines), encoding="utf-8")
 
         count = len(srt_blocks)
         total_fixed += count

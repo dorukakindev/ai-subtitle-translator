@@ -20,6 +20,24 @@ class TestGlossaryLoading(unittest.TestCase):
         self.write_file(".json", '{"hello": "merhaba"}')
         self.assertEqual(load_glossary(self.test_file), {"hello": "merhaba"})
 
+    def test_json_complex_types(self):
+        content = json.dumps({
+            "term_list": ["v1", "v2"],
+            "term_dict": {"a": "b"},
+            "term_null": None,
+            "term_bool": True,
+            "term_str": "translation",
+            "MCMLXXVII": 1977,
+            "version": 2.5,
+        })
+        self.write_file(".json", content)
+        expected = {
+            "term_str": "translation",
+            "MCMLXXVII": "1977",
+            "version": "2.5",
+        }
+        self.assertEqual(load_glossary(self.test_file), expected)
+
     def test_json_list(self):
         self.write_file(".json", '["hello"]')
         self.assertEqual(load_glossary(self.test_file), {})

@@ -169,6 +169,28 @@ def _descriptor_key(value: str) -> str:
     return value
 
 
+_SDH_ACTION_VERBS = {
+    "breaking", "shattering", "crashing", "slamming", "closes", "closing",
+    "opens", "opening", "creaks", "creaking", "ticking", "rings", "ringing",
+    "beeping", "honking", "squealing", "humming", "buzzing", "rumbling",
+    "clicking", "typing", "whistling", "shouting", "yelling", "coughing",
+    "sneezing", "whispering", "murmuring", "cheering", "booing", "laughing",
+    "laughter", "sighing", "gasping", "groaning", "moaning", "screaming",
+    "crying", "sobbing", "panting", "grunting", "singing", "playing",
+    "continues", "fades", "applause", "applauding", "chuckle", "chuckles",
+    "chuckling", "giggle", "giggles", "giggling", "sniffles", "chatter",
+    "barking", "howling", "growling", "meow", "roaring", "chirping", "knocks", "knocking"
+}
+
+_KNOWN_LANGUAGES = {
+    "french", "german", "spanish", "english", "italian", "russian", "japanese",
+    "chinese", "korean", "arabic", "portuguese", "hindi", "turkish", "latin",
+    "greek", "dutch", "swedish", "polish", "hebrew", "vietnamese", "thai",
+    "tagalog", "swahili", "persian", "danish", "norwegian", "finnish", "czech",
+    "hungarian", "romanian", "ukrainian", "cantonese", "mandarin"
+}
+
+
 def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     key = _descriptor_key(content)
     if not key:
@@ -180,6 +202,10 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     if not words:
         return True
 
+    # Language descriptor check: [speaking French], [in Spanish]
+    if len(words) >= 2 and words[0] in ("speaking", "in") and words[1] in _KNOWN_LANGUAGES:
+        return True
+
     words_no_digits = [w for w in words if not w.isdigit()]
     if not words_no_digits:
         return True
@@ -187,18 +213,13 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     if len(words_no_digits) == 1:
         return words_no_digits[0] in _SDH_KEYWORDS or words_no_digits[0] in _SPEAKER_WORDS
 
+    # All non-digit words are SDH/speaker keywords: [soft music], [door closes], [narrator 2]
     if all(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words_no_digits):
         return True
 
-    raw_words = content.strip().split()
-    is_title_case = len(raw_words) >= 2 and all(w[0].isupper() for w in raw_words if w and w[0].isalpha())
-
-    if is_title_case:
-        return False
-
-    if not bare_text and not is_title_case:
-        if any(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words_no_digits):
-            return True
+    # Sound action verb ending: [glass breaking], [Glass Breaking], [GLASS BREAKING], [woman whispering]
+    if len(words_no_digits) >= 2 and words_no_digits[-1] in _SDH_ACTION_VERBS:
+        return True
 
     return False
 

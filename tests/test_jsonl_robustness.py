@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import sys
 import os
 import json
+import tempfile
 from pathlib import Path
 
 class TestJsonlRobustness(unittest.TestCase):
@@ -142,6 +143,30 @@ class TestJsonlRobustness(unittest.TestCase):
             # 3. Missing record yielded [HATA], valid record processed successfully
             self.assertIn("[HATA]", written_text)
             self.assertIn("Satir 2", written_text)
+
+    def test_atomic_write_srt_preserves_file_on_error(self):
+        import subtitle_batch_translate
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = Path(tmpdir) / "subtitles_tr.srt"
+            out_file.write_text("ÖNCEKİ İÇERİK OK", encoding="utf-8")
+
+            blocks = [(1, "00:00:00,000 --> 00:00:02,000", "Merhaba Dünya")]
+            subtitle_batch_translate.write_srt(out_file, blocks)
+
+            written = out_file.read_text(encoding="utf-8")
+            self.assertIn("1\n00:00:00,000 --> 00:00:02,000\nMerhaba Dünya\n\n", written)
+            self.assertNotIn("\\n", written)
+
+            # Exception simulation: target file content must remain unchanged if exception raised before write
+            try:
+                def bad_normalize(text):
+                    raise RuntimeError("Simulated failure during formatting")
+                with patch("subtitle_batch_translate._normalize_output_text", side_effect=bad_normalize):
+                    subtitle_batch_translate.write_srt(out_file, blocks)
+            except RuntimeError:
+                pass
+
+            self.assertEqual(out_file.read_text(encoding="utf-8"), written)
 
 if __name__ == '__main__':
     unittest.main()

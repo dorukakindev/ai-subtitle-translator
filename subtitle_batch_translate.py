@@ -135,13 +135,16 @@ def _normalize_output_text(text: str) -> str:
     return text
 
 
+from app_state import atomic_write_text, state_path
+
+
 def write_srt(filepath, blocks):
-    """(index, timestamp, text) listesinden SRT dosyası yazar."""
-    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-    with open(filepath, "w", encoding="utf-8") as f:
-        for idx, timestamp, text in blocks:
-            text = _normalize_output_text(text)
-            f.write(f"{idx}\n{timestamp}\n{text}\n\n")
+    """(index, timestamp, text) listesinden SRT dosyası yazar (atomik)."""
+    lines = []
+    for idx, timestamp, text in blocks:
+        text = _normalize_output_text(text)
+        lines.append(f"{idx}\n{timestamp}\n{text}\n\n")
+    atomic_write_text(filepath, "".join(lines), encoding="utf-8")
 
 
 def create_batch_requests(srt_files):

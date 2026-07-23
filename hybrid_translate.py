@@ -535,7 +535,14 @@ def load_glossary(filepath: str) -> dict:
             parsed = json.loads(content)
             if isinstance(parsed, dict):
                 for k, v in parsed.items():
-                    ks, vs = str(k).strip(), str(v).strip()
+                    ks = str(k).strip() if k is not None else ""
+                    if not ks:
+                        continue
+                    vs = None
+                    if isinstance(v, str):
+                        vs = v.strip()
+                    elif type(v) in (int, float) and not isinstance(v, bool):
+                        vs = str(v).strip()
                     if ks and vs:
                         result[ks] = vs
         except json.JSONDecodeError:
