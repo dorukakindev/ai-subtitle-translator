@@ -29,7 +29,22 @@ def _release(ptr):
         _method(ptr, 2, wintypes.ULONG)(ptr)
 
 
-def pick_multiple_folders(owner_hwnd=0, title="Altyazı Klasörlerini Seç"):
+def _normalize_folder_paths(paths: list[str]) -> list[str]:
+    """Deduplicate folder paths using canonical/normalized path representation."""
+    seen = set()
+    result = []
+    for p in paths:
+        if not p:
+            continue
+        norm = os.path.normcase(os.path.abspath(str(p)))
+        if norm not in seen:
+            seen.add(norm)
+            result.append(str(p))
+    return result
+
+
+def pick_multiple_folders(owner_hwnd=0,
+                          title="Altyazı Klasörlerini Seç (Ctrl/Shift ile birden fazla klasör seçebilirsiniz)"):
     """Windows klasör seçicisini çoklu seçimle açar.
 
     Liste: seçim tamamlandı. []: kullanıcı iptal etti. None: native picker
@@ -71,7 +86,7 @@ def pick_multiple_folders(owner_hwnd=0, title="Altyazı Klasörlerini Seç"):
 
         hr = _method(dialog, 3, ctypes.c_long, wintypes.HWND)(dialog, owner_hwnd or None)
         if hr < 0:
-            return [] if ctypes.c_ulong(hr).value == 0x800704C7 else None
+            return [] if (hr & 0xFFFFFFFF) == 0x800704C7 else None
 
         if _method(dialog, 27, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p))(
                 dialog, ctypes.byref(items)) < 0 or not items:
@@ -102,7 +117,7 @@ def pick_multiple_folders(owner_hwnd=0, title="Altyazı Klasörlerini Seç"):
                         ole32.CoTaskMemFree(display_name)
             finally:
                 _release(item)
-        return selected
+        return _normalize_folder_paths(selected)
     except Exception:
         return None
     finally:

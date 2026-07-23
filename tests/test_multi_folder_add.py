@@ -10,8 +10,8 @@ import subtitle_translator_gui as gui
 class MultiFolderAddTest(unittest.TestCase):
     def test_add_folder_uses_single_native_multi_select_dialog(self):
         selected = [r"C:\one", r"D:\two"]
-        app = SimpleNamespace(_is_running=False, received=None)
-        app._log = lambda *args: None
+        app = SimpleNamespace(_is_running=False, received=None, logs=[])
+        app._log = lambda *args: app.logs.append(args)
         app.winfo_id = lambda: 123
         app._append_folder_files = lambda paths: setattr(app, "received", paths)
 
@@ -19,19 +19,53 @@ class MultiFolderAddTest(unittest.TestCase):
             gui.App._add_folder_files(app)
 
         picker.assert_called_once_with(
-            owner_hwnd=123, title="Altyazı Klasörlerini Seç")
+            owner_hwnd=123,
+            title="Altyazı Klasörlerini Seç (Ctrl/Shift ile birden fazla klasör seçebilirsiniz)")
         self.assertEqual(app.received, selected)
+        self.assertEqual(len(app.logs), 0)
 
-    def test_add_folder_cancel_does_not_append(self):
-        app = SimpleNamespace(_is_running=False, appended=False)
-        app._log = lambda *args: None
+    def test_add_folder_cancel_does_not_append_and_does_not_trigger_fallback(self):
+        app = SimpleNamespace(_is_running=False, appended=False, logs=[])
+        app._log = lambda *args: app.logs.append(args)
         app.winfo_id = lambda: 123
         app._append_folder_files = lambda _paths: setattr(app, "appended", True)
 
-        with mock.patch("subtitle_translator_gui.pick_multiple_folders", return_value=[]):
+        with mock.patch("subtitle_translator_gui.pick_multiple_folders", return_value=[]), \
+             mock.patch("subtitle_translator_gui.filedialog.askdirectory") as askdir:
             gui.App._add_folder_files(app)
 
         self.assertFalse(app.appended)
+        askdir.assert_not_called()
+        self.assertEqual(len(app.logs), 0)
+
+    def test_fallback_when_native_picker_returns_none(self):
+        app = SimpleNamespace(_is_running=False, received=None, logs=[])
+        app._log = lambda *args: app.logs.append(args)
+        app.winfo_id = lambda: 123
+        app.attributes = lambda *args: None
+        app._append_folder_files = lambda paths: setattr(app, "received", paths)
+
+        with mock.patch("subtitle_translator_gui.pick_multiple_folders", return_value=None), \
+             mock.patch("subtitle_translator_gui.filedialog.askdirectory", side_effect=[r"C:\dir1", r"C:\dir2"]), \
+             mock.patch("tkinter.messagebox.askyesno", side_effect=[True, False]):
+            gui.App._add_folder_files(app)
+
+        self.assertEqual(app.received, [r"C:\dir1", r"C:\dir2"])
+        self.assertTrue(any("Native çoklu klasör seçici kullanılamadı" in msg[0] for msg in app.logs))
+
+    def test_fallback_cancelled_on_second_prompt(self):
+        app = SimpleNamespace(_is_running=False, received=None, logs=[])
+        app._log = lambda *args: app.logs.append(args)
+        app.winfo_id = lambda: 123
+        app.attributes = lambda *args: None
+        app._append_folder_files = lambda paths: setattr(app, "received", paths)
+
+        with mock.patch("subtitle_translator_gui.pick_multiple_folders", return_value=None), \
+             mock.patch("subtitle_translator_gui.filedialog.askdirectory", side_effect=[r"C:\dir1", ""]), \
+             mock.patch("tkinter.messagebox.askyesno", side_effect=[True]):
+            gui.App._add_folder_files(app)
+
+        self.assertEqual(app.received, [r"C:\dir1"])
 
     def test_multiple_folders_append_to_existing_queue(self):
         with tempfile.TemporaryDirectory() as root:

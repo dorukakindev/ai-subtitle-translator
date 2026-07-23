@@ -5541,7 +5541,7 @@ class App(ctk.CTk):
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._pick_files).grid(row=0, column=0, sticky="ew")
-        ctk.CTkButton(pick_fr, text="📂  Klasör Ekle", height=34,
+        ctk.CTkButton(pick_fr, text="📂  Klasörler Ekle", height=34,
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._add_folder_files).grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -7741,14 +7741,32 @@ class App(ctk.CTk):
             return
         try:
             paths = pick_multiple_folders(
-                owner_hwnd=self.winfo_id(), title="Altyazı Klasörlerini Seç")
+                owner_hwnd=self.winfo_id(),
+                title="Altyazı Klasörlerini Seç (Ctrl/Shift ile birden fazla klasör seçebilirsiniz)")
         except Exception:
             paths = None
         if paths is None:
-            self.attributes("-topmost", True)
-            path = filedialog.askdirectory(parent=self, title="Altyazı Klasörü Ekle")
-            self.attributes("-topmost", False)
-            paths = [path] if path else []
+            self._log("Native çoklu klasör seçici kullanılamadı, alternatif klasör seçimi açılıyor.", "warn")
+            collected = []
+            while True:
+                self.attributes("-topmost", True)
+                path = filedialog.askdirectory(parent=self, title="Altyazı Klasörü Ekle")
+                self.attributes("-topmost", False)
+                if not path:
+                    break
+                collected.append(path)
+                try:
+                    from tkinter import messagebox
+                    ans = messagebox.askyesno(
+                        "Klasör Ekle",
+                        "Başka klasör eklemek ister misiniz?",
+                        parent=self
+                    )
+                except Exception:
+                    ans = False
+                if not ans:
+                    break
+            paths = collected
         if not paths:
             return
 
@@ -9201,11 +9219,13 @@ class App(ctk.CTk):
     def _get_srt_files(self):
         if self._selected_files:
             files = list(self._selected_files)
-        else:
+        elif getattr(self, "_input_folder_explicitly_selected", False):
             root = (self.input_var.get() or "").strip()
             if not root:
                 return []
             files = get_subtitle_files(root, recursive=True)
+        else:
+            files = []
         files = self._dedupe_paths(files)
         # Dizi hafızası açıkken bölüm sırasına diz (E01 kararları E02'ye aksın)
         if getattr(self, "series_memory_var", None) and self.series_memory_var.get():
