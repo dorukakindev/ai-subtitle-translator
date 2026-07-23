@@ -41,11 +41,39 @@ def _load_api_key() -> str:
     return ""
 
 
-API_KEY = _load_api_key()
-if not API_KEY:
-    raise SystemExit("OpenAI API anahtarı bulunamadı — credential_store'a kaydedin "
-                     "veya .gui_settings.json sağlayın.")
-client = OpenAI(api_key=API_KEY)
+def _get_base_url() -> str:
+    try:
+        p = Path(__file__).parent / ".gui_settings.json"
+        if p.exists():
+            url = json.loads(p.read_text(encoding="utf-8")).get("custom_api_url", "")
+            if url:
+                print(f"[UYARI] Özel API URL yapılandırılmış: {url}")
+                print("[UYARI] Bu script sadece resmi OpenAI Batch API'yi destekler! Hatalar olabilir.")
+                return url
+    except Exception:
+        pass
+    return ""
+
+def _get_client():
+    api_key = _load_api_key()
+    if not api_key:
+        raise SystemExit("OpenAI API anahtarı bulunamadı — credential_store'a kaydedin "
+                         "veya .gui_settings.json sağlayın.")
+    base_url = _get_base_url()
+    kwargs = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return OpenAI(**kwargs)
+
+def safe_parse_jsonl_line(line, log_fn=None):
+    try:
+        if not line or not line.strip():
+            return None
+        return json.loads(line)
+    except Exception as e:
+        if log_fn:
+            log_fn(f"Corrupt JSONL line skipped: {e}")
+        return None
 
 
 def parse_srt(filepath):
@@ -137,6 +165,7 @@ def submit_batch(requests):
 
     print(f"[+] {len(requests)} istek JSONL dosyasına yazıldı.")
 
+    client = _get_client()
     with open(jsonl_path, "rb") as f:
         uploaded = client.files.create(file=f, purpose="batch")
 
@@ -155,6 +184,7 @@ def submit_batch(requests):
 
 def wait_for_batch(batch_id, poll_interval=60):
     """Batch tamamlanana kadar bekler."""
+    client = _get_client()
     print(f"\n[~] Batch bekleniyor (her {poll_interval} saniyede kontrol)...")
     while True:
         batch = client.batches.retrieve(batch_id)
@@ -173,18 +203,26 @@ def wait_for_batch(batch_id, poll_interval=60):
 
 def process_results(output_file_id, file_map, srt_files):
     """Sonuçları indir ve SRT dosyalarını oluştur."""
+    client = _get_client()
     content = client.files.content(output_file_id).text
 
     # Sonuçları custom_id'ye göre topla
     translations = {}
     for line in content.strip().splitlines():
-        result = json.loads(line)
-        cid = result["custom_id"]
+        result = safe_parse_jsonl_line(line, log_fn=print)
+        if not result:
+            continue
+        cid = result.get("custom_id")
+        if not cid:
+            continue
         if result.get("error"):
             print(f"[!] Hata ({cid}): {result['error']}")
             translations[cid] = None
         else:
-            translations[cid] = result["response"]["body"]["choices"][0]["message"]["content"].strip()
+            try:
+                translations[cid] = result["response"]["body"]["choices"][0]["message"]["content"].strip()
+            except (KeyError, TypeError, IndexError):
+                translations[cid] = None
 
     # Her SRT dosyası için çevrilmiş blokları topla (dict — None slot crash'i önler)
     file_blocks = {}  # filepath -> {block_i: (idx, timestamp, text)}

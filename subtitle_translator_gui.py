@@ -4706,7 +4706,7 @@ _BATCH_DONE_STATUSES = frozenset({"completed"})
 _BATCH_DEAD_STATUSES = frozenset({"failed", "expired", "cancelled"})
 
 
-def _fetch_batch_statuses(api_key: str, batch_ids: list, log_fn=None) -> dict:
+def _fetch_batch_statuses(api_key: str, batch_ids: list, base_url: str = "", log_fn=None) -> dict:
     """Verilen batch id'lerin OpenAI'deki GÜNCEL durumunu çeker.
 
     Döner: {batch_id: status_str}. status_str bilinen OpenAI değerlerinden biri
@@ -4719,10 +4719,13 @@ def _fetch_batch_statuses(api_key: str, batch_ids: list, log_fn=None) -> dict:
         return result
     try:
         from openai import OpenAI as _OAI
-        client = _OAI(api_key=api_key)
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        client = _OAI(**kwargs)
     except Exception as e:
         if log_fn:
-            log_fn(f"Batch durumu sorgulanamadı: {e}", "warn")
+            log_fn("Batch durumu sorgulanamadı.", "warn")
         return result
     for bid in batch_ids:
         try:
@@ -4766,7 +4769,7 @@ class App(ctk.CTk):
         self._removed_queue_files = set()
         self._content_type_preflight_done = False
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
-        self._batch_lock     = threading.Lock()   # _active_batches eşzamanlı erişimi
+        self._batch_lock     = threading.RLock()   # _active_batches eşzamanlı erişimi
         self._ckpt_lock      = threading.Lock()   # sync checkpoint dosyasına eşzamanlı yazım
         self.model_2_5m_combo = None
         self.model_250k_combo = None
@@ -4972,9 +4975,10 @@ class App(ctk.CTk):
                     pass
 
         api_key = self.api_key_entry.get().strip()
+        base_url = self._main_api_base_url()
 
         def _fetch_in_bg():
-            fetched = _fetch_batch_statuses(api_key, batch_ids, self._log)
+            fetched = _fetch_batch_statuses(api_key, batch_ids, base_url, self._log)
             _post_ui(self, _apply_statuses, fetched)
 
         threading.Thread(target=_fetch_in_bg, daemon=True).start()
@@ -7191,6 +7195,12 @@ class App(ctk.CTk):
                     self.stat_tokens_sub_var.set(f"~${c:.4f} ({ct:,} önb.)")
                 else:
                     self.stat_tokens_sub_var.set(f"Token  ~${c:.4f}")
+                pts = self._token_sparkline_points
+                if not pts or pts[-1] != t:
+                    pts.append(t)
+                    if len(pts) > 20:
+                        del pts[:-20]
+                    self._update_token_sparkline()
             except Exception:
                 pass
         _post_ui(self, _upd)
@@ -9056,12 +9066,12 @@ class App(ctk.CTk):
             return
         with self._batch_lock:
             self._active_batches[batch_id] = (api_key, base_url or "")
-        self._write_batch_owner()
+            self._write_batch_owner()
 
     def _unregister_batch(self, batch_id: str):
         with self._batch_lock:
             self._active_batches.pop(batch_id, None)
-        self._write_batch_owner()
+            self._write_batch_owner()
 
     def _write_batch_owner(self):
         """Bu sürecin ÜZERİNDE ÇALIŞTIĞI batch'leri işaretler (batch_owner_<pid>.json).
@@ -9071,17 +9081,17 @@ class App(ctk.CTk):
         _live_owned_batch_ids. YALNIZCA kendi pid dosyamıza dokunulur; başka bir sürecin
         kilidi asla ezilmez/silinmez. Aktif batch kalmayınca kendi dosyamız silinir."""
         import os as _os
-        try:
-            p = state_path(__file__, f"{_BATCH_OWNER_PREFIX}{_os.getpid()}.json")
-            with self._batch_lock:
+        with self._batch_lock:
+            try:
+                p = state_path(__file__, f"{_BATCH_OWNER_PREFIX}{_os.getpid()}.json")
                 ids = sorted(self._active_batches.keys())
-            if not ids:
-                p.unlink(missing_ok=True)
-                return
-            atomic_write_json(p, {"pid": _os.getpid(), "ts": time.time(),
-                                  "batch_ids": ids})
-        except Exception:
-            pass   # kilit yazılamazsa eski davranışa düşülür (fail-open)
+                if not ids:
+                    p.unlink(missing_ok=True)
+                    return
+                atomic_write_json(p, {"pid": _os.getpid(), "ts": time.time(),
+                                      "batch_ids": ids})
+            except Exception:
+                pass   # kilit yazılamazsa eski davranışa düşülür (fail-open)
 
     def _clear_batch_recovery(self, batch_ids):
         """Verilen batch'lerin kurtarma dosyalarını (batch_fmap_<id>.json) siler ve
