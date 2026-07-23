@@ -532,19 +532,36 @@ def load_glossary(filepath: str) -> dict:
     result = {}
     if ext == ".json":
         try:
-            result = json.loads(content)
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                for k, v in parsed.items():
+                    ks, vs = str(k).strip(), str(v).strip()
+                    if ks and vs:
+                        result[ks] = vs
         except json.JSONDecodeError:
-            result = {}
+            pass
     else:
+        import csv
         for line in content.splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            for sep in ["\t", "=", ","]:
-                if sep in line:
-                    k, _, v = line.partition(sep)
-                    result[k.strip()] = v.strip()
-                    break
+            k, v = None, None
+            if "\t" in line:
+                k, _, v = line.partition("\t")
+            elif "=" in line:
+                k, _, v = line.partition("=")
+            elif "," in line:
+                try:
+                    parsed_csv = next(csv.reader([line]))
+                    if len(parsed_csv) >= 2:
+                        k, v = parsed_csv[0], parsed_csv[1]
+                except Exception:
+                    pass
+            if k is not None and v is not None:
+                ks, vs = k.strip(), v.strip()
+                if ks and vs:
+                    result[ks] = vs
     return result
 
 

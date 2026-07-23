@@ -110,7 +110,7 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
       çevirinin her satırı da sarılır
     Kısmi/satır-içi etiketler ('he said <i>no</i>') güvenle geri konamaz — atlanır.
     Çeviri zaten etiket içeriyorsa (idempotenlik) dokunulmaz."""
-    if not src_text or not tr_text or tr_text.startswith("[HATA"):
+    if not src_text or not tr_text or tr_text.startswith("[HATA") or tr_text.strip() == "[ÇEVİRİ EKSİK]":
         return tr_text
 
     src = src_text.strip()

@@ -1,4 +1,5 @@
 .credentials
+.credentials.tmp
 .gui_settings.json
 .gui_settings.json.bak.*
 batch_fmap_*.json

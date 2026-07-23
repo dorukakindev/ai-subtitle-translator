@@ -196,6 +196,25 @@ def _strip_standalone_music_notes(line: str) -> str:
     return value
 
 
+def _is_speaker_name(inner: str) -> bool:
+    if not inner:
+        return False
+    if re.search(r'[?!,;:]', inner):
+        return False
+    if inner.endswith('.'):
+        return False
+    words = inner.split()
+    if not (1 <= len(words) <= 3):
+        return False
+    if inner.isupper():
+        return True
+    for w in words:
+        if not w: continue
+        if not (w[0].isupper() or w[0].isdigit()):
+            return False
+    return True
+
+
 def _strip_speaker_prefix(line: str) -> str:
     while True:
         match = SPEAKER_PREFIX_RE.match(line)
@@ -204,7 +223,7 @@ def _strip_speaker_prefix(line: str) -> str:
         raw = match.group(1)
         inner = raw[1:-1].strip()
         colon_follows = line[match.start(1) + len(raw):match.end()].strip().startswith(":")
-        if colon_follows or is_sdh_descriptor(inner):
+        if colon_follows or is_sdh_descriptor(inner) or _is_speaker_name(inner):
             line = line[match.end():]
             continue
         return line
