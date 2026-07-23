@@ -602,6 +602,9 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
                        cultural_refs: list = None, target_language: str = "",
                        analysis_depth: str = "standard"):
     _ensure_path()
+    sig = _cache_sig(filepath)
+    if not sig or not sig.startswith("sha256:"):
+        return
     path = _cache_path(filepath)
     data = {
         "source_language":    context.source_language,
@@ -620,7 +623,7 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
         "idiom_map":          idiom_map or {},
         "cultural_refs":      cultural_refs or [],
         "analysis_depth":     normalize_analysis_depth(analysis_depth),
-        "_sig":               _cache_sig(filepath),   # kaynak dosya imzası (bayat-önbellek koruması)
+        "_sig":               sig,   # kaynak dosya imzası (bayat-önbellek koruması)
         "target_language":    target_language or "",  # hedef dil değişirse analizi yeniden kullanma
     }
     # Atomik yazım: yarım kalan dosya bozuk önbellek bırakmasın
@@ -650,17 +653,28 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
     if not path.exists():
         return None
     try:
+        cur_sig = _cache_sig(filepath)
+        if not cur_sig or not cur_sig.startswith("sha256:"):
+            return None
+
         from subtitle_localizer.models import ContextMemory, CharacterVoice
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
-        # Kaynak dosya değiştiyse bayat analizi kullanma (yeniden analiz et)
-        if d.get("_sig") and d.get("_sig") != _cache_sig(filepath):
+
+        cached_sig = d.get("_sig")
+        if not isinstance(cached_sig, str) or not cached_sig.startswith("sha256:") or cached_sig != cur_sig:
             return None
-        # Hedef dil değiştiyse (aynı dosya farklı dile çevriliyor) bayat analizi kullanma
-        if expected_target and d.get("target_language") and d.get("target_language") != expected_target:
-            return None
+
+        if expected_target:
+            cached_target = d.get("target_language")
+            if not cached_target or cached_target != expected_target:
+                return None
+
         if expected_analysis_depth:
-            cached_depth = normalize_analysis_depth(d.get("analysis_depth") or "standard")
+            raw_cached_depth = d.get("analysis_depth")
+            if not raw_cached_depth:
+                return None
+            cached_depth = normalize_analysis_depth(raw_cached_depth)
             expected_depth = normalize_analysis_depth(expected_analysis_depth)
             if cached_depth != expected_depth:
                 return None

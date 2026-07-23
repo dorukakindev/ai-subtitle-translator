@@ -10894,11 +10894,15 @@ class App(ctk.CTk):
             data  = None
             cpath = _precontext_cache_path(fp)
             try:
-                if cpath.exists():
+                cur_sig = _precontext_cache_sig(fp)
+                if cpath.exists() and cur_sig and cur_sig.startswith("sha256:"):
                     cached = json.loads(cpath.read_text(encoding="utf-8"))
+                    cached_sig = cached.get("_sig")
                     if (cached.get("_ver") == PRECONTEXT_CACHE_VER
                             and cached.get("_tgt") == tgt
-                            and cached.get("_sig", "") == _precontext_cache_sig(fp)):
+                            and isinstance(cached_sig, str)
+                            and cached_sig.startswith("sha256:")
+                            and cached_sig == cur_sig):
                         data = cached.get("data")
             except Exception:
                 data = None
@@ -10930,13 +10934,15 @@ class App(ctk.CTk):
                         continue
                     data_by_fp[fp] = data
                     try:
-                        cpath = _precontext_cache_path(fp)
-                        atomic_write_json(cpath, {
-                            "_ver": PRECONTEXT_CACHE_VER,
-                            "_tgt": tgt,
-                            "data": data,
-                            "_sig": _precontext_cache_sig(fp),
-                        })
+                        sig = _precontext_cache_sig(fp)
+                        if sig and sig.startswith("sha256:"):
+                            cpath = _precontext_cache_path(fp)
+                            atomic_write_json(cpath, {
+                                "_ver": PRECONTEXT_CACHE_VER,
+                                "_tgt": tgt,
+                                "data": data,
+                                "_sig": sig,
+                            })
                     except Exception as e:
                         # Önceden sessizce yutuluyordu (except: pass) — disk/izin hatası
                         # hiç görünmüyordu; artık en azından uyarı olarak loglanıyor
