@@ -22,6 +22,24 @@ def _src(**kw):
 
 
 class SdhSourceDrivenTest(unittest.TestCase):
+    def test_chevron_speaker_markers_stripped(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", ">> Merhaba."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "&gt;&gt; Dünya."),
+        ]
+        src_map = _src(**{"1": ">> Hello.", "2": "&gt;&gt; World."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            {idx: text for idx, _ts, text in result},
+            {"1": "Merhaba.", "2": "Dünya."},
+        )
+
+    def test_chevron_language_only_cue_dropped(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", ">> [anlaşılmayan konuşma]")]
+        src_map = _src(**{"1": "&gt;&gt; [non-english]"})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result, [])
+
     def test_src_sfx_only_cue_dropped(self):
         # Kaynak tamamen parantez → kural 1: çeviri cue'su tamamen silinir.
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[ÇAN SESLERİ]")]

@@ -7,6 +7,7 @@ MUSIC_NOTE_RE = re.compile(r"[♪♫♬♩]+")
 EMPTY_DASH_RE = re.compile(r"^\s*[-–—_]+\s*$")
 BRACKET_OR_PAREN_RE = re.compile(r"\[[^\]\n]{1,100}\]|\([^)\n]{1,100}\)")
 SPEAKER_PREFIX_RE = re.compile(r"^\s*-?\s*(\[[^\]\n]{1,40}\]|\([^)\n]{1,40}\))\s*:?\s*")
+CHEVRON_SPEAKER_RE = re.compile(r"^\s*(?:(?:&gt;|>){2})\s*", re.IGNORECASE)
 
 _SDH_KEYWORDS = {
     # English hearing-impaired captions
@@ -274,6 +275,7 @@ def _strip_speaker_prefix(line: str) -> str:
 
 def strip_sdh_line(line: str, strip_format_tags: bool = True) -> str:
     line = str(line or "")
+    line = CHEVRON_SPEAKER_RE.sub("", line)
     line = _strip_speaker_prefix(line)
     if strip_format_tags:
         line = FORMAT_TAG_RE.sub("", line)
@@ -562,7 +564,7 @@ SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
 def src_is_sfx_only(src_text: str) -> bool:
     """Kaynak cue'su tamamen parantez/köşeli parantez/nota mı (gerçek diyalog
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
-    text = str(src_text or "").strip()
+    text = CHEVRON_SPEAKER_RE.sub("", str(src_text or "")).strip()
     return bool(text) and bool(SFX_ONLY_STRUCTURAL_RE.match(text))
 
 
@@ -587,7 +589,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     parçası, gerçek noktalama değil — bracket sökümünden HEMEN SONRA temizlenir
     (dış boşluk kırpımından önce, aksi halde '- :' gibi ara boşluklu varyantlar
     kaçar)."""
-    tr_line = str(tr_line or "")
+    tr_line = CHEVRON_SPEAKER_RE.sub("", str(tr_line or ""))
     src_line = str(src_line or "")
     if not BRACKET_OR_PAREN_RE.search(src_line):
         return tr_line
