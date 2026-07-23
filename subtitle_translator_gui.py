@@ -7352,10 +7352,16 @@ class App(ctk.CTk):
                     return "invalid_items"
                 if any(str(it.get("t", "")).strip() == "[HATA]" for it in items):
                     return "hata_line"
-                if any(ht.has_non_turkish_target_leak(str(it.get("t", ""))) for it in items):
-                    return "non_turkish_target"
                 req = req_by_id.get(cid)
                 chunk_src_map = _chunk_src_map_from_request(req) if req else {}
+                if any(
+                    ht.has_non_turkish_target_leak(
+                        str(it.get("t", "")),
+                        source_text=chunk_src_map.get(str(it.get("i")), ""),
+                    )
+                    for it in items
+                ):
+                    return "non_turkish_target"
                 if chunk_src_map:
                     expected_ids = list(chunk_src_map)
                     actual_ids = [str(it.get("i")) for it in items if "i" in it]
@@ -7395,8 +7401,13 @@ class App(ctk.CTk):
             token'ı döndürür (yanlış alarm mı gerçek sızıntı mı ayırt edilebilsin)."""
             try:
                 items = json.loads(_extract_json_array(raw_map.get(cid, "")))
+                req = req_by_id.get(cid)
+                chunk_src_map = _chunk_src_map_from_request(req) if req else {}
                 for it in items:
-                    tok = ht.non_turkish_leak_token(str(it.get("t", "")))
+                    tok = ht.non_turkish_leak_token(
+                        str(it.get("t", "")),
+                        source_text=chunk_src_map.get(str(it.get("i")), ""),
+                    )
                     if tok:
                         return tok
             except Exception:
@@ -7541,11 +7552,16 @@ class App(ctk.CTk):
                 continue
             try:
                 items = json.loads(_extract_json_array(raw_map.get(cid, "")))
+                req = req_by_id.get(cid)
+                chunk_src_map = _chunk_src_map_from_request(req) if req else {}
                 marked = 0
                 example = None
                 for item in items:
                     if isinstance(item, dict):
-                        tok = ht.non_turkish_leak_token(str(item.get("t", "")))
+                        tok = ht.non_turkish_leak_token(
+                            str(item.get("t", "")),
+                            source_text=chunk_src_map.get(str(item.get("i")), ""),
+                        )
                         if tok:
                             item["t"] = "[HATA_NON_TURKISH_TARGET]"
                             marked += 1

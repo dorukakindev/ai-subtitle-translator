@@ -4344,8 +4344,30 @@ def _glossary_target_is_source_kept_asis(key: str, value: str) -> bool:
     return bool(key_tokens) and key_tokens == _tokens(value)
 
 
+_PRESERVED_TERM_TR_SUFFIXES = frozenset({
+    "i", "ı", "u", "ü", "yi", "yı", "yu", "yü", "e", "a", "ye", "ya",
+    "de", "da", "te", "ta", "den", "dan", "ten", "tan",
+    "in", "ın", "un", "ün", "nin", "nın", "nun", "nün",
+    "le", "la", "yle", "yla", "ler", "lar",
+})
+
+
+def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool:
+    value = str(token or "").strip(".,;:!?()[]{}\"'“”‘’<>-–—").casefold()
+    if not value or not source_text:
+        return False
+    for source_token in _GLOSSARY_WORD_RE.findall(str(source_text)):
+        source_value = source_token.casefold()
+        if value == source_value:
+            return True
+        if value.startswith(source_value) and value[len(source_value):] in _PRESERVED_TERM_TR_SUFFIXES:
+            return True
+    return False
+
+
 def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
-                            glossary_key: str | None = None) -> str | None:
+                            glossary_key: str | None = None,
+                            source_text: str = "") -> str | None:
     """Return the first concrete token that trips the non-Turkish-target-leak
     detector, or None if the text is clean. Single source of truth for
     has_non_turkish_target_leak — also used to name the offending word in
@@ -4376,6 +4398,8 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
         # Lowercase tokens with these characters are almost always target-language drift.
         if token[:1].isupper():
             continue
+        if _source_preserves_latin_extended_token(token, source_text):
+            continue
         return token
     if glossary_target:
         token = _glossary_wqx_token(value, glossary_key=glossary_key)
@@ -4385,10 +4409,12 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
 
 
 def has_non_turkish_target_leak(text: str, *, glossary_target: bool = False,
-                                 glossary_key: str | None = None) -> bool:
+                                 glossary_key: str | None = None,
+                                 source_text: str = "") -> bool:
     """Detect non-Turkey-Turkish leaks that should never appear in Turkish output."""
     return non_turkish_leak_token(text, glossary_target=glossary_target,
-                                   glossary_key=glossary_key) is not None
+                                  glossary_key=glossary_key,
+                                  source_text=source_text) is not None
 
 
 # ── Sözlük hedefinde gloss/talimat guard'ı (bkz. plans/sozluk-gloss-ve-half-sayi-brief.md) ──

@@ -51,6 +51,16 @@ class SourceLanguageLeftoverTest(unittest.TestCase):
         self.assertFalse(ht.has_non_turkish_target_leak("Juárez burada anılıyor."))
         self.assertFalse(ht.has_non_turkish_target_leak("Dükkânda hâlâ katı hâlden gaza geçiyor."))
 
+    def test_source_term_with_latin_diacritic_and_turkish_suffix_is_allowed(self):
+        self.assertFalse(ht.has_non_turkish_target_leak(
+            "Rapé ve hapé--", source_text="Rapé and hapé--"))
+        self.assertFalse(ht.has_non_turkish_target_leak(
+            "rapéyi burun deliklerine üflemek", source_text="blow the rapé into the nostrils"))
+        self.assertFalse(ht.has_non_turkish_target_leak(
+            "rapénin şifası", source_text="the medicine of rapé"))
+        self.assertTrue(ht.has_non_turkish_target_leak(
+            "rapéyi burun deliklerine üflemek", source_text="blow the medicine into the nostrils"))
+
     def test_homoglyph_normalization_allows_cyrillic_a_in_turkish_word(self):
         self.assertEqual(ht.normalize_latin_homoglyphs("BАNA"), "BANA")
         self.assertFalse(ht.has_non_turkish_target_leak("O da BАNA kavanozda şeyler getirdi."))
