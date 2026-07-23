@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import sys
 import os
 import json
+from pathlib import Path
 
 class TestJsonlRobustness(unittest.TestCase):
     @patch("credential_store.load_key")
@@ -62,6 +63,39 @@ class TestJsonlRobustness(unittest.TestCase):
         self.assertEqual(blocks[0][2], "Valid Translation")
         self.assertEqual(blocks[1][2], "[ÇEVIRI HATASI]")
         self.assertEqual(blocks[2][2], "[ÇEVIRI HATASI]")
+
+    def test_try_extract_fenced_newlines(self):
+        from repair_batches import _try_extract
+        fenced_content = "```json\n[{\"i\": 1, \"t\": \"Merhaba\"}]\n```"
+        result = _try_extract(fenced_content)
+        self.assertIsNotNone(result)
+        self.assertEqual(result, [{"i": 1, "t": "Merhaba"}])
+
+    def test_standalone_provider_resolution(self):
+        from subtitle_batch_translate import resolve_standalone_provider
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / ".gui_settings.json"
+            # 1. Official OpenAI default
+            settings_path.write_text(json.dumps({"main_custom": False, "api_url": "https://api.openai.com/v1"}), encoding="utf-8")
+            with patch("credential_store.load_key", return_value="sk-official"):
+                key, url, service = resolve_standalone_provider(settings_path)
+                self.assertEqual(key, "sk-official")
+                self.assertEqual(service, "openai")
+
+            # 2. Custom provider active
+            settings_path.write_text(json.dumps({"main_custom": True, "main_custom_url": "https://custom.endpoint.com/v1"}), encoding="utf-8")
+            with patch("credential_store.load_key", side_effect=lambda s: "sk-custom" if s == "main_custom" else "sk-official"):
+                key, url, service = resolve_standalone_provider(settings_path)
+                self.assertEqual(key, "sk-custom")
+                self.assertEqual(url, "https://custom.endpoint.com/v1")
+                self.assertEqual(service, "main_custom")
+
+            # 3. Custom provider missing key raises RuntimeError (does not fall back to official key)
+            with patch("credential_store.load_key", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    resolve_standalone_provider(settings_path)
 
 if __name__ == '__main__':
     unittest.main()

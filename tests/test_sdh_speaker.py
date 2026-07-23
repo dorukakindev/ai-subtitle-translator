@@ -14,5 +14,11 @@ class TestSdhSpeaker(unittest.TestCase):
         self.assertEqual(strip_sdh_line("[Narrator 2] Hello"), "Hello")
         self.assertEqual(strip_sdh_line("[DR. SMITH]: Hello"), "Hello")
 
+    def test_preserved_bracketed_phrases(self):
+        self.assertEqual(strip_sdh_line("[New York] is a city."), "[New York] is a city.")
+        self.assertEqual(strip_sdh_line("[Chapter One] The beginning."), "[Chapter One] The beginning.")
+        self.assertEqual(strip_sdh_line("[Breaking News] Markets fell."), "[Breaking News] Markets fell.")
+        self.assertEqual(strip_sdh_line("[No Entry] Keep out."), "[No Entry] Keep out.")
+
 if __name__ == "__main__":
     unittest.main()

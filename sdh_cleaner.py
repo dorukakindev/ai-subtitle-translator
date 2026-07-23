@@ -169,10 +169,17 @@ def _descriptor_key(value: str) -> str:
     return value
 
 
+_NON_SDH_BRACKET_PHRASES = {
+    "breaking news", "new york", "chapter one", "no entry",
+}
+
+
 def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     key = _descriptor_key(content)
     if not key:
         return True
+    if key in _NON_SDH_BRACKET_PHRASES:
+        return False
     if key in _SDH_KEYWORDS or key in _SPEAKER_WORDS:
         return True
     words = key.split()
@@ -196,23 +203,27 @@ def _strip_standalone_music_notes(line: str) -> str:
     return value
 
 
-def _is_speaker_name(inner: str) -> bool:
+def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
     if not inner:
         return False
     if re.search(r'[?!,;:]', inner):
         return False
-    if inner.endswith('.'):
-        return False
     words = inner.split()
-    if not (1 <= len(words) <= 3):
+    if not words or len(words) > 3:
         return False
-    if inner.isupper():
+
+    # A colon explicitly marks a speaker prefix: [DR. SMITH]: Hello
+    if colon_follows:
         return True
-    for w in words:
-        if not w: continue
-        if not (w[0].isupper() or w[0].isdigit()):
-            return False
-    return True
+
+    # Without a colon, only single-word proper names ([John], [MARY]) are treated as speaker tags.
+    # 2-3 word TitleCase/uppercase phrases ([New York], [Chapter One]) without a colon are kept.
+    if len(words) == 1:
+        w = words[0]
+        if w.isalpha() and (w.isupper() or w.istitle()):
+            return True
+
+    return False
 
 
 def _strip_speaker_prefix(line: str) -> str:
@@ -223,7 +234,7 @@ def _strip_speaker_prefix(line: str) -> str:
         raw = match.group(1)
         inner = raw[1:-1].strip()
         colon_follows = line[match.start(1) + len(raw):match.end()].strip().startswith(":")
-        if colon_follows or is_sdh_descriptor(inner) or _is_speaker_name(inner):
+        if colon_follows or is_sdh_descriptor(inner) or _is_speaker_name(inner, colon_follows):
             line = line[match.end():]
             continue
         return line

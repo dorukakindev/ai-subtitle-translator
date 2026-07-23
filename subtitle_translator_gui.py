@@ -4592,22 +4592,9 @@ def rotate_logs(log_dir: Path, keep: int = 100) -> int:
     return removed
 
 
-# ── Canlı batch sahipliği (yarım-batch penceresi için) ────────────────────────
-# SORUN (2026-07-16 gerçek olay): `batch_id.txt` gönderim anında yazılır ve iş bitince
-# temizlenir — yani UÇUŞTAKİ bir batch ile ÇÖKMÜŞ/sahipsiz kalmış bir batch dosyada
-# BİREBİR aynı görünür. Bu yüzden bir batch beklenirken uygulamanın İKİNCİ bir örneği
-# açılırsa (ya da kapatılıp yeniden açılırsa), açılış kontrolü canlı batch'leri "yarım
-# kalmış" diye listeler. Oradaki "Seçilenleri Sil" düğmesi, parası ödenmiş ve hâlâ
-# işlenen bir batch'in kurtarma verisini (fmap + id) siler.
-# ÇÖZÜM: batch'leri işleyen süreç sahipliğini `batch_owner_<pid>.json`'a yazar; açılış
-# kontrolü, sahibi HÂLÂ YAŞAYAN süreç olan id'leri pencerede göstermez. Süreç gerçekten
-# çöktüyse pid ölüdür → kilit yok sayılır → pencere amaçlandığı gibi çıkar (kurtarma
-# yine çalışır).
-# NEDEN SÜREÇ-BAŞINA DOSYA (tek ortak dosya DEĞİL): tek dosya tek sahipli olurdu —
-# ikinci bir süreç (ya da App kuran bir test) kendi kilidini yazarken canlı sahibin
-# kaydını EZER, aktif batch'i kalmayınca da dosyayı SİLERDİ; yani korumanın kendisi
-# çözmeye çalıştığı kirlenmeyi yeniden üretirdi. Her süreç yalnızca KENDİ dosyasını
-# yazar/siler; okuyucu hepsini tarayıp ölü pid'lerinkini yok sayar.
+
+
+
 _BATCH_OWNER_PREFIX = "batch_owner_"
 _BATCH_OWNER_GLOB = "batch_owner_*.json"
 
@@ -4706,7 +4693,7 @@ _BATCH_DONE_STATUSES = frozenset({"completed"})
 _BATCH_DEAD_STATUSES = frozenset({"failed", "expired", "cancelled"})
 
 
-def _fetch_batch_statuses(api_key: str, batch_ids: list, base_url: str = "", log_fn=None) -> dict:
+def _fetch_batch_statuses(api_key: str, batch_ids: list, log_fn=None, base_url: str = "") -> dict:
     """Verilen batch id'lerin OpenAI'deki GÜNCEL durumunu çeker.
 
     Döner: {batch_id: status_str}. status_str bilinen OpenAI değerlerinden biri

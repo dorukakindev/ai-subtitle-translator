@@ -8,51 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-def _load_api_key() -> str:
-    try:
-        from credential_store import load_key
-        key = load_key("openai")
-        if key:
-            return key
-    except Exception:
-        pass
-    # Fallback: .gui_settings.json
-    try:
-        SETTINGS_FILE = Path(__file__).parent / ".gui_settings.json"
-        if SETTINGS_FILE.exists():
-            with open(SETTINGS_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            key = data.get("api_key", "")
-            if key:
-                return key
-    except Exception:
-        pass
-    print("OpenAI API anahtarı bulunamadı.")
-    sys.exit(1)
-
-def _get_base_url():
-    try:
-        SETTINGS_FILE = Path(__file__).parent / ".gui_settings.json"
-        if SETTINGS_FILE.exists():
-            with open(SETTINGS_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            url = data.get("custom_api_url", "")
-            if url:
-                print(f"[UYARI] Özel API URL yapılandırılmış: {url}")
-                print("[UYARI] Bu script sadece resmi OpenAI Batch API'yi destekler! Hatalar olabilir.")
-                return url
-    except Exception:
-        pass
-    return ""
-
-def _get_client():
-    api_key = _load_api_key()
-    base_url = _get_base_url()
-    from openai import OpenAI
-    kwargs = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return OpenAI(**kwargs)
+from subtitle_batch_translate import _get_client
 
 FMAP_FILES = [
     r"C:\Users\T\Downloads\Batch\batch_fmap_batch_69ea30a7134c8190aac14a89f717393f.json",
@@ -69,7 +25,7 @@ FMAP_FILES = [
 def _try_extract(text: str):
     clean = text.strip()
     if clean.startswith("```"):
-        clean = "\\n".join(clean.split("\\n")[1:]).rsplit("```", 1)[0].strip()
+        clean = "\n".join(clean.split("\n")[1:]).rsplit("```", 1)[0].strip()
 
     try:
         return json.loads(clean)
@@ -129,7 +85,7 @@ def main():
             print(f"  ! {fname}: output yolu/fmap eksik — atlanıyor")
             continue
 
-        print(f"\\n{'='*60}")
+        print(f"\n{'='*60}")
         print(f"Batch  : {batch_id}")
         print(f"Çıktı  : {os.path.basename(output_path)}")
         print(f"Chunks : {len(raw_fmap)}")
@@ -183,11 +139,16 @@ def main():
                 chunk_fail += 1
                 continue
 
-            body = res["response"]["body"]
-            raw  = body["choices"][0]["message"]["content"].strip()
+            raw = ""
+            try:
+                choices = res.get("response", {}).get("body", {}).get("choices", [])
+                if choices and isinstance(choices, list):
+                    raw = choices[0].get("message", {}).get("content", "").strip()
+            except Exception:
+                raw = ""
 
             if not raw:
-                print(f"  [UYARI] {cid}: boş yanıt")
+                print(f"  [UYARI] {cid}: yanıt metni alınamadı (eksik veya boş yanıt)")
                 for entry in info:
                     idx, start, end = entry[0], entry[1], entry[2]
                     srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
@@ -213,14 +174,14 @@ def main():
         with open(output_path, "w", encoding="utf-8") as f:
             for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
                 idx, ts, text = srt_blocks[key]
-                f.write(f"{idx}\\n{ts}\\n{text}\\n\\n")
+                f.write(f"{idx}\n{ts}\n{text}\n\n")
 
         count = len(srt_blocks)
         total_fixed += count
         print(f"  Yazıldı: {count} satır  ({chunk_ok} chunk OK, {chunk_fail} chunk FAIL)")
         print(f"  Dosya: {output_path}")
 
-    print(f"\\n{'='*60}")
+    print(f"\n{'='*60}")
     print(f"TAMAMLANDI — Toplam {total_fixed} satır yeniden yazıldı, {total_hata} [HATA] satır")
 
 if __name__ == "__main__":

@@ -22,44 +22,68 @@ MODEL = "gpt-4.1-nano"       # 2.5M/gün bedava token havuzunda, en hızlı
 # ===============
 
 
-def _load_api_key() -> str:
-    """Anahtarı güvenli depodan (credential_store) ya da .gui_settings.json'dan yükle —
-    kaynak dosyada düz API anahtarı tutma."""
+def resolve_standalone_provider(settings_file: Path | None = None) -> tuple[str, str, str]:
+    """Standalone batch script'leri için API anahtarı, base_url ve servis adını çözer.
+    Döner: (api_key, base_url, service_name).
+    """
+    if settings_file is None:
+        settings_file = Path(__file__).parent / ".gui_settings.json"
+
+    main_custom = False
+    custom_url = ""
+    api_url = ""
+
+    if settings_file.exists():
+        try:
+            with open(settings_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            main_custom = bool(data.get("main_custom"))
+            custom_url = (data.get("main_custom_url", "") or "").strip()
+            api_url = (data.get("api_url", "") or "").strip()
+        except Exception:
+            pass
+
+    if main_custom and custom_url:
+        service_name = "main_custom"
+        base_url = custom_url
+    else:
+        service_name = "openai"
+        base_url = api_url
+
+    api_key = None
     try:
-        import credential_store
-        k = credential_store.load_key("openai")
-        if k:
-            return k
+        from credential_store import load_key
+        api_key = load_key(service_name)
     except Exception:
         pass
-    try:
-        p = Path(__file__).parent / ".gui_settings.json"
-        if p.exists():
-            return (json.loads(p.read_text(encoding="utf-8")).get("api_key", "") or "")
-    except Exception:
-        pass
-    return ""
 
+    if not api_key and service_name == "openai" and settings_file.exists():
+        try:
+            with open(settings_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            api_key = (data.get("api_key", "") or "").strip()
+        except Exception:
+            pass
 
-def _get_base_url() -> str:
-    try:
-        p = Path(__file__).parent / ".gui_settings.json"
-        if p.exists():
-            url = json.loads(p.read_text(encoding="utf-8")).get("custom_api_url", "")
-            if url:
-                print(f"[UYARI] Özel API URL yapılandırılmış: {url}")
-                print("[UYARI] Bu script sadece resmi OpenAI Batch API'yi destekler! Hatalar olabilir.")
-                return url
-    except Exception:
-        pass
-    return ""
-
-def _get_client():
-    api_key = _load_api_key()
     if not api_key:
-        raise SystemExit("OpenAI API anahtarı bulunamadı — credential_store'a kaydedin "
-                         "veya .gui_settings.json sağlayın.")
-    base_url = _get_base_url()
+        if service_name == "main_custom":
+            raise RuntimeError("Custom provider API anahtarı ('main_custom') credential store'da bulunamadı.")
+        else:
+            raise RuntimeError("OpenAI API anahtarı ('openai') credential store'da veya .gui_settings.json içinde bulunamadı.")
+
+    return api_key, base_url, service_name
+
+
+def _load_api_key(settings_file: Path | None = None) -> str:
+    try:
+        api_key, _, _ = resolve_standalone_provider(settings_file)
+        return api_key
+    except Exception:
+        return ""
+
+
+def _get_client(settings_file: Path | None = None):
+    api_key, base_url, _ = resolve_standalone_provider(settings_file)
     kwargs = {"api_key": api_key}
     if base_url:
         kwargs["base_url"] = base_url
