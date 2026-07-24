@@ -4838,8 +4838,15 @@ def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str
 
 
 def clear_sync_ckpt_entries_from_store(path: Path, keys_to_remove: set = None, log_fn=None) -> bool:
-    """Temizlenecek (cid:hash) anahtarlarını depodan çıkarır; keys_to_remove boş ise tümünü temizler."""
+    """Temizlenecek (cid:hash) anahtarlarını depodan çıkarır.
+    - keys_to_remove is None: Tüm depoyu (ve dosyaları) siler.
+    - keys_to_remove == set() (boş): İşlem yapmaz (no-op).
+    - Dolu set: Yalnızca verilen anahtarları siler.
+    """
     path = Path(path)
+    if keys_to_remove is not None and not keys_to_remove:
+        return True
+
     target_path = path
     legacy_jsonl = path.with_suffix(".jsonl") if path.suffix == ".json" else None
 
@@ -4851,14 +4858,14 @@ def clear_sync_ckpt_entries_from_store(path: Path, keys_to_remove: set = None, l
 
     try:
         with _interprocess_lock(path):
-            if not keys_to_remove:
+            if keys_to_remove is None:
                 path.unlink(missing_ok=True)
                 if legacy_jsonl:
                     legacy_jsonl.unlink(missing_ok=True)
                 return True
             store = load_sync_ckpt_store(path)
             entries = store.get("entries", {})
-            for k in list(keys_to_remove):
+            for k in set(keys_to_remove):
                 entries.pop(k, None)
             if not entries:
                 path.unlink(missing_ok=True)

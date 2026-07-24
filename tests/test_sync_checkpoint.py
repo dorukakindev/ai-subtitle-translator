@@ -4,15 +4,16 @@ Sync mod çökme kurtarma (per-chunk checkpoint):
 - Kaynak içeriği değişirse (aynı cid) bayat çeviri KULLANILMAZ → yeniden çevrilir.
 - Model/ayarlar değişirse (parmak izi) bayat çeviri KULLANILMAZ → yeniden çevrilir.
 - Başarılı koşuda kayıt silinir.
-Checkpoint yolu monkeypatch'lenir → gerçek .sync_checkpoint.jsonl'a dokunulmaz.
+- App() veya Tkinter penceresi OLUŞTURULMAZ; SimpleNamespace ile test edilir.
 """
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import subtitle_translator_gui as gui
-from tests._gui_app import make_app
 
 
 def _req(cid, srcs):
@@ -21,57 +22,69 @@ def _req(cid, srcs):
 
 
 class SyncCheckpointTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.app = make_app(gui)  # açılıştaki yarım-batch penceresi kapalı (bkz. _gui_app)
-        cls.app.update_idletasks()
-        cls._tmp = tempfile.mkdtemp()
-        cls.app._sync_ckpt_path = lambda: Path(cls._tmp) / "ckpt.jsonl"
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            cls.app.destroy()
-        except Exception:
-            pass
-
     def setUp(self):
-        self.app._clear_sync_ckpt()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.ckpt_path = Path(self.tmpdir.name) / ".sync_checkpoint.json"
+        self.fingerprint = "gpt-5.4-mini|tr|off|standard|Otomatik"
 
-    def _hash(self, req):
-        """Kaydetme yolunun kullandığı imza: kaynak + güncel ayar parmak izi."""
-        return gui.App._chunk_src_hash(req, self.app._ckpt_fingerprint())
+        self.app = SimpleNamespace(
+            _sync_ckpt_path=lambda: self.ckpt_path,
+            _ckpt_fingerprint=lambda: self.fingerprint,
+            _chunk_src_hash=gui.App._chunk_src_hash,
+            _load_sync_ckpt=lambda: gui.App._load_sync_ckpt(self.app),
+            _save_sync_ckpt_entry=lambda cid, text, h: gui.App._save_sync_ckpt_entry(self.app, cid, text, h),
+            _clear_sync_ckpt=lambda keys=None: gui.App._clear_sync_ckpt(self.app, keys),
+            _log=MagicMock(),
+        )
+        self.app._resume_from_sync_ckpt = gui.App._resume_from_sync_ckpt.__get__(self.app)
+        self.app._prefill_sync_ckpt = gui.App._prefill_sync_ckpt.__get__(self.app)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _hash(self, req, scope=""):
+        return gui.App._chunk_src_hash(req, self.fingerprint, scope=scope)
 
     def test_save_load_roundtrip(self):
         r = _req("c1", ["hello", "world"])
         h = self._hash(r)
         self.app._save_sync_ckpt_entry("c1", "merhaba\ndünya", h)
         d = self.app._load_sync_ckpt()
-        self.assertEqual(d["c1"], ("merhaba\ndünya", h))
+        key = f"c1:{h}"
+        self.assertIn(key, d)
+        self.assertEqual(d[key]["t"], "merhaba\ndünya")
+        self.assertEqual(d[key]["h"], h)
 
     def test_resume_skips_matching_chunk(self):
         r = _req("c1", ["hello"])
-        self.app._save_sync_ckpt_entry("c1", "merhaba", self._hash(r))
+        h = self._hash(r)
+        self.app._save_sync_ckpt_entry("c1", "merhaba", h)
         raw = {}
-        remaining = self.app._resume_from_sync_ckpt([r], raw)
+        remaining, resumed_keys = self.app._resume_from_sync_ckpt([r], raw)
         self.assertEqual(remaining, [])              # API'ye gitmeyecek
         self.assertEqual(raw["c1"], "merhaba")
+        self.assertEqual(resumed_keys, {f"c1:{h}"})
 
     def test_resume_skips_matching_multiline_chunk(self):
         r = _req("c1", ["hello", "world"])
-        self.app._save_sync_ckpt_entry("c1", "merhaba\ndünya", self._hash(r))
+        h = self._hash(r)
+        self.app._save_sync_ckpt_entry("c1", "merhaba\ndünya", h)
         raw = {}
-        self.assertEqual(self.app._resume_from_sync_ckpt([r], raw), [])
+        remaining, resumed_keys = self.app._resume_from_sync_ckpt([r], raw)
+        self.assertEqual(remaining, [])
         self.assertEqual(raw["c1"], "merhaba\ndünya")
+        self.assertEqual(resumed_keys, {f"c1:{h}"})
 
     def test_resume_retranslates_on_content_change(self):
         r_old = _req("c1", ["hello"])
-        self.app._save_sync_ckpt_entry("c1", "merhaba", self._hash(r_old))
+        h_old = self._hash(r_old)
+        self.app._save_sync_ckpt_entry("c1", "merhaba", h_old)
         r_new = _req("c1", ["goodbye"])              # aynı cid, FARKLI içerik
         raw = {}
-        remaining = self.app._resume_from_sync_ckpt([r_new], raw)
+        remaining, resumed_keys = self.app._resume_from_sync_ckpt([r_new], raw)
         self.assertEqual(len(remaining), 1)          # bayat çeviri kullanılmaz → yeniden çevrilir
         self.assertNotIn("c1", raw)
+        self.assertEqual(resumed_keys, set())
 
     def test_hash_stable_across_prev_tr_injection(self):
         """prev_tr enjeksiyonu payload'a alan ekler ama 'tr' değişmez → imza aynı
@@ -85,31 +98,35 @@ class SyncCheckpointTest(unittest.TestCase):
 
     def test_prefill_fills_rawmap_without_filtering(self):
         r = _req("c1", ["hi"])
-        self.app._save_sync_ckpt_entry("c1", "selam", self._hash(r))
+        h = self._hash(r)
+        self.app._save_sync_ckpt_entry("c1", "selam", h)
         raw = {}
-        n = self.app._prefill_sync_ckpt([r], raw)
+        n, resumed_keys = self.app._prefill_sync_ckpt([r], raw)
         self.assertEqual(n, 1)
         self.assertEqual(raw["c1"], "selam")
+        self.assertEqual(resumed_keys, {f"c1:{h}"})
 
     def test_prefill_scope_prevents_cross_file_reuse(self):
         r = _req("chunk_0", ["Previously on..."])
-        fp = self.app._ckpt_fingerprint()
-        saved = gui.App._chunk_src_hash(r, fp, scope="A.srt")
-        self.app._save_sync_ckpt_entry("chunk_0", "Önceki bölümde...", saved)
+        h = self._hash(r, scope="A.srt")
+        self.app._save_sync_ckpt_entry("chunk_0", "Önceki bölümde...", h)
         raw = {}
-        self.assertEqual(self.app._prefill_sync_ckpt([r], raw, scope="B.srt"), 0)
+        n, resumed_keys = self.app._prefill_sync_ckpt([r], raw, scope="B.srt")
+        self.assertEqual(n, 0)
         self.assertNotIn("chunk_0", raw)
+        self.assertEqual(resumed_keys, set())
 
     def test_clear_removes_checkpoint(self):
         self.app._save_sync_ckpt_entry("c1", "x", "h")
-        self.app._clear_sync_ckpt()
+        self.app._clear_sync_ckpt(None)
         self.assertEqual(self.app._load_sync_ckpt(), {})
 
     def test_corrupt_line_skipped(self):
-        p = self.app._sync_ckpt_path()
-        p.write_text('{"cid":"c1","t":"ok","h":"h1"}\nNOT JSON\n', encoding="utf-8")
+        p_jsonl = Path(self.tmpdir.name) / ".sync_checkpoint.jsonl"
+        p_jsonl.write_text('{"cid":"c1","t":"ok","h":"h1"}\nNOT JSON\n', encoding="utf-8")
         d = self.app._load_sync_ckpt()
-        self.assertEqual(d, {"c1": ("ok", "h1")})    # bozuk satır atlandı
+        self.assertIn("c1:h1", d)
+        self.assertEqual(d["c1:h1"]["t"], "ok")
 
 
 if __name__ == "__main__":
