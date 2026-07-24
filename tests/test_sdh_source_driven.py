@@ -278,6 +278,29 @@ class SdhSourceDrivenTest(unittest.TestCase):
         self.assertEqual(with_flag, legacy)
         self.assertEqual([b[0] for b in with_flag], ["2"])
 
+    def test_failure_marker_survives_mixed_sdh_and_dialogue_source(self):
+        blocks = [
+            ("190", "00:00:01,000 --> 00:00:02,000", "[ÇEVİRİ EKSİK]"),
+            ("409", "00:00:02,000 --> 00:00:03,000", "[HATA]"),
+        ]
+        src_map = _src(**{
+            "190": "- [Ben laughs]\n- Would you like to see?",
+            "409": "- [Audience laughing]\n- Oh, shit.",
+        })
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            {idx: text for idx, _ts, text in result},
+            {"190": "[ÇEVİRİ EKSİK]", "409": "[HATA]"},
+        )
+
+    def test_failure_marker_for_sfx_only_source_is_still_dropped(self):
+        blocks = [("313", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
+        src_map = _src(**{"313": "[organ music playing]"})
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result, [])
+
 
 if __name__ == "__main__":
     unittest.main()

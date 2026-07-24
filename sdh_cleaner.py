@@ -551,6 +551,11 @@ def _src_is_real_dialogue(src_text: str) -> bool:
     return bool(s) and not is_sdh_only(s)
 
 
+def _is_translation_failure_marker(text: str) -> bool:
+    value = str(text or "").strip()
+    return value.startswith("[HATA") or value == "[ÇEVİRİ EKSİK]"
+
+
 # ── Kaynak-güdümlü yapısal SFX tespiti ──────────────────────────────────────
 # Beyaz liste sorgulamaz: ayırt edici işaret parantezin/köşeli parantezin
 # KENDİSİ, içindeki kelimeler değil. clean_sdh çeviriden SONRA çalıştığı için
@@ -660,6 +665,10 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
             # else: kaynak boş/SFX ya da src_map yok → düşür (eski güvenli davranış)
             continue
         if source_driven and src_map is not None:
+            if _is_translation_failure_marker(original):
+                if _src_is_real_dialogue(src_text):
+                    result.append((idx, ts, text))
+                continue
             if src_is_sfx_only(src_text):
                 continue
             lines = []
