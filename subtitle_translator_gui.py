@@ -22,7 +22,7 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
 import credential_store
 import series_memory
 import sdh_cleaner
-from app_state import atomic_write_json, mutate_batch_ids, state_dir, state_path
+from app_state import _interprocess_lock, atomic_write_json, mutate_batch_ids, state_dir, state_path
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
 from folder_picker import pick_multiple_folders
 
@@ -4758,6 +4758,125 @@ def _batch_status_label(status: str) -> tuple:
     if status in _BATCH_DEAD_STATUSES:
         return f"✗ {status}", "dead"
     return "? durum bilinmiyor", "unknown"
+
+
+# ── Sync checkpoint store module-level helpers ────────────────────────────────
+SYNC_CKPT_STORE_VER = 2
+
+
+def load_sync_ckpt_store(path: Path) -> dict:
+    """Sync checkpoint deposunu okur (v2 JSON veya legacy JSONL dönüşümü).
+    Döndürür: {'version': 2, 'entries': {key: {'cid': ..., 'h': ..., 't': ..., 'updated_at': ...}}}
+    Boş/bozuk dosyada güvenli boş depo yapısı döndürür.
+    """
+    path = Path(path)
+    store = {"version": SYNC_CKPT_STORE_VER, "entries": {}}
+    target_path = path
+    if not target_path.exists() and target_path.suffix == ".json":
+        legacy_jsonl = target_path.with_suffix(".jsonl")
+        if legacy_jsonl.exists():
+            target_path = legacy_jsonl
+
+    if not target_path.exists():
+        return store
+
+    try:
+        content = target_path.read_text(encoding="utf-8")
+        if not content.strip():
+            return store
+        try:
+            d = json.loads(content)
+            if isinstance(d, dict) and d.get("version") == SYNC_CKPT_STORE_VER and isinstance(d.get("entries"), dict):
+                store["entries"] = d["entries"]
+                return store
+        except Exception:
+            pass
+
+        # Legacy JSONL format migration
+        entries = {}
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+                cid = o.get("cid")
+                h = o.get("h", "")
+                t = o.get("t", "")
+                if cid:
+                    key = f"{cid}:{h}"
+                    entries[key] = {"cid": cid, "h": h, "t": t, "updated_at": 0.0}
+            except Exception:
+                continue
+        store["entries"] = entries
+    except Exception:
+        pass
+    return store
+
+
+def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str, log_fn=None) -> bool:
+    """Süreçler arası kilit altında sync checkpoint deposuna tek kaydı atomik günceller/ekler."""
+    path = Path(path)
+    key = f"{cid}:{src_hash}"
+    try:
+        with _interprocess_lock(path):
+            store = load_sync_ckpt_store(path)
+            entries = store.get("entries", {})
+            entries[key] = {
+                "cid": cid,
+                "h": src_hash,
+                "t": text,
+                "updated_at": time.time(),
+            }
+            store["entries"] = entries
+            atomic_write_json(path, store)
+            return True
+    except Exception as e:
+        if log_fn:
+            log_fn(f"Checkpoint kaydı yazılamadı: {e}", "warn")
+        return False
+
+
+def clear_sync_ckpt_entries_from_store(path: Path, keys_to_remove: set = None, log_fn=None) -> bool:
+    """Temizlenecek (cid:hash) anahtarlarını depodan çıkarır; keys_to_remove boş ise tümünü temizler."""
+    path = Path(path)
+    target_path = path
+    legacy_jsonl = path.with_suffix(".jsonl") if path.suffix == ".json" else None
+
+    if not target_path.exists() and legacy_jsonl and legacy_jsonl.exists():
+        target_path = legacy_jsonl
+
+    if not target_path.exists():
+        return True
+
+    try:
+        with _interprocess_lock(path):
+            if not keys_to_remove:
+                path.unlink(missing_ok=True)
+                if legacy_jsonl:
+                    legacy_jsonl.unlink(missing_ok=True)
+                return True
+            store = load_sync_ckpt_store(path)
+            entries = store.get("entries", {})
+            for k in list(keys_to_remove):
+                entries.pop(k, None)
+            if not entries:
+                path.unlink(missing_ok=True)
+                if legacy_jsonl:
+                    legacy_jsonl.unlink(missing_ok=True)
+            else:
+                store["entries"] = entries
+                atomic_write_json(path, store)
+            return True
+    except Exception as e:
+        if log_fn:
+            log_fn(f"Checkpoint temizlenemedi: {e}", "warn")
+        return False
+
+
+def should_clear_sync_ckpt(is_stop_flag: bool, is_full_success: bool) -> bool:
+    """Yalnızca durdurulmamış VE tam başarılı koşuda checkpoint temizleme kararı verir."""
+    return not is_stop_flag and is_full_success
 
 
 # ── Ana uygulama ──────────────────────────────────────────────────────────────
@@ -11032,7 +11151,7 @@ class App(ctk.CTk):
     # aynı işi tekrar başlatınca o chunk'lar API'ye GÖNDERİLMEZ (token/para tasarrufu).
     # JSONL append (O(1)/chunk). Başarılı tam koşudan sonra silinir.
     def _sync_ckpt_path(self) -> Path:
-        return state_path(__file__, ".sync_checkpoint.jsonl")
+        return state_path(__file__, ".sync_checkpoint.json")
 
     def _ckpt_fingerprint(self) -> str:
         """Checkpoint imzasına giren ayar parmak izi. Model/hedef dil/üslup/küfür/tür
@@ -11064,108 +11183,97 @@ class App(ctk.CTk):
             return ""
 
     def _load_sync_ckpt(self) -> dict:
-        """{cid: (text, src_hash)} — bozuk/yarım satırlar atlanır."""
-        d = {}
-        p = self._sync_ckpt_path()
-        if not p.exists():
-            return d
-        try:
-            for line in p.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    o = json.loads(line)
-                    if o.get("cid"):
-                        d[o["cid"]] = (o.get("t", ""), o.get("h", ""))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return d
+        """{f"{cid}:{h}": {'cid': ..., 'h': ..., 't': ...}}"""
+        store = load_sync_ckpt_store(self._sync_ckpt_path())
+        return store.get("entries", {})
 
     def _save_sync_ckpt_entry(self, cid, text, src_hash):
-        with self._ckpt_lock:
-            try:
-                with open(self._sync_ckpt_path(), "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"cid": cid, "t": text, "h": src_hash},
-                                       ensure_ascii=False) + "\n")
-            except Exception:
-                pass
+        log_fn = None
+        if not getattr(self, "_ckpt_write_warned", False):
+            def _log_warn(msg, level="warn"):
+                self._log(msg, level)
+                self._ckpt_write_warned = True
+            log_fn = _log_warn
+        save_sync_ckpt_entry_to_store(self._sync_ckpt_path(), cid, text, src_hash, log_fn=log_fn)
 
-    def _clear_sync_ckpt(self):
-        try:
-            self._sync_ckpt_path().unlink(missing_ok=True)
-        except Exception:
-            pass
+    def _clear_sync_ckpt(self, keys_to_remove=None):
+        clear_sync_ckpt_entries_from_store(self._sync_ckpt_path(), keys_to_remove, log_fn=self._log)
 
     def _resume_from_sync_ckpt(self, api_requests, raw_map):
         """Checkpoint'teki (içerik imzası eşleşen) tamamlanmış chunk'ları raw_map'e koyar
-        ve api_requests'ten çıkarır. Kalan api_requests'i döndürür."""
-        ckpt = self._load_sync_ckpt()
-        if not ckpt:
-            return api_requests
+        ve api_requests'ten çıkarır. Kalan api_requests'i ve kurtarılan anahtarları döndürür."""
+        store = load_sync_ckpt_store(self._sync_ckpt_path())
+        entries = store.get("entries", {})
+        if not entries:
+            return api_requests, set()
         fp = self._ckpt_fingerprint()
-        resumed, still = 0, []
-        import hashlib
+        resumed, still, resumed_keys = 0, [], set()
         for req in api_requests:
             cid = req["custom_id"]
-            ent = ckpt.get(cid)
-            # Yeni (ayarsız) hash veya eski (ayarlı) hash ile eşleşirse kabul et
-            is_match = False
-            if ent and ent[0]:
-                h_new = self._chunk_src_hash(req, fp)
-                if ent[1] == h_new:
-                    is_match = True
-                else:
-                    try:
-                        pl = json.loads(req["body"]["messages"][1]["content"])
-                        srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
-                        h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
-                        if ent[1] == h_old:
-                            is_match = True
-                    except:
-                        pass
-            if is_match:
-                raw_map[cid] = ent[0]
+            h_new = self._chunk_src_hash(req, fp)
+            target_key = f"{cid}:{h_new}"
+            ent = entries.get(target_key)
+            matched_key = target_key if ent else None
+            if not ent:
+                try:
+                    pl = json.loads(req["body"]["messages"][1]["content"])
+                    srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
+                    h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
+                    target_key_old = f"{cid}:{h_old}"
+                    ent = entries.get(target_key_old)
+                    if ent:
+                        matched_key = target_key_old
+                except Exception:
+                    ent = None
+            if ent and ent.get("t"):
+                raw_map[cid] = ent["t"]
                 resumed += 1
+                if matched_key:
+                    resumed_keys.add(matched_key)
             else:
                 still.append(req)
         if resumed:
             self._log(f"Çökme kurtarma: {resumed} tamamlanmış chunk önbellekten alındı — "
                       f"yeniden çevrilmeyecek (kalan {len(still)} istek API'ye)", "ok")
-        return still
+        return still, resumed_keys
 
-    def _prefill_sync_ckpt(self, reqs, raw_map, scope: str = "") -> int:
+    def _prefill_sync_ckpt(self, reqs, raw_map, scope: str = "") -> tuple[int, set]:
         """Checkpoint'teki (imzası eşleşen) tamamlanmış chunk'ları raw_map'e koyar; döngüler
         `cid in raw_map` ile atlar. (raw_map'i filtrelemez — chain prev_pairs için uygun.)"""
-        ckpt = self._load_sync_ckpt()
-        if not ckpt:
-            return 0
+        store = load_sync_ckpt_store(self._sync_ckpt_path())
+        entries = store.get("entries", {})
+        if not entries:
+            return 0, set()
         fp = self._ckpt_fingerprint()
-        n = 0
-        import hashlib
+        n, resumed_keys = 0, set()
         for req in reqs:
             cid = req["custom_id"]
-            ent = ckpt.get(cid)
-            if ent and ent[0] and cid not in raw_map:
-                h_new = self._chunk_src_hash(req, fp, scope)
-                is_match = (ent[1] == h_new)
-                if not is_match and not scope:
-                    try:
-                        pl = json.loads(req["body"]["messages"][1]["content"])
-                        srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
-                        h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
-                        is_match = (ent[1] == h_old)
-                    except:
-                        pass
-                if is_match:
-                    raw_map[cid] = ent[0]
-                    n += 1
+            if cid in raw_map:
+                continue
+            h_new = self._chunk_src_hash(req, fp, scope)
+            target_key = f"{cid}:{h_new}"
+            ent = entries.get(target_key)
+            matched_key = target_key if ent else None
+            if not ent and not scope:
+                try:
+                    pl = json.loads(req["body"]["messages"][1]["content"])
+                    srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
+                    h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
+                    target_key_old = f"{cid}:{h_old}"
+                    ent = entries.get(target_key_old)
+                    if ent:
+                        matched_key = target_key_old
+                except Exception:
+                    ent = None
+            if ent and ent.get("t"):
+                raw_map[cid] = ent["t"]
+                n += 1
+                if matched_key:
+                    resumed_keys.add(matched_key)
         if n:
             self._log(f"Çökme kurtarma: {n} tamamlanmış chunk önbellekten alındı "
                       f"(yeniden çevrilmeyecek)", "ok")
-        return n
+        return n, resumed_keys
 
     def _run_sync(self, api_key):
         import hybrid_translate as ht
@@ -11299,7 +11407,8 @@ class App(ctk.CTk):
             self._update_tm_stat()
 
         # Çökme kurtarma: önceki yarıda kalan koşudan tamamlanmış chunk'ları geri al
-        api_requests = self._resume_from_sync_ckpt(api_requests, raw_map)
+        api_requests, resumed_keys = self._resume_from_sync_ckpt(api_requests, raw_map)
+        used_ckpt_keys = set(resumed_keys)
 
         total = len(requests)
         api_total = len(api_requests)
@@ -11374,12 +11483,13 @@ class App(ctk.CTk):
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
                     try:
                         cid_r, text, tok, cached_tok = send_one(req)
+                        src_h = self._chunk_src_hash(req, self._ckpt_fingerprint())
                         with lock:
                             raw_map[cid_r] = text
                             completed[0] += 1
+                            used_ckpt_keys.add(f"{cid_r}:{src_h}")
                         self._update_tokens(tok, cached=cached_tok)
-                        self._save_sync_ckpt_entry(
-                            cid_r, text, self._chunk_src_hash(req, self._ckpt_fingerprint()))
+                        self._save_sync_ckpt_entry(cid_r, text, src_h)
                         tmap  = parse_response(text, file_map[cid])
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
                         if pairs:
@@ -11411,12 +11521,13 @@ class App(ctk.CTk):
                     cid_hint = req.get("custom_id", "?")
                     try:
                         cid, text, tok, cached_tok = fut.result()
+                        src_h = self._chunk_src_hash(req, self._ckpt_fingerprint())
                         with lock:
                             raw_map[cid] = text
                             completed[0] += 1
+                            used_ckpt_keys.add(f"{cid}:{src_h}")
                         self._update_tokens(tok, cached=cached_tok)
-                        self._save_sync_ckpt_entry(
-                            cid, text, self._chunk_src_hash(req, self._ckpt_fingerprint()))
+                        self._save_sync_ckpt_entry(cid, text, src_h)
                     except Exception as e:
                         with lock:
                             failed[0] += 1
@@ -11427,8 +11538,9 @@ class App(ctk.CTk):
             self._retry_hata(client, raw_map, requests, max_rounds=self._max_retry)
             _all_written = self._write_results(raw_map, file_map, output_dir,
                                                openai_key=api_key, src=src)
-            if _all_written:
-                self._clear_sync_ckpt()   # başarılı tam koşu — kurtarma kaydı silinir
+            is_full_success = _all_written and failed[0] == 0
+            if should_clear_sync_ckpt(self._stop_flag, is_full_success):
+                self._clear_sync_ckpt(used_ckpt_keys)
 
         self._set_running(False)
         self._set_status("Tamamlandı." if not self._stop_flag else "Durduruldu.")
@@ -11450,6 +11562,7 @@ class App(ctk.CTk):
         completed_files = []
         failed_files = []
         skipped_files = []
+        used_ckpt_keys = set()
 
         def send_one(req):
             body = req["body"]
@@ -11626,7 +11739,8 @@ class App(ctk.CTk):
             failed    = [0]
             raw_map   = {}
             _ckpt_scope = str(Path(filepath).resolve())
-            self._prefill_sync_ckpt(batch_reqs, raw_map, scope=_ckpt_scope)
+            _, prefilled_keys = self._prefill_sync_ckpt(batch_reqs, raw_map, scope=_ckpt_scope)
+            used_ckpt_keys.update(prefilled_keys)
             start_ts  = time.time()
             lock      = threading.Lock()
             base_pct  = int((fi + 0.4) / n_files * 100)
@@ -11674,13 +11788,13 @@ class App(ctk.CTk):
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
                     try:
                         cid, text, tok, cached_tok = send_one(req)
+                        src_h = self._chunk_src_hash(req, self._ckpt_fingerprint(), _ckpt_scope)
                         with lock:
                             raw_map[cid] = text
                             completed[0] += 1
+                            used_ckpt_keys.add(f"{cid}:{src_h}")
                         self._update_tokens(tok, cached=cached_tok)
-                        self._save_sync_ckpt_entry(
-                            cid, text, self._chunk_src_hash(
-                                req, self._ckpt_fingerprint(), _ckpt_scope))
+                        self._save_sync_ckpt_entry(cid, text, src_h)
                         tmap  = parse_response(text, fmap.get(cid, []))
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
                         if pairs:
@@ -11703,13 +11817,13 @@ class App(ctk.CTk):
                         cid_hint = req.get("custom_id", "?")
                         try:
                             cid, text, tok, cached_tok = fut.result()
+                            src_h = self._chunk_src_hash(req, self._ckpt_fingerprint(), _ckpt_scope)
                             with lock:
                                 raw_map[cid] = text
                                 completed[0] += 1
+                                used_ckpt_keys.add(f"{cid}:{src_h}")
                             self._update_tokens(tok, cached=cached_tok)
-                            self._save_sync_ckpt_entry(
-                            cid, text, self._chunk_src_hash(
-                                req, self._ckpt_fingerprint(), _ckpt_scope))
+                            self._save_sync_ckpt_entry(cid, text, src_h)
                         except Exception as e:
                             with lock:
                                 failed[0] += 1
@@ -11961,8 +12075,8 @@ class App(ctk.CTk):
         summary = summarize_file_outcomes(
             completed_files, failed_files, skipped_files, total_files=n_files, stop_flag=self._stop_flag
         )
-        if summary["is_recovery_complete"]:
-            self._clear_sync_ckpt()   # tamamlanan veya bilinçli atlanan tüm dosyalar muhasebeleştirildi
+        if should_clear_sync_ckpt(self._stop_flag, summary["is_full_success"]):
+            self._clear_sync_ckpt(used_ckpt_keys)
         self._save_quality_report(report_rows, output_dir)
         self._set_running(False)
         self._set_eta("")
