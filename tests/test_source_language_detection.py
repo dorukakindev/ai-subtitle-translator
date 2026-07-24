@@ -157,50 +157,105 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertIn("from Italian to Turkish", italian)
         self.assertNotEqual(spanish, italian)
 
-    # ── detection-failure visibility regression ──────────────────────
-    def test_dialog_fail_count_detects_auto_language_entries(self):
-        """Confirm dialog code path correctly counts failed detections."""
-        detected = {
-            "ok.srt": "Spanish",
-            "fail1.srt": gui.AUTO_LANGUAGE,
-            "fail2.srt": gui.AUTO_LANGUAGE,
-        }
-        fail_count = sum(
-            1 for fp in detected
-            if gui.normalize_language_name(detected.get(fp)) == gui.AUTO_LANGUAGE
-        )
-        self.assertEqual(fail_count, 2)
+    # ── Strict Unresolved Source Language Preflight Tests ──────────────────
+    def test_failed_detection_no_user_selection_rejects_continue_no_english_conversion(self):
+        detected = {"file1.srt": gui.AUTO_LANGUAGE}
+        items = gui.prepare_source_language_confirm_items(detected)
+        self.assertEqual(items["file1.srt"]["initial"], gui.UNRESOLVED_LANGUAGE)
+        self.assertTrue(items["file1.srt"]["is_failed"])
 
-    def test_dialog_fail_count_zero_when_all_detected(self):
-        detected = {"a.srt": "Italian", "b.srt": "French"}
-        fail_count = sum(
-            1 for fp in detected
-            if gui.normalize_language_name(detected.get(fp)) == gui.AUTO_LANGUAGE
-        )
-        self.assertEqual(fail_count, 0)
+        user_sels = {"file1.srt": gui.UNRESOLVED_LANGUAGE}
+        is_valid, unresolved = gui.validate_source_language_selections(user_sels)
+        self.assertFalse(is_valid)
+        self.assertEqual(unresolved, ["file1.srt"])
 
-    def test_apply_detected_keeps_auto_when_all_fail(self):
-        """When detection fails for ALL files, global should stay Otomatik."""
-        class Var:
-            def __init__(self, v): self.value = v
-            def get(self): return self.value
-            def set(self, v): self.value = v
+        should_cont, final_map = gui.resolve_source_language_preflight(detected, user_sels, "continue")
+        self.assertFalse(should_cont)
+        self.assertEqual(final_map["file1.srt"], gui.AUTO_LANGUAGE)
+        self.assertNotEqual(final_map["file1.srt"], "English")
 
-        stub = SimpleNamespace(
-            _file_language_vars={
-                "a.srt": Var(gui.AUTO_LANGUAGE),
-                "b.srt": Var(gui.AUTO_LANGUAGE),
-            },
-            src_var=Var("English"),
-        )
-        gui.App._apply_detected_source_languages(
-            stub, {"a.srt": gui.AUTO_LANGUAGE, "b.srt": gui.AUTO_LANGUAGE})
-        # Both stay AUTO_LANGUAGE → global should reflect that
-        self.assertEqual(stub._file_language_vars["a.srt"].get(), gui.AUTO_LANGUAGE)
-        self.assertEqual(stub._file_language_vars["b.srt"].get(), gui.AUTO_LANGUAGE)
+    def test_failed_detection_user_selects_spanish_allows_continue(self):
+        detected = {"file1.srt": gui.AUTO_LANGUAGE}
+        user_sels = {"file1.srt": "Spanish"}
+        is_valid, unresolved = gui.validate_source_language_selections(user_sels)
+        self.assertTrue(is_valid)
+        self.assertEqual(unresolved, [])
 
-    def test_batch_detector_api_exception_returns_auto_for_all(self):
-        """When API call raises, all files should get AUTO_LANGUAGE."""
+        should_cont, final_map = gui.resolve_source_language_preflight(detected, user_sels, "continue")
+        self.assertTrue(should_cont)
+        self.assertEqual(final_map["file1.srt"], "Spanish")
+
+    def test_real_english_detection_is_not_counted_as_failed(self):
+        detected = {"eng.srt": "English"}
+        items = gui.prepare_source_language_confirm_items(detected)
+        self.assertEqual(items["eng.srt"]["initial"], "English")
+        self.assertFalse(items["eng.srt"]["is_failed"])
+
+        user_sels = {"eng.srt": "English"}
+        is_valid, unresolved = gui.validate_source_language_selections(user_sels)
+        self.assertTrue(is_valid)
+
+        should_cont, final_map = gui.resolve_source_language_preflight(detected, user_sels, "continue")
+        self.assertTrue(should_cont)
+        self.assertEqual(final_map["eng.srt"], "English")
+
+    def test_english_detection_and_failed_detection_are_distinguished(self):
+        detected = {"eng.srt": "English", "fail.srt": gui.AUTO_LANGUAGE}
+        items = gui.prepare_source_language_confirm_items(detected)
+        self.assertEqual(items["eng.srt"]["initial"], "English")
+        self.assertFalse(items["eng.srt"]["is_failed"])
+        self.assertEqual(items["fail.srt"]["initial"], gui.UNRESOLVED_LANGUAGE)
+        self.assertTrue(items["fail.srt"]["is_failed"])
+
+        user_sels = {"eng.srt": "English", "fail.srt": gui.UNRESOLVED_LANGUAGE}
+        is_valid, unresolved = gui.validate_source_language_selections(user_sels)
+        self.assertFalse(is_valid)
+        self.assertEqual(unresolved, ["fail.srt"])
+
+        should_cont, final_map = gui.resolve_source_language_preflight(detected, user_sels, "continue")
+        self.assertFalse(should_cont)
+        self.assertEqual(final_map["eng.srt"], "English")
+        self.assertEqual(final_map["fail.srt"], gui.AUTO_LANGUAGE)
+
+    def test_all_files_failed_no_selection_cannot_continue(self):
+        detected = {"f1.srt": gui.AUTO_LANGUAGE, "f2.srt": gui.AUTO_LANGUAGE}
+        user_sels = {"f1.srt": gui.UNRESOLVED_LANGUAGE, "f2.srt": gui.UNRESOLVED_LANGUAGE}
+        is_valid, unresolved = gui.validate_source_language_selections(user_sels)
+        self.assertFalse(is_valid)
+        self.assertEqual(sorted(unresolved), ["f1.srt", "f2.srt"])
+
+        should_cont, final_map = gui.resolve_source_language_preflight(detected, user_sels, "continue")
+        self.assertFalse(should_cont)
+        self.assertEqual(final_map["f1.srt"], gui.AUTO_LANGUAGE)
+        self.assertEqual(final_map["f2.srt"], gui.AUTO_LANGUAGE)
+
+    def test_some_resolved_one_unresolved_cannot_continue(self):
+        detected = {"f1.srt": "Italian", "f2.srt": gui.AUTO_LANGUAGE}
+        user_sels = {"f1.srt": "Italian", "f2.srt": gui.UNRESOLVED_LANGUAGE}
+        is_valid, unresolved = gui.validate_source_language_selections(user_sels)
+        self.assertFalse(is_valid)
+        self.assertEqual(unresolved, ["f2.srt"])
+
+        should_cont, final_map = gui.resolve_source_language_preflight(detected, user_sels, "continue")
+        self.assertFalse(should_cont)
+        self.assertEqual(final_map["f1.srt"], "Italian")
+        self.assertEqual(final_map["f2.srt"], gui.AUTO_LANGUAGE)
+
+    def test_edit_and_cancel_actions_do_not_start_translation_and_preserve_auto(self):
+        detected = {"f1.srt": "Italian", "f2.srt": gui.AUTO_LANGUAGE}
+        user_sels = {"f1.srt": "Italian", "f2.srt": gui.UNRESOLVED_LANGUAGE}
+
+        should_edit, map_edit = gui.resolve_source_language_preflight(detected, user_sels, "edit")
+        self.assertFalse(should_edit)
+        self.assertEqual(map_edit["f1.srt"], "Italian")
+        self.assertEqual(map_edit["f2.srt"], gui.AUTO_LANGUAGE)
+
+        should_cancel, map_cancel = gui.resolve_source_language_preflight(detected, user_sels, "cancel")
+        self.assertFalse(should_cancel)
+        self.assertEqual(map_cancel["f1.srt"], "Italian")
+        self.assertEqual(map_cancel["f2.srt"], gui.AUTO_LANGUAGE)
+
+    def test_api_exception_auto_language_sets_unresolved_sentinel_in_confirm_items(self):
         with patch.object(gui, "_safe_chat_create", side_effect=RuntimeError("net")):
             detected = gui.detect_source_languages_batch_with_ai(
                 object(),
@@ -209,6 +264,13 @@ class SourceLanguageDetectionTest(unittest.TestCase):
             )
         self.assertEqual(detected["a.srt"], gui.AUTO_LANGUAGE)
         self.assertEqual(detected["b.srt"], gui.AUTO_LANGUAGE)
+
+        items = gui.prepare_source_language_confirm_items(detected)
+        self.assertEqual(items["a.srt"]["initial"], gui.UNRESOLVED_LANGUAGE)
+        self.assertTrue(items["a.srt"]["is_failed"])
+        self.assertEqual(items["b.srt"]["initial"], gui.UNRESOLVED_LANGUAGE)
+        self.assertTrue(items["b.srt"]["is_failed"])
+        self.assertNotEqual(items["a.srt"]["initial"], "English")
 
 
 if __name__ == "__main__":

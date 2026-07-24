@@ -252,7 +252,9 @@ LANGUAGES = [
     "Dutch","Polish","Swedish","Norwegian","Danish","Finnish",
 ]
 AUTO_LANGUAGE = "Otomatik"
+UNRESOLVED_LANGUAGE = "Dil seçin"
 SOURCE_LANGUAGES = [AUTO_LANGUAGE] + LANGUAGES
+CONFIRM_SOURCE_LANGUAGES = [UNRESOLVED_LANGUAGE] + LANGUAGES
 # Naive `name.lower()[:2]` guesses the ISO 639-1 code from the English language
 # name — wrong for over half of LANGUAGES (Turkish->"tu" not "tr", German->"ge"
 # not "de", Spanish->"sp" not "es", Portuguese/Polish collide on "po", Chinese
@@ -281,7 +283,7 @@ def _lang_iso639_1(name: str) -> str:
 
 def normalize_language_name(name: str, allow_auto: bool = True) -> str:
     raw = str(name or "").strip()
-    if allow_auto and raw.lower() in {"auto", "automatic", "otomatik"}:
+    if allow_auto and raw.lower() in {"auto", "automatic", "otomatik", "dil seçin", "dil secin"}:
         return AUTO_LANGUAGE
     for language in LANGUAGES:
         if language.lower() == raw.lower():
@@ -291,6 +293,63 @@ def normalize_language_name(name: str, allow_auto: bool = True) -> str:
         if _lang_iso639_1(language) == code:
             return language
     return AUTO_LANGUAGE if allow_auto else ""
+
+
+def prepare_source_language_confirm_items(detected: dict) -> dict:
+    """Prepares items for the source language preflight confirmation dialog.
+    Returns: {fp: {"initial": str, "is_failed": bool}}
+    Failed detections (AUTO_LANGUAGE or invalid) get initial UNRESOLVED_LANGUAGE ("Dil seçin")
+    and is_failed True.
+    """
+    items = {}
+    for fp, raw_lang in detected.items():
+        norm = normalize_language_name(raw_lang, allow_auto=False)
+        if norm:
+            items[fp] = {"initial": norm, "is_failed": False}
+        else:
+            items[fp] = {"initial": UNRESOLVED_LANGUAGE, "is_failed": True}
+    return items
+
+
+def validate_source_language_selections(selections: dict) -> tuple[bool, list]:
+    """Validates user selections from the preflight confirmation dialog.
+    Returns (is_valid, unresolved_filepaths).
+    is_valid is True only if every file has a valid supported language selected.
+    """
+    unresolved = []
+    for fp, val in selections.items():
+        norm = normalize_language_name(val, allow_auto=False)
+        if not norm:
+            unresolved.append(fp)
+    return (len(unresolved) == 0, unresolved)
+
+
+def resolve_source_language_preflight(detected_input: dict, user_selections: dict, action: str) -> tuple[bool, dict]:
+    """Resolves the final preflight state and map to apply.
+    Returns: (should_continue: bool, final_applied_map: dict)
+
+    Rules:
+    - If action != 'continue': should_continue is False.
+    - If action == 'continue':
+        - If any file in user_selections is unresolved: should_continue is False.
+        - If all files resolved: should_continue is True.
+    - final_applied_map contains resolved language names for resolved files,
+      and AUTO_LANGUAGE ("Otomatik") for unresolved files (NEVER "English").
+    """
+    is_valid, unresolved = validate_source_language_selections(user_selections)
+    should_continue = (action == "continue") and is_valid
+
+    final_map = {}
+    for fp in detected_input:
+        user_val = user_selections.get(fp, "")
+        norm = normalize_language_name(user_val, allow_auto=False)
+        if norm:
+            final_map[fp] = norm
+        else:
+            final_map[fp] = AUTO_LANGUAGE
+
+    return (should_continue, final_map)
+
 CHUNK         = 30
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 20  # preceding lines sent as rolling context
@@ -11083,11 +11142,11 @@ class App(ctk.CTk):
         files = list(detected)
         if not files:
             return True
-        fail_count = sum(
-            1 for fp in files
-            if normalize_language_name(detected.get(fp)) == AUTO_LANGUAGE
-        )
+
+        prepared = prepare_source_language_confirm_items(detected)
+        unresolved_count = sum(1 for item in prepared.values() if item["is_failed"])
         result = {"action": "cancel"}
+
         dlg = ctk.CTkToplevel(self)
         dlg.title("Kaynak Dil Ön Analizi")
         dlg.geometry("700x500")
@@ -11098,24 +11157,30 @@ class App(ctk.CTk):
         dlg.grid_columnconfigure(0, weight=1)
         dlg.grid_rowconfigure(2, weight=1)
 
-        if fail_count:
-            header = f"{len(files)} dosyadan {fail_count} tanesinin dili algılanamadı"
-        else:
-            header = f"{len(files)} dosyanın kaynak dili algılandı"
-        ctk.CTkLabel(
+        header_var = ctk.StringVar()
+        subtext_var = ctk.StringVar()
+
+        def _update_header_labels(unres_cnt):
+            if unres_cnt > 0:
+                header_var.set(f"{len(files)} dosyadan {unres_cnt} tanesinin kaynak dili seçilmedi!")
+                subtext_var.set("⚠ Lütfen 'Dil seçin' olarak işaretli dosyalar için kaynak dil seçin.")
+            else:
+                header_var.set(f"{len(files)} dosyanın kaynak dili doğrulandı")
+                subtext_var.set("Her dosyanın dilini kontrol et; yanlışsa kutudan değiştirebilirsin.")
+
+        _update_header_labels(unresolved_count)
+
+        header_lbl = ctk.CTkLabel(
             dlg,
-            text=header,
+            textvariable=header_var,
             font=ctk.CTkFont("Segoe UI", 15, "bold"),
-            text_color=WARN if fail_count else FG,
-        ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
-        sub_text = (
-            "⚠ işaretli dosyaların dilini elle seçin; diğerlerini kontrol edebilirsin."
-            if fail_count
-            else "Her dosyanın dilini kontrol et; yanlışsa kutudan değiştirebilirsin."
+            text_color=WARN if unresolved_count > 0 else FG,
         )
+        header_lbl.grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
+
         ctk.CTkLabel(
             dlg,
-            text=sub_text,
+            textvariable=subtext_var,
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=FG2,
         ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
@@ -11124,41 +11189,102 @@ class App(ctk.CTk):
             dlg, fg_color="transparent", scrollbar_button_color=BORDER, height=320)
         scroll.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
         scroll.grid_columnconfigure(0, weight=1)
+
         row_vars = {}
+        row_frames = {}
+        row_labels = {}
+
         for i, fp in enumerate(files):
-            row = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=7)
+            item = prepared[fp]
+            failed = item["is_failed"]
+            row = ctk.CTkFrame(
+                scroll,
+                fg_color="#3A2323" if failed else CARD,
+                corner_radius=7,
+            )
             row.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
             row.grid_columnconfigure(0, weight=1)
+            row_frames[fp] = row
+
             name = Path(fp).name
-            detected_language = normalize_language_name(detected.get(fp))
-            failed = detected_language == AUTO_LANGUAGE
-            if failed:
-                detected_language = "English"
             label_text = (f"⚠ {name}" if failed else name)
             if len(label_text) > 65:
                 label_text = "..." + label_text[-62:]
-            ctk.CTkLabel(
+
+            lbl = ctk.CTkLabel(
                 row, text=label_text,
                 font=ctk.CTkFont("Segoe UI", 11),
                 text_color=WARN if failed else FG, anchor="w",
-            ).grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=6)
-            var = ctk.StringVar(value=detected_language)
+            )
+            lbl.grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=6)
+            row_labels[fp] = lbl
+
+            var = ctk.StringVar(value=item["initial"])
             row_vars[fp] = var
-            ctk.CTkOptionMenu(
-                row, variable=var, values=LANGUAGES, width=150, height=30,
+
+            values = CONFIRM_SOURCE_LANGUAGES if failed else LANGUAGES
+
+            dropdown = ctk.CTkOptionMenu(
+                row, variable=var, values=values, width=150, height=30,
                 font=ctk.CTkFont("Segoe UI", 10), fg_color=BORDER,
                 button_color=BORDER, button_hover_color=ACCENT,
                 dropdown_fg_color=CARD, text_color=FG,
-            ).grid(row=0, column=1, padx=(4, 10), pady=5)
+            )
+            dropdown.grid(row=0, column=1, padx=(4, 10), pady=5)
+
+            def _make_on_change(path):
+                def _on_change(val):
+                    norm = normalize_language_name(val, allow_auto=False)
+                    orig_name = Path(path).name
+                    if norm:
+                        row_frames[path].configure(fg_color=CARD)
+                        row_labels[path].configure(
+                            text=orig_name if len(orig_name) <= 65 else "..." + orig_name[-62:],
+                            text_color=FG,
+                        )
+                    else:
+                        row_frames[path].configure(fg_color="#3A2323")
+                        lbl_txt = f"⚠ {orig_name}"
+                        row_labels[path].configure(
+                            text=lbl_txt if len(lbl_txt) <= 65 else "..." + lbl_txt[-62:],
+                            text_color=WARN,
+                        )
+                    cur_sels = {p: v.get() for p, v in row_vars.items()}
+                    _, unres = validate_source_language_selections(cur_sels)
+                    _update_header_labels(len(unres))
+                    header_lbl.configure(text_color=WARN if len(unres) > 0 else FG)
+                return _on_change
+
+            dropdown.configure(command=_make_on_change(fp))
 
         def _collect():
-            return {fp: normalize_language_name(var.get(), allow_auto=False)
-                    for fp, var in row_vars.items()}
+            return {fp: var.get() for fp, var in row_vars.items()}
+
+        def _try_continue():
+            selections = _collect()
+            is_valid, unres_files = validate_source_language_selections(selections)
+            if not is_valid:
+                _update_header_labels(len(unres_files))
+                header_lbl.configure(text_color=WARN)
+                for u_fp in unres_files:
+                    if u_fp in row_frames:
+                        row_frames[u_fp].configure(fg_color="#3A2323")
+                        orig_name = Path(u_fp).name
+                        lbl_txt = f"⚠ {orig_name}"
+                        row_labels[u_fp].configure(
+                            text=lbl_txt if len(lbl_txt) <= 65 else "..." + lbl_txt[-62:],
+                            text_color=WARN,
+                        )
+                return
+
+            _finish("continue")
 
         def _finish(action):
+            user_sels = _collect()
+            should_cont, final_map = resolve_source_language_preflight(detected, user_sels, action)
             detected.clear()
-            detected.update(_collect())
-            result["action"] = action
+            detected.update(final_map)
+            result["action"] = "continue" if should_cont else action
             dlg.destroy()
 
         buttons = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -11167,7 +11293,7 @@ class App(ctk.CTk):
         ctk.CTkButton(
             buttons, text="Bu Dillerle Devam Et", height=36,
             fg_color=GREEN, hover_color="#27AE60",
-            command=lambda: _finish("continue"),
+            command=_try_continue,
         ).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(
             buttons, text="Ana Ekranda Düzenle", height=36,
