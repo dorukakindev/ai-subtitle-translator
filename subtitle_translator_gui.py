@@ -3365,11 +3365,14 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
         texts = []
         for cue in cues:
             if hasattr(cue, "text"):
-                text = str(cue.text).strip()
+                raw_txt = str(cue.text).strip()
             else:
-                text = str(cue[2]).strip() if len(cue) > 2 else ""
-            if text:
-                texts.append(text)
+                raw_txt = str(cue[2]).strip() if len(cue) > 2 else ""
+            if not raw_txt:
+                continue
+            spoken = _strip_sdh_line(raw_txt).strip()
+            if spoken:
+                texts.append(spoken)
         if not texts:
             continue
         if len(texts) > 15:
@@ -3413,11 +3416,28 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
             except TypeError:
                 token_callback(total)
         content = (resp.choices[0].message.content or "").strip()
-        data = json.loads(content)
-        detected_map = data.get("languages") or {}
+        data = {}
+        try:
+            import hybrid_translate as ht
+            data = ht._extract_json_object(content)
+        except Exception:
+            try:
+                data = json.loads(content)
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        detected_map = data.get("languages")
+        if not isinstance(detected_map, dict):
+            detected_map = {}
         for item_id, filepath in id_to_path.items():
-            language = normalize_language_name(
-                detected_map.get(item_id, ""), allow_auto=False)
+            raw_val = detected_map.get(item_id)
+            if raw_val is None:
+                try:
+                    raw_val = detected_map.get(int(item_id))
+                except (ValueError, TypeError):
+                    raw_val = None
+            language = normalize_language_name(raw_val, allow_auto=False)
             if language:
                 results[filepath] = language
     except Exception as e:
@@ -11315,6 +11335,7 @@ class App(ctk.CTk):
             return False
         self._set_running(True)
         detect_model = self._main_model_name()
+        base_url = self._main_api_base_url()
         self._set_phase("Kaynak Dil", f"{len(auto_files)} dosyanın dili algılanıyor")
         self._set_status(f"Kaynak dil ön analizi: {detect_model}")
         self._log(
@@ -11323,7 +11344,6 @@ class App(ctk.CTk):
 
         def _worker():
             try:
-                base_url = self._main_api_base_url()
                 client = OpenAI(api_key=api_key, base_url=base_url if base_url else None)
                 detected = self._detect_source_languages_parallel(
                     client, auto_files, detect_model)
@@ -11332,6 +11352,8 @@ class App(ctk.CTk):
                 detected = {fp: AUTO_LANGUAGE for fp in auto_files}
 
             def _finish():
+                if getattr(self, "_destroyed", False):
+                    return
                 should_continue = self._show_source_language_confirm_dialog(detected)
                 if should_continue:
                     self._language_preflight_done = True

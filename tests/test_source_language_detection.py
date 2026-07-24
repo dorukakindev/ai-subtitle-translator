@@ -272,6 +272,176 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertTrue(items["b.srt"]["is_failed"])
         self.assertNotEqual(items["a.srt"]["initial"], "English")
 
+    # ── Advanced Response Parsing, Thread Safety, & Batch Boundary Tests ────
+    def test_base_url_read_on_main_thread_passed_to_openai_client(self):
+        """Preflight captures base_url on main thread before starting worker."""
+        captured_base_url = []
+
+        def fake_init(self_client, api_key=None, base_url=None):
+            captured_base_url.append(base_url)
+
+        stub = SimpleNamespace(
+            _auto_source_language_files=lambda files: files,
+            _set_running=lambda val: None,
+            _main_model_name=lambda: "test-model",
+            _main_api_base_url=lambda: "https://custom.api.endpoint/v1",
+            _set_phase=lambda p, msg: None,
+            _set_status=lambda msg: None,
+            _log=lambda msg, tag="info": None,
+            _detect_source_languages_parallel=lambda client, files, model: {f: "Spanish" for f in files},
+            _show_source_language_confirm_dialog=lambda detected: True,
+            _language_preflight_done=False,
+            after=lambda ms, fn: fn(),
+            _start=lambda: None,
+        )
+
+        with patch("openai.OpenAI.__init__", new=fake_init):
+            gui.App._start_source_language_preflight(stub, "fake-key", ["a.srt"])
+
+        self.assertEqual(captured_base_url, ["https://custom.api.endpoint/v1"])
+
+    def test_worker_thread_does_not_call_main_api_base_url_or_tk_get(self):
+        """Worker thread does not execute _main_api_base_url or Tk var gets."""
+        main_thread_calls = []
+
+        def guarded_base_url():
+            if threading.current_thread() is not threading.main_thread():
+                raise AssertionError("Worker thread must not call _main_api_base_url()")
+            main_thread_calls.append("base_url")
+            return "https://main-thread-url.com"
+
+        stub = SimpleNamespace(
+            _auto_source_language_files=lambda files: files,
+            _set_running=lambda val: None,
+            _main_model_name=lambda: "test-model",
+            _main_api_base_url=guarded_base_url,
+            _set_phase=lambda p, msg: None,
+            _set_status=lambda msg: None,
+            _log=lambda msg, tag="info": None,
+            _detect_source_languages_parallel=lambda client, files, model: {f: "Spanish" for f in files},
+            _show_source_language_confirm_dialog=lambda detected: True,
+            _language_preflight_done=False,
+            after=lambda ms, fn: fn(),
+            _start=lambda: None,
+        )
+
+        with patch("openai.OpenAI.__init__", return_value=SimpleNamespace()):
+            gui.App._start_source_language_preflight(stub, "fake-key", ["a.srt"])
+
+        self.assertEqual(main_thread_calls, ["base_url"])
+
+    def test_missing_id_leaves_only_that_file_unresolved(self):
+        """If response misses one ID, only that file stays AUTO_LANGUAGE."""
+        response_json = {"languages": {"0": "Spanish"}}
+        with patch.object(gui, "_safe_chat_create", return_value=_response(json.dumps(response_json))):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {"file0.srt": [("1", "", "Hola")], "file1.srt": [("1", "", "Ciao")]},
+                "test-model"
+            )
+        self.assertEqual(detected["file0.srt"], "Spanish")
+        self.assertEqual(detected["file1.srt"], gui.AUTO_LANGUAGE)
+
+    def test_out_of_order_results_map_to_correct_files(self):
+        """Response keys arriving in reverse order map correctly."""
+        response_json = {"languages": {"1": "Italian", "0": "Spanish"}}
+        with patch.object(gui, "_safe_chat_create", return_value=_response(json.dumps(response_json))):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {"file0.srt": [("1", "", "Hola")], "file1.srt": [("1", "", "Ciao")]},
+                "test-model"
+            )
+        self.assertEqual(detected["file0.srt"], "Spanish")
+        self.assertEqual(detected["file1.srt"], "Italian")
+
+    def test_duplicate_or_invalid_id_safely_leaves_unresolved(self):
+        """Duplicate keys in JSON or unrecognized IDs leave files AUTO_LANGUAGE."""
+        response_json = {"languages": {"999": "Spanish"}}
+        with patch.object(gui, "_safe_chat_create", return_value=_response(json.dumps(response_json))):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {"file0.srt": [("1", "", "Hola")]},
+                "test-model"
+            )
+        self.assertEqual(detected["file0.srt"], gui.AUTO_LANGUAGE)
+
+    def test_corrupt_or_fenced_response_handles_gracefully(self):
+        """Fenced JSON response is extracted correctly; corrupt text leaves AUTO_LANGUAGE (not English)."""
+        fenced_json = "```json\n{\"languages\": {\"0\": \"Spanish\"}}\n```"
+        with patch.object(gui, "_safe_chat_create", return_value=_response(fenced_json)):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(), {"file0.srt": [("1", "", "Hola")]}, "test-model"
+            )
+        self.assertEqual(detected["file0.srt"], "Spanish")
+
+        corrupt_text = "Sorry, I cannot identify these languages."
+        with patch.object(gui, "_safe_chat_create", return_value=_response(corrupt_text)):
+            detected_corrupt = gui.detect_source_languages_batch_with_ai(
+                object(), {"file0.srt": [("1", "", "Hola")]}, "test-model"
+            )
+        self.assertEqual(detected_corrupt["file0.srt"], gui.AUTO_LANGUAGE)
+        self.assertNotEqual(detected_corrupt["file0.srt"], "English")
+
+    def test_batching_21_files_splits_into_20_and_1(self):
+        """21 files trigger exactly 2 batch API calls (20 and 1)."""
+        captured_batch_sizes = []
+
+        def fake_batch_detect(client, file_cues, model, log_fn=None, token_callback=None):
+            captured_batch_sizes.append(len(file_cues))
+            return {fp: "Spanish" for fp in file_cues}
+
+        stub = SimpleNamespace(
+            _cached_blocks_for=lambda fp: [("1", "", "Hola")],
+            _update_tokens=lambda *a, **k: None,
+            _log=lambda *a, **k: None,
+        )
+
+        files = [f"file_{i}.srt" for i in range(21)]
+        with patch.object(gui, "detect_source_languages_batch_with_ai", side_effect=fake_batch_detect):
+            results = gui.App._detect_source_languages_parallel(stub, object(), files, "test-model")
+
+        self.assertEqual(captured_batch_sizes, [20, 1])
+        self.assertEqual(len(results), 21)
+
+    def test_same_basename_different_paths_do_not_mix_up(self):
+        """Files sharing basename (e.g. dirA/sub.srt vs dirB/sub.srt) map independently."""
+        path_a = r"C:\path\dirA\sub.srt"
+        path_b = r"C:\path\dirB\sub.srt"
+        response_json = {"languages": {"0": "Spanish", "1": "Italian"}}
+
+        with patch.object(gui, "_safe_chat_create", return_value=_response(json.dumps(response_json))):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {path_a: [("1", "", "Hola")], path_b: [("1", "", "Ciao")]},
+                "test-model"
+            )
+
+        self.assertEqual(detected[path_a], "Spanish")
+        self.assertEqual(detected[path_b], "Italian")
+
+    def test_sdh_only_or_empty_cue_file_returns_unresolved(self):
+        """File with only SDH sound descriptors (e.g. [door slamming]) becomes AUTO_LANGUAGE."""
+        sdh_only_cues = [("1", "", "[door slamming]"), ("2", "", "[applause]"), ("3", "", "♪♪♪")]
+        with patch.object(gui, "_safe_chat_create") as mock_api:
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {"sdh_file.srt": sdh_only_cues},
+                "test-model"
+            )
+        self.assertEqual(detected["sdh_file.srt"], gui.AUTO_LANGUAGE)
+        mock_api.assert_not_called()
+
+    def test_real_english_result_is_preserved_as_english(self):
+        """Valid English response from API stays 'English'."""
+        response_json = {"languages": {"0": "English"}}
+        with patch.object(gui, "_safe_chat_create", return_value=_response(json.dumps(response_json))):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {"eng.srt": [("1", "", "Hello, how are you?")]},
+                "test-model"
+            )
+        self.assertEqual(detected["eng.srt"], "English")
+
 
 if __name__ == "__main__":
     unittest.main()
