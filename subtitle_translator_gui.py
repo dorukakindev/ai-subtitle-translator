@@ -11083,6 +11083,10 @@ class App(ctk.CTk):
         files = list(detected)
         if not files:
             return True
+        fail_count = sum(
+            1 for fp in files
+            if normalize_language_name(detected.get(fp)) == AUTO_LANGUAGE
+        )
         result = {"action": "cancel"}
         dlg = ctk.CTkToplevel(self)
         dlg.title("Kaynak Dil Ön Analizi")
@@ -11094,15 +11098,24 @@ class App(ctk.CTk):
         dlg.grid_columnconfigure(0, weight=1)
         dlg.grid_rowconfigure(2, weight=1)
 
+        if fail_count:
+            header = f"{len(files)} dosyadan {fail_count} tanesinin dili algılanamadı"
+        else:
+            header = f"{len(files)} dosyanın kaynak dili algılandı"
         ctk.CTkLabel(
             dlg,
-            text=f"{len(files)} dosyanın kaynak dili algılandı",
+            text=header,
             font=ctk.CTkFont("Segoe UI", 15, "bold"),
-            text_color=FG,
+            text_color=WARN if fail_count else FG,
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
+        sub_text = (
+            "⚠ işaretli dosyaların dilini elle seçin; diğerlerini kontrol edebilirsin."
+            if fail_count
+            else "Her dosyanın dilini kontrol et; yanlışsa kutudan değiştirebilirsin."
+        )
         ctk.CTkLabel(
             dlg,
-            text="Her dosyanın dilini kontrol et; yanlışsa kutudan değiştirebilirsin.",
+            text=sub_text,
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=FG2,
         ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
@@ -11117,13 +11130,18 @@ class App(ctk.CTk):
             row.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
             row.grid_columnconfigure(0, weight=1)
             name = Path(fp).name
-            ctk.CTkLabel(
-                row, text=name if len(name) <= 65 else "..." + name[-62:],
-                font=ctk.CTkFont("Segoe UI", 11), text_color=FG, anchor="w",
-            ).grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=6)
             detected_language = normalize_language_name(detected.get(fp))
-            if detected_language == AUTO_LANGUAGE:
+            failed = detected_language == AUTO_LANGUAGE
+            if failed:
                 detected_language = "English"
+            label_text = (f"⚠ {name}" if failed else name)
+            if len(label_text) > 65:
+                label_text = "..." + label_text[-62:]
+            ctk.CTkLabel(
+                row, text=label_text,
+                font=ctk.CTkFont("Segoe UI", 11),
+                text_color=WARN if failed else FG, anchor="w",
+            ).grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=6)
             var = ctk.StringVar(value=detected_language)
             row_vars[fp] = var
             ctk.CTkOptionMenu(

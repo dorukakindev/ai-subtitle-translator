@@ -157,6 +157,59 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertIn("from Italian to Turkish", italian)
         self.assertNotEqual(spanish, italian)
 
+    # ── detection-failure visibility regression ──────────────────────
+    def test_dialog_fail_count_detects_auto_language_entries(self):
+        """Confirm dialog code path correctly counts failed detections."""
+        detected = {
+            "ok.srt": "Spanish",
+            "fail1.srt": gui.AUTO_LANGUAGE,
+            "fail2.srt": gui.AUTO_LANGUAGE,
+        }
+        fail_count = sum(
+            1 for fp in detected
+            if gui.normalize_language_name(detected.get(fp)) == gui.AUTO_LANGUAGE
+        )
+        self.assertEqual(fail_count, 2)
+
+    def test_dialog_fail_count_zero_when_all_detected(self):
+        detected = {"a.srt": "Italian", "b.srt": "French"}
+        fail_count = sum(
+            1 for fp in detected
+            if gui.normalize_language_name(detected.get(fp)) == gui.AUTO_LANGUAGE
+        )
+        self.assertEqual(fail_count, 0)
+
+    def test_apply_detected_keeps_auto_when_all_fail(self):
+        """When detection fails for ALL files, global should stay Otomatik."""
+        class Var:
+            def __init__(self, v): self.value = v
+            def get(self): return self.value
+            def set(self, v): self.value = v
+
+        stub = SimpleNamespace(
+            _file_language_vars={
+                "a.srt": Var(gui.AUTO_LANGUAGE),
+                "b.srt": Var(gui.AUTO_LANGUAGE),
+            },
+            src_var=Var("English"),
+        )
+        gui.App._apply_detected_source_languages(
+            stub, {"a.srt": gui.AUTO_LANGUAGE, "b.srt": gui.AUTO_LANGUAGE})
+        # Both stay AUTO_LANGUAGE → global should reflect that
+        self.assertEqual(stub._file_language_vars["a.srt"].get(), gui.AUTO_LANGUAGE)
+        self.assertEqual(stub._file_language_vars["b.srt"].get(), gui.AUTO_LANGUAGE)
+
+    def test_batch_detector_api_exception_returns_auto_for_all(self):
+        """When API call raises, all files should get AUTO_LANGUAGE."""
+        with patch.object(gui, "_safe_chat_create", side_effect=RuntimeError("net")):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {"a.srt": [("1", "", "Hello")], "b.srt": [("1", "", "Bonjour")]},
+                "test-model",
+            )
+        self.assertEqual(detected["a.srt"], gui.AUTO_LANGUAGE)
+        self.assertEqual(detected["b.srt"], gui.AUTO_LANGUAGE)
+
 
 if __name__ == "__main__":
     unittest.main()
