@@ -7976,6 +7976,7 @@ def submit_batch(
     source_path: str = None,
     output_dir: str = None,
     base_url: str = "",
+    source_language: str = "",
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
 
@@ -8027,6 +8028,7 @@ def submit_batch(
             "output_path": output_path or "",
             "source_path": source_path or "",   # resume: kaynağı geriye hesaplama, saklananı kullan
             "output_dir": output_dir or "",     # resume: raporu doğru klasöre yaz
+            "source_language": source_language or "",
             "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
         }
         atomic_write_json(fmap_path, fmap_data)

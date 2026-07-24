@@ -62,11 +62,13 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
                 ht.submit_batch("k", [{"a": 1}], None, {"c1": [("f", 1)]},
                                 output_path=r"C:\out\ÇIKTI\Film\Film.srt",
                                 source_path=r"C:\in\Film.vtt",
-                                output_dir=r"C:\out\ÇIKTI")
+                                output_dir=r"C:\out\ÇIKTI",
+                                source_language="Spanish")
             data = json.loads(fmap_path.read_text(encoding="utf-8"))
             self.assertEqual(data["source_path"], r"C:\in\Film.vtt")
             self.assertEqual(data["output_dir"], r"C:\out\ÇIKTI")
             self.assertEqual(data["output_path"], r"C:\out\ÇIKTI\Film\Film.srt")
+            self.assertEqual(data["source_language"], "Spanish")
             self.assertEqual(data["type"], "hybrid")
         finally:
             fmap_path.unlink(missing_ok=True)
@@ -87,6 +89,7 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
             data = json.loads(fmap_path.read_text(encoding="utf-8"))
             self.assertEqual(data["source_path"], "")
             self.assertEqual(data["output_dir"], "")
+            self.assertEqual(data["source_language"], "")
         finally:
             fmap_path.unlink(missing_ok=True)
             if saved_bid is not None:

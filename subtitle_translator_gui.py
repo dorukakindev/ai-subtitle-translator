@@ -251,6 +251,8 @@ LANGUAGES = [
     "Portuguese","Russian","Japanese","Korean","Chinese","Arabic",
     "Dutch","Polish","Swedish","Norwegian","Danish","Finnish",
 ]
+AUTO_LANGUAGE = "Otomatik"
+SOURCE_LANGUAGES = [AUTO_LANGUAGE] + LANGUAGES
 # Naive `name.lower()[:2]` guesses the ISO 639-1 code from the English language
 # name — wrong for over half of LANGUAGES (Turkish->"tu" not "tr", German->"ge"
 # not "de", Spanish->"sp" not "es", Portuguese/Polish collide on "po", Chinese
@@ -275,6 +277,20 @@ def _lang_iso639_1(name: str) -> str:
     2-letter slice for anything not in the table above)."""
     key = str(name or "").strip().lower()
     return _LANGUAGE_ISO639_1.get(key) or key[:2]
+
+
+def normalize_language_name(name: str, allow_auto: bool = True) -> str:
+    raw = str(name or "").strip()
+    if allow_auto and raw.lower() in {"auto", "automatic", "otomatik"}:
+        return AUTO_LANGUAGE
+    for language in LANGUAGES:
+        if language.lower() == raw.lower():
+            return language
+    code = raw.lower()
+    for language in LANGUAGES:
+        if _lang_iso639_1(language) == code:
+            return language
+    return AUTO_LANGUAGE if allow_auto else ""
 CHUNK         = 30
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 20  # preceding lines sent as rolling context
@@ -3219,6 +3235,138 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
         log_fn("İçerik türü otomatik tespit edilemedi — Otomatik kullanılacak", "warn")
     return "Otomatik"
 
+
+def detect_source_language_with_ai(client, cues, model, log_fn=None,
+                                   token_callback=None, filename: str = "") -> str:
+    """Altyazının baskın konuşma dilini desteklenen kaynak dillerden biriyle eşler."""
+    texts = []
+    for cue in cues:
+        if hasattr(cue, "text"):
+            text = str(cue.text).strip()
+        else:
+            text = str(cue[2]).strip() if len(cue) > 2 else ""
+        if text:
+            texts.append(text)
+    if not texts:
+        return AUTO_LANGUAGE
+    if len(texts) > 90:
+        mid = len(texts) // 2
+        texts = texts[:35] + texts[mid:mid + 30] + texts[-25:]
+    sample = "\n".join(texts)[:12000]
+    language_list = ", ".join(LANGUAGES)
+    prompt = (
+        "Detect the dominant spoken language of this subtitle sample. "
+        "Ignore names, song titles, isolated foreign phrases, markup and SDH labels. "
+        f"Choose exactly one supported language from: {language_list}. "
+        "Return ONLY JSON in this form: {\"language\": \"English\"}.\n\n"
+        f"File: {Path(filename).name if filename else '(unknown)'}\n"
+        f"Subtitle sample:\n{sample}"
+    )
+    try:
+        resp = _safe_chat_create(
+            client,
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a precise language identification engine."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=40,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            timeout=45.0,
+        )
+        if token_callback and getattr(resp, "usage", None):
+            total, cached = _get_usage_details(resp.usage)
+            try:
+                token_callback(total, cached=cached)
+            except TypeError:
+                token_callback(total)
+        content = (resp.choices[0].message.content or "").strip()
+        try:
+            raw = json.loads(content).get("language", "")
+        except Exception:
+            raw = content
+        detected = normalize_language_name(raw, allow_auto=False)
+        if detected:
+            return detected
+        if log_fn:
+            log_fn(f"[{Path(filename).name}] Kaynak dil yanıtı eşleşmedi: {content[:80]}", "warn")
+    except Exception as e:
+        if log_fn:
+            log_fn(f"[{Path(filename).name}] Kaynak dil tespiti başarısız: {e}", "warn")
+    return AUTO_LANGUAGE
+
+
+def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
+                                          log_fn=None, token_callback=None) -> dict:
+    """Birden çok dosyanın baskın dilini tek model çağrısında tespit eder."""
+    items = []
+    id_to_path = {}
+    for index, (filepath, cues) in enumerate(file_cues.items()):
+        texts = []
+        for cue in cues:
+            if hasattr(cue, "text"):
+                text = str(cue.text).strip()
+            else:
+                text = str(cue[2]).strip() if len(cue) > 2 else ""
+            if text:
+                texts.append(text)
+        if not texts:
+            continue
+        if len(texts) > 15:
+            mid = len(texts) // 2
+            texts = texts[:6] + texts[mid:mid + 5] + texts[-4:]
+        item_id = str(index)
+        id_to_path[item_id] = filepath
+        items.append({
+            "id": item_id,
+            "filename": Path(filepath).name,
+            "sample": "\n".join(texts)[:1800],
+        })
+    results = {filepath: AUTO_LANGUAGE for filepath in file_cues}
+    if not items:
+        return results
+    prompt = (
+        "Detect the dominant spoken language of every subtitle sample independently. "
+        "Ignore names, isolated foreign phrases, markup and SDH labels. "
+        f"Allowed languages: {', '.join(LANGUAGES)}. "
+        "Return ONLY JSON: {\"languages\":{\"0\":\"Spanish\",\"1\":\"Italian\"}}. "
+        "Include every supplied id.\n\n"
+        f"{json.dumps(items, ensure_ascii=False)}"
+    )
+    try:
+        resp = _safe_chat_create(
+            client,
+            model=model,
+            messages=[
+                {"role": "system", "content": "You identify subtitle languages precisely."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=max(100, len(items) * 12),
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            timeout=60.0,
+        )
+        if token_callback and getattr(resp, "usage", None):
+            total, cached = _get_usage_details(resp.usage)
+            try:
+                token_callback(total, cached=cached)
+            except TypeError:
+                token_callback(total)
+        content = (resp.choices[0].message.content or "").strip()
+        data = json.loads(content)
+        detected_map = data.get("languages") or {}
+        for item_id, filepath in id_to_path.items():
+            language = normalize_language_name(
+                detected_map.get(item_id, ""), allow_auto=False)
+            if language:
+                results[filepath] = language
+    except Exception as e:
+        if log_fn:
+            log_fn(f"Toplu kaynak dil tespiti başarısız: {e}", "warn")
+    return results
+
+
 def _strip_md(raw):
     raw = raw.strip()
     if raw.startswith("```"):
@@ -4922,6 +5070,7 @@ class App(ctk.CTk):
         self._input_entry_focus_val = None
         self._removed_queue_files = set()
         self._content_type_preflight_done = False
+        self._language_preflight_done = False
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
         self._batch_lock     = threading.RLock()   # _active_batches eşzamanlı erişimi
         self._ckpt_lock      = threading.Lock()   # sync checkpoint dosyasına eşzamanlı yazım
@@ -5407,6 +5556,7 @@ class App(ctk.CTk):
             return
         before = len(self._selected_files)
         self._content_type_preflight_done = False
+        self._language_preflight_done = False
         self._selected_files = self._dedupe_paths(list(self._selected_files) + valid)
         added = len(self._selected_files) - before
         total = len(self._selected_files)
@@ -5628,7 +5778,8 @@ class App(ctk.CTk):
         section("DİL")
         lbl("Kaynak dil")
         self.src_var = ctk.StringVar(value="English")
-        combo(self.src_var, LANGUAGES)
+        self.src_combo = combo(self.src_var, SOURCE_LANGUAGES)
+        self.src_combo.configure(command=lambda _value: self._apply_source_language_to_all())
         lbl("Hedef dil")
         self.tgt_var = ctk.StringVar(value="Turkish")
         combo(self.tgt_var, LANGUAGES)
@@ -6471,6 +6622,7 @@ class App(ctk.CTk):
         self._file_rows_frame.grid(row=1, column=0, sticky="ew", padx=8, pady=(0,10))
         self._file_rows_frame.grid_columnconfigure(0, weight=1)
         self._file_schema_vars = {}
+        self._file_language_vars = {}
 
         # ── Log yeniden boyutlandırma tutamacı ──────────────────────────────────
         # Dosya listesi ile Log arasında sürüklenebilir ince bir çubuk: yukarı
@@ -6561,9 +6713,15 @@ class App(ctk.CTk):
         """Input klasörü seçilince her dosya için şema dropdown'u oluştur."""
         for w in self._file_rows_frame.winfo_children():
             w.destroy()
+        old_languages = {
+            fp: var.get() for fp, var in getattr(self, "_file_language_vars", {}).items()
+            if fp in files
+        }
         self._file_schema_vars = {}
+        self._file_language_vars = {}
         schema_names = [v["name"] for v in CONTENT_SCHEMAS.values()]
         default = normalize_schema_name(self.content_type_var.get())
+        default_language = normalize_language_name(self.src_var.get())
         for fp in sorted(files, key=lambda p: Path(p).name.lower()):
             row_fr = ctk.CTkFrame(self._file_rows_frame, fg_color=CARD, corner_radius=6)
             row_fr.pack(fill="x", padx=2, pady=(0, 3))
@@ -6575,6 +6733,15 @@ class App(ctk.CTk):
                          font=ctk.CTkFont("Segoe UI", 11),
                          text_color=FG, anchor="w").grid(
                          row=0, column=0, sticky="ew", padx=(10,4), pady=5)
+            lang_var = ctk.StringVar(value=old_languages.get(fp, default_language))
+            self._file_language_vars[fp] = lang_var
+            ctk.CTkOptionMenu(row_fr, variable=lang_var, values=SOURCE_LANGUAGES,
+                              width=105, height=26,
+                              font=ctk.CTkFont("Segoe UI", 10),
+                              fg_color=BORDER, button_color=BORDER,
+                              button_hover_color=ACCENT,
+                              dropdown_fg_color=CARD, text_color=FG,
+                              ).grid(row=0, column=1, padx=(4, 2), pady=4)
             var = ctk.StringVar(value=default)
             self._file_schema_vars[fp] = var
             ctk.CTkOptionMenu(row_fr, variable=var, values=schema_names,
@@ -6583,14 +6750,14 @@ class App(ctk.CTk):
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
                               dropdown_fg_color=CARD, text_color=FG,
-                              ).grid(row=0, column=1, padx=(4, 2), pady=4)
+                              ).grid(row=0, column=2, padx=(4, 2), pady=4)
             # Dosya silme butonu
             ctk.CTkButton(row_fr, text="X", width=26, height=26,
                           font=ctk.CTkFont("Segoe UI", 11, "bold"),
                           fg_color="transparent", hover_color=BORDER,
                           text_color=WARN,
                           command=lambda p=fp: self._remove_file_from_list(p)
-                          ).grid(row=0, column=2, padx=(0, 6), pady=4)
+                          ).grid(row=0, column=3, padx=(0, 6), pady=4)
         self._file_list_lbl.configure(text=f"DOSYALAR ({len(files)})")
         self._job_board.grid_remove()   # iş panosu varsa gizle
         self._file_list_outer.grid()
@@ -6600,6 +6767,7 @@ class App(ctk.CTk):
         if filepath in self._selected_files:
             self._selected_files.remove(filepath)
         self._file_schema_vars.pop(filepath, None)
+        getattr(self, "_file_language_vars", {}).pop(filepath, None)
         remaining = list(self._selected_files)
         if remaining:
             self._refresh_selected_files_ui(f"Dosya listeden çıkarıldı: {Path(filepath).name}")
@@ -6621,6 +6789,7 @@ class App(ctk.CTk):
     def _refresh_selected_files_ui(self, log_msg: str = ""):
         import os
         self._content_type_preflight_done = False
+        self._language_preflight_done = False
         files = self._dedupe_paths(self._selected_files)
         self._selected_files = files
         if not files:
@@ -6649,6 +6818,11 @@ class App(ctk.CTk):
         self.content_type_var.set(name)
         for var in self._file_schema_vars.values():
             var.set(name)
+
+    def _apply_source_language_to_all(self):
+        language = normalize_language_name(self.src_var.get())
+        for var in getattr(self, "_file_language_vars", {}).values():
+            var.set(language)
 
     def _get_file_glossary(self, filepath: str) -> str:
         """Dosyanın şemasına göre glossary yolunu döndür.
@@ -6707,6 +6881,24 @@ class App(ctk.CTk):
         name = normalize_schema_name(var.get() if var else self.content_type_var.get())
         return self._schema_by_name(name)
 
+    def _get_file_source_language(self, filepath: str) -> str:
+        if (threading.current_thread() is not threading.main_thread()
+                and getattr(self, "_active_snapshot", None)):
+            value = self._active_snapshot.get("file_source_languages", {}).get(filepath)
+            if value:
+                return normalize_language_name(value)
+            return normalize_language_name(self._active_snapshot.get("src_lang", "English"))
+        var = getattr(self, "_file_language_vars", {}).get(filepath)
+        value = var.get() if var else self.src_var.get()
+        return normalize_language_name(value)
+
+    def _effective_file_source_language(self, filepath: str, fallback: str = "English") -> str:
+        language = self._get_file_source_language(filepath)
+        if language != AUTO_LANGUAGE:
+            return language
+        fallback = normalize_language_name(fallback)
+        return fallback if fallback != AUTO_LANGUAGE else "English"
+
     # ── UI Dispatcher & Thread Safety ─────────────────────────────────────────
     _post_ui = _post_ui
 
@@ -6755,6 +6947,7 @@ class App(ctk.CTk):
         srt_files = self._get_srt_files()
         file_schemas = {}
         file_glossaries = {}
+        file_source_languages = {}
         for fp in srt_files:
             try:
                 var_s = getattr(self, "_file_schema_vars", {}).get(fp)
@@ -6764,6 +6957,10 @@ class App(ctk.CTk):
                 pass
             try:
                 file_glossaries[fp] = self._get_file_glossary(fp)
+            except Exception:
+                pass
+            try:
+                file_source_languages[fp] = self._get_file_source_language(fp)
             except Exception:
                 pass
 
@@ -6782,6 +6979,7 @@ class App(ctk.CTk):
             "input_dir": self.input_var.get(),
             "output_dir": self.output_var.get(),
             "src_lang": self.src_var.get(),
+            "file_source_languages": file_source_languages,
             "tgt_lang": self.tgt_var.get(),
             "profanity": self.profanity_var.get(),
             "same_folder": self.same_folder_var.get(),
@@ -6900,7 +7098,7 @@ class App(ctk.CTk):
             return
 
         fp   = files[0]
-        src  = self.src_var.get()
+        src  = self._effective_file_source_language(fp, self.src_var.get())
         tgt  = self.tgt_var.get()
         model = self._main_model_name()
 
@@ -7224,6 +7422,7 @@ class App(ctk.CTk):
         self._removed_queue_files.add(norm_fp)
         self._selected_files = [p for p in self._selected_files if self._norm_path(p) != norm_fp]
         self._file_schema_vars.pop(filepath, None)
+        getattr(self, "_file_language_vars", {}).pop(filepath, None)
         try:
             row["frame"].destroy()
         except Exception:
@@ -7880,6 +8079,7 @@ class App(ctk.CTk):
             self._selected_files = []
             self._input_folder_explicitly_selected = True
             self._content_type_preflight_done = False
+            self._language_preflight_done = False
             self.clear_files_btn.grid_remove()
             self.clear_info_btn.grid_remove()
             # ProjectMemory'yi bu klasör için başlat
@@ -8294,6 +8494,7 @@ class App(ctk.CTk):
         self._selected_files = []
         self._input_folder_explicitly_selected = True
         self._content_type_preflight_done = False
+        self._language_preflight_done = False
         self.file_info_var.set("")
         self.clear_files_btn.grid_remove()
         self.clear_info_btn.grid_remove()
@@ -8436,7 +8637,7 @@ class App(ctk.CTk):
                     self.model_250k_var.set(loaded_model)
                 self._update_active_model()
             if "api_url" in d:                     self.api_url_var.set(_normalize_api_base_url(d["api_url"]))
-            if d.get("src_lang") in LANGUAGES:     self.src_var.set(d["src_lang"])
+            if d.get("src_lang") in SOURCE_LANGUAGES: self.src_var.set(d["src_lang"])
             if d.get("tgt_lang") in LANGUAGES:     self.tgt_var.set(d["tgt_lang"])
             if d.get("mode") in ("batch","sync"):  self.mode_var.set(d["mode"])
             if d.get("hybrid"):
@@ -9034,7 +9235,7 @@ class App(ctk.CTk):
                 return
 
         srt_files = self._get_srt_files()
-        if srt_files:
+        if srt_files and _lang_iso639_1(self.tgt_var.get()) == "tr":
             import hybrid_translate as ht
             turkish_files = []
             for fp in srt_files:
@@ -9056,11 +9257,19 @@ class App(ctk.CTk):
                 return
         if (
             srt_files
+            and not self._language_preflight_done
+            and self._auto_source_language_files(srt_files)
+        ):
+            if self._start_source_language_preflight(key, srt_files):
+                return
+        if (
+            srt_files
             and not self._content_type_preflight_done
             and self._auto_content_type_files(srt_files)
         ):
             if self._start_content_type_preflight(key, srt_files):
                 return
+        self._language_preflight_done = False
         self._content_type_preflight_done = False
         self._active_snapshot = self._take_run_snapshot()
 
@@ -9498,7 +9707,7 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
 
-    def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks):
+    def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks, src_lang=None):
         """Geri çeviri anlam kontrolü. Açıksa çalışır: Türkçeyi tekrar
         kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
         log'a yazar. Flag'lenen satırları helper model ile düzeltir."""
@@ -9516,7 +9725,7 @@ class App(ctk.CTk):
                 api_key=self._helper_api_key("qc"),
                 base_url=self._helper_api_base_url("qc"),
                 model=self._helper_api_model("qc"),
-                src_lang=self.src_var.get() or "English",
+                src_lang=src_lang or self.src_var.get() or "English",
                 tgt_lang=self.tgt_var.get() or "Turkish",
                 log_fn=self._log, token_callback=self._update_tokens)
             if not flags:
@@ -10627,7 +10836,7 @@ class App(ctk.CTk):
         mm_key = self._helper_api_key("analysis")
         mm_url = self._helper_api_base_url("analysis")
         mm_mdl = self._helper_api_model("analysis")
-        src    = self.src_var.get()
+        src    = self._effective_file_source_language(filepath, self.src_var.get())
         tgt    = self.tgt_var.get()
 
         if not mm_key:
@@ -10824,6 +11033,176 @@ class App(ctk.CTk):
         ctk.CTkButton(btn_fr, text="✕  Kapat", fg_color=CARD,
                       hover_color=BORDER, command=dlg.destroy).grid(
                       row=0, column=1, padx=4, sticky="ew")
+
+    def _auto_source_language_files(self, files: list) -> list:
+        return [fp for fp in files if self._get_file_source_language(fp) == AUTO_LANGUAGE]
+
+    def _detect_source_languages_parallel(self, client, files, model) -> dict:
+        results = {}
+        if not files:
+            return results
+
+        batches = [files[i:i + 20] for i in range(0, len(files), 20)]
+
+        def _one(batch):
+            cues_by_file = {}
+            for fp in batch:
+                try:
+                    cues_by_file[fp] = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
+                except Exception as e:
+                    self._log(f"[{Path(fp).name}] Kaynak dil örneği okunamadı: {e}", "warn")
+                    cues_by_file[fp] = []
+            return detect_source_languages_batch_with_ai(
+                client, cues_by_file, model, self._log,
+                token_callback=self._update_tokens)
+
+        with ThreadPoolExecutor(max_workers=min(4, len(batches))) as ex:
+            for detected in ex.map(_one, batches):
+                results.update(detected)
+        return results
+
+    def _apply_detected_source_languages(self, detected: dict):
+        for fp, raw_language in detected.items():
+            language = normalize_language_name(raw_language)
+            var = getattr(self, "_file_language_vars", {}).get(fp)
+            if var is None:
+                var = ctk.StringVar(value=language)
+                self._file_language_vars[fp] = var
+            else:
+                var.set(language)
+        all_languages = {
+            normalize_language_name(var.get())
+            for var in getattr(self, "_file_language_vars", {}).values()
+        }
+        if len(all_languages) == 1 and AUTO_LANGUAGE not in all_languages:
+            self.src_var.set(next(iter(all_languages)))
+        elif len(all_languages) > 1:
+            self.src_var.set(AUTO_LANGUAGE)
+
+    def _show_source_language_confirm_dialog(self, detected: dict) -> bool:
+        files = list(detected)
+        if not files:
+            return True
+        result = {"action": "cancel"}
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Kaynak Dil Ön Analizi")
+        dlg.geometry("700x500")
+        dlg.configure(fg_color=BG)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+        dlg.grid_columnconfigure(0, weight=1)
+        dlg.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            dlg,
+            text=f"{len(files)} dosyanın kaynak dili algılandı",
+            font=ctk.CTkFont("Segoe UI", 15, "bold"),
+            text_color=FG,
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 4))
+        ctk.CTkLabel(
+            dlg,
+            text="Her dosyanın dilini kontrol et; yanlışsa kutudan değiştirebilirsin.",
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=FG2,
+        ).grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+
+        scroll = ctk.CTkScrollableFrame(
+            dlg, fg_color="transparent", scrollbar_button_color=BORDER, height=320)
+        scroll.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        scroll.grid_columnconfigure(0, weight=1)
+        row_vars = {}
+        for i, fp in enumerate(files):
+            row = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=7)
+            row.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
+            row.grid_columnconfigure(0, weight=1)
+            name = Path(fp).name
+            ctk.CTkLabel(
+                row, text=name if len(name) <= 65 else "..." + name[-62:],
+                font=ctk.CTkFont("Segoe UI", 11), text_color=FG, anchor="w",
+            ).grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=6)
+            detected_language = normalize_language_name(detected.get(fp))
+            if detected_language == AUTO_LANGUAGE:
+                detected_language = "English"
+            var = ctk.StringVar(value=detected_language)
+            row_vars[fp] = var
+            ctk.CTkOptionMenu(
+                row, variable=var, values=LANGUAGES, width=150, height=30,
+                font=ctk.CTkFont("Segoe UI", 10), fg_color=BORDER,
+                button_color=BORDER, button_hover_color=ACCENT,
+                dropdown_fg_color=CARD, text_color=FG,
+            ).grid(row=0, column=1, padx=(4, 10), pady=5)
+
+        def _collect():
+            return {fp: normalize_language_name(var.get(), allow_auto=False)
+                    for fp, var in row_vars.items()}
+
+        def _finish(action):
+            detected.clear()
+            detected.update(_collect())
+            result["action"] = action
+            dlg.destroy()
+
+        buttons = ctk.CTkFrame(dlg, fg_color="transparent")
+        buttons.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 12))
+        buttons.grid_columnconfigure((0, 1, 2), weight=1)
+        ctk.CTkButton(
+            buttons, text="Bu Dillerle Devam Et", height=36,
+            fg_color=GREEN, hover_color="#27AE60",
+            command=lambda: _finish("continue"),
+        ).grid(row=0, column=0, padx=4, sticky="ew")
+        ctk.CTkButton(
+            buttons, text="Ana Ekranda Düzenle", height=36,
+            fg_color=CARD, hover_color=BORDER,
+            command=lambda: _finish("edit"),
+        ).grid(row=0, column=1, padx=4, sticky="ew")
+        ctk.CTkButton(
+            buttons, text="İptal", height=36, fg_color=CARD,
+            hover_color=BORDER, command=lambda: _finish("cancel"),
+        ).grid(row=0, column=2, padx=4, sticky="ew")
+        dlg.protocol("WM_DELETE_WINDOW", lambda: _finish("cancel"))
+        self.wait_window(dlg)
+        self._apply_detected_source_languages(detected)
+        return result["action"] == "continue"
+
+    def _start_source_language_preflight(self, api_key: str, files: list) -> bool:
+        auto_files = self._auto_source_language_files(files)
+        if not auto_files:
+            return False
+        self._set_running(True)
+        detect_model = self._main_model_name()
+        self._set_phase("Kaynak Dil", f"{len(auto_files)} dosyanın dili algılanıyor")
+        self._set_status(f"Kaynak dil ön analizi: {detect_model}")
+        self._log(
+            f"{len(auto_files)} dosyanın kaynak dili dosya bazında algılanıyor ({detect_model})...",
+            "info")
+
+        def _worker():
+            try:
+                base_url = self._main_api_base_url()
+                client = OpenAI(api_key=api_key, base_url=base_url if base_url else None)
+                detected = self._detect_source_languages_parallel(
+                    client, auto_files, detect_model)
+            except Exception as e:
+                self._log(f"Kaynak dil ön analizi başarısız: {e}", "warn")
+                detected = {fp: AUTO_LANGUAGE for fp in auto_files}
+
+            def _finish():
+                should_continue = self._show_source_language_confirm_dialog(detected)
+                if should_continue:
+                    self._language_preflight_done = True
+                    self._set_running(False)
+                    self.after(20, self._start)
+                else:
+                    self._language_preflight_done = False
+                    self._set_running(False)
+                    self._set_status("Kaynak dil seçimi bekleniyor.")
+                    self._log("Kaynak dil ön analizi uygulandı; çeviri başlatılmadı.", "info")
+
+            _post_ui(self, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
 
     def _detect_content_types_parallel(self, client, files, model) -> dict:
         """'Otomatik' şemalı dosyaların içerik türünü paralel tespit eder.
@@ -11043,7 +11422,8 @@ class App(ctk.CTk):
         threading.Thread(target=_worker, daemon=True).start()
         return True
 
-    def _get_precontext_hints(self, client, files, src, tgt, model) -> dict:
+    def _get_precontext_hints(self, client, files, src, tgt, model,
+                              source_languages: dict | None = None) -> dict:
         """Hybrid (Yardımcı Analiz) kapalıyken dosya başına ön-bağlam hint'i üretir.
         Sonuçlar .context_cache/ altında önbelleklenir; önbellekte olmayan dosyalar
         paralel analiz edilir (4 worker)."""
@@ -11055,6 +11435,7 @@ class App(ctk.CTk):
         data_by_fp, to_analyze = {}, []
         for fp in files:
             data  = None
+            file_src = (source_languages or {}).get(fp, src)
             cpath = _precontext_cache_path(fp)
             try:
                 cur_sig = _precontext_cache_sig(fp)
@@ -11063,6 +11444,7 @@ class App(ctk.CTk):
                     cached_sig = cached.get("_sig")
                     if (cached.get("_ver") == PRECONTEXT_CACHE_VER
                             and cached.get("_tgt") == tgt
+                            and cached.get("_src") == file_src
                             and isinstance(cached_sig, str)
                             and cached_sig.startswith("sha256:")
                             and cached_sig == cur_sig):
@@ -11083,7 +11465,8 @@ class App(ctk.CTk):
                     return fp, None
                 try:
                     blocks = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
-                    return fp, analyze_file_precontext(client, blocks, model, src, tgt,
+                    file_src = (source_languages or {}).get(fp, src)
+                    return fp, analyze_file_precontext(client, blocks, model, file_src, tgt,
                                                        log_fn=self._log,
                                                        token_cb=self._update_tokens)
                 except Exception as e:
@@ -11103,6 +11486,7 @@ class App(ctk.CTk):
                             atomic_write_json(cpath, {
                                 "_ver": PRECONTEXT_CACHE_VER,
                                 "_tgt": tgt,
+                                "_src": (source_languages or {}).get(fp, src),
                                 "data": data,
                                 "_sig": sig,
                             })
@@ -11180,10 +11564,20 @@ class App(ctk.CTk):
         değişince eski koşunun chunk'ları 'tamamlanmış' sayılmaz — aksi hâlde ayar
         değiştirip yeniden çeviren kullanıcıya bayat çeviri geri yazılır."""
         try:
-            return "|".join([
+            parts = [
                 self._main_model_name(), self.tgt_var.get(), self.profanity_var.get(),
                 self.style_var.get(), self.content_type_var.get(),
-            ])
+            ]
+            snapshot = getattr(self, "_active_snapshot", None)
+            if isinstance(snapshot, dict):
+                file_sources = snapshot.get("file_source_languages") or {}
+            else:
+                file_sources = {
+                    fp: normalize_language_name(var.get())
+                    for fp, var in getattr(self, "_file_language_vars", {}).items()
+                }
+            parts.append(json.dumps(sorted(file_sources.items()), ensure_ascii=False))
+            return "|".join(parts)
         except Exception:
             return ""
 
@@ -11342,14 +11736,18 @@ class App(ctk.CTk):
         if _auto_files:
             self._log(f"{len(_auto_files)} dosyanın içerik türü paralel analiz ediliyor...", "info")
         _detected = self._detect_content_types_parallel(client, _auto_files, model)
+        _source_languages = {
+            fp: self._effective_file_source_language(fp, src) for fp in valid_files
+        }
         _schema_groups: dict = {}
         for fp in valid_files:
             sname = self._get_file_schema(fp)["name"]
             if sname == "Otomatik":
                 sname = _detected.get(fp, "Otomatik")
-            _schema_groups.setdefault(sname, []).append(fp)
+            _schema_groups.setdefault((sname, _source_languages[fp]), []).append(fp)
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
-        _file_hints = self._get_precontext_hints(client, valid_files, src, tgt, model)
+        _file_hints = self._get_precontext_hints(
+            client, valid_files, src, tgt, model, source_languages=_source_languages)
         # Dizi hafızası: önceki bölümlerin terim/karakter/sen-siz kararlarını ekle
         _sm_used = 0
         for fp in valid_files:
@@ -11360,8 +11758,8 @@ class App(ctk.CTk):
         if _sm_used:
             self._log(f"Dizi hafızası: {_sm_used} dosyaya önceki bölüm kararları eklendi", "info")
         all_requests, all_file_map = [], {}
-        for sname, group in _schema_groups.items():
-            reqs, fmap = build_requests(group, src, tgt, model,
+        for (sname, group_src), group in _schema_groups.items():
+            reqs, fmap = build_requests(group, group_src, tgt, model,
                                         chunk_size=self._chunk_size,
                                         schema=self._schema_by_name(sname),
                                         profanity=_profanity,
@@ -11559,7 +11957,8 @@ class App(ctk.CTk):
         if not self._stop_flag:
             self._retry_hata(client, raw_map, requests, max_rounds=self._max_retry)
             _all_written = self._write_results(raw_map, file_map, output_dir,
-                                               openai_key=api_key, src=src)
+                                               openai_key=api_key, src=src,
+                                               source_languages=_source_languages)
             is_full_success = _all_written and failed[0] == 0
             if should_clear_sync_ckpt(self._stop_flag, is_full_success):
                 self._clear_sync_ckpt(used_ckpt_keys)
@@ -11607,6 +12006,7 @@ class App(ctk.CTk):
                 skipped_files.append(filepath)
                 continue
             fname = Path(filepath).name
+            file_src = self._effective_file_source_language(filepath, src)
             self._log(f"\n── [{fi+1}/{n_files}] {fname} ──", "info")
             self._update_file_progress(filepath, "Hazırlanıyor", 2)
 
@@ -11676,7 +12076,7 @@ class App(ctk.CTk):
                         result = ht.analyze_with_helper(
                             cues=cues, helper_api_key=self._helper_api_key("analysis"), helper_url=self._helper_api_base_url("analysis"), helper_model=self._helper_api_model("analysis"),
                             style=self.style_var.get(),
-                            source_language=_lang_iso639_1(src),
+                            source_language=_lang_iso639_1(file_src),
                             target_language=_lang_iso639_1(tgt),
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
@@ -11692,7 +12092,7 @@ class App(ctk.CTk):
                         else:
                             self._log(f"[{fname}] Analiz başarısız — boş bağlamla çeviri devam ediyor", "warn")
                             self._update_file_progress(filepath, "Analiz atlandı", 10, "warn")
-                            result = ht.empty_analysis_result(_lang_iso639_1(src))
+                            result = ht.empty_analysis_result(_lang_iso639_1(file_src))
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
                     ht.save_context_cache(context, filepath, char_examples, pronoun_map,
                                           character_styles=character_styles,
@@ -11734,7 +12134,7 @@ class App(ctk.CTk):
             # bölümlerin birikmiş kararlarını prompt'a ekle (ilk karar kanon)
             self._update_series_memory_from_analysis(filepath, context, pronoun_map)
             system_prompt = ht.build_system_prompt(
-                context, src, tgt,
+                context, file_src, tgt,
                 schema=schema_dict,
                 character_examples=char_examples,
                 profanity=profanity,
@@ -12066,7 +12466,8 @@ class App(ctk.CTk):
             except Exception:
                 pass
             self._maybe_backtranslation_check(
-                out_path, {str(c.index): _clean_src(c.text) for c in cues}, sorted_blocks)
+                out_path, {str(c.index): _clean_src(c.text) for c in cues},
+                sorted_blocks, src_lang=file_src)
             # Rapor satırı
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
@@ -12158,14 +12559,18 @@ class App(ctk.CTk):
         if _auto_files:
             self._log(f"{len(_auto_files)} dosyanın içerik türü paralel analiz ediliyor...", "info")
         _detected = self._detect_content_types_parallel(client, _auto_files, model)
+        _source_languages = {
+            fp: self._effective_file_source_language(fp, src) for fp in valid_files
+        }
         _schema_groups: dict = {}
         for fp in valid_files:
             sname = self._get_file_schema(fp)["name"]
             if sname == "Otomatik":
                 sname = _detected.get(fp, "Otomatik")
-            _schema_groups.setdefault(sname, []).append(fp)
+            _schema_groups.setdefault((sname, _source_languages[fp]), []).append(fp)
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
-        _file_hints = self._get_precontext_hints(client, valid_files, src, tgt, model)
+        _file_hints = self._get_precontext_hints(
+            client, valid_files, src, tgt, model, source_languages=_source_languages)
         # Dizi hafızası: önceki bölümlerin terim/karakter/sen-siz kararlarını ekle
         _sm_used = 0
         for fp in valid_files:
@@ -12176,8 +12581,8 @@ class App(ctk.CTk):
         if _sm_used:
             self._log(f"Dizi hafızası: {_sm_used} dosyaya önceki bölüm kararları eklendi", "info")
         all_requests, all_file_map = [], {}
-        for sname, group in _schema_groups.items():
-            reqs, fmap = build_requests(group, src, tgt, model,
+        for (sname, group_src), group in _schema_groups.items():
+            reqs, fmap = build_requests(group, group_src, tgt, model,
                                         chunk_size=self._chunk_size,
                                         schema=self._schema_by_name(sname),
                                         profanity=_profanity,
@@ -12192,7 +12597,9 @@ class App(ctk.CTk):
             all_requests.extend(reqs)
             all_file_map.update(fmap)
             if len(_schema_groups) > 1:
-                self._log(f"Şema '{sname}': {len(group)} dosya, {len(reqs)} istek", "info")
+                self._log(
+                    f"Şema '{sname}', kaynak '{group_src}': "
+                    f"{len(group)} dosya, {len(reqs)} istek", "info")
         requests, file_map = all_requests, all_file_map
         # Cache'ten blok sayısını al — dosyaları tekrar parse etme
         total_blocks = sum(len(self._block_cache[fp]) for fp in valid_files)
@@ -12249,6 +12656,7 @@ class App(ctk.CTk):
                     "part_index": ci,
                     "part_count": len(chunks),
                     "output_paths": output_paths,
+                    "source_languages": _source_languages,
                     "requests": chunk,
                     "fmap": {cid: [list(x) for x in info] for cid, info in slice_fmap.items()},
                 }
@@ -12306,7 +12714,8 @@ class App(ctk.CTk):
             else:
                 final_written = self._write_results(
                     accumulated_raw_map, file_map, output_dir,
-                    openai_key=api_key, src=src, output_paths=output_paths)
+                    openai_key=api_key, src=src, output_paths=output_paths,
+                    source_languages=_source_languages)
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -12338,6 +12747,7 @@ class App(ctk.CTk):
         accumulated_file_map = {}
         accumulated_requests = []
         accumulated_output_paths = {}
+        accumulated_source_languages = {}
         regular_groups = {}
         regular_recovery_safe = True
         last_output_dir = output_dir
@@ -12365,14 +12775,16 @@ class App(ctk.CTk):
                         # yeniden başlatma sonrası başka bir şeye dönmüş olabilir (düz-batch
                         # dalı zaten output_dir'i böyle saklıyordu; hybrid'de eksikti).
                         _saved_src = fmap_data.get("source_path", "")
+                        _saved_source_language = fmap_data.get("source_language", "")
                         _saved_out_dir = fmap_data.get("output_dir", "")
                         if _saved_out_dir:
                             last_output_dir = _saved_out_dir
                         _terminal = self._wait_batch_hybrid(client, bid, saved_fmap, out_path,
                                                 openai_key=api_key,
-                                                is_last=(i == len(batch_ids)-1),
-                                                report_rows=_resume_report_rows,
-                                                source_path=_saved_src)
+                                                 is_last=(i == len(batch_ids)-1),
+                                                 report_rows=_resume_report_rows,
+                                                 source_path=_saved_src,
+                                                 source_language=_saved_source_language)
                         if _terminal:
                             hybrid_completed_bids.append(bid)
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
@@ -12383,6 +12795,7 @@ class App(ctk.CTk):
                         accumulated_file_map.update(saved_fmap)
                         accumulated_requests.extend(fmap_data.get("requests") or [])
                         accumulated_output_paths.update(fmap_data.get("output_paths") or {})
+                        accumulated_source_languages.update(fmap_data.get("source_languages") or {})
                         run_id = str(fmap_data.get("run_id") or bid)
                         part_index = int(fmap_data.get("part_index", 0))
                         part_count = max(1, int(fmap_data.get("part_count", 1)))
@@ -12421,7 +12834,8 @@ class App(ctk.CTk):
                 regular_written = self._write_results(
                     accumulated_raw_map, accumulated_file_map, last_output_dir,
                     openai_key=api_key, src=src,
-                    output_paths=accumulated_output_paths)
+                    output_paths=accumulated_output_paths,
+                    source_languages=accumulated_source_languages)
         elif not self._stop_flag and (accumulated_raw_map or regular_groups):
             self._log("Regular batch parçalarının tümü hazır değil; eksik final yazılmadı.", "warn")
         # Hybrid resume yolunda işlenen dosyalar için kalite raporu yaz
@@ -12437,7 +12851,8 @@ class App(ctk.CTk):
         self._set_running(False)   # erken-stop / hiç-poll-yok durumunda UI kilitlenmesin
 
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
-                           openai_key, is_last=True, report_rows=None, source_path=""):
+                           openai_key, is_last=True, report_rows=None, source_path="",
+                           source_language=""):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -12668,7 +13083,9 @@ class App(ctk.CTk):
                                 except Exception:
                                     pass
                                 self._store_tm_pairs(pp, _src_map, self._main_model_name(), tgt)
-                                self._maybe_backtranslation_check(output_path, _src_map, pp)
+                                self._maybe_backtranslation_check(
+                                    output_path, _src_map, pp,
+                                    src_lang=source_language or self.src_var.get())
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -12827,7 +13244,7 @@ class App(ctk.CTk):
         return raw_map
 
     def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,
-                       output_paths=None):
+                       output_paths=None, source_languages=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
@@ -12860,6 +13277,9 @@ class App(ctk.CTk):
             _last_src_cues = _src_cues
             _raw_map   = _raw_src_map_from_cues(_src_cues)   # ham (etiketli) kaynak
             src_blocks = {str(idx): _clean_src(text) for idx, ts, text in _src_cues}  # etiketsiz
+            _file_src_lang = (source_languages or {}).get(fp)
+            if not _file_src_lang:
+                _file_src_lang = self._effective_file_source_language(fp, src or "English")
             _analysis_result = None
             try:
                 _analysis_result = ht.load_context_cache(
@@ -12966,7 +13386,7 @@ class App(ctk.CTk):
                     _repair_client = OpenAI(api_key=openai_key, base_url=self._main_api_base_url() or None)
                     sorted_blocks, _n_repaired = _repair_untranslated_sync(
                         sorted_blocks, _raw_map, _repair_client,
-                        src_lang=src or self.src_var.get(), tgt_lang=_tgt_lang,
+                        src_lang=_file_src_lang, tgt_lang=_tgt_lang,
                         model=self._main_model_name(),
                         schema=self._get_schema(), profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens)
@@ -12996,7 +13416,8 @@ class App(ctk.CTk):
             w = scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
                                          src_clean_map=src_blocks)
             total_warnings += w
-            self._maybe_backtranslation_check(out_path, src_blocks, sorted_blocks)
+            self._maybe_backtranslation_check(
+                out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang)
             # Rapor satırı: [HATA] (kalan + işaretlenen) ve CPS aşımı sayıları
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
@@ -13149,7 +13570,8 @@ class App(ctk.CTk):
             pass
 
     def _run_twowave_batches(self, openai_key, requests, fmap, out_path,
-                             source_path, output_dir, fname, progress_fn=None) -> bool:
+                             source_path, output_dir, fname, progress_fn=None,
+                             source_language="") -> bool:
         """İki-dalgalı zincirli batch (B3) — TEK dosya için sıralı submit-wait-submit-wait.
 
         A dalgasını gönderir, BEKLER, A'nın kuyruk çevirilerini B dalgasının ilk chunk'ına
@@ -13171,7 +13593,7 @@ class App(ctk.CTk):
         def _submit_wait(reqs, this_fmap, this_out):
             bid = ht.submit_batch(openai_key, reqs, self._log, this_fmap, this_out,
                                   source_path=source_path, output_dir=output_dir,
-                                  base_url=b_url)
+                                  base_url=b_url, source_language=source_language)
             if not bid:
                 return None, None
             self._register_batch(bid, openai_key, b_url)
@@ -13249,11 +13671,15 @@ class App(ctk.CTk):
 
         n_files   = len(srt_files)
         input_dir = self.input_var.get()
+        source_languages = {
+            fp: self._effective_file_source_language(fp, src) for fp in srt_files
+        }
         self._set_stat(self.stat_files_var, str(n_files))
 
         # ── Batch session: resume tracking ────────────────────────────────────
         session_fp = ht.batch_session_fingerprint(input_dir, output_dir, srt_files, {
             "target": tgt,
+            "source_languages": source_languages,
             "model": model,
             "style": self.style_var.get(),
             "profanity": profanity,
@@ -13289,6 +13715,7 @@ class App(ctk.CTk):
             if self._is_queued_file_removed(filepath):
                 continue
             fname = Path(filepath).name
+            file_src = source_languages.get(filepath, self._effective_file_source_language(filepath, src))
             file_status = session["files"].get(str(filepath), {}).get("status", "pending")
 
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
@@ -13342,7 +13769,7 @@ class App(ctk.CTk):
                         result = ht.analyze_with_helper(
                             cues=cues, helper_api_key=self._helper_api_key("analysis"), helper_url=self._helper_api_base_url("analysis"), helper_model=self._helper_api_model("analysis"),
                             style=self.style_var.get(),
-                            source_language=_lang_iso639_1(src),
+                            source_language=_lang_iso639_1(file_src),
                             target_language=_lang_iso639_1(tgt),
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
@@ -13357,7 +13784,7 @@ class App(ctk.CTk):
                             break
                         else:
                             self._log(f"[{fname}] Analiz başarısız — boş bağlamla batch devam ediyor", "warn")
-                            result = ht.empty_analysis_result(_lang_iso639_1(src))
+                            result = ht.empty_analysis_result(_lang_iso639_1(file_src))
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
                     ht.save_context_cache(context, filepath, char_examples, pronoun_map,
                                           character_styles=character_styles,
@@ -13408,7 +13835,7 @@ class App(ctk.CTk):
                             "info")
                         self._register_batch(existing_bid, openai_key, b_url)
                         submitted.append((filepath, fname, existing_out, fmap,
-                                          existing_bid, cues, analysis_tuple))
+                                          existing_bid, cues, analysis_tuple, file_src))
                         self._set_progress(int((fi + 1) / n_files * 40))
                         continue
                     # batch_id yoksa yeniden gönder (aşağı düş)
@@ -13418,7 +13845,7 @@ class App(ctk.CTk):
                 # kararları prompt'a ekle (ilk karar kanon)
                 self._update_series_memory_from_analysis(filepath, context, pronoun_map)
                 system_prompt = ht.build_system_prompt(
-                    context, src, tgt,
+                    context, file_src, tgt,
                     schema=schema_dict,
                     character_examples=char_examples,
                     profanity=profanity,
@@ -13454,7 +13881,9 @@ class App(ctk.CTk):
                 if getattr(self, "twowave_var", None) and self.twowave_var.get():
                     self._twowave_pending[str(filepath)] = requests
                     ht.update_batch_session(session, filepath, "pending")
-                    submitted.append((filepath, fname, out_path, fmap, "__twowave__", cues, analysis_tuple))
+                    submitted.append((
+                        filepath, fname, out_path, fmap, "__twowave__", cues,
+                        analysis_tuple, file_src))
                     self._log(f"[{fname}] İki-dalgalı — Faz 2'de sıralı gönderilecek", "info")
                     self._set_progress(int((fi + 1) / n_files * 40))
                     continue
@@ -13462,12 +13891,15 @@ class App(ctk.CTk):
                 self._set_status(f"Batch gönderiliyor: {fname}")
                 batch_id = ht.submit_batch(
                     openai_key, requests, self._log, fmap, out_path,
-                    source_path=str(filepath), output_dir=output_dir, base_url=b_url)
+                    source_path=str(filepath), output_dir=output_dir, base_url=b_url,
+                    source_language=file_src)
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",
                                             batch_id=batch_id, out_path=out_path)
-                    submitted.append((filepath, fname, out_path, fmap, batch_id, cues, analysis_tuple))
+                    submitted.append((
+                        filepath, fname, out_path, fmap, batch_id, cues,
+                        analysis_tuple, file_src))
                     self._set_progress(int((fi + 1) / n_files * 40))
                 else:
                     self._log(f"[{fname}] Batch gönderilemedi, atlanıyor", "err")
@@ -13493,7 +13925,8 @@ class App(ctk.CTk):
         n_sub = len(submitted)
         report_rows = []   # kalite raporu satırları (dosya başına)
 
-        for si, (filepath, fname, out_path, fmap, batch_id, cues, analysis_tuple) in enumerate(submitted):
+        for si, (filepath, fname, out_path, fmap, batch_id, cues,
+                 analysis_tuple, file_src) in enumerate(submitted):
             if self._stop_flag:
                 break
             self._log(f"\n── [{si+1}/{n_sub}] {fname} — Batch bekleniyor ──", "info")
@@ -13513,7 +13946,8 @@ class App(ctk.CTk):
                     _tw_reqs = self._twowave_pending.get(str(filepath), [])
                     _ok = self._run_twowave_batches(
                         openai_key, _tw_reqs, fmap, out_path,
-                        str(filepath), output_dir, fname, progress_fn=_pfn)
+                        str(filepath), output_dir, fname, progress_fn=_pfn,
+                        source_language=file_src)
                     if not _ok or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
@@ -13557,7 +13991,7 @@ class App(ctk.CTk):
                     _repair_client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
                         _final_blocks, _raw_map_pre, _repair_client,
-                        src_lang=src, tgt_lang=tgt,
+                        src_lang=file_src, tgt_lang=tgt,
                         model="gpt-5.4-mini",
                         schema=self._get_schema(), profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens)
@@ -13771,7 +14205,8 @@ class App(ctk.CTk):
                                                   log_fn=self._log, src_clean_map=_src_map)
                 except Exception:
                     pass
-                self._maybe_backtranslation_check(out_path, _src_map, _final_blocks)
+                self._maybe_backtranslation_check(
+                    out_path, _src_map, _final_blocks, src_lang=file_src)
                 # TM kaydı (ortak yardımcı)
                 self._store_tm_pairs(_final_blocks, _src_map, self._main_model_name(), tgt)
                 if self.auto_glossary_var.get():
