@@ -276,9 +276,14 @@ class SourceLanguageDetectionTest(unittest.TestCase):
     def test_base_url_read_on_main_thread_passed_to_openai_client(self):
         """Preflight captures base_url on main thread before starting worker."""
         captured_base_url = []
+        done_event = threading.Event()
 
         def fake_init(self_client, api_key=None, base_url=None):
             captured_base_url.append(base_url)
+
+        def post_ui_sync(app_instance, fn):
+            fn()
+            done_event.set()
 
         stub = SimpleNamespace(
             _auto_source_language_files=lambda files: files,
@@ -295,20 +300,27 @@ class SourceLanguageDetectionTest(unittest.TestCase):
             _start=lambda: None,
         )
 
-        with patch("openai.OpenAI.__init__", new=fake_init):
+        with patch("openai.OpenAI.__init__", new=fake_init), \
+             patch.object(gui, "_post_ui", side_effect=post_ui_sync):
             gui.App._start_source_language_preflight(stub, "fake-key", ["a.srt"])
+            self.assertTrue(done_event.wait(timeout=2.0))
 
         self.assertEqual(captured_base_url, ["https://custom.api.endpoint/v1"])
 
     def test_worker_thread_does_not_call_main_api_base_url_or_tk_get(self):
         """Worker thread does not execute _main_api_base_url or Tk var gets."""
         main_thread_calls = []
+        done_event = threading.Event()
 
         def guarded_base_url():
             if threading.current_thread() is not threading.main_thread():
                 raise AssertionError("Worker thread must not call _main_api_base_url()")
             main_thread_calls.append("base_url")
             return "https://main-thread-url.com"
+
+        def post_ui_sync(app_instance, fn):
+            fn()
+            done_event.set()
 
         stub = SimpleNamespace(
             _auto_source_language_files=lambda files: files,
@@ -325,8 +337,10 @@ class SourceLanguageDetectionTest(unittest.TestCase):
             _start=lambda: None,
         )
 
-        with patch("openai.OpenAI.__init__", return_value=SimpleNamespace()):
+        with patch("openai.OpenAI.__init__", return_value=SimpleNamespace()), \
+             patch.object(gui, "_post_ui", side_effect=post_ui_sync):
             gui.App._start_source_language_preflight(stub, "fake-key", ["a.srt"])
+            self.assertTrue(done_event.wait(timeout=2.0))
 
         self.assertEqual(main_thread_calls, ["base_url"])
 
@@ -354,8 +368,8 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertEqual(detected["file0.srt"], "Spanish")
         self.assertEqual(detected["file1.srt"], "Italian")
 
-    def test_duplicate_or_invalid_id_safely_leaves_unresolved(self):
-        """Duplicate keys in JSON or unrecognized IDs leave files AUTO_LANGUAGE."""
+    def test_unknown_id_safely_leaves_unresolved(self):
+        """Unrecognized ID in response leaves file AUTO_LANGUAGE."""
         response_json = {"languages": {"999": "Spanish"}}
         with patch.object(gui, "_safe_chat_create", return_value=_response(json.dumps(response_json))):
             detected = gui.detect_source_languages_batch_with_ai(
@@ -364,6 +378,24 @@ class SourceLanguageDetectionTest(unittest.TestCase):
                 "test-model"
             )
         self.assertEqual(detected["file0.srt"], gui.AUTO_LANGUAGE)
+
+    def test_duplicate_id_in_json_safely_leaves_unresolved(self):
+        """Duplicate keys in JSON (e.g. {"0": "Spanish", "0": "Italian"}) leave duplicate item AUTO_LANGUAGE."""
+        raw_json_with_duplicate = '{"languages": {"0": "Spanish", "0": "Italian", "1": "French"}}'
+        with patch.object(gui, "_safe_chat_create", return_value=_response(raw_json_with_duplicate)):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {
+                    "file0.srt": [("1", "", "Hola")],
+                    "file1.srt": [("1", "", "Bonjour")],
+                },
+                "test-model"
+            )
+
+        # file0.srt (ID 0) is duplicated in JSON -> must stay AUTO_LANGUAGE (never Spanish or Italian)
+        self.assertEqual(detected["file0.srt"], gui.AUTO_LANGUAGE)
+        # file1.srt (ID 1) is unique -> correctly resolved to French
+        self.assertEqual(detected["file1.srt"], "French")
 
     def test_corrupt_or_fenced_response_handles_gracefully(self):
         """Fenced JSON response is extracted correctly; corrupt text leaves AUTO_LANGUAGE (not English)."""
@@ -382,26 +414,39 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertEqual(detected_corrupt["file0.srt"], gui.AUTO_LANGUAGE)
         self.assertNotEqual(detected_corrupt["file0.srt"], "English")
 
-    def test_batching_21_files_splits_into_20_and_1(self):
-        """21 files trigger exactly 2 batch API calls (20 and 1)."""
-        captured_batch_sizes = []
+    def test_parametric_batching_boundary_matrix(self):
+        """Full matrix of file counts (1, 19, 20, 21, 39, 40, 41) verifies exact batch partitioning."""
+        matrix = [
+            (1, [1]),
+            (19, [19]),
+            (20, [20]),
+            (21, [20, 1]),
+            (39, [20, 19]),
+            (40, [20, 20]),
+            (41, [20, 20, 1]),
+        ]
 
-        def fake_batch_detect(client, file_cues, model, log_fn=None, token_callback=None):
-            captured_batch_sizes.append(len(file_cues))
-            return {fp: "Spanish" for fp in file_cues}
+        for total_files, expected_batches in matrix:
+            captured_batch_sizes = []
 
-        stub = SimpleNamespace(
-            _cached_blocks_for=lambda fp: [("1", "", "Hola")],
-            _update_tokens=lambda *a, **k: None,
-            _log=lambda *a, **k: None,
-        )
+            def fake_batch_detect(client, file_cues, model, log_fn=None, token_callback=None):
+                captured_batch_sizes.append(len(file_cues))
+                return {fp: "Spanish" for fp in file_cues}
 
-        files = [f"file_{i}.srt" for i in range(21)]
-        with patch.object(gui, "detect_source_languages_batch_with_ai", side_effect=fake_batch_detect):
-            results = gui.App._detect_source_languages_parallel(stub, object(), files, "test-model")
+            stub = SimpleNamespace(
+                _cached_blocks_for=lambda fp: [("1", "", "Hola")],
+                _update_tokens=lambda *a, **k: None,
+                _log=lambda *a, **k: None,
+            )
 
-        self.assertEqual(captured_batch_sizes, [20, 1])
-        self.assertEqual(len(results), 21)
+            files = [f"file_{i}.srt" for i in range(total_files)]
+            with patch.object(gui, "detect_source_languages_batch_with_ai", side_effect=fake_batch_detect):
+                results = gui.App._detect_source_languages_parallel(stub, object(), files, "test-model")
+
+            self.assertEqual(captured_batch_sizes, expected_batches, f"Failed for file count {total_files}")
+            self.assertEqual(len(results), total_files, f"Failed result count for file count {total_files}")
+            # Ensure every file maps to exactly one result
+            self.assertEqual(set(results.keys()), set(files))
 
     def test_same_basename_different_paths_do_not_mix_up(self):
         """Files sharing basename (e.g. dirA/sub.srt vs dirB/sub.srt) map independently."""
@@ -441,6 +486,35 @@ class SourceLanguageDetectionTest(unittest.TestCase):
                 "test-model"
             )
         self.assertEqual(detected["eng.srt"], "English")
+
+    def test_preflight_finish_aborts_dialog_when_app_is_shutting_down(self):
+        """When _is_shutting_down is True, _finish() returns without opening the confirm dialog."""
+        dialog_opened = []
+
+        def post_ui_immediate(app_instance, fn):
+            fn()
+
+        stub = SimpleNamespace(
+            _auto_source_language_files=lambda files: files,
+            _set_running=lambda val: None,
+            _main_model_name=lambda: "test-model",
+            _main_api_base_url=lambda: "",
+            _set_phase=lambda p, msg: None,
+            _set_status=lambda msg: None,
+            _log=lambda msg, tag="info": None,
+            _detect_source_languages_parallel=lambda client, files, model: {f: "Spanish" for f in files},
+            _show_source_language_confirm_dialog=lambda detected: dialog_opened.append(True),
+            _language_preflight_done=False,
+            _is_shutting_down=True,
+            after=lambda ms, fn: fn(),
+            _start=lambda: None,
+        )
+
+        with patch("openai.OpenAI.__init__", return_value=SimpleNamespace()), \
+             patch.object(gui, "_post_ui", side_effect=post_ui_immediate):
+            gui.App._start_source_language_preflight(stub, "fake-key", ["a.srt"])
+
+        self.assertEqual(dialog_opened, [], "Dialog should not open when app is shutting down!")
 
 
 if __name__ == "__main__":

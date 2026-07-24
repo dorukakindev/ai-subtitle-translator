@@ -3356,6 +3356,51 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
     return AUTO_LANGUAGE
 
 
+def parse_source_languages_response(content: str) -> tuple[dict, set]:
+    """Parses source language detection response, extracting JSON object
+    and tracking duplicate keys in any JSON object.
+    Returns: (detected_map: dict, duplicate_keys: set)
+    """
+    raw = (content or "").strip()
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        inner = "\n".join(lines[1:])
+        raw = inner.rsplit("```", 1)[0].strip()
+    if "{" in raw and "}" in raw:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            raw = raw[start:end + 1]
+
+    duplicate_keys = set()
+
+    def pairs_hook(pairs):
+        seen = set()
+        d = {}
+        for k, v in pairs:
+            str_k = str(k)
+            if str_k in seen:
+                duplicate_keys.add(str_k)
+            else:
+                seen.add(str_k)
+            d[k] = v
+        return d
+
+    try:
+        data = json.loads(raw, object_pairs_hook=pairs_hook)
+    except Exception:
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    detected_map = data.get("languages")
+    if not isinstance(detected_map, dict):
+        detected_map = {}
+
+    return detected_map, duplicate_keys
+
+
 def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
                                           log_fn=None, token_callback=None) -> dict:
     """Birden çok dosyanın baskın dilini tek model çağrısında tespit eder."""
@@ -3416,21 +3461,10 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
             except TypeError:
                 token_callback(total)
         content = (resp.choices[0].message.content or "").strip()
-        data = {}
-        try:
-            import hybrid_translate as ht
-            data = ht._extract_json_object(content)
-        except Exception:
-            try:
-                data = json.loads(content)
-            except Exception:
-                data = {}
-        if not isinstance(data, dict):
-            data = {}
-        detected_map = data.get("languages")
-        if not isinstance(detected_map, dict):
-            detected_map = {}
+        detected_map, duplicate_keys = parse_source_languages_response(content)
         for item_id, filepath in id_to_path.items():
+            if item_id in duplicate_keys or str(item_id) in duplicate_keys:
+                continue
             raw_val = detected_map.get(item_id)
             if raw_val is None:
                 try:
@@ -11352,7 +11386,7 @@ class App(ctk.CTk):
                 detected = {fp: AUTO_LANGUAGE for fp in auto_files}
 
             def _finish():
-                if getattr(self, "_destroyed", False):
+                if getattr(self, "_is_shutting_down", False):
                     return
                 should_continue = self._show_source_language_confirm_dialog(detected)
                 if should_continue:
