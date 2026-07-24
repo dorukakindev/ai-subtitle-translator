@@ -6,6 +6,92 @@ from unittest.mock import patch
 import subtitle_translator_gui as gui
 
 
+class UpstreamProviderRecoveryTest(unittest.TestCase):
+    @staticmethod
+    def _req(items):
+        return {
+            "custom_id": "chunk_1",
+            "body": {
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "system", "content": "Translate to Turkish."},
+                    {"role": "user", "content": json.dumps({"tr": items})},
+                ],
+            },
+        }
+
+    def test_upstream_400_skips_repeated_full_chunk_and_uses_small_recovery(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        logs = []
+        app._log = lambda message, tag="info": logs.append((message, tag))
+        app._update_tokens = lambda *args, **kwargs: None
+        raw_map = {}
+        req = self._req([
+            {"i": 1, "t": "Hello."},
+            {"i": 2, "t": "How are you?"},
+        ])
+        recovered = json.dumps([
+            {"i": 1, "t": "Merhaba."},
+            {"i": 2, "t": "Nasılsın?"},
+        ], ensure_ascii=False)
+
+        with patch.object(
+            gui,
+            "_safe_chat_create",
+            side_effect=RuntimeError(
+                "Error code: 400 - {'error': {'message': 'Upstream request failed'}}"
+            ),
+        ) as full_retry, patch.object(
+            app, "_resend_missing_blocks", return_value=recovered
+        ) as small_recovery:
+            app._retry_hata(object(), raw_map, [req], max_rounds=3)
+
+        self.assertEqual(full_retry.call_count, 1)
+        small_recovery.assert_called_once()
+        self.assertEqual(small_recovery.call_args.kwargs["max_sub"], 8)
+        self.assertEqual(json.loads(raw_map["chunk_1"])[0]["t"], "Merhaba.")
+        self.assertTrue(any("küçük isteklerle kurtarmaya" in msg for msg, _ in logs))
+
+    def test_all_missing_chunk_is_recovered_in_small_groups(self):
+        items = [{"i": i, "t": f"Source {i}"} for i in range(1, 6)]
+        req = self._req(items)
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _log=lambda *args, **kwargs: None,
+            _update_tokens=lambda *args, **kwargs: None,
+        )
+        group_sizes = []
+
+        def translate_group(_client, **kwargs):
+            payload = json.loads(kwargs["messages"][1]["content"])
+            group_sizes.append(len(payload["tr"]))
+            translated = [
+                {"i": item["i"], "t": f"Çeviri {item['i']}"}
+                for item in payload["tr"]
+            ]
+            return SimpleNamespace(
+                usage=None,
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(translated, ensure_ascii=False)
+                        )
+                    )
+                ],
+            )
+
+        with patch.object(gui, "_safe_chat_create", side_effect=translate_group):
+            merged = gui.App._resend_missing_blocks(
+                app, object(), req, "", max_sub=2
+            )
+
+        self.assertEqual(group_sizes, [2, 2, 1])
+        parsed = json.loads(merged)
+        self.assertEqual([item["t"] for item in parsed],
+                         [f"Çeviri {i}" for i in range(1, 6)])
+
+
 class RetryQualityGuardTest(unittest.TestCase):
     def test_retry_hata_retries_parsed_non_turkish_target_leak(self):
         app = gui.App.__new__(gui.App)

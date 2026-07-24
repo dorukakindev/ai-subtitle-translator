@@ -3599,6 +3599,11 @@ def _missing_block_items(all_items: list, current_raw: str) -> list:
     return [it for it in all_items if str(it.get("i")) not in ok]
 
 
+def _is_upstream_provider_error(exc) -> bool:
+    text = str(exc or "").lower()
+    return "upstream request failed" in text or "upstream error" in text
+
+
 def _repaired_json_ids(items) -> list:
     """items (JSON onarım yanıtı) içindeki geçerli 'i' alanlarını sırayla döner."""
     return [str(it["i"]) for it in items if isinstance(it, dict) and "i" in it]
@@ -7792,6 +7797,7 @@ class App(ctk.CTk):
         # Step 0: try cheap JSON repair before full re-translation
         self._json_repair_pass(client, raw_map, requests_list)
         req_by_id = {r["custom_id"]: r for r in requests_list}
+        upstream_failed = set()
 
         def _retry_reason(cid):
             raw = raw_map.get(cid)
@@ -7911,9 +7917,12 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             retry_reasons = {cid: _retry_reason(cid) for cid in req_by_id}
-            to_retry = [cid for cid, reason in retry_reasons.items() if reason]
-            if not to_retry:
+            pending = [cid for cid, reason in retry_reasons.items() if reason]
+            if not pending:
                 return
+            to_retry = [cid for cid in pending if cid not in upstream_failed]
+            if not to_retry:
+                break
             leak_cids = [cid for cid in to_retry if retry_reasons.get(cid) == "non_turkish_target"]
             leak_count = len(leak_cids)
             extra = f", {leak_count} hedef-dil kaçağı" if leak_count else ""
@@ -7950,6 +7959,14 @@ class App(ctk.CTk):
                     except Exception as e:
                         estr = str(e)
                         estr_l = estr.lower()
+                        if _is_upstream_provider_error(e):
+                            upstream_failed.add(cid)
+                            self._log(
+                                f"  ↪ {cid}: sağlayıcı büyük isteği reddetti; "
+                                "küçük isteklerle kurtarmaya geçilecek",
+                                "warn",
+                            )
+                            break
                         transient = (
                             "429" in estr
                             or "rate limit" in estr_l
@@ -7993,7 +8010,12 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             try:
-                merged = self._resend_missing_blocks(client, req_by_id[cid], raw_map.get(cid, ""))
+                merged = self._resend_missing_blocks(
+                    client,
+                    req_by_id[cid],
+                    raw_map.get(cid, ""),
+                    max_sub=8 if cid in upstream_failed else 20,
+                )
             except Exception as e:
                 self._log(f"  ↺ {cid}: alt-istek kurtarması hatası — {e}", "warn")
                 merged = None
@@ -8039,7 +8061,7 @@ class App(ctk.CTk):
         if len(all_items) < 2:
             return None
         missing = _missing_block_items(all_items, current_raw)
-        if not missing or len(missing) >= len(all_items):
+        if not missing:
             return None
 
         recovered = {}
@@ -8058,8 +8080,9 @@ class App(ctk.CTk):
         _ml     = model.lower()
         _no_temp = _ml.startswith(("gpt-5", "o1", "o3", "o4", "codex-"))
         n_groups = math.ceil(len(missing) / max_sub)
+        recovery_kind = "sağlayıcı kurtarması" if len(missing) == len(all_items) else "kesilme kurtarması"
         self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
-                  f"{n_groups} küçük istekle tamamlanıyor (kesilme kurtarması)", "warn")
+                  f"{n_groups} küçük istekle tamamlanıyor ({recovery_kind})", "warn")
 
         for s in range(0, len(missing), max_sub):
             if self._stop_flag:
