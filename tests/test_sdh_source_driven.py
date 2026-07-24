@@ -34,6 +34,35 @@ class SdhSourceDrivenTest(unittest.TestCase):
             {"1": "Merhaba.", "2": "Dünya."},
         )
 
+    def test_inline_narrator_label_stripped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "Bunun karşılığı yok. Anlatıcı: Zırhlı balıklar artık yok.",
+        )]
+        src_map = _src(**{
+            "1": "There are no modern analogues to this. >> Narrator: "
+                 "Though armored fish no longer exist."
+        })
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Bunun karşılığı yok. Zırhlı balıklar artık yok.",
+        )
+
+    def test_narrator_word_preserved_without_source_marker(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "Anlatıcı: güvenilmez olabilir.",
+        )]
+        src_map = _src(**{"1": "The narrator may be unreliable."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Anlatıcı: güvenilmez olabilir.",
+        )
+
     def test_chevron_language_only_cue_dropped(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", ">> [anlaşılmayan konuşma]")]
         src_map = _src(**{"1": "&gt;&gt; [non-english]"})

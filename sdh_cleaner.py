@@ -570,6 +570,12 @@ def src_is_sfx_only(src_text: str) -> bool:
 
 _DASH_ONLY_LINE_RE = re.compile(r'^[-–—]\s*$')
 _ORPHANED_LABEL_COLON_RE = re.compile(r'^(\s*[-–—]?\s*):\s*')
+_SRC_NARRATOR_LABEL_RE = re.compile(
+    r'(?:(?:&gt;|>){2})\s*Narrator\s*:', re.IGNORECASE
+)
+_TR_NARRATOR_LABEL_RE = re.compile(
+    r'\b(?:Narrator|Anlatıcı|Anlatici)\s*:\s*', re.IGNORECASE
+)
 
 
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
@@ -591,6 +597,8 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     kaçar)."""
     tr_line = CHEVRON_SPEAKER_RE.sub("", str(tr_line or ""))
     src_line = str(src_line or "")
+    if _SRC_NARRATOR_LABEL_RE.search(src_line):
+        tr_line = _TR_NARRATOR_LABEL_RE.sub("", tr_line)
     if not BRACKET_OR_PAREN_RE.search(src_line):
         return tr_line
     stripped = BRACKET_OR_PAREN_RE.sub("", tr_line)
