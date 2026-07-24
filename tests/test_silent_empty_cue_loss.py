@@ -27,6 +27,8 @@ class IsUntranslatedEmptyTest(unittest.TestCase):
         self.assertFalse(gui._is_untranslated("[ LAUGHS ]", ""))
         self.assertFalse(gui._is_untranslated("[ BOTH LAUGH ]", ""))
         self.assertFalse(gui._is_untranslated("♪♪♪", ""))
+        self.assertFalse(gui._is_untranslated("Troy: [ Panting ]", ""))
+        self.assertFalse(gui._is_untranslated("Both: [ Laughing ]", ""))
 
     def test_mixed_sfx_and_dialogue_with_empty_translation_is_flagged(self):
         # S04E15 #17 tarzı: SFX etiketi + gerçek diyalog aynı cue'da.

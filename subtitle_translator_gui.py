@@ -1560,6 +1560,13 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
 def parse_srt(filepath):
     parsed = []
     content = read_subtitle_text(filepath).strip()
+    content = re.sub(
+        r'(?m)^(\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*'
+        r'\d{1,2}:\d{2}:\d{2}[,.]\d{3}[^\n]*)\n[ \t]*\n'
+        r'(?!(?:\d+)[ \t]*\n\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->)',
+        r'\1\n',
+        content,
+    )
     for block in re.split(r"\n[ \t]*\n+", content):
         lines = block.strip().splitlines()
         # Numarasız SRT (ilk satır doğrudan zaman damgası) → sıralı index uydur
@@ -2652,6 +2659,12 @@ def _src_is_sdh_only(src_text: str) -> bool:
     (gerçek diyalog kelimesi yok). _is_untranslated'daki iki ayrı kontrolde
     (boş çeviri + source==target) aynı mantık kullanılıyor, tek yerden."""
     no_sdh = re.sub(r'\([^)]*\)|\[[^\]]*\]|[♪_]+', '', src_text).strip()
+    if re.search(r'\([^)]*\)|\[[^\]]*\]', src_text):
+        no_sdh = re.sub(
+            r"^(?:[A-Z][A-Za-z0-9 .'\-]{0,30}:\s*)",
+            "",
+            no_sdh,
+        ).strip()
     return (not no_sdh) or bool(_SDH_ONLY_SRC_RE.match(src_text.strip()))
 
 
@@ -3517,7 +3530,9 @@ def _align_is_sfx_only(text: str) -> bool:
     SDH temizliğiyle SİLİNMESİ meşru olan cue'ları, gerçek diyalogdan ayırır."""
     t = _align_visible(text)
     t = re.sub(r'^(?:(?:&gt;|>){1,2})\s*', '', t)
-    return bool(t) and bool(_ALIGN_SDH_ONLY_RE.match(t))
+    return bool(t) and (
+        bool(_ALIGN_SDH_ONLY_RE.match(t)) or _src_is_sdh_only(t)
+    )
 
 
 def _align_is_empty_tr(tr: str) -> bool:

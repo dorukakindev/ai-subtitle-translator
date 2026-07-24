@@ -63,6 +63,99 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "Anlatıcı: güvenilmez olabilir.",
         )
 
+    def test_plain_speaker_label_stripped_by_source(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "HABER SPİKERİ: Her şey burada başladı.",
+        )]
+        src_map = _src(**{"1": "NEWS ANCHOR: It all started here."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Her şey burada başladı.",
+        )
+
+    def test_title_case_and_inline_speaker_labels_stripped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "Troy: Hayır. Röportajcı: Size ateş etti mi?",
+        )]
+        src_map = _src(**{
+            "1": "Troy: NO. Interviewer: DID HE SHOOT AT YOU?"
+        })
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Hayır. Size ateş etti mi?",
+        )
+
+    def test_bracket_source_label_plain_translation_label_stripped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            'Ses: "Dışarı çık."',
+        )]
+        src_map = _src(**{"1": '[Voice] "Go outside."'})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            '"Dışarı çık."',
+        )
+
+    def test_comma_quote_source_label_plain_translation_label_stripped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            'Ses: "Otur."',
+        )]
+        src_map = _src(**{"1": 'Voice, "Sit."'})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            '"Otur."',
+        )
+
+    def test_plain_label_only_line_is_dropped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "JOHN:\nBunu bilmiyordum.",
+        )]
+        src_map = _src(**{"1": "JOHN:\nI didn't know that."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Bunu bilmiyordum.",
+        )
+
+    def test_plain_colon_prose_preserved_without_source_label(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "SONUÇ: Bu ihtimal hâlâ geçerli.",
+        )]
+        src_map = _src(**{"1": "The result is that this remains possible."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "SONUÇ: Bu ihtimal hâlâ geçerli.",
+        )
+
+    def test_sentence_ending_with_colon_is_not_a_speaker_label(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "O kadar çok şey örtüşüyor ki:",
+        )]
+        src_map = _src(**{"1": "So many things line up:"})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "O kadar çok şey örtüşüyor ki:",
+        )
+
     def test_chevron_language_only_cue_dropped(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", ">> [anlaşılmayan konuşma]")]
         src_map = _src(**{"1": "&gt;&gt; [non-english]"})

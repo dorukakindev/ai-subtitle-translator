@@ -56,6 +56,32 @@ class ParseSrtTest(unittest.TestCase):
         self.assertEqual(len(b), 2)
         self.assertEqual([x[2] for x in b], ["Merhaba", "Dunya"])
 
+    def test_blank_line_between_timestamp_and_dialogue_is_recovered(self):
+        p = _write(
+            self.d,
+            "broken.srt",
+            "1\n00:00:01,000 --> 00:00:02,000\n\nGerçek replik.\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\nSonraki replik.\n",
+        )
+        b = gui.parse_srt(p)
+        self.assertEqual(
+            b,
+            [
+                ("1", "00:00:01,000 --> 00:00:02,000", "Gerçek replik."),
+                ("2", "00:00:02,000 --> 00:00:03,000", "Sonraki replik."),
+            ],
+        )
+
+    def test_empty_cue_before_next_index_stays_empty(self):
+        p = _write(
+            self.d,
+            "empty.srt",
+            "1\n00:00:01,000 --> 00:00:02,000\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\nSonraki replik.\n",
+        )
+        b = gui.parse_srt(p)
+        self.assertEqual(b, [("2", "00:00:02,000 --> 00:00:03,000", "Sonraki replik.")])
+
 
 if __name__ == "__main__":
     unittest.main()

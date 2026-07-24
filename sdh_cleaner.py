@@ -576,6 +576,22 @@ _SRC_NARRATOR_LABEL_RE = re.compile(
 _TR_NARRATOR_LABEL_RE = re.compile(
     r'\b(?:Narrator|Anlatıcı|Anlatici)\s*:\s*', re.IGNORECASE
 )
+_SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
+    r"(?m)(?:^|(?<=[.!?…]))\s*(?:-\s*)?"
+    r"(?:[A-Z][A-Z0-9 .'\-]{1,30}|"
+    r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}):\s*"
+)
+_TR_PLAIN_SPEAKER_LABEL_RE = re.compile(
+    r"(?m)(^|(?<=[.!?…]))(\s*(?:-\s*)?)"
+    r"[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*"
+)
+_SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
+    r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
+)
+_SRC_QUOTED_SPEAKER_PREFIX_RE = re.compile(
+    r"(?mi)^\s*(?:-\s*)?[A-Z][A-Za-z'\-]*"
+    r"(?:\s+[A-Z][A-Za-z'\-]*){0,2},\s*[\"“]"
+)
 
 
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
@@ -599,6 +615,12 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     src_line = str(src_line or "")
     if _SRC_NARRATOR_LABEL_RE.search(src_line):
         tr_line = _TR_NARRATOR_LABEL_RE.sub("", tr_line)
+    if (_SRC_PLAIN_SPEAKER_LABEL_RE.search(src_line)
+            or _SRC_BRACKET_SPEAKER_PREFIX_RE.search(src_line)
+            or _SRC_QUOTED_SPEAKER_PREFIX_RE.search(src_line)):
+        tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
+        if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
+            return ""
     if not BRACKET_OR_PAREN_RE.search(src_line):
         return tr_line
     stripped = BRACKET_OR_PAREN_RE.sub("", tr_line)
