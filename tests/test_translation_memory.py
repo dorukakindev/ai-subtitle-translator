@@ -167,5 +167,35 @@ class TMSessionHitsTest(unittest.TestCase):
         self.assertEqual(tm.hit_count_session(), 0)
 
 
+class TMSchemaLegacyFallbackIsolationTest(unittest.TestCase):
+    def test_legacy_unschematized_record_does_not_leak_to_schematized_queries(self):
+        """Un-schematized legacy TM record must NOT bleed into queries with non-empty schema_name."""
+        tm = _tmp_tm()
+        # Create un-schematized legacy record (schema_name="")
+        tm.store("Same source text", "LEGACY", tgt_lang="Turkish", model="gpt-4o", schema_name="")
+
+        # Query with schema_name="anime" and "frp" (Exact, Batch, Fuzzy)
+        self.assertIsNone(tm.lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name="anime"))
+        self.assertIsNone(tm.lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name="frp"))
+
+        batch_anime = tm.lookup_batch(["Same source text"], tgt_lang="Turkish", model="gpt-4o", schema_name="anime")
+        batch_frp = tm.lookup_batch(["Same source text"], tgt_lang="Turkish", model="gpt-4o", schema_name="frp")
+        self.assertEqual(batch_anime, {})
+        self.assertEqual(batch_frp, {})
+
+        fuzzy_anime = tm.fuzzy_lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name="anime")
+        fuzzy_frp = tm.fuzzy_lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name="frp")
+        self.assertIsNone(fuzzy_anime)
+        self.assertIsNone(fuzzy_frp)
+
+        # Un-schematized query (schema_name="") MUST find the legacy record
+        self.assertEqual(tm.lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name=""), "LEGACY")
+        batch_legacy = tm.lookup_batch(["Same source text"], tgt_lang="Turkish", model="gpt-4o", schema_name="")
+        self.assertEqual(batch_legacy.get("Same source text"), "LEGACY")
+        fuzzy_legacy = tm.fuzzy_lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name="")
+        self.assertIsNotNone(fuzzy_legacy)
+        self.assertEqual(fuzzy_legacy[0], "LEGACY")
+
+
 if __name__ == "__main__":
     unittest.main()

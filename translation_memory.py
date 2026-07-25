@@ -138,8 +138,8 @@ class TranslationMemory:
                 ).fetchone()
         except Exception:
             return None
-        # Fallback: settings-aware olmayan eski girişleri dene (sadece ayar verilmişse)
-        if row is None and fingerprint:
+        # Fallback: settings-aware olmayan eski girişleri dene (yalnızca schema_name BOŞ ise)
+        if row is None and fingerprint and not schema_name:
             try:
                 old_h = self._hash(source, tgt_lang, "")
                 with self._lock:
@@ -179,12 +179,12 @@ class TranslationMemory:
                     src = uniq.get(h)
                     if src is not None:
                         result[src] = target
-        # Fallback: settings-aware olmayan eski girişler için
-        if not result and fingerprint:
+        # Fallback: YALNIZCA schema_name BOŞ ise ve henüz bulunamamış kaynaklar varsa eski şemasız girişleri dene
+        missing_sources = [s for s in sources if s and s.strip() and s not in result]
+        if missing_sources and fingerprint and not schema_name:
             uniq2 = {}
-            for s in sources:
-                if s and s.strip():
-                    uniq2[self._hash(s, tgt_lang, "")] = s
+            for s in missing_sources:
+                uniq2[self._hash(s, tgt_lang, "")] = s
             hashes2 = list(uniq2.keys())
             for i in range(0, len(hashes2), 900):
                 batch = hashes2[i:i + 900]
