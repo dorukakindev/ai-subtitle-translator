@@ -74,6 +74,46 @@ class TestPackage3GlossaryAndTmSchema(unittest.TestCase):
             finally:
                 tm.close()
 
+    def test_locked_terms_hint_sanitizes_glossary_and_preserves_names(self):
+        """_locked_terms_hint sanitizes terms (dropping parens/notes/foreign script) while preserving character names."""
+        import subtitle_translator_gui as gui
+        from unittest.mock import MagicMock
+
+        app = gui.App.__new__(gui.App)
+        app._log = MagicMock()
+        app._get_file_glossary = MagicMock(return_value="")
+
+        pm = MagicMock()
+        pm.get_glossary.return_value = {
+            "sword": "kılıç",
+            "shield": "kalkan",
+            "Caesar": "Caesar (Sezar)",
+            "maggot": "qurt/qurtçuk değil; askerî hakaret olarak mecazi 'pislik'/'larva' yerine doğrudan 'çürük kurt' anlamı vermeden...",
+            "temple": "கோயிலும்"
+        }
+        pm.get_characters.return_value = {"Arthur": {}, "Merlin": {}}
+        app._pm = pm
+
+        hint = app._locked_terms_hint("file.srt", "Turkish")
+
+        self.assertIn("sword -> kılıç", hint)
+        self.assertIn("shield -> kalkan", hint)
+        self.assertNotIn("Caesar (Sezar)", hint)
+        self.assertNotIn("çürük kurt", hint)
+        self.assertNotIn("கோயிலும்", hint)
+
+        self.assertIn("LOCKED NAMES", hint)
+        self.assertIn("Arthur", hint)
+        self.assertIn("Merlin", hint)
+
+    def test_glossary_token_matches_key_plural_s_handling(self):
+        """_glossary_token_matches_key handles single English plural s without over-stripping words like Princess."""
+        self.assertTrue(ht._glossary_token_matches_key("Newsweeks", {"newsweek"}))
+        self.assertTrue(ht._glossary_token_matches_key("Newsweek", {"newsweeks"}))
+        self.assertTrue(ht._glossary_token_matches_key("Newsweek'in".replace("'", ""), {"newsweeks"}))
+        self.assertFalse(ht._glossary_token_matches_key("Princess", {"prince"}))
+        self.assertTrue(ht._glossary_token_matches_key("Princess", {"princess"}))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9950,6 +9950,12 @@ class App(ctk.CTk):
                     terms.update(self._pm.get_glossary() or {})
                 except Exception:
                     pass
+            if terms:
+                try:
+                    log_fn = getattr(self, "_log", None)
+                    terms = ht.sanitize_glossary_for_turkish(terms, target_language=tgt, log_fn=log_fn) or {}
+                except Exception:
+                    pass
             locked = [(s, t) for s, t in terms.items()
                       if s and t and str(s).strip().lower() != str(t).strip().lower()]
             names = []
