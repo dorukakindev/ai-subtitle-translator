@@ -9453,8 +9453,16 @@ class App(ctk.CTk):
         batch_ids = list(dict.fromkeys(batch_ids))
         if not batch_ids:
             messagebox.showerror("Hata", "batch_id.txt boş veya bozuk.")
-            self._set_running(False)
             return
+
+        self._token_total = 0
+        self._token_cached = 0
+        self._cost_total = 0.0
+        self._tm.reset_session_hits()
+        for attr in ("stat_tokens_var", "stat_done_var", "stat_fail_var", "stat_tm_var"):
+            getattr(self, attr).set("0")
+        self._set_eta("")
+        self._set_running(True)
 
         def _guarded_resume():
             try:
@@ -9467,7 +9475,11 @@ class App(ctk.CTk):
                 except Exception:
                     pass
 
-        threading.Thread(target=_guarded_resume, daemon=True).start()
+        try:
+            threading.Thread(target=_guarded_resume, daemon=True).start()
+        except Exception:
+            self._set_running(False)
+            raise
 
     def _import_jsonl(self):
         """Manuel indirilen batch JSONL → SRT dönüştürücü."""
@@ -9688,6 +9700,7 @@ class App(ctk.CTk):
         with self._batch_lock:
             items = list(self._active_batches.items())
             self._active_batches.clear()
+            self._write_batch_owner()
         cancelled = []
         for bid, auth in items:
             if isinstance(auth, (tuple, list)):
