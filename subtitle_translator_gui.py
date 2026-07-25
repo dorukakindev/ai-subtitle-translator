@@ -1802,7 +1802,7 @@ def _translate_speaker_labels(text: str) -> str:
             
     return "\n".join(new_lines)
 
-def write_srt(filepath, blocks):
+def write_srt(filepath, blocks, target_language="Turkish"):
     # Çıktı HER ZAMAN SRT biçimindedir → uzantıyı .srt yap (.vtt/.ass girdiler için de),
     # yoksa SRT içeriği .vtt/.ass uzantısıyla yazılıp oynatıcıda açılmaz.
     out = Path(filepath).with_suffix(".srt")
@@ -1813,18 +1813,23 @@ def write_srt(filepath, blocks):
         for idx, ts, text in blocks:
             # Metindeki çift+ newline'lar SRT blok ayracını (\n\n) taklit edip yeniden
             # okumada satır düşürür/bozar — tek newline'a indir.
+            is_turkish = normalize_language_name(
+                target_language, allow_auto=False
+            ) == "Turkish"
             try:
                 import hybrid_translate as ht
                 text = ht.normalize_latin_homoglyphs(str(text))
-                text = ht._apply_local_fixes(str(text))[0]
+                if is_turkish:
+                    text = ht._apply_local_fixes(str(text))[0]
             except Exception:
                 text = str(text)
             text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
             text = re.sub(r'\n{2,}', '\n', text)
-            text = sdh_cleaner.normalize_sdh_descriptors(text)
-            text = sdh_cleaner.normalize_speaker_labels(text)
-            text = sdh_cleaner.normalize_turkish_artifacts(text)
-            text = _translate_speaker_labels(text)
+            if is_turkish:
+                text = sdh_cleaner.normalize_sdh_descriptors(text)
+                text = sdh_cleaner.normalize_speaker_labels(text)
+                text = sdh_cleaner.normalize_turkish_artifacts(text)
+                text = _translate_speaker_labels(text)
             if not text.strip():
                 text = "[ÇEVİRİ EKSİK]"
             f.write(f"{idx}\n{ts}\n{text}\n\n")
@@ -9661,7 +9666,7 @@ class App(ctk.CTk):
                     except Exception:
                         pass
 
-                write_srt(out_path, self._maybe_merge_cues(blocks))
+                write_srt(out_path, self._maybe_merge_cues(blocks), tgt)
                 self._log(f"Kaydedildi: {out_path}  ({len(blocks)} satır, {missing} eksik)", "ok")
                 _post_ui(self, messagebox.showinfo, "Tamamlandı",
                               f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
@@ -9867,7 +9872,7 @@ class App(ctk.CTk):
         threading.Thread(target=_work, daemon=True).start()
 
     # ── Bağlam İncelemesi (Batch sonrası ikinci geçiş) ────────────────────────
-    def _save_raw_backup(self, out_path, raw_blocks, raw_map):
+    def _save_raw_backup(self, out_path, raw_blocks, raw_map, target_language="Turkish"):
         """Kalite geçişlerinden ÖNCEKİ ham çeviriyi <stem>.ham.srt olarak yedekler.
 
         critic/polish/native/geri-çeviri/QC ham çeviriyi değiştirebilir; bu yedek
@@ -9889,7 +9894,7 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             bpath = str(Path(out_path).with_suffix(".ham.srt"))
-            write_srt(bpath, blk)
+            write_srt(bpath, blk, target_language)
             self._log(f"Ham çeviri yedeği: {Path(bpath).name}", "info")
         except Exception as e:
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
@@ -10748,7 +10753,7 @@ class App(ctk.CTk):
                     blocks, _ = _fill_hata_with_source(blocks, _raw_map, log_fn=self._log)
                     blocks = _restore_tags_blocks(blocks, _raw_map)
 
-                write_srt(fp, blocks)
+                write_srt(fp, blocks, tgt)
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
                 self._update_file_progress(fp,
                     f"Tamamlandı  {len(blocks)} satır", 100, "done")
@@ -12753,10 +12758,10 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
+            write_srt(out_path, self._maybe_merge_cues(sorted_blocks), tgt)
             completed_files.append(filepath)
             self._log(f"Kaydedildi: {out_path}", "ok")
-            self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
+            self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
             try:
@@ -13238,7 +13243,7 @@ class App(ctk.CTk):
                             pp    = list(parse_srt(output_path))
                             _raw_backup_blocks = list(pp)   # kalite geçişleri öncesi ham çeviri (yedek)
                             self._save_raw_backup(
-                                output_path, _raw_backup_blocks, {})
+                                output_path, _raw_backup_blocks, {}, tgt)
                             
                             # Kaynak cue'ları yükle (consistency sweep + etiket geri yükleme +
                             # [HATA] işaretleme + TM/QC bunlara bağlı; bulunamazsa hepsi atlanır).
@@ -13416,8 +13421,8 @@ class App(ctk.CTk):
                                         self._helper_api_model("polish"), log_fn=self._log)
                                 except Exception:
                                     pass
-                            write_srt(output_path, self._maybe_merge_cues(pp))
-                            self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map)
+                            write_srt(output_path, self._maybe_merge_cues(pp), tgt)
+                            self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map, tgt)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
@@ -13752,9 +13757,9 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
+            write_srt(out_path, self._maybe_merge_cues(sorted_blocks), tgt)
             self._log(f"Kaydedildi: {out_path}", "ok")
-            self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map)
+            self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
             w = scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
                                          src_clean_map=src_blocks)
@@ -14354,7 +14359,7 @@ class App(ctk.CTk):
                         _raw_map = _raw_src_map_from_cues(cues)
                         _interim_blocks, _n_filled_save = _fill_hata_with_source(list(_final_blocks), _raw_map, log_fn=self._log)
                         _interim_blocks = _restore_tags_blocks(_interim_blocks, _raw_map)
-                        write_srt(out_path, self._maybe_merge_cues(_interim_blocks))
+                        write_srt(out_path, self._maybe_merge_cues(_interim_blocks), tgt)
                     except Exception:
                         pass
                     self._log(
@@ -14550,8 +14555,8 @@ class App(ctk.CTk):
                             self._helper_api_model("polish"), log_fn=self._log)
                     except Exception:
                         pass
-                write_srt(out_path, self._maybe_merge_cues(_final_blocks))
-                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_src_map_from_cues(cues))
+                write_srt(out_path, self._maybe_merge_cues(_final_blocks), tgt)
+                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_src_map_from_cues(cues), tgt)
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
                 _w = 0

@@ -59,6 +59,20 @@ class WriteSrtOutputTest(unittest.TestCase):
         self.assertEqual(blocks[0][2], "(SEYİRCİ KAHKAHA ATIYOR)")
         self.assertEqual(blocks[1][2], "-(DİSKO MÜZİĞİ ÇALIYOR)\nSEYİRCİ: Again!")
 
+    def test_non_turkish_target_skips_turkish_output_rewrites(self):
+        p = os.path.join(self.d, "english.srt")
+        gui.write_srt(
+            p,
+            [("1", "00:00:01,000 --> 00:00:02,000",
+              "(AUDIENCE LAUGHING)\nNARRATOR: Again!")],
+            target_language="English",
+        )
+        blocks = gui.parse_srt(p)
+        self.assertEqual(
+            blocks[0][2],
+            "(AUDIENCE LAUGHING)\nNARRATOR: Again!",
+        )
+
     def test_write_normalizes_unicode_and_tabs(self):
         p = os.path.join(self.d, "unicode.srt")
         gui.write_srt(p, [("1", "00:00:01,000 --> 00:00:02,000", "o\u0308yle\tmi?")])
