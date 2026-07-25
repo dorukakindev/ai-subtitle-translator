@@ -3690,6 +3690,20 @@ _ALIGN_NUMBER_RE = re.compile(r'\d{2,}')
 _ALIGN_PROPER_RE = re.compile(r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]{3,}')
 
 
+def _saved_regular_requests(fmap_data: dict, saved_fmap: dict):
+    requests = fmap_data.get("requests") if isinstance(fmap_data, dict) else None
+    if not isinstance(requests, list) or not requests:
+        return None, "missing_requests"
+    request_ids = {
+        str(req.get("custom_id"))
+        for req in requests
+        if isinstance(req, dict) and req.get("custom_id")
+    }
+    if not set(saved_fmap).issubset(request_ids):
+        return None, "id_mismatch"
+    return requests, ""
+
+
 def _align_visible(text) -> str:
     return re.sub(r'\s+', ' ', str(text or '')).strip()
 
@@ -12981,18 +12995,6 @@ class App(ctk.CTk):
         src, tgt   = self.src_var.get(), self.tgt_var.get()
         model      = self._main_model_name()
 
-        # Build default file_map for regular batches
-        srt_files = self._get_srt_files()
-        default_requests, default_file_map = build_requests(
-            srt_files, src, tgt, model,
-            schema=self._get_schema(),
-            profanity=self.profanity_var.get(),
-            chunk_size=self._chunk_size,
-            context_lines=self._context_lines,
-            lookahead_lines=self._lookahead_lines,
-            scene_gap_sec=self._scene_gap_seconds,
-            temperature=self._temperature) if srt_files else ([], {})
-
         accumulated_raw_map = {}
         accumulated_file_map = {}
         accumulated_requests = []
@@ -13040,10 +13042,27 @@ class App(ctk.CTk):
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
                             break
                     else:
+                        saved_requests, request_error = _saved_regular_requests(
+                            fmap_data, saved_fmap)
+                        if request_error == "missing_requests":
+                            self._log(
+                                f"[HATA] {bid}: eski fmap güvenli retry isteklerini içermiyor; "
+                                "mevcut UI ayarlarıyla yeniden oluşturulmayacak. Kurtarma verisi korundu.",
+                                "err")
+                            regular_recovery_safe = False
+                            self._unregister_batch(bid)
+                            continue
+                        if request_error == "id_mismatch":
+                            self._log(
+                                f"[HATA] {bid}: fmap ile kaydedilmiş request kimlikleri uyuşmuyor; "
+                                "yanlış final yazılmayacak. Kurtarma verisi korundu.", "err")
+                            regular_recovery_safe = False
+                            self._unregister_batch(bid)
+                            continue
                         saved_out = fmap_data.get("output_dir", output_dir)
                         last_output_dir = saved_out
                         accumulated_file_map.update(saved_fmap)
-                        accumulated_requests.extend(fmap_data.get("requests") or [])
+                        accumulated_requests.extend(saved_requests)
                         accumulated_output_paths.update(fmap_data.get("output_paths") or {})
                         accumulated_source_languages.update(fmap_data.get("source_languages") or {})
                         run_id = str(fmap_data.get("run_id") or bid)
@@ -13064,18 +13083,18 @@ class App(ctk.CTk):
                             accumulated_raw_map.update(batch_raw_map)
                     continue
                 except Exception as e:
-                    self._log(f"Kaydedilmiş file_map yüklenemedi ({bid}): {e} — yeniden oluşturuluyor", "warn")
+                    self._log(f"Kaydedilmiş file_map yüklenemedi ({bid}): {e}", "warn")
 
             self._log(f"[HATA] {bid}: batch_fmap_{bid}.json yok; yanlış/boş final "
                       "yazmamak için resume durduruldu.", "err")
             regular_recovery_safe = False
+            self._unregister_batch(bid)
 
         regular_ready = _regular_batch_groups_ready(
             regular_groups, recovery_safe=regular_recovery_safe)
         regular_written = False
         if not self._stop_flag and accumulated_raw_map and regular_ready:
-            retry_source = accumulated_requests or default_requests
-            retry_list = [r for r in retry_source if r["custom_id"] in accumulated_file_map]
+            retry_list = [r for r in accumulated_requests if r["custom_id"] in accumulated_file_map]
             self._retry_hata(client, accumulated_raw_map, retry_list, max_rounds=self._max_retry)
             missing_ids = set(accumulated_file_map) - set(accumulated_raw_map)
             if missing_ids:
@@ -14074,12 +14093,18 @@ class App(ctk.CTk):
                     existing_bid = sess_entry.get("batch_id")
                     existing_out = sess_entry.get("out_path", "")
                     if existing_bid:
-                        fmap = ht.load_fmap_for_batch(existing_bid)
-                        if not fmap:
+                        fmap_status, fmap = ht.load_fmap_for_batch(existing_bid, detailed=True)
+                        if fmap_status != "ok":
+                            reason = {
+                                "missing": "fmap dosyası eksik",
+                                "invalid_json": "fmap JSON'u bozuk",
+                                "invalid_schema": "fmap şeması geçersiz",
+                                "valid_empty": "fmap geçerli fakat boş",
+                                "io_error": "fmap okunamadı",
+                            }.get(fmap_status, f"fmap durumu: {fmap_status}")
                             self._log(
-                                f"{fname} — batch kurtarma eşlemesi yok/boş ({existing_bid}); "
-                                "boş çıktı yazılmayacak.", "err")
-                            ht.update_batch_session(session, filepath, "failed")
+                                f"{fname} — {reason} ({existing_bid}); batch yeniden "
+                                "gönderilmeyecek, kurtarma verisi korunacak.", "err")
                             continue
                         self._log(
                             f"{fname} — zaten gönderildi ({existing_bid}), yeniden bağlanılıyor",

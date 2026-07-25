@@ -882,18 +882,45 @@ def batch_session_summary(session: dict, filepaths: list) -> dict:
     return counts
 
 
-def load_fmap_for_batch(batch_id: str) -> dict | None:
-    """Load the saved file_map for a hybrid batch (stored by submit_batch)."""
+def load_fmap_for_batch(batch_id: str, detailed: bool = False):
+    """Load a hybrid batch fmap.
+
+    detailed=True returns (status, fmap). Status is one of: ok, valid_empty,
+    missing, invalid_json, invalid_schema, io_error.
+    """
+    def _result(status, fmap=None):
+        if detailed:
+            return status, fmap
+        return fmap if status in ("ok", "valid_empty") else None
+
+    fmap_path = _batch_fmap_path(batch_id)
+    if not fmap_path.exists():
+        return _result("missing")
     try:
-        fmap_path = _batch_fmap_path(batch_id)
-        if not fmap_path.exists():
-            return None
         with open(fmap_path, encoding="utf-8") as f:
             fmap_data = json.load(f)
-        return {cid: [tuple(x) for x in info]
-                for cid, info in fmap_data.get("fmap", {}).items()}
+    except json.JSONDecodeError:
+        return _result("invalid_json")
     except Exception:
-        return None
+        return _result("io_error")
+
+    if not isinstance(fmap_data, dict) or not isinstance(fmap_data.get("fmap"), dict):
+        return _result("invalid_schema")
+    raw_fmap = fmap_data["fmap"]
+    try:
+        fmap = {}
+        for cid, info in raw_fmap.items():
+            if not isinstance(cid, str) or not isinstance(info, list):
+                return _result("invalid_schema")
+            rows = []
+            for row in info:
+                if not isinstance(row, (list, tuple)) or len(row) < 3:
+                    return _result("invalid_schema")
+                rows.append(tuple(row))
+            fmap[cid] = rows
+    except Exception:
+        return _result("invalid_schema")
+    return _result("ok" if fmap else "valid_empty", fmap)
 
 
 # ── Yardimci model analizi ───────────────────────────────────────────────────
