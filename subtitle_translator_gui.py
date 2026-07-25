@@ -11398,7 +11398,7 @@ class App(ctk.CTk):
                     cues_by_file[fp] = []
             return detect_source_languages_batch_with_ai(
                 client, cues_by_file, model, self._log,
-                token_callback=self._token_callback_for_model(model))
+                token_callback=App._token_callback_for_model(self, model))
 
         with ThreadPoolExecutor(max_workers=min(4, len(batches))) as ex:
             for detected in ex.map(_one, batches):
