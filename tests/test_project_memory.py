@@ -1,8 +1,11 @@
 """
 project_memory.py — detect_series_key ve temel hafıza işlemleri testleri.
 """
+import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from project_memory import ProjectMemory
@@ -69,6 +72,43 @@ class ProjectMemoryOpsTest(unittest.TestCase):
         hint = pm.build_context_hint()
         self.assertIn("Chaos Marine", hint)
         self.assertIn("Kaos Denizlisi", hint)
+
+    def test_concurrent_updates_are_not_lost_and_json_stays_valid(self):
+        with tempfile.TemporaryDirectory() as td:
+            pm = ProjectMemory(td)
+            workers = 12
+            barrier = threading.Barrier(workers)
+
+            def update(i):
+                barrier.wait()
+                pm.update_glossary({f"term-{i}": f"terim-{i}"})
+                pm.update_characters([f"Character-{i}"])
+                pm.update_pronoun_map({f"Character-{i}": "sen"})
+                pm.add_note(f"note-{i}")
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                list(pool.map(update, range(workers)))
+
+            self.assertEqual(len(pm.get_glossary()), workers)
+            self.assertEqual(len(pm.get_characters()), workers)
+            self.assertEqual(len(pm.get_pronoun_map()), workers)
+            self.assertEqual(len(pm.get_notes()), workers)
+            saved = json.loads((Path(td) / ".project_memory.json").read_text(
+                encoding="utf-8"
+            ))
+            self.assertEqual(len(saved["glossary"]), workers)
+            self.assertEqual(len(saved["characters"]), workers)
+
+    def test_getters_return_copies(self):
+        pm = self._make_pm()
+        pm.update_glossary({"term": "terim"})
+        pm.add_note("not")
+        glossary = pm.get_glossary()
+        notes = pm.get_notes()
+        glossary["other"] = "başka"
+        notes.append("başka not")
+        self.assertNotIn("other", pm.get_glossary())
+        self.assertNotIn("başka not", pm.get_notes())
 
 
 if __name__ == "__main__":
