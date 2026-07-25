@@ -583,17 +583,16 @@ _SRC_NARRATOR_LABEL_RE = re.compile(
 _TR_NARRATOR_LABEL_RE = re.compile(
     r'\b(?:Narrator|Anlatıcı|Anlatici)\s*:\s*', re.IGNORECASE
 )
-_HEADING_LABEL_WORDS = frozenset({
-    "chapter", "episode", "part", "act", "scene", "season", "book", "volume",
-    "breaking", "news", "flash", "report", "live", "update",
-    "location", "date", "time", "note", "warning", "caution", "notice", "disclaimer",
-    "b\u00f6l\u00fcm", "kisim", "k\u0131s\u0131m", "sahne", "sezon", "cilt", "son dakika", "haber", "konum", "tarih", "saat"
-})
+_HEADING_LABEL_PATTERNS = (
+    re.compile(r"^\s*(?:chapter|episode|part|act|scene|season|book|volume|b\u00f6l\u00fcm|kisim|k\u0131s\u0131m|sahne|sezon|cilt)\s*(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:breaking news|news flash|special report|live report|son dakika|son dakika haberi)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:location|date|time|konum|tarih|saat|note|warning|caution|notice|disclaimer)\s*$", re.IGNORECASE),
+)
 
 
 def _is_heading_label(label_text: str) -> bool:
-    words = [w.lower() for w in re.findall(r"\w+", str(label_text or ""))]
-    return any(w in _HEADING_LABEL_WORDS for w in words)
+    clean = str(label_text or "").strip()
+    return any(p.match(clean) for p in _HEADING_LABEL_PATTERNS)
 
 
 def _src_has_plain_speaker_label(src_line: str) -> bool:
