@@ -13830,6 +13830,8 @@ class App(ctk.CTk):
                         helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
                         analysis_result=_analysis_result,
+                        token_callback=self._token_callback_for_model(
+                            self._helper_api_model("critic")),
                         src_map=src_blocks)
                     _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
@@ -13848,8 +13850,8 @@ class App(ctk.CTk):
             if sorted_blocks and not self._stop_flag:
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = self._maybe_condense(
-                    sorted_blocks, self._helper_api_key("qc"),
-                    self._helper_api_base_url("qc"), self._helper_api_model("qc"), _tgt_lang, src_map=src_blocks)
+                    sorted_blocks, self._helper_api_key("analysis"),
+                    self._helper_api_base_url("analysis"), self._helper_api_model("analysis"), _tgt_lang, src_map=src_blocks)
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
             if self.clean_sdh_var.get():
                 _before_pass = list(sorted_blocks)

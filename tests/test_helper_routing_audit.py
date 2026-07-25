@@ -78,6 +78,21 @@ class HelperRoutingAuditTests(unittest.TestCase):
                         f"native_reader_pass call site must use 'critic' role: {chunk}",
                     )
 
+    def test_plain_batch_native_counts_critic_tokens_and_condense_uses_analysis(self):
+        import inspect
+        src = inspect.getsource(gui.App._write_results)
+        native_at = src.index("sorted_blocks = ht.native_reader_pass(")
+        native_call = src[native_at:src.index("_record_pass_change", native_at)]
+        self.assertIn('token_callback=self._token_callback_for_model(', native_call)
+        self.assertIn('self._helper_api_model("critic")', native_call)
+
+        condense_at = src.index("sorted_blocks = self._maybe_condense(")
+        condense_call = src[condense_at:src.index("if self.clean_sdh_var.get()", condense_at)]
+        self.assertIn('self._helper_api_key("analysis")', condense_call)
+        self.assertIn('self._helper_api_base_url("analysis")', condense_call)
+        self.assertIn('self._helper_api_model("analysis")', condense_call)
+        self.assertNotIn('self._helper_api_key("qc")', condense_call)
+
     def test_native_validation_and_cost_use_critic_role(self):
         import inspect
         validate_src = inspect.getsource(gui.App._validate)
