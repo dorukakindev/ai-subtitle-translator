@@ -72,8 +72,11 @@ class HelperRoutingAuditTests(unittest.TestCase):
             if "native_reader_pass(" in line:
                 chunk = " ".join(lines[i:i+6])
                 if "helper_api_key=" in chunk:
-                    self.assertIn('helper_api_key=self._helper_api_key("critic")', chunk,
-                                  f"native_reader_pass call site must use 'critic' role: {chunk}")
+                    self.assertTrue(
+                        'helper_api_key=self._helper_api_key("critic")' in chunk
+                        or 'helper_api_key=helper_keys.get("critic", "")' in chunk,
+                        f"native_reader_pass call site must use 'critic' role: {chunk}",
+                    )
 
     def test_native_validation_and_cost_use_critic_role(self):
         import inspect

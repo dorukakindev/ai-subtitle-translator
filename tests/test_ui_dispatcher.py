@@ -384,6 +384,34 @@ class UIDispatcherTest(unittest.TestCase):
             resume_src.index("App._start_worker(self, _guarded_resume"),
         )
 
+    def test_auxiliary_workers_do_not_read_tk_variables(self):
+        test_src = inspect.getsource(gui.App._test_translate)
+        test_worker = test_src[test_src.index("def _run():"):]
+        for forbidden in (
+            "self._main_api_base_url()",
+            "self._get_file_schema(",
+            "self._get_file_glossary(",
+            "self.profanity_var.get()",
+            "self.chain_ctx_var.get()",
+        ):
+            self.assertNotIn(forbidden, test_worker)
+
+        post_src = inspect.getsource(gui.App._run_post_process)
+        for forbidden in (
+            "self.tgt_var.get()",
+            "self.analysis_depth_var.get()",
+            "self.ext_project_path_var.get()",
+            "self._helper_api_key(",
+            "self._helper_api_base_url(",
+            "self._helper_api_model(",
+            "self._get_file_glossary(",
+        ):
+            self.assertNotIn(forbidden, post_src)
+
+        content_src = inspect.getsource(gui.App._start_content_type_preflight)
+        content_worker = content_src[content_src.index("def _worker():"):]
+        self.assertNotIn("self._main_api_base_url()", content_worker)
+
     def test_set_running_refreshes_and_clears_snapshot_on_main_thread(self):
         button = SimpleNamespace(configure=lambda **kwargs: None)
         snapshot = {"notify_desktop": True, "marker": "fresh"}

@@ -7302,6 +7302,19 @@ class App(ctk.CTk):
         src  = self._effective_file_source_language(fp, self.src_var.get())
         tgt  = self.tgt_var.get()
         model = self._main_model_name()
+        base_url = self._main_api_base_url()
+        schema = self._get_file_schema(fp)
+        profanity = self.profanity_var.get()
+        glossary_path = self._get_file_glossary(fp)
+        chain_context = self.chain_ctx_var.get()
+        build_options = {
+            "chunk_size": self._chunk_size,
+            "project_memory": self._pm,
+            "context_lines": self._context_lines,
+            "lookahead_lines": self._lookahead_lines,
+            "scene_gap_sec": self._scene_gap_seconds,
+            "temperature": self._temperature,
+        }
 
         self._log(f"🧪 Test çevirisi: {Path(fp).name} (ilk 3 chunk)", "info")
         self._set_running(True)
@@ -7310,8 +7323,7 @@ class App(ctk.CTk):
             try:
                 import hybrid_translate as ht
                 from openai import OpenAI as _OAI
-                b_url = self._main_api_base_url()
-                client = _OAI(api_key=api_key, base_url=b_url if b_url else None)
+                client = _OAI(api_key=api_key, base_url=base_url if base_url else None)
                 if not list(parse_subtitle(fp)):
                     try:
                         _post_ui(self, messagebox.showwarning, "Test", "Dosyada geçerli SRT bloğu yok.")
@@ -7321,19 +7333,12 @@ class App(ctk.CTk):
 
                 # Gerçek çeviriyle birebir aynı istek hattını kullan:
                 # ctx/next_ctx, süre, frag etiketleri, glossary, proje hafızası dahil.
-                schema    = self._get_file_schema(fp)
-                profanity = self.profanity_var.get()
-                gloss     = ht.load_glossary(self._get_file_glossary(fp))
+                gloss = ht.load_glossary(glossary_path)
                 reqs, fmap = build_requests([fp], src, tgt, model,
-                                            chunk_size=self._chunk_size,
                                             schema=schema,
                                             profanity=profanity,
                                             glossary=gloss,
-                                            project_memory=self._pm,
-                                            context_lines=self._context_lines,
-                                            lookahead_lines=self._lookahead_lines,
-                                            scene_gap_sec=self._scene_gap_seconds,
-                                            temperature=self._temperature)
+                                            **build_options)
                 reqs = reqs[:2]   # ilk ~2 chunk (≈100 satır) yeterli önizleme
 
                 results, prev_pairs = [], []
@@ -7342,9 +7347,10 @@ class App(ctk.CTk):
                         break
                     cid      = req["custom_id"]
                     user_msg = req["body"]["messages"][1]
-                    if self.chain_ctx_var.get():
+                    if chain_context:
                         user_msg["content"] = _inject_prev_tr(
-                            user_msg["content"], prev_pairs, max_pairs=self._context_lines)
+                            user_msg["content"], prev_pairs,
+                            max_pairs=build_options["context_lines"])
                     payload = json.loads(user_msg["content"])
                     try:
                         resp = _safe_chat_create(client, **req["body"])
@@ -10622,16 +10628,26 @@ class App(ctk.CTk):
             return  # kullanıcı iptal etti
 
         selected_passes = result[0]
+        job = self._take_run_snapshot()
+        job["analysis_depth"] = self.analysis_depth_var.get()
+        job["ext_project_path"] = self.ext_project_path_var.get().strip()
+        job["merge_max_chars"] = self._merge_max_chars
+        job["merge_max_gap_ms"] = self._merge_max_gap_ms
         self._set_running(True)
         self._set_phase("Post-işlem", f"{len(paths)} dosya seçildi")
         App._start_worker(self,
-            self._run_post_process, (list(paths), selected_passes))
+            self._run_post_process, (list(paths), selected_passes, job))
 
-    def _run_post_process(self, paths: list, selected_passes: list):
+    def _run_post_process(self, paths: list, selected_passes: list, job=None):
         import hybrid_translate as ht
+        job = dict(job or {})
+        helper_keys = job.get("helper_keys") or {}
+        helper_urls = job.get("helper_urls") or {}
+        helper_models = job.get("helper_models") or {}
+        file_glossaries = job.get("file_glossaries") or {}
         try:
-            ht.set_project_path(self.ext_project_path_var.get().strip())
-            tgt      = self.tgt_var.get()
+            ht.set_project_path(job.get("ext_project_path", ""))
+            tgt = job.get("tgt_lang", "Turkish")
         except Exception as e:
             # Kurulum hatası (ör. harici proje yolu) → thread sessizce ölmesin, UI'yi geri aç
             self._log_exc("Post-işlem başlatılamadı", e)
@@ -10650,11 +10666,11 @@ class App(ctk.CTk):
         do_ai_merge = "ai_merge"      in selected_passes
         mm_key = mm_url = mm_model = ""
         if do_ai_merge:
-            mm_key = self._helper_api_key("analysis")
-            mm_url = self._helper_api_base_url("analysis")
-            mm_model = self._helper_api_model("analysis")
+            mm_key = helper_keys.get("analysis", "")
+            mm_url = helper_urls.get("analysis", "")
+            mm_model = helper_models.get("analysis", "gpt-5.4-mini")
 
-        self._show_progress_board(paths)
+        _post_ui(self, self._show_progress_board, paths)
 
         for i, fp in enumerate(paths):
             if self._stop_flag:
@@ -10691,8 +10707,8 @@ class App(ctk.CTk):
                     orig_cues = None
                 analysis_result = (ht.load_context_cache(
                     fp,
-                    expected_target=self.tgt_var.get(),
-                    expected_analysis_depth=self.analysis_depth_var.get(),
+                    expected_target=tgt,
+                    expected_analysis_depth=job.get("analysis_depth"),
                 ) if (do_critic or do_polish or do_native or do_qc) else None)
 
                 # Critic Pass
@@ -10704,11 +10720,11 @@ class App(ctk.CTk):
                         _critic_change_log = []
                         blocks = ht.critic_pass_with_helper(
                             cues=orig_cues, tr_blocks=blocks,
-                            helper_api_key=self._helper_api_key("critic"),
-                            helper_url=self._helper_api_base_url("critic"),
-                            helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
+                            helper_api_key=helper_keys.get("critic", ""),
+                            helper_url=helper_urls.get("critic", ""),
+                            helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             log_fn=self._log,
-                            glossary=ht.load_glossary(self._get_file_glossary(fp)),
+                            glossary=ht.load_glossary(file_glossaries.get(fp, "")),
                             analysis_result=analysis_result,
                             change_log=_critic_change_log)
                         self._write_critic_change_report(fp, _critic_change_log)
@@ -10723,7 +10739,9 @@ class App(ctk.CTk):
                         self._log(f"Polish Pass — {len(blocks)} satır...", "info")
                         blocks = self._polish_pass(
                             blocks, tgt,
-                            self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
+                            helper_keys.get("polish", ""),
+                            helper_urls.get("polish", ""),
+                            helper_models.get("polish", "gpt-5.4-mini"),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
                             analysis_result=analysis_result)
                     except Exception as e:
@@ -10737,9 +10755,9 @@ class App(ctk.CTk):
                         self._log(f"Native Okuyucu Pass — {len(blocks)} satır...", "info")
                         blocks = ht.native_reader_pass(
                             tr_blocks=blocks,
-                            helper_api_key=self._helper_api_key("critic"), 
-                            helper_url=self._helper_api_base_url("critic"),
-                            helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
+                            helper_api_key=helper_keys.get("critic", ""),
+                            helper_url=helper_urls.get("critic", ""),
+                            helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             log_fn=self._log, analysis_result=analysis_result,
                             token_callback=self._update_tokens,
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None)
@@ -10770,7 +10788,10 @@ class App(ctk.CTk):
                         self._log(f"QC Kontrolü — {len(blocks)} satır...", "info")
                         blocks = self._run_quality_check_inline(
                             fp, orig_cues, blocks, 
-                            self._helper_api_key("qc"), self._helper_api_base_url("qc"), self._helper_api_model("qc"), tgt, analysis_result=analysis_result)
+                            helper_keys.get("qc", ""),
+                            helper_urls.get("qc", ""),
+                            helper_models.get("qc", "gpt-5.4-mini"),
+                            tgt, analysis_result=analysis_result)
                     except Exception as e:
                         self._log(f"QC hatası: {e}", "warn")
 
@@ -10782,7 +10803,8 @@ class App(ctk.CTk):
                         _before = len(blocks)
                         blocks = ai_resegment_cues(
                             blocks, mm_key, mm_url, mm_model, log_fn=self._log,
-                            max_chars=self._merge_max_chars, max_gap_ms=self._merge_max_gap_ms,
+                            max_chars=job.get("merge_max_chars", MERGE_MAX_CHARS),
+                            max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS),
                             token_callback=self._update_tokens)
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
@@ -10794,7 +10816,9 @@ class App(ctk.CTk):
                         self._update_file_progress(fp, "Cue Birleştirme", 96)
                         _before = len(blocks)
                         blocks = merge_fragmented_cues(
-                            blocks, max_chars=self._merge_max_chars, max_gap_ms=self._merge_max_gap_ms)
+                            blocks,
+                            max_chars=job.get("merge_max_chars", MERGE_MAX_CHARS),
+                            max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS))
                         self._log(f"Parçalı cue birleştirme: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"Cue birleştirme hatası: {e}", "warn")
@@ -11734,6 +11758,7 @@ class App(ctk.CTk):
         self._set_running(True)
         self._set_phase("İçerik Türü", f"{len(auto_files)} dosya ön analiz ediliyor")
         detect_model = self._main_model_name() if self._main_custom_active() else CONTENT_TYPE_DETECT_MODEL
+        base_url = self._main_api_base_url()
         self._set_status(f"İçerik türü ön analizi: {detect_model}")
         self._log(
             f"{len(auto_files)} dosya çeviri başlamadan önce içerik türü için analiz ediliyor "
@@ -11743,8 +11768,8 @@ class App(ctk.CTk):
 
         def _worker():
             try:
-                b_url = self._main_api_base_url()
-                client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
+                client = OpenAI(
+                    api_key=api_key, base_url=base_url if base_url else None)
                 detected = self._detect_content_types_parallel(
                     client,
                     auto_files,
