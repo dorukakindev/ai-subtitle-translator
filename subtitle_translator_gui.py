@@ -5217,6 +5217,8 @@ class App(ctk.CTk):
         self._token_cached   = 0
         self._token_lock     = threading.Lock()   # _token_total multi-thread erişimi
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
+        self._worker_lock    = threading.Lock()
+        self._worker_threads = set()
         self._selected_files = []   # manually picked files; empty = use input folder
         self._input_folder_explicitly_selected = False
         self._input_entry_focus_val = None
@@ -5441,7 +5443,7 @@ class App(ctk.CTk):
             )
             _post_ui(self, _apply_statuses, fetched)
 
-        threading.Thread(target=_fetch_in_bg, daemon=True).start()
+        App._start_worker(self, _fetch_in_bg)
 
         # Alt butonlar
         btn_fr = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -5537,6 +5539,8 @@ class App(ctk.CTk):
 
     def _on_close(self):
         """Pencere kapatılırken kaynakları temizce kapat."""
+        if getattr(self, "_is_shutting_down", False):
+            return
         running = getattr(self, "_is_running", False)
         if running:
             if not messagebox.askyesno(
@@ -5562,14 +5566,57 @@ class App(ctk.CTk):
             self._save_settings()
         except Exception:
             pass
+        self._drain_workers_for_close(time.monotonic() + 2.0)
+
+    def _start_worker(self, target, args=(), daemon=True):
+        if not hasattr(self, "_worker_lock"):
+            self._worker_lock = threading.Lock()
+        if not hasattr(self, "_worker_threads"):
+            self._worker_threads = set()
+
+        def _tracked():
+            try:
+                target(*args)
+            finally:
+                with self._worker_lock:
+                    self._worker_threads.discard(threading.current_thread())
+
+        thread = threading.Thread(target=_tracked, daemon=daemon)
+        with self._worker_lock:
+            self._worker_threads.add(thread)
+        try:
+            thread.start()
+        except Exception:
+            with self._worker_lock:
+                self._worker_threads.discard(thread)
+            raise
+        return thread
+
+    def _drain_workers_for_close(self, deadline):
+        with self._worker_lock:
+            alive = [
+                thread for thread in self._worker_threads
+                if thread.is_alive() and thread is not threading.current_thread()
+            ]
+        if alive and time.monotonic() < deadline:
+            try:
+                self.after(50, self._drain_workers_for_close, deadline)
+                return
+            except Exception:
+                pass
+        self._finish_close()
+
+    def _finish_close(self):
         try:
             if hasattr(self, "_tm") and self._tm:
                 self._tm.close()
         except Exception:
             pass
         try:
-            if hasattr(self, "_log_file") and self._log_file:
-                self._log_file.close()
+            with self._log_lock:
+                if hasattr(self, "_log_file") and self._log_file:
+                    self._log_file.close()
+                    self._log_file = None
         except Exception:
             pass
         self.destroy()
@@ -7325,7 +7372,7 @@ class App(ctk.CTk):
             finally:
                 self._set_running(False)
 
-        threading.Thread(target=_run, daemon=True).start()
+        App._start_worker(self, _run)
 
     def _show_test_dialog(self, results: list, fname: str):
         """Kaynak / Çeviri yan yana önizleme dialog'u."""
@@ -9467,11 +9514,12 @@ class App(ctk.CTk):
                 self._set_running(False)
 
         if hybrid and mode == "batch":
-            threading.Thread(target=_guarded_worker, args=(self._run_hybrid, key, mm, ext_path), daemon=True).start()
+            App._start_worker(self,
+                _guarded_worker, (self._run_hybrid, key, mm, ext_path))
         elif mode == "sync":
-            threading.Thread(target=_guarded_worker, args=(self._run_sync, key), daemon=True).start()
+            App._start_worker(self, _guarded_worker, (self._run_sync, key))
         else:
-            threading.Thread(target=_guarded_worker, args=(self._run_batch, key), daemon=True).start()
+            App._start_worker(self, _guarded_worker, (self._run_batch, key))
 
     def _resume(self):
         if getattr(self, "_is_running", False):
@@ -9523,7 +9571,7 @@ class App(ctk.CTk):
                     pass
 
         try:
-            threading.Thread(target=_guarded_resume, daemon=True).start()
+            App._start_worker(self, _guarded_resume)
         except Exception:
             self._set_running(False)
             raise
@@ -9686,7 +9734,7 @@ class App(ctk.CTk):
                 self._set_running(False)
                 self._set_status("Hazır.")
 
-        threading.Thread(target=_do, daemon=True).start()
+        App._start_worker(self, _do)
 
     # ── Aktif batch muhasebesi (durdururken uzak iptal için) ──────────────────
     def _register_batch(self, batch_id: str, api_key: str, base_url: str = ""):
@@ -9817,7 +9865,7 @@ class App(ctk.CTk):
                 "'↺ Batch'i Devam Ettir' ile sonuçları alabilirsiniz.\n"
                 "Evet derseniz iptal edilir (faturalanmayı durdurur).")
             if ans:
-                threading.Thread(target=self._cancel_active_batches, daemon=True).start()
+                App._start_worker(self, self._cancel_active_batches)
 
     def _get_srt_files(self):
         if self._selected_files:
@@ -9874,7 +9922,7 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             _post_ui(self, _upd)
-        threading.Thread(target=_work, daemon=True).start()
+        App._start_worker(self, _work)
 
     # ── Bağlam İncelemesi (Batch sonrası ikinci geçiş) ────────────────────────
     def _save_raw_backup(self, out_path, raw_blocks, raw_map, target_language="Turkish"):
@@ -10576,10 +10624,8 @@ class App(ctk.CTk):
         selected_passes = result[0]
         self._set_running(True)
         self._set_phase("Post-işlem", f"{len(paths)} dosya seçildi")
-        threading.Thread(
-            target=self._run_post_process,
-            args=(list(paths), selected_passes),
-            daemon=True).start()
+        App._start_worker(self,
+            self._run_post_process, (list(paths), selected_passes))
 
     def _run_post_process(self, paths: list, selected_passes: list):
         import hybrid_translate as ht
@@ -11504,7 +11550,7 @@ class App(ctk.CTk):
 
             _post_ui(self, _finish)
 
-        threading.Thread(target=_worker, daemon=True).start()
+        App._start_worker(self, _worker)
         return True
 
     def _detect_content_types_parallel(self, client, files, model) -> dict:
@@ -11722,7 +11768,7 @@ class App(ctk.CTk):
 
             _post_ui(self, _finish)
 
-        threading.Thread(target=_worker, daemon=True).start()
+        App._start_worker(self, _worker)
         return True
 
     def _get_precontext_hints(self, client, files, src, tgt, model,

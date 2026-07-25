@@ -377,11 +377,11 @@ class UIDispatcherTest(unittest.TestCase):
         resume_src = inspect.getsource(gui.App._resume)
         self.assertLess(
             start_src.index("self._active_snapshot = self._take_run_snapshot()"),
-            start_src.index("threading.Thread(target=_guarded_worker"),
+            start_src.index("App._start_worker(self,"),
         )
         self.assertLess(
             resume_src.index("self._active_snapshot = self._take_run_snapshot()"),
-            resume_src.index("threading.Thread(target=_guarded_resume"),
+            resume_src.index("App._start_worker(self, _guarded_resume"),
         )
 
     def test_set_running_refreshes_and_clears_snapshot_on_main_thread(self):

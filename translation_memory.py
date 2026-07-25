@@ -45,15 +45,19 @@ class TranslationMemory:
         # Tek bağlantı çok thread'den paylaşılıyor (check_same_thread=False); yazımları
         # serileştir (eşzamanlı INSERT/commit aynı bağlantıda bozulmaya yol açabilir).
         self._lock = threading.RLock()
+        self._closed = False
         self._init_db()
 
     # ── Bağlantı ──────────────────────────────────────────────────────────────
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
-            self._conn.execute("PRAGMA journal_mode=WAL")
-        return self._conn
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("TranslationMemory is closed")
+            if self._conn is None:
+                self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
+                self._conn.execute("PRAGMA journal_mode=WAL")
+            return self._conn
 
     def _init_db(self):
         try:
@@ -348,9 +352,14 @@ class TranslationMemory:
     # ── Temizlik ──────────────────────────────────────────────────────────────
 
     def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            self._closed = True
+            if self._conn:
+                self._conn.close()
+                self._conn = None
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
