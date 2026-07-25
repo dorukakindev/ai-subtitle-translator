@@ -128,10 +128,16 @@ class QCAutoFixRoutingTest(unittest.TestCase):
                                      f"Main model leaked in {name}")
                     self.assertNotIn("model=\"gpt-5.4-mini\"", block,
                                      f"Hardcoded main/helper model leaked in {name}")
-                    self.assertIn("helper_api_key=self._helper_api_key(\"qc\")", block,
-                                  f"QC helper key missing in {name}")
-                    self.assertIn("model=self._helper_api_model(\"qc\")", block,
-                                  f"QC helper model missing in {name}")
+                    if name == "_run_quality_check_inline":
+                        self.assertIn("helper_api_key=qc_key", block)
+                        self.assertIn("model=qc_model", block)
+                        self.assertIn(
+                            'qc_key = self._helper_api_key("qc")', src)
+                    else:
+                        self.assertIn("helper_api_key=self._helper_api_key(\"qc\")", block,
+                                      f"QC helper key missing in {name}")
+                        self.assertIn("model=self._helper_api_model(\"qc\")", block,
+                                      f"QC helper model missing in {name}")
 
         self.assertEqual(total_qc_calls_checked, 8, "Expected exactly 8 ht.qc_auto_fix calls across execution flows")
 

@@ -54,6 +54,14 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertIn("_n_auto = _record_pass_change", src_sh, "_run_sync_hybrid must record actual QC auto changes!")
         self.assertIn("_n_auto = _record_pass_change", src_rh, "_run_hybrid must record actual QC auto changes!")
 
+    def test_plain_report_records_actual_pass_and_qc_changes(self):
+        src = inspect.getsource(gui.App._write_results)
+        self.assertIn("_pass_fix = sum(", src)
+        self.assertIn('stats=_qc_stats', src)
+        self.assertIn('"pass_fix": _pass_fix', src)
+        self.assertIn('"qc_auto": _qc_stats["qc_auto"]', src)
+        self.assertIn('"qc": _qc_stats["qc"]', src)
+
 
 if __name__ == "__main__":
     unittest.main()

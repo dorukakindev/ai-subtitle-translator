@@ -10832,7 +10832,8 @@ class App(ctk.CTk):
                             helper_keys.get("qc", ""),
                             helper_urls.get("qc", ""),
                             helper_models.get("qc", "gpt-5.4-mini"),
-                            tgt, analysis_result=analysis_result)
+                            tgt, analysis_result=analysis_result,
+                            use_passed_credentials=True)
                     except Exception as e:
                         self._log(f"QC hatası: {e}", "warn")
 
@@ -10886,7 +10887,9 @@ class App(ctk.CTk):
         else:
             self._set_phase("Hazır", "Durduruldu.")
 
-    def _run_quality_check_inline(self, fp, orig_cues, blocks, mm_key, mm_url, mm_model, tgt, analysis_result=None):
+    def _run_quality_check_inline(self, fp, orig_cues, blocks, mm_key, mm_url,
+                                  mm_model, tgt, analysis_result=None,
+                                  stats=None, use_passed_credentials=False):
         """QC kontrolü yap, dialog göster, onaylanan düzeltmeleri uygula. Güncel blocks döner.
 
         Uygulanan TÜM düzeltmeler (otomatik + dialogdan onaylı) <dosya>.qc_degisiklikler.txt'e
@@ -10897,6 +10900,12 @@ class App(ctk.CTk):
         yalnızca o yeniden-çeviri başarısız/güvenlik-filtresinden dönerse öneri metni
         aynen uygulanıyor. Kullanıcı gerçek sonucu görmeden onaylamış oluyordu."""
         import hybrid_translate as ht
+        if use_passed_credentials or not hasattr(self, "_helper_api_key"):
+            qc_key, qc_url, qc_model = mm_key, mm_url, mm_model
+        else:
+            qc_key = self._helper_api_key("qc")
+            qc_url = self._helper_api_base_url("qc")
+            qc_model = self._helper_api_model("qc")
         try:
             issues = ht.quality_check_with_helper(
                 cues=orig_cues,
@@ -10938,13 +10947,17 @@ class App(ctk.CTk):
             blocks = ht.qc_auto_fix(
                 issues=auto_issues,
                 tr_blocks=blocks,
-                helper_api_key=self._helper_api_key("qc"),
-                model=self._helper_api_model("qc"),
+                helper_api_key=qc_key,
+                model=qc_model,
                 tgt_lang=tgt,
-                base_url=self._helper_api_base_url("qc"),
+                base_url=qc_url,
                 log_fn=self._log,
             )
+            before_count = len(applied_records)
             _record(auto_issues, before_map, blocks)
+            if stats is not None:
+                stats["qc_auto"] = stats.get("qc_auto", 0) + (
+                    len(applied_records) - before_count)
 
         if not review_issues:
             self._write_qc_change_report(fp, applied_records)
@@ -10966,13 +10979,17 @@ class App(ctk.CTk):
             blocks = ht.qc_auto_fix(
                 issues=approved_fixes,
                 tr_blocks=blocks,
-                helper_api_key=self._helper_api_key("qc"),
-                model=self._helper_api_model("qc"),
+                helper_api_key=qc_key,
+                model=qc_model,
                 tgt_lang=tgt,
-                base_url=self._helper_api_base_url("qc"),
+                base_url=qc_url,
                 log_fn=self._log,
             )
+            before_count = len(applied_records)
             _record(approved_fixes, before_map, blocks)
+            if stats is not None:
+                stats["qc"] = stats.get("qc", 0) + (
+                    len(applied_records) - before_count)
 
         self._write_qc_change_report(fp, applied_records)
         return blocks
@@ -13738,6 +13755,8 @@ class App(ctk.CTk):
             sorted_blocks = [blocks_dict[k] for k in sorted(blocks_dict, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k)))]
             _raw_backup_blocks = list(sorted_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
             _cons_fixes, _rev_fixes = 0, 0
+            _pass_fix = 0
+            _qc_stats = {"qc": 0, "qc_auto": 0}
             _pass_trace = {}
             _pass_history = {}
             # Kaynağı DOSYA BAŞINA BİR KEZ parse et; tüm adımlar bunu paylaşır
@@ -13771,6 +13790,7 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks, _rev_fixes = self._review_pass(fp, sorted_blocks, model_name, _tgt_lang)
                 _record_pass_change(_pass_trace, "Review", _before_pass, sorted_blocks, _pass_history)
+            _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
             # ── Kalite geçişleri (tüm modlarda, toggle açıksa) ──────────────
             if self.critic_var.get() and sorted_blocks and not self._stop_flag:
                 try:
@@ -13822,6 +13842,9 @@ class App(ctk.CTk):
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Final consistency sweep hatası: {e}", "warn")
+            _pass_fix = sum(
+                1 for block in sorted_blocks
+                if _pre_pass.get(str(block[0])) not in (None, block[2]))
             if sorted_blocks and not self._stop_flag:
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = self._maybe_condense(
@@ -13847,7 +13870,8 @@ class App(ctk.CTk):
                         str(out_path), _src_cues, sorted_blocks,
                         self._helper_api_key("qc"), self._helper_api_base_url("qc"),
                         self._helper_api_model("qc"), _tgt_lang,
-                        analysis_result=_analysis_result)
+                        analysis_result=_analysis_result,
+                        stats=_qc_stats)
                     _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"QC hatası: {e}", "warn")
@@ -13897,6 +13921,8 @@ class App(ctk.CTk):
                 "hata": _hata_n + _n_filled, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "rev": _rev_fixes, "warn": w,
+                "pass_fix": _pass_fix,
+                "qc_auto": _qc_stats["qc_auto"], "qc": _qc_stats["qc"],
                 "pass_trace": _pass_trace,
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
