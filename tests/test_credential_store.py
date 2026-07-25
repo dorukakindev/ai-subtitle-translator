@@ -101,6 +101,23 @@ class FallbackRoundtripTest(unittest.TestCase):
         self.assertEqual(cs.load_key("openai_helper"), "helper-secret-value")
         self.assertEqual(cs.load_key("helper_role_qc_key"), "qc-secret-value")
 
+    def test_migration_write_failure_preserves_original_settings_file(self):
+        settings = Path(self._tmp.name) / ".gui_settings.json"
+        original = json.dumps({
+            "model": "gpt-5.4-mini",
+            "api_key": "sk-legacy-openai-key",
+        })
+        settings.write_text(original, encoding="utf-8")
+
+        with mock.patch.object(cs, "save_key", return_value=True), \
+             mock.patch.object(cs.os, "replace", side_effect=OSError("locked")):
+            with self.assertRaisesRegex(OSError, "locked"):
+                cs.migrate_from_settings(settings)
+
+        self.assertEqual(settings.read_text(encoding="utf-8"), original)
+        self.assertFalse(list(settings.parent.glob(
+            f".{settings.name}.*.tmp")))
+
 
 if __name__ == "__main__":
     unittest.main()

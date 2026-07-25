@@ -15,6 +15,7 @@ import platform
 import re
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 SERVICE_NAME = "SubtitleTranslator"
@@ -185,6 +186,24 @@ def _cleanup_fallback(service: str) -> None:
             _write_fallback_store(store)
 
 
+def _atomic_write_settings_json(path: Path, data: dict) -> None:
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            try:
+                os.chmod(tmp, path.stat().st_mode)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 # ── Migration helper ─────────────────────────────────────────────────────────
 
 def migrate_from_settings(settings_path: str | Path) -> None:
@@ -261,5 +280,4 @@ def migrate_from_settings(settings_path: str | Path) -> None:
         changed = True
 
     if changed:
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _atomic_write_settings_json(p, data)
