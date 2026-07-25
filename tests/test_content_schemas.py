@@ -2,6 +2,8 @@
 İçerik türü şemaları ve otomatik tespit eşleştirme testleri.
 """
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import subtitle_translator_gui as gui
 
@@ -99,6 +101,27 @@ class MatchCategoryTest(unittest.TestCase):
         self.assertIsNotNone(resolved, "'Anime / Animasyon' hiçbir şemaya çözülemedi")
         # Çözülen ad gerçek bir şema olmalı
         self.assertIsNotNone(gui._match_category(resolved, cats))
+
+    def test_turkish_dotted_i_category_matches_case_variants(self):
+        cats = gui._detect_categories()
+        expected = "Dini İçerik / Vaaz"
+        for value in ("dini içerik / vaaz", "DİNİ İÇERİK / VAAZ"):
+            self.assertEqual(gui._match_category(value, cats), expected)
+            self.assertEqual(gui.normalize_schema_name(value), expected)
+
+    def test_content_detection_prompt_does_not_name_categories_outside_schema_list(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"category": "Belgesel"}'))],
+            usage=None,
+        )
+        with patch("hybrid_translate._safe_chat_create", return_value=response) as call:
+            self.assertEqual(
+                gui.detect_content_type_with_ai(None, [("1", "00:00:01,000", "A sample")], "test"),
+                "Belgesel",
+            )
+        system_prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertNotIn("'Gaming'", system_prompt)
+        self.assertNotIn("'Akademik Anlatım'", system_prompt)
 
 
 class SchemaNameNormalizeTest(unittest.TestCase):

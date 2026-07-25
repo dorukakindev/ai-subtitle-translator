@@ -3187,21 +3187,26 @@ def _detect_categories() -> list:
     return [v["name"] for v in CONTENT_SCHEMAS.values() if v["name"] != "Otomatik"]
 
 
+def _schema_name_key(value) -> str:
+    """Şema adlarını Türkçe dotted-I farkı olmadan karşılaştırmak için anahtar."""
+    return unicodedata.normalize("NFKC", str(value or "").strip()).casefold().replace("\u0307", "")
+
+
 def _match_category(detected: str, categories: list):
     """Modelin döndürdüğü tür adını kategori listesine eşler.
     Sıra: tam eşleşme → kategori adı cevabın içinde geçiyor (en uzun/spesifik
     kazanır) → cevap bir kategori adının parçası (en kısa kazanır, örn.
     'Komedi' → 'Komedi (Sitcom)'). Eşleşme yoksa None."""
-    d = (detected or "").strip().lower()
+    d = _schema_name_key(detected)
     if not d:
         return None
     for cat in categories:
-        if cat.lower() == d:
+        if _schema_name_key(cat) == d:
             return cat
-    contains = [c for c in categories if c.lower() in d]
+    contains = [c for c in categories if _schema_name_key(c) in d]
     if contains:
         return max(contains, key=len)
-    contained = [c for c in categories if d in c.lower()]
+    contained = [c for c in categories if d in _schema_name_key(c)]
     if contained:
         return min(contained, key=len)
     return None
@@ -3209,10 +3214,10 @@ def _match_category(detected: str, categories: list):
 
 def normalize_schema_name(name: str) -> str:
     raw = str(name or "").strip()
-    if raw.lower() in {"auto", "automatic", "otomatik"}:
+    if _schema_name_key(raw) in {"auto", "automatic", "otomatik"}:
         return "Otomatik"
     for schema in CONTENT_SCHEMAS.values():
-        if schema["name"].lower() == raw.lower():
+        if _schema_name_key(schema["name"]) == _schema_name_key(raw):
             return schema["name"]
     return raw or "Otomatik"
 
@@ -3253,8 +3258,6 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
         "- Sample with scripted dialogue, laugh track, multiple episodes → 'Komedi (Sitcom)'\n"
         "- Sample with presenter, hidden-camera reactions, challenge segments → 'Reality Show'\n"
         "- Sample with narrative voiceover, archival footage, historical events → 'Belgesel'\n"
-        "- Sample with gameplay footage, player commentary, no scripted dialogue → 'Gaming'\n"
-        "- Sample with scientific demonstration, expert presenter, studio setting → 'Akademik Anlatım'\n"
         "- Sample with formal interview, talking heads, news-style editing → 'Söyleşi / Podcast'\n\n"
         "Return ONLY a JSON object: {\"category\": \"exact category name\"}. Nothing else."
     )
