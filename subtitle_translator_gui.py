@@ -12041,7 +12041,7 @@ class App(ctk.CTk):
                         fuzzy = self._tm.fuzzy_lookup(item["t"], threshold=0.95, tgt_lang=tgt, model=self._main_model_name(), profanity=self.profanity_var.get(), schema_name=sch_name)
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
-                        return None  # eksik e?le?me ? API'ye g?nder
+                        return None  # eksik e?le?me -> API'ye g?nder
                     results.append({"i": item["i"], "t": cached})
                 return json.dumps(results, ensure_ascii=False)
             except Exception:
