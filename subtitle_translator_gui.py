@@ -7168,15 +7168,17 @@ class App(ctk.CTk):
         import datetime
         icons = {"ok": "✓", "err": "✗", "warn": "⚠", "info": "›"}
         icon  = icons.get(tag, " ")
-        if len(msg) > 500:
-            msg = msg[:497] + "…"
+        disk_msg = _sanitize_settings_backup_text(str(msg))
+        ui_msg = disk_msg
+        if len(ui_msg) > 500:
+            ui_msg = ui_msg[:497] + "…"
         ts   = datetime.datetime.now().strftime("%H:%M:%S")
-        line = f"{icon}  {msg}\n"
+        line = f"{icon}  {ui_msg}\n"
 
         # Log dosyasına yaz (zaman damgası ile) — lock: concurrent worker thread'ler
         try:
             with self._log_lock:
-                self._log_file.write(f"[{ts}] {icon}  {msg}\n")
+                self._log_file.write(f"[{ts}] {icon}  {disk_msg}\n")
                 self._log_file.flush()
         except Exception:
             pass
