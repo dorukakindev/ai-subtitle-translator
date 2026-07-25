@@ -1,0 +1,74 @@
+import inspect
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import subtitle_translator_gui as gui
+
+
+class _Var:
+    def __init__(self, value=""):
+        self.value = value
+
+    def set(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class ClipboardSafetyTest(unittest.TestCase):
+    def test_clipboard_failure_is_reported_without_logging_memory_content(self):
+        logs = []
+        stub = SimpleNamespace(
+            _pm=SimpleNamespace(build_context_hint=lambda: "SECRET MEMORY CONTENT"),
+            clipboard_clear=MagicMock(side_effect=RuntimeError("clipboard locked")),
+            clipboard_append=MagicMock(),
+            _log=lambda message, level="": logs.append((message, level)),
+        )
+        with patch.object(gui.messagebox, "showwarning") as warning:
+            result = gui.App._copy_project_memory_to_clipboard(stub)
+        self.assertFalse(result)
+        warning.assert_called_once()
+        self.assertNotIn("SECRET MEMORY CONTENT", " ".join(x[0] for x in logs))
+
+
+class AdvancedSettingsCancelTest(unittest.TestCase):
+    def test_restore_helper_reverts_only_snapshotted_values(self):
+        stub = SimpleNamespace(_chunk_size=99, _temperature=0.9)
+        gui.App._restore_advanced_settings(
+            stub, {"_chunk_size": 40, "_temperature": 0.2, "_missing": None})
+        self.assertEqual(stub._chunk_size, 40)
+        self.assertEqual(stub._temperature, 0.2)
+        self.assertFalse(hasattr(stub, "_missing"))
+
+    def test_window_close_uses_same_cancel_handler(self):
+        src = inspect.getsource(gui.App._show_advanced_settings)
+        self.assertIn('dlg.protocol("WM_DELETE_WINDOW", _cancel)', src)
+        self.assertIn("command=_cancel", src)
+        self.assertIn("command=_save", src)
+
+
+class EstimateFailureTest(unittest.TestCase):
+    def test_estimate_exception_replaces_calculating_message(self):
+        info = _Var()
+        stub = SimpleNamespace(
+            _chunk_size=40,
+            file_info_var=info,
+            stat_files_var=_Var(),
+            _set_stat=lambda _var, _value: None,
+            _is_shutting_down=False,
+        )
+        with patch.object(gui, "estimate_tokens", side_effect=OSError("unreadable")), \
+                patch.object(gui.App, "_start_worker",
+                             side_effect=lambda _self, target, args=(), daemon=True: target()):
+            gui.App._estimate_async(
+                stub, ["one.srt", "two.srt"],
+                lambda blocks, est: f"{blocks}:{est}")
+        self.assertIn("2 dosya", info.value)
+        self.assertIn("tahmini yapılamadı", info.value)
+        self.assertNotIn("hesaplanıyor", info.value)
+
+
+if __name__ == "__main__":
+    unittest.main()

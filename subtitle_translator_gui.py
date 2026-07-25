@@ -5747,12 +5747,25 @@ class App(ctk.CTk):
                       command=_clear_pm).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="📋  Kopyala",
                       fg_color=CARD, hover_color=BORDER,
-                      command=lambda: (self.clipboard_clear(),
-                                       self.clipboard_append(self._pm.build_context_hint()))).grid(
+                      command=self._copy_project_memory_to_clipboard).grid(
             row=0, column=1, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="✕  Kapat",
                       fg_color=CARD, hover_color=BORDER,
                       command=dlg.destroy).grid(row=0, column=2, padx=4, sticky="ew")
+
+    def _copy_project_memory_to_clipboard(self):
+        try:
+            content = self._pm.build_context_hint()
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            messagebox.showinfo("Kopyalandı", "Proje hafızası panoya kopyalandı.")
+            return True
+        except Exception as e:
+            self._log(f"Proje hafızası panoya kopyalanamadı: {e}", "warn")
+            messagebox.showwarning(
+                "Pano kullanılamıyor",
+                "Proje hafızası panoya kopyalanamadı. Başka bir uygulama panoyu kilitlemiş olabilir.")
+            return False
 
     # ── Drag-and-Drop ─────────────────────────────────────────────────────────
     def _setup_drag_drop(self):
@@ -9088,6 +9101,14 @@ class App(ctk.CTk):
                       "_max_workers", "_temperature", "_max_retry", "_scene_gap_seconds")
         _adv_snapshot = {a: getattr(self, a, None) for a in _adv_attrs}
 
+        def _cancel():
+            self._restore_advanced_settings(_adv_snapshot)
+            dlg.destroy()
+
+        def _save():
+            self._save_settings()
+            dlg.destroy()
+
         dlg.grid_columnconfigure(0, weight=1)
         r = 0
 
@@ -9161,15 +9182,20 @@ class App(ctk.CTk):
         ctk.CTkButton(btn_fr, text="✓ Kaydet", height=36,
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=ACCENT, hover_color="#5a4fd1",
-                      command=lambda: (self._save_settings(), dlg.destroy())
+                      command=_save
                       ).grid(row=0, column=0, sticky="ew", padx=(0,4))
 
         ctk.CTkButton(btn_fr, text="✕ İptal", height=36,
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=CARD, hover_color=BORDER,
-                      command=lambda: ([setattr(self, k, v) for k, v in _adv_snapshot.items()
-                                        if v is not None], dlg.destroy())
+                      command=_cancel
                       ).grid(row=0, column=1, sticky="ew", padx=(4,0))
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+    def _restore_advanced_settings(self, snapshot):
+        for key, value in snapshot.items():
+            if value is not None:
+                setattr(self, key, value)
 
     # ── Progress Tracking ─────────────────────────────────────────────────────
     def _start_elapsed_timer(self):
@@ -9977,6 +10003,13 @@ class App(ctk.CTk):
             try:
                 est, total_blocks = estimate_tokens(files, chunk_size=_cs)
             except Exception:
+                def _failed():
+                    try:
+                        self.file_info_var.set(
+                            f"⚠  {n} dosya  •  token tahmini yapılamadı")
+                    except Exception:
+                        pass
+                _post_ui(self, _failed)
                 return
             est_k = f"{est/1000:.0f}k"
             def _upd():
