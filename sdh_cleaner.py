@@ -5,9 +5,60 @@ import unicodedata
 FORMAT_TAG_RE = re.compile(r"</?(i|b|u|font)[^>]*>", re.IGNORECASE)
 MUSIC_NOTE_RE = re.compile(r"[♪♫♬♩]+")
 EMPTY_DASH_RE = re.compile(r"^\s*[-–—_]+\s*$")
-BRACKET_OR_PAREN_RE = re.compile(r"\[[^\]\n]{1,100}\]|\([^)\n]{1,100}\)")
+_MAX_DESCRIPTOR_GROUP = 300
 SPEAKER_PREFIX_RE = re.compile(r"^\s*-?\s*(\[[^\]\n]{1,40}\]|\([^)\n]{1,40}\))\s*:?\s*")
 CHEVRON_SPEAKER_RE = re.compile(r"^\s*(?:(?:&gt;|>){2})\s*", re.IGNORECASE)
+
+
+def _bracket_group_spans(text: str) -> list:
+    """Dengeli []/() gruplarını satır bazında ve sınırlı uzunlukta bulur."""
+    text = str(text or "")
+    spans = []
+    stack = []
+    start = None
+    pairs = {"]": "[", ")": "("}
+    for pos, char in enumerate(text):
+        if char == "\n":
+            stack.clear()
+            start = None
+            continue
+        if char in "[(":
+            if not stack:
+                start = pos
+            stack.append(char)
+        elif char in "])" and stack:
+            if stack[-1] != pairs[char]:
+                stack.clear()
+                start = None
+                continue
+            stack.pop()
+            if not stack and start is not None:
+                if pos - start - 1 <= _MAX_DESCRIPTOR_GROUP:
+                    spans.append((start, pos + 1))
+                start = None
+        if start is not None and pos - start > _MAX_DESCRIPTOR_GROUP + 2:
+            stack.clear()
+            start = None
+    return spans
+
+
+def _replace_bracket_groups(text: str, replacer) -> str:
+    text = str(text or "")
+    spans = _bracket_group_spans(text)
+    if not spans:
+        return text
+    out = []
+    cursor = 0
+    for start, end in spans:
+        out.append(text[cursor:start])
+        out.append(replacer(text[start:end]))
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def _has_bracket_group(text: str) -> bool:
+    return bool(_bracket_group_spans(text))
 
 _SDH_KEYWORDS = {
     # English hearing-impaired captions
@@ -165,13 +216,15 @@ def _ascii_fold(value: str) -> str:
 def _descriptor_key(value: str) -> str:
     value = _ascii_fold(value)
     value = MUSIC_NOTE_RE.sub(" ", value)
+    value = re.sub(r"[\[\](){}]+", " ", value)
     value = re.sub(r"[_\-–—:;,.!?]+", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     return value
 
 
 _SDH_ACTION_VERBS = {
-    "breaking", "shattering", "crashing", "slamming", "closes", "closing",
+    "break", "breaks", "breaking", "shatter", "shatters", "shattering",
+    "crash", "crashes", "crashing", "slam", "slams", "slamming", "closes", "closing",
     "opens", "opening", "creaks", "creaking", "ticking", "rings", "ringing",
     "beeping", "honking", "squealing", "humming", "buzzing", "rumbling",
     "clicking", "typing", "whistling", "shouting", "yelling", "coughing",
@@ -181,6 +234,16 @@ _SDH_ACTION_VERBS = {
     "continues", "fades", "applause", "applauding", "chuckle", "chuckles",
     "chuckling", "giggle", "giggles", "giggling", "sniffles", "chatter",
     "barking", "howling", "growling", "meow", "roaring", "chirping", "knocks", "knocking"
+}
+
+_SDH_SOUND_MODIFIERS = {
+    "loud", "sudden", "distant", "faint", "soft", "heavy", "sharp",
+    "quiet", "continuous", "muffled", "nearby",
+}
+
+_SDH_SOUND_NOUNS = {
+    "crash", "slam", "bang", "boom", "thud", "click", "beep", "buzz",
+    "rumble", "scream", "shout", "whisper", "knock", "ring",
 }
 
 _KNOWN_LANGUAGES = {
@@ -212,7 +275,9 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
         return True
 
     if len(words_no_digits) == 1:
-        return words_no_digits[0] in _SDH_KEYWORDS or words_no_digits[0] in _SPEAKER_WORDS
+        return (words_no_digits[0] in _SDH_KEYWORDS
+                or words_no_digits[0] in _SPEAKER_WORDS
+                or words_no_digits[0] in _SDH_ACTION_VERBS)
 
     # All non-digit words are SDH/speaker keywords: [soft music], [door closes], [narrator 2]
     if all(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words_no_digits):
@@ -220,6 +285,10 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
 
     # Sound action verb ending: [glass breaking], [Glass Breaking], [GLASS BREAKING], [woman whispering]
     if len(words_no_digits) >= 2 and words_no_digits[-1] in _SDH_ACTION_VERBS:
+        return True
+    if (len(words_no_digits) >= 2
+            and words_no_digits[-1] in _SDH_SOUND_NOUNS
+            and all(w in _SDH_SOUND_MODIFIERS for w in words_no_digits[:-1])):
         return True
 
     return False
@@ -285,12 +354,11 @@ def strip_sdh_line(line: str, strip_format_tags: bool = True) -> str:
 
     line = _strip_standalone_music_notes(line)
 
-    def replace_descriptor(match):
-        raw = match.group(0)
+    def replace_descriptor(raw):
         inner = raw[1:-1]
         return "" if is_sdh_descriptor(inner) else raw
 
-    line = BRACKET_OR_PAREN_RE.sub(replace_descriptor, line)
+    line = _replace_bracket_groups(line, replace_descriptor)
     line = re.sub(r"\s+([,.;:!?])", r"\1", line)
     line = re.sub(r"(^|\s)[-–—]\s*$", "", line)
     line = re.sub(r"\s{2,}", " ", line).strip()
@@ -306,10 +374,8 @@ def is_sdh_only(text: str) -> bool:
     if not text or EMPTY_DASH_RE.match(text):
         return True
 
-    stripped = BRACKET_OR_PAREN_RE.sub(
-        lambda m: "" if is_sdh_descriptor(m.group(0)[1:-1]) else m.group(0),
-        text,
-    )
+    stripped = _replace_bracket_groups(
+        text, lambda raw: "" if is_sdh_descriptor(raw[1:-1]) else raw)
     stripped = re.sub(r"[\s,.;:!?_\-–—]+", "", stripped)
     if not stripped:
         return True
@@ -340,14 +406,13 @@ def _apply_sdh_translations(text: str) -> str:
 
 def normalize_sdh_descriptors(text: str) -> str:
     """Translate English words inside SDH brackets/parentheses without removing them."""
-    def replace_descriptor(match):
-        raw = match.group(0)
+    def replace_descriptor(raw):
         opener, closer = raw[0], raw[-1]
         inner = raw[1:-1]
         translated = translate_sdh_descriptor(inner)
         return f"{opener}{translated}{closer}"
 
-    return BRACKET_OR_PAREN_RE.sub(replace_descriptor, str(text or ""))
+    return _replace_bracket_groups(str(text or ""), replace_descriptor)
 
 
 def _tr_upper(s: str) -> str:
@@ -628,7 +693,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     çeviri satırındaki tüm parantez/köşeli gruplarını sök (kalan repliği bırak).
     Kaynakta grup YOKSA çeviriye DOKUNMA — parantez orada gerçek nesir olabilir.
 
-    '<i>'/'<b>' gibi biçim etiketlerine hiç dokunulmaz (BRACKET_OR_PAREN_RE zaten
+    '<i>'/'<b>' gibi biçim etiketlerine hiç dokunulmaz (bracket tarayıcı zaten
     '<>' içeriğini eşlemiyor — strip_sdh_line'ın aksine format-tag sökme adımı
     burada hiç çalıştırılmaz). '- ' diyalog tiresi korunur; etiket sökülünce
     satırda yalnızca '-'/'- ' kalıyorsa satır boş sayılır (tek başına tire
@@ -650,9 +715,9 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""
-    if not BRACKET_OR_PAREN_RE.search(src_line):
+    if not _has_bracket_group(src_line):
         return tr_line
-    stripped = BRACKET_OR_PAREN_RE.sub("", tr_line)
+    stripped = _replace_bracket_groups(tr_line, lambda _raw: "")
     stripped = _ORPHANED_LABEL_COLON_RE.sub(r"\1", stripped)
     stripped = re.sub(r"\s{2,}", " ", stripped).strip()
     if _DASH_ONLY_LINE_RE.match(stripped):

@@ -8287,7 +8287,7 @@ class App(ctk.CTk):
     def _on_mode_change(self):
         if self.mode_var.get() == "sync" and not self.hybrid_var.get():
             self.hybrid_var.set(True)
-            self.hybrid_frame.grid()
+            self._toggle_hybrid()
 
     def _toggle_hybrid(self):
         if self.hybrid_var.get():

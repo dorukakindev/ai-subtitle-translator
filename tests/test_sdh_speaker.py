@@ -38,6 +38,22 @@ class TestSdhSpeaker(unittest.TestCase):
         self.assertEqual(strip_sdh_line("[speaks Latin] Salve"), "Salve")
         self.assertEqual(strip_sdh_line("[in Spanish] Hola"), "Hola")
 
+    def test_generic_sound_forms_are_cleaned_without_removing_headings(self):
+        self.assertEqual(strip_sdh_line("[loud crash] Run!"), "Run!")
+        self.assertEqual(strip_sdh_line("[glass breaks] Run!"), "Run!")
+        self.assertEqual(strip_sdh_line("[slams] Run!"), "Run!")
+        self.assertEqual(strip_sdh_line("[Soft Power] A documentary."),
+                         "[Soft Power] A documentary.")
+        self.assertEqual(strip_sdh_line("[Breaking News] Markets fell."),
+                         "[Breaking News] Markets fell.")
+
+    def test_long_and_nested_descriptors_are_cleaned_with_bounded_scanner(self):
+        long_descriptor = "[very " + ("loud " * 22) + "crashing]"
+        self.assertEqual(strip_sdh_line(long_descriptor + " Run!"), "Run!")
+        self.assertEqual(strip_sdh_line("[glass (loudly) crashing] Run!"), "Run!")
+        over_limit = "[" + ("noise " * 60) + "] Keep"
+        self.assertEqual(strip_sdh_line(over_limit), over_limit)
+
     def test_preserved_titles_and_names(self):
         self.assertEqual(strip_sdh_line("[Latin] title remains"), "[Latin] title remains")
         self.assertEqual(strip_sdh_line("[New York] is a city."), "[New York] is a city.")
