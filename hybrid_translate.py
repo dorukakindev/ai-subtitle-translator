@@ -760,6 +760,54 @@ def _session_path(input_dir: str) -> Path:
     return _session_dir() / f"{h}_session.json"
 
 
+def prune_batch_sessions(max_age_days: int = 90, now: float = None,
+                         log_fn=None) -> int:
+    root = _session_dir()
+    if not root.exists():
+        return 0
+    cutoff = (time.time() if now is None else float(now)) - max_age_days * 86400
+    removed = 0
+    for path in root.glob("*_session.json"):
+        try:
+            if path.stat().st_mtime >= cutoff:
+                continue
+        except OSError:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+            continue
+        files = data.get("files")
+        if not isinstance(files, dict) or not files:
+            continue
+        statuses = {
+            str(entry.get("status", "pending"))
+            for entry in files.values()
+            if isinstance(entry, dict)
+        }
+        if not statuses or statuses & {"pending", "submitted"}:
+            continue
+        if not statuses.issubset({"completed", "failed"}):
+            continue
+        input_exists = bool(data.get("input_dir")) and Path(
+            data["input_dir"]).exists()
+        if "failed" in statuses and input_exists:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    if removed and log_fn:
+        log_fn(f"Eski batch session temizliği: {removed} güvenli kayıt silindi", "info")
+    return removed
+
+
 def batch_session_fingerprint(input_dir: str, output_dir: str, filepaths: list,
                               settings: dict) -> str:
     files = []
@@ -806,6 +854,7 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
 
     Returns the session dict (already persisted to disk).
     """
+    prune_batch_sessions()
     existing = load_batch_session(input_dir)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 

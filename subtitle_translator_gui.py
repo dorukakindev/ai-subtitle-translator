@@ -22,7 +22,7 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
 import credential_store
 import series_memory
 import sdh_cleaner
-from app_state import (_interprocess_lock, atomic_write_json,
+from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json,
                        best_effort_cancel_remote_batch, mutate_batch_ids,
                        state_dir, state_path)
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
@@ -1829,6 +1829,18 @@ def write_srt(filepath, blocks):
                 text = "[ÇEVİRİ EKSİK]"
             f.write(f"{idx}\n{ts}\n{text}\n\n")
     _tmp.replace(out)
+
+
+def _create_postprocess_backup(filepath) -> Path:
+    src = Path(filepath)
+    candidate = src.with_name(f"{src.stem}.postprocess.bak{src.suffix}")
+    index = 2
+    while candidate.exists():
+        candidate = src.with_name(
+            f"{src.stem}.postprocess.{index}.bak{src.suffix}")
+        index += 1
+    atomic_write_bytes(candidate, src.read_bytes())
+    return candidate
 
 
 def _paths_equal(a, b) -> bool:
@@ -10589,6 +10601,16 @@ class App(ctk.CTk):
             self._update_file_progress(fp, "Yükleniyor", 5)
 
             try:
+                try:
+                    backup_path = _create_postprocess_backup(fp)
+                    self._log(
+                        f"Post-işlem yedeği: {backup_path.name}", "info")
+                except Exception as backup_error:
+                    self._log(
+                        f"{fname}: geri alınabilir yedek oluşturulamadı; "
+                        f"orijinal dosyaya dokunulmadı ({backup_error})", "err")
+                    self._update_file_progress(fp, "Yedek hatası", 0, "error")
+                    continue
                 blocks = list(parse_subtitle(fp))
                 if not blocks:
                     self._log(f"{fname}: geçerli blok yok, atlandı", "warn")
@@ -13206,6 +13228,8 @@ class App(ctk.CTk):
                             tgt   = self.tgt_var.get()
                             pp    = list(parse_srt(output_path))
                             _raw_backup_blocks = list(pp)   # kalite geçişleri öncesi ham çeviri (yedek)
+                            self._save_raw_backup(
+                                output_path, _raw_backup_blocks, {})
                             
                             # Kaynak cue'ları yükle (consistency sweep + etiket geri yükleme +
                             # [HATA] işaretleme + TM/QC bunlara bağlı; bulunamazsa hepsi atlanır).
@@ -14552,6 +14576,9 @@ class App(ctk.CTk):
                 self._log(f"[{fname}] Faz-2 hatası: {e} — atlanıyor", "err")
                 ht.update_batch_session(session, filepath, "failed")
                 continue
+            finally:
+                if self._wait_between_files(si, n_sub, fname) == "stopped":
+                    self._stop_flag = True
 
         self._save_quality_report(report_rows, output_dir)
         self._set_running(False)

@@ -30,6 +30,17 @@ def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
         tmp.unlink(missing_ok=True)
 
 
+def atomic_write_bytes(path, data: bytes) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_bytes(data)
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def atomic_write_json(path, data) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
 
