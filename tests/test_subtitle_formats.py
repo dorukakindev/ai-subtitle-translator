@@ -97,6 +97,21 @@ class ParseVttTest(unittest.TestCase):
         self.assertEqual(blocks[0][2], "2 < 3 and 5 > 4")
         os.unlink(path)
 
+    def test_vtt_comma_timestamps_without_blank_lines_are_separate_cues(self):
+        vtt = (
+            "WEBVTT\n"
+            "1:23,456 --> 1:24,000\nFirst\n"
+            "00:01:25,000 --> 00:01:26,000\nSecond\n"
+        )
+        path = _write_temp(vtt, ".vtt")
+        from subtitle_formats import parse_any
+        blocks = parse_any(path)
+        self.assertEqual([(b[1], b[2]) for b in blocks], [
+            ("00:01:23,456 --> 00:01:24,000", "First"),
+            ("00:01:25,000 --> 00:01:26,000", "Second"),
+        ])
+        os.unlink(path)
+
 
 class ParseAssTest(unittest.TestCase):
     # parse_ass ilk Format: satırını Events kolonları olarak alır;
@@ -199,6 +214,20 @@ class ParseAssTest(unittest.TestCase):
         texts = [b[2] for b in blocks]
         self.assertNotIn("Sign text", texts)
         self.assertIn("Normal text", texts)
+        os.unlink(path)
+
+    def test_ass_events_format_ignores_brackets_before_custom_columns(self):
+        content = (
+            "[Script Info]\n\n[Events]\n"
+            "; [metadata kept before the format]\n"
+            "Format: Start, End, Text, Style\n"
+            "Dialogue: 0:00:01.00,0:00:03.00,Hello [there],Default\n"
+        )
+        path = _write_temp(content, ".ass")
+        from subtitle_formats import parse_any
+        blocks = parse_any(path)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0][2], "Hello [there]")
         os.unlink(path)
 
 

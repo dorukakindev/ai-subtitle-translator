@@ -53,18 +53,11 @@ def _vtt_ts_to_srt(ts: str) -> str:
     """WebVTT zaman damgasını (HH:MM:SS.mmm veya MM:SS.mmm) SRT formatına çevirir.
     Milisaniye kısmı 3 haneye tamamlanır (SRT geçerliliği: ,5 → ,500; ,12 → ,120)."""
     ts = ts.strip()
-    # HH:MM:SS.mmm → HH:MM:SS,mmm
-    if ts.count(':') == 2:
-        out = ts.replace('.', ',')
-    # MM:SS.mmm → 00:MM:SS,mmm
-    elif ts.count(':') == 1:
-        out = '00:' + ts.replace('.', ',')
-    else:
+    match = re.fullmatch(r'(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[.,](\d*)', ts)
+    if not match:
         return ts
-    if ',' in out:
-        head, ms = out.rsplit(',', 1)
-        out = head + ',' + (ms.ljust(3, '0')[:3] if ms else '000')
-    return out
+    hour, minute, second, ms = match.groups()
+    return f"{int(hour or 0):02d}:{int(minute):02d}:{int(second):02d},{(ms + '000')[:3]}"
 
 def _ass_ts_to_srt(ts: str) -> str:
     """ASS zaman damgasını (H:MM:SS.cc) SRT formatına çevirir."""
@@ -205,7 +198,7 @@ def parse_vtt(filepath: str) -> list:
     # Boş-satır ayracı olmayan / başlıktan hemen sonra başlayan VTT'lerde cue'ların
     # tek bloğa çökmesini engelle: her zaman-damgası satırının önüne boş satır ekle
     # (zaten boş satır varsa zararsız — split \n\n+ çoklu boşluğu tek ayraç sayar).
-    content = re.sub(r'\n(?=\d{1,2}:\d{2}(?::\d{2})?\.\d{3}\s*-->)', '\n\n', content)
+    content = re.sub(r'\n(?=\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->)', '\n\n', content)
 
     # WEBVTT başlığını atla, boş satırlarla ayrılmış bloklara böl
     parts = re.split(r'\n\n+', content.strip())
@@ -266,14 +259,15 @@ def parse_ass(filepath: str) -> list:
     """
     content = read_subtitle_text(filepath)
 
-    # [Events] bölümündeki Format satırını bul. [V4+ Styles] [Fonts] gibi diğer
-    # bölümlerle karışmaması için YALNIZCA [Events] içinde arıyoruz.
-    # fallback: boş section eşleşmesi.
-    events_match = re.search(r'\[Events\][^\[]*?Format:\s*(.*)', content,
-                             re.IGNORECASE)
-    if events_match:
-        raw_fmt = events_match.group(1)
-        cols = [c.strip().lower() for c in raw_fmt.split('\n')[0].split(',')]
+    # [Events] bölümünü gerçek section sınırlarıyla ayır; içerikteki [ karakteri
+    # (ör. Comment veya diyalog metni) Format satırı aramasını kesmemeli.
+    events_match = re.search(r'^\s*\[Events\]\s*$([\s\S]*?)(?=^\s*\[[^\r\n]+\]\s*$|\Z)',
+                             content, re.IGNORECASE | re.MULTILINE)
+    format_match = (re.search(r'^\s*Format\s*:\s*(.*?)\s*$', events_match.group(1),
+                              re.IGNORECASE | re.MULTILINE)
+                    if events_match else None)
+    if format_match:
+        cols = [c.strip().lower() for c in format_match.group(1).split(',')]
     else:
         # [Events] yok veya içinde Format satırı yok -> V4+ varsayılan
         cols = ['marked','start','end','style','name','marginl','marginr',
