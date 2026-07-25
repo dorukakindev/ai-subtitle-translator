@@ -14462,7 +14462,7 @@ class App(ctk.CTk):
                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
                     "name": fname, "total": len(_final_blocks),
-                    "hata": _hata_n + _n_filled_save, "cps": _cps_n,
+                    "hata": _hata_n + _n_filled, "cps": _cps_n,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                     "cons": _cons_fixes, "pass_fix": _pass_fix,
                     "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,

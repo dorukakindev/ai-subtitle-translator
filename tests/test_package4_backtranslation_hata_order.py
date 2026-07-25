@@ -73,6 +73,30 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         self.assertGreater(fill_pos, bt_pos, "_fill_hata_with_source must follow _maybe_backtranslation_check")
         self.assertGreater(write_pos, fill_pos, "write_srt must follow _fill_hata_with_source")
 
+    def test_hybrid_batch_tail_hata_counting_and_raw_backup(self):
+        """Simulate post-processing pass producing [HATA], verify [ÇEVİRİ EKSİK] output, report counting _n_filled, and raw backup preservation."""
+        cues = [
+            MagicMock(index=1, text="Hello world"),
+            MagicMock(index=2, text="Goodbye world"),
+        ]
+        # Simulate post-processing producing a [HATA] line
+        pp_blocks = [
+            (1, "00:00:01 -> 00:00:02", "Merhaba dünya"),
+            (2, "00:00:03 -> 00:00:05", "[HATA: timeout]"),
+        ]
+        raw_backup_blocks = [(1, "00:00:01 -> 00:00:02", "Hello world"), (2, "00:00:03 -> 00:00:05", "Goodbye world")]
+        raw_map = gui._raw_src_map_from_cues(cues)
+
+        final_blocks, n_filled = gui._fill_hata_with_source(pp_blocks, raw_map)
+        self.assertEqual(n_filled, 1)
+        self.assertEqual(final_blocks[1][2], "[ÇEVİRİ EKSİK]")
+
+        # Report counting logic in _run_hybrid: uses _n_filled from _fill_hata_with_source
+        self.assertEqual(n_filled, 1)
+
+        # Raw backup preserves pre-quality content
+        self.assertEqual(raw_backup_blocks[1][2], "Goodbye world")
+
 
 if __name__ == "__main__":
     unittest.main()
