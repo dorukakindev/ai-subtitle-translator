@@ -252,7 +252,7 @@ def _ends_sentence(text: str) -> bool:
 def _ellipsis_continues(cur: str, nxt: str) -> bool:
     """'...' ile biten satır devam cümlesi mi? Sonraki satır elipsisle veya
     küçük harfle başlıyorsa cümle sarkıyor demektir ('Düşünüyordum...' / '...dün olanları')."""
-    c = cur.rstrip('"\'Â»â€ ').rstrip()
+    c = cur.rstrip('"\'»” ').rstrip()
     if not (c.endswith('...') or c.endswith('…')):
         return False
     n = nxt.lstrip('"\'«“ ').lstrip()
@@ -2389,7 +2389,7 @@ def build_system_prompt(
         f"NEVER add parenthetical translator notes or glosses '(...)' that do not exist in the source "
         f"line. Translate the term; do not explain it.",
         "SCRIPT GUARD: Turkish uses the Latin alphabet only. "
-        "NEVER output Arabic (Ø¹ØŒØ­), Tamil (à®•à¯‹à®¯à®¿à®²à¯), Devanagari (à¤¦à¥‡à¤µ), Cyrillic (Ñ‚ĞµĞºÑÑ‚), "
+        f"NEVER output Arabic (ع،ح), Tamil (கோயில்), Devanagari (देव), Cyrillic (текст), "
         "CJK (寺), or ANY non-Latin script characters. "
         "If you see 'temple', 'mosque', 'shrine', translate to Turkish words: "
         "tapınak, cami, türbe — NEVER use the word's form in another language's script.",
@@ -2701,7 +2701,7 @@ def native_reader_pass(
                     f"{k}={v}" for k, v in list(pronoun_map.items())[:6])
             idiom_map = analysis_result[5] if len(analysis_result) > 5 else None
             if isinstance(idiom_map, dict) and idiom_map:
-                context_info += ("\nÅu deyimleri doÄŸal TÃ¼rkÃ§e karÅŸÄ±lÄ±ÄŸÄ±yla oku (literal DEÄÄ°L): "
+                context_info += ("\nŞu deyimleri doğal Türkçe karşılığıyla oku (literal DEĞİL): "
                                  + "; ".join(f"{k}→{v}" for k, v in list(idiom_map.items())[:8]))
         except Exception:
             pass
@@ -3423,7 +3423,7 @@ _LOCAL_FIXES = [
     (re.compile(r"\b(?:het\s+)?Barre\s+Land['’]in\b", re.I), "Çorak Ülke'nin"),
     (re.compile(r"\b(?:het\s+)?Barre\s+Land['’]i\b", re.I), "Çorak Ülke'yi"),
     (re.compile(r'\b(?:het\s+)?Barre\s+Land\b', re.I), 'Çorak Ülke'),
-    (re.compile(r'\bDe\s+Heilige\s+Graal\s+ÅŸatosu', re.I), 'Kutsal KÃ¢se Åatosu'),
+    (re.compile(r'\bDe\s+Heilige\s+Graal\s+şatosu', re.I), 'Kutsal Kâse Şatosu'),
     (re.compile(r'\bDe\s+Heilige\s+Graal\b', re.I), 'Kutsal Kâse'),
     (re.compile(r'\bDe\s+Toverberg[’\']i\b', re.I), 'Büyülü Dağ’ı'),
     (re.compile(r'\bDe\s+Toverberg\b', re.I), 'Büyülü Dağ'),
@@ -3558,7 +3558,7 @@ _LOCAL_FIXES = [
     (re.compile(r"\bBible['’](da|de)\b", re.I), "Kutsal Kitap'ta"),
     (re.compile(r"\bBible['’](dan|den)\b", re.I), "Kutsal Kitap'tan"),
     (re.compile(r"\bBible['’]([ıiuü])\b", re.I), r"Kutsal Kitap'\1"),
-    (re.compile(r"\bBible['â€™](in|Ä±n|un|Ã¼n)\b", re.I), "Kutsal Kitap'ın"),
+    (re.compile(r"\bBible['’](in|ın|un|ün)\b", re.I), "Kutsal Kitap'ın"),
     (re.compile(r'\bBible\b', re.I), 'Kutsal Kitap'),
     # Cibraani context-dependent: language context → İbranice
     (re.compile(r'\bCibraani\s+(dilinde|dili)\b', re.I), 'İbranice'),
@@ -4253,7 +4253,7 @@ def _looks_like_early_turkish_verb_closure(text: str) -> bool:
     core = re.sub(r"^\s*[-–—]?\s*[^:\n]{1,40}:\s*", "", core).strip()
     if len(core.split()) < 2:
         return False
-    last = re.sub(r"[\"'â€œâ€â€˜â€™Â»Â«)\].,!?;:â€¦]+$", "", core).split()
+    last = re.sub(r'''["' “”‘’»«…)\].,!?;:]+$''', "", core).split()
     if not last:
         return False
     tail = last[-1].lower()
@@ -4388,7 +4388,7 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
                 return token
         return None
     for match in _TOKEN_WITH_LATIN_EXTENDED_RE.finditer(value):
-        token = match.group(0).strip(".,;:!?()[]{}\"'â€œâ€â€˜â€™<>")
+        token = match.group(0).strip(".,;:!?()[]{}\"' “”‘’»<>")
         if not any(
             "\u00C0" <= ch <= "\u024F" and ch not in _TARGET_TURKISH_LATIN_ALLOW
             for ch in token
@@ -4732,7 +4732,7 @@ def _looks_like_dangling_turkish_fragment(text: str, fragment_tag: str | None = 
         return True
     if _looks_like_early_turkish_verb_closure(core):
         return False
-    tail = re.sub(r"[\"'â€œâ€â€˜â€™Â»Â«)\].,!?;:â€¦]+$", "", core).split()[-1].lower()
+    tail = re.sub(r'''["' “”‘’»«…)\].,!?;:]+$''', "", core).split()[-1].lower()
     if tail in {"ve", "veya", "ya", "ama", "fakat", "çünkü", "ki", "ile", "için", "gibi"}:
         return True
     if len(tail) < 4:
@@ -5491,7 +5491,7 @@ _POLISH_ENGLISH_BACKSLIDE_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 _POLISH_MODEL_CORRUPTION_RE = re.compile(
-    r"\b(?:thek|Thek|THEK|iyeleri|Ä°yeleri|IYELERI|mekiÅŸi|MEKÄ°ÅÄ°)\b",
+    r"\b(?:thek|Thek|THEK|iyeleri|İyeleri|IYELERI|mekişi|MEKİŞİ)\b",
 )
 _POLISH_SPEAKER_LABEL_RE = re.compile(
     r"(?m)^\s*[-\u2013\u2014]?\s*[\w ._'/.-]{2,30}:\s*",
