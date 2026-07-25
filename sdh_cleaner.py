@@ -241,6 +241,8 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
         return False
     if re.search(r'[?!,;:]', inner):
         return False
+    if _is_heading_label(inner):
+        return False
     words = inner.split()
     if not words or len(words) > 3:
         return False
@@ -581,6 +583,28 @@ _SRC_NARRATOR_LABEL_RE = re.compile(
 _TR_NARRATOR_LABEL_RE = re.compile(
     r'\b(?:Narrator|Anlatıcı|Anlatici)\s*:\s*', re.IGNORECASE
 )
+_HEADING_LABEL_WORDS = frozenset({
+    "chapter", "episode", "part", "act", "scene", "season", "book", "volume",
+    "breaking", "news", "flash", "report", "live", "update",
+    "location", "date", "time", "note", "warning", "caution", "notice", "disclaimer",
+    "b\u00f6l\u00fcm", "kisim", "k\u0131s\u0131m", "sahne", "sezon", "cilt", "son dakika", "haber", "konum", "tarih", "saat"
+})
+
+
+def _is_heading_label(label_text: str) -> bool:
+    words = [w.lower() for w in re.findall(r"\w+", str(label_text or ""))]
+    return any(w in _HEADING_LABEL_WORDS for w in words)
+
+
+def _src_has_plain_speaker_label(src_line: str) -> bool:
+    m = _SRC_PLAIN_SPEAKER_LABEL_RE.search(src_line)
+    if not m:
+        return False
+    matched_text = m.group(0).rstrip(":\n\r\t ")
+    label = re.sub(r"^\s*-\s*", "", matched_text).strip()
+    return not _is_heading_label(label)
+
+
 _SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?m)(?:^|(?<=[.!?…]))\s*(?:-\s*)?"
     r"(?:[A-Z][A-Z0-9 .'\-]{1,30}|"
@@ -620,7 +644,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     src_line = str(src_line or "")
     if _SRC_NARRATOR_LABEL_RE.search(src_line):
         tr_line = _TR_NARRATOR_LABEL_RE.sub("", tr_line)
-    if (_SRC_PLAIN_SPEAKER_LABEL_RE.search(src_line)
+    if (_src_has_plain_speaker_label(src_line)
             or _SRC_BRACKET_SPEAKER_PREFIX_RE.search(src_line)
             or _SRC_QUOTED_SPEAKER_PREFIX_RE.search(src_line)):
         tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
