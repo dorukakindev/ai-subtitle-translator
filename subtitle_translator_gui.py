@@ -9845,10 +9845,10 @@ class App(ctk.CTk):
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
 
     def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks, src_lang=None) -> int:
-        """Geri ?eviri anlam kontrol?. A??ksa ?al???r: T?rk?eyi tekrar
-        kayna?a ?evirip anlamca sapan sat?rlar? bulur, <stem>.geri_ceviri.txt'e +
-        log'a yazar. Flag'lenen sat?rlar? helper model ile d?zeltir. D?zeltilen
-        sat?r say?s?n? d?ner."""
+        """Geri çeviri anlam kontrolü. Açıksa çalışır: Türkçeyi tekrar
+        kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
+        log'a yazar. Flag'lenen satırları helper model ile düzeltir. Düzeltilen
+        satır sayısını döner."""
         try:
             if not self.backtrans_var.get():
                 return 0
@@ -12027,7 +12027,7 @@ class App(ctk.CTk):
                     _tm_cache[(src_t, sname)] = tgt_t
 
         def _tm_fill_chunk(req: dict) -> str | None:
-            """Chunk'taki t?m bloklar TM'de tam e?le?iyorsa JSON cevab? d?ner, yoksa None."""
+            """Chunk'taki tüm bloklar TM'de tam eşleşiyorsa JSON cevabı döner, yoksa None."""
             try:
                 payload = json.loads(req["body"]["messages"][1]["content"])
                 items   = payload.get("tr", [])
@@ -12041,7 +12041,7 @@ class App(ctk.CTk):
                         fuzzy = self._tm.fuzzy_lookup(item["t"], threshold=0.95, tgt_lang=tgt, model=self._main_model_name(), profanity=self.profanity_var.get(), schema_name=sch_name)
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
-                        return None  # eksik e?le?me -> API'ye g?nder
+                        return None  # eksik eşleşme -> API'ye gönder
                     results.append({"i": item["i"], "t": cached})
                 return json.dumps(results, ensure_ascii=False)
             except Exception:

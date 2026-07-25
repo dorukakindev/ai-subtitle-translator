@@ -4285,29 +4285,38 @@ _GLOSSARY_GUARD_TURKISH_TARGETS = frozenset({"tr", "tur", "turkish", "türkçe",
 
 
 
-def _remove_single_plural_s(s: str) -> str:
-    s = str(s or "").lower()
-    if len(s) > 2 and s.endswith("s") and not s.endswith("ss"):
-        return s[:-1]
-    return s
+_TR_APOSTROPHIC_SUFFIXES = frozenset({
+    "in", "\u0131n", "un", "\u00fcn", "nin", "n\u0131n", "nun", "n\u00fcn",
+    "de", "da", "te", "ta", "den", "dan", "ten", "tan",
+    "e", "a", "ye", "ya", "i", "\u0131", "u", "\u00fc", "yi", "y\u0131", "yu", "y\u00fc",
+    "le", "la", "yle", "yla", "ler", "lar", "li", "l\u0131", "lu", "l\u00fc",
+    "lik", "l\u0131k", "luk", "l\u00fck"
+})
 
 
-def _glossary_token_matches_key(word: str, key_tokens: set[str]) -> bool:
-    wl = str(word or "").lower()
+def _glossary_token_matches_key(word: str, key_tokens: set[str], raw_value: str = "") -> bool:
+    w = str(word or "").strip()
+    wl = w.lower()
     if not wl:
         return False
-    wl_singular = _remove_single_plural_s(wl)
-    key_singulars = {kt: _remove_single_plural_s(kt) for kt in key_tokens}
 
-    if wl in key_tokens or wl_singular in key_tokens or any(wl_singular == ks for ks in key_singulars.values()):
+    if wl in key_tokens:
         return True
 
-    for suff in ("in", "\u0131n", "un", "\u00fcn", "nin", "n\u0131n", "nun", "n\u00fcn", "de", "da", "te", "ta", "den", "dan", "ten", "tan", "e", "a", "ye", "ya", "i", "\u0131", "u", "\u00fc", "yi", "y\u0131", "yu", "y\u00fc", "le", "la", "yle", "yla", "ler", "lar", "li", "l\u0131", "lu", "l\u00fc", "lik", "l\u0131k", "luk", "l\u00fck"):
+    for suff in _TR_APOSTROPHIC_SUFFIXES:
         if wl.endswith(suff):
             stem = wl[:-len(suff)]
-            stem_singular = _remove_single_plural_s(stem)
-            if stem in key_tokens or stem_singular in key_tokens or any(stem_singular == ks for ks in key_singulars.values()):
+            if stem in key_tokens:
                 return True
+
+    if (wl + "s") in key_tokens and raw_value:
+        pattern = re.compile(rf"\b{re.escape(w)}['\u2019]([a-z\u00e7\u011f\u0131\u00f6\u015f\u00fcA-Z\u00c7\u011e\u0130\u00d6\u015e\u00dc]+)", re.IGNORECASE)
+        m = pattern.search(raw_value)
+        if m:
+            suff = m.group(1).lower()
+            if suff in _TR_APOSTROPHIC_SUFFIXES:
+                return True
+
     return False
 
 def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | None:
@@ -4353,7 +4362,7 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
             w for w in hits
             if not (
                 w[:1].isupper()
-                and _glossary_token_matches_key(w, key_tokens)
+                and _glossary_token_matches_key(w, key_tokens, raw_value=value)
             )
         ]
         if not hits:

@@ -107,12 +107,24 @@ class TestPackage3GlossaryAndTmSchema(unittest.TestCase):
         self.assertIn("Merlin", hint)
 
     def test_glossary_token_matches_key_plural_s_handling(self):
-        """_glossary_token_matches_key handles single English plural s without over-stripping words like Princess."""
-        self.assertTrue(ht._glossary_token_matches_key("Newsweeks", {"newsweek"}))
-        self.assertTrue(ht._glossary_token_matches_key("Newsweek", {"newsweeks"}))
-        self.assertTrue(ht._glossary_token_matches_key("Newsweek'in".replace("'", ""), {"newsweeks"}))
-        self.assertFalse(ht._glossary_token_matches_key("Princess", {"prince"}))
-        self.assertTrue(ht._glossary_token_matches_key("Princess", {"princess"}))
+        """_glossary_token_matches_key and _glossary_wqx_token require apostrophe + Turkish suffix for plural s matching."""
+        # 1. Newsweeks -> Newsweek'ler (with apostrophe + Turkish suffix) is exempted
+        self.assertTrue(ht._glossary_token_matches_key("Newsweek", {"newsweeks"}, raw_value="Newsweek'ler"))
+        self.assertIsNone(ht._glossary_wqx_token("Newsweek'in sayısı", glossary_key="Newsweeks"))
+
+        # 2. Without apostrophe + Turkish suffix, false s-stripping matches MUST BE FALSE
+        self.assertFalse(ht._glossary_token_matches_key("Pari", {"paris"}, raw_value="Pari"))
+        self.assertFalse(ht._glossary_token_matches_key("Jame", {"james"}, raw_value="Jame"))
+        self.assertFalse(ht._glossary_token_matches_key("New", {"news"}, raw_value="New"))
+        self.assertFalse(ht._glossary_token_matches_key("Xerxe", {"xerxes"}, raw_value="Xerxe"))
+        self.assertFalse(ht._glossary_token_matches_key("What", {"whats"}, raw_value="What"))
+
+        # Verify _glossary_wqx_token behavior directly
+        self.assertEqual(ht._glossary_wqx_token("Xerxe kralı", glossary_key="Xerxes"), "Xerxe")
+
+        # 3. Exact proper nouns match
+        self.assertTrue(ht._glossary_token_matches_key("Princess", {"princess"}, raw_value="Princess"))
+        self.assertTrue(ht._glossary_token_matches_key("Xerxes", {"xerxes"}, raw_value="Xerxes"))
 
 
 if __name__ == "__main__":
