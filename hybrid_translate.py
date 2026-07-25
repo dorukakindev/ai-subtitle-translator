@@ -4352,12 +4352,10 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
             and all(w.lower() in key_tokens for w in non_hits)
         ):
             return None
-        # rstrip("s") normalizes simple English plurals so a plural source key
-        # ("Newsweeks") still exempts its Turkish-suffixed singular stem
-        # ("Newsweek'ler" -> word token "Newsweek"). Gerçek olay (rough.treatment.1978,
-        # 2026-07-20): "Newsweeks"->"Newsweek'ler" hedefi tek kelimeye bölününce
-        # ("'ler" apostrofla ayrılır) exact-match istisnası tutmadı ve 50 terimlik
-        # sözlük komple gitti.
+        # Apostroflu Türkçe ek bağlamı, çoğul kaynak anahtarın tekil kökünü güvenle
+        # korur ("Newsweeks" -> "Newsweek'ler"). Gerçek olay (rough.treatment.1978,
+        # 2026-07-20): apostrof kelimeyi böldüğü için exact-match istisnası tutmadı
+        # ve 50 terimlik sözlük komple gitti.
         hits = [
             w for w in hits
             if not (
