@@ -160,6 +160,24 @@ class SaveSettingsFallbackWarningTest(unittest.TestCase):
             warn_logs = [msg for level, msg in app.logs if "fallback dosyada saklandı" in msg]
             self.assertEqual(len(warn_logs), 1)
 
+    def test_empty_general_keys_delete_credentials_and_helper_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            app = _SecurityApp(Path(td) / ".gui_settings.json")
+            app._helper_keys_cache = {
+                "openai_helper": "old-helper",
+                "anthropic": "keep-this",
+            }
+            with mock.patch.object(gui.credential_store, "save_key") as save_key, \
+                 mock.patch.object(gui.credential_store, "delete_key") as delete_key:
+                gui.App._save_settings(app)
+
+            save_key.assert_not_called()
+            deleted = {call.args[0] for call in delete_key.call_args_list}
+            self.assertIn("openai", deleted)
+            self.assertIn("openai_helper", deleted)
+            self.assertNotIn("openai_helper", app._helper_keys_cache)
+            self.assertEqual(app._helper_keys_cache["anthropic"], "keep-this")
+
 
 if __name__ == "__main__":
     unittest.main()

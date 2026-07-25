@@ -8584,12 +8584,17 @@ class App(ctk.CTk):
             _k = self.api_key_entry.get().strip()
             if _k:
                 fallback_used = (not credential_store.save_key("openai", _k)) or fallback_used
+            else:
+                credential_store.delete_key("openai")
             
             # Genel yardımcı anahtarı kaydet
             _mk = self.helper_key_entry.get().strip()
             if _mk:
                 fallback_used = (not credential_store.save_key("openai_helper", _mk)) or fallback_used
                 self._helper_keys_cache["openai_helper"] = _mk
+            else:
+                credential_store.delete_key("openai_helper")
+                self._helper_keys_cache.pop("openai_helper", None)
             
             # Role özel API anahtarlarını kaydet / temizle
             for role in self.helper_roles:
