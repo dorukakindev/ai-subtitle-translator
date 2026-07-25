@@ -384,6 +384,20 @@ MODEL_PRICE = {  # USD per 1M tokens (blended estimate)
     "o3-mini":            5.00,
     "o1-mini":            5.00,
 }
+_DEFAULT_TOKEN_PRICE = object()
+
+
+def _model_token_price(model: str):
+    name = str(model or "").strip().lower()
+    if name in MODEL_PRICE:
+        return MODEL_PRICE[name]
+    matches = [
+        (key, price) for key, price in MODEL_PRICE.items()
+        if name.startswith(key + "-")
+    ]
+    if matches:
+        return max(matches, key=lambda item: len(item[0]))[1]
+    return None
 
 POLISH_MODEL = "gpt-4.1-mini"
 
@@ -5215,6 +5229,7 @@ class App(ctk.CTk):
         self._pause_btw_files.set()  # initially not paused
         self._token_total    = 0
         self._token_cached   = 0
+        self._unknown_cost_tokens = 0
         self._token_lock     = threading.Lock()   # _token_total multi-thread erişimi
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
         self._worker_lock    = threading.Lock()
@@ -7694,7 +7709,8 @@ class App(ctk.CTk):
                 tr_blocks=blocks,
                 helper_api_key=mm_k, helper_url=mm_u, helper_model=mm_m,
                 tgt_lang=tgt, cps_limit=21.0,
-                log_fn=self._log, token_callback=self._update_tokens,
+                log_fn=self._log,
+                token_callback=self._token_callback_for_model(mm_m),
                 src_map=src_map)
             return new_blocks
         except Exception as e:
@@ -7721,7 +7737,8 @@ class App(ctk.CTk):
                         blocks, key, self._helper_api_base_url("analysis"), self._helper_api_model("analysis"),
                         log_fn=self._log, max_chars=self._merge_max_chars,
                         max_gap_ms=self._merge_max_gap_ms,
-                        token_callback=self._update_tokens)
+                        token_callback=self._token_callback_for_model(
+                            self._helper_api_model("analysis")))
                 self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
             out = merge_fragmented_cues(blocks,
                                         max_chars=self._merge_max_chars,
@@ -7740,29 +7757,35 @@ class App(ctk.CTk):
                 return schema
         return CONTENT_SCHEMAS["auto"]
 
-    def _update_tokens(self, added: int, price: float = None, cached: int = 0):
+    def _update_tokens(self, added: int, price=_DEFAULT_TOKEN_PRICE, cached: int = 0):
         """Token sayacını + tahmini maliyeti günceller. Maliyet AYRI birikir (kümülatif
         token × tek fiyat DEĞİL) — böylece her kaynak kendi fiyatıyla eklenir. price
         verilmezse ana model fiyatı kullanılır; Batch API çağrıları %50 indirimli geçer.
         cached verilirse OpenAI Prompt Caching indirimi (%50) hesaba katılır."""
-        if price is None:
-            price = MODEL_PRICE.get(self._main_model_name(), 0.60)
+        if price is _DEFAULT_TOKEN_PRICE:
+            price = _model_token_price(self._main_model_name())
         with self._token_lock:
             self._token_total += added
             self._token_cached = getattr(self, "_token_cached", 0) + cached
-            
-            # Compute cost: cached tokens are 50% cheaper
+            unknown_added = added if price is None else 0
+            self._unknown_cost_tokens = (
+                getattr(self, "_unknown_cost_tokens", 0) + unknown_added)
             uncached = max(0, added - cached)
-            cost_added = (uncached * price + cached * price * 0.5) / 1_000_000
+            cost_added = 0.0 if price is None else (
+                uncached * price + cached * price * 0.5) / 1_000_000
             self._cost_total = getattr(self, "_cost_total", 0.0) + cost_added
             
             total = self._token_total
             cached_total = self._token_cached
             cost  = self._cost_total
-        def _upd(t=total, c=cost, ct=cached_total):
+            unknown_total = self._unknown_cost_tokens
+        def _upd(t=total, c=cost, ct=cached_total, ut=unknown_total):
             try:
                 self.stat_tokens_var.set(f"{t:,}")
-                if ct > 0:
+                if ut > 0:
+                    self.stat_tokens_sub_var.set(
+                        f"~${c:.4f} + {ut:,} token fiyatı bilinmiyor")
+                elif ct > 0:
                     self.stat_tokens_sub_var.set(f"~${c:.4f} ({ct:,} önb.)")
                 else:
                     self.stat_tokens_sub_var.set(f"Token  ~${c:.4f}")
@@ -7776,9 +7799,20 @@ class App(ctk.CTk):
                 pass
         _post_ui(self, _upd)
 
+    def _token_callback_for_model(self, model: str, discount: float = 1.0):
+        price = _model_token_price(model)
+        if price is not None:
+            price *= discount
+
+        def _callback(added, cached=0):
+            self._update_tokens(added, price=price, cached=cached)
+        return _callback
+
     def _update_batch_tokens(self, added: int):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
-        self._update_tokens(added, price=MODEL_PRICE.get(self._main_model_name(), 0.60) * 0.5)
+        price = _model_token_price(self._main_model_name())
+        self._update_tokens(
+            added, price=None if price is None else price * 0.5)
 
     def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = ""):
         """Kaynak↔çeviri çiftlerini TM'ye yazar; eksik işaretler ve kaynak==çeviri
@@ -9444,6 +9478,7 @@ class App(ctk.CTk):
         self._token_total = 0
         self._token_cached = 0
         self._cost_total  = 0.0
+        self._unknown_cost_tokens = 0
         with self._batch_lock:
             self._active_batches.clear()   # onceki durdurulan kosudan kalanlari temizle
         self._tm.reset_session_hits()
@@ -9559,6 +9594,7 @@ class App(ctk.CTk):
         self._token_total = 0
         self._token_cached = 0
         self._cost_total = 0.0
+        self._unknown_cost_tokens = 0
         self._tm.reset_session_hits()
         for attr in ("stat_tokens_var", "stat_done_var", "stat_fail_var", "stat_tm_var"):
             getattr(self, attr).set("0")
@@ -9979,7 +10015,9 @@ class App(ctk.CTk):
                 model=self._helper_api_model("qc"),
                 src_lang=src_lang or self.src_var.get() or "English",
                 tgt_lang=self.tgt_var.get() or "Turkish",
-                log_fn=self._log, token_callback=self._update_tokens)
+                log_fn=self._log,
+                token_callback=self._token_callback_for_model(
+                    self._helper_api_model("qc")))
             if not flags:
                 return 0
             # Fix mode: flagged satırları helper ile düzelt
@@ -10456,7 +10494,9 @@ class App(ctk.CTk):
                     tok, cached = 0, 0
                     if resp.usage:
                         tok, cached = _get_usage_details(resp.usage)
-                    self._update_tokens(tok, cached=cached)
+                    self._update_tokens(
+                        tok, price=_model_token_price(helper_model),
+                        cached=cached)
                     polished = json.loads(raw)
                     if not isinstance(polished, list):
                         raise RuntimeError("Polish: expected JSON array")
@@ -10759,7 +10799,8 @@ class App(ctk.CTk):
                             helper_url=helper_urls.get("critic", ""),
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             log_fn=self._log, analysis_result=analysis_result,
-                            token_callback=self._update_tokens,
+                            token_callback=self._token_callback_for_model(
+                                helper_models.get("critic", "gpt-5.4-mini")),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None)
                     except Exception as e:
                         self._log(f"Native Pass hatası: {e}", "warn")
@@ -10805,7 +10846,7 @@ class App(ctk.CTk):
                             blocks, mm_key, mm_url, mm_model, log_fn=self._log,
                             max_chars=job.get("merge_max_chars", MERGE_MAX_CHARS),
                             max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS),
-                            token_callback=self._update_tokens)
+                            token_callback=self._token_callback_for_model(mm_model))
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"AI segmentasyon hatası: {e}", "warn")
@@ -11340,7 +11381,7 @@ class App(ctk.CTk):
                     cues_by_file[fp] = []
             return detect_source_languages_batch_with_ai(
                 client, cues_by_file, model, self._log,
-                token_callback=self._update_tokens)
+                token_callback=self._token_callback_for_model(model))
 
         with ThreadPoolExecutor(max_workers=min(4, len(batches))) as ex:
             for detected in ex.map(_one, batches):
@@ -11586,7 +11627,10 @@ class App(ctk.CTk):
         def _one(fp):
             try:
                 cues = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
-                return fp, detect_content_type_with_ai(client, cues, model, self._log, token_callback=self._update_tokens, filename=fp)
+                return fp, detect_content_type_with_ai(
+                    client, cues, model, self._log,
+                    token_callback=self._token_callback_for_model(model),
+                    filename=fp)
             except Exception as e:
                 self._log(f"[{Path(fp).name}] Tür tespiti hatası: {e}", "warn")
                 return fp, "Otomatik"
@@ -12423,7 +12467,10 @@ class App(ctk.CTk):
                 if schema_dict["name"] == "Otomatik":
                     self._log(f"[{fname}] İçerik türü otomatik analiz ediliyor...", "info")
                     try:
-                        detected_name = detect_content_type_with_ai(client, cues, model, self._log, token_callback=self._update_tokens, filename=filepath)
+                        detected_name = detect_content_type_with_ai(
+                            client, cues, model, self._log,
+                            token_callback=self._token_callback_for_model(model),
+                            filename=filepath)
                         schema_dict = self._schema_by_name(detected_name)
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
@@ -12711,7 +12758,8 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions, idiom_map, cultural_refs),
-                    token_callback=self._update_tokens,
+                    token_callback=self._token_callback_for_model(
+                        self._helper_api_model("critic")),
                     src_map=_src_map_from_cues(cues),
                 )
                 _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
@@ -13410,7 +13458,8 @@ class App(ctk.CTk):
                                 pp = ht.native_reader_pass(
                                     tr_blocks=pp, helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
-                                    token_callback=self._update_tokens,
+                                    token_callback=self._token_callback_for_model(
+                                        self._helper_api_model("critic")),
                                     src_map=_src_map_from_cues(_orig_cues))
                                 _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
@@ -14161,7 +14210,10 @@ class App(ctk.CTk):
                         from openai import OpenAI
                         b_url = self._main_api_base_url()
                         client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
-                        detected_name = detect_content_type_with_ai(client, cues, model, self._log, token_callback=self._update_tokens, filename=filepath)
+                        detected_name = detect_content_type_with_ai(
+                            client, cues, model, self._log,
+                            token_callback=self._token_callback_for_model(model),
+                            filename=filepath)
                         schema_dict = self._schema_by_name(detected_name)
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
@@ -14525,7 +14577,8 @@ class App(ctk.CTk):
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                                 log_fn=self._log,
                                 analysis_result=_full_analysis,
-                                token_callback=self._update_tokens,
+                                token_callback=self._token_callback_for_model(
+                                    self._helper_api_model("critic")),
                                 src_map=_src_map_from_cues(cues))
                             _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
