@@ -1823,31 +1823,38 @@ def write_srt(filepath, blocks, target_language="Turkish"):
     out.parent.mkdir(parents=True, exist_ok=True)
     # Atomik yazım: önce .tmp'ye yaz, çökme durumunda yarım SRT kalmasın
     _tmp = out.with_suffix(".srt.tmp")
-    with open(_tmp, "w", encoding="utf-8") as f:
-        for idx, ts, text in blocks:
-            # Metindeki çift+ newline'lar SRT blok ayracını (\n\n) taklit edip yeniden
-            # okumada satır düşürür/bozar — tek newline'a indir.
-            is_turkish = normalize_language_name(
-                target_language, allow_auto=False
-            ) == "Turkish"
-            try:
-                import hybrid_translate as ht
-                text = ht.normalize_latin_homoglyphs(str(text))
+    try:
+        with open(_tmp, "w", encoding="utf-8") as f:
+            for idx, ts, text in blocks:
+                # Metindeki çift+ newline'lar SRT blok ayracını (\n\n) taklit edip yeniden
+                # okumada satır düşürür/bozar — tek newline'a indir.
+                is_turkish = normalize_language_name(
+                    target_language, allow_auto=False
+                ) == "Turkish"
+                try:
+                    import hybrid_translate as ht
+                    text = ht.normalize_latin_homoglyphs(str(text))
+                    if is_turkish:
+                        text = ht._apply_local_fixes(str(text))[0]
+                except Exception:
+                    text = str(text)
+                text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
+                text = re.sub(r'\n{2,}', '\n', text)
                 if is_turkish:
-                    text = ht._apply_local_fixes(str(text))[0]
-            except Exception:
-                text = str(text)
-            text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
-            text = re.sub(r'\n{2,}', '\n', text)
-            if is_turkish:
-                text = sdh_cleaner.normalize_sdh_descriptors(text)
-                text = sdh_cleaner.normalize_speaker_labels(text)
-                text = sdh_cleaner.normalize_turkish_artifacts(text)
-                text = _translate_speaker_labels(text)
-            if not text.strip():
-                text = "[ÇEVİRİ EKSİK]"
-            f.write(f"{idx}\n{ts}\n{text}\n\n")
-    _tmp.replace(out)
+                    text = sdh_cleaner.normalize_sdh_descriptors(text)
+                    text = sdh_cleaner.normalize_speaker_labels(text)
+                    text = sdh_cleaner.normalize_turkish_artifacts(text)
+                    text = _translate_speaker_labels(text)
+                if not text.strip():
+                    text = "[ÇEVİRİ EKSİK]"
+                f.write(f"{idx}\n{ts}\n{text}\n\n")
+        _tmp.replace(out)
+    except Exception:
+        try:
+            _tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _create_postprocess_backup(filepath) -> Path:

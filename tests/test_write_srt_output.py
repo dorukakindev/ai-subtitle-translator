@@ -5,6 +5,8 @@ newline'lar SRT blok ayracını (\\n\\n) taklit edip yeniden okumada satır dü�
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import hybrid_translate as ht
 import sdh_cleaner
@@ -31,6 +33,15 @@ class WriteSrtOutputTest(unittest.TestCase):
         p = os.path.join(self.d, "a.srt")
         gui.write_srt(p, [("1", "00:00:01,000 --> 00:00:02,000", "x")])
         self.assertTrue(os.path.exists(p))
+
+    def test_failed_atomic_replace_cleans_temp_and_keeps_existing_output(self):
+        p = os.path.join(self.d, "existing.srt")
+        Path(p).write_text("old output", encoding="utf-8")
+        with mock.patch.object(Path, "replace", side_effect=OSError("locked")):
+            with self.assertRaises(OSError):
+                gui.write_srt(p, [("1", "00:00:01,000 --> 00:00:02,000", "new output")])
+        self.assertEqual(Path(p).read_text(encoding="utf-8"), "old output")
+        self.assertFalse(Path(p + ".tmp").exists())
 
     def test_double_newline_collapsed_roundtrips(self):
         p = os.path.join(self.d, "b.srt")
