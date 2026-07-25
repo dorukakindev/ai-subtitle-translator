@@ -1392,6 +1392,21 @@ def _generate_cultural_refs(
         return []
 
 
+def _strip_code_fence(raw: str) -> str:
+    """Fenced ```json ... ``` kod bloklarını (tek satır veya çok satırlı) güvenle soyar."""
+    raw = (raw or "").strip()
+    if not raw.startswith("```"):
+        return raw
+    if "\n" not in raw and raw.endswith("```") and raw.count("```") >= 2:
+        inner = raw[3:-3].strip()
+        if inner.lower().startswith("json"):
+            inner = inner[4:].strip()
+        return inner
+    lines = raw.split("\n")
+    inner = "\n".join(lines[1:])
+    return inner.rsplit("```", 1)[0].strip()
+
+
 def _extract_json_object(raw: str) -> dict:
     """JSON objesini ham API cevabından çıkarır.
 
@@ -1402,12 +1417,7 @@ def _extract_json_object(raw: str) -> dict:
       metin nedeniyle yanlış kesme sorununu giderir)
     - Son aşamada regex ile anahtar alanları dağınık yanıttan toparlamayı dener
     """
-    raw = (raw or "").strip()
-    # ```json veya ``` bloklarını soy
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        inner = "\n".join(lines[1:])
-        raw = inner.rsplit("```", 1)[0].strip()
+    raw = _strip_code_fence(raw)
     if not raw:
         return {}
     # Önce direkt parse dene
@@ -5381,13 +5391,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
 
 def _extract_json_array(raw: str) -> str:
     """Return the first valid JSON array found in raw text (handles preamble / code fences)."""
-    raw = raw.strip()
-    if not raw:
-        return ""
-
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
-
+    raw = _strip_code_fence(raw)
     if not raw:
         return ""
 

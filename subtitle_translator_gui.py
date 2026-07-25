@@ -3361,11 +3361,7 @@ def parse_source_languages_response(content: str) -> tuple[dict, set]:
     and tracking duplicate keys in any JSON object.
     Returns: (detected_map: dict, duplicate_keys: set)
     """
-    raw = (content or "").strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        inner = "\n".join(lines[1:])
-        raw = inner.rsplit("```", 1)[0].strip()
+    raw = _strip_md(content)
     if "{" in raw and "}" in raw:
         start = raw.find("{")
         end = raw.rfind("}")
@@ -3481,10 +3477,15 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
 
 
 def _strip_md(raw):
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
-    return raw
+    raw = (raw or "").strip()
+    if not raw.startswith("```"):
+        return raw
+    if "\n" not in raw and raw.endswith("```") and raw.count("```") >= 2:
+        inner = raw[3:-3].strip()
+        if inner.lower().startswith("json"):
+            inner = inner[4:].strip()
+        return inner
+    return "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
 
 def _extract_json_array(raw):
     """Extracts a JSON array from raw text, even with preamble/postamble."""

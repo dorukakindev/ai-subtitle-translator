@@ -43,6 +43,15 @@ class ExtractJsonObjectTest(unittest.TestCase):
         self.assertEqual(_extract_json_object(raw), {"key": "text with {brace}", "num": 42})
 
 
+    def test_single_line_fenced_json(self):
+        raw = '```json {"a": 1}```'
+        self.assertEqual(_extract_json_object(raw), {"a": 1})
+
+    def test_single_line_fenced_json_without_lang(self):
+        raw = '``` {"a": 1} ```'
+        self.assertEqual(_extract_json_object(raw), {"a": 1})
+
+
 class ExtractJsonArrayTest(unittest.TestCase):
     def test_direct_valid_array(self):
         result = _extract_json_array('[{"id": 1}, {"id": 2}]')
@@ -52,6 +61,10 @@ class ExtractJsonArrayTest(unittest.TestCase):
         raw = '```json\n[{"id": 1}]\n```'
         result = _extract_json_array(raw)
         self.assertEqual(result, '[{"id": 1}]')
+
+    def test_single_line_fenced_array(self):
+        raw = '```json [{"id": 1}]```'
+        self.assertEqual(_extract_json_array(raw), '[{"id": 1}]')
 
     def test_preamble_text_ve_fence(self):
         raw = 'Here are translations:\n```\n[{"id": 1, "tr": "a"}]\n```\nDone.'
@@ -73,3 +86,12 @@ class ExtractJsonArrayTest(unittest.TestCase):
 
     def test_malformed_array_returns_empty(self):
         self.assertEqual(_extract_json_array("[broken json"), "")
+
+
+class GuiStripMdTest(unittest.TestCase):
+    def test_single_line_fenced_json_gui_strip_md(self):
+        import subtitle_translator_gui as gui
+        self.assertEqual(gui._strip_md('```json {"0": "Spanish"}```'), '{"0": "Spanish"}')
+        detected_map, dups = gui.parse_source_languages_response('```json {"languages": {"0": "Spanish"}}```')
+        self.assertEqual(detected_map, {"0": "Spanish"})
+
