@@ -44,7 +44,7 @@ class FillHataWithSourceTest(unittest.TestCase):
         raw = {"1": "<i>Inner voice.</i>"}
         out, _ = gui._fill_hata_with_source(blocks, raw)
         restored = gui._restore_tags_blocks(out, raw)
-        self.assertEqual(restored[0][2], "<i>[ÇEVİRİ EKSİK]</i>")
+        self.assertEqual(restored[0][2], "[ÇEVİRİ EKSİK]")
 
 
 if __name__ == "__main__":

@@ -9844,17 +9844,18 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
 
-    def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks, src_lang=None):
-        """Geri çeviri anlam kontrolü. Açıksa çalışır: Türkçeyi tekrar
-        kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
-        log'a yazar. Flag'lenen satırları helper model ile düzeltir."""
+    def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks, src_lang=None) -> int:
+        """Geri ?eviri anlam kontrol?. A??ksa ?al???r: T?rk?eyi tekrar
+        kayna?a ?evirip anlamca sapan sat?rlar? bulur, <stem>.geri_ceviri.txt'e +
+        log'a yazar. Flag'lenen sat?rlar? helper model ile d?zeltir. D?zeltilen
+        sat?r say?s?n? d?ner."""
         try:
             if not self.backtrans_var.get():
-                return
+                return 0
         except Exception:
-            return
+            return 0
         if not src_clean_map or not blocks:
-            return
+            return 0
         try:
             import hybrid_translate as ht
             flags = ht.back_translation_check(
@@ -9866,7 +9867,7 @@ class App(ctk.CTk):
                 tgt_lang=self.tgt_var.get() or "Turkish",
                 log_fn=self._log, token_callback=self._update_tokens)
             if not flags:
-                return
+                return 0
             # Fix mode: flagged satırları helper ile düzelt
             fix_client = None
             fix_key = self._helper_api_key("qc")
@@ -9925,8 +9926,10 @@ class App(ctk.CTk):
                 self._log(f"Geri çeviri raporu: {Path(rpath).name} ({len(flags)} satır)", "info")
             except Exception as _re:
                 self._log(f"Geri çeviri raporu yazılamadı: {_re}", "warn")
+            return n_fixed
         except Exception as e:
             self._log(f"Geri çeviri kontrolü hatası: {e}", "warn")
+            return 0
 
     def _locked_terms_hint(self, fp: str, tgt: str) -> str:
         """Batch inceleme için kilitli terim + isim bloğu.
@@ -12663,6 +12666,11 @@ class App(ctk.CTk):
                     log_fn=self._log, token_cb=self._update_tokens)
             except Exception:
                 pass
+            out_path = _resolve_output_path(input_dir, output_dir, filepath,
+                                             same_folder=self.same_folder_var.get())
+            self._maybe_backtranslation_check(
+                out_path, {str(c.index): _clean_src(c.text) for c in cues},
+                sorted_blocks, src_lang=file_src)
             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
             _n_filled = 0
             try:
@@ -12679,8 +12687,6 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
-            out_path = _resolve_output_path(input_dir, output_dir, filepath,
-                                             same_folder=self.same_folder_var.get())
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks))
             completed_files.append(filepath)
             self._log(f"Kaydedildi: {out_path}", "ok")
@@ -12693,9 +12699,6 @@ class App(ctk.CTk):
                     src_clean_map={str(c.index): _clean_src(c.text) for c in cues})
             except Exception:
                 pass
-            self._maybe_backtranslation_check(
-                out_path, {str(c.index): _clean_src(c.text) for c in cues},
-                sorted_blocks, src_lang=file_src)
             # Rapor satırı
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
@@ -13284,6 +13287,11 @@ class App(ctk.CTk):
                             # CPS uyarısı — diğer akışlarla paritede
                             _log_cps_warning(pp, self._log)
                             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
+                            if _orig_cues:
+                                _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
+                                self._maybe_backtranslation_check(
+                                    output_path, _src_map, pp,
+                                    src_lang=source_language or self.src_var.get())
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
                             try:
                                 _raw_map = _raw_src_map_from_cues(_orig_cues)
@@ -13311,9 +13319,6 @@ class App(ctk.CTk):
                                 except Exception:
                                     pass
                                 self._store_tm_pairs(pp, _src_map, self._main_model_name(), tgt, schema_name=_schema_name)
-                                self._maybe_backtranslation_check(
-                                    output_path, _src_map, pp,
-                                    src_lang=source_language or self.src_var.get())
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -13622,6 +13627,8 @@ class App(ctk.CTk):
                 self._log(f"Onarım geçişi atlandı: {e}", "warn")
             # CPS uyarısı — sync-hybrid ile paritede (düz-batch loglarında da görünsün)
             _log_cps_warning(sorted_blocks, self._log)
+            self._maybe_backtranslation_check(
+                out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang)
             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
             _n_filled = 0
             try:
@@ -13644,9 +13651,6 @@ class App(ctk.CTk):
             w = scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
                                          src_clean_map=src_blocks)
             total_warnings += w
-            self._maybe_backtranslation_check(
-                out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang)
-            # Rapor satırı: [HATA] (kalan + işaretlenen) ve CPS aşımı sayıları
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
@@ -14409,6 +14413,15 @@ class App(ctk.CTk):
                 # CPS uyarısı — sync-hybrid ile paritede (batch loglarında da görünsün)
                 _log_cps_warning(_final_blocks, self._log)
                 # Etiket geri yükleme + birleştirme + yazım HER ZAMAN çalışır (kalite
+                _src_map = {str(c.index): _clean_src(c.text) for c in cues}
+                self._maybe_backtranslation_check(
+                    out_path, _src_map, _final_blocks, src_lang=file_src)
+                _n_filled = 0
+                try:
+                    _raw_map = _raw_src_map_from_cues(cues)
+                    _final_blocks, _n_filled = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
+                except Exception:
+                    pass
                 # toggle'ları kapalı olsa bile italik/konum etiketleri kaybolmasın) —
                 # eskiden bu adımlar yalnızca bir kalite geçişi açıkken çalışıyordu.
                 try:
@@ -14433,9 +14446,6 @@ class App(ctk.CTk):
                                                   log_fn=self._log, src_clean_map=_src_map)
                 except Exception:
                     pass
-                self._maybe_backtranslation_check(
-                    out_path, _src_map, _final_blocks, src_lang=file_src)
-                # TM kaydı (ortak yardımcı)
                 self._store_tm_pairs(_final_blocks, _src_map, self._main_model_name(), tgt, schema_name=_schema_name)
                 if self.auto_glossary_var.get():
                     self._run_auto_glossary(cues, _final_blocks, filepath)
