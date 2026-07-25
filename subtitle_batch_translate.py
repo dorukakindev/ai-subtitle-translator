@@ -253,8 +253,27 @@ def process_results(output_file_id, file_map, srt_files):
 
     # Her SRT dosyası için çevrilmiş blokları topla (dict — None slot crash'i önler)
     file_blocks = {}  # filepath -> {block_i: (idx, timestamp, text)}
+    source_cache = {}
     for cid, (filepath, block_i, idx, timestamp) in file_map.items():
-        translated_text = translations.get(cid) or "[ÇEVIRI HATASI]"
+        if filepath not in source_cache:
+            try:
+                source_cache[filepath] = parse_srt(filepath)
+            except Exception:
+                source_cache[filepath] = []
+        source_blocks = source_cache[filepath]
+        source_text = source_blocks[block_i][2] if block_i < len(source_blocks) else ""
+        if cid not in translations or translations[cid] is None:
+            translated_text = "[ÇEVIRI HATASI]"
+        elif translations[cid]:
+            translated_text = translations[cid]
+        else:
+            try:
+                import sdh_cleaner
+                if source_text and sdh_cleaner.is_sdh_only(source_text):
+                    continue
+            except Exception:
+                pass
+            translated_text = "[ÇEVIRI HATASI]"
         file_blocks.setdefault(filepath, {})[block_i] = (idx, timestamp, translated_text)
 
     # Dosyaları sıralı blok indeksine göre yaz

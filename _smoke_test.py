@@ -110,7 +110,9 @@ def main():
     try:
         import sdh_cleaner
         sorted_blocks = [srt_blocks[k] for k in sorted(srt_blocks)]
-        sorted_blocks = sdh_cleaner.clean_sdh_blocks(sorted_blocks)
+        src_map = gui._src_map_from_cues(cues)
+        sorted_blocks = sdh_cleaner.clean_sdh_blocks(
+            sorted_blocks, src_map=src_map, source_driven=True)
         srt_blocks = {int(b[0]): b for b in sorted_blocks}
         print("  SDH temizliği: OK")
     except Exception as e:

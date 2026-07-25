@@ -129,7 +129,12 @@ def main():
 
             info = raw_fmap.get(cid, [])
 
-            if res.get("error") or not info:
+            if not info:
+                print(f"  [UYARI] {cid}: fmap eşleşmesi yok; sonuç hiçbir cue'ya yazılmadı")
+                chunk_fail += 1
+                continue
+
+            if res.get("error"):
                 err_msg = res.get("error", {})
                 if err_msg:
                     print(f"  [HATA] {cid}: {err_msg.get('message','')}")

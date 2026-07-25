@@ -5277,6 +5277,7 @@ class App(ctk.CTk):
         self._is_shutting_down   = False
         self._active_snapshot    = None
         self._drain_ui_queue_id  = None
+        self._pending_batches_after_id = None
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -5314,11 +5315,15 @@ class App(ctk.CTk):
         except Exception:
             pass
         # Açılışta yarım kalan batch kontrolü (UI hazır olduktan sonra çalışsın)
-        self.after(500, self._check_pending_batches)
+        try:
+            self._pending_batches_after_id = self.after(500, self._check_pending_batches)
+        except Exception:
+            self._pending_batches_after_id = None
 
 
     def _check_pending_batches(self):
         """Program açılışında batch_id.txt varsa seçim penceresi gösterir."""
+        self._pending_batches_after_id = None
         try:
             bid_path = _batch_id_path()
             if not bid_path.exists():
@@ -5341,8 +5346,9 @@ class App(ctk.CTk):
             if not batch_ids:
                 return
             self._show_pending_batches_dialog(batch_ids)
-        except Exception:
-            pass
+        except Exception as e:
+            if not getattr(self, "_is_shutting_down", False):
+                self._log(f"Yarım kalan batch kontrolü başarısız: {e}", "warn")
 
     def _show_pending_batches_dialog(self, batch_ids):
         """Yarım kalan batch'leri seçtiren CustomTkinter penceresi."""
@@ -5574,6 +5580,12 @@ class App(ctk.CTk):
                     "OpenAI'de koşmaya devam eder.\n\nKapatmak ister misiniz?"):
                 return
         self._is_shutting_down = True
+        try:
+            if self._pending_batches_after_id is not None:
+                self.after_cancel(self._pending_batches_after_id)
+                self._pending_batches_after_id = None
+        except Exception:
+            self._pending_batches_after_id = None
         try:
             if self._drain_ui_queue_id is not None:
                 self.after_cancel(self._drain_ui_queue_id)

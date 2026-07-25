@@ -94,5 +94,41 @@ class DeleteConfirmationGateSourceTest(unittest.TestCase):
         self.assertIn("askyesno", block)
 
 
+class PendingBatchStartupSafetyTest(unittest.TestCase):
+    def test_startup_check_logs_unexpected_failure_and_clears_callback_id(self):
+        logs = []
+        stub = SimpleNamespace(
+            _pending_batches_after_id="after-1",
+            _is_shutting_down=False,
+            _log=lambda message, level="": logs.append((message, level)),
+        )
+        with patch.object(gui, "_batch_id_path", side_effect=OSError("locked")):
+            gui.App._check_pending_batches(stub)
+        self.assertIsNone(stub._pending_batches_after_id)
+        self.assertEqual(logs[0][1], "warn")
+        self.assertIn("batch kontrolü başarısız", logs[0][0])
+
+    def test_startup_check_suppresses_expected_shutdown_noise(self):
+        logs = []
+        stub = SimpleNamespace(
+            _pending_batches_after_id="after-1",
+            _is_shutting_down=True,
+            _log=lambda message, level="": logs.append((message, level)),
+        )
+        with patch.object(gui, "_batch_id_path", side_effect=OSError("destroyed")):
+            gui.App._check_pending_batches(stub)
+        self.assertEqual(logs, [])
+
+    def test_pending_callback_is_stored_and_cancelled_on_close(self):
+        import inspect
+        init_src = inspect.getsource(gui.App.__init__)
+        close_src = inspect.getsource(gui.App._on_close)
+        self.assertIn(
+            "self._pending_batches_after_id = self.after(500, self._check_pending_batches)",
+            init_src,
+        )
+        self.assertIn("self.after_cancel(self._pending_batches_after_id)", close_src)
+
+
 if __name__ == "__main__":
     unittest.main()

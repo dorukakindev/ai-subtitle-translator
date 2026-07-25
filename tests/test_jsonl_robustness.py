@@ -65,6 +65,37 @@ class TestJsonlRobustness(unittest.TestCase):
         self.assertEqual(blocks[1][2], "[ÇEVIRI HATASI]")
         self.assertEqual(blocks[2][2], "[ÇEVIRI HATASI]")
 
+    @patch("subtitle_batch_translate._get_client")
+    @patch("subtitle_batch_translate.write_srt")
+    def test_explicit_empty_result_only_drops_pure_sdh_source(
+            self, mock_write_srt, mock_get_client):
+        import subtitle_batch_translate as standalone
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_client.files.content.return_value.text = (
+            '{"custom_id":"sfx","response":{"body":{"choices":[{"message":{"content":""}}]}}}\n'
+            '{"custom_id":"dialogue","response":{"body":{"choices":[{"message":{"content":""}}]}}}'
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source.srt"
+            source.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\n[MUSIC]\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nHello\n\n",
+                encoding="utf-8",
+            )
+            fmap = {
+                "sfx": (str(source), 0, "1", "00:00:00,000 --> 00:00:01,000"),
+                "dialogue": (str(source), 1, "2", "00:00:01,000 --> 00:00:02,000"),
+            }
+            with patch.object(standalone, "INPUT_FOLDER", tmpdir):
+                standalone.process_results("out", fmap, [str(source)])
+
+        blocks = mock_write_srt.call_args.args[1]
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0][0], "2")
+        self.assertEqual(blocks[0][2], "[ÇEVIRI HATASI]")
+
     def test_try_extract_fenced_newlines(self):
         from repair_batches import _try_extract
         fenced_content = "```json\n[{\"i\": 1, \"t\": \"Merhaba\"}]\n```"
@@ -126,11 +157,13 @@ class TestJsonlRobustness(unittest.TestCase):
 
             jsonl_content = (
                 '{"custom_id": "cid1"}\n'
+                '{"custom_id": "unknown", "response": {"body": {"choices": [{"message": {"content": "ignored"}}]}}}\n'
                 '{"custom_id": "cid2", "response": {"body": {"choices": [{"message": {"content": "[{\\"i\\": 2, \\"t\\": \\"Satir 2\\"}]"}}]}}}\n'
             )
             mock_client.files.content.return_value.text = jsonl_content
 
-            with patch("repair_batches.FMAP_FILES", [str(fmap_file)]):
+            with patch("repair_batches.FMAP_FILES", [str(fmap_file)]), \
+                    patch("builtins.print") as mock_print:
                 repair_batches.main()
 
             self.assertTrue(out_file.exists())
@@ -143,6 +176,13 @@ class TestJsonlRobustness(unittest.TestCase):
             # 3. Missing record yielded [HATA], valid record processed successfully
             self.assertIn("[HATA]", written_text)
             self.assertIn("Satir 2", written_text)
+            printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list
+                                if call.args)
+            self.assertIn("unknown: fmap eşleşmesi yok", printed)
+
+    def test_smoke_script_uses_source_driven_sdh_cleanup(self):
+        smoke = (Path(__file__).parents[1] / "_smoke_test.py").read_text(encoding="utf-8")
+        self.assertIn("src_map=src_map, source_driven=True", smoke)
 
     def test_atomic_write_srt_preserves_file_on_error(self):
         import subtitle_batch_translate
