@@ -9229,7 +9229,7 @@ class App(ctk.CTk):
             if hybrid:                                  roles.append("analysis")
             if self.critic_var.get():                  roles.append("critic")
             if self.polish_var.get():                  roles.append("polish")
-            if self.native_var.get():                  roles.append("qc")
+            if self.native_var.get():                  roles.append("critic")
             if self.qc_var.get():                      roles.append("qc")
             for role in roles:
                 hkey = self._helper_api_key(role)
@@ -9311,11 +9311,18 @@ class App(ctk.CTk):
             details.append(f"└ Polish Pass ({pl_m}): ~${pl_cost:.4f}")
             total_cost += pl_cost
 
-        if self.qc_var.get() or self.native_var.get():
+        if self.native_var.get():
+            nt_m = self._helper_api_model("critic")
+            nt_p = get_price(nt_m)
+            nt_cost = ((base_tokens * 2.0) / 1_000_000 * nt_p["in"]) + ((base_tokens * 0.1) / 1_000_000 * nt_p["out"])
+            details.append(f"└ Native Reader ({nt_m}): ~${nt_cost:.4f}")
+            total_cost += nt_cost
+
+        if self.qc_var.get():
             qc_m = self._helper_api_model("qc")
             qc_p = get_price(qc_m)
             qc_cost = ((base_tokens * 2.0) / 1_000_000 * qc_p["in"]) + ((base_tokens * 0.1) / 1_000_000 * qc_p["out"])
-            details.append(f"└ QC / Native Pass ({qc_m}): ~${qc_cost:.4f}")
+            details.append(f"└ QC Pass ({qc_m}): ~${qc_cost:.4f}")
             total_cost += qc_cost
 
         details.append(f"\nGenel Toplam Maliyet: ~${total_cost:.4f}")
@@ -13319,6 +13326,7 @@ class App(ctk.CTk):
                                 _before_pass = list(pp)
                                 pp = ht.native_reader_pass(
                                     tr_blocks=pp, helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt, log_fn=self._log,
+                                    analysis_result=_analysis_result,
                                     token_callback=self._update_tokens,
                                     src_map=_src_map_from_cues(_orig_cues))
                                 _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
@@ -13348,7 +13356,8 @@ class App(ctk.CTk):
                                 self._set_status("QC kontrolü...")
                                 _issues = ht.quality_check_with_helper(
                                     cues=_orig_cues, tr_blocks=pp,
-                                    helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt, log_fn=self._log)
+                                    helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt, log_fn=self._log,
+                                    analysis_result=_analysis_result)
                                 if _issues:
                                     _auto_qc, _review_qc = ht.split_qc_issues_for_review(_issues)
                                     if _auto_qc:

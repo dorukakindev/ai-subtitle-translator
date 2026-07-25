@@ -75,6 +75,38 @@ class HelperRoutingAuditTests(unittest.TestCase):
                     self.assertIn('helper_api_key=self._helper_api_key("critic")', chunk,
                                   f"native_reader_pass call site must use 'critic' role: {chunk}")
 
+    def test_native_validation_and_cost_use_critic_role(self):
+        import inspect
+        validate_src = inspect.getsource(gui.App._validate)
+        cost_src = inspect.getsource(gui.App._show_cost_estimate)
+        self.assertIn(
+            'if self.native_var.get():                  roles.append("critic")',
+            validate_src,
+        )
+        self.assertIn(
+            'nt_m = self._helper_api_model("critic")',
+            cost_src,
+        )
+        self.assertIn(
+            'qc_m = self._helper_api_model("qc")',
+            cost_src,
+        )
+        self.assertIn("Native Reader", cost_src)
+        self.assertIn("QC Pass", cost_src)
+        self.assertNotIn("QC / Native Pass", cost_src)
+
+    def test_resume_native_and_qc_receive_loaded_analysis(self):
+        import inspect
+        src = inspect.getsource(gui.App._wait_batch_hybrid)
+        native_at = src.index("pp = ht.native_reader_pass(")
+        native_call = src[native_at:src.index(
+            "_record_pass_change", native_at
+        )]
+        qc_at = src.index("_issues = ht.quality_check_with_helper(")
+        qc_call = src[qc_at:src.index("if _issues:", qc_at)]
+        self.assertIn("analysis_result=_analysis_result", native_call)
+        self.assertIn("analysis_result=_analysis_result", qc_call)
+
     def test_claim7_8_safe_chat_create_respects_explicit_openai_provider(self):
         """Claim 7 & 8: Reseller OpenAI model with 'claude' name or /messages URL must not be forced to Anthropic."""
         for safe_create in (ht._safe_chat_create, gui._safe_chat_create):
