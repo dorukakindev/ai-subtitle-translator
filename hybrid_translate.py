@@ -4284,6 +4284,18 @@ _GLOSSARY_WQX_CHAR_RE = re.compile(r"[wqxWQX]")
 _GLOSSARY_GUARD_TURKISH_TARGETS = frozenset({"tr", "tur", "turkish", "türkçe", "turkce"})
 
 
+
+def _glossary_token_matches_key(word: str, key_tokens: set[str]) -> bool:
+    wl = str(word or "").lower().rstrip("s")
+    if not wl:
+        return False
+    if wl in key_tokens or any(wl == kt.rstrip("s") for kt in key_tokens):
+        return True
+    for suff in ("in", "\u0131n", "un", "\u00fcn", "nin", "n\u0131n", "nun", "n\u00fcn", "de", "da", "te", "ta", "den", "dan", "ten", "tan", "e", "a", "ye", "ya", "i", "\u0131", "u", "\u00fc", "yi", "y\u0131", "yu", "y\u00fc", "le", "la", "yle", "yla", "ler", "lar", "li", "l\u0131", "lu", "l\u00fc", "lik", "l\u0131k", "luk", "l\u00fck"):
+        if wl.endswith(suff) and wl[:-len(suff)] in key_tokens:
+            return True
+    return False
+
 def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | None:
     """R_wqx: Türk alfabesinde q/w/x yoktur. `value` içindeki bu harfleri taşıyan
     ilk kelimeyi döner — TEK kelimelik + büyük-harfle-başlayan hedefler hariç
@@ -4327,8 +4339,7 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
             w for w in hits
             if not (
                 w[:1].isupper()
-                and any(w.lower() == kt or w.lower().rstrip("s") == kt.rstrip("s")
-                        for kt in key_tokens)
+                and _glossary_token_matches_key(w, key_tokens)
             )
         ]
         if not hits:
@@ -8351,4 +8362,3 @@ def save_results(
         if n_marked:
             log_fn(f"{n_marked} çevrilemeyen satır kaynak metne düşürülmedi; [ÇEVİRİ EKSİK] olarak işaretlendi", "warn")
     return count, n_marked
-

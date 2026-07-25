@@ -7692,7 +7692,7 @@ class App(ctk.CTk):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
         self._update_tokens(added, price=MODEL_PRICE.get(self._main_model_name(), 0.60) * 0.5)
 
-    def _store_tm_pairs(self, blocks, src_clean_map, model, tgt):
+    def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = ""):
         """Kaynak↔çeviri çiftlerini TM'ye yazar; eksik işaretler ve kaynak==çeviri
         (kimlik) çiftleri hariç tutulur. DÖRT akışın ortak TM-kayıt mantığı tek yerde — birebir aynıydı,
         burada toplandı ki bir daha 'şu akışta var bu akışta yok' sürüklenmesi olmasın.
@@ -7708,7 +7708,7 @@ class App(ctk.CTk):
             ]
             if pairs:
                 profanity = self.profanity_var.get() if hasattr(self, "profanity_var") else ""
-                self._tm.store_batch(pairs, model, tgt_lang=tgt, profanity=profanity)
+                self._tm.store_batch(pairs, model, tgt_lang=tgt, profanity=profanity, schema_name=schema_name)
             self._update_tm_stat()
         except Exception as _tm_e:
             self._log(f"TM kayıt hatası: {_tm_e}", "warn")
@@ -11995,44 +11995,48 @@ class App(ctk.CTk):
                                         lookahead_lines=self._lookahead_lines,
                                         scene_gap_sec=self._scene_gap_seconds,
                                         temperature=self._temperature)
+            for r in reqs:
+                r["schema_name"] = sname
             all_requests.extend(reqs)
             all_file_map.update(fmap)
         requests, file_map = all_requests, all_file_map
         # ── TM ön taraması: tüm blokları tam eşleşen chunk'ları API'ye gönderme ──
         # Tüm chunk kaynaklarını TEK toplu sorguda çöz (satır-satır yerine)
-        _all_srcs = []
-        for req in requests:
-            try:
-                _pl = json.loads(req["body"]["messages"][1]["content"])
-                _all_srcs.extend(it["t"] for it in _pl.get("tr", []) if "t" in it)
-            except Exception:
-                pass
-        _tm_cache = self._tm.lookup_batch(_all_srcs, tgt_lang=tgt,
-                                           model=self._main_model_name(),
-                                           profanity=self.profanity_var.get()) if _all_srcs else {}
+        _tm_cache = {}
+        for (sname, group_src), group in _schema_groups.items():
+            _group_srcs = []
+            for req in requests:
+                if req.get("schema_name") == sname:
+                    try:
+                        _pl = json.loads(req["body"]["messages"][1]["content"])
+                        _group_srcs.extend(it["t"] for it in _pl.get("tr", []) if "t" in it)
+                    except Exception:
+                        pass
+            if _group_srcs:
+                _group_cache = self._tm.lookup_batch(_group_srcs, tgt_lang=tgt, model=self._main_model_name(), profanity=self.profanity_var.get(), schema_name=sname)
+                for src_t, tgt_t in _group_cache.items():
+                    _tm_cache[(src_t, sname)] = tgt_t
 
         def _tm_fill_chunk(req: dict) -> str | None:
-            """Chunk'taki tüm bloklar TM'de tam eşleşiyorsa JSON cevabı döner, yoksa None."""
+            """Chunk'taki t?m bloklar TM'de tam e?le?iyorsa JSON cevab? d?ner, yoksa None."""
             try:
                 payload = json.loads(req["body"]["messages"][1]["content"])
                 items   = payload.get("tr", [])
                 if not items:
                     return None
+                sch_name = req.get("schema_name", "")
                 results = []
                 for item in items:
-                    cached = _tm_cache.get(item["t"])
+                    cached = _tm_cache.get((item["t"], sch_name))
                     if cached is None:
-                        fuzzy = self._tm.fuzzy_lookup(item["t"], threshold=0.95, tgt_lang=tgt,
-                                                      model=self._main_model_name(),
-                                                      profanity=self.profanity_var.get())
+                        fuzzy = self._tm.fuzzy_lookup(item["t"], threshold=0.95, tgt_lang=tgt, model=self._main_model_name(), profanity=self.profanity_var.get(), schema_name=sch_name)
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
-                        return None  # eksik eşleşme — API'ye gönder
+                        return None  # eksik e?le?me ? API'ye g?nder
                     results.append({"i": item["i"], "t": cached})
                 return json.dumps(results, ensure_ascii=False)
             except Exception:
                 return None
-
         api_requests = []
         tm_hits_count = 0
         raw_map = {}
@@ -12710,7 +12714,7 @@ class App(ctk.CTk):
             # TM kaydı (ortak yardımcı)
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
-                                 self._main_model_name(), tgt)
+                                 self._main_model_name(), tgt, schema_name=schema_dict.get("name", ""))
             if self.auto_glossary_var.get():
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
             ht.clear_context_cache(filepath)
@@ -13306,7 +13310,7 @@ class App(ctk.CTk):
                                                              log_fn=self._log, src_clean_map=_src_map)
                                 except Exception:
                                     pass
-                                self._store_tm_pairs(pp, _src_map, self._main_model_name(), tgt)
+                                self._store_tm_pairs(pp, _src_map, self._main_model_name(), tgt, schema_name=_schema_name)
                                 self._maybe_backtranslation_check(
                                     output_path, _src_map, pp,
                                     src_lang=source_language or self.src_var.get())
@@ -13657,7 +13661,7 @@ class App(ctk.CTk):
                 "tm_hits": self._tm.hit_count_session(),
             })
             # TM kaydı (ortak yardımcı)
-            self._store_tm_pairs(sorted_blocks, src_blocks, model_name, _tgt_lang)
+            self._store_tm_pairs(sorted_blocks, src_blocks, model_name, _tgt_lang, schema_name=schema_dict.get("name", ""))
             # Auto-Glossary (düz sync/batch'te de) — Cue nesnesi gerektiğinden kaynağı
             # load_subtitle ile yükle (_src_cues tuple olabilir; build_glossary c.text ister)
             if self.auto_glossary_var.get():
@@ -14432,7 +14436,7 @@ class App(ctk.CTk):
                 self._maybe_backtranslation_check(
                     out_path, _src_map, _final_blocks, src_lang=file_src)
                 # TM kaydı (ortak yardımcı)
-                self._store_tm_pairs(_final_blocks, _src_map, self._main_model_name(), tgt)
+                self._store_tm_pairs(_final_blocks, _src_map, self._main_model_name(), tgt, schema_name=_schema_name)
                 if self.auto_glossary_var.get():
                     self._run_auto_glossary(cues, _final_blocks, filepath)
 

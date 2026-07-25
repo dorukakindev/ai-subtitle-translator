@@ -94,8 +94,8 @@ class TranslationMemory:
     # ── Hash ──────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _settings_fingerprint(model: str = "", profanity: str = "") -> str:
-        """Ayarların özetini döndürür — farklı model/profanity farklı TM girişi demektir."""
+    def _settings_fingerprint(model: str = "", profanity: str = "", schema_name: str = "") -> str:
+        """Ayarların özetini döndürür — farklı model/profanity/schema_name farklı TM girişi demektir."""
         parts = []
         model_short = (model or "").strip().lower().replace(" ", "-")[:40]
         if model_short:
@@ -103,6 +103,9 @@ class TranslationMemory:
         prof = (profanity or "").strip().lower()[:20]
         if prof:
             parts.append(f"p:{prof}")
+        sch = (schema_name or "").strip().lower()[:40]
+        if sch:
+            parts.append(f"s:{sch}")
         return "|".join(parts)
 
     @staticmethod
@@ -118,12 +121,12 @@ class TranslationMemory:
 
     # ── Arama ─────────────────────────────────────────────────────────────────
 
-    def lookup(self, source: str, tgt_lang: str = "", model: str = "", profanity: str = "") -> str | None:
+    def lookup(self, source: str, tgt_lang: str = "", model: str = "", profanity: str = "", schema_name: str = "") -> str | None:
         """Kaynak metni TM'de ara. Bulursa hedef metni döner, yoksa None.
         model ve profanity aynı ayarlarla kaydedilmiş girişleri bulmak için kullanılır."""
         if not source or not source.strip():
             return None
-        fingerprint = self._settings_fingerprint(model, profanity)
+        fingerprint = self._settings_fingerprint(model, profanity, schema_name)
         h = self._hash(source, tgt_lang, fingerprint)
         try:
             with self._lock:
@@ -153,10 +156,10 @@ class TranslationMemory:
         except Exception:
             return None
 
-    def lookup_batch(self, sources: list, tgt_lang: str = "", model: str = "", profanity: str = "") -> dict:
+    def lookup_batch(self, sources: list, tgt_lang: str = "", model: str = "", profanity: str = "", schema_name: str = "") -> dict:
         """Birden çok kaynak metni TEK sorguda arar. {source: target} döner
         (yalnızca bulunanlar). Satır-satır lookup'a göre büyük dosyalarda hızlı."""
-        fingerprint = self._settings_fingerprint(model, profanity)
+        fingerprint = self._settings_fingerprint(model, profanity, schema_name)
         uniq = {}
         for s in sources:
             if s and s.strip():
@@ -194,7 +197,7 @@ class TranslationMemory:
         return result
 
     def fuzzy_lookup(self, source: str, threshold: float = FUZZY_THRESHOLD,
-                     tgt_lang: str = "", model: str = "", profanity: str = "") -> tuple[str, float] | None:
+                     tgt_lang: str = "", model: str = "", profanity: str = "", schema_name: str = "") -> tuple[str, float] | None:
         """Fuzzy eşleştirme: %threshold+ benzerlik varsa (çeviri, oran) döner.
         Tam eşleşme varsa önce onu döner. Yoksa kısa adaylara (±40% uzunluk) bakar.
         Pahalı DB taramasını kısaltmak için uzunluk filtrelemesi yapar.
@@ -202,7 +205,7 @@ class TranslationMemory:
         if not source or not source.strip():
             return None
         # Önce tam eşleşme dene (hızlı yol)
-        exact = self.lookup(source, tgt_lang=tgt_lang, model=model, profanity=profanity)
+        exact = self.lookup(source, tgt_lang=tgt_lang, model=model, profanity=profanity, schema_name=schema_name)
         if exact is not None:
             return (exact, 1.0)
 
@@ -211,17 +214,28 @@ class TranslationMemory:
         if src_len < 6:
             return None  # çok kısa metinlerde fuzzy anlamsız
 
-        # DB'den uzunluk filtreli ve hedef dile göre adaylar çek (±40% uzunluk)
+        # DB'den uzunluk filtreli ve hedef dile/şemaya göre adaylar çek (±40% uzunluk)
         lo = int(src_len * 0.6)
         hi = int(src_len * 1.4)
         lang = tgt_lang.strip().lower()
-        # Hedef dil belirtilmişse YALNIZCA o dile bak — eskiden `OR tgt_lang=''` etiketsiz
-        # (başka dile ait olabilecek) eski kayıtları sızdırıp yanlış fuzzy eşleşme verebiliyordu.
-        if lang:
+        sch = schema_name.strip().lower()[:40] if schema_name else ""
+        if lang and sch:
+            with self._lock:
+                rows = self._get_conn().execute(
+                    "SELECT source, target FROM tm WHERE tgt_lang = ? AND schema_name = ? AND LENGTH(source) BETWEEN ? AND ? LIMIT 500",
+                    (lang, sch, lo, hi)
+                ).fetchall()
+        elif lang:
             with self._lock:
                 rows = self._get_conn().execute(
                     "SELECT source, target FROM tm WHERE tgt_lang = ? AND LENGTH(source) BETWEEN ? AND ? LIMIT 500",
                     (lang, lo, hi)
+                ).fetchall()
+        elif sch:
+            with self._lock:
+                rows = self._get_conn().execute(
+                    "SELECT source, target FROM tm WHERE schema_name = ? AND LENGTH(source) BETWEEN ? AND ? LIMIT 500",
+                    (sch, lo, hi)
                 ).fetchall()
         else:
             with self._lock:
@@ -261,7 +275,7 @@ class TranslationMemory:
             return False
         if not _is_safe_target(_t):
             return False
-        fingerprint = self._settings_fingerprint(model, profanity)
+        fingerprint = self._settings_fingerprint(model, profanity, schema_name)
         h = self._hash(source, tgt_lang, fingerprint)
         try:
             with self._lock:
@@ -283,7 +297,7 @@ class TranslationMemory:
         """Toplu kaydetme. pairs = [(source, target), ...]"""
         if not pairs:
             return
-        fingerprint = self._settings_fingerprint(model, profanity)
+        fingerprint = self._settings_fingerprint(model, profanity, schema_name)
         rows = []
         for source, target in pairs:
             if not source or not target or _is_missing_translation(target):
