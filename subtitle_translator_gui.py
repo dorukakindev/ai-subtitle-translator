@@ -22,7 +22,9 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
 import credential_store
 import series_memory
 import sdh_cleaner
-from app_state import _interprocess_lock, atomic_write_json, mutate_batch_ids, state_dir, state_path
+from app_state import (_interprocess_lock, atomic_write_json,
+                       best_effort_cancel_remote_batch, mutate_batch_ids,
+                       state_dir, state_path)
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
 from folder_picker import pick_multiple_folders
 
@@ -12899,6 +12901,9 @@ class App(ctk.CTk):
                 for req in chunk:
                     f.write(json.dumps(req, ensure_ascii=False) + "\n")
             _upload_failed = False
+            _created_batch_id = ""
+            _metadata_ready = False
+            _metadata_cancelled = False
             try:
                 self._log(f"Yükleniyor ({ci+1}/{len(chunks)})...", "info")
                 with open(jpath, "rb") as f:
@@ -12907,11 +12912,11 @@ class App(ctk.CTk):
                     input_file_id=up.id,
                     endpoint="/v1/chat/completions",
                     completion_window="24h")
+                _created_batch_id = batch.id
                 batch_ids.append(batch.id)
                 mutate_batch_ids(_batch_id_path(), add=[batch.id])
                 self._register_batch(batch.id, api_key, b_url)
                 slice_fmap = _slice_file_map(file_map, chunk)
-                batch_runs.append((batch.id, slice_fmap, chunk))
                 fmap_path = state_path(__file__, f"batch_fmap_{batch.id}.json")
                 fmap_data = {
                     "type": "regular",
@@ -12925,9 +12930,21 @@ class App(ctk.CTk):
                     "fmap": {cid: [list(x) for x in info] for cid, info in slice_fmap.items()},
                 }
                 atomic_write_json(fmap_path, fmap_data)
+                _metadata_ready = True
+                batch_runs.append((batch.id, slice_fmap, chunk))
                 self._log(f"Batch oluşturuldu: {batch.id}", "ok")
             except Exception as e:
                 self._log_exc("Hata", e)
+                if _created_batch_id and not _metadata_ready:
+                    _metadata_cancelled = best_effort_cancel_remote_batch(
+                        client, _created_batch_id, self._log)
+                    self._unregister_batch(_created_batch_id)
+                    if _metadata_cancelled:
+                        try:
+                            mutate_batch_ids(_batch_id_path(), remove=[_created_batch_id])
+                        except Exception:
+                            pass
+                        batch_ids = [bid for bid in batch_ids if bid != _created_batch_id]
                 self._set_running(False)
                 _upload_failed = True
             finally:
@@ -12937,6 +12954,24 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             if _upload_failed:
+                if _created_batch_id and not _metadata_ready:
+                    if _metadata_cancelled:
+                        msg = (
+                            f"Batch metadata kaydı başarısız oldu ({_created_batch_id}); "
+                            "uzak batch güvenli biçimde iptal edildi."
+                        )
+                    else:
+                        msg = (
+                            f"Batch metadata kaydı başarısız oldu ({_created_batch_id}) ve uzak "
+                            "batch iptal edilemedi. Otomatik resume mümkün değil; batch ID ile "
+                            "sağlayıcı panelinden durumu kontrol edin."
+                        )
+                    self._log(msg, "err")
+                    try:
+                        _post_ui(self, messagebox.showerror, "Batch Metadata Hatası", msg)
+                    except Exception:
+                        pass
+                    return
                 if batch_ids:
                     self._log(f"{len(batch_ids)} batch gönderilmişti — "
                               f"'↺ Batch'i Devam Ettir' ile alınabilir veya "

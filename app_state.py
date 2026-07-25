@@ -86,3 +86,17 @@ def mutate_batch_ids(path, *, add=(), remove=(), replace=None) -> list[str]:
         else:
             path.unlink(missing_ok=True)
         return result
+
+
+def best_effort_cancel_remote_batch(client, batch_id: str, log_fn=None) -> bool:
+    try:
+        client.batches.cancel(batch_id)
+        if log_fn:
+            log_fn(f"Metadata kaydı başarısız olan batch iptal edildi: {batch_id}", "warn")
+        return True
+    except Exception as exc:
+        if log_fn:
+            log_fn(
+                f"ACİL: Batch metadata kaydı başarısız ve uzak batch iptal edilemedi "
+                f"({batch_id}): {exc}", "err")
+        return False

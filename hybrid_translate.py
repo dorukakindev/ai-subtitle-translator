@@ -13,7 +13,8 @@ import traceback
 import unicodedata
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
-from app_state import atomic_write_json, mutate_batch_ids, state_dir, state_path
+from app_state import (atomic_write_json, best_effort_cancel_remote_batch,
+                       mutate_batch_ids, state_dir, state_path)
 
 _SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -8080,21 +8081,31 @@ def submit_batch(
         completion_window="24h",
     )
 
-    # Append to batch_id.txt for resume (overwrite, batch_ids collected by caller)
-    mutate_batch_ids(_batch_id_path(), add=[batch.id])
+    try:
+        mutate_batch_ids(_batch_id_path(), add=[batch.id])
 
-    # Save file_map for resume/recovery
-    if file_map is not None:
-        fmap_path = _batch_fmap_path(batch.id)
-        fmap_data = {
-            "type": "hybrid",
-            "output_path": output_path or "",
-            "source_path": source_path or "",   # resume: kaynağı geriye hesaplama, saklananı kullan
-            "output_dir": output_dir or "",     # resume: raporu doğru klasöre yaz
-            "source_language": source_language or "",
-            "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
-        }
-        atomic_write_json(fmap_path, fmap_data)
+        if file_map is not None:
+            fmap_path = _batch_fmap_path(batch.id)
+            fmap_data = {
+                "type": "hybrid",
+                "output_path": output_path or "",
+                "source_path": source_path or "",
+                "output_dir": output_dir or "",
+                "source_language": source_language or "",
+                "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
+            }
+            atomic_write_json(fmap_path, fmap_data)
+    except Exception as exc:
+        cancelled = best_effort_cancel_remote_batch(client, batch.id, log_fn)
+        if cancelled:
+            try:
+                mutate_batch_ids(_batch_id_path(), remove=[batch.id])
+            except Exception:
+                pass
+        raise RuntimeError(
+            f"Batch oluşturuldu ancak recovery metadata kaydedilemedi ({batch.id}); "
+            f"uzak iptal={'başarılı' if cancelled else 'başarısız'}"
+        ) from exc
 
     if log_fn:
         log_fn(f"Batch gönderildi: {batch.id}", "ok")

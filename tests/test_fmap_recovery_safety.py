@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import hybrid_translate as ht
 import subtitle_translator_gui as gui
@@ -86,6 +86,46 @@ class SavedRegularRequestSafetyTest(unittest.TestCase):
         )
         self.assertIs(requests, saved)
         self.assertEqual(reason, "")
+
+
+class OrphanBatchCancellationTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {STATE_DIR_ENV: self._td.name})
+        self._env.start()
+        self.client = MagicMock()
+        self.client.files.create.return_value.id = "file_1"
+        self.client.batches.create.return_value.id = "batch_orphan"
+        self.requests = [{"custom_id": "cid", "body": {"messages": []}}]
+        self.fmap = {"cid": [("1", "start", "end")]}
+
+    def tearDown(self):
+        self._env.stop()
+        self._td.cleanup()
+
+    def test_fmap_write_failure_cancels_remote_batch_and_removes_id(self):
+        with patch("openai.OpenAI", return_value=self.client), \
+             patch.object(ht, "atomic_write_json", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "recovery metadata"):
+                ht.submit_batch(
+                    "key", self.requests, file_map=self.fmap, log_fn=MagicMock())
+
+        self.client.batches.cancel.assert_called_once_with("batch_orphan")
+        self.assertFalse(ht._batch_id_path().exists())
+
+    def test_failed_remote_cancel_preserves_batch_id_for_manual_recovery(self):
+        self.client.batches.cancel.side_effect = RuntimeError("provider unavailable")
+        with patch("openai.OpenAI", return_value=self.client), \
+             patch.object(ht, "atomic_write_json", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "uzak iptal=başarısız"):
+                ht.submit_batch(
+                    "key", self.requests, file_map=self.fmap, log_fn=MagicMock())
+
+        self.assertEqual(
+            ht._batch_id_path().read_text(encoding="utf-8").strip(),
+            "batch_orphan",
+        )
 
 
 if __name__ == "__main__":
