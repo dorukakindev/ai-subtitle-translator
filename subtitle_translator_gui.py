@@ -2168,7 +2168,7 @@ def _log_cps_warning(blocks: list, log_fn) -> int:
 def _clean_src(text: str) -> str:
     """Strip HTML/ASS formatting tags from source text before translation."""
     text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)   # <i>, <b>, <font ...>
-    text = re.sub(r'\{[^}]+\}', '', text)             # {an8}, {\c&H...}
+    text = re.sub(r'\{[^}]*\}', '', text)             # {}, {an8}, {\c&H...}
     text = re.sub(r'  +', ' ', text)
     return text.strip()
 

@@ -8,8 +8,15 @@ import os
 import tempfile
 import unittest
 
-from subtitle_formats import restore_format_tags
 import subtitle_translator_gui as gui
+
+
+class CleanSourceTagsTest(unittest.TestCase):
+    def test_empty_ass_override_tag_is_removed_without_touching_unmatched_brace(self):
+        self.assertEqual(gui._clean_src(r"{}Hello {\i1}world{\i0}"), "Hello world")
+        self.assertEqual(gui._clean_src("A literal { stays"), "A literal { stays")
+
+from subtitle_formats import restore_format_tags
 
 
 class RestoreFormatTagsTest(unittest.TestCase):
