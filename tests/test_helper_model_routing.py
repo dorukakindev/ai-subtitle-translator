@@ -2,6 +2,18 @@ import unittest
 
 
 class HelperModelRoutingTest(unittest.TestCase):
+    def test_anthropic_message_url_normalizes_native_and_proxy_bases(self):
+        from helper_models import _anthropic_messages_url
+
+        self.assertEqual(_anthropic_messages_url("https://api.anthropic.com"),
+                         "https://api.anthropic.com/v1/messages")
+        self.assertEqual(_anthropic_messages_url("https://api.anthropic.com/v1"),
+                         "https://api.anthropic.com/v1/messages")
+        self.assertEqual(_anthropic_messages_url("https://api.anthropic.com/v1/messages"),
+                         "https://api.anthropic.com/v1/messages")
+        self.assertEqual(_anthropic_messages_url("https://opencode.ai/zen/go/v1/messages"),
+                         "https://opencode.ai/zen/go/v1/messages")
+
     def test_deepseek_v4_flash_routes_to_deepseek_api(self):
         from helper_models import resolve_helper_model
 

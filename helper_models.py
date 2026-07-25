@@ -439,6 +439,18 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     return DummyResponse(output_text, input_tokens, output_tokens, total_tokens)
 
 
+def _anthropic_messages_url(base_url: str | None) -> str:
+    """Anthropic-compatible bir taban URL'yi tekil /v1/messages uç noktasına getirir."""
+    url = (base_url or "https://api.anthropic.com/v1").strip().rstrip("/")
+    if url.lower().endswith("/chat/completions"):
+        url = url[:-17].rstrip("/")
+    if url.lower().endswith("/messages"):
+        return url
+    if not url.lower().endswith("/v1"):
+        url += "/v1"
+    return url + "/messages"
+
+
 def call_anthropic_messages(model_id: str, messages: list, temperature: float = None, max_tokens: int = None, api_key_str: str = None, base_url: str = None):
     import json
     import urllib.request
@@ -483,17 +495,7 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
         else:
             headers["Authorization"] = f"Bearer {api_key_str}"
 
-    url = base_url or "https://api.anthropic.com/v1"
-    url_stripped = url.rstrip("/")
-    if url_stripped.endswith("/chat/completions"):
-        url_stripped = url_stripped[:-17].rstrip("/")
-    # /v1 eksikse ekle (proxy'lerde sıklıkla kullanıcı sadece host giriyor)
-    if "/v1" not in url_stripped and "api.anthropic.com" not in url_stripped:
-        url_stripped = url_stripped + "/v1"
-    if not url_stripped.endswith("/messages"):
-        url = url_stripped + "/messages"
-    else:
-        url = url_stripped
+    url = _anthropic_messages_url(base_url)
 
     req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers, method="POST")
     try:
