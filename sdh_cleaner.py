@@ -203,8 +203,8 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     if not words:
         return True
 
-    # Language descriptor check: [speaking French], [in Spanish]
-    if len(words) >= 2 and words[0] in ("speaking", "in") and words[1] in _KNOWN_LANGUAGES:
+    # Language descriptor check: [speaking French], [speaks Latin], [in Spanish]
+    if len(words) >= 2 and words[0] in ("speaking", "speaks", "in") and words[1] in _KNOWN_LANGUAGES:
         return True
 
     words_no_digits = [w for w in words if not w.isdigit()]
@@ -255,7 +255,8 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
     # 2-3 word TitleCase/uppercase phrases ([New York], [Chapter One]) without a colon are kept.
     if len(words) == 1:
         w = words[0]
-        if w.isalpha() and (w.isupper() or w.istitle()):
+        if (w.casefold() not in _KNOWN_LANGUAGES
+                and w.isalpha() and (w.isupper() or w.istitle())):
             return True
 
     return False

@@ -35,9 +35,11 @@ class TestSdhSpeaker(unittest.TestCase):
         self.assertEqual(strip_sdh_line("[Speaking French] Bonjour"), "Bonjour")
         self.assertEqual(strip_sdh_line("[SPEAKING FRENCH] Bonjour"), "Bonjour")
         self.assertEqual(strip_sdh_line("[speaking German] Hallo"), "Hallo")
+        self.assertEqual(strip_sdh_line("[speaks Latin] Salve"), "Salve")
         self.assertEqual(strip_sdh_line("[in Spanish] Hola"), "Hola")
 
     def test_preserved_titles_and_names(self):
+        self.assertEqual(strip_sdh_line("[Latin] title remains"), "[Latin] title remains")
         self.assertEqual(strip_sdh_line("[New York] is a city."), "[New York] is a city.")
         self.assertEqual(strip_sdh_line("[Chapter One] The beginning."), "[Chapter One] The beginning.")
         self.assertEqual(strip_sdh_line("[Breaking News] Markets fell."), "[Breaking News] Markets fell.")
