@@ -18,7 +18,8 @@ from tkinter import filedialog, messagebox
 from openai import OpenAI
 from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model, normalize_helper_model_label
 from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
-                              restore_format_tags, read_subtitle_text)
+                              restore_format_tags, read_subtitle_text,
+                              clean_translation_source_text)
 import credential_store
 import series_memory
 import sdh_cleaner
@@ -1658,26 +1659,44 @@ _TS_LINE_RE = re.compile(
 def parse_srt(filepath):
     parsed = []
     content = read_subtitle_text(filepath).strip()
-    content = re.sub(
-        r'(?m)^(\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*'
-        r'\d{1,2}:\d{2}:\d{2}[,.]\d{3}[^\n]*)\n[ \t]*\n'
-        r'(?!(?:\d+)[ \t]*\n\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->)',
-        r'\1\n',
-        content,
-    )
-    for block in re.split(r"\n[ \t]*\n+", content):
-        lines = block.strip().splitlines()
-        # Numarasız SRT (ilk satır doğrudan zaman damgası) → sıralı index uydur
-        if len(lines) >= 2 and _TS_LINE_RE.match(lines[0].strip()):
-            ts = lines[0].strip().replace(".", ",")
-            parsed.append((None, ts, "\n".join(lines[1:]).strip()))
+    lines = content.splitlines()
+
+    def _cue_start(pos):
+        if pos >= len(lines):
+            return None
+        current = lines[pos].strip()
+        if _TS_LINE_RE.match(current):
+            return None, current, pos + 1
+        if (re.fullmatch(r"\d+", current) and pos + 1 < len(lines)
+                and _TS_LINE_RE.match(lines[pos + 1].strip())):
+            return current, lines[pos + 1].strip(), pos + 2
+        return None
+
+    i = 0
+    while i < len(lines):
+        start = _cue_start(i)
+        if start is None:
+            i += 1
             continue
-        if len(lines) < 3:
-            continue
-        if not _TS_LINE_RE.match(lines[1].strip()):
-            continue
-        ts = lines[1].strip().replace(".", ",")
-        parsed.append((lines[0].strip(), ts, "\n".join(lines[2:]).strip()))
+        idx, ts, i = start
+        text_lines = []
+        while i < len(lines):
+            if _cue_start(i) is not None:
+                break
+            if not lines[i].strip():
+                next_nonblank = i + 1
+                while next_nonblank < len(lines) and not lines[next_nonblank].strip():
+                    next_nonblank += 1
+                if _cue_start(next_nonblank) is not None or next_nonblank >= len(lines):
+                    i = next_nonblank
+                    break
+                i = next_nonblank
+                continue
+            text_lines.append(lines[i].strip())
+            i += 1
+        text = "\n".join(text_lines).strip()
+        if text:
+            parsed.append((idx, ts.replace(".", ","), text))
     raw_ids = [idx for idx, _ts, _text in parsed]
     valid_ids = bool(raw_ids) and all(idx is not None and re.fullmatch(r"\d+", idx)
                                       for idx in raw_ids)
@@ -1844,7 +1863,8 @@ def write_srt(filepath, blocks, target_language="Turkish"):
                 import hybrid_translate as ht
                 text = ht.normalize_latin_homoglyphs(str(text))
                 if is_turkish:
-                    text = ht._apply_local_fixes(str(text))[0]
+                    text = ht._apply_local_fixes(
+                        str(text), allow_context_sensitive=False)[0]
             except Exception:
                 text = str(text)
             text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
@@ -2173,10 +2193,7 @@ def _log_cps_warning(blocks: list, log_fn) -> int:
 
 def _clean_src(text: str) -> str:
     """Strip HTML/ASS formatting tags from source text before translation."""
-    text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)   # <i>, <b>, <font ...>
-    text = re.sub(r'\{(?:\\[^}]*|)\}', '', text)       # ASS override/empty tag; preserve {username}
-    text = re.sub(r'  +', ' ', text)
-    return text.strip()
+    return clean_translation_source_text(text)
 
 
 def _ends_sentence_gui(text: str) -> bool:
@@ -12403,18 +12420,22 @@ class App(ctk.CTk):
 
     @staticmethod
     def _chunk_src_hash(req, fingerprint: str = "", scope: str = "") -> str:
-        """Chunk'ın çevrilecek KAYNAK satırları + ayar parmak izinin (fingerprint)
-        imzası — kaynak içeriği YA DA model/ayarlar değişirse checkpoint eşleşmesin
-        (bayat çeviri sunulmasın). 'tr' dışındaki alanlar (prev_tr enjeksiyonu vb.)
-        imzayı değiştirmez."""
+        """Chunk'ın bütün çeviri payload'u + ayar parmak izi.
+
+        Kaynak satırları aynı kalsa bile bağlam, sözlük, sahne veya zincirlenmiş
+        önceki çeviri değişirse eski checkpoint yeniden kullanılmaz.
+        """
         try:
             pl = json.loads(req["body"]["messages"][1]["content"])
-            srcs = "".join(str(it.get("t", "")) for it in pl.get("tr", []))
+            payload = json.dumps(
+                pl, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), default=str,
+            )
             scoped_fp = fingerprint
             if scope:
                 scoped_fp += "\x1e" + str(scope)
-            data = scoped_fp + "\x1f" + srcs
-            return hashlib.md5(data.encode("utf-8", "replace")).hexdigest()[:10]
+            data = scoped_fp + "\x1f" + payload
+            return hashlib.sha256(data.encode("utf-8", "replace")).hexdigest()[:16]
         except Exception:
             return ""
 
@@ -12450,17 +12471,6 @@ class App(ctk.CTk):
             target_key = f"{cid}:{h_new}"
             ent = entries.get(target_key)
             matched_key = target_key if ent else None
-            if not ent:
-                try:
-                    pl = json.loads(req["body"]["messages"][1]["content"])
-                    srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
-                    h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
-                    target_key_old = f"{cid}:{h_old}"
-                    ent = entries.get(target_key_old)
-                    if ent:
-                        matched_key = target_key_old
-                except Exception:
-                    ent = None
             if ent and ent.get("t"):
                 raw_map[cid] = ent["t"]
                 resumed += 1
@@ -12490,17 +12500,6 @@ class App(ctk.CTk):
             target_key = f"{cid}:{h_new}"
             ent = entries.get(target_key)
             matched_key = target_key if ent else None
-            if not ent and not scope:
-                try:
-                    pl = json.loads(req["body"]["messages"][1]["content"])
-                    srcs = " ".join(str(it.get("t", "")) for it in pl.get("tr", []))
-                    h_old = hashlib.md5((fp + "\x1f" + srcs).encode("utf-8", "replace")).hexdigest()[:10]
-                    target_key_old = f"{cid}:{h_old}"
-                    ent = entries.get(target_key_old)
-                    if ent:
-                        matched_key = target_key_old
-                except Exception:
-                    ent = None
             if ent and ent.get("t"):
                 raw_map[cid] = ent["t"]
                 n += 1
@@ -12559,10 +12558,12 @@ class App(ctk.CTk):
             fp: self._effective_file_source_language(fp, src) for fp in valid_files
         }
         _schema_groups: dict = {}
+        _effective_schema_names = {}
         for fp in valid_files:
             sname = self._get_file_schema(fp)["name"]
             if sname == "Otomatik":
                 sname = _detected.get(fp, "Otomatik")
+            _effective_schema_names[fp] = sname
             _schema_groups.setdefault((sname, _source_languages[fp]), []).append(fp)
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
         _file_hints = self._get_precontext_hints(
@@ -12781,7 +12782,8 @@ class App(ctk.CTk):
             self._retry_hata(client, raw_map, requests, max_rounds=self._max_retry)
             _all_written = self._write_results(raw_map, file_map, output_dir,
                                                openai_key=api_key, src=src,
-                                               source_languages=_source_languages)
+                                               source_languages=_source_languages,
+                                               schema_names=_effective_schema_names)
             if _all_written:
                 is_full_success = failed[0] == 0
             else:
@@ -13417,10 +13419,12 @@ class App(ctk.CTk):
             fp: self._effective_file_source_language(fp, src) for fp in valid_files
         }
         _schema_groups: dict = {}
+        _effective_schema_names = {}
         for fp in valid_files:
             sname = self._get_file_schema(fp)["name"]
             if sname == "Otomatik":
                 sname = _detected.get(fp, "Otomatik")
+            _effective_schema_names[fp] = sname
             _schema_groups.setdefault((sname, _source_languages[fp]), []).append(fp)
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
         _file_hints = self._get_precontext_hints(
@@ -13514,6 +13518,7 @@ class App(ctk.CTk):
                     "part_count": len(chunks),
                     "output_paths": output_paths,
                     "source_languages": _source_languages,
+                    "schema_names": _effective_schema_names,
                     "requests": chunk,
                     "fmap": {cid: [list(x) for x in info] for cid, info in slice_fmap.items()},
                 }
@@ -13602,7 +13607,8 @@ class App(ctk.CTk):
                 final_written = self._write_results(
                     accumulated_raw_map, file_map, output_dir,
                     openai_key=api_key, src=src, output_paths=output_paths,
-                    source_languages=_source_languages)
+                    source_languages=_source_languages,
+                    schema_names=_effective_schema_names)
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -13623,6 +13629,7 @@ class App(ctk.CTk):
         accumulated_requests = []
         accumulated_output_paths = {}
         accumulated_source_languages = {}
+        accumulated_schema_names = {}
         regular_groups = {}
         regular_recovery_safe = True
         last_output_dir = output_dir
@@ -13690,6 +13697,7 @@ class App(ctk.CTk):
                         accumulated_requests.extend(saved_requests)
                         accumulated_output_paths.update(fmap_data.get("output_paths") or {})
                         accumulated_source_languages.update(fmap_data.get("source_languages") or {})
+                        accumulated_schema_names.update(fmap_data.get("schema_names") or {})
                         run_id = str(fmap_data.get("run_id") or bid)
                         part_index = int(fmap_data.get("part_index", 0))
                         part_count = max(1, int(fmap_data.get("part_count", 1)))
@@ -13729,7 +13737,8 @@ class App(ctk.CTk):
                     accumulated_raw_map, accumulated_file_map, last_output_dir,
                     openai_key=api_key, src=src,
                     output_paths=accumulated_output_paths,
-                    source_languages=accumulated_source_languages)
+                    source_languages=accumulated_source_languages,
+                    schema_names=accumulated_schema_names)
         elif not self._stop_flag and (accumulated_raw_map or regular_groups):
             self._log("Regular batch parçalarının tümü hazır değil; eksik final yazılmadı.", "warn")
         # Hybrid resume yolunda işlenen dosyalar için kalite raporu yaz
@@ -14194,7 +14203,7 @@ class App(ctk.CTk):
         return raw_map
 
     def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,
-                       output_paths=None, source_languages=None):
+                       output_paths=None, source_languages=None, schema_names=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
@@ -14229,6 +14238,9 @@ class App(ctk.CTk):
             _last_src_cues = _src_cues
             _raw_map   = _raw_src_map_from_cues(_src_cues)   # ham (etiketli) kaynak
             src_blocks = {str(idx): _clean_src(text) for idx, ts, text in _src_cues}  # etiketsiz
+            schema_name = (schema_names or {}).get(fp) or (schema_names or {}).get(str(fp))
+            schema_dict = (self._schema_by_name(schema_name)
+                           if schema_name else self._get_file_schema(fp))
             _file_src_lang = (source_languages or {}).get(fp)
             if not _file_src_lang:
                 _file_src_lang = self._effective_file_source_language(fp, src or "English")

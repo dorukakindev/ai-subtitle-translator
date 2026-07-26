@@ -15,6 +15,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 from app_state import (atomic_write_json, atomic_write_text, best_effort_cancel_remote_batch,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
+from subtitle_formats import clean_translation_source_text
 
 _SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -208,10 +209,7 @@ def cps(text: str, duration_sec: float) -> float:
 
 def _clean_source_text(text: str) -> str:
     """Strip HTML / ASS formatting tags from source subtitle text before translation."""
-    text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)   # <i>, <b>, <font color=...>
-    text = re.sub(r'\{[^}]+\}', '', text)             # {an8}, {\c&HFFFFFF&}
-    text = re.sub(r'  +', ' ', text)
-    return text.strip()
+    return clean_translation_source_text(text)
 
 
 _TERM_RE_CACHE = {}
@@ -1442,7 +1440,7 @@ def _generate_cultural_refs(
     log_fn=None,
 ) -> list:
     """Detect cultural references (pop culture, brand names, regional references) in cues.
-    Recommends keep/localize/gloss action for each.
+    Recommends keep/localize action for each.
 
     Returns list of dicts: [{src, type, action, target}]
     """
@@ -1472,10 +1470,10 @@ def _generate_cultural_refs(
             f"For each reference, decide the best translation strategy for {tgt_lang} audience:\n"
             f"  'keep'     — audience will recognize it, keep unchanged (e.g. Marvel, Netflix)\n"
             f"  'localize' — replace with {tgt_lang} equivalent (e.g. US baseball team → Turkish equivalent)\n"
-            f"  'gloss'    — keep but add brief clarification in parentheses\n\n"
+            f"Never add a parenthetical explanation that is absent from the source.\n\n"
             f"Default for this genre: {localize_default}\n\n"
             f"Text:\n{combined[:2500]}\n\n"
-            f'Return JSON: {{"refs": [{{"src": "...", "type": "pop_culture|brand|regional|historical", "action": "keep|localize|gloss", "target": "Turkish equivalent if localize"}}]}}\n'
+            f'Return JSON: {{"refs": [{{"src": "...", "type": "pop_culture|brand|regional|historical", "action": "keep|localize", "target": "Turkish equivalent if localize"}}]}}\n'
             f"Only include items that clearly appear in the text. Return ONLY the JSON."
         )
         resp = _safe_chat_create(
@@ -1492,14 +1490,24 @@ def _generate_cultural_refs(
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
         try:
             data = json.loads(raw)
-            return data["refs"] if isinstance(data.get("refs"), list) else []
+            refs = data["refs"] if isinstance(data.get("refs"), list) else []
+            return [
+                {**ref, "action": "keep" if ref.get("action") == "gloss" else ref.get("action")}
+                for ref in refs if isinstance(ref, dict)
+                and ref.get("action") in {"keep", "localize", "gloss"}
+            ]
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
                 start_i = raw.find("{")
                 end_i = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start_i:end_i])
-                    return data["refs"] if isinstance(data.get("refs"), list) else []
+                    refs = data["refs"] if isinstance(data.get("refs"), list) else []
+                    return [
+                        {**ref, "action": "keep" if ref.get("action") == "gloss" else ref.get("action")}
+                        for ref in refs if isinstance(ref, dict)
+                        and ref.get("action") in {"keep", "localize", "gloss"}
+                    ]
                 except Exception:
                     pass
             return []
@@ -2606,10 +2614,9 @@ def build_system_prompt(
                     target = r.get("target", "")
                     parts.append(f"  \"{r['src']}\" → \"{target}\"" if target else f"  \"{r['src']}\" → find natural Turkish equivalent")
             if gloss_refs:
-                parts.append("Add brief parenthetical gloss for these:")
+                parts.append("Keep these references without adding parenthetical explanations:")
                 for r in gloss_refs[:5]:
-                    target = r.get("target", "")
-                    parts.append(f"  \"{r['src']}\" → keep + add brief clarification")
+                    parts.append(f"  \"{r['src']}\" → keep unchanged")
             parts.append("")
 
     # ── Mandatory terms ───────────────────────────────────────────────────────
@@ -4460,6 +4467,11 @@ def _glossary_token_matches_key(word: str, key_tokens: set[str], raw_value: str 
 
     return False
 
+_TURKISH_WQX_LOANWORDS = frozenset({
+    "web", "wifi", "wi-fi", "fax", "watt", "whatsapp", "twitter",
+})
+
+
 def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | None:
     """R_wqx: Türk alfabesinde q/w/x yoktur. `value` içindeki bu harfleri taşıyan
     ilk kelimeyi döner — TEK kelimelik + büyük-harfle-başlayan hedefler hariç
@@ -4479,7 +4491,11 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
     words = _GLOSSARY_WORD_RE.findall(str(value or ""))
     if not words:
         return None
-    hits = [w for w in words if _GLOSSARY_WQX_CHAR_RE.search(w)]
+    hits = [
+        w for w in words
+        if _GLOSSARY_WQX_CHAR_RE.search(w)
+        and w.casefold() not in _TURKISH_WQX_LOANWORDS
+    ]
     if not hits:
         return None
     if len(words) == 1 and hits[0][:1].isupper():
@@ -4706,9 +4722,10 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
     checks are meaningless for other targets) — for any other target the glossary
     is returned unmodified.
 
-    Beyond the existing per-term filtering, a term whose target trips R_wqx
-    (Turkish has no q/w/x) causes the WHOLE glossary to be dropped, not just that
-    term. Real incident (The Blood of Hussain, 2026-07-16): an analysis pass
+    Beyond the existing per-term filtering, several targets tripping R_wqx
+    (Turkish has no q/w/x) can cause the whole glossary to be dropped. A single
+    hit is isolated so valid loans such as "web" cannot erase clean siblings.
+    Real incident (The Blood of Hussain, 2026-07-16): an analysis pass
     drifted into Somali for EVERY term in the glossary at once, including terms
     that individually look harmless to the other 3 checks (no foreign script, no
     drift-list word, no diacritic) — e.g. "Bangiga Adduunka" for World Bank, or
@@ -4792,7 +4809,8 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
             continue
         cleaned[str(key)] = value_s
 
-    if wqx_hits:
+    whole_drop_threshold = max(2, (len(glossary) + 3) // 4)
+    if len(wqx_hits) >= whole_drop_threshold:
         if log_fn:
             pairs = ", ".join(f"{k}->{v}" for k, v in wqx_hits.items())
             log_fn(
@@ -4802,6 +4820,13 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
                 "warn",
             )
         return {}
+    if wqx_hits and log_fn:
+        pairs = ", ".join(f"{k}->{v}" for k, v in wqx_hits.items())
+        log_fn(
+            "Sozluk guard: tekil q/w/x supheleri nedeniyle SADECE ilgili "
+            f"terim(ler) atildi, geri kalan sozluk korundu: {pairs}",
+            "warn",
+        )
 
     if dropped_terms and log_fn:
         pairs = ", ".join(f"{k}->{v}" for k, v in dropped_terms.items())
@@ -7826,15 +7851,39 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
     return True, ""
 
 
-def _apply_local_fixes(text: str) -> tuple[str, int]:
+_CONTEXT_SENSITIVE_LOCAL_FIX_PATTERNS = frozenset({
+    r"\bmy ass\b", r"\basses\b", r"\bass\b", r"\basshole\b",
+    r"\bshit\b", r"\bshitting\b", r"\bbullshit\b", r"\bfuck\b",
+    r"\bfucking\b", r"\bfucked\b", r"\bdamn\b", r"\bdamned\b",
+    r"\bhell\b", r"\bbitch\b", r"\bcrap\b", r"\bcrappy\b",
+    r"\bpiss\b", r"\bpissed\b", r"\bbastard\b",
+    r"\bscrew you\b", r"\bscrew it\b",
+})
+
+
+def _apply_local_fixes(text: str, allow_context_sensitive: bool = True) -> tuple[str, int]:
     """Apply instant regex-based fixes. Returns (fixed_text, n_fixes)."""
     count = 0
     for pattern, replacement in _LOCAL_FIXES:
+        if (not allow_context_sensitive
+                and pattern.pattern in _CONTEXT_SENSITIVE_LOCAL_FIX_PATTERNS):
+            continue
         new = pattern.sub(replacement, text)
         if new != text:
             count += 1
             text = new
     return text, count
+
+
+def _turkish_second_person_register(text: str) -> str:
+    value = str(text or "").casefold()
+    if re.search(r"\bsiz(?:ler)?\b", value) or re.search(
+            r"\b[\wçğıöşü]+(?:sınız|siniz|sunuz|sünüz)\b", value):
+        return "formal"
+    if re.search(r"\bsen\b", value) or re.search(
+            r"\b[\wçğıöşü]+(?:sın|sin|sun|sün)\b", value):
+        return "informal"
+    return ""
 
 
 def consistency_sweep(
@@ -7883,6 +7932,12 @@ def consistency_sweep(
             if not has_non_turkish_target_leak(tr)
         ]
         if not clean_common:
+            continue
+        registers = {
+            register for tr, _count in clean_common
+            if (register := _turkish_second_person_register(tr))
+        }
+        if len(registers) > 1:
             continue
         best_tr, best_count = clean_common[0]
         if minority_threshold is None:
@@ -8277,7 +8332,7 @@ def critic_pass_with_helper(
     for i, (idx, ts, text) in enumerate(result):
         if not text or text == "[HATA]":
             continue
-        fixed, n = _apply_local_fixes(text)
+        fixed, n = _apply_local_fixes(text, allow_context_sensitive=False)
         if n:
             result[i] = (idx, ts, fixed)
             local_fixed += 1
@@ -9091,7 +9146,7 @@ def _normalize_output_text(text: str) -> str:
     """Final SRT write-time cleanup shared by hybrid/batch output paths."""
     text = normalize_latin_homoglyphs(str(text))
     text = unicodedata.normalize("NFC", text.strip()).replace("\t", " ")
-    text, _ = _apply_local_fixes(text)
+    text, _ = _apply_local_fixes(text, allow_context_sensitive=False)
     text = re.sub(r"\n{2,}", "\n", text)
     try:
         import sdh_cleaner

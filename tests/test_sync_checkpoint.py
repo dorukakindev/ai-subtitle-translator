@@ -86,15 +86,14 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertNotIn("c1", raw)
         self.assertEqual(resumed_keys, set())
 
-    def test_hash_stable_across_prev_tr_injection(self):
-        """prev_tr enjeksiyonu payload'a alan ekler ama 'tr' değişmez → imza aynı
-        kalmalı (zincir modunda kurtarma çalışsın diye)."""
+    def test_hash_changes_across_prev_tr_injection(self):
+        """Zincir bağlamı değişirse bayat checkpoint kullanılmamalı."""
         r = _req("c1", ["hello"])
         h1 = self._hash(r)
         pl = json.loads(r["body"]["messages"][1]["content"])
         pl["prev_tr"] = [{"src": "hi", "tr": "selam"}]
         r["body"]["messages"][1]["content"] = json.dumps(pl)
-        self.assertEqual(self._hash(r), h1)
+        self.assertNotEqual(self._hash(r), h1)
 
     def test_prefill_fills_rawmap_without_filtering(self):
         r = _req("c1", ["hi"])

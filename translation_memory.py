@@ -5,12 +5,58 @@ Fuzzy eşleştirme: %85+ benzerlik için SequenceMatcher kullanır.
 """
 import sqlite3
 import hashlib
+import re
 import threading
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
 FUZZY_THRESHOLD = 0.85  # minimum benzerlik oranı
+
+_SEMANTIC_TOKEN_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)?", re.UNICODE)
+_NEGATION_TOKENS = frozenset({
+    "not", "no", "never", "neither", "nor", "without",
+    "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't",
+    "won't", "wouldn't", "can't", "cannot", "couldn't", "shouldn't",
+    "mustn't", "hasn't", "haven't", "hadn't",
+})
+_MODAL_TOKENS = frozenset({
+    "can", "could", "may", "might", "must", "shall", "should", "will", "would",
+})
+_PRONOUN_TOKENS = frozenset({
+    "i", "you", "he", "she", "it", "we", "they",
+    "me", "him", "her", "us", "them", "my", "your", "his", "its", "our",
+    "their", "mine", "yours", "hers", "ours", "theirs",
+})
+_NUMBER_WORDS = frozenset({
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+    "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+    "thousand", "million", "billion",
+})
+
+
+def _fuzzy_semantic_anchors(text: str) -> tuple:
+    raw_tokens = _SEMANTIC_TOKEN_RE.findall(str(text or ""))
+    tokens = [token.replace("’", "'").casefold() for token in raw_tokens]
+    digits = tuple(re.findall(r"(?<!\w)[+-]?\d+(?:[.,:/-]\d+)*(?!\w)", str(text or "")))
+    proper = tuple(
+        token.casefold() for token in raw_tokens
+        if token[:1].isupper() and token.casefold() != "i"
+    )
+    return (
+        frozenset(token for token in tokens if token in _NEGATION_TOKENS),
+        frozenset(token for token in tokens if token in _MODAL_TOKENS),
+        frozenset(token for token in tokens if token in _PRONOUN_TOKENS),
+        tuple(token for token in tokens if token in _NUMBER_WORDS),
+        digits,
+        proper,
+    )
+
+
+def _fuzzy_semantically_compatible(source: str, candidate: str) -> bool:
+    return _fuzzy_semantic_anchors(source) == _fuzzy_semantic_anchors(candidate)
 
 
 def _is_missing_translation(target: str) -> bool:
@@ -245,6 +291,8 @@ class TranslationMemory:
         matcher.set_seq2(src_norm)
         for db_src, db_tgt in rows:
             candidate_norm = " ".join(db_src.strip().lower().split())
+            if not _fuzzy_semantically_compatible(source, db_src):
+                continue
             matcher.set_seq1(candidate_norm)
             ratio = matcher.ratio()
             if ratio > best_ratio:

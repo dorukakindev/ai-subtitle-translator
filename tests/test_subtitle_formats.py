@@ -202,7 +202,7 @@ class ParseAssTest(unittest.TestCase):
         self.assertEqual(blocks[0][2], "Hello world")
         os.unlink(path)
 
-    def test_ass_sign_style_skipped(self):
+    def test_ass_sign_style_is_preserved_for_translation(self):
         content = (
             self._HEADER +
             "Dialogue: 0,0:00:01.00,0:00:02.00,sign,,0,0,0,,Sign text\n"
@@ -212,7 +212,7 @@ class ParseAssTest(unittest.TestCase):
         from subtitle_formats import parse_any
         blocks = parse_any(path)
         texts = [b[2] for b in blocks]
-        self.assertNotIn("Sign text", texts)
+        self.assertIn("Sign text", texts)
         self.assertIn("Normal text", texts)
         os.unlink(path)
 

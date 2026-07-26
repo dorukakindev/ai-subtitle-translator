@@ -238,7 +238,7 @@ class TestSyncCheckpointStore(unittest.TestCase):
         h1 = App._chunk_src_hash(req, "fp1")
         h2 = App._chunk_src_hash(req, "fp1")
         h3 = App._chunk_src_hash(req, "fp2")
-        self.assertEqual(len(h1), 10)
+        self.assertEqual(len(h1), 16)
         self.assertEqual(h1, h2)
         self.assertNotEqual(h1, h3)
 
@@ -305,7 +305,7 @@ class TestSyncCheckpointStore(unittest.TestCase):
             self.assertNotIn("c1", raw_map)
             self.assertEqual(resumed_keys, set())
 
-    def test_prev_tr_change_does_not_change_hash(self):
+    def test_prev_tr_change_changes_hash(self):
         r1 = _make_req("c1", ["Hello"])
         h1 = App._chunk_src_hash(r1, "fp")
 
@@ -315,7 +315,7 @@ class TestSyncCheckpointStore(unittest.TestCase):
         r2["body"]["messages"][1]["content"] = json.dumps(pl)
 
         h2 = App._chunk_src_hash(r2, "fp")
-        self.assertEqual(h1, h2)
+        self.assertNotEqual(h1, h2)
 
     def test_legacy_migration_write_error_preserves_legacy_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

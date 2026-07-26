@@ -11,6 +11,27 @@ import unicodedata
 from pathlib import Path
 
 
+_SOURCE_HTML_TAG = re.compile(r'</?[a-zA-Z][^>]*>')
+_VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
+_SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
+_SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
+_SOURCE_EMPTY_OVERRIDE = re.compile(r'\{\}')
+
+
+def clean_translation_source_text(text: str) -> str:
+    """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
+    text = _SOURCE_HTML_TAG.sub(
+        lambda match: match.group(0)
+        if _VTT_VOICE_TAG.fullmatch(match.group(0)) else "",
+        str(text or ""),
+    )
+    text = _SOURCE_VTT_TIMESTAMP.sub("", text)
+    text = _SOURCE_ASS_OVERRIDE.sub("", text)
+    text = _SOURCE_EMPTY_OVERRIDE.sub("", text)
+    text = re.sub(r"  +", " ", text)
+    return text.strip()
+
+
 # ── Toleranslı encoding çözümleme ─────────────────────────────────────────────
 
 def normalize_srt_timestamp_separators(text: str) -> str:
@@ -297,8 +318,8 @@ def parse_vtt(filepath: str) -> list:
 
 
 def parse_ass(filepath: str) -> list:
-    """ASS/SSA dosyasını parse eder. Sadece Default/Main stilini alır,
-    diğer stiller (fx, sign, overlap) atlanır.
+    """ASS/SSA dosyasını parse eder. Anlam taşıyan diyalog/ekran metnini alır,
+    yalnız salt efekt, karaoke, kredi ve çevirmen notu stillerini atlar.
     Returns: [(index_str, 'HH:MM:SS,mmm --> HH:MM:SS,mmm', text), ...]
     """
     content = read_subtitle_text(filepath)
@@ -327,9 +348,10 @@ def parse_ass(filepath: str) -> list:
 
     blocks = []
     idx = 1
-    # Tam eşleşme: "Footnote" veya "edited" gibi stilleri yanlışlıkla atlamamak için
+    # Yalnızca salt efekt/çevirmen notu stillerini atla. Sign/Caption/Title/OP/ED
+    # ekrandaki anlamlı metin veya şarkı sözü taşıyabilir.
     _SKIP_STYLES = re.compile(
-        r'^(fx|sign|caption|title|op|ed|karaoke|credit|note)$',
+        r'^(fx|karaoke|credit|note)$',
         re.IGNORECASE)
 
     # Dialogue satırlarını yalnızca [Events] bölümünden çek.

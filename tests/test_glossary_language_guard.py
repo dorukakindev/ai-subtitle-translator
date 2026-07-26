@@ -70,7 +70,7 @@ class WqxTargetGuardTest(unittest.TestCase):
             "Всемирный банк": "World Bank",
             "президент": "başkan",
         })
-        self.assertEqual(cleaned, {})
+        self.assertEqual(cleaned, {"президент": "başkan"})
 
     def test_title_case_show_name_does_not_drop_glossary(self):
         glossary = {
@@ -349,16 +349,13 @@ class GlossaryVerboseMetaCommentaryGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"ear-piercing ceremony": "kulak delme töreni"})
 
-    def test_wqx_whole_drop_still_works_alongside_verbose_sibling(self):
-        # Bir sözlükte HEM uzun-not (tek-terim atılan) HEM gerçek kısa Somalice
-        # (whole-glossary-drop tetikleyen) varsa, kısa Somalice yine de TÜM
-        # sözlüğü düşürmeli -- uzun not bu sinyali gizlemiyor.
+    def test_single_wqx_leak_does_not_drop_clean_sibling(self):
         cleaned = ht.sanitize_glossary_for_turkish({
             "maggot": self.MAGGOT_NOTE,
             "Armed Forces": "Qawweyaha Xoogga Dalka",
             "church": "kilise",
         })
-        self.assertEqual(cleaned, {})
+        self.assertEqual(cleaned, {"church": "kilise"})
 
 
 class PrecontextGlossaryGuardTest(unittest.TestCase):
@@ -376,7 +373,7 @@ class PrecontextGlossaryGuardTest(unittest.TestCase):
         }
         hint = gui.build_precontext_hint(data)
         self.assertNotIn("Qawweyaha", hint)
-        self.assertNotIn("Kerbela", hint)  # whole-glossary-drop: temiz terim de gider
+        self.assertIn("Kerbela", hint)
 
     def test_precontext_terms_untouched_when_clean(self):
         import subtitle_translator_gui as gui
@@ -426,7 +423,7 @@ class SeriesMemoryGlossaryGuardTest(unittest.TestCase):
             sm_obj, _season, _ep = self.app._series_mem_for(fp)
             self.assertIsNotNone(sm_obj)
             self.assertNotIn("Armed Forces", sm_obj._data["terms"])
-            self.assertNotIn("Karbala", sm_obj._data["terms"])  # whole-glossary-drop
+            self.assertIn("Karbala", sm_obj._data["terms"])
 
 
 if __name__ == "__main__":
