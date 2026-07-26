@@ -437,6 +437,25 @@ class UIDispatcherTest(unittest.TestCase):
         gui.App._set_running(stub, False)
         self.assertIsNone(stub._active_snapshot)
 
+    def test_run_freezes_tk_variable_getters_to_snapshot_values(self):
+        class Var:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+        src_var = Var("English")
+        stub = SimpleNamespace(
+            _active_snapshot={"src_lang": "Spanish"},
+            src_var=src_var,
+        )
+        gui.App._freeze_run_variable_reads(stub)
+        src_var.value = "Italian"
+        self.assertEqual(src_var.get(), "Spanish")
+        gui.App._unfreeze_run_variable_reads(stub)
+        self.assertEqual(src_var.get(), "Italian")
+
     def test_jsonl_worker_uses_values_captured_before_thread_launch(self):
         src = inspect.getsource(gui.App._import_jsonl)
         worker_at = src.index("def _do():")

@@ -7264,6 +7264,12 @@ class App(ctk.CTk):
             "hybrid_mode": self.hybrid_var.get(),
             "auto_glossary": self.auto_glossary_var.get(),
             "analysis_depth": self.analysis_depth_var.get(),
+            "style": getattr(self, "style_var", None).get()
+            if getattr(self, "style_var", None) else "natural",
+            "content_type": getattr(self, "content_type_var", None).get()
+            if getattr(self, "content_type_var", None) else "Otomatik",
+            "backup_raw": bool(getattr(self, "backup_raw_var", None)
+                               and self.backup_raw_var.get()),
             "ext_project_path": self.ext_project_path_var.get().strip(),
             "notify_desktop": self.notify_var.get(),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
@@ -7297,6 +7303,50 @@ class App(ctk.CTk):
             "file_schemas": file_schemas,
             "file_glossaries": file_glossaries,
         }
+
+    def _freeze_run_variable_reads(self):
+        self._frozen_run_var_getters = []
+        mapping = {
+            "input_var": "input_dir", "output_var": "output_dir",
+            "src_var": "src_lang", "tgt_var": "tgt_lang",
+            "profanity_var": "profanity", "same_folder_var": "same_folder",
+            "mode_var": "mode", "hybrid_var": "hybrid_mode",
+            "auto_glossary_var": "auto_glossary",
+            "analysis_depth_var": "analysis_depth",
+            "ext_project_path_var": "ext_project_path",
+            "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
+            "critic_var": "critic", "polish_var": "polish",
+            "native_var": "native", "qc_var": "qc",
+            "condense_var": "condense", "backtrans_var": "backtrans",
+            "semantic_reconcile_var": "semantic_reconcile",
+            "review_pass_var": "review", "twowave_var": "twowave",
+            "clean_sdh_var": "clean_sdh", "linebreak_var": "linebreak",
+            "ai_segment_var": "ai_segment", "merge_cues_var": "merge_cues",
+            "chain_ctx_var": "chain_ctx", "precontext_var": "precontext",
+            "series_memory_var": "series_memory", "style_var": "style",
+            "content_type_var": "content_type", "backup_raw_var": "backup_raw",
+            "glossary_var": "global_glossary_path",
+        }
+        snapshot = getattr(self, "_active_snapshot", {}) or {}
+        for attr, key in mapping.items():
+            var = getattr(self, attr, None)
+            if var is None or key not in snapshot:
+                continue
+            try:
+                original = var.get
+                value = snapshot[key]
+                var.get = lambda _value=value: _value
+                self._frozen_run_var_getters.append((var, original))
+            except Exception:
+                continue
+
+    def _unfreeze_run_variable_reads(self):
+        for var, original in getattr(self, "_frozen_run_var_getters", []):
+            try:
+                var.get = original
+            except Exception:
+                pass
+        self._frozen_run_var_getters = []
 
     # ── Log yardımcıları ──────────────────────────────────────────────────────
     def _log(self, msg, tag=""):
@@ -7618,8 +7668,10 @@ class App(ctk.CTk):
         self._is_running = running
         if running:
             self._active_snapshot = self._take_run_snapshot()
+            App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
         else:
+            App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
             self._stop_elapsed_timer()
             if self._job_rows:
@@ -8631,8 +8683,8 @@ class App(ctk.CTk):
     # ── Ana Model — Özel Sağlayıcı resolver'ları ────────────────────────────
     # "OpenAI API Key"/"OpenAI API Base URL"/model dropdown'ına ASLA yazmaz/okumaz
     # onların dışından — yalnızca AŞAĞIDAKİ ayrı alanları okur, açık VE doluysa
-    # onu döner; kapalıysa ya da özel alan boşsa sessizce gerçek OpenAI alanına
-    # düşer (fail-safe, helper-role resolver'larıyla aynı "boş=genel" felsefesi).
+    # onu döner; kapalıysa gerçek OpenAI alanına döner. Özel alan boşsa güvenlik
+    # için fail-closed davranır; OpenAI anahtarı özel URL'ye gönderilmez.
     def _main_custom_active(self) -> bool:
         return bool(getattr(self, "main_custom_var", None) and self.main_custom_var.get())
 
