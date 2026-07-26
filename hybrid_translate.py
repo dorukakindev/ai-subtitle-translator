@@ -4195,6 +4195,9 @@ def find_garble_tokens(text) -> list:
     found = []
 
     for m in _GARBLE_STRAY_LETTER_RE.finditer(s):
+        if (m.start() > 0 and m.end() < len(s)
+                and s[m.start() - 1] == "-" and s[m.end()] == "-"):
+            continue
         if _garble_neighbor_is_capitalized(s, m.start(), m.end()):
             continue  # özel-isim dizisinin parçası olabilir (ör. "Monumento a la Humanidad")
         found.append((m.group(0), "R1_stray_letter"))

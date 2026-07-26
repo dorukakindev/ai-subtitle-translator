@@ -26,6 +26,14 @@ class StrayLetterR1Test(unittest.TestCase):
         # "ay'a" (aya/moon-DAT) — apostrof-bitişik meşru ek, başıboş harf DEĞİL.
         self.assertEqual(ht.find_garble_tokens("1969'da ay'a gittiler."), [])
 
+    def test_hyphenated_lyric_syllables_not_flagged(self):
+        self.assertEqual(
+            ht.find_garble_tokens(
+                "Ram'ı ram-a-lam-a-ding-dong'a kim koydu"
+            ),
+            [],
+        )
+
     def test_foreign_proper_name_preposition_not_flagged(self):
         # Explorer 2 #662 gerçek olayı: İspanyolca özel isim "Monumento a la
         # Humanidad" içindeki 'a' edatı, komşusunda Büyük-harfli kelime var —

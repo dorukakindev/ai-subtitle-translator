@@ -87,6 +87,16 @@ class MissingDialogueTest(unittest.TestCase):
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "missing_dialogue" for f in findings))
 
+    def test_position_tag_plus_sfx_absent_is_not_flagged(self):
+        blocks = _b((132, "Buradayım."), (134, "Devam edelim."))
+        src = _s(**{
+            "132": "I'M HERE.",
+            "133": r"{\an8}(bell ringing)",
+            "134": "LET'S KEEP GOING.",
+        })
+        findings = gui.detect_alignment_issues(blocks, src)
+        self.assertFalse(any(f["type"] == "missing_dialogue" for f in findings))
+
     def test_html_escaped_speaker_marker_plus_language_tag_is_sdh_only(self):
         blocks = _b((10, "Merhaba."), (12, "Nasılsın?"))
         src = _s(**{

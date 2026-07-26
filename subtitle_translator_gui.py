@@ -2773,6 +2773,7 @@ def _src_is_sdh_only(src_text: str) -> bool:
     """Kaynak satır yalnızca SFX/SDH köşeli-parantez/parantez/nota içeriği mi
     (gerçek diyalog kelimesi yok). _is_untranslated'daki iki ayrı kontrolde
     (boş çeviri + source==target) aynı mantık kullanılıyor, tek yerden."""
+    src_text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
     no_sdh = re.sub(r'\([^)]*\)|\[[^\]]*\]|[♪_]+', '', src_text).strip()
     if re.search(r'\([^)]*\)|\[[^\]]*\]', src_text):
         no_sdh = re.sub(
@@ -4023,7 +4024,12 @@ _MIXED_TERM_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 # ">>COLLINS:" / ">>NOORY:" gibi konuşmacı etiketlerini token'lamadan ÖNCE satırdan
 # sil — aksi hâlde konuşmacı adı yanlışlıkla 'özel-isim adayı' sayılıp gerçek
 # terimin (ör. Gobekli) karşılığını gölgeliyor (cand_words[0] yanlış seçilir).
-_MIXED_TERM_SPEAKER_RE = re.compile(r'^\s*>{1,2}\s*[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]*:\s*', re.MULTILINE)
+_MIXED_TERM_SPEAKER_RE = re.compile(
+    r'^\s*(?:\{\\[^}]*\}\s*)?(?:-\s*)?'
+    r'(?:(?:>{1,2}\s*)?[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]*:\s*'
+    r'|\[[^\]\n]{1,40}\]\s*)',
+    re.MULTILINE,
+)
 
 
 def _mixed_term_strip_speaker(text: str) -> str:

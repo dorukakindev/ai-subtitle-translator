@@ -293,6 +293,21 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_bracketed_narrator_label_not_a_mixed_term(self):
+        blocks = _b(
+            (1, "Josh bunu biliyordu."),
+            (2, "Josh daha sonra ayrıldı."),
+            (3, "Myspace bunu kabul etmedi."),
+            (4, "Myspace sonunda satıldı."),
+        )
+        src = _s(**{
+            "1": "- [Narrator] He knew this.",
+            "2": r"{\an8}- [Narrator] He later left.",
+            "3": "- [Narrator] It didn't accept this.",
+            "4": "- [Narrator] It was eventually sold.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_empty_blocks_returns_empty(self):
         self.assertEqual(gui.detect_mixed_term_renderings([], {}), [])
 

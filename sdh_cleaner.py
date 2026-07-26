@@ -637,7 +637,8 @@ SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
 def src_is_sfx_only(src_text: str) -> bool:
     """Kaynak cue'su tamamen parantez/köşeli parantez/nota mı (gerçek diyalog
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
-    text = CHEVRON_SPEAKER_RE.sub("", str(src_text or "")).strip()
+    text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
+    text = CHEVRON_SPEAKER_RE.sub("", text).strip()
     return bool(text) and bool(SFX_ONLY_STRUCTURAL_RE.match(text))
 
 
