@@ -235,6 +235,47 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
         ids = [b[0] for b in out]
         self.assertEqual(ids, ["1", "3"], "yalnızca SFX-only #2 düşürülmeli, sıra korunmalı")
 
+    def test_missing_dialogue_id_is_reinserted_and_repaired(self):
+        source_cues = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "FIRST."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "MISSING DIALOGUE."),
+            ("3", "00:00:03,000 --> 00:00:04,000", "THIRD."),
+        ]
+        blocks = [
+            ("1", source_cues[0][1], "Birinci."),
+            ("3", source_cues[2][1], "Üçüncü."),
+        ]
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"2","t":"Kayıp diyalog."}]'))],
+            usage=None,
+        )
+        with mock.patch("subtitle_translator_gui._safe_chat_create",
+                        return_value=response):
+            out, repaired = gui._repair_untranslated_sync(
+                blocks,
+                {"1": "FIRST.", "2": "MISSING DIALOGUE.", "3": "THIRD."},
+                client=object(), src_lang="English", tgt_lang="Turkish",
+                source_cues=source_cues,
+            )
+        self.assertEqual([str(block[0]) for block in out], ["1", "2", "3"])
+        self.assertEqual(out[1][2], "Kayıp diyalog.")
+        self.assertEqual(repaired, 1)
+
+    def test_missing_sfx_id_is_not_reinserted(self):
+        source_cues = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "DIALOGUE."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "[MUSIC]"),
+        ]
+        out, repaired = gui._repair_untranslated_sync(
+            [("1", source_cues[0][1], "Diyalog.")],
+            {"1": "DIALOGUE.", "2": "[MUSIC]"},
+            client=None, src_lang="English", tgt_lang="Turkish",
+            source_cues=source_cues,
+        )
+        self.assertEqual([str(block[0]) for block in out], ["1"])
+        self.assertEqual(repaired, 0)
+
     def test_no_hata_cues_returns_blocks_unchanged(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Tamamdır.")]
         out, repaired = gui._repair_untranslated_sync(

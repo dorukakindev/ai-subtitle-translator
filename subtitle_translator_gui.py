@@ -2860,7 +2860,8 @@ def _chunk_src_map_from_request(req: dict) -> dict:
 
 def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
-                              log_fn=None, token_cb=None, max_per_call=15):
+                              log_fn=None, token_cb=None, max_per_call=15,
+                              source_cues=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -2878,9 +2879,42 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
 
     # [HATA] ve çevrilmemiş satırları topla; kaynağı SFX/müzik-only olanları
     # onarım kuyruğuna ALMA — düşürülecekler listesine ekle.
+    out = list(blocks)
+    if source_cues:
+        existing = {str(block[0]): block for block in out}
+        ordered = []
+        inserted = 0
+        source_ids = set()
+        for cue in source_cues:
+            if hasattr(cue, "index") and not callable(getattr(cue, "index")):
+                sid = str(cue.index)
+                ts = f"{cue.start} --> {cue.end}"
+                src = str(cue.text or "")
+                idx = cue.index
+            else:
+                try:
+                    idx, ts, src = cue
+                except (TypeError, ValueError):
+                    continue
+                sid = str(idx)
+                src = str(src or "")
+            source_ids.add(sid)
+            if sid in existing:
+                ordered.append(existing[sid])
+            elif src.strip() and not _src_is_sdh_only(src):
+                ordered.append((idx, ts, "[HATA]"))
+                inserted += 1
+        ordered.extend(block for block in out if str(block[0]) not in source_ids)
+        out = ordered
+        if inserted and log_fn:
+            log_fn(
+                f"↺  {inserted} kayıp diyalog cue'su onarım kuyruğuna geri eklendi",
+                "warn",
+            )
+
     hata_indices = []
     drop_positions = []
-    for i, (idx, ts, text) in enumerate(blocks):
+    for i, (idx, ts, text) in enumerate(out):
         src = raw_src_map.get(str(idx), "")
         if str(text).startswith("[HATA") or _is_untranslated(src, str(text)):
             if not (src and src.strip()):
@@ -2891,9 +2925,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 hata_indices.append((i, idx, ts, src))
 
     if not hata_indices and not drop_positions:
-        return blocks, 0
+        return out, 0
 
-    out = list(blocks)  # mutable kopya
     repaired = 0
 
     if hata_indices and client:
@@ -9821,7 +9854,8 @@ class App(ctk.CTk):
                             src_lang=src, tgt_lang=tgt,
                             model="gpt-5.4-mini", # Kullanıcı isteği üzerine hep gpt-5.4-mini
                             schema=schema, profanity=profanity,
-                            log_fn=self._log, token_cb=self._update_tokens)
+                            log_fn=self._log, token_cb=self._update_tokens,
+                            source_cues=cues)
                     except Exception:
                         pass
                     
@@ -13052,7 +13086,8 @@ class App(ctk.CTk):
                     src_lang=src, tgt_lang=tgt,
                     model=model,
                     schema=self._get_schema(), profanity=self.profanity_var.get(),
-                    log_fn=self._log, token_cb=self._update_tokens)
+                    log_fn=self._log, token_cb=self._update_tokens,
+                    source_cues=cues)
             except Exception:
                 pass
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
@@ -14073,7 +14108,8 @@ class App(ctk.CTk):
                         src_lang=_file_src_lang, tgt_lang=_tgt_lang,
                         model=self._main_model_name(),
                         schema=self._get_schema(), profanity=self.profanity_var.get(),
-                        log_fn=self._log, token_cb=self._update_tokens)
+                        log_fn=self._log, token_cb=self._update_tokens,
+                        source_cues=_src_cues)
             except Exception as e:
                 self._log(f"Onarım geçişi atlandı: {e}", "warn")
             # CPS uyarısı — sync-hybrid ile paritede (düz-batch loglarında da görünsün)
@@ -14693,7 +14729,8 @@ class App(ctk.CTk):
                         src_lang=file_src, tgt_lang=tgt,
                         model="gpt-5.4-mini",
                         schema=self._get_schema(), profanity=self.profanity_var.get(),
-                        log_fn=self._log, token_cb=self._update_tokens)
+                        log_fn=self._log, token_cb=self._update_tokens,
+                        source_cues=cues)
                 except Exception:
                     pass
                 
