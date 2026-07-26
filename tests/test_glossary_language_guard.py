@@ -239,6 +239,23 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         cleaned = ht.sanitize_glossary_for_turkish({"band": "AC/DC"})
         self.assertEqual(cleaned, {"band": "AC/DC"})
 
+    def test_lowercase_source_loanword_with_turkish_suffix_is_preserved(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "drag queens": "drag queen'ler",
+            "freedom": "özgürlük",
+        })
+        self.assertEqual(cleaned, {
+            "drag queens": "drag queen'ler",
+            "freedom": "özgürlük",
+        })
+
+    def test_wqx_inside_slash_gloss_drops_only_that_term(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "B.A.R.": "B.A.R. / Browning otomatik tüfek",
+            "curator": "küratör",
+        })
+        self.assertEqual(cleaned, {"curator": "küratör"})
+
     def test_wqx_still_drops_whole_glossary(self):
         # Eski politika (R_wqx) bozulmamalı: Somalice + eğik-çizgi aynı terimde
         # birlikte olsa bile TÜM sözlük atılmalı (whole-glossary-drop kazanır).

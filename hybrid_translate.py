@@ -4374,6 +4374,23 @@ _TR_APOSTROPHIC_SUFFIXES = frozenset({
 })
 
 
+def _glossary_plural_s_with_turkish_suffix(
+    word: str, key_tokens: set[str], raw_value: str = ""
+) -> bool:
+    w = str(word or "").strip()
+    if not w or (w.lower() + "s") not in key_tokens or not raw_value:
+        return False
+    pattern = re.compile(
+        rf"\b{re.escape(w)}['\u2019]([a-z\u00e7\u011f\u0131\u00f6\u015f\u00fc"
+        rf"A-Z\u00c7\u011e\u0130\u00d6\u015e\u00dc]+)",
+        re.IGNORECASE,
+    )
+    match = pattern.search(raw_value)
+    return bool(
+        match and match.group(1).lower() in _TR_APOSTROPHIC_SUFFIXES
+    )
+
+
 def _glossary_token_matches_key(word: str, key_tokens: set[str], raw_value: str = "") -> bool:
     w = str(word or "").strip()
     wl = w.lower()
@@ -4389,13 +4406,8 @@ def _glossary_token_matches_key(word: str, key_tokens: set[str], raw_value: str 
             if stem in key_tokens:
                 return True
 
-    if (wl + "s") in key_tokens and raw_value:
-        pattern = re.compile(rf"\b{re.escape(w)}['\u2019]([a-z\u00e7\u011f\u0131\u00f6\u015f\u00fcA-Z\u00c7\u011e\u0130\u00d6\u015e\u00dc]+)", re.IGNORECASE)
-        m = pattern.search(raw_value)
-        if m:
-            suff = m.group(1).lower()
-            if suff in _TR_APOSTROPHIC_SUFFIXES:
-                return True
+    if _glossary_plural_s_with_turkish_suffix(w, key_tokens, raw_value):
+        return True
 
     return False
 
@@ -4439,8 +4451,13 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
         hits = [
             w for w in hits
             if not (
-                w[:1].isupper()
-                and _glossary_token_matches_key(w, key_tokens, raw_value=value)
+                (
+                    w[:1].isupper()
+                    and _glossary_token_matches_key(w, key_tokens, raw_value=value)
+                )
+                or _glossary_plural_s_with_turkish_suffix(
+                    w, key_tokens, raw_value=value
+                )
             )
         ]
         if not hits:
@@ -4680,7 +4697,22 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if _glossary_target_is_source_kept_asis(key, value_s):
             cleaned[str(key)] = value_s
             continue
-        if _glossary_wqx_token(normalize_latin_homoglyphs(value_s), glossary_key=key) is not None:
+        gloss_reason = _glossary_gloss_or_instruction_marker(value_s)
+        normalized_value = normalize_latin_homoglyphs(value_s)
+        gloss_wqx_words = [
+            word for word in _GLOSSARY_WORD_RE.findall(normalized_value)
+            if _GLOSSARY_WQX_CHAR_RE.search(word)
+        ]
+        if gloss_reason and (
+            not gloss_wqx_words
+            or (
+                len(gloss_wqx_words) == 1
+                and gloss_wqx_words[0][:1].isupper()
+            )
+        ):
+            gloss_dropped_terms[str(key)] = (value_s, gloss_reason)
+            continue
+        if _glossary_wqx_token(normalized_value, glossary_key=key) is not None:
             wqx_hits[str(key)] = value_s
         if has_non_turkish_target_leak(value_s, glossary_target=True, glossary_key=key):
             dropped_terms[str(key)] = value_s
