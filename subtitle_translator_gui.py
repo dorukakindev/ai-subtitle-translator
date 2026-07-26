@@ -6337,7 +6337,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(sr_fr, text="Nihai Anlam Mutabakatı",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Son kalite geçişlerinden sonra yalnız şüpheli\ncue kümelerini kaynakla ±2 komşu içinde\nyeniden karşılaştırır. Küme güvenli değilse\nhiçbir değişiklik yapmaz. (Hedefli ek maliyet)",
+        ctk.CTkLabel(sb, text="Şüpheli cue'ları kaynakla ±2 komşu içinde\nyeniden karşılaştırır; zor dosyada kapsam ve\nmaliyet genişleyebilir. Küme güvenli değilse\nhiçbir değişiklik yapmaz. (Ek maliyet)",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -10220,6 +10220,9 @@ class App(ctk.CTk):
                     lines = [
                         "# Nihai Anlam Mutabakatı",
                         f"# Küme: {stats['clusters']} | Şüpheli cue: {stats['suspects']} | "
+                        f"Kapsam: {stats.get('covered_cues', 0)}/{len(blocks)} "
+                        f"(%{stats.get('coverage_pct', 0.0):.1f}) | "
+                        f"Tahmini API isteği: {stats.get('api_requests', 0)} | "
                         f"Öneri: {stats['proposed']} | Düzeltme: {stats['fixed']} | "
                         f"Reddedilen küme: {stats['rejected']}",
                         "",

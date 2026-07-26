@@ -97,6 +97,41 @@ class SemanticClusterBuilderTest(unittest.TestCase):
 
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_plan_logs_real_coverage_and_request_count(self):
+        blocks = [
+            (str(i), f"00:00:{i:02d} --> 00:00:{i + 1:02d}", f"Çeviri {i}.")
+            for i in range(1, 101)
+        ]
+        src_map = {str(i): f"Source {i}." for i in range(1, 101)}
+        clusters = []
+        for number, start in enumerate((1, 31), 1):
+            items = [
+                {"id": str(i), "source": src_map[str(i)],
+                 "translation": blocks[i - 1][2], "suspect": True,
+                 "reasons": ["POST_PASS_CHANGED"]}
+                for i in range(start, start + 30)
+            ]
+            clusters.append({
+                "cluster": f"c{number}",
+                "items": items,
+                "suspect_ids": [item["id"] for item in items],
+            })
+        log = MagicMock()
+
+        with patch("hybrid_translate.build_semantic_reconciliation_clusters",
+                   return_value=clusters):
+            _result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="", model="m", log_fn=log
+            )
+
+        self.assertEqual(stats["covered_cues"], 60)
+        self.assertEqual(stats["coverage_pct"], 60.0)
+        self.assertEqual(stats["api_requests"], 2)
+        message, level = log.call_args.args
+        self.assertIn("60/100 cue (%60.0)", message)
+        self.assertIn("2 ek API isteği", message)
+        self.assertEqual(level, "warn")
+
     def test_valid_source_driven_retranslation_is_applied(self):
         blocks = [
             ("1", "00:00:01 --> 00:00:02", "Merhaba."),
@@ -165,6 +200,61 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(stats["fixed"], 0)
         self.assertEqual(stats["rejected"], 1)
+
+    def test_cluster_cannot_be_applied_again_from_another_batch(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Eski bir."),
+            ("2", "00:00:02 --> 00:00:03", "Eski iki."),
+        ]
+        src_map = {"1": "First.", "2": "Second."}
+        clusters = [
+            {
+                "cluster": "c1",
+                "items": [{"id": "1", "source": "First.",
+                           "translation": "Eski bir.", "suspect": True,
+                           "reasons": ["POST_PASS_CHANGED"]}],
+                "suspect_ids": ["1"],
+            },
+            {
+                "cluster": "c2",
+                "items": [{"id": "2", "source": "Second.",
+                           "translation": "Eski iki.", "suspect": True,
+                           "reasons": ["POST_PASS_CHANGED"]}],
+                "suspect_ids": ["2"],
+            },
+        ]
+        responses = [
+            _response([{
+                "cluster": "c1",
+                "fixes": [{"id": "1", "text": "İlk.", "reason": "meaning"}],
+            }]),
+            _response([{
+                "cluster": "c1",
+                "fixes": [{"id": "1", "text": "İkinci kez.", "reason": "retry"}],
+            }]),
+        ]
+
+        with patch("hybrid_translate.build_semantic_reconciliation_clusters",
+                   return_value=clusters), \
+             patch("hybrid_translate._semantic_cluster_batches",
+                   return_value=[[clusters[0]], [clusters[1]]]), \
+             patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", side_effect=responses), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}), \
+             patch("hybrid_translate.validate_semantic_reconciliation_candidate",
+                   return_value=(True, "")):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m"
+            )
+
+        self.assertEqual(result[0][2], "İlk.")
+        self.assertEqual(result[1][2], "Eski iki.")
+        self.assertEqual(stats["fixed"], 1)
+        self.assertEqual(stats["rejected"], 1)
+        self.assertIn(
+            "cluster_outside_batch",
+            [detail.get("reason") for detail in stats["details"]],
+        )
 
 
 class SemanticGuiIntegrationTest(unittest.TestCase):

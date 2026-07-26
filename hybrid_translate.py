@@ -5770,15 +5770,33 @@ def semantic_reconciliation_pass(
     clusters = build_semantic_reconciliation_clusters(
         src_map, tr_blocks, cues=cues, changed_ids=changed_ids,
     )
+    batches = _semantic_cluster_batches(clusters)
+    covered_ids = {
+        str(item.get("id", ""))
+        for cluster in clusters
+        for item in cluster.get("items", [])
+        if item.get("id") is not None
+    }
+    coverage_pct = (len(covered_ids) * 100.0 / len(tr_blocks)) if tr_blocks else 0.0
     stats = {
         "clusters": len(clusters),
         "suspects": sum(len(cluster["suspect_ids"]) for cluster in clusters),
+        "covered_cues": len(covered_ids),
+        "coverage_pct": coverage_pct,
+        "api_requests": len(batches),
         "proposed": 0,
         "fixed": 0,
         "rejected": 0,
         "details": [],
     }
     result = list(tr_blocks or [])
+    if log_fn and clusters:
+        log_fn(
+            f"Nihai anlam mutabakatı planı: {len(clusters)} küme, "
+            f"{len(covered_ids)}/{len(tr_blocks)} cue (%{coverage_pct:.1f}), "
+            f"yaklaşık {len(batches)} ek API isteği",
+            "warn" if coverage_pct >= 60.0 else "info",
+        )
     if not clusters or not api_key or not model:
         return result, stats
 
@@ -5786,7 +5804,7 @@ def semantic_reconciliation_pass(
     client = OpenAI(api_key=api_key, base_url=base_url)
     validator_cues = _semantic_validator_cues(src_map, result, cues)
     before_reason_map = _semantic_reason_map(result, validator_cues)
-    cluster_by_id = {cluster["cluster"]: cluster for cluster in clusters}
+    all_cluster_ids = {cluster["cluster"] for cluster in clusters}
     system_prompt = (
         f"You are the final bilingual subtitle semantic reconciler for {src_lang} to {tgt_lang}. "
         "Inspect each small cluster across neighboring cues. Correct only real meaning errors: "
@@ -5800,7 +5818,8 @@ def semantic_reconciliation_pass(
         "Omit clusters with no real error and omit unchanged cues."
     )
 
-    for batch in _semantic_cluster_batches(clusters):
+    for batch in batches:
+        batch_cluster_by_id = {cluster["cluster"]: cluster for cluster in batch}
         payload = {"clusters": batch}
         try:
             resp = _safe_chat_create(
@@ -5842,7 +5861,19 @@ def semantic_reconciliation_pass(
             if not isinstance(response_cluster, dict):
                 continue
             cluster_id = str(response_cluster.get("cluster", ""))
-            cluster = cluster_by_id.get(cluster_id)
+            cluster = batch_cluster_by_id.get(cluster_id)
+            if cluster is None:
+                stats["rejected"] += 1
+                stats["details"].append({
+                    "cluster": cluster_id or "?",
+                    "status": "rejected",
+                    "reason": (
+                        "cluster_outside_batch"
+                        if cluster_id in all_cluster_ids
+                        else "cluster_id"
+                    ),
+                })
+                continue
             if cluster_id in duplicate_clusters:
                 if cluster_id not in seen_clusters:
                     stats["rejected"] += 1
@@ -5851,7 +5882,7 @@ def semantic_reconciliation_pass(
                                              "reason": "duplicate_cluster"})
                     seen_clusters.add(cluster_id)
                 continue
-            if cluster is None or cluster_id in seen_clusters:
+            if cluster_id in seen_clusters:
                 stats["rejected"] += 1
                 stats["details"].append({"cluster": cluster_id or "?",
                                          "status": "rejected", "reason": "cluster_id"})
