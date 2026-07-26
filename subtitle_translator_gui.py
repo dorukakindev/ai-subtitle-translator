@@ -120,7 +120,8 @@ _SETTINGS_SECRET_KEY_RE = re.compile(
     r'("(?:[^"]*(?:api[_-]?key|secret|token|_key)[^"]*)"\s*:\s*")([^"]*)(")',
     re.I,
 )
-_SETTINGS_TOKEN_RE = re.compile(r"\b(?:sk|mk)-[A-Za-z0-9._\-]+\b")
+_SETTINGS_TOKEN_RE = re.compile(
+    r"\b(?:(?:sk|mk)-[A-Za-z0-9._\-]+|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})\b")
 
 
 def _sanitize_settings_backup_text(text: str) -> str:
@@ -147,9 +148,9 @@ def _settings_backup_suffix(path: Path) -> int:
 def _write_sanitized_settings_backup(src_path: Path, keep_last: int = 3) -> Path | None:
     if not src_path.exists():
         return None
-    bak = src_path.with_name(f".gui_settings.json.bak.{int(time.time())}")
+    bak = src_path.with_name(f".gui_settings.json.bak.{time.time_ns()}")
     raw = src_path.read_text(encoding="utf-8", errors="replace")
-    bak.write_text(_sanitize_settings_backup_text(raw), encoding="utf-8")
+    atomic_write_text(bak, _sanitize_settings_backup_text(raw), encoding="utf-8")
     backups = sorted(src_path.parent.glob(".gui_settings.json.bak.*"), key=_settings_backup_suffix, reverse=True)
     for stale in backups[keep_last:]:
         try:
@@ -4811,7 +4812,8 @@ def _detect_pass_overrides(history: dict, max_items: int = 5) -> tuple[int, str]
 
 
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
-                              total_tokens: int) -> str:
+                              total_tokens: int, actual_cost: float = None,
+                              unknown_cost_tokens: int = 0) -> str:
     """ceviri_raporu.txt içeriğini üretir. Satırlardaki alanlar opsiyoneldir —
     yalnızca mevcut olanlar yazılır (düz mod 'rev', hybrid 'pass_fix'/'qc' taşır)."""
     import datetime as _dt
@@ -4910,7 +4912,12 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         counts_txt = _format_interaction_counts(interaction_counts)
         suffix = f"; {counts_txt}" if counts_txt else ""
         lines.append(f"Pass etkileşimleri: {total_overrides}{suffix} ({joined})")
-    lines.append(f"Oturum token toplamı: {total_tokens:,}  (~${total_tokens/1e6*price:.4f})")
+    if actual_cost is None:
+        actual_cost = total_tokens / 1e6 * price
+    unknown_note = (f" + {unknown_cost_tokens:,} token fiyatı bilinmiyor"
+                    if unknown_cost_tokens else "")
+    lines.append(
+        f"Oturum token toplamı: {total_tokens:,}  (~${actual_cost:.4f}{unknown_note})")
     return "\n".join(lines)
 
 
@@ -5007,7 +5014,10 @@ def _pid_alive(pid: int) -> bool:
             k32 = ctypes.windll.kernel32
             h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not h:
-                return False   # açılamıyor → süreç yok (ya da erişim yok; yok say)
+                err = k32.GetLastError()
+                if err == 87:  # ERROR_INVALID_PARAMETER: PID yok
+                    return False
+                return True    # ACCESS_DENIED/belirsiz: güvenli yönde canlı say
             try:
                 code = ctypes.c_ulong()
                 if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
@@ -7312,6 +7322,7 @@ class App(ctk.CTk):
             "helper_models": helper_models,
             "file_schemas": file_schemas,
             "file_glossaries": file_glossaries,
+            "selected_files": tuple(getattr(self, "_selected_files", ()) or ()),
         }
 
     def _freeze_run_variable_reads(self):
@@ -7941,11 +7952,11 @@ class App(ctk.CTk):
             self._update_tokens(added, price=price, cached=cached)
         return _callback
 
-    def _update_batch_tokens(self, added: int):
+    def _update_batch_tokens(self, added: int, cached: int = 0):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
         price = _model_token_price(self._main_model_name())
         self._update_tokens(
-            added, price=None if price is None else price * 0.5)
+            added, price=None if price is None else price * 0.5, cached=cached)
 
     def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = ""):
         """Kaynak↔çeviri çiftlerini TM'ye yazar; eksik işaretler ve kaynak==çeviri
@@ -8546,6 +8557,7 @@ class App(ctk.CTk):
         self._content_type_preflight_done = False
         self._input_folder_explicitly_selected = False
         self._selected_files = self._dedupe_paths(list(paths))
+        self._pm = None
         n = len(self._selected_files)
         self._refresh_selected_files_ui(
             f"{n} dosya seçildi: "
@@ -8613,6 +8625,7 @@ class App(ctk.CTk):
         before = len(self._selected_files)
         self._content_type_preflight_done = False
         self._selected_files = self._dedupe_paths(list(self._selected_files) + files)
+        self._pm = None
         added = len(self._selected_files) - before
         total = len(self._selected_files)
         for path in empty:
@@ -9890,7 +9903,7 @@ class App(ctk.CTk):
                             self._log(f"Post-process {cid_pp}: JSON parse başarısız "
                                       f"(ham: {raw[:60]!r})", "err")
 
-                self._update_tokens(total_tokens)
+                self._update_batch_tokens(total_tokens)
                 self._log(f"JSONL: {len(trans)} satır çevrilmiş | {errors} hatalı chunk | "
                           f"{len(ts_map)} timestamp", "info")
 
@@ -10123,7 +10136,12 @@ class App(ctk.CTk):
         if key is None:
             return None, None, None
         slug, season, ep = key
-        input_dir = self.input_var.get() or str(Path(fp).parent)
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        selected = snapshot.get("selected_files") if snapshot else getattr(self, "_selected_files", ())
+        input_dir = (str(Path(fp).parent) if selected
+                     else snapshot.get("input_dir") if snapshot
+                     else self.input_var.get())
+        input_dir = input_dir or str(Path(fp).parent)
         try:
             return series_memory.SeriesMemory.load(input_dir, slug), season, ep
         except Exception:
@@ -10402,13 +10420,17 @@ class App(ctk.CTk):
                     if (threading.current_thread() is not threading.main_thread()
                             and getattr(self, "_active_snapshot", None)):
                         enabled = bool(self._active_snapshot.get("series_memory"))
-                        input_dir = self._active_snapshot.get("input_dir") or str(Path(fp).parent)
+                        selected = self._active_snapshot.get("selected_files") or ()
+                        input_dir = (str(Path(fp).parent) if selected
+                                     else self._active_snapshot.get("input_dir") or str(Path(fp).parent))
                     else:
                         enabled = bool(
                             getattr(self, "series_memory_var", None)
                             and self.series_memory_var.get()
                         )
-                        input_dir = self.input_var.get() or str(Path(fp).parent)
+                        input_dir = (str(Path(fp).parent)
+                                     if self.__dict__.get("_selected_files")
+                                     else self.input_var.get() or str(Path(fp).parent))
                     key = series_memory.parse_series_key(fp) if enabled else None
                     if key:
                         slug, _season, _episode = key
@@ -11097,9 +11119,11 @@ class App(ctk.CTk):
                             helper_url=helper_urls.get("critic", ""),
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             log_fn=self._log,
-                            glossary=ht.load_glossary(file_glossaries.get(fp, "")),
-                            analysis_result=analysis_result,
-                            change_log=_critic_change_log)
+                             glossary=ht.load_glossary(file_glossaries.get(fp, "")),
+                             analysis_result=analysis_result,
+                            change_log=_critic_change_log,
+                            token_callback=self._token_callback_for_model(
+                                helper_models.get("critic", "gpt-5.4-mini")))
                         self._write_critic_change_report(fp, _critic_change_log)
                     except Exception as e:
                         self._log(f"Critic Pass hatası: {e}", "warn")
@@ -11551,11 +11575,31 @@ class App(ctk.CTk):
 
         if status == "completed" and approved_list and glossary_path:
             try:
-                with open(glossary_path, "a", encoding="utf-8") as f:
-                    f.write(f"\n# Auto-Glossary — {Path(filepath).name}\n")
-                    for item in approved_list:
-                        f.write(f"{item['src']} = {item['tgt']}\n")
-                self._log(f"Auto-Glossary: {len(approved_list)} terim sözlüğe eklendi", "ok")
+                gp = Path(glossary_path)
+                approved = {}
+                for item in approved_list:
+                    src_term = str(item.get("src", "")).strip()
+                    tgt_term = str(item.get("tgt", "")).strip()
+                    if (not src_term or not tgt_term
+                            or any(ch in src_term + tgt_term for ch in "\r\n\t=")):
+                        continue
+                    approved[src_term] = tgt_term
+                written = len(approved)
+                if not approved:
+                    self._log("Auto-Glossary: geçerli onaylı terim yok", "warn")
+                    return
+                if gp.suffix.casefold() == ".json":
+                    merged = dict(existing)
+                    merged.update(approved)
+                    atomic_write_json(gp, merged)
+                else:
+                    existing_text = gp.read_text(encoding="utf-8") if gp.exists() else ""
+                    rows = [existing_text.rstrip(), "",
+                            f"# Auto-Glossary — {Path(filepath).name}"]
+                    rows.extend(f"{src_term} = {tgt_term}"
+                                for src_term, tgt_term in approved.items())
+                    atomic_write_text(gp, "\n".join(rows).lstrip("\n") + "\n")
+                self._log(f"Auto-Glossary: {written} terim sözlüğe eklendi", "ok")
             except Exception as e:
                 self._log(f"Auto-Glossary yazma hatası: {e}", "err")
 
@@ -11661,15 +11705,19 @@ class App(ctk.CTk):
         try:
             with self._token_lock:
                 tok = self._token_total
+                actual_cost = self._cost_total
+                unknown_cost_tokens = self._unknown_cost_tokens
             txt = build_quality_report_text(rows, self._main_model_name(),
                                             self.tgt_var.get(),
-                                            self.mode_var.get(), tok)
+                                            self.mode_var.get(), tok,
+                                            actual_cost=actual_cost,
+                                            unknown_cost_tokens=unknown_cost_tokens)
             # Rapor, çıktı .srt'lerle aynı 'efektif tabana' gider (Kural 1: <girdi>/ÇIKTI,
             # Kural 2: çıktı kökü) — bkz. plans/output-folder-rules-brief.md.
             rep_dir = _resolve_report_dir(self.input_var.get(), output_dir)
             rep_dir.mkdir(parents=True, exist_ok=True)
             p = rep_dir / "ceviri_raporu.txt"
-            p.write_text(txt, encoding="utf-8")
+            atomic_write_text(p, txt, encoding="utf-8")
             self._log(f"Kalite raporu: {p}", "ok")
             return p
         except Exception:
@@ -12836,6 +12884,11 @@ class App(ctk.CTk):
                     filepath,
                     expected_target=tgt,
                     expected_analysis_depth=self.analysis_depth_var.get(),
+                    expected_source=_lang_iso639_1(file_src),
+                    helper_model=self._helper_api_model("analysis"),
+                    style=self.style_var.get(),
+                    schema=schema_dict,
+                    glossary=glossary,
                 )
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
@@ -12862,8 +12915,10 @@ class App(ctk.CTk):
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
-                            schema=schema_dict,
-                            analysis_depth=self.analysis_depth_var.get())
+                             schema=schema_dict,
+                            analysis_depth=self.analysis_depth_var.get(),
+                            token_callback=self._token_callback_for_model(
+                                self._helper_api_model("analysis")))
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
@@ -12881,9 +12936,14 @@ class App(ctk.CTk):
                                               character_styles=character_styles,
                                               scene_emotions=scene_emotions,
                                               idiom_map=idiom_map,
-                                              cultural_refs=cultural_refs,
-                                              target_language=tgt,
-                                              analysis_depth=self.analysis_depth_var.get())
+                                               cultural_refs=cultural_refs,
+                                               target_language=tgt,
+                                               analysis_depth=self.analysis_depth_var.get(),
+                                               helper_model=self._helper_api_model("analysis"),
+                                               style=self.style_var.get(),
+                                               schema=schema_dict,
+                                               glossary=glossary,
+                                               source_language=_lang_iso639_1(file_src))
                     # Proje hafızasına kaydet
                     if _analysis_ok and self._pm is not None:
                         try:
@@ -13081,6 +13141,8 @@ class App(ctk.CTk):
                     glossary=glossary,
                     analysis_result=(context, char_examples, pronoun_map),
                     change_log=_critic_change_log,
+                    token_callback=self._token_callback_for_model(
+                        self._helper_api_model("critic")),
                 )
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                 self._write_critic_change_report(out_path, _critic_change_log)
@@ -13835,7 +13897,9 @@ class App(ctk.CTk):
                                     helper_model=self._helper_api_model("critic"),
                                     tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
-                                    change_log=_critic_change_log)
+                                    change_log=_critic_change_log,
+                                    token_callback=self._token_callback_for_model(
+                                        self._helper_api_model("critic")))
                                 _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
                                 self._write_critic_change_report(output_path, _critic_change_log)
                             if self.polish_var.get() and pp:
@@ -14202,7 +14266,9 @@ class App(ctk.CTk):
                         helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
                         analysis_result=_analysis_result,
-                        change_log=_critic_change_log)
+                        change_log=_critic_change_log,
+                        token_callback=self._token_callback_for_model(
+                            self._helper_api_model("critic")))
                     _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
@@ -14657,6 +14723,11 @@ class App(ctk.CTk):
                     filepath,
                     expected_target=tgt,
                     expected_analysis_depth=self.analysis_depth_var.get(),
+                    expected_source=_lang_iso639_1(file_src),
+                    helper_model=self._helper_api_model("analysis"),
+                    style=self.style_var.get(),
+                    schema=schema_dict,
+                    glossary=glossary,
                 )
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
@@ -14679,8 +14750,10 @@ class App(ctk.CTk):
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
-                            schema=schema_dict,
-                            analysis_depth=self.analysis_depth_var.get())
+                             schema=schema_dict,
+                            analysis_depth=self.analysis_depth_var.get(),
+                            token_callback=self._token_callback_for_model(
+                                self._helper_api_model("analysis")))
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
@@ -14697,9 +14770,14 @@ class App(ctk.CTk):
                                               character_styles=character_styles,
                                               scene_emotions=scene_emotions,
                                               idiom_map=idiom_map,
-                                              cultural_refs=cultural_refs,
-                                              target_language=tgt,
-                                              analysis_depth=self.analysis_depth_var.get())
+                                               cultural_refs=cultural_refs,
+                                               target_language=tgt,
+                                               analysis_depth=self.analysis_depth_var.get(),
+                                               helper_model=self._helper_api_model("analysis"),
+                                               style=self.style_var.get(),
+                                               schema=schema_dict,
+                                               glossary=glossary,
+                                               source_language=_lang_iso639_1(file_src))
                     # Proje hafızasına kaydet
                     if _analysis_ok and self._pm is not None:
                         try:
@@ -15003,7 +15081,9 @@ class App(ctk.CTk):
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                                 log_fn=self._log, glossary=glossary,
                                 analysis_result=_full_analysis,
-                                change_log=_critic_change_log)
+                                change_log=_critic_change_log,
+                                token_callback=self._token_callback_for_model(
+                                    self._helper_api_model("critic")))
                             _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
                             self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:

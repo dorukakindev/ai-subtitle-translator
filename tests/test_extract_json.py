@@ -80,9 +80,8 @@ class ExtractJsonArrayTest(unittest.TestCase):
         self.assertEqual(_extract_json_array(""), "")
         self.assertEqual(_extract_json_array("   "), "")
 
-    def test_non_array_returns_raw_if_valid_json(self):
-        # Valid JSON passes through even if it's an object
-        self.assertEqual(_extract_json_array('{"a": 1}'), '{"a": 1}')
+    def test_non_array_is_rejected(self):
+        self.assertEqual(_extract_json_array('{"a": 1}'), "")
 
     def test_malformed_array_returns_empty(self):
         self.assertEqual(_extract_json_array("[broken json"), "")
@@ -94,4 +93,3 @@ class GuiStripMdTest(unittest.TestCase):
         self.assertEqual(gui._strip_md('```json {"0": "Spanish"}```'), '{"0": "Spanish"}')
         detected_map, dups = gui.parse_source_languages_response('```json {"languages": {"0": "Spanish"}}```')
         self.assertEqual(detected_map, {"0": "Spanish"})
-

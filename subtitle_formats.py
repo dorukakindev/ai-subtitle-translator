@@ -7,6 +7,7 @@ Her format → (index_str, timestamp_str, text) üçlülerine dönüştürülür
 
 import glob as _glob
 import re
+import unicodedata
 from pathlib import Path
 
 
@@ -32,7 +33,17 @@ def read_subtitle_text(filepath) -> str:
     bozuk UTF-16 olarak yorumlamamak için."""
     raw = Path(filepath).read_bytes()
     text = None
+    if raw and raw.count(b"\x00") / len(raw) >= 0.15:
+        even_nuls = raw[0::2].count(0)
+        odd_nuls = raw[1::2].count(0)
+        enc = "utf-16-be" if even_nuls > odd_nuls else "utf-16-le"
+        try:
+            text = raw.decode(enc)
+        except UnicodeDecodeError:
+            text = None
     for enc in ("utf-8-sig",):
+        if text is not None:
+            break
         try:
             text = raw.decode(enc)
             break
@@ -152,12 +163,28 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
         out = lead + out
     if tail and not out.endswith(tail):
         out += tail
+    src_lines = src.split("\n")
+    out_lines = out.split("\n")
+    if len(src_lines) == len(out_lines) and len(src_lines) > 1:
+        restored = []
+        for src_line, out_line in zip(src_lines, out_lines):
+            src_line = src_line.strip()
+            lm = _LEAD_OVERRIDE_RE.match(src_line)
+            line_lead = lm.group(0) if lm else ""
+            tm = _TRAIL_OVERRIDE_RE.search(src_line)
+            line_tail = tm.group(0) if tm else ""
+            if line_lead and not out_line.startswith(line_lead):
+                out_line = line_lead + out_line
+            if line_tail and not out_line.endswith(line_tail):
+                out_line += line_tail
+            restored.append(out_line)
+        out = "\n".join(restored)
     return out
 
 
 # ── ASS stil/tag temizleme ────────────────────────────────────────────────────
 
-_ASS_OVERRIDE = re.compile(r'\{[^}]*\}')
+_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _ASS_SOFTLINE = re.compile(r'\\N', re.IGNORECASE)
 _ASS_HARDLINE = re.compile(r'\\n', re.IGNORECASE)
 _ASS_HSPACE   = re.compile(r'\\h', re.IGNORECASE)
@@ -188,9 +215,11 @@ def _format_ass_text(text: str) -> str:
 _VTT_TAG = re.compile(
     r'</?(?:b|i|u|c(?:\.[^\s>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?|ruby|rt)\s*>',
     re.IGNORECASE)
+_VTT_CUE_TS_TAG = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 
 def _clean_vtt_text(text: str) -> str:
     """WebVTT inline tag'lerini ve position bilgisini kaldır."""
+    text = _VTT_CUE_TS_TAG.sub('', text)
     text = _VTT_TAG.sub('', text)
     return text.strip()
 
@@ -377,7 +406,9 @@ def get_subtitle_files(directory: str, recursive: bool = True,
         iterator = base.rglob(ext) if recursive else base.glob(ext)
         for fp in iterator:
             seen[str(fp)] = None
-    excl_dirs = {d.lower() for d in (exclude_dir_names or ())}
+    def _path_key(value: str) -> str:
+        return unicodedata.normalize("NFKD", str(value)).casefold().replace("ı", "i")
+    excl_dirs = {_path_key(d) for d in (exclude_dir_names or ())}
     excl_sfx = tuple(s.lower() for s in (exclude_suffixes or ()))
     result = []
     for fp in seen:
@@ -387,7 +418,7 @@ def get_subtitle_files(directory: str, recursive: bool = True,
         if excl_dirs:
             try:
                 rel = Path(fp).relative_to(base)
-                dir_parts = {p.lower() for p in rel.parts[:-1]}  # sadece dizin bileşenleri
+                dir_parts = {_path_key(p) for p in rel.parts[:-1]}  # sadece dizin bileşenleri
             except Exception:
                 dir_parts = set()
             if dir_parts & excl_dirs:

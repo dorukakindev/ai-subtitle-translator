@@ -35,7 +35,7 @@ def _machine_key() -> bytes:
     with source code access can reverse this. Use `keyring` for real security.
     """
     identity = f"{platform.node()}|{os.getenv('USERNAME','')}|{platform.system()}"
-    return hashlib.sha256(identity.encode()).digest()
+    return hashlib.sha256(identity.encode("utf-8")).digest()
 
 
 def _obfuscate(text: str) -> str:
@@ -151,7 +151,7 @@ def _write_fallback_store(data: dict) -> None:
         principal = f"{domain}\\{user}" if domain and user else user
         if principal:
             subprocess.run(
-                ["icacls", str(p), "/grant:r", f"{principal}:R"],
+                ["icacls", str(p), "/grant:r", f"{principal}:F"],
                 check=False, capture_output=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except Exception:
@@ -247,7 +247,8 @@ def migrate_from_settings(settings_path: str | Path) -> None:
     for key_name in list(data.keys()):
         # .get(.., "") yalnızca eksik anahtarı korur; JSON null (None) gelirse
         # .strip() patlar — `or ""` ile None/yanlış-tip güvenli
-        val = (data.get(key_name) or "").strip()
+        raw_value = data.get(key_name)
+        val = raw_value.strip() if isinstance(raw_value, str) else ""
         if not val or len(val) <= 5:
             continue
 

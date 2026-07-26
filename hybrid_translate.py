@@ -597,11 +597,30 @@ def _cache_sig(filepath: str) -> str:
         return ""
 
 
+def analysis_fingerprint(source_language: str = "", target_language: str = "",
+                         analysis_depth: str = "", model: str = "", style: str = "",
+                         schema: dict = None, glossary: dict = None) -> str:
+    payload = {
+        "source": str(source_language or "").strip().casefold(),
+        "target": str(target_language or "").strip().casefold(),
+        "depth": normalize_analysis_depth(analysis_depth),
+        "model": str(model or "").strip().casefold(),
+        "style": str(style or "").strip().casefold(),
+        "schema": schema or {},
+        "glossary": glossary or {},
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def save_context_cache(context, filepath: str, character_examples: dict = None,
                        pronoun_map: dict = None, character_styles: dict = None,
                        scene_emotions: list = None, idiom_map: dict = None,
                        cultural_refs: list = None, target_language: str = "",
-                       analysis_depth: str = "standard"):
+                       analysis_depth: str = "standard", helper_model: str = "",
+                       style: str = "", schema: dict = None, glossary: dict = None,
+                       source_language: str = ""):
     _ensure_path()
     sig = _cache_sig(filepath)
     if not sig or not sig.startswith("sha256:"):
@@ -626,6 +645,10 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
         "analysis_depth":     normalize_analysis_depth(analysis_depth),
         "_sig":               sig,   # kaynak dosya imzası (bayat-önbellek koruması)
         "target_language":    target_language or "",  # hedef dil değişirse analizi yeniden kullanma
+        "_source_hint":       source_language or context.source_language,
+        "_analysis_fp":       analysis_fingerprint(
+            source_language or context.source_language, target_language, analysis_depth,
+            helper_model, style, schema, glossary),
     }
     # Atomik yazım: yarım kalan dosya bozuk önbellek bırakmasın
     try:
@@ -644,7 +667,9 @@ def _scene_plan_cache_is_stale(scenes) -> bool:
     return not any(isinstance(s, dict) and "summary" in s for s in scenes)
 
 
-def load_context_cache(filepath: str, expected_target: str = "", expected_analysis_depth: str = ""):
+def load_context_cache(filepath: str, expected_target: str = "", expected_analysis_depth: str = "",
+                       expected_source: str = "", helper_model: str = "", style: str = "",
+                       schema: dict = None, glossary: dict = None):
     """Returns 7-tuple or None:
     (ContextMemory, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs)
     Old v1 caches (missing new fields) are handled gracefully with empty defaults.
@@ -678,6 +703,16 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
             cached_depth = normalize_analysis_depth(raw_cached_depth)
             expected_depth = normalize_analysis_depth(expected_analysis_depth)
             if cached_depth != expected_depth:
+                return None
+        if expected_source and str(d.get("_source_hint") or "").strip().casefold() != str(expected_source).strip().casefold():
+            return None
+        if any((helper_model, style, schema, glossary)):
+            expected_fp = analysis_fingerprint(
+                expected_source or d.get("_source_hint", ""),
+                expected_target or d.get("target_language", ""),
+                expected_analysis_depth or d.get("analysis_depth", "standard"),
+                helper_model, style, schema, glossary)
+            if d.get("_analysis_fp") != expected_fp:
                 return None
         memory = ContextMemory(
             source_language=d.get("source_language", ""),
@@ -758,7 +793,11 @@ def _batch_fmap_path(batch_id: str) -> Path:
 
 
 def _session_path(input_dir: str) -> Path:
-    h = hashlib.md5(str(input_dir).encode("utf-8")).hexdigest()[:12]
+    try:
+        key = str(Path(input_dir).expanduser().resolve()).replace("\\", "/").casefold().rstrip("/")
+    except Exception:
+        key = str(input_dir).replace("\\", "/").casefold().rstrip("/")
+    h = hashlib.md5(key.encode("utf-8")).hexdigest()[:12]
     return _session_dir() / f"{h}_session.json"
 
 
@@ -816,13 +855,12 @@ def batch_session_fingerprint(input_dir: str, output_dir: str, filepaths: list,
     for fp in filepaths or []:
         p = Path(fp)
         try:
-            st = p.stat()
-            files.append((str(p.resolve()), st.st_size, st.st_mtime_ns))
+            files.append((str(p.resolve()), _cache_sig(str(p))))
         except OSError:
-            files.append((str(p), None, None))
+            files.append((str(p), ""))
     payload = {
-        "input_dir": str(input_dir),
-        "output_dir": str(output_dir),
+        "input_dir": str(Path(input_dir).expanduser().resolve()),
+        "output_dir": str(Path(output_dir).expanduser().resolve()),
         "files": files,
         "settings": settings or {},
     }
@@ -2032,6 +2070,7 @@ def _analyze_context_openai_compatible(
     target_language: str,
     analysis_depth: str = "standard",
     log_fn=None,
+    token_callback=None,
 ):
     _ensure_path()
     from openai import OpenAI
@@ -2120,6 +2159,12 @@ def _analyze_context_openai_compatible(
         temperature=0.2,
         **_extra,
     )
+    if token_callback and getattr(resp, "usage", None):
+        tot, cached = _get_usage_details(resp.usage)
+        try:
+            token_callback(tot, cached=cached)
+        except TypeError:
+            token_callback(tot)
     raw = resp.choices[0].message.content if resp.choices else ""
     data = _extract_json_object(raw)
     if not data:
@@ -2182,6 +2227,7 @@ def analyze_with_helper(
     progress_fn=None,
     schema: dict = None,  # Content schema for cultural ref genre-aware decisions
     analysis_depth: str = "standard",
+    token_callback=None,
 ):
     """Returns (ContextMemory, character_examples_dict) or None on failure."""
     _ensure_path()
@@ -2237,6 +2283,7 @@ def analyze_with_helper(
                         source_language=source_language,
                         target_language=target_language,
                         analysis_depth=depth_key,
+                        token_callback=token_callback,
                         log_fn=log_fn,
                     )
                 return i, provider.analyze_context(req)
@@ -5052,7 +5099,25 @@ def _question_mark_mismatch(src_text: str, tr_text: str) -> bool:
 
 def _normalized_numeric_tokens(text: str) -> list[str]:
     value = _semantic_text_for_validator(text)
-    return [m.group(0).replace(",", ".") for m in _NUMERIC_TOKEN_RE.finditer(value)]
+    def _normalize(token: str) -> str:
+        sign = ""
+        if token[:1] in "+-":
+            sign, token = token[0], token[1:]
+        if any(ch in token for ch in ":/"):
+            return sign + token
+        if "," not in token and "." not in token:
+            return sign + token
+        if "," in token and "." in token:
+            decimal = "," if token.rfind(",") > token.rfind(".") else "."
+            grouping = "." if decimal == "," else ","
+            token = token.replace(grouping, "").replace(decimal, ".")
+            return sign + token
+        sep = "," if "," in token else "."
+        parts = token.split(sep)
+        if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
+            return sign + "".join(parts)
+        return sign + token.replace(sep, ".")
+    return [_normalize(m.group(0)) for m in _NUMERIC_TOKEN_RE.finditer(value)]
 
 
 def _numeric_token_mismatch(src_text: str, tr_text: str) -> bool:
@@ -5559,8 +5624,8 @@ def _extract_json_array(raw: str) -> str:
 
     # Direct parse
     try:
-        json.loads(raw)
-        return raw
+        parsed = json.loads(raw)
+        return raw if isinstance(parsed, list) else ""
     except Exception:
         pass
     # Find first [...] block
@@ -5569,8 +5634,8 @@ def _extract_json_array(raw: str) -> str:
     if start != -1 and end > start:
         candidate = raw[start:end + 1]
         try:
-            json.loads(candidate)
-            return candidate
+            parsed = json.loads(candidate)
+            return candidate if isinstance(parsed, list) else ""
         except Exception:
             pass
     return ""  # Return empty string instead of raw, so caller knows parse failed
@@ -8092,8 +8157,7 @@ def build_glossary_suggestions(
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
             return []
-        if raw.startswith("```"):
-            raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
+        raw = _strip_code_fence(raw)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -8111,12 +8175,33 @@ def build_glossary_suggestions(
             suggestions = data
         else:
             suggestions = data.get("suggestions", []) if isinstance(data, dict) else []
-        lower_existing = {k.lower() for k in existing_keys}
-        new_suggestions = [
-            sg for sg in suggestions
-            if sg.get("src") and sg.get("tgt")
-            and sg["src"].lower() not in lower_existing
-        ]
+        lower_existing = {k.casefold() for k in existing_keys}
+        new_suggestions = []
+        for sg in suggestions:
+            if not isinstance(sg, dict):
+                continue
+            src = sg.get("src")
+            tgt = sg.get("tgt")
+            if not isinstance(src, str) or not isinstance(tgt, str):
+                continue
+            src = src.strip()
+            tgt = tgt.strip()
+            if (not src or not tgt or src.casefold() in lower_existing
+                    or any(ch in src + tgt for ch in "\r\n\t=")
+                    or len(src) > 160 or len(tgt) > 240):
+                continue
+            matching_pairs = [
+                pair for pair in pairs
+                if src.casefold() in pair["src"].casefold()
+            ]
+            if not matching_pairs or not any(
+                    tgt.casefold() in pair["tgt"].casefold()
+                    for pair in matching_pairs):
+                continue
+            clean = dict(sg)
+            clean["src"] = src
+            clean["tgt"] = tgt
+            new_suggestions.append(clean)
 
         if log_fn:
             log_fn(f"Glossary builder: {len(new_suggestions)} yeni terim önerildi", "ok")
@@ -8139,6 +8224,7 @@ def critic_pass_with_helper(
     glossary: dict = None,
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
     change_log: list | None = None,
+    token_callback=None,
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
@@ -8467,6 +8553,12 @@ def critic_pass_with_helper(
                 max_tokens=len(chunk) * 60,
                 temperature=0.1,
             )
+            if token_callback and getattr(resp, "usage", None):
+                tot, cached = _get_usage_details(resp.usage)
+                try:
+                    token_callback(tot, cached=cached)
+                except TypeError:
+                    token_callback(tot)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 if log_fn:

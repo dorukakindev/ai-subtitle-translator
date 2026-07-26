@@ -223,30 +223,21 @@ class TranslationMemory:
         hi = int(src_len * 1.4)
         lang = tgt_lang.strip().lower()
         sch = schema_name.strip().lower()[:40] if schema_name else ""
-        if lang and sch:
-            with self._lock:
-                rows = self._get_conn().execute(
-                    "SELECT source, target FROM tm WHERE tgt_lang = ? AND schema_name = ? AND LENGTH(source) BETWEEN ? AND ? LIMIT 500",
-                    (lang, sch, lo, hi)
-                ).fetchall()
-        elif lang:
-            with self._lock:
-                rows = self._get_conn().execute(
-                    "SELECT source, target FROM tm WHERE tgt_lang = ? AND LENGTH(source) BETWEEN ? AND ? LIMIT 500",
-                    (lang, lo, hi)
-                ).fetchall()
-        elif sch:
-            with self._lock:
-                rows = self._get_conn().execute(
-                    "SELECT source, target FROM tm WHERE schema_name = ? AND LENGTH(source) BETWEEN ? AND ? LIMIT 500",
-                    (sch, lo, hi)
-                ).fetchall()
-        else:
-            with self._lock:
-                rows = self._get_conn().execute(
-                    "SELECT source, target FROM tm WHERE LENGTH(source) BETWEEN ? AND ? LIMIT 500",
-                    (lo, hi)
-                ).fetchall()
+        clauses = ["LENGTH(source) BETWEEN ? AND ?", "schema_name = ?"]
+        params = [lo, hi, sch]
+        if lang:
+            clauses.append("tgt_lang = ?")
+            params.append(lang)
+        if model:
+            clauses.append("LOWER(model) = ?")
+            params.append(model.strip().casefold())
+        if profanity:
+            clauses.append("profanity = ?")
+            params.append(profanity.strip().lower()[:20])
+        sql = ("SELECT source, target FROM tm WHERE "
+               + " AND ".join(clauses) + " LIMIT 500")
+        with self._lock:
+            rows = self._get_conn().execute(sql, params).fetchall()
 
         best_target = None
         best_ratio  = 0.0
