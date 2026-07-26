@@ -59,6 +59,7 @@ class _SecurityApp:
             "qc_var": True,
             "native_var": True,
             "backtrans_var": True,
+            "semantic_reconcile_var": True,
             "backup_raw_var": True,
             "auto_glossary_var": True,
             "linebreak_var": True,

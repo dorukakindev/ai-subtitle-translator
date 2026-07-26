@@ -6322,7 +6322,22 @@ class App(ctk.CTk):
         ctk.CTkLabel(bt_fr, text="Geri Çeviri Anlam Kontrolü",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Türkçeyi tekrar İngilizceye çevirip anlamı\nkaynaktan SAPAN satırları yakalar; rapora ve\nlog'a yazar — çeviriye DOKUNMAZ. Gerçek\nyanlış çevirileri bulur. (Ek maliyet)",
+        ctk.CTkLabel(sb, text="Türkçeyi tekrar İngilizceye çevirip anlamı\nkaynaktan SAPAN satırları yakalar; güvenli\nönerileri otomatik düzeltir ve raporlar.\n(Ek maliyet)",
+                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+                     justify="left", wraplength=260).grid(
+                     row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
+
+        self.semantic_reconcile_var = ctk.BooleanVar(value=True)
+        sr_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        sr_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        sr_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(sr_fr, text="", variable=self.semantic_reconcile_var,
+                      width=44, height=22,
+                      fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
+        ctk.CTkLabel(sr_fr, text="Nihai Anlam Mutabakatı",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(sb, text="Son kalite geçişlerinden sonra yalnız şüpheli\ncue kümelerini kaynakla ±2 komşu içinde\nyeniden karşılaştırır. Küme güvenli değilse\nhiçbir değişiklik yapmaz. (Hedefli ek maliyet)",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -7250,6 +7265,11 @@ class App(ctk.CTk):
             "native": self.native_var.get(),
             "qc": self.qc_var.get(),
             "condense": self.condense_var.get(),
+            "backtrans": bool(getattr(self, "backtrans_var", None)
+                              and self.backtrans_var.get()),
+            "semantic_reconcile": (self.semantic_reconcile_var.get()
+                                   if getattr(self, "semantic_reconcile_var", None)
+                                   else True),
             "review": self.review_pass_var.get(),
             "twowave": self.twowave_var.get(),
             "clean_sdh": self.clean_sdh_var.get(),
@@ -8653,6 +8673,7 @@ class App(ctk.CTk):
             "qc": self.qc_var.get(),
             "native": self.native_var.get(),
             "backtrans": self.backtrans_var.get(),
+            "semantic_reconcile": self.semantic_reconcile_var.get(),
             "backup_raw": self.backup_raw_var.get(),
             "auto_glossary": self.auto_glossary_var.get(),
             "linebreak": self.linebreak_var.get(),
@@ -9015,6 +9036,8 @@ class App(ctk.CTk):
                 self.native_var.set(bool(d["native"]))
             if "backtrans" in d:
                 self.backtrans_var.set(bool(d["backtrans"]))
+            if "semantic_reconcile" in d:
+                self.semantic_reconcile_var.set(bool(d["semantic_reconcile"]))
             if "auto_glossary" in d:
                 self.auto_glossary_var.set(bool(d["auto_glossary"]))
             if "linebreak" in d:
@@ -10060,22 +10083,34 @@ class App(ctk.CTk):
         kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
         log'a yazar. Flag'lenen satırları helper model ile düzeltir. Düzeltilen
         satır sayısını döner."""
-        try:
-            if not self.backtrans_var.get():
-                return 0
-        except Exception:
+        if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
+            enabled = bool(self._active_snapshot.get("backtrans"))
+        else:
+            try:
+                enabled = bool(self.backtrans_var.get())
+            except Exception:
+                enabled = False
+        if not enabled:
             return 0
         if not src_clean_map or not blocks:
             return 0
         try:
             import hybrid_translate as ht
+            run_src_lang = src_lang
+            run_tgt_lang = None
+            if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
+                run_src_lang = run_src_lang or self._active_snapshot.get("src_lang")
+                run_tgt_lang = self._active_snapshot.get("tgt_lang")
+            else:
+                run_src_lang = run_src_lang or self.src_var.get()
+                run_tgt_lang = self.tgt_var.get()
             flags = ht.back_translation_check(
                 src_map=src_clean_map, tr_blocks=blocks,
                 api_key=self._helper_api_key("qc"),
                 base_url=self._helper_api_base_url("qc"),
                 model=self._helper_api_model("qc"),
-                src_lang=src_lang or self.src_var.get() or "English",
-                tgt_lang=self.tgt_var.get() or "Turkish",
+                src_lang=run_src_lang or "English",
+                tgt_lang=run_tgt_lang or "Turkish",
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("qc")))
@@ -10143,6 +10178,82 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"Geri çeviri kontrolü hatası: {e}", "warn")
             return 0
+
+    def _semantic_reconcile_enabled(self) -> bool:
+        if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
+            return bool(self._active_snapshot.get("semantic_reconcile", True))
+        try:
+            return bool(self.semantic_reconcile_var.get())
+        except Exception:
+            return True
+
+    def _maybe_semantic_reconciliation(self, out_path, src_clean_map, blocks,
+                                       src_lang=None, cues=None, changed_ids=None) -> int:
+        if not self._semantic_reconcile_enabled() or not src_clean_map or not blocks:
+            return 0
+        try:
+            import hybrid_translate as ht
+            if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
+                run_src_lang = src_lang or self._active_snapshot.get("src_lang") or "English"
+                run_tgt_lang = self._active_snapshot.get("tgt_lang") or "Turkish"
+            else:
+                run_src_lang = src_lang or self.src_var.get() or "English"
+                run_tgt_lang = self.tgt_var.get() or "Turkish"
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map=src_clean_map,
+                tr_blocks=blocks,
+                api_key=self._helper_api_key("qc"),
+                base_url=self._helper_api_base_url("qc"),
+                model=self._helper_api_model("qc"),
+                src_lang=run_src_lang,
+                tgt_lang=run_tgt_lang,
+                cues=cues,
+                changed_ids=changed_ids,
+                log_fn=self._log,
+                token_callback=self._token_callback_for_model(
+                    self._helper_api_model("qc")),
+            )
+            blocks[:] = result
+            if stats.get("clusters"):
+                try:
+                    rpath = str(Path(out_path).with_suffix(".anlamsal_mutabakat.txt"))
+                    lines = [
+                        "# Nihai Anlam Mutabakatı",
+                        f"# Küme: {stats['clusters']} | Şüpheli cue: {stats['suspects']} | "
+                        f"Öneri: {stats['proposed']} | Düzeltme: {stats['fixed']} | "
+                        f"Reddedilen küme: {stats['rejected']}",
+                        "",
+                    ]
+                    for detail in stats.get("details", []):
+                        cluster = detail.get("cluster") or ",".join(detail.get("clusters", []))
+                        lines.append(
+                            f"[{cluster or '?'}] {detail.get('status', '?')}: "
+                            f"{detail.get('reason', '')}".rstrip()
+                        )
+                        if detail.get("ids"):
+                            lines.append("  cue: " + ", ".join(detail["ids"]))
+                        for sid, change in detail.get("changes", {}).items():
+                            lines.append(f"  [{sid}] kaynak: {change.get('source', '')}")
+                            lines.append(f"       önce : {change.get('before', '')}")
+                            lines.append(f"       sonra: {change.get('after', '')}")
+                    with open(rpath, "w", encoding="utf-8") as fh:
+                        fh.write("\n".join(lines))
+                    self._log(f"Anlamsal mutabakat raporu: {Path(rpath).name}", "info")
+                except Exception as exc:
+                    self._log(f"Anlamsal mutabakat raporu yazılamadı: {exc}", "warn")
+            return int(stats.get("fixed", 0))
+        except Exception as e:
+            self._log(f"Nihai anlam mutabakatı hatası: {e}", "warn")
+            return 0
+
+    def _run_final_semantic_checks(self, out_path, src_clean_map, blocks,
+                                   src_lang=None, cues=None, changed_ids=None) -> int:
+        fixed = self._maybe_backtranslation_check(
+            out_path, src_clean_map, blocks, src_lang=src_lang)
+        fixed += self._maybe_semantic_reconciliation(
+            out_path, src_clean_map, blocks, src_lang=src_lang,
+            cues=cues, changed_ids=changed_ids)
+        return fixed
 
     def _locked_terms_hint(self, fp: str, tgt: str) -> str:
         """Batch inceleme için kilitli terim + isim bloğu.
@@ -12941,9 +13052,14 @@ class App(ctk.CTk):
                 pass
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                              same_folder=self.same_folder_var.get())
-            self._maybe_backtranslation_check(
+            _before_semantic = list(sorted_blocks)
+            self._run_final_semantic_checks(
                 out_path, {str(c.index): _clean_src(c.text) for c in cues},
-                sorted_blocks, src_lang=file_src)
+                sorted_blocks, src_lang=file_src, cues=cues,
+                changed_ids=_pass_history.keys())
+            _record_pass_change(
+                _pass_trace, "Final-Semantic", _before_semantic,
+                sorted_blocks, _pass_history)
             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
             _n_filled = 0
             try:
@@ -12975,7 +13091,7 @@ class App(ctk.CTk):
             # Rapor satırı
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
-            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": fname, "total": len(sorted_blocks),
                 "hata": _hata_n + _n_filled, "cps": _cps_n,
@@ -13605,9 +13721,14 @@ class App(ctk.CTk):
                             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
-                                self._maybe_backtranslation_check(
+                                _before_semantic = list(pp)
+                                self._run_final_semantic_checks(
                                     output_path, _src_map, pp,
-                                    src_lang=source_language or self.src_var.get())
+                                    src_lang=source_language or self._snap_get("src_lang", "English"),
+                                    cues=_orig_cues, changed_ids=_pass_history.keys())
+                                _record_pass_change(
+                                    _pass_trace, "Final-Semantic",
+                                    _before_semantic, pp, _pass_history)
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
                             try:
                                 _raw_map = _raw_src_map_from_cues(_orig_cues)
@@ -13642,7 +13763,7 @@ class App(ctk.CTk):
                                     1 for b in pp
                                     if _pre_pass.get(str(b[0])) is not None
                                     and _clean_src(_pre_pass[str(b[0])]) != _clean_src(b[2]))
-                                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+                                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                                 report_rows.append({"name": Path(output_path).name,
                                                     "total": len(pp), "hata": _hn, "cps": _cn,
                                                     "cps_avg": _cps_avg, "cps_max": _cps_max,
@@ -13952,8 +14073,13 @@ class App(ctk.CTk):
                 self._log(f"Onarım geçişi atlandı: {e}", "warn")
             # CPS uyarısı — sync-hybrid ile paritede (düz-batch loglarında da görünsün)
             _log_cps_warning(sorted_blocks, self._log)
-            self._maybe_backtranslation_check(
-                out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang)
+            _before_semantic = list(sorted_blocks)
+            self._run_final_semantic_checks(
+                out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
+                cues=_src_cues, changed_ids=_pass_history.keys())
+            _record_pass_change(
+                _pass_trace, "Final-Semantic", _before_semantic,
+                sorted_blocks, _pass_history)
             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
             _n_filled = 0
             try:
@@ -13978,7 +14104,7 @@ class App(ctk.CTk):
             total_warnings += w
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
-            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "total": len(sorted_blocks),
                 "hata": _hata_n + _n_filled, "cps": _cps_n,
@@ -14751,8 +14877,13 @@ class App(ctk.CTk):
                 _log_cps_warning(_final_blocks, self._log)
                 # Etiket geri yükleme + birleştirme + yazım HER ZAMAN çalışır (kalite
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
-                self._maybe_backtranslation_check(
-                    out_path, _src_map, _final_blocks, src_lang=file_src)
+                _before_semantic = list(_final_blocks)
+                self._run_final_semantic_checks(
+                    out_path, _src_map, _final_blocks, src_lang=file_src,
+                    cues=cues, changed_ids=_pass_history.keys())
+                _record_pass_change(
+                    _pass_trace, "Final-Semantic", _before_semantic,
+                    _final_blocks, _pass_history)
                 _n_filled = 0
                 try:
                     _raw_map = _raw_src_map_from_cues(cues)
@@ -14790,7 +14921,7 @@ class App(ctk.CTk):
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu)
                 _hata_n, _cps_n = _count_hata_cps(_final_blocks)
                 _cps_avg, _cps_max = _cps_stats(_final_blocks)
-                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
                     "name": fname, "total": len(_final_blocks),
                     "hata": _hata_n + _n_filled, "cps": _cps_n,

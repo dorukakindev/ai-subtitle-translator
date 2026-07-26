@@ -62,6 +62,23 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertIn('"qc_auto": _qc_stats["qc_auto"]', src)
         self.assertIn('"qc": _qc_stats["qc"]', src)
 
+    def test_final_semantic_checks_have_four_flow_parity(self):
+        flows = [
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        ]
+        for flow in flows:
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                semantic_pos = src.rfind("_run_final_semantic_checks(")
+                fill_pos = src.rfind("_fill_hata_with_source(")
+                restore_pos = src.rfind("_restore_tags_blocks(")
+                self.assertGreaterEqual(semantic_pos, 0)
+                self.assertTrue(semantic_pos < fill_pos < restore_pos)
+                self.assertIn('changed_ids=_pass_history.keys()', src)
+
 
 if __name__ == "__main__":
     unittest.main()

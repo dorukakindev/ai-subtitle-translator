@@ -65,12 +65,12 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         # Verify _fill_hata_with_source is called in success path
         self.assertIn("_fill_hata_with_source(_final_blocks", src)
         
-        # Verify order: _maybe_backtranslation_check before _fill_hata_with_source before write_srt
-        bt_pos = src.rfind("_maybe_backtranslation_check(")
+        # Verify order: final semantic checks before _fill_hata_with_source before write_srt
+        bt_pos = src.rfind("_run_final_semantic_checks(")
         fill_pos = src.rfind("_fill_hata_with_source(")
         write_pos = src.rfind("write_srt(")
         
-        self.assertGreater(fill_pos, bt_pos, "_fill_hata_with_source must follow _maybe_backtranslation_check")
+        self.assertGreater(fill_pos, bt_pos, "_fill_hata_with_source must follow final semantic checks")
         self.assertGreater(write_pos, fill_pos, "write_srt must follow _fill_hata_with_source")
 
     def test_hybrid_batch_tail_hata_counting_and_raw_backup(self):

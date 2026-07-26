@@ -85,6 +85,7 @@ class _SettingsOnlyApp:
             "qc_var": True,
             "native_var": True,
             "backtrans_var": True,
+            "semantic_reconcile_var": True,
             "auto_glossary_var": True,
             "linebreak_var": True,
             "condense_var": True,
@@ -148,6 +149,7 @@ class SettingsPersistenceTest(unittest.TestCase):
                 "qc": False,
                 "native": False,
                 "backtrans": False,
+                "semantic_reconcile": False,
                 "clean_sdh": False,
                 "auto_glossary": False,
                 "linebreak": False,
@@ -171,6 +173,7 @@ class SettingsPersistenceTest(unittest.TestCase):
             self.assertEqual(app.api_url_var.get(), "")
             for attr in (
                 "polish_var", "qc_var", "native_var", "backtrans_var",
+                "semantic_reconcile_var",
                 "clean_sdh_var", "auto_glossary_var", "linebreak_var",
                 "condense_var", "merge_cues_var", "ai_segment_var",
                 "chain_ctx_var", "precontext_var", "series_memory_var",

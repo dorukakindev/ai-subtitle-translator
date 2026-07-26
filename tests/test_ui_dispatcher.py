@@ -287,6 +287,8 @@ class UIDispatcherTest(unittest.TestCase):
             native_var=SimpleNamespace(get=lambda: True),
             qc_var=SimpleNamespace(get=lambda: True),
             condense_var=SimpleNamespace(get=lambda: False),
+            backtrans_var=SimpleNamespace(get=lambda: False),
+            semantic_reconcile_var=SimpleNamespace(get=lambda: True),
             review_pass_var=SimpleNamespace(get=lambda: False),
             twowave_var=SimpleNamespace(get=lambda: False),
             clean_sdh_var=SimpleNamespace(get=lambda: True),
@@ -324,6 +326,7 @@ class UIDispatcherTest(unittest.TestCase):
         self.assertEqual(snap["helper_keys"]["critic"], "hk-test")
         self.assertFalse(snap["ai_segment"])
         self.assertTrue(snap["chain_ctx"])
+        self.assertTrue(snap["semantic_reconcile"])
 
     def test_worker_thread_reads_snapshot_not_tk_vars(self):
         """Worker-called methods read from snapshot when on background thread."""
