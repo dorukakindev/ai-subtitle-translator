@@ -13,8 +13,8 @@ import traceback
 import unicodedata
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
-from app_state import (atomic_write_json, best_effort_cancel_remote_batch,
-                       mutate_batch_ids, state_dir, state_path)
+from app_state import (atomic_write_json, atomic_write_text, best_effort_cancel_remote_batch,
+                       is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
 
 _SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -752,6 +752,8 @@ def _batch_id_path() -> Path:
 
 
 def _batch_fmap_path(batch_id: str) -> Path:
+    if not is_safe_batch_id(batch_id):
+        raise ValueError("Geçersiz batch_id")
     return state_path(__file__, f"batch_fmap_{batch_id}.json")
 
 
@@ -6204,18 +6206,9 @@ def _salvage_json_objects(raw: str) -> list:
 
 def _translation_items_from_raw(raw: str) -> list | None:
     """Parse batch translation JSON; salvage complete items if the array is truncated."""
-    extracted = _extract_json_array(raw or "")
-    if extracted:
-        try:
-            data = json.loads(extracted)
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict) and isinstance(data.get("tr"), list):
-                return data["tr"]
-        except Exception:
-            pass
-    salvaged = _salvage_json_objects(raw or "")
-    return salvaged or None
+    from response_integrity import translation_items_from_raw
+    items, _mode = translation_items_from_raw(raw)
+    return items
 
 
 _POLISH_NUMBER_RE = re.compile(r"(?<!\w)[+-]?\d+(?:[.,:/]\d+)*(?:[%$€₺])?(?!\w)")
@@ -8791,6 +8784,7 @@ def submit_batch(
     output_dir: str = None,
     base_url: str = "",
     source_language: str = "",
+    schema_name: str = "",
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
 
@@ -8842,6 +8836,7 @@ def submit_batch(
                 "source_path": source_path or "",
                 "output_dir": output_dir or "",
                 "source_language": source_language or "",
+                "schema_name": schema_name or "",
                 "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
             }
             atomic_write_json(fmap_path, fmap_data)
@@ -9039,6 +9034,7 @@ def save_results(
     srt_blocks = {}
     token_sum  = 0
     token_cached_sum = 0
+    seen_cids = set()
 
     for line in content.strip().splitlines():
         try:
@@ -9047,7 +9043,11 @@ def save_results(
             if log_fn:
                 log_fn(f"Satır ayrıştırılamadı: {line[:80]}", "warn")
             continue
-        cid  = res["custom_id"]
+        if not isinstance(res, dict) or not isinstance(res.get("custom_id"), str):
+            if log_fn:
+                log_fn("Batch satırı custom_id içermiyor; atlandı", "warn")
+            continue
+        cid = res["custom_id"]
         info = file_map.get(cid, [])
 
         if not info:
@@ -9055,6 +9055,13 @@ def save_results(
             if log_fn:
                 log_fn(f"[WARN] {cid}: file_map'te eşleşme yok, chunk atlandı", "warn")
             continue
+        if cid in seen_cids:
+            for (idx, start, end) in info:
+                srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA_DUPLICATE_ID]")
+            if log_fn:
+                log_fn(f"{cid}: duplicate custom_id; chunk reddedildi", "err")
+            continue
+        seen_cids.add(cid)
         if res.get("error"):
             for (idx, start, end) in info:
                 srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
@@ -9062,7 +9069,14 @@ def save_results(
                 log_fn(f"İstek hatası ({cid}): {res['error'].get('message','')}", "err")
             continue
 
-        body = res["response"]["body"]
+        response = res.get("response")
+        body = response.get("body") if isinstance(response, dict) else None
+        if not isinstance(body, dict):
+            for (idx, start, end) in info:
+                srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA_MALFORMED_RESPONSE]")
+            if log_fn:
+                log_fn(f"{cid}: response/body yapısı geçersiz", "err")
+            continue
         finish_reason = ""
         try:
             finish_reason = body.get("choices", [{}])[0].get("finish_reason", "")
@@ -9085,7 +9099,13 @@ def save_results(
             except Exception:
                 pass
 
-        raw = body["choices"][0]["message"]["content"].strip()
+        try:
+            choices = body.get("choices")
+            message = choices[0].get("message") if isinstance(choices, list) and choices else None
+            content_value = message.get("content") if isinstance(message, dict) else None
+            raw = content_value.strip() if isinstance(content_value, str) else ""
+        except Exception:
+            raw = ""
         if not raw:
             if log_fn:
                 log_fn(f"{cid}: boş yanıt", "err")
@@ -9098,22 +9118,29 @@ def save_results(
         if raw_clean.startswith("```"):
             raw_clean = "\n".join(raw_clean.split("\n")[1:]).rsplit("```", 1)[0].strip()
 
-        items = _translation_items_from_raw(raw_clean)
-        if items and isinstance(items, list):
-            trans_map = {}
-            for item in items:
-                if isinstance(item, dict) and "i" in item and "t" in item:
-                    trans_map[str(item["i"])] = item["t"]
-            if log_fn and len(trans_map) < len(info):
-                log_fn(f"{cid}: JSON kısmi kurtarıldı — {len(trans_map)}/{len(info)} satır korundu", "warn")
-        else:
+        from response_integrity import parse_translation_payload
+        expected_ids = {str(idx) for idx, _start, _end in info}
+        parsed = parse_translation_payload(raw_clean, expected_ids)
+        trans_map = parsed.translations
+        if parsed.parse_mode == "invalid":
             if log_fn:
                 log_fn(f"{cid}: JSON parse başarısız — chunk [HATA] yazılıyor "
                        f"(ham: {raw_clean[:80]!r})", "err")
-            trans_map = {}
+        elif log_fn and parsed.missing_ids:
+            log_fn(
+                f"{cid}: JSON kısmi kurtarıldı — "
+                f"{len(trans_map)}/{len(info)} satır korundu", "warn")
         for (idx, start, end) in info:
             text = trans_map.get(str(idx), "[HATA]")
             srt_blocks[idx] = (str(idx), f"{start} --> {end}", text)
+
+    for cid, info in file_map.items():
+        if cid in seen_cids:
+            continue
+        if log_fn:
+            log_fn(f"{cid}: batch çıktısında custom_id eksik", "err")
+        for (idx, start, end) in info:
+            srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA_MISSING_RESPONSE]")
 
     if token_callback and token_sum:
         try:
@@ -9132,6 +9159,7 @@ def save_results(
     n_marked = 0
     if src_cues:
         try:
+            import sdh_cleaner
             from subtitle_formats import restore_format_tags
             raw_map = {str(c.index): c.text for c in src_cues if hasattr(c, "text")}
             for key, (idx, ts, text) in list(srt_blocks.items()):
@@ -9144,10 +9172,12 @@ def save_results(
                         srt_blocks[key] = (idx, ts, "")
                     continue
                 if str(text).startswith("[HATA"):
-                    if src:
+                    if src and not sdh_cleaner.src_is_sfx_only(src):
                         srt_blocks[key] = (idx, ts, "[ÇEVİRİ EKSİK]")
                         n_marked += 1
                         continue
+                    srt_blocks[key] = (idx, ts, "")
+                    continue
                 srt_blocks[key] = (idx, ts, restore_format_tags(raw_map.get(str(idx), ""), text))
         except Exception as e:
             if log_fn:
@@ -9155,13 +9185,11 @@ def save_results(
 
     _out = Path(output_path).with_suffix(".srt")   # çıktı her zaman SRT
     _out.parent.mkdir(parents=True, exist_ok=True)
-    _tmp_srt = _out.with_suffix(".srt.tmp")        # atomik yazım
-    with open(_tmp_srt, "w", encoding="utf-8") as f:
-        for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
-            idx, ts, text = srt_blocks[key]
-            text = _normalize_output_text(text)
-            f.write(f"{idx}\n{ts}\n{text}\n\n")
-    _tmp_srt.replace(_out)
+    rows = []
+    for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
+        idx, ts, text = srt_blocks[key]
+        rows.append(f"{idx}\n{ts}\n{_normalize_output_text(text)}\n\n")
+    atomic_write_text(_out, "".join(rows))
 
     count = len(srt_blocks)
     if log_fn:

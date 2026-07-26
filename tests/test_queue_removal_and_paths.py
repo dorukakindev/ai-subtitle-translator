@@ -290,7 +290,12 @@ class ProductionOutputPathTest(unittest.TestCase):
 
     def test_standard_rule_two_path_is_unchanged(self):
         out = gui._resolve_output_path("/input", "/output", "/input/Film.vtt")
-        self.assertEqual(out, Path("/output/Film/Film.srt"))
+        self.assertEqual(out, Path("/output/Film.vtt/Film.vtt.srt"))
+
+    def test_same_stem_different_formats_do_not_collide(self):
+        vtt = gui._resolve_output_path("/input", "/output", "/input/Film.vtt")
+        ass = gui._resolve_output_path("/input", "/output", "/input/Film.ass")
+        self.assertNotEqual(vtt, ass)
 
 
 if __name__ == "__main__":

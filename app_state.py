@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 import uuid
 from contextlib import contextmanager
@@ -8,6 +9,7 @@ from pathlib import Path
 
 STATE_DIR_ENV = "SUBTITLE_TRANSLATOR_STATE_DIR"
 _fallback_lock = threading.RLock()
+_BATCH_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z")
 
 
 def state_dir(anchor_file) -> Path:
@@ -17,6 +19,10 @@ def state_dir(anchor_file) -> Path:
 
 def state_path(anchor_file, name: str) -> Path:
     return state_dir(anchor_file) / name
+
+
+def is_safe_batch_id(value) -> bool:
+    return bool(_BATCH_ID_RE.fullmatch(str(value or "").strip()))
 
 
 def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:

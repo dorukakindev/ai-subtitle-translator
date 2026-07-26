@@ -18,6 +18,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from app_state import _interprocess_lock, atomic_write_json
+
 SERVICE_NAME = "SubtitleTranslator"
 
 # ── Fallback file path ──────────────────────────────────────────────────────
@@ -139,11 +141,7 @@ def _read_fallback_store() -> dict:
 
 def _write_fallback_store(data: dict) -> None:
     p = _fallback_path()
-    # Atomik yazım: çökme yarım/bozuk anahtar dosyası bırakmasın
-    _tmp = p.with_name(p.name + ".tmp")
-    with open(_tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    _tmp.replace(p)
+    atomic_write_json(p, data)
     # Obfuscation zayıf; en azından dosyayı diğer kullanıcılardan gizle (yalnız sahibine okunur).
     try:
         import os
@@ -162,13 +160,15 @@ def _write_fallback_store(data: dict) -> None:
 
 def _save_fallback(service: str, key: str) -> None:
     with _fallback_lock:
-        store = _read_fallback_store()
-        store[service] = _obfuscate(key)
-        _write_fallback_store(store)
+        with _interprocess_lock(_fallback_path()):
+            store = _read_fallback_store()
+            store[service] = _obfuscate(key)
+            _write_fallback_store(store)
 
 
 def _load_fallback(service: str) -> str | None:
-    store = _read_fallback_store()
+    with _interprocess_lock(_fallback_path()):
+        store = _read_fallback_store()
     token = store.get(service)
     if token is None:
         return None
@@ -180,10 +180,11 @@ def _load_fallback(service: str) -> str | None:
 
 def _cleanup_fallback(service: str) -> None:
     with _fallback_lock:
-        store = _read_fallback_store()
-        if service in store:
-            del store[service]
-            _write_fallback_store(store)
+        with _interprocess_lock(_fallback_path()):
+            store = _read_fallback_store()
+            if service in store:
+                del store[service]
+                _write_fallback_store(store)
 
 
 def _atomic_write_settings_json(path: Path, data: dict) -> None:

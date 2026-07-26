@@ -35,17 +35,22 @@ class ResolveOutputPathTest(unittest.TestCase):
 
     def test_extension_normalized_to_srt(self):
         # Girdi .vtt/.ass olsa da çıktı daima .srt; alt-klasör stem'i uzantısız
-        for ext in (".vtt", ".ass", ".srt"):
+        expected = {
+            ".vtt": ("Film.vtt.srt", "Film.vtt"),
+            ".ass": ("Film.ass.srt", "Film.ass"),
+            ".srt": ("Film.srt", "Film"),
+        }
+        for ext, (name, parent) in expected.items():
             p = gui._resolve_output_path("/a", "/b", f"/a/Film{ext}")
             self.assertEqual(p.suffix, ".srt")
-            self.assertEqual(p.name, "Film.srt")
-            self.assertEqual(p.parent.name, "Film")
+            self.assertEqual(p.name, name)
+            self.assertEqual(p.parent.name, parent)
 
     def test_multi_dot_filename_stem_and_subfolder(self):
         # "Film.English(US).vtt" → stem "Film.English(US)" alt-klasör, çıktı .srt
         p = gui._resolve_output_path("/a", "/b", "/a/Film.English(US).vtt")
-        self.assertEqual(p.parent.name, "Film.English(US)")
-        self.assertEqual(p.name, "Film.English(US).srt")
+        self.assertEqual(p.parent.name, "Film.English(US).vtt")
+        self.assertEqual(p.name, "Film.English(US).vtt.srt")
 
     def test_recursive_input_preserves_substructure_rule1(self):
         # Kural 1 recursive girdide göreli substructure'ı korur
@@ -80,7 +85,7 @@ class SameFolderModeTest(unittest.TestCase):
                                       "/completely/unrelated/output",
                                       "/data/folderA/film.vtt", same_folder=True)
         self.assertEqual(p.parent, Path("/data/folderA"))
-        self.assertEqual(p.name, "film.srt")
+        self.assertEqual(p.name, "film.vtt.srt")
 
     def test_different_files_each_return_to_own_folder(self):
         # 3 ayrı klasörden eklenen dosyalar kendi klasörlerine gider
@@ -100,7 +105,7 @@ class SameFolderModeTest(unittest.TestCase):
         # .vtt/.ass kaynaklarda uzantı zaten değiştiği için çakışma yok — düz isim
         for ext in (".vtt", ".ass"):
             p = gui._resolve_output_path("", "", f"/data/subs/film{ext}", same_folder=True)
-            self.assertEqual(p.name, "film.srt")
+            self.assertEqual(p.name, f"film{ext}.srt")
 
 
 class Rule1ReachableTest(unittest.TestCase):

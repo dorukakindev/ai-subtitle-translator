@@ -63,6 +63,9 @@ class SaveResultsBozukJsonlTest(unittest.TestCase):
                     output_path=out_path,
                 )
 
-            self.assertEqual(count, 0)
+            self.assertEqual(count, 1)
+            self.assertIn(
+                "[HATA_MISSING_RESPONSE]",
+                Path(out_path).read_text(encoding="utf-8"))
         finally:
             Path(out_path).unlink(missing_ok=True)

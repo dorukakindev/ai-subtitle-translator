@@ -78,6 +78,19 @@ class HelperRoutingAuditTests(unittest.TestCase):
                         f"native_reader_pass call site must use 'critic' role: {chunk}",
                     )
 
+    def test_custom_provider_does_not_receive_shared_helper_key(self):
+        stub = SimpleNamespace(
+            helper_model_vars={"critic": SimpleNamespace(get=lambda: "Özel (Custom)")},
+            helper_custom_key_vars={"critic": SimpleNamespace(get=lambda: "")},
+            helper_role_key_vars={},
+            _helper_keys_cache={},
+            helper_key_entry=SimpleNamespace(get=lambda: "shared-openai-helper"),
+            api_key_entry=SimpleNamespace(get=lambda: "main-openai-key"),
+            _is_custom_helper_label=lambda label: True,
+            _get_current_helper_provider=lambda role: "anthropic",
+        )
+        self.assertEqual(gui.App._helper_api_key(stub, "critic"), "")
+
     def test_plain_batch_native_counts_critic_tokens_and_condense_uses_analysis(self):
         import inspect
         src = inspect.getsource(gui.App._write_results)

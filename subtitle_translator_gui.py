@@ -23,7 +23,8 @@ import credential_store
 import series_memory
 import sdh_cleaner
 from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json,
-                       best_effort_cancel_remote_batch, mutate_batch_ids,
+                       atomic_write_text,
+                       best_effort_cancel_remote_batch, is_safe_batch_id, mutate_batch_ids,
                        state_dir, state_path)
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
 from folder_picker import pick_multiple_folders
@@ -1320,7 +1321,7 @@ def _is_dialogue_cue(text: str) -> bool:
 _SDH_ONLY_RE = re.compile(r'^(\[[^\]]*\]|\([^)]*\)|♪[^♪]*♪?|[_♪])$')
 def _is_sdh_only(text: str) -> bool:
     """Sadece ses betimlemesi/efekt mi? ([Laughing], (sighs), ♪, _ gibi)."""
-    return sdh_cleaner.is_sdh_only(text)
+    return sdh_cleaner.src_is_sfx_only(text)
 
 def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                           max_gap_ms: int = MERGE_MAX_GAP_MS,
@@ -1821,39 +1822,33 @@ def write_srt(filepath, blocks, target_language="Turkish"):
     # yoksa SRT içeriği .vtt/.ass uzantısıyla yazılıp oynatıcıda açılmaz.
     out = Path(filepath).with_suffix(".srt")
     out.parent.mkdir(parents=True, exist_ok=True)
-    # Atomik yazım: önce .tmp'ye yaz, çökme durumunda yarım SRT kalmasın
-    _tmp = out.with_suffix(".srt.tmp")
+    rows = []
     try:
-        with open(_tmp, "w", encoding="utf-8") as f:
-            for idx, ts, text in blocks:
-                # Metindeki çift+ newline'lar SRT blok ayracını (\n\n) taklit edip yeniden
-                # okumada satır düşürür/bozar — tek newline'a indir.
-                is_turkish = normalize_language_name(
-                    target_language, allow_auto=False
-                ) == "Turkish"
-                try:
-                    import hybrid_translate as ht
-                    text = ht.normalize_latin_homoglyphs(str(text))
-                    if is_turkish:
-                        text = ht._apply_local_fixes(str(text))[0]
-                except Exception:
-                    text = str(text)
-                text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
-                text = re.sub(r'\n{2,}', '\n', text)
+        for idx, ts, text in blocks:
+            # Metindeki çift+ newline'lar SRT blok ayracını (\n\n) taklit edip yeniden
+            # okumada satır düşürür/bozar — tek newline'a indir.
+            is_turkish = normalize_language_name(
+                target_language, allow_auto=False
+            ) == "Turkish"
+            try:
+                import hybrid_translate as ht
+                text = ht.normalize_latin_homoglyphs(str(text))
                 if is_turkish:
-                    text = sdh_cleaner.normalize_sdh_descriptors(text)
-                    text = sdh_cleaner.normalize_speaker_labels(text)
-                    text = sdh_cleaner.normalize_turkish_artifacts(text)
-                    text = _translate_speaker_labels(text)
-                if not text.strip():
-                    text = "[ÇEVİRİ EKSİK]"
-                f.write(f"{idx}\n{ts}\n{text}\n\n")
-        _tmp.replace(out)
+                    text = ht._apply_local_fixes(str(text))[0]
+            except Exception:
+                text = str(text)
+            text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
+            text = re.sub(r'\n{2,}', '\n', text)
+            if is_turkish:
+                text = sdh_cleaner.normalize_sdh_descriptors(text)
+                text = sdh_cleaner.normalize_speaker_labels(text)
+                text = sdh_cleaner.normalize_turkish_artifacts(text)
+                text = _translate_speaker_labels(text)
+            if not text.strip():
+                text = "[ÇEVİRİ EKSİK]"
+            rows.append(f"{idx}\n{ts}\n{text}\n\n")
+        atomic_write_text(out, "".join(rows))
     except Exception:
-        try:
-            _tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise
 
 
@@ -1899,11 +1894,12 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
 
     Yol her zaman .srt uzantılıdır (çıktı daima SRT)."""
     src = Path(filepath)
+    source_key = src.stem if src.suffix.lower() == ".srt" else src.name
+    output_name = f"{source_key}.srt"
     if same_folder:
-        candidate = src.with_suffix(".srt")
-        if candidate.name.lower() == src.name.lower():
-            candidate = src.with_name(f"{src.stem}.tr.srt")
-        return candidate
+        if src.suffix.lower() == ".srt":
+            return src.with_name(f"{src.stem}.tr.srt")
+        return src.with_name(output_name)
     in_dir = (input_dir or "").strip()
     out_dir = (output_dir or "").strip()
     if not out_dir or _paths_equal(in_dir, out_dir):
@@ -1912,20 +1908,20 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
             rel = src.relative_to(base)
         except Exception:
             rel = Path(src.name)
-        return (base / "ÇIKTI" / rel).with_suffix(".srt")
+        return base / "ÇIKTI" / rel.parent / output_name
     if in_dir:
         try:
             rel = src.relative_to(Path(in_dir))
             if len(rel.parts) > 1:
-                return (Path(out_dir) / rel.parent / src.stem / src.name).with_suffix(".srt")
+                return Path(out_dir) / rel.parent / source_key / output_name
         except Exception:
             pass
     if src.parent and src.parent.name and not _paths_equal(str(src.parent), out_dir) and not (in_dir and _paths_equal(str(src.parent), in_dir)):
         parent_key = os.path.normcase(os.path.abspath(str(src.parent)))
         digest = hashlib.sha1(parent_key.encode("utf-8", errors="surrogatepass")).hexdigest()[:8]
         bucket = f"{src.parent.name}-{digest}"
-        return (Path(out_dir) / bucket / src.stem / src.name).with_suffix(".srt")
-    return (Path(out_dir) / src.stem / src.name).with_suffix(".srt")
+        return Path(out_dir) / bucket / source_key / output_name
+    return Path(out_dir) / source_key / output_name
 
 
 def _resolve_report_dir(input_dir: str, output_dir: str) -> Path:
@@ -2362,6 +2358,7 @@ def _make_smart_chunks_gui(blocks: list, chunk_size: int, frag_tags=None,
 def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                     profanity="Orta", glossary: dict = None, project_memory=None,
                     file_hints: dict = None, block_cache: dict = None,
+                    file_glossaries: dict = None,
                     context_lines: int = None, lookahead_lines: int = None,
                     scene_gap_sec: float = None, scene_emotions: list = None,
                     temperature: float = None):
@@ -2385,9 +2382,13 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
     # Şemaya gömülü sözlük (ör. Warhammer terimleri) — aktif sözlükle birleştir;
     # kullanıcının kendi sözlüğü öncelikli (şema değerini ezer).
     _schema_gloss = (schema or {}).get("glossary") or {}
-    gloss = {**_schema_gloss, **(glossary or {})} if _schema_gloss else (glossary or {})
     _cache = block_cache or {}
     for fp in srt_files:
+        selected_glossary = (
+            (file_glossaries or {}).get(fp, glossary or {})
+            if file_glossaries is not None else (glossary or {}))
+        gloss = ({**_schema_gloss, **selected_glossary}
+                 if _schema_gloss else selected_glossary)
         # Çağıran zaten parse ettiyse cache'ten al (sync/batch _block_cache) — disk okumaz
         blocks = _cache.get(fp)
         if blocks is None:
@@ -3566,27 +3567,9 @@ def _strip_md(raw):
 
 def _extract_json_array(raw):
     """Extracts a JSON array from raw text, even with preamble/postamble."""
-    raw = _strip_md(raw)
-    if not raw.strip():
-        return ""
-
-    # Direct parse — most common case
-    try:
-        json.loads(raw)
-        return raw
-    except Exception:
-        pass
-    # Model added preamble like "Here is the JSON:" — find first [...]
-    start = raw.find('[')
-    end   = raw.rfind(']')
-    if start != -1 and end > start:
-        candidate = raw[start:end + 1]
-        try:
-            json.loads(candidate)
-            return candidate
-        except Exception:
-            pass
-    return ""  # Give up, return empty string to indicate failure
+    from response_integrity import translation_items_from_raw
+    items, _mode = translation_items_from_raw(raw)
+    return json.dumps(items, ensure_ascii=False) if isinstance(items, list) else ""
 
 def _salvage_json_objects(raw) -> list:
     """Kesilmiş/bozuk bir JSON dizisinden TAM objeleri kurtarır (yarım kalan son
@@ -3617,45 +3600,13 @@ def _salvage_json_objects(raw) -> list:
 
 
 def parse_response(raw, chunk_info):
-    raw_extracted = _extract_json_array(raw)
-    try:
-        items = json.loads(raw_extracted)
-        if isinstance(items, list):
-            trans_map = {}
-            for item in items:
-                if isinstance(item, dict) and "i" in item and "t" in item:
-                    trans_map[str(item["i"])] = item["t"]
-            # Every expected index present? If not, mark missing as [HATA]
-            for (idx, *_rest) in chunk_info:
-                trans_map.setdefault(str(idx), "[HATA]")
-            return trans_map
-        # Dict shape: {"tr":[...]} — model returned the full envelope
-        if isinstance(items, dict) and isinstance(items.get("tr"), list):
-            trans_map = {}
-            for item in items["tr"]:
-                if isinstance(item, dict) and "i" in item and "t" in item:
-                    trans_map[str(item["i"])] = item["t"]
-            for (idx, *_rest) in chunk_info:
-                trans_map.setdefault(str(idx), "[HATA]")
-            return trans_map
-    except Exception:
-        pass
-    # Tam parse başarısız (çoğunlukla kesilmiş yanıt) — tamamlanan objeleri kurtar,
-    # böylece çevrilen satırlar korunur; yalnızca kesilen kuyruk [HATA] kalır
-    # (retry_hata / _fill_hata_with_source devralır).
-    salvaged = _salvage_json_objects(raw)
-    if salvaged:
-        trans_map = {}
-        for item in salvaged:
-            if isinstance(item, dict) and "i" in item and "t" in item:
-                trans_map[str(item["i"])] = item["t"]
-        if trans_map:
-            for (idx, *_rest) in chunk_info:
-                trans_map.setdefault(str(idx), "[HATA]")
-            return trans_map
-    # Hiçbir şey kurtarılamadı — hepsini [HATA] (ham metni bloklara bölme, çok-satırlı
-    # altyazıyı bozardı).
-    return {str(info[0]): "[HATA]" for info in chunk_info}
+    from response_integrity import parse_translation_payload
+    expected_ids = {str(info[0]) for info in chunk_info}
+    parsed = parse_translation_payload(raw, expected_ids)
+    trans_map = dict(parsed.translations)
+    for cue_id in expected_ids:
+        trans_map.setdefault(cue_id, "[HATA]")
+    return trans_map
 
 
 def _missing_block_items(all_items: list, current_raw: str) -> list:
@@ -5387,6 +5338,7 @@ class App(ctk.CTk):
                 parts = re.findall(r'batch_[a-f0-9]+', raw)
                 batch_ids.extend(parts if parts else [raw])
             batch_ids = list(dict.fromkeys(batch_ids))  # deduplicate, preserve order
+            batch_ids = [bid for bid in batch_ids if is_safe_batch_id(bid)]
             # Başka bir CANLI süreç bu batch'leri işliyorsa onları GÖSTERME — pencerenin
             # 'Sil' düğmesi uçuştaki (parası ödenmiş) bir batch'in kurtarma verisini
             # silerdi. Bkz. _live_owned_batch_ids.
@@ -5653,7 +5605,7 @@ class App(ctk.CTk):
             self._save_settings()
         except Exception:
             pass
-        self._drain_workers_for_close(time.monotonic() + 2.0)
+        self._drain_workers_for_close()
 
     def _start_worker(self, target, args=(), daemon=True):
         if not hasattr(self, "_worker_lock"):
@@ -5679,13 +5631,13 @@ class App(ctk.CTk):
             raise
         return thread
 
-    def _drain_workers_for_close(self, deadline):
+    def _drain_workers_for_close(self, deadline=None):
         with self._worker_lock:
             alive = [
                 thread for thread in self._worker_threads
                 if thread.is_alive() and thread is not threading.current_thread()
             ]
-        if alive and time.monotonic() < deadline:
+        if alive:
             try:
                 self.after(50, self._drain_workers_for_close, deadline)
                 return
@@ -6621,7 +6573,7 @@ class App(ctk.CTk):
                          fg_color=CARD, border_color=BORDER, text_color=FG).pack(fill="x", padx=4, pady=(0,1))
 
             # API Key
-            lbl_custom_key = ctk.CTkLabel(c_frame, text="Özel API Anahtarı (boş = genel yardımcı anahtar)", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2)
+            lbl_custom_key = ctk.CTkLabel(c_frame, text="Özel API Anahtarı (bu sağlayıcıya özel)", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2)
             lbl_custom_key.pack(anchor="w", padx=4, pady=(2,1))
             kvar = ctk.StringVar()
             self.helper_custom_key_vars[role] = kvar
@@ -7253,6 +7205,17 @@ class App(ctk.CTk):
             return self._active_snapshot[key]
         return default
 
+    def _run_setting(self, key: str, var_name: str, default=None):
+        snapshot = getattr(self, "_active_snapshot", None)
+        if (threading.current_thread() is not threading.main_thread()
+                and isinstance(snapshot, dict) and key in snapshot):
+            return snapshot[key]
+        var = getattr(self, var_name, None)
+        try:
+            return var.get()
+        except Exception:
+            return default
+
     def _take_run_snapshot(self) -> dict:
         """Ana thread'de çalışarak çeviri oturumu için gereken tüm UI ayarlarının
         saf Python nesnesi olarak kopyasını oluşturur. Worker thread'ler Tk variable .get()
@@ -7815,7 +7778,10 @@ class App(ctk.CTk):
                 helper_api_key=mm_k, helper_url=mm_u, helper_model=mm_m,
                 tgt_lang=tgt, cps_limit=21.0,
                 log_fn=self._log,
-                token_callback=self._token_callback_for_model(mm_m),
+                token_callback=(
+                    self._token_callback_for_model(mm_m)
+                    if hasattr(self, "_token_callback_for_model")
+                    else self._update_tokens),
                 src_map=src_map)
             return new_blocks
         except Exception as e:
@@ -7934,8 +7900,15 @@ class App(ctk.CTk):
                 and _clean_src(tr_text).strip().lower() != src_clean_map[str(idx)].strip().lower()
             ]
             if pairs:
-                profanity = self.profanity_var.get() if hasattr(self, "profanity_var") else ""
-                self._tm.store_batch(pairs, model, tgt_lang=tgt, profanity=profanity, schema_name=schema_name)
+                if (threading.current_thread() is not threading.main_thread()
+                        and getattr(self, "_active_snapshot", None)):
+                    profanity = self._active_snapshot.get("profanity", "")
+                else:
+                    profanity = self.profanity_var.get() if hasattr(self, "profanity_var") else ""
+                if not self._tm.store_batch(
+                        pairs, model, tgt_lang=tgt, profanity=profanity,
+                        schema_name=schema_name):
+                    self._log("TM toplu kayıt başarısız; çeviri çıktısı korundu", "warn")
             self._update_tm_stat()
         except Exception as _tm_e:
             self._log(f"TM kayıt hatası: {_tm_e}", "warn")
@@ -7961,24 +7934,32 @@ class App(ctk.CTk):
             raw = raw_map.get(cid)
             if raw is None:
                 continue  # no response at all — handled by retry_hata
-            # Only attempt repair if parse truly failed (no valid array found)
-            try:
-                items = json.loads(_extract_json_array(raw))
-                if isinstance(items, list) and items:
-                    continue  # already valid
-            except Exception:
-                pass
+            from response_integrity import parse_translation_payload
+            expected_ids = _expected_ids_from_req(req)
+            parsed_before = parse_translation_payload(raw, expected_ids)
+            missing_ids = set(parsed_before.missing_ids)
+            if not missing_ids:
+                continue
+            if parsed_before.parse_mode in {"array", "envelope"}:
+                continue
+            if len(raw) > 12000:
+                self._log(
+                    f"  ↺ {cid}: bozuk yanıt JSON onarımı için çok uzun; "
+                    "tam yeniden çeviriye bırakıldı", "warn")
+                continue
             # Build repair prompt
             repair_payload = {
-                "task": "The previous response was supposed to be a valid JSON array but failed to parse. "
-                        "Return ONLY the corrected JSON array with the same translations. "
+                "task": "Recover only the missing items from this malformed JSON response. "
+                        "Return ONLY a JSON array for the requested IDs. "
                         "No commentary, no markdown fences, no extra text.",
                 "rules": [
                     "Output must be a JSON array: [{\"i\": N, \"t\": \"...\"}]",
                     "Preserve all translation content — do not change meanings",
+                    "Do not return any ID outside missing_ids",
                     "Do not wrap in ```json``` or any other delimiter",
                 ],
-                "broken_response": raw[:2000],  # cap to avoid token waste
+                "missing_ids": sorted(missing_ids),
+                "broken_response": raw,
             }
             try:
                 resp = _safe_chat_create(
@@ -7996,20 +7977,33 @@ class App(ctk.CTk):
                 if resp.usage:
                     tok, cached = _get_usage_details(resp.usage)
                 self._update_tokens(tok, cached=cached)
-                # Validate the repaired response
-                items2 = json.loads(_extract_json_array(fixed))
-                if isinstance(items2, list) and items2:
-                    expected_ids = _expected_ids_from_req(req)
-                    if _validate_repaired_chunk(items2, expected_ids):
-                        raw_map[cid] = fixed
-                        repaired += 1
-                        self._log(f"  🔧 {cid}: JSON onarıldı ({len(items2)} item)", "ok")
-                    else:
-                        # id kümesi beklenenle uyuşmuyor (kayma riski) — onarımı
-                        # KABUL ETME, raw_map dokunulmadan kalsın ki chunk normal
-                        # tam-yeniden-çeviri yoluna (_retry_hata) düşsün.
-                        self._log(f"  ↺ {cid}: JSON onarımı id doğrulamasından geçemedi, "
-                                  f"tam yeniden çeviriye bırakıldı", "warn")
+                parsed_repair = parse_translation_payload(fixed, missing_ids)
+                if (parsed_repair.fatal_reason
+                        or parsed_repair.duplicate_ids
+                        or parsed_repair.unexpected_ids
+                        or parsed_repair.invalid_text_ids
+                        or not parsed_repair.translations):
+                    self._log(f"  ↺ {cid}: JSON onarımı id doğrulamasından geçemedi, "
+                              f"tam yeniden çeviriye bırakıldı", "warn")
+                    continue
+                merged = dict(parsed_before.translations)
+                merged.update(parsed_repair.translations)
+                if not parsed_before.translations and not parsed_repair.missing_ids:
+                    raw_map[cid] = fixed
+                else:
+                    raw_map[cid] = json.dumps(
+                        [{"i": cue_id, "t": merged[cue_id]}
+                         for cue_id in sorted(
+                             expected_ids,
+                             key=lambda value: (0, int(value))
+                             if str(value).isdigit() else (1, str(value)))
+                         if cue_id in merged],
+                        ensure_ascii=False)
+                repaired += 1
+                self._log(
+                    f"  🔧 {cid}: JSON onarımı birleştirildi "
+                    f"({len(parsed_repair.translations)} yeni, "
+                    f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
             except Exception:
                 pass  # repair failed — retry_hata will handle it
         if repaired:
@@ -8593,6 +8587,8 @@ class App(ctk.CTk):
         url = cfg.base_url
         if url:
             url = url.rstrip("/")
+            if cfg.provider == "anthropic" and not url.lower().endswith("/messages"):
+                url += "/messages"
         return url
 
     def _helper_api_model(self, role: str):
@@ -8607,6 +8603,15 @@ class App(ctk.CTk):
             keys = self._active_snapshot.get("helper_keys") or {}
             if role in keys:
                 return keys[role]
+        custom_active = (
+            role in getattr(self, "helper_model_vars", {})
+            and self._is_custom_helper_label(self.helper_model_vars[role].get()))
+        if custom_active:
+            provider = self._get_current_helper_provider(role)
+            custom_key = (
+                self.helper_custom_key_vars[role].get().strip()
+                if role in self.helper_custom_key_vars else "")
+            return custom_key or self._helper_keys_cache.get(provider, "").strip()
         k = ""
         if role in self.helper_role_key_vars:
             k = self.helper_role_key_vars[role].get().strip()
@@ -8635,9 +8640,7 @@ class App(ctk.CTk):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             return self._active_snapshot.get("main_api_key", "")
         if self._main_custom_active():
-            k = self.main_custom_key_entry.get().strip()
-            if k:
-                return k
+            return self.main_custom_key_entry.get().strip()
         return self.api_key_entry.get().strip()
 
     def _main_api_base_url(self):
@@ -8645,17 +8648,14 @@ class App(ctk.CTk):
             return self._active_snapshot.get("main_api_base_url", None)
         if self._main_custom_active():
             u = self.main_custom_url_var.get().strip()
-            if u:
-                return _normalize_api_base_url(u)
+            return _normalize_api_base_url(u) if u else None
         return _normalize_api_base_url(self.api_url_var.get())
 
     def _main_model_name(self) -> str:
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             return self._active_snapshot.get("main_model_name", "")
         if self._main_custom_active():
-            m = self.main_custom_model_var.get().strip()
-            if m:
-                return m
+            return self.main_custom_model_var.get().strip()
         return self.model_var.get()
 
     def _sync_main_custom_visibility(self):
@@ -8762,12 +8762,8 @@ class App(ctk.CTk):
                 data[f"helper_custom_url_{role}"] = self.helper_custom_url_vars[role].get()
 
         try:
-            # Atomik yazım: önce .tmp'ye yaz, sonra rename
             _sp  = Path(self._settings_path())
-            _tmp = _sp.with_suffix(".json.tmp")
-            with open(_tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            _tmp.replace(_sp)
+            atomic_write_json(_sp, data)
         except Exception:
             pass
 
@@ -9442,6 +9438,13 @@ class App(ctk.CTk):
         if len(key) < 10:
             messagebox.showerror("Hata", "API anahtarını girin.")
             return None
+        if self._main_custom_active():
+            if not self._main_api_base_url():
+                messagebox.showerror("Hata", "Özel sağlayıcı Base URL alanını girin.")
+                return None
+            if not self._main_model_name():
+                messagebox.showerror("Hata", "Özel sağlayıcı model adını girin.")
+                return None
         hybrid = self.mode_var.get() == "batch" and self.hybrid_var.get()
         if hybrid or any((self.critic_var.get(), self.polish_var.get(),
                           self.native_var.get(), self.qc_var.get())):
@@ -9708,6 +9711,7 @@ class App(ctk.CTk):
             parts = re.findall(r"batch_[A-Za-z0-9]+", line) or [line]
             batch_ids.extend(parts)
         batch_ids = list(dict.fromkeys(batch_ids))
+        batch_ids = [bid for bid in batch_ids if is_safe_batch_id(bid)]
         if not batch_ids:
             messagebox.showerror("Hata", "batch_id.txt boş veya bozuk.")
             return
@@ -9861,9 +9865,9 @@ class App(ctk.CTk):
                         _raw_map_pre = _raw_src_map_from_cues(cues)
                         _repair_client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
                         blocks, _n_repaired = _repair_untranslated_sync(
-                            blocks, _raw_map_pre, _repair_client,
-                            src_lang=src, tgt_lang=tgt,
-                            model="gpt-5.4-mini", # Kullanıcı isteği üzerine hep gpt-5.4-mini
+                        blocks, _raw_map_pre, _repair_client,
+                        src_lang=src, tgt_lang=tgt,
+                            model=self._main_model_name(),
                             schema=schema, profanity=profanity,
                             log_fn=self._log, token_cb=self._update_tokens,
                             source_cues=cues)
@@ -9902,7 +9906,7 @@ class App(ctk.CTk):
 
     # ── Aktif batch muhasebesi (durdururken uzak iptal için) ──────────────────
     def _register_batch(self, batch_id: str, api_key: str, base_url: str = ""):
-        if not batch_id:
+        if not is_safe_batch_id(batch_id):
             return
         with self._batch_lock:
             self._active_batches[batch_id] = (api_key, base_url or "")
@@ -9940,18 +9944,19 @@ class App(ctk.CTk):
         Tamamlanan işten sonra çağrılır — yoksa '↺ Batch'i Devam Ettir' zaten biten
         işi yeniden indirip (hybrid'de) işlenmiş çıktının üzerine yazardı."""
         base = state_dir(__file__)
-        done = {str(b).strip() for b in (batch_ids or []) if str(b).strip()}
+        done = {str(b).strip() for b in (batch_ids or [])
+                if is_safe_batch_id(b)}
         if not done:
+            return
+        try:
+            mutate_batch_ids(_batch_id_path(), remove=done)
+        except Exception:
             return
         for bid in done:
             try:
                 (base / f"batch_fmap_{bid}.json").unlink(missing_ok=True)
             except Exception:
                 pass
-        try:
-            mutate_batch_ids(_batch_id_path(), remove=done)
-        except Exception:
-            pass
 
     def _cancel_active_batches(self):
         """Açık OpenAI batch'lerini iptal eder + kurtarma dosyalarını temizler.
@@ -10041,7 +10046,8 @@ class App(ctk.CTk):
             files = get_subtitle_files(root, recursive=True)
         else:
             files = []
-        files = self._dedupe_paths(files)
+        dedupe = getattr(self, "_dedupe_paths", None)
+        files = dedupe(files) if callable(dedupe) else list(dict.fromkeys(files))
         # Dizi hafızası açıkken bölüm sırasına diz (E01 kararları E02'ye aksın)
         if getattr(self, "series_memory_var", None) and self.series_memory_var.get():
             files = series_memory.sort_files_by_episode(files)
@@ -11445,14 +11451,18 @@ class App(ctk.CTk):
         mm_key = self._helper_api_key("analysis")
         mm_url = self._helper_api_base_url("analysis")
         mm_mdl = self._helper_api_model("analysis")
-        src    = self._effective_file_source_language(filepath, self.src_var.get())
-        tgt    = self.tgt_var.get()
+        src_default = App._run_setting(self, "src_lang", "src_var", "English")
+        effective = getattr(self, "_effective_file_source_language", None)
+        src = effective(filepath, src_default) if callable(effective) else src_default
+        tgt = App._run_setting(self, "tgt_lang", "tgt_var", "Turkish")
 
         if not mm_key:
             self._log("Auto-Glossary: OpenAI API anahtarı gerekli", "warn")
             return
 
-        glossary_path = self.glossary_var.get().strip()
+        glossary_path = str(App._run_setting(
+            self,
+            "global_glossary_path", "glossary_var", "") or "").strip()
         existing = ht.load_glossary(glossary_path) if glossary_path else {}
 
         self._log(f"Auto-Glossary: {Path(filepath).name} analiz ediliyor...", "info")
@@ -12427,10 +12437,9 @@ class App(ctk.CTk):
             return
 
         _profanity = self.profanity_var.get()
-        # Load global glossary once (schema-based glossary lookup uses first file as proxy)
-        _global_glossary = ht.load_glossary(self._get_file_glossary(valid_files[0])) if valid_files else {}
-        if _global_glossary:
-            self._log(f"Glossary: {len(_global_glossary)} terim yüklendi", "info")
+        _file_glossaries = {
+            fp: ht.load_glossary(self._get_file_glossary(fp)) for fp in valid_files
+        }
         _auto_files = [fp for fp in valid_files
                        if self._get_file_schema(fp)["name"] == "Otomatik"]
         if _auto_files:
@@ -12463,7 +12472,7 @@ class App(ctk.CTk):
                                         chunk_size=self._chunk_size,
                                         schema=self._schema_by_name(sname),
                                         profanity=_profanity,
-                                        glossary=_global_glossary,
+                                        file_glossaries=_file_glossaries,
                                         project_memory=self._pm,
                                         file_hints=_file_hints,
                                         block_cache=self._block_cache,
@@ -12663,7 +12672,10 @@ class App(ctk.CTk):
             _all_written = self._write_results(raw_map, file_map, output_dir,
                                                openai_key=api_key, src=src,
                                                source_languages=_source_languages)
-            is_full_success = _all_written and failed[0] == 0
+            if _all_written:
+                is_full_success = failed[0] == 0
+            else:
+                is_full_success = False
             if should_clear_sync_ckpt(self._stop_flag, is_full_success):
                 self._clear_sync_ckpt(used_ckpt_keys)
 
@@ -12793,6 +12805,7 @@ class App(ctk.CTk):
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
+                    _analysis_ok = result is not None
                     if result is None:
                         if self._stop_flag:
                             break
@@ -12801,15 +12814,16 @@ class App(ctk.CTk):
                             self._update_file_progress(filepath, "Analiz atlandı", 10, "warn")
                             result = ht.empty_analysis_result(_lang_iso639_1(file_src))
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
-                    ht.save_context_cache(context, filepath, char_examples, pronoun_map,
-                                          character_styles=character_styles,
-                                          scene_emotions=scene_emotions,
-                                          idiom_map=idiom_map,
-                                          cultural_refs=cultural_refs,
-                                          target_language=tgt,
-                                          analysis_depth=self.analysis_depth_var.get())
+                    if _analysis_ok:
+                        ht.save_context_cache(context, filepath, char_examples, pronoun_map,
+                                              character_styles=character_styles,
+                                              scene_emotions=scene_emotions,
+                                              idiom_map=idiom_map,
+                                              cultural_refs=cultural_refs,
+                                              target_language=tgt,
+                                              analysis_depth=self.analysis_depth_var.get())
                     # Proje hafızasına kaydet
-                    if self._pm is not None:
+                    if _analysis_ok and self._pm is not None:
                         try:
                             self._pm.merge_glossary_from_analysis(
                                 ht.sanitize_glossary_for_turkish(
@@ -12839,7 +12853,6 @@ class App(ctk.CTk):
             # ── OpenAI sync ───────────────────────────────────────────────────
             # Dizi hafızasını bu bölümün analiziyle güncelle, sonra önceki
             # bölümlerin birikmiş kararlarını prompt'a ekle (ilk karar kanon)
-            self._update_series_memory_from_analysis(filepath, context, pronoun_map)
             system_prompt = ht.build_system_prompt(
                 context, file_src, tgt,
                 schema=schema_dict,
@@ -13137,9 +13150,9 @@ class App(ctk.CTk):
                 _raw_map_pre = _raw_src_map_from_cues(cues)
                 sorted_blocks, _n_repaired = _repair_untranslated_sync(
                     sorted_blocks, _raw_map_pre, client,
-                    src_lang=src, tgt_lang=tgt,
+                    src_lang=file_src, tgt_lang=tgt,
                     model=model,
-                    schema=self._get_schema(), profanity=self.profanity_var.get(),
+                    schema=schema_dict, profanity=self.profanity_var.get(),
                     log_fn=self._log, token_cb=self._update_tokens,
                     source_cues=cues)
             except Exception:
@@ -13201,6 +13214,8 @@ class App(ctk.CTk):
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
                                  self._main_model_name(), tgt, schema_name=schema_dict.get("name", ""))
+            if _hata_n == 0:
+                self._update_series_memory_from_analysis(filepath, context, pronoun_map)
             if self.auto_glossary_var.get():
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
             ht.clear_context_cache(filepath)
@@ -13212,7 +13227,8 @@ class App(ctk.CTk):
         summary = summarize_file_outcomes(
             completed_files, failed_files, skipped_files, total_files=n_files, stop_flag=self._stop_flag
         )
-        if should_clear_sync_ckpt(self._stop_flag, summary["is_full_success"]):
+        if should_clear_sync_ckpt(
+                self._stop_flag, summary["is_recovery_complete"]):
             self._clear_sync_ckpt(used_ckpt_keys)
         self._save_quality_report(report_rows, output_dir)
         self._set_running(False)
@@ -13265,9 +13281,9 @@ class App(ctk.CTk):
             return
 
         _profanity = self.profanity_var.get()
-        _global_glossary = ht.load_glossary(self._get_file_glossary(valid_files[0])) if valid_files else {}
-        if _global_glossary:
-            self._log(f"Glossary: {len(_global_glossary)} terim yüklendi", "info")
+        _file_glossaries = {
+            fp: ht.load_glossary(self._get_file_glossary(fp)) for fp in valid_files
+        }
         _auto_files = [fp for fp in valid_files
                        if self._get_file_schema(fp)["name"] == "Otomatik"]
         if _auto_files:
@@ -13300,7 +13316,7 @@ class App(ctk.CTk):
                                         chunk_size=self._chunk_size,
                                         schema=self._schema_by_name(sname),
                                         profanity=_profanity,
-                                        glossary=_global_glossary,
+                                        file_glossaries=_file_glossaries,
                                         project_memory=self._pm,
                                         file_hints=_file_hints,
                                         block_cache=self._block_cache,
@@ -13511,15 +13527,17 @@ class App(ctk.CTk):
                         # dalı zaten output_dir'i böyle saklıyordu; hybrid'de eksikti).
                         _saved_src = fmap_data.get("source_path", "")
                         _saved_source_language = fmap_data.get("source_language", "")
+                        _saved_schema_name = fmap_data.get("schema_name", "")
                         _saved_out_dir = fmap_data.get("output_dir", "")
                         if _saved_out_dir:
                             last_output_dir = _saved_out_dir
                         _terminal = self._wait_batch_hybrid(client, bid, saved_fmap, out_path,
                                                 openai_key=api_key,
                                                  is_last=(i == len(batch_ids)-1),
-                                                 report_rows=_resume_report_rows,
-                                                 source_path=_saved_src,
-                                                 source_language=_saved_source_language)
+                                                  report_rows=_resume_report_rows,
+                                                  source_path=_saved_src,
+                                                  source_language=_saved_source_language,
+                                                  schema_name=_saved_schema_name)
                         if _terminal:
                             hybrid_completed_bids.append(bid)
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
@@ -13604,7 +13622,7 @@ class App(ctk.CTk):
 
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
                            openai_key, is_last=True, report_rows=None, source_path="",
-                           source_language=""):
+                           source_language="", schema_name=""):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -13633,26 +13651,51 @@ class App(ctk.CTk):
 
                 if b.status == "completed":
                     self._unregister_batch(batch_id)
-                    terminal = True
+                    terminal = False
                     self._set_eta("")
                     self._log("Tamamlandı, indiriliyor...", "ok")
+                    _saved_ok = False
+                    _out_obj = Path(output_path)
+                    _stage_path = _out_obj.with_name(
+                        f".{_out_obj.name}.{batch_id}.stage.srt")
                     if b.output_file_id:
                         try:
                             ht.save_results(openai_key, b.output_file_id, file_map,
-                                            output_path, self._log,
+                                            str(_stage_path), self._log,
                                             token_callback=self._update_batch_tokens,
                                             base_url=str(getattr(client, "base_url", "")))
+                            _saved_ok = True
                         except Exception as e:
                             self._log(f"Sonuçlar kaydedilemedi: {e}", "err")
                     else:
                         self._log("Batch çıktısı boş (hiçbir istek başarılı olamadı).", "err")
                     if b.error_file_id:
                         self._show_errors(client, b.error_file_id)
+                    if not _saved_ok:
+                        self._log(
+                            "Batch terminal durumda fakat yerel sonuç güvenle yazılamadı; "
+                            "kurtarma kaydı korunuyor.", "err")
+                        break
                     # Post-processing: Consistency Sweep + Critic Pass + Polish Pass + SDH
                     if True:  # consistency sweep always runs; others are gated
                         try:
                             tgt   = self.tgt_var.get()
-                            pp    = list(parse_srt(output_path))
+                            pp    = list(parse_srt(str(_stage_path)))
+                            if not pp:
+                                raise ValueError("İndirilen batch çıktısı boş")
+                            _missing_count = sum(
+                                1 for _idx, _ts, text in pp
+                                if str(text or "").startswith("[HATA")
+                                or "[ÇEVİRİ EKSİK]" in str(text or ""))
+                            if _missing_count:
+                                _partial_path = _out_obj.with_name(
+                                    f"{_out_obj.stem}.partial.srt")
+                                _stage_path.replace(_partial_path)
+                                self._log(
+                                    f"Resume: {_missing_count} eksik çeviri kaldı; "
+                                    f"nihai çıktı korunup {_partial_path.name} yazıldı.",
+                                    "err")
+                                break
                             _raw_backup_blocks = list(pp)   # kalite geçişleri öncesi ham çeviri (yedek)
                             self._save_raw_backup(
                                 output_path, _raw_backup_blocks, {}, tgt)
@@ -13850,7 +13893,9 @@ class App(ctk.CTk):
                                                              log_fn=self._log, src_clean_map=_src_map)
                                 except Exception:
                                     pass
-                                self._store_tm_pairs(pp, _src_map, self._main_model_name(), tgt, schema_name=_schema_name)
+                                self._store_tm_pairs(
+                                    pp, _src_map, self._main_model_name(), tgt,
+                                    schema_name=schema_name or self._get_file_schema(str(_src_path))["name"])
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -13870,8 +13915,11 @@ class App(ctk.CTk):
                                                     "pass_history": _pass_history,
                                                     "pass_coverage": _pc,
                                                     "tm_hits": self._tm.hit_count_session()})
+                            terminal = True
                         except Exception as ppe:
                             self._log_exc(f"Post-processing [{Path(output_path).name}]", ppe)
+                        finally:
+                            _stage_path.unlink(missing_ok=True)
                     break
                 elif b.status in ("failed","expired","cancelled"):
                     self._unregister_batch(batch_id)
@@ -13937,7 +13985,8 @@ class App(ctk.CTk):
                     self._set_eta("")
                     if b.output_file_id:
                         self._log("Tamamlandı, indiriliyor...", "ok")
-                        batch_raw_map = self._save_batch_results(client, b.output_file_id)
+                        batch_raw_map = self._save_batch_results(
+                            client, b.output_file_id, expected_ids=set(file_map))
                     else:
                         self._log("Batch çıktısı boş (hiçbir istek başarılı olamadı).", "err")
                     if b.error_file_id:
@@ -13972,9 +14021,11 @@ class App(ctk.CTk):
 
         return batch_raw_map, terminal
 
-    def _save_batch_results(self, client, output_file_id):
+    def _save_batch_results(self, client, output_file_id, expected_ids=None):
         content   = client.files.content(output_file_id).text
         raw_map   = {}
+        duplicate_ids = set()
+        expected_ids = set(expected_ids or [])
         token_sum = 0
         for line in content.strip().splitlines():
             line = line.strip()
@@ -13985,6 +14036,14 @@ class App(ctk.CTk):
             try:
                 res = json.loads(line)
                 cid = res["custom_id"]
+                if expected_ids and cid not in expected_ids:
+                    self._log(f"{cid}: beklenmeyen custom_id; atlandı", "err")
+                    continue
+                if cid in raw_map or cid in duplicate_ids:
+                    duplicate_ids.add(cid)
+                    raw_map.pop(cid, None)
+                    self._log(f"{cid}: duplicate custom_id; chunk reddedildi", "err")
+                    continue
                 if res.get("error"):
                     continue
                 body    = res["response"]["body"]
@@ -14162,7 +14221,7 @@ class App(ctk.CTk):
                         sorted_blocks, _raw_map, _repair_client,
                         src_lang=_file_src_lang, tgt_lang=_tgt_lang,
                         model=self._main_model_name(),
-                        schema=self._get_schema(), profanity=self.profanity_var.get(),
+                        schema=schema_dict, profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=_src_cues)
             except Exception as e:
@@ -14563,6 +14622,7 @@ class App(ctk.CTk):
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
+                    _analysis_ok = result is not None
                     if result is None:
                         if self._stop_flag:
                             break
@@ -14570,15 +14630,16 @@ class App(ctk.CTk):
                             self._log(f"[{fname}] Analiz başarısız — boş bağlamla batch devam ediyor", "warn")
                             result = ht.empty_analysis_result(_lang_iso639_1(file_src))
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
-                    ht.save_context_cache(context, filepath, char_examples, pronoun_map,
-                                          character_styles=character_styles,
-                                          scene_emotions=scene_emotions,
-                                          idiom_map=idiom_map,
-                                          cultural_refs=cultural_refs,
-                                          target_language=tgt,
-                                          analysis_depth=self.analysis_depth_var.get())
+                    if _analysis_ok:
+                        ht.save_context_cache(context, filepath, char_examples, pronoun_map,
+                                              character_styles=character_styles,
+                                              scene_emotions=scene_emotions,
+                                              idiom_map=idiom_map,
+                                              cultural_refs=cultural_refs,
+                                              target_language=tgt,
+                                              analysis_depth=self.analysis_depth_var.get())
                     # Proje hafızasına kaydet
-                    if self._pm is not None:
+                    if _analysis_ok and self._pm is not None:
                         try:
                             self._pm.merge_glossary_from_analysis(
                                 ht.sanitize_glossary_for_turkish(
@@ -14624,16 +14685,18 @@ class App(ctk.CTk):
                             f"{fname} — zaten gönderildi ({existing_bid}), yeniden bağlanılıyor",
                             "info")
                         self._register_batch(existing_bid, openai_key, b_url)
+                        _existing_schema_name = (
+                            session["files"].get(str(filepath), {}).get("schema_name")
+                            or schema_dict.get("name", "")
+                        )
                         submitted.append((filepath, fname, existing_out, fmap,
-                                          existing_bid, cues, analysis_tuple, file_src))
+                                          existing_bid, cues, analysis_tuple, file_src,
+                                          _existing_schema_name))
                         self._set_progress(int((fi + 1) / n_files * 40))
                         continue
                     # batch_id yoksa yeniden gönder (aşağı düş)
 
                 # Batch isteği oluştur + gönder
-                # Dizi hafızasını bu bölümün analiziyle güncelle, sonra birikmiş
-                # kararları prompt'a ekle (ilk karar kanon)
-                self._update_series_memory_from_analysis(filepath, context, pronoun_map)
                 system_prompt = ht.build_system_prompt(
                     context, file_src, tgt,
                     schema=schema_dict,
@@ -14673,7 +14736,7 @@ class App(ctk.CTk):
                     ht.update_batch_session(session, filepath, "pending")
                     submitted.append((
                         filepath, fname, out_path, fmap, "__twowave__", cues,
-                        analysis_tuple, file_src))
+                        analysis_tuple, file_src, schema_dict.get("name", "")))
                     self._log(f"[{fname}] İki-dalgalı — Faz 2'de sıralı gönderilecek", "info")
                     self._set_progress(int((fi + 1) / n_files * 40))
                     continue
@@ -14682,14 +14745,16 @@ class App(ctk.CTk):
                 batch_id = ht.submit_batch(
                     openai_key, requests, self._log, fmap, out_path,
                     source_path=str(filepath), output_dir=output_dir, base_url=b_url,
-                    source_language=file_src)
+                    source_language=file_src, schema_name=schema_dict.get("name", ""))
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",
                                             batch_id=batch_id, out_path=out_path)
+                    session["files"][str(filepath)]["schema_name"] = schema_dict.get("name", "")
+                    ht._save_batch_session(session)
                     submitted.append((
                         filepath, fname, out_path, fmap, batch_id, cues,
-                        analysis_tuple, file_src))
+                        analysis_tuple, file_src, schema_dict.get("name", "")))
                     self._set_progress(int((fi + 1) / n_files * 40))
                 else:
                     self._log(f"[{fname}] Batch gönderilemedi, atlanıyor", "err")
@@ -14716,7 +14781,7 @@ class App(ctk.CTk):
         report_rows = []   # kalite raporu satırları (dosya başına)
 
         for si, (filepath, fname, out_path, fmap, batch_id, cues,
-                 analysis_tuple, file_src) in enumerate(submitted):
+                 analysis_tuple, file_src, file_schema_name) in enumerate(submitted):
             if self._stop_flag:
                 break
             self._log(f"\n── [{si+1}/{n_sub}] {fname} — Batch bekleniyor ──", "info")
@@ -14731,6 +14796,7 @@ class App(ctk.CTk):
                 self._set_status(f"{status}  {completed}/{total} — {fname}")
 
             try:
+                _stage_path = None
                 if batch_id == "__twowave__":
                     # B3: iki-dalgalı sıralı submit-wait-submit-wait, out_path'e birleşik yazar.
                     _tw_reqs = self._twowave_pending.get(str(filepath), [])
@@ -14766,10 +14832,14 @@ class App(ctk.CTk):
                     # save_results [HATA] satırlarını görünür eksik-çeviri işaretiyle bırakır;
                     # işaretlenen sayı raporun gerçeği yansıtması için yakalanır
                     # save_results'i src_cues=None vererek bu akışta işaretleme yapmadan bırakıyoruz.
-                    _save_ret = ht.save_results(openai_key, out_id, fmap, out_path, self._log,
+                    _out_obj = Path(out_path)
+                    _stage_path = _out_obj.with_name(
+                        f".{_out_obj.name}.{batch_id}.stage.srt")
+                    _save_ret = ht.save_results(openai_key, out_id, fmap, str(_stage_path), self._log,
                                                 token_callback=self._update_batch_tokens,
                                                 src_cues=None, base_url=b_url)
-                _final_blocks = list(parse_srt(out_path))
+                _parse_path = str(_stage_path) if _stage_path else out_path
+                _final_blocks = list(parse_srt(_parse_path))
                 if cues and not _final_blocks:
                     self._log(f"{fname}: kaynak dolu ama batch çıktısı boş; tamamlandı sayılmayacak.", "err")
                     ht.update_batch_session(session, filepath, "failed")
@@ -14782,8 +14852,9 @@ class App(ctk.CTk):
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
                         _final_blocks, _raw_map_pre, _repair_client,
                         src_lang=file_src, tgt_lang=tgt,
-                        model="gpt-5.4-mini",
-                        schema=self._get_schema(), profanity=self.profanity_var.get(),
+                        model=self._helper_api_model("analysis"),
+                        schema=self._schema_by_name(file_schema_name),
+                        profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=cues)
                 except Exception:
@@ -14796,10 +14867,12 @@ class App(ctk.CTk):
                 )
                 if _unresolved_missing:
                     try:
-                        _raw_map = _raw_src_map_from_cues(cues)
-                        _interim_blocks, _n_filled_save = _fill_hata_with_source(list(_final_blocks), _raw_map, log_fn=self._log)
-                        _interim_blocks = _restore_tags_blocks(_interim_blocks, _raw_map)
-                        write_srt(out_path, self._maybe_merge_cues(_interim_blocks), tgt)
+                        _out_obj = Path(out_path)
+                        _partial_path = _out_obj.with_name(
+                            f"{_out_obj.stem}.partial.srt")
+                        write_srt(
+                            str(_partial_path),
+                            self._maybe_merge_cues(_final_blocks), tgt)
                     except Exception:
                         pass
                     self._log(
@@ -15012,7 +15085,16 @@ class App(ctk.CTk):
                                                   log_fn=self._log, src_clean_map=_src_map)
                 except Exception:
                     pass
-                self._store_tm_pairs(_final_blocks, _src_map, self._main_model_name(), tgt, schema_name=_schema_name)
+                self._store_tm_pairs(
+                    _final_blocks, _src_map, self._main_model_name(), tgt,
+                    schema_name=file_schema_name)
+                if not any(
+                        str(text or "").startswith("[HATA")
+                        or "[ÇEVİRİ EKSİK]" in str(text or "")
+                        for _idx, _ts, text in _final_blocks):
+                    _context, _char_examples, _pronoun_map, *_rest = analysis_tuple
+                    self._update_series_memory_from_analysis(
+                        filepath, _context, _pronoun_map)
                 if self.auto_glossary_var.get():
                     self._run_auto_glossary(cues, _final_blocks, filepath)
 
@@ -15040,6 +15122,11 @@ class App(ctk.CTk):
                 ht.update_batch_session(session, filepath, "failed")
                 continue
             finally:
+                try:
+                    if _stage_path:
+                        Path(_stage_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
                 if self._wait_between_files(si, n_sub, fname) == "stopped":
                     self._stop_flag = True
 

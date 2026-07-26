@@ -12,6 +12,8 @@ import re
 import threading
 from pathlib import Path
 
+from app_state import atomic_write_json
+
 
 def is_self_translation(src, tgt) -> bool:
     """Kaynak==hedef mi (kelime kendine 'çevriliyor' → İngilizce sızıntısı)?
@@ -52,10 +54,7 @@ class ProjectMemory:
         with self._lock:
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                _tmp = self._path.with_name(self._path.name + ".tmp")
-                with open(_tmp, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, indent=2, ensure_ascii=False)
-                _tmp.replace(self._path)
+                atomic_write_json(self._path, self._data)
             except Exception:
                 pass
 

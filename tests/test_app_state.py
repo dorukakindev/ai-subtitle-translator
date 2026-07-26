@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app_state import atomic_write_json, mutate_batch_ids
+from app_state import atomic_write_json, is_safe_batch_id, mutate_batch_ids
 
 
 class AppStateTest(unittest.TestCase):
@@ -20,6 +20,11 @@ class AppStateTest(unittest.TestCase):
             atomic_write_json(path, {"ok": True})
             self.assertTrue(path.exists())
             self.assertEqual(list(Path(td).glob("*.tmp")), [])
+
+    def test_batch_id_rejects_path_components(self):
+        self.assertTrue(is_safe_batch_id("batch_abc-123"))
+        for value in ("../secret", r"..\secret", "x/y", "x:y", ""):
+            self.assertFalse(is_safe_batch_id(value))
 
 
 if __name__ == "__main__":

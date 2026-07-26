@@ -300,7 +300,7 @@ class TranslationMemory:
                     profanity: str = "", schema_name: str = ""):
         """Toplu kaydetme. pairs = [(source, target), ...]"""
         if not pairs:
-            return
+            return True
         fingerprint = self._settings_fingerprint(model, profanity, schema_name)
         rows = []
         for source, target in pairs:
@@ -320,7 +320,9 @@ class TranslationMemory:
                 profanity.strip().lower()[:20] if profanity else "",
                 schema_name.strip().lower()[:40] if schema_name else "",
             ))
-        if rows:
+        if not rows:
+            return True
+        try:
             with self._lock:
                 conn = self._get_conn()
                 conn.executemany(
@@ -329,6 +331,9 @@ class TranslationMemory:
                     rows,
                 )
                 conn.commit()
+            return True
+        except Exception:
+            return False
 
     # ── İstatistikler ─────────────────────────────────────────────────────────
 

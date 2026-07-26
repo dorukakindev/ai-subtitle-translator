@@ -16,6 +16,8 @@ import json
 import re
 from pathlib import Path
 
+from app_state import atomic_write_json
+
 # 'Show.Name.S01E05.720p' → show + season + ep
 _SXXEXX = re.compile(
     r'^(?P<show>.+?)[ ._\-]+[Ss](?P<season>\d{1,2})[ ._\-]?[Ee](?P<ep>\d{1,3})')
@@ -94,10 +96,7 @@ class SeriesMemory:
     def save(self):
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
-            tmp.replace(self._path)   # atomik
+            atomic_write_json(self._path, self._data)
         except Exception as e:
             import sys
             print(f"[series_memory] kaydetme hatası {self._path}: {e}", file=sys.stderr)

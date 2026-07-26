@@ -110,5 +110,23 @@ class SchemaGlossaryInjectionTest(unittest.TestCase):
         self.assertEqual(pl["glossary"].get("world"), "dünya")
 
 
+    def test_each_file_uses_its_own_glossary(self):
+        import subtitle_translator_gui as gui
+        fp_a = self._srt("Alpha term")
+        fp_b = self._srt("Beta term")
+        reqs, _ = gui.build_requests(
+            [fp_a, fp_b], "English", "Turkish", "gpt-5.4-mini",
+            file_glossaries={
+                fp_a: {"Alpha": "Alfa"},
+                fp_b: {"Beta": "BetaTR"},
+            })
+        payloads = {}
+        for req in reqs:
+            payload = json.loads(req["body"]["messages"][1]["content"])
+            payloads[payload["tr"][0]["t"]] = payload
+        self.assertEqual(payloads["Alpha term"]["glossary"], {"Alpha": "Alfa"})
+        self.assertEqual(payloads["Beta term"]["glossary"], {"Beta": "BetaTR"})
+
+
 if __name__ == "__main__":
     unittest.main()
