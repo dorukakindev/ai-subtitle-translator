@@ -58,6 +58,20 @@ class WqxTargetGuardTest(unittest.TestCase):
         cleaned = ht.sanitize_glossary_for_turkish({"Washington": "Washington"})
         self.assertEqual(cleaned, {"Washington": "Washington"})
 
+    def test_non_latin_person_name_transliteration_kept(self):
+        glossary = {
+            "Рэй Уайз": "Ray Wise",
+            "пиломатериалы": "kereste",
+        }
+        self.assertEqual(ht.sanitize_glossary_for_turkish(glossary), glossary)
+
+    def test_non_latin_generic_title_case_leak_still_rejected(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "Всемирный банк": "World Bank",
+            "президент": "başkan",
+        })
+        self.assertEqual(cleaned, {})
+
     def test_title_case_show_name_does_not_drop_glossary(self):
         glossary = {
             "the Cosby's": "The Cosby Show",

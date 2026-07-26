@@ -4436,7 +4436,15 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
     if len(words) == 1 and hits[0][:1].isupper():
         return None  # tek-kelime + büyük harf: gerçek özel isim/marka olabilir
     if glossary_key is not None:
-        key_tokens = {w.lower() for w in _GLOSSARY_WORD_RE.findall(str(glossary_key or ""))}
+        key_words = _GLOSSARY_WORD_RE.findall(str(glossary_key or ""))
+        if (
+            not re.search(r"[A-Za-z]", str(glossary_key))
+            and len(words) == len(key_words) <= 4
+            and all(w[:1].isupper() for w in words)
+            and all(w[:1].isupper() for w in key_words)
+        ):
+            return None
+        key_tokens = {w.lower() for w in key_words}
         non_hits = [w for w in words if not _GLOSSARY_WQX_CHAR_RE.search(w)]
         if (
             non_hits
