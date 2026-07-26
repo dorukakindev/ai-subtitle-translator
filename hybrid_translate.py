@@ -5753,6 +5753,19 @@ def _semantic_cluster_batches(clusters: list, max_items: int = 48) -> list:
     return batches
 
 
+def _is_permanent_semantic_api_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return True
+    text = str(exc or "").lower()
+    return any(marker in text for marker in (
+        "invalid_api_key",
+        "incorrect api key",
+        "authentication_error",
+        "permission_denied",
+    ))
+
+
 def semantic_reconciliation_pass(
     src_map: dict,
     tr_blocks: list,
@@ -5818,7 +5831,7 @@ def semantic_reconciliation_pass(
         "Omit clusters with no real error and omit unchanged cues."
     )
 
-    for batch in batches:
+    for batch_pos, batch in enumerate(batches):
         batch_cluster_by_id = {cluster["cluster"]: cluster for cluster in batch}
         payload = {"clusters": batch}
         try:
@@ -5843,9 +5856,27 @@ def semantic_reconciliation_pass(
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
         except Exception as exc:
-            stats["rejected"] += len(batch)
             stats["details"].append({"clusters": [c["cluster"] for c in batch],
                                      "status": "api_error", "reason": str(exc)})
+            if _is_permanent_semantic_api_error(exc):
+                remaining = sum(len(item) for item in batches[batch_pos:])
+                stats["rejected"] += remaining
+                skipped = remaining - len(batch)
+                if skipped:
+                    stats["details"].append({
+                        "cluster": "remaining",
+                        "status": "skipped",
+                        "reason": "permanent_api_error",
+                        "count": skipped,
+                    })
+                if log_fn:
+                    log_fn(
+                        f"Nihai anlam mutabakatı kalıcı API yetkilendirme hatası "
+                        f"nedeniyle durduruldu; {skipped} kalan küme denenmedi: {exc}",
+                        "warn",
+                    )
+                break
+            stats["rejected"] += len(batch)
             if log_fn:
                 log_fn(f"Nihai anlam mutabakatı yanıtı atlandı: {exc}", "warn")
             continue

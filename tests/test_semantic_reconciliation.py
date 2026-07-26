@@ -97,6 +97,43 @@ class SemanticClusterBuilderTest(unittest.TestCase):
 
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_permanent_auth_error_stops_remaining_batches(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Bir."),
+            ("2", "00:00:02 --> 00:00:03", "İki."),
+        ]
+        src_map = {"1": "One.", "2": "Two."}
+        clusters = [
+            {
+                "cluster": f"c{i}",
+                "items": [{"id": str(i), "source": src_map[str(i)],
+                           "translation": blocks[i - 1][2], "suspect": True,
+                           "reasons": ["POST_PASS_CHANGED"]}],
+                "suspect_ids": [str(i)],
+            }
+            for i in (1, 2)
+        ]
+        error = RuntimeError(
+            "Error code: 401 - {'code': 'invalid_api_key'}"
+        )
+
+        with patch("hybrid_translate.build_semantic_reconciliation_clusters",
+                   return_value=clusters), \
+             patch("hybrid_translate._semantic_cluster_batches",
+                   return_value=[[clusters[0]], [clusters[1]]]), \
+             patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create",
+                   side_effect=error) as chat:
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m"
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual(stats["rejected"], 2)
+        self.assertEqual(stats["details"][-1]["reason"], "permanent_api_error")
+        self.assertEqual(stats["details"][-1]["count"], 1)
+
     def test_plan_logs_real_coverage_and_request_count(self):
         blocks = [
             (str(i), f"00:00:{i:02d} --> 00:00:{i + 1:02d}", f"Çeviri {i}.")
@@ -285,6 +322,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
 
         self.assertEqual(fixed, 1)
         self.assertEqual(blocks[0][2], "Yeni.")
+        app._helper_api_key.assert_called_with("critic")
+        app._helper_api_base_url.assert_called_with("critic")
+        app._helper_api_model.assert_called_with("critic")
 
     def test_worker_uses_snapshot_toggle(self):
         app = gui.App.__new__(gui.App)

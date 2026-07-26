@@ -10202,16 +10202,16 @@ class App(ctk.CTk):
             result, stats = ht.semantic_reconciliation_pass(
                 src_map=src_clean_map,
                 tr_blocks=blocks,
-                api_key=self._helper_api_key("qc"),
-                base_url=self._helper_api_base_url("qc"),
-                model=self._helper_api_model("qc"),
+                api_key=self._helper_api_key("critic"),
+                base_url=self._helper_api_base_url("critic"),
+                model=self._helper_api_model("critic"),
                 src_lang=run_src_lang,
                 tgt_lang=run_tgt_lang,
                 cues=cues,
                 changed_ids=changed_ids,
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
-                    self._helper_api_model("qc")),
+                    self._helper_api_model("critic")),
             )
             blocks[:] = result
             if stats.get("clusters"):
@@ -10235,6 +10235,8 @@ class App(ctk.CTk):
                         )
                         if detail.get("ids"):
                             lines.append("  cue: " + ", ".join(detail["ids"]))
+                        if detail.get("count"):
+                            lines.append(f"  küme: {detail['count']}")
                         for sid, change in detail.get("changes", {}).items():
                             lines.append(f"  [{sid}] kaynak: {change.get('source', '')}")
                             lines.append(f"       önce : {change.get('before', '')}")
