@@ -189,6 +189,9 @@ class SeriesMemory:
                     lines.append(f"- {aa} → {bb}: '{reg}'" if bb else f"- {aa}: '{reg}'")
         return "\n".join(lines) + "\n"
 
+    def get_terms(self) -> dict:
+        return dict(self._data.get("terms") or {})
+
     def counts(self) -> dict:
         return {"terms": len(self._data.get("terms", {})),
                 "characters": len(self._data.get("characters", {})),

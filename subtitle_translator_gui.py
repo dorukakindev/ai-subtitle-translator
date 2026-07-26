@@ -4282,6 +4282,17 @@ def detect_mixed_term_renderings(blocks: list, src_map: dict) -> list:
     return findings
 
 
+def _mixed_term_suspect_ids(blocks: list, src_map: dict) -> set:
+    suspects = set()
+    for clusters in _mixed_term_clusters(blocks, src_map).values():
+        real_clusters = [cluster for cluster in clusters if len(cluster) >= 2]
+        if len(real_clusters) < 2:
+            continue
+        for cluster in real_clusters:
+            suspects.update(str(idx) for idx, _token in cluster if idx is not None)
+    return suspects
+
+
 def _mixed_term_autofix_plan(blocks: list, src_map: dict) -> dict:
     """Karışık-terim kümelerinden GÜVENLİ otomatik-düzeltme planı çıkarır.
 
@@ -10222,7 +10233,8 @@ class App(ctk.CTk):
             return True
 
     def _maybe_semantic_reconciliation(self, out_path, src_clean_map, blocks,
-                                       src_lang=None, cues=None, changed_ids=None) -> int:
+                                       src_lang=None, cues=None, changed_ids=None,
+                                       source_path=None) -> int:
         if not self._semantic_reconcile_enabled() or not src_clean_map or not blocks:
             return 0
         try:
@@ -10233,6 +10245,11 @@ class App(ctk.CTk):
             else:
                 run_src_lang = src_lang or self.src_var.get() or "English"
                 run_tgt_lang = self.tgt_var.get() or "Turkish"
+            locked_terms = self._get_locked_terms_dict(source_path, run_tgt_lang)
+            extra_suspect_reasons = {
+                sid: {"MIXED_TERM_INCONSISTENCY"}
+                for sid in _mixed_term_suspect_ids(blocks, src_clean_map)
+            }
             result, stats = ht.semantic_reconciliation_pass(
                 src_map=src_clean_map,
                 tr_blocks=blocks,
@@ -10243,6 +10260,8 @@ class App(ctk.CTk):
                 tgt_lang=run_tgt_lang,
                 cues=cues,
                 changed_ids=changed_ids,
+                extra_suspect_reasons=extra_suspect_reasons,
+                locked_terms=locked_terms,
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
@@ -10258,6 +10277,7 @@ class App(ctk.CTk):
                         f"(%{stats.get('coverage_pct', 0.0):.1f}) | "
                         f"Tahmini API isteği: {stats.get('api_requests', 0)} | "
                         f"Öneri: {stats['proposed']} | Düzeltme: {stats['fixed']} | "
+                        f"Satır sarma kurtarma: {stats.get('reflow_recovered', 0)} | "
                         f"Reddedilen küme: {stats['rejected']}",
                         "",
                     ]
@@ -10275,6 +10295,7 @@ class App(ctk.CTk):
                             lines.append(f"  [{sid}] kaynak: {change.get('source', '')}")
                             lines.append(f"       önce : {change.get('before', '')}")
                             lines.append(f"       sonra: {change.get('after', '')}")
+                    Path(rpath).parent.mkdir(parents=True, exist_ok=True)
                     with open(rpath, "w", encoding="utf-8") as fh:
                         fh.write("\n".join(lines))
                     self._log(f"Anlamsal mutabakat raporu: {Path(rpath).name}", "info")
@@ -10286,13 +10307,64 @@ class App(ctk.CTk):
             return 0
 
     def _run_final_semantic_checks(self, out_path, src_clean_map, blocks,
-                                   src_lang=None, cues=None, changed_ids=None) -> int:
+                                   src_lang=None, cues=None, changed_ids=None,
+                                   source_path=None) -> int:
         fixed = self._maybe_backtranslation_check(
             out_path, src_clean_map, blocks, src_lang=src_lang)
         fixed += self._maybe_semantic_reconciliation(
             out_path, src_clean_map, blocks, src_lang=src_lang,
-            cues=cues, changed_ids=changed_ids)
+            cues=cues, changed_ids=changed_ids, source_path=source_path)
         return fixed
+
+    def _get_locked_terms_dict(self, fp: str | None, tgt: str) -> dict:
+        try:
+            import hybrid_translate as ht
+            terms = {}
+            try:
+                terms.update(ht.load_glossary(self._get_file_glossary(fp)) or {})
+            except Exception:
+                pass
+            if getattr(self, "_pm", None) is not None:
+                try:
+                    terms.update(self._pm.get_glossary() or {})
+                except Exception:
+                    pass
+            if fp:
+                try:
+                    if (threading.current_thread() is not threading.main_thread()
+                            and getattr(self, "_active_snapshot", None)):
+                        enabled = bool(self._active_snapshot.get("series_memory"))
+                        input_dir = self._active_snapshot.get("input_dir") or str(Path(fp).parent)
+                    else:
+                        enabled = bool(
+                            getattr(self, "series_memory_var", None)
+                            and self.series_memory_var.get()
+                        )
+                        input_dir = self.input_var.get() or str(Path(fp).parent)
+                    key = series_memory.parse_series_key(fp) if enabled else None
+                    if key:
+                        slug, _season, _episode = key
+                        sm_obj = series_memory.SeriesMemory.load(input_dir, slug)
+                        terms.update(sm_obj.get_terms())
+                except Exception:
+                    pass
+            try:
+                terms = ht.sanitize_glossary_for_turkish(
+                    terms, target_language=tgt, log_fn=getattr(self, "_log", None)
+                ) or {}
+            except Exception:
+                pass
+            return {
+                str(source).strip(): str(target).strip()
+                for source, target in terms.items()
+                if source and target
+                and (
+                    str(source).strip().casefold() != str(target).strip().casefold()
+                    or not str(source).strip().islower()
+                )
+            }
+        except Exception:
+            return {}
 
     def _locked_terms_hint(self, fp: str, tgt: str) -> str:
         """Batch inceleme için kilitli terim + isim bloğu.
@@ -10302,27 +10374,9 @@ class App(ctk.CTk):
         Böylece review pass terim/isim tutarsızlığını yalnız sezgiyle değil,
         sabit referansla düzeltebilir. Boşsa '' döner."""
         try:
-            import hybrid_translate as ht
-            terms = {}
-            try:
-                terms.update(ht.load_glossary(self._get_file_glossary(fp)) or {})
-            except Exception:
-                pass
-            if self._pm is not None:
-                try:
-                    terms.update(self._pm.get_glossary() or {})
-                except Exception:
-                    pass
-            if terms:
-                try:
-                    log_fn = getattr(self, "_log", None)
-                    terms = ht.sanitize_glossary_for_turkish(terms, target_language=tgt, log_fn=log_fn) or {}
-                except Exception:
-                    pass
-            locked = [(s, t) for s, t in terms.items()
-                      if s and t and str(s).strip().lower() != str(t).strip().lower()]
+            locked = list(self._get_locked_terms_dict(fp, tgt).items())
             names = []
-            if self._pm is not None:
+            if getattr(self, "_pm", None) is not None:
                 try:
                     names = [n for n in (self._pm.get_characters() or {}).keys() if n]
                 except Exception:
@@ -13096,7 +13150,7 @@ class App(ctk.CTk):
             self._run_final_semantic_checks(
                 out_path, {str(c.index): _clean_src(c.text) for c in cues},
                 sorted_blocks, src_lang=file_src, cues=cues,
-                changed_ids=_pass_history.keys())
+                changed_ids=_pass_history.keys(), source_path=filepath)
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
@@ -13765,7 +13819,8 @@ class App(ctk.CTk):
                                 self._run_final_semantic_checks(
                                     output_path, _src_map, pp,
                                     src_lang=source_language or self._snap_get("src_lang", "English"),
-                                    cues=_orig_cues, changed_ids=_pass_history.keys())
+                                    cues=_orig_cues, changed_ids=_pass_history.keys(),
+                                    source_path=str(_src_path))
                                 _record_pass_change(
                                     _pass_trace, "Final-Semantic",
                                     _before_semantic, pp, _pass_history)
@@ -14117,7 +14172,7 @@ class App(ctk.CTk):
             _before_semantic = list(sorted_blocks)
             self._run_final_semantic_checks(
                 out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
-                cues=_src_cues, changed_ids=_pass_history.keys())
+                cues=_src_cues, changed_ids=_pass_history.keys(), source_path=fp)
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
@@ -14922,7 +14977,8 @@ class App(ctk.CTk):
                 _before_semantic = list(_final_blocks)
                 self._run_final_semantic_checks(
                     out_path, _src_map, _final_blocks, src_lang=file_src,
-                    cues=cues, changed_ids=_pass_history.keys())
+                    cues=cues, changed_ids=_pass_history.keys(),
+                    source_path=filepath)
                 _record_pass_change(
                     _pass_trace, "Final-Semantic", _before_semantic,
                     _final_blocks, _pass_history)

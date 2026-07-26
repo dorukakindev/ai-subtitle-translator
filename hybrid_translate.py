@@ -5571,8 +5571,11 @@ _SEMANTIC_RECONCILIATION_REASONS = (
     "BROKEN_FRAGMENT_FLOW",
     "CONJUNCTION_FRAGMENT_SPILL",
     "DAR_PERSON_DRIFT",
+    "DANGLING_TURKISH_FRAGMENT",
     "DOMINATES_MISSING_PREDICATE",
     "EARLY_VERB_CLOSURE",
+    "EN_TURKISH_SUFFIX_LEFTOVER",
+    "GARBLE_TOKEN",
     "GREEK_WORD_EXPLANATION_LOSS",
     "IDIOM_MISTRANSLATION",
     "LENGTH_RATIO_OUTLIER",
@@ -5581,6 +5584,7 @@ _SEMANTIC_RECONCILIATION_REASONS = (
     "NEIGHBOR_PREFIX_ECHO",
     "NEIGHBOR_SEMANTIC_REPEAT",
     "NUMBER_MISMATCH",
+    "NON_TURKISH_TARGET_LEAK",
     "ORPHAN_FRAGMENT",
     "PAREN_NOTE",
     "PUNCT_ONLY_TRANSLATION",
@@ -5588,6 +5592,7 @@ _SEMANTIC_RECONCILIATION_REASONS = (
     "REIGN_MISTRANSLATION",
     "SHORT_SOURCE_OVEREXPANSION",
     "SINGLE_LETTER_TARGET",
+    "SOURCE_LANG_LEFTOVER",
     "SPELLED_NUMBER_MISMATCH",
 )
 
@@ -5706,6 +5711,7 @@ def build_semantic_reconciliation_clusters(
     tr_blocks: list,
     cues: list = None,
     changed_ids=None,
+    extra_suspect_reasons: dict | None = None,
     window: int = 2,
     max_cluster_items: int = 12,
 ) -> list:
@@ -5724,6 +5730,13 @@ def build_semantic_reconciliation_clusters(
         sid = str(sid)
         if sid in block_ids:
             suspects.setdefault(sid, set()).add("POST_PASS_CHANGED")
+    for sid, reasons in (extra_suspect_reasons or {}).items():
+        sid = str(sid)
+        if sid not in block_ids:
+            continue
+        if isinstance(reasons, str):
+            reasons = [reasons]
+        suspects.setdefault(sid, set()).update(str(reason) for reason in reasons if reason)
     for sid in _source_wordplay_risk_ids(src_map, tr_blocks):
         suspects.setdefault(sid, set()).add("SOURCE_WORDPLAY_RISK")
     if not suspects:
@@ -5816,12 +5829,15 @@ def semantic_reconciliation_pass(
     tgt_lang: str = "Turkish",
     cues: list = None,
     changed_ids=None,
+    extra_suspect_reasons: dict | None = None,
+    locked_terms: dict | None = None,
     log_fn=None,
     token_callback=None,
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
     clusters = build_semantic_reconciliation_clusters(
         src_map, tr_blocks, cues=cues, changed_ids=changed_ids,
+        extra_suspect_reasons=extra_suspect_reasons,
     )
     batches = _semantic_cluster_batches(clusters)
     covered_ids = {
@@ -5840,6 +5856,7 @@ def semantic_reconciliation_pass(
         "proposed": 0,
         "fixed": 0,
         "rejected": 0,
+        "reflow_recovered": 0,
         "details": [],
     }
     result = list(tr_blocks or [])
@@ -5870,6 +5887,30 @@ def semantic_reconciliation_pass(
         "{\"id\":\"12\",\"text\":\"...\",\"reason\":\"...\"}]}]. "
         "Omit clusters with no real error and omit unchanged cues."
     )
+    locked_terms = {
+        str(source).strip(): str(target).strip()
+        for source, target in (locked_terms or {}).items()
+        if str(source).strip() and str(target).strip()
+    }
+    if locked_terms:
+        rows = "; ".join(
+            f"{source} -> {target}"
+            for source, target in list(locked_terms.items())[:80]
+        )
+        system_prompt += (
+            f"\nLOCKED TERMS (source -> required {tgt_lang} rendering; preserve exactly "
+            f"whenever the source term occurs):\n{rows}"
+        )
+
+    def _locked_suffixes(text: str, target: str) -> set:
+        return {
+            suffix.casefold()
+            for suffix in re.findall(
+                re.escape(target) + r"['’]([A-Za-zÇĞİÖŞÜçğıöşü]+)",
+                str(text or ""),
+                flags=re.IGNORECASE,
+            )
+        }
 
     for batch_pos, batch in enumerate(batches):
         batch_cluster_by_id = {cluster["cluster"]: cluster for cluster in batch}
@@ -5963,6 +6004,11 @@ def semantic_reconciliation_pass(
             if not isinstance(fixes, list) or not fixes:
                 continue
             allowed_ids = {item["id"] for item in cluster["items"]}
+            old_by_id = {
+                str(idx): str(text or "")
+                for idx, _ts, text in result
+                if str(idx) in allowed_ids
+            }
             proposals = {}
             proposal_reasons = {}
             invalid_reason = ""
@@ -5977,22 +6023,37 @@ def semantic_reconciliation_pass(
                     break
                 proposals[sid] = text
                 proposal_reasons[sid] = str(fix.get("reason", "")).strip()
-            stats["proposed"] += len(proposals)
             if invalid_reason:
                 stats["rejected"] += 1
                 stats["details"].append({"cluster": cluster_id, "status": "rejected",
                                          "reason": invalid_reason})
                 continue
+            no_op_ids = {
+                sid for sid, text in proposals.items()
+                if old_by_id.get(sid, "").strip() == text.strip()
+            }
+            for sid in no_op_ids:
+                proposals.pop(sid, None)
+                proposal_reasons.pop(sid, None)
+            if not proposals:
+                continue
+            stats["proposed"] += len(proposals)
 
-            candidate = list(result)
             candidate_by_id = {
                 str(idx): (pos, idx, ts, text)
-                for pos, (idx, ts, text) in enumerate(candidate)
+                for pos, (idx, ts, text) in enumerate(result)
             }
-            for sid, text in proposals.items():
-                pos, idx, ts, _old = candidate_by_id[sid]
-                candidate[pos] = (idx, ts, text)
+
+            def _candidate_from_proposals():
+                candidate_blocks = list(result)
+                for proposal_id, proposal_text in proposals.items():
+                    pos, idx, ts, _old = candidate_by_id[proposal_id]
+                    candidate_blocks[pos] = (idx, ts, proposal_text)
+                return candidate_blocks
+
+            candidate = _candidate_from_proposals()
             candidate_text = {str(idx): text for idx, _ts, text in candidate}
+            reflow_recovered = 0
 
             for sid, new_text in proposals.items():
                 _pos, _idx, _ts, old_text = candidate_by_id[sid]
@@ -6006,9 +6067,50 @@ def semantic_reconciliation_pass(
                     source_text=str(src_map.get(sid, "")),
                     neighbor_texts=neighbors,
                 )
+                if not ok and reason == "linebreak_count":
+                    reflowed = _reflow_to_line_count(
+                        new_text, old_text.count("\n") + 1
+                    )
+                    retry_candidate = dict(candidate_text)
+                    retry_candidate[sid] = reflowed
+                    retry_neighbors = [
+                        retry_candidate[item["id"]]
+                        for item in cluster["items"]
+                        if item["id"] != sid
+                    ]
+                    ok, reason = validate_semantic_reconciliation_candidate(
+                        old_text, reflowed,
+                        source_text=str(src_map.get(sid, "")),
+                        neighbor_texts=retry_neighbors,
+                    )
+                    if ok:
+                        proposals[sid] = reflowed
+                        candidate_text[sid] = reflowed
+                        reflow_recovered += 1
                 if not ok:
                     invalid_reason = reason
                     break
+            if not invalid_reason:
+                candidate = _candidate_from_proposals()
+                candidate_text = {str(idx): text for idx, _ts, text in candidate}
+                for sid in proposals:
+                    source = str(src_map.get(sid, ""))
+                    old_text = str(candidate_by_id[sid][3])
+                    new_text = str(proposals[sid])
+                    for locked_source, locked_target in locked_terms.items():
+                        if locked_source.casefold() not in source.casefold():
+                            continue
+                        if (locked_target.casefold() in old_text.casefold()
+                                and locked_target.casefold() not in new_text.casefold()):
+                            invalid_reason = "locked_term_violation"
+                            break
+                        old_suffixes = _locked_suffixes(old_text, locked_target)
+                        if old_suffixes and not old_suffixes.issubset(
+                                _locked_suffixes(new_text, locked_target)):
+                            invalid_reason = "locked_term_violation"
+                            break
+                    if invalid_reason:
+                        break
             if not invalid_reason:
                 after_reason_map = _semantic_reason_map(candidate, validator_cues)
                 for sid in allowed_ids:
@@ -6016,6 +6118,19 @@ def semantic_reconciliation_pass(
                     if any(_is_semantic_reconciliation_reason(reason) for reason in new_reasons):
                         invalid_reason = "new_validator_issue"
                         break
+                if not invalid_reason:
+                    triggering = {
+                        item["id"]: {
+                            reason for reason in item.get("reasons", [])
+                            if _is_semantic_reconciliation_reason(reason)
+                        }
+                        for item in cluster["items"]
+                        if item.get("suspect")
+                    }
+                    for sid, reasons in triggering.items():
+                        if reasons & after_reason_map.get(sid, set()):
+                            invalid_reason = "unresolved_cluster_issue"
+                            break
             if invalid_reason:
                 stats["rejected"] += 1
                 stats["details"].append({"cluster": cluster_id, "status": "rejected",
@@ -6026,6 +6141,7 @@ def semantic_reconciliation_pass(
             result = candidate
             before_reason_map = _semantic_reason_map(result, validator_cues)
             stats["fixed"] += len(proposals)
+            stats["reflow_recovered"] += reflow_recovered
             stats["details"].append({
                 "cluster": cluster_id,
                 "status": "applied",
@@ -7468,6 +7584,16 @@ def validate_semantic_reconciliation_candidate(
     neighbor_texts: list[str] | None = None,
 ) -> tuple[bool, str]:
     """Allow a source-driven retranslation while retaining structural and source guards."""
+    old = str(original_text or "")
+    new = str(candidate_text or "")
+    new_core = re.sub(r'''["' “”‘’»«…)\].,!?;:]+$''', "", new.strip())
+    if (_looks_like_early_turkish_verb_closure(old)
+            and re.search(
+                r"\b[A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü]*['’]"
+                r"(?:ın|in|un|ün|nın|nin|nun|nün)$",
+                new_core,
+            )):
+        return False, "missing_predicate"
     ok, reason = validate_polish_candidate(
         original_text, candidate_text,
         source_text=source_text, neighbor_texts=neighbor_texts,
@@ -7475,8 +7601,6 @@ def validate_semantic_reconciliation_candidate(
     if ok or reason not in _SEMANTIC_REWRITE_REJECTIONS:
         return ok, reason
 
-    old = str(original_text or "")
-    new = str(candidate_text or "")
     if old.count("\n") != new.count("\n"):
         return False, "linebreak_count"
     if _POLISH_FORMAT_RE.findall(old) != _POLISH_FORMAT_RE.findall(new):

@@ -75,6 +75,13 @@ class MergeTest(unittest.TestCase):
         m.merge_terms({"a": "b"})
         self.assertEqual(len(m._data["terms"]), 1)
 
+    def test_get_terms_returns_defensive_copy(self):
+        m = self._mem()
+        m.merge_terms({"Hive": "Kovan"})
+        terms = m.get_terms()
+        terms["Hive"] = "Arı Kovanı"
+        self.assertEqual(m.get_terms()["Hive"], "Kovan")
+
 
 class BuildHintTest(unittest.TestCase):
     def test_empty_returns_empty(self):

@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -95,8 +97,222 @@ class SemanticClusterBuilderTest(unittest.TestCase):
             self.assertFalse(seen & ids)
             seen |= ids
 
+    def test_expanded_validator_reasons_are_selected(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Bozuk."),
+            ("2", "00:00:02 --> 00:00:03", "Kalan."),
+        ]
+        src_map = {"1": "Broken.", "2": "Left."}
+        reasons = {
+            "1": {"GARBLE_TOKEN", "DANGLING_TURKISH_FRAGMENT"},
+            "2": {"EN_TURKISH_SUFFIX_LEFTOVER", "SOURCE_LANG_LEFTOVER"},
+        }
+
+        with patch("hybrid_translate._semantic_reason_map", return_value=reasons):
+            clusters = ht.build_semantic_reconciliation_clusters(src_map, blocks)
+
+        selected = {
+            item["id"]: set(item["reasons"])
+            for cluster in clusters
+            for item in cluster["items"]
+            if item["suspect"]
+        }
+        self.assertEqual(selected["1"], reasons["1"])
+        self.assertEqual(selected["2"], reasons["2"])
+
+    def test_explicit_mixed_term_ids_are_selected(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Bir."),
+            ("2", "00:00:02 --> 00:00:03", "İki."),
+        ]
+        src_map = {"1": "One.", "2": "Two."}
+
+        with patch("hybrid_translate._semantic_reason_map", return_value={}):
+            clusters = ht.build_semantic_reconciliation_clusters(
+                src_map, blocks,
+                extra_suspect_reasons={"2": {"MIXED_TERM_INCONSISTENCY"}},
+            )
+
+        suspect = next(
+            item for item in clusters[0]["items"] if item["id"] == "2"
+        )
+        self.assertIn("MIXED_TERM_INCONSISTENCY", suspect["reasons"])
+
+    def test_mixed_term_helper_returns_concrete_cue_ids(self):
+        clusters = {
+            "Laboratory": [
+                [("4", "Tedarik"), ("8", "Tedarik")],
+                [("11", "Sağlama"), ("15", "Sağlama")],
+            ],
+            "Ambiguous": [
+                [("20", "Bir"), ("21", "Bir")],
+                [("22", "İki")],
+            ],
+        }
+
+        with patch("subtitle_translator_gui._mixed_term_clusters",
+                   return_value=clusters):
+            suspects = gui._mixed_term_suspect_ids([], {})
+
+        self.assertEqual(suspects, {"4", "8", "11", "15"})
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_missing_predicate_regression_is_rejected(self):
+        ok, reason = ht.validate_semantic_reconciliation_candidate(
+            "Kral Behemoth korunuyor...",
+            "Kral Behemoth'un",
+            source_text="The King Behemoth is protected...",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "missing_predicate")
+
+    def test_unchanged_proposal_is_not_counted_or_rejected(self):
+        blocks = [("1", "00:00:01 --> 00:00:02", "Zaten doğru.")]
+        src_map = {"1": "Already correct."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{"id": "1", "text": " Zaten doğru. ", "reason": "none"}],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"}
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["proposed"], 0)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["rejected"], 0)
+        self.assertEqual(stats["details"], [])
+
+    def test_locked_term_cannot_be_removed(self):
+        blocks = [(
+            "1", "00:00:01 --> 00:00:02",
+            "Biyoteknoloji Tedarik Laboratuvarı.",
+        )]
+        src_map = {"1": "Biotechnology Provision Laboratory."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{
+                "id": "1",
+                "text": "Biyoteknoloji Sağlama Laboratuvarı.",
+                "reason": "terminology",
+            }],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create",
+                   return_value=_response(payload)) as chat:
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"},
+                locked_terms={
+                    "Biotechnology Provision Laboratory":
+                        "Biyoteknoloji Tedarik Laboratuvarı"
+                },
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["details"][-1]["reason"], "locked_term_violation")
+        self.assertIn(
+            "Biotechnology Provision Laboratory -> "
+            "Biyoteknoloji Tedarik Laboratuvarı",
+            chat.call_args.kwargs["messages"][0]["content"],
+        )
+
+    def test_locked_proper_name_suffix_cannot_be_changed(self):
+        blocks = [(
+            "1", "00:00:01 --> 00:00:02",
+            "Kaori Sweet Seventeen'den verileri aktardım.",
+        )]
+        src_map = {"1": "I transferred the data from Kaori Sweet Seventeen."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{
+                "id": "1",
+                "text": "Kaori Sweet Seventeen'dan verileri aktardım.",
+                "reason": "wording",
+            }],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"},
+                locked_terms={"Sweet Seventeen": "Sweet Seventeen"},
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["details"][-1]["reason"], "locked_term_violation")
+
+    def test_linebreak_only_rejection_is_reflowed_and_revalidated(self):
+        blocks = [(
+            "1", "00:00:01 --> 00:00:02",
+            "Eski birinci satır.\nEski ikinci satır.",
+        )]
+        src_map = {"1": "A corrected subtitle over two lines."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{
+                "id": "1",
+                "text": "Düzeltilmiş altyazı iki satır boyunca akar.",
+                "reason": "meaning",
+            }],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"}
+            )
+
+        self.assertEqual(result[0][2].count("\n"), 1)
+        self.assertEqual(stats["fixed"], 1)
+        self.assertEqual(stats["reflow_recovered"], 1)
+
+    def test_unresolved_triggering_issue_rejects_cluster(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Tekrar."),
+            ("2", "00:00:02 --> 00:00:03", "Tekrar."),
+        ]
+        src_map = {"1": "First meaning.", "2": "Second meaning."}
+        cluster = {
+            "cluster": "c1",
+            "items": [
+                {"id": "1", "source": src_map["1"], "translation": "Tekrar.",
+                 "suspect": True, "reasons": ["NEIGHBOR_ECHO"]},
+                {"id": "2", "source": src_map["2"], "translation": "Tekrar.",
+                 "suspect": True, "reasons": ["NEIGHBOR_ECHO"]},
+            ],
+            "suspect_ids": ["1", "2"],
+        }
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{"id": "2", "text": "İkinci anlam.", "reason": "partial"}],
+        }]
+
+        with patch("hybrid_translate.build_semantic_reconciliation_clusters",
+                   return_value=[cluster]), \
+             patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)), \
+             patch("hybrid_translate.validate_semantic_reconciliation_candidate",
+                   return_value=(True, "")), \
+             patch("hybrid_translate._semantic_reason_map",
+                   side_effect=[
+                       {"1": {"NEIGHBOR_ECHO"}, "2": {"NEIGHBOR_ECHO"}},
+                       {"1": {"NEIGHBOR_ECHO"}},
+                   ]):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m"
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["details"][-1]["reason"], "unresolved_cluster_issue")
+
     def test_permanent_auth_error_stops_remaining_batches(self):
         blocks = [
             ("1", "00:00:01 --> 00:00:02", "Bir."),
@@ -337,6 +553,60 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
             self.assertFalse(app._semantic_reconcile_enabled())
 
         app.semantic_reconcile_var.get.assert_not_called()
+
+    def test_report_parent_is_created_before_write(self):
+        app = gui.App.__new__(gui.App)
+        app._pm = None
+        app.semantic_reconcile_var = SimpleNamespace(get=lambda: True)
+        app.src_var = SimpleNamespace(get=lambda: "English")
+        app.tgt_var = SimpleNamespace(get=lambda: "Turkish")
+        app._log = MagicMock()
+        app._helper_api_key = MagicMock(return_value="k")
+        app._helper_api_base_url = MagicMock(return_value=None)
+        app._helper_api_model = MagicMock(return_value="m")
+        app._token_callback_for_model = MagicMock(return_value=MagicMock())
+        app._get_file_glossary = MagicMock(return_value="")
+        blocks = [("1", "00:00:01 --> 00:00:02", "Eski.")]
+        stats = {
+            "clusters": 1, "suspects": 1, "covered_cues": 1,
+            "coverage_pct": 100.0, "api_requests": 1, "proposed": 0,
+            "fixed": 0, "rejected": 0, "reflow_recovered": 0,
+            "details": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("hybrid_translate.semantic_reconciliation_pass",
+                   return_value=(list(blocks), stats)):
+            out_path = Path(tmp) / "new" / "nested" / "episode.srt"
+            app._maybe_semantic_reconciliation(
+                str(out_path), {"1": "Source."}, blocks
+            )
+            report = out_path.with_suffix(".anlamsal_mutabakat.txt")
+            self.assertTrue(report.exists())
+
+    def test_locked_terms_merge_file_project_and_series_memory(self):
+        app = gui.App.__new__(gui.App)
+        app._pm = MagicMock()
+        app._pm.get_glossary.return_value = {"Project Term": "Proje Terimi"}
+        app._get_file_glossary = MagicMock(return_value="glossary.json")
+        app.series_memory_var = SimpleNamespace(get=lambda: True)
+        app.input_var = SimpleNamespace(get=lambda: "C:/subs")
+        app._log = MagicMock()
+        series = MagicMock()
+        series.get_terms.return_value = {"King Behemoth": "Kral Behemoth"}
+
+        with patch("hybrid_translate.load_glossary",
+                   return_value={"Provision Laboratory": "Tedarik Laboratuvarı"}), \
+             patch("hybrid_translate.sanitize_glossary_for_turkish",
+                   side_effect=lambda terms, **_kwargs: terms), \
+             patch("series_memory.SeriesMemory.load", return_value=series):
+            terms = app._get_locked_terms_dict(
+                "C:/subs/Betterman.S01E02.srt", "Turkish"
+            )
+
+        self.assertEqual(terms["Provision Laboratory"], "Tedarik Laboratuvarı")
+        self.assertEqual(terms["Project Term"], "Proje Terimi")
+        self.assertEqual(terms["King Behemoth"], "Kral Behemoth")
 
 
 if __name__ == "__main__":
