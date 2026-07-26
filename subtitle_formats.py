@@ -12,6 +12,16 @@ from pathlib import Path
 
 # ── Toleranslı encoding çözümleme ─────────────────────────────────────────────
 
+def normalize_srt_timestamp_separators(text: str) -> str:
+    """SRT zaman satırlarındaki hatalı saat ayraçlarını düzeltir."""
+    return re.sub(
+        r'(?m)^([ \t]*\d{1,3})[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[ \t]*'
+        r'-->[ \t]*\d{1,3})[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[^\n]*)$',
+        r'\1:\2:\3\4:\5:\6\7',
+        str(text or ""),
+    )
+
+
 def read_subtitle_text(filepath) -> str:
     """Altyazı dosyasını toleranslı çözümler: utf-8-sig → utf-16 (BOM) → cp1254 → latin-1(replace).
 
@@ -44,7 +54,10 @@ def read_subtitle_text(filepath) -> str:
         text = raw.decode("latin-1", errors="replace")
     # Satır sonlarını normalize et (eski metin-modu açılışın yaptığı gibi):
     # read_bytes()+decode() \r\n çevirmez; parser'lar \n\n'e güvenir.
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if Path(filepath).suffix.lower() == ".srt":
+        text = normalize_srt_timestamp_separators(text)
+    return text
 
 
 # ── Zaman damgası dönüştürme ──────────────────────────────────────────────────

@@ -315,6 +315,19 @@ class GetSubtitleFilesTest(unittest.TestCase):
 
 
 class ParseSrtEdgeCasesTest(unittest.TestCase):
+    def test_semicolon_timestamp_separators_reach_hybrid_parser(self):
+        srt = (
+            "1\n00;02;32,000 --> 00;02;38,000\nFirst\n\n"
+            "2\n00:02:39,000 --> 00:02:41,000\nSecond\n"
+        )
+        path = _write_temp(srt, ".srt")
+        import hybrid_translate as ht
+        cues = ht.load_srt(path)
+        self.assertEqual(len(cues), 2)
+        self.assertEqual(cues[0].start, "00:02:32,000")
+        self.assertEqual(cues[0].end, "00:02:38,000")
+        os.unlink(path)
+
     def test_duplicate_cue_numbers_not_overwritten(self):
         srt = "1\n00:00:01,000 --> 00:00:02,000\nFirst\n\n1\n00:00:03,000 --> 00:00:04,000\nSecond\n"
         path = _write_temp(srt, ".srt")
