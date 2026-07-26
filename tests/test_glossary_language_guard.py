@@ -256,6 +256,17 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"curator": "küratör"})
 
+    def test_lowercase_source_carryover_drops_only_that_term(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "dowsing abilities": "dowsing yetenekleri",
+            "flower of death": "ölüm çiçeği",
+            "Algernon": "Algernon",
+        })
+        self.assertEqual(cleaned, {
+            "flower of death": "ölüm çiçeği",
+            "Algernon": "Algernon",
+        })
+
     def test_wqx_still_drops_whole_glossary(self):
         # Eski politika (R_wqx) bozulmamalı: Somalice + eğik-çizgi aynı terimde
         # birlikte olsa bile TÜM sözlük atılmalı (whole-glossary-drop kazanır).

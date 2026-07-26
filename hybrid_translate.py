@@ -4712,8 +4712,16 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         ):
             gloss_dropped_terms[str(key)] = (value_s, gloss_reason)
             continue
-        if _glossary_wqx_token(normalized_value, glossary_key=key) is not None:
-            wqx_hits[str(key)] = value_s
+        wqx_token = _glossary_wqx_token(normalized_value, glossary_key=key)
+        if wqx_token is not None:
+            key_tokens = {
+                word.lower()
+                for word in _GLOSSARY_WORD_RE.findall(str(key or ""))
+            }
+            if not _glossary_token_matches_key(
+                wqx_token, key_tokens, raw_value=value_s
+            ):
+                wqx_hits[str(key)] = value_s
         if has_non_turkish_target_leak(value_s, glossary_target=True, glossary_key=key):
             dropped_terms[str(key)] = value_s
             continue
