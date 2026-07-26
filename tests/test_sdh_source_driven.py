@@ -169,6 +169,21 @@ class SdhSourceDrivenTest(unittest.TestCase):
         result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
         self.assertNotIn("1", [b[0] for b in result])
 
+    def test_technical_or_dialogue_parentheses_are_not_sfx_only(self):
+        for text in ("[OK]", "(No.)", "(f(x))", "(Hey!)"):
+            with self.subTest(text=text):
+                self.assertFalse(sdh.src_is_sfx_only(text))
+        self.assertTrue(sdh.src_is_sfx_only("[door closes]"))
+
+    def test_source_sdh_does_not_strip_target_technical_parentheses(self):
+        self.assertEqual(
+            sdh.strip_labels_by_source(
+                "(f(x)) değerini hesapla. [KAPI KAPANIR]",
+                "[door closes] Calculate f(x).",
+            ),
+            "(f(x)) değerini hesapla.",
+        )
+
     def test_position_tagged_sfx_only_cue_dropped(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[ZİL ÇALIYOR]")]
         src_map = _src(**{"1": r"{\an8}(bell ringing)"})

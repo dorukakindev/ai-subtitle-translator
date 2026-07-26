@@ -82,6 +82,20 @@ class ParseSrtTest(unittest.TestCase):
         b = gui.parse_srt(p)
         self.assertEqual(b, [("2", "00:00:02,000 --> 00:00:03,000", "Sonraki replik.")])
 
+    def test_garbage_timestamp_block_is_rejected(self):
+        p = _write(self.d, "garbage.srt",
+                   "1\nnot a timestamp\nYanlis\n\n"
+                   "2\n00:00:02,000 --> 00:00:03,000\nDogru\n")
+        self.assertEqual(gui.parse_srt(p), [
+            ("2", "00:00:02,000 --> 00:00:03,000", "Dogru"),
+        ])
+
+    def test_dot_milliseconds_are_normalized(self):
+        p = _write(self.d, "dots.srt",
+                   "1\n00:00:01.000 --> 00:00:02.250\nMerhaba\n")
+        self.assertEqual(gui.parse_srt(p)[0][1],
+                         "00:00:01,000 --> 00:00:02,250")
+
 
 if __name__ == "__main__":
     unittest.main()

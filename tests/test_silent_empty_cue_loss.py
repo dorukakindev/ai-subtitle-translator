@@ -19,6 +19,13 @@ import sdh_cleaner as sdh
 
 
 class IsUntranslatedEmptyTest(unittest.TestCase):
+    def test_short_identical_dialogue_is_untranslated(self):
+        self.assertTrue(gui._is_untranslated("Let's go.", "Let's go."))
+
+    def test_title_case_is_not_all_caps(self):
+        self.assertFalse(gui._src_text_is_all_caps("The Great Escape"))
+        self.assertTrue(gui._src_text_is_all_caps("LOUD BANGING"))
+
     def test_real_dialogue_with_empty_translation_is_flagged(self):
         self.assertTrue(gui._is_untranslated("WHAT A GREAT ROOM THIS IS. WOW!", ""))
 

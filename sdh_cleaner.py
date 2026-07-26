@@ -233,7 +233,8 @@ _SDH_ACTION_VERBS = {
     "crying", "sobbing", "panting", "grunting", "singing", "playing",
     "continues", "fades", "applause", "applauding", "chuckle", "chuckles",
     "chuckling", "giggle", "giggles", "giggling", "sniffles", "chatter",
-    "barking", "howling", "growling", "meow", "roaring", "chirping", "knocks", "knocking"
+    "barking", "howling", "growling", "meow", "roaring", "chirping", "knocks", "knocking",
+    "jingling", "konusur", "konusuyor", "kapanir", "kapaniyor",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -251,7 +252,8 @@ _KNOWN_LANGUAGES = {
     "chinese", "korean", "arabic", "portuguese", "hindi", "turkish", "latin",
     "greek", "dutch", "swedish", "polish", "hebrew", "vietnamese", "thai",
     "tagalog", "swahili", "persian", "danish", "norwegian", "finnish", "czech",
-    "hungarian", "romanian", "ukrainian", "cantonese", "mandarin"
+    "hungarian", "romanian", "ukrainian", "cantonese", "mandarin",
+    "urdu", "punjabi", "bengali", "tamil", "telugu",
 }
 
 
@@ -260,6 +262,8 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     if not key:
         return True
     if key in _SDH_KEYWORDS or key in _SPEAKER_WORDS:
+        return True
+    if key in {"non english", "unintelligible speech", "indistinct speech"}:
         return True
 
     words = key.split()
@@ -315,6 +319,8 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
     words = inner.split()
     if not words or len(words) > 3:
         return False
+    if inner.strip().casefold().rstrip(".!?") in {"ok", "no", "yes", "hey"}:
+        return False
 
     # A colon explicitly marks a speaker prefix: [DR. SMITH]: Hello
     if colon_follows:
@@ -328,6 +334,15 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
                 and w.isalpha() and (w.isupper() or w.istitle())):
             return True
 
+    return False
+
+
+def _is_protected_bracket_content(raw: str) -> bool:
+    inner = raw[1:-1].strip()
+    if inner.casefold().rstrip(".!?") in {"ok", "no", "yes", "hey"}:
+        return True
+    if any(ch in inner for ch in "[]()=+*/<>"):
+        return True
     return False
 
 
@@ -639,7 +654,23 @@ def src_is_sfx_only(src_text: str) -> bool:
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
     text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
     text = CHEVRON_SPEAKER_RE.sub("", text).strip()
-    return bool(text) and bool(SFX_ONLY_STRUCTURAL_RE.match(text))
+    if not text:
+        return False
+    spans = _bracket_group_spans(text)
+    residue = _replace_bracket_groups(text, lambda _raw: "")
+    residue = MUSIC_NOTE_RE.sub("", residue).replace("_", "").strip()
+    if not spans:
+        return bool(SFX_ONLY_STRUCTURAL_RE.match(text))
+    if residue:
+        return bool(MUSIC_NOTE_RE.search(text)) and not residue
+    for start, end in spans:
+        raw = text[start:end]
+        inner = raw[1:-1].strip()
+        colon_follows = text[end:].lstrip().startswith(":")
+        if not (is_sdh_descriptor(inner)
+                or _is_speaker_name(inner, colon_follows=colon_follows)):
+            return False
+    return True
 
 
 _DASH_ONLY_LINE_RE = re.compile(r'^[-–—]\s*$')
@@ -716,9 +747,22 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""
-    if not _has_bracket_group(src_line):
+    source_groups = []
+    for start, end in _bracket_group_spans(src_line):
+        raw = src_line[start:end]
+        inner = raw[1:-1].strip()
+        colon_follows = src_line[end:].lstrip().startswith(":")
+        if (is_sdh_descriptor(inner)
+                or _is_speaker_name(inner, colon_follows=colon_follows)):
+            source_groups.append(raw)
+    if not source_groups:
         return tr_line
-    stripped = _replace_bracket_groups(tr_line, lambda _raw: "")
+    def _strip_verified(raw):
+        inner = raw[1:-1].strip()
+        if _is_protected_bracket_content(raw):
+            return raw
+        return ""
+    stripped = _replace_bracket_groups(tr_line, _strip_verified)
     stripped = _ORPHANED_LABEL_COLON_RE.sub(r"\1", stripped)
     stripped = re.sub(r"\s{2,}", " ", stripped).strip()
     if _DASH_ONLY_LINE_RE.match(stripped):

@@ -15,6 +15,10 @@ class CleanSourceTagsTest(unittest.TestCase):
     def test_empty_ass_override_tag_is_removed_without_touching_unmatched_brace(self):
         self.assertEqual(gui._clean_src(r"{}Hello {\i1}world{\i0}"), "Hello world")
         self.assertEqual(gui._clean_src("A literal { stays"), "A literal { stays")
+        self.assertEqual(
+            gui._clean_src(r"Type {username} here. {\an8}"),
+            "Type {username} here.",
+        )
 
 from subtitle_formats import restore_format_tags
 

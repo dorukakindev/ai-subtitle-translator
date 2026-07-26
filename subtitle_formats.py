@@ -205,61 +205,63 @@ def parse_vtt(filepath: str) -> list:
 
     blocks = []
     idx = 1
-    # Satır sonu normalize et
-    content = content.replace('\r\n', '\n').replace('\r', '\n')
-
-    # Boş-satır ayracı olmayan / başlıktan hemen sonra başlayan VTT'lerde cue'ların
-    # tek bloğa çökmesini engelle: her zaman-damgası satırının önüne boş satır ekle
-    # (zaten boş satır varsa zararsız — split \n\n+ çoklu boşluğu tek ayraç sayar).
-    content = re.sub(r'\n(?=\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->)', '\n\n', content)
-
-    # WEBVTT başlığını atla, boş satırlarla ayrılmış bloklara böl
-    parts = re.split(r'\n\n+', content.strip())
-    for part in parts:
-        lines = part.strip().splitlines()
-        if not lines:
+    lines = content.replace('\r\n', '\n').replace('\r', '\n').splitlines()
+    ts_re = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line or line.startswith('WEBVTT'):
+            i += 1
             continue
-        # İlk satır WEBVTT, NOTE, STYLE, REGION veya timestamp olmayan bir şeyse atla
-        if lines[0].startswith('WEBVTT') or lines[0].startswith('NOTE') \
-                or lines[0].startswith('STYLE') or lines[0].startswith('REGION'):
+        upper = line.upper()
+        if upper in {'NOTE', 'STYLE', 'REGION'} or any(
+                upper.startswith(prefix + ' ') for prefix in ('NOTE', 'STYLE', 'REGION')):
+            i += 1
+            while i < len(lines) and lines[i].strip():
+                i += 1
             continue
 
-        # Timestamp satırını bul — sadece gerçek zaman damgası formatındaki satırları eşleştir
-        _ts_re = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->')
-        ts_idx = None
-        for li, line in enumerate(lines):
-            if _ts_re.match(line):
-                ts_idx = li
-                break
-        if ts_idx is None:
+        if ts_re.match(line):
+            ts_idx = i
+        elif i + 1 < len(lines) and ts_re.match(lines[i + 1].strip()):
+            ts_idx = i + 1
+        else:
+            i += 1
             continue
 
-        # Blok index'i HER ZAMAN sıralı sayaç — VTT'nin açık cue ID etiketi
-        # (timestamp öncesi satır) benzersiz olmayabilir ve bağımsız ilerleyen
-        # sayaçla çakışıp downstream'de blokları sessizce ezerdi. Çıktı zaten
-        # SRT olarak yeniden numaralanır; cue etiketi downstream'de kullanılmaz.
-        cue_id = str(idx)
-
-        # Timestamp ayrıştır
-        ts_line = lines[ts_idx]
-        # Position metadata'sı olabilir: "00:00:01.000 --> 00:00:03.000 align:start"
+        ts_line = lines[ts_idx].strip()
         ts_parts = ts_line.split('-->')
         if len(ts_parts) < 2:
+            i = ts_idx + 1
             continue
         start_raw = ts_parts[0].strip()
-        end_raw   = ts_parts[1].strip().split()[0]  # position metadata'yı at
+        end_parts = ts_parts[1].strip().split()
+        if not end_parts:
+            i = ts_idx + 1
+            continue
+        timestamp = f'{_vtt_ts_to_srt(start_raw)} --> {_vtt_ts_to_srt(end_parts[0])}'
 
-        start_srt = _vtt_ts_to_srt(start_raw)
-        end_srt   = _vtt_ts_to_srt(end_raw)
-        timestamp  = f'{start_srt} --> {end_srt}'
-
-        # Metin satırları — ham etiketleri koru, ancak etiketler söküldüğünde tamamen boşalan hayalet cue'ları atla
-        text_lines = lines[ts_idx + 1:]
-        text = '\n'.join(l.strip() for l in text_lines if l.strip())
+        text_lines = []
+        i = ts_idx + 1
+        while i < len(lines):
+            current = lines[i].strip()
+            if not current:
+                i += 1
+                break
+            if ts_re.match(current):
+                break
+            if i + 1 < len(lines) and ts_re.match(lines[i + 1].strip()):
+                if re.fullmatch(r'(?:\d+|[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*)', current):
+                    break
+                text_lines.append(current)
+                i += 1
+                continue
+            text_lines.append(current)
+            i += 1
+        text = '\n'.join(text_lines)
         if not _clean_vtt_text(text).strip():
             continue
-
-        blocks.append((cue_id, timestamp, text))
+        blocks.append((str(idx), timestamp, text))
         idx += 1
 
     return blocks
@@ -301,8 +303,9 @@ def parse_ass(filepath: str) -> list:
         r'^(fx|sign|caption|title|op|ed|karaoke|credit|note)$',
         re.IGNORECASE)
 
-    # Dialogue satırlarını çek
-    for line in content.splitlines():
+    # Dialogue satırlarını yalnızca [Events] bölümünden çek.
+    event_text = events_match.group(1) if events_match else content
+    for line in event_text.splitlines():
         cleaned_line = line.strip()
         if not cleaned_line.lower().startswith('dialogue:'):
             continue
@@ -369,15 +372,11 @@ def get_subtitle_files(directory: str, recursive: bool = True,
     yedekleri — asla girdi olmamalı, yoksa yeniden çalıştırmada kendi çıktısını çevirir)."""
     exts = ('*.srt', '*.vtt', '*.ass', '*.ssa')
     seen = {}  # path → None, ekleme sırasını korur (dict insertion order)
-    for ext in exts:
-        if recursive:
-            for fp in _glob.glob(f'{directory}/**/{ext}', recursive=True):
-                seen[fp] = None
-        else:
-            for fp in _glob.glob(f'{directory}/{ext}'):
-                seen[fp] = None
-
     base = Path(directory)
+    for ext in exts:
+        iterator = base.rglob(ext) if recursive else base.glob(ext)
+        for fp in iterator:
+            seen[str(fp)] = None
     excl_dirs = {d.lower() for d in (exclude_dir_names or ())}
     excl_sfx = tuple(s.lower() for s in (exclude_suffixes or ()))
     result = []

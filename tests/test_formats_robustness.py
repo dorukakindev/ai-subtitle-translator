@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from subtitle_formats import parse_vtt, restore_format_tags
+from subtitle_formats import get_subtitle_files, parse_ass, parse_vtt, restore_format_tags
 
 
 def _w(d, name, text):
@@ -44,6 +44,38 @@ class VttRobustnessTest(unittest.TestCase):
                "2\n00:00:02.000 --> 00:00:03.000\nDünya\n")
         b = parse_vtt(_w(self.d, "c.vtt", vtt))
         self.assertEqual(len(b), 2)
+
+    def test_cue_ids_do_not_leak_without_blank_separator(self):
+        vtt = ("WEBVTT\n\n"
+               "first\n00:00:01.000 --> 00:00:02.000\nMerhaba\n"
+               "NOTE-1\n00:00:02.000 --> 00:00:03.000\nDunya\n")
+        b = parse_vtt(_w(self.d, "ids.vtt", vtt))
+        self.assertEqual([x[2] for x in b], ["Merhaba", "Dunya"])
+
+    def test_note_metadata_is_skipped_but_note_prefixed_id_is_kept(self):
+        vtt = ("WEBVTT\n\nNOTE ignored metadata\nline\n\n"
+               "NOTE-1\n00:00:01.000 --> 00:00:02.000\nGercek cue\n")
+        b = parse_vtt(_w(self.d, "note-id.vtt", vtt))
+        self.assertEqual(len(b), 1)
+        self.assertEqual(b[0][2], "Gercek cue")
+
+
+class AssAndDiscoveryRobustnessTest(unittest.TestCase):
+    def test_dialogue_outside_events_is_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            ass = ("[Script Info]\nDialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,Yanlis\n"
+                   "[Events]\n"
+                   "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+                   "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Dogru\n")
+            blocks = parse_ass(_w(d, "a.ass", ass))
+            self.assertEqual([b[2] for b in blocks], ["Dogru"])
+
+    def test_brackets_in_directory_name_are_literal(self):
+        with tempfile.TemporaryDirectory() as d:
+            nested = os.path.join(d, "Film [1080p]")
+            os.makedirs(nested)
+            wanted = _w(nested, "film.srt", "1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+            self.assertEqual(get_subtitle_files(d), [wanted])
 
 
 class RestoreTagsTest(unittest.TestCase):

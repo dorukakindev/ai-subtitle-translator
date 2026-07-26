@@ -1649,6 +1649,11 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
 
 
 # ── SRT yardımcıları ──────────────────────────────────────────────────────────
+_TS_LINE_RE = re.compile(
+    r"^\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*"
+    r"\d{1,2}:\d{2}:\d{2}[,.]\d{3}(?:\s+.*)?$")
+
+
 def parse_srt(filepath):
     parsed = []
     content = read_subtitle_text(filepath).strip()
@@ -1662,12 +1667,16 @@ def parse_srt(filepath):
     for block in re.split(r"\n[ \t]*\n+", content):
         lines = block.strip().splitlines()
         # Numarasız SRT (ilk satır doğrudan zaman damgası) → sıralı index uydur
-        if len(lines) >= 2 and "-->" in lines[0]:
-            parsed.append((None, lines[0].strip(), "\n".join(lines[1:]).strip()))
+        if len(lines) >= 2 and _TS_LINE_RE.match(lines[0].strip()):
+            ts = lines[0].strip().replace(".", ",")
+            parsed.append((None, ts, "\n".join(lines[1:]).strip()))
             continue
         if len(lines) < 3:
             continue
-        parsed.append((lines[0].strip(), lines[1].strip(), "\n".join(lines[2:]).strip()))
+        if not _TS_LINE_RE.match(lines[1].strip()):
+            continue
+        ts = lines[1].strip().replace(".", ",")
+        parsed.append((lines[0].strip(), ts, "\n".join(lines[2:]).strip()))
     raw_ids = [idx for idx, _ts, _text in parsed]
     valid_ids = bool(raw_ids) and all(idx is not None and re.fullmatch(r"\d+", idx)
                                       for idx in raw_ids)
@@ -2164,7 +2173,7 @@ def _log_cps_warning(blocks: list, log_fn) -> int:
 def _clean_src(text: str) -> str:
     """Strip HTML/ASS formatting tags from source text before translation."""
     text = re.sub(r'</?[a-zA-Z][^>]*>', '', text)   # <i>, <b>, <font ...>
-    text = re.sub(r'\{[^}]*\}', '', text)             # {}, {an8}, {\c&H...}
+    text = re.sub(r'\{(?:\\[^}]*|)\}', '', text)       # ASS override/empty tag; preserve {username}
     text = re.sub(r'  +', ' ', text)
     return text.strip()
 
@@ -2791,7 +2800,8 @@ def _src_text_is_all_caps(src_text: str) -> bool:
     çevrilirken çoğunlukla köşeli parantezle sarmalanıyor ('[VURMA SESLERİ VE
     KAHKAHA]') — bu bilinçli bir biçim tercihi, içerik kaybı değil."""
     toks = [w for w in (t.strip('.,!?;:\'"()[]…-«»“”') for t in str(src_text or '').split()) if w]
-    return bool(toks) and all(w[:1].isupper() for w in toks)
+    alpha = "".join(ch for ch in str(src_text or "") if ch.isalpha())
+    return bool(toks) and bool(alpha) and alpha.isupper()
 
 
 def _is_untranslated(src_text: str, tr_text: str) -> bool:
@@ -2830,14 +2840,14 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah",
         "robot", "laser", "internet", "pizza", "taxi",
     ])
-    src_words = src_text.split()
-    if len(src_words) <= 2:
-        return False
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
     if src_norm == tr_norm and src_norm not in _LOANWORDS:
         if not _src_is_sdh_only(src_text) and not _src_all_caps:
             return True
+    src_words = src_text.split()
+    if len(src_words) <= 2:
+        return False
     return False
 
 
@@ -4451,7 +4461,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         if tr_text == "[HATA]":
             continue
         src_text = orig.get(str(idx), "")
-        if not src_text or not tr_text:
+        if not src_text:
             continue
 
         if _is_untranslated(src_text, tr_text):
@@ -4459,7 +4469,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
             warnings += 1
 
         # Length ratio check
-        if len(src_text) > 4:  # skip trivially short
+        if tr_text and len(src_text) > 4:  # skip trivially short
             ratio = len(tr_text) / len(src_text)
             if ratio < 0.12 or ratio > 5.0:
                 ratio_issues.append((str(idx), round(ratio, 2)))
