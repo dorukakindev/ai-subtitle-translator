@@ -8750,6 +8750,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
                          idiom_map: dict = None,
                          tm=None,
                          tgt_lang: str = "",
+                         profanity: str = "",
+                         schema_name: str = "",
                          context_lines: int = None,
                          lookahead_lines: int = None,
                          scene_gap_sec: float = None,
@@ -8868,9 +8870,14 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
             item = {"i": c.index, "t": _clean_source_text(c.text)}
             if tm is not None:
                 clean_source = _clean_source_text(c.text)
-                cached = tm.lookup(clean_source, tgt_lang=tgt_lang, model=model)
+                cached = tm.lookup(
+                    clean_source, tgt_lang=tgt_lang, model=model,
+                    profanity=profanity, schema_name=schema_name)
                 if cached is None:
-                    fuzzy = tm.fuzzy_lookup(clean_source, threshold=0.95, tgt_lang=tgt_lang, model=model)
+                    fuzzy = tm.fuzzy_lookup(
+                        clean_source, threshold=0.95,
+                        tgt_lang=tgt_lang, model=model,
+                        profanity=profanity, schema_name=schema_name)
                     cached = fuzzy[0] if fuzzy else None
                 if cached:
                     item["tr"] = cached

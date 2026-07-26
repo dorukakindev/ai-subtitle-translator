@@ -1,4 +1,5 @@
 import json
+import inspect
 import os
 import tempfile
 import unittest
@@ -120,6 +121,35 @@ class MemoryIsolationTest(unittest.TestCase):
                 model="model-a", tgt_lang="tr",
                 profanity="Sert", schema_name="Anime"))
             tm.close()
+
+    def test_hybrid_request_builder_routes_all_tm_dimensions(self):
+        cue = SimpleNamespace(
+            index=1, start="00:00:01,000", end="00:00:02,000",
+            text="A source line.",
+        )
+        tm = mock.Mock()
+        tm.lookup.return_value = None
+        tm.fuzzy_lookup.return_value = None
+
+        ht.build_batch_requests(
+            [cue], "system", "model-a", tm=tm, tgt_lang="tr",
+            profanity="Sert", schema_name="Anime",
+        )
+
+        tm.lookup.assert_called_once_with(
+            "A source line.", tgt_lang="tr", model="model-a",
+            profanity="Sert", schema_name="Anime",
+        )
+        tm.fuzzy_lookup.assert_called_once_with(
+            "A source line.", threshold=0.95, tgt_lang="tr",
+            model="model-a", profanity="Sert", schema_name="Anime",
+        )
+
+    def test_both_hybrid_flows_forward_tm_dimensions(self):
+        for method in (gui.App._run_sync_hybrid, gui.App._run_hybrid):
+            source = inspect.getsource(method)
+            self.assertIn("profanity=profanity", source)
+            self.assertIn('schema_name=schema_dict.get("name", "")', source)
 
 
 class ParserAndValidationTest(unittest.TestCase):
