@@ -16,6 +16,11 @@ _VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
 _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 _SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _SOURCE_EMPTY_OVERRIDE = re.compile(r'\{\}')
+_LEGACY_DETECT_ENCODINGS = {
+    "big5", "big5hkscs", "cp932", "cp949", "euc_jp", "euc_kr",
+    "cp1251", "gb18030", "gbk", "koi8_r", "shift_jis",
+    "shift_jis_2004", "shift_jisx0213", "windows_1251",
+}
 
 
 def clean_translation_source_text(text: str) -> str:
@@ -42,6 +47,62 @@ def normalize_srt_timestamp_separators(text: str) -> str:
         r'\1:\2:\3\4:\5:\6\7',
         str(text or ""),
     )
+
+
+def _legacy_script_ratio(text: str, encoding: str) -> float:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return 0.0
+    enc = encoding.lower().replace("-", "_")
+    if enc in {"cp932", "euc_jp", "shift_jis", "shift_jis_2004", "shift_jisx0213"}:
+        matched = sum(
+            "\u3040" <= ch <= "\u30ff" or "\u3400" <= ch <= "\u9fff"
+            for ch in letters)
+    elif enc in {"gb18030", "gbk", "big5", "big5hkscs"}:
+        matched = sum("\u3400" <= ch <= "\u9fff" for ch in letters)
+    elif enc in {"cp949", "euc_kr"}:
+        matched = sum(
+            "\uac00" <= ch <= "\ud7af" or "\u3400" <= ch <= "\u9fff"
+            for ch in letters)
+    elif enc in {"cp1251", "windows_1251", "koi8_r"}:
+        matched = sum("\u0400" <= ch <= "\u052f" for ch in letters)
+    else:
+        matched = sum(ord(ch) > 127 for ch in letters)
+    return matched / len(letters)
+
+
+def _decode_detected_legacy(raw: bytes) -> str | None:
+    if len(raw) < 80:
+        return None
+    try:
+        from charset_normalizer import from_bytes
+        matches = list(from_bytes(raw))[:10]
+    except Exception:
+        return None
+    candidates = []
+    for match in matches:
+        encoding = str(match.encoding or "").lower().replace("-", "_")
+        if encoding not in _LEGACY_DETECT_ENCODINGS:
+            continue
+        try:
+            text = raw.decode(match.encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+        coherence = float(getattr(match, "coherence", 0.0) or 0.0)
+        chaos_value = getattr(match, "chaos", None)
+        chaos = float(chaos_value) if chaos_value is not None else 1.0
+        if chaos > 0.2:
+            continue
+        ratio = _legacy_script_ratio(text, encoding)
+        punctuation_bonus = 0.0
+        if encoding in {
+            "cp932", "euc_jp", "shift_jis", "shift_jis_2004", "shift_jisx0213",
+        }:
+            punctuation_bonus = min(0.5, sum(ch in "。、！？" for ch in text) / 20)
+        score = ratio + (coherence * 2.0) - chaos + punctuation_bonus
+        if coherence >= 0.15 or ratio >= 0.2:
+            candidates.append((score, text))
+    return max(candidates, default=(0.0, None), key=lambda item: item[0])[1]
 
 
 def read_subtitle_text(filepath) -> str:
@@ -76,6 +137,8 @@ def read_subtitle_text(filepath) -> str:
             text = raw.decode("utf-16")
         except UnicodeDecodeError:
             pass
+    if text is None:
+        text = _decode_detected_legacy(raw)
     if text is None:
         for enc in ("cp1254",):
             try:

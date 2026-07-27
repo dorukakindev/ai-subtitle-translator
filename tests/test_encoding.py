@@ -98,6 +98,42 @@ class ReadSubtitleTextTest(unittest.TestCase):
         finally:
             os.unlink(fp)
 
+    def test_shift_jis_detected_before_cp1254_fallback(self):
+        body = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "こんにちは、世界。これは字幕のテストです。\n\n"
+        ) * 12
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        Path(fp).write_bytes(body.encode("shift_jis"))
+        try:
+            self.assertIn("こんにちは、世界", read_subtitle_text(fp))
+        finally:
+            os.unlink(fp)
+
+    def test_gb18030_detected_before_cp1254_fallback(self):
+        body = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "你好，世界。这是一个字幕编码测试，今天开始翻译。\n\n"
+        ) * 12
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        Path(fp).write_bytes(body.encode("gb18030"))
+        try:
+            self.assertIn("你好，世界", read_subtitle_text(fp))
+        finally:
+            os.unlink(fp)
+
+    def test_cp1251_detected_before_cp1254_fallback(self):
+        body = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "Привет, мир. Это проверка кодировки субтитров.\n\n"
+        ) * 12
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        Path(fp).write_bytes(body.encode("cp1251"))
+        try:
+            self.assertIn("Привет, мир", read_subtitle_text(fp))
+        finally:
+            os.unlink(fp)
+
 
 class ParseSubtitleEncodingTest(unittest.TestCase):
     def test_parse_srt_cp1254(self):

@@ -53,6 +53,7 @@ API_REQUEST_TIMEOUT_SECONDS = 300
 
 def _safe_chat_create(client, **kwargs):
     model = kwargs.get("model", "")
+    requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
     base_url = str(getattr(client, "base_url", "")).lower().rstrip("/")
 
@@ -114,13 +115,9 @@ def _safe_chat_create(client, **kwargs):
         pass
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
-    from provider_retry import before_provider_request, record_provider_failure
-    before_provider_request(client)
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as exc:
-        record_provider_failure(client, exc)
-        raise
+    from provider_retry import chat_create_with_compat
+    return chat_create_with_compat(
+        client, model, kwargs, requested_format=requested_format)
 
 
 _SETTINGS_SECRET_KEY_RE = re.compile(
@@ -7552,6 +7549,19 @@ class App(ctk.CTk):
 
         _post_ui(self, _write)
 
+    def _provider_wait_callback(self, event: str, remaining: int, waiting: int):
+        if event == "start" and waiting == 1:
+            self._log(
+                f"Reseller kota beklemesi: {remaining} sn "
+                f"({waiting} istek sırada)", "warn")
+        if event in {"start", "tick"}:
+            self._set_status(
+                f"Reseller kota beklemesi: {remaining} sn "
+                f"({waiting} istek sırada)")
+        elif event == "end" and waiting == 0:
+            self._set_status(
+                "Durduruluyor..." if self._stop_flag else "API beklemesi bitti, devam ediliyor...")
+
     def _log_exc(self, label: str, exc: Exception):
         """Hata mesajını + kısa traceback'i loga yazar."""
         tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
@@ -9819,6 +9829,11 @@ class App(ctk.CTk):
         # çalıştırmada program kendi çıktısını kaynak sanmaz.
         self._save_settings()
         self._stop_flag   = False
+        from provider_retry import configure_provider_wait_hooks
+        configure_provider_wait_hooks(
+            cancel_check=lambda: self._stop_flag,
+            wait_callback=self._provider_wait_callback,
+        )
         self._pause_btw_files.set()  # start unpaused
         self._token_total = 0
         self._token_cached = 0
@@ -9919,6 +9934,11 @@ class App(ctk.CTk):
             return
         self._save_settings()
         self._stop_flag = False
+        from provider_retry import configure_provider_wait_hooks
+        configure_provider_wait_hooks(
+            cancel_check=lambda: self._stop_flag,
+            wait_callback=self._provider_wait_callback,
+        )
         self._active_snapshot = self._take_run_snapshot()
         self._pause_btw_files.set()  # resume: start unpaused
         with self._batch_lock:

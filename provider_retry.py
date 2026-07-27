@@ -1,5 +1,6 @@
 import email.utils
 import hashlib
+import copy
 import json
 import re
 import threading
@@ -116,13 +117,36 @@ def _client_key(client) -> str:
 
 
 class ProviderCooldownRegistry:
-    def __init__(self, clock=None, sleeper=None, retry_spacing: float = 0.25):
+    def __init__(
+        self,
+        clock=None,
+        sleeper=None,
+        retry_spacing: float = 0.25,
+        cancel_check=None,
+        wait_callback=None,
+    ):
         self._clock = clock or time.monotonic
         self._sleep = sleeper or time.sleep
         self._retry_spacing = max(0.0, float(retry_spacing))
+        self._cancel_check = cancel_check
+        self._wait_callback = wait_callback
         self._lock = threading.Lock()
         self._cooldown_until = {}
         self._next_slot = {}
+        self._waiting = 0
+
+    def set_hooks(self, cancel_check=None, wait_callback=None):
+        with self._lock:
+            self._cancel_check = cancel_check
+            self._wait_callback = wait_callback
+
+    def _notify(self, event: str, remaining: float):
+        callback = self._wait_callback
+        if callback:
+            try:
+                callback(event, max(0, int(remaining + 0.999)), self._waiting)
+            except Exception:
+                pass
 
     def before_request(self, client) -> float:
         key = _client_key(client)
@@ -138,7 +162,27 @@ class ProviderCooldownRegistry:
                 self._cooldown_until.pop(key, None)
                 self._next_slot.pop(key, None)
         if wait > 0.0:
-            self._sleep(wait)
+            with self._lock:
+                self._waiting += 1
+            self._notify("start", wait)
+            deadline = self._clock() + wait
+            last_second = None
+            try:
+                while True:
+                    if self._cancel_check and self._cancel_check():
+                        raise ProviderWaitCancelled("API kota beklemesi kullanıcı tarafından durduruldu")
+                    remaining = deadline - self._clock()
+                    if remaining <= 0:
+                        break
+                    second = int(remaining + 0.999)
+                    if second != last_second:
+                        last_second = second
+                        self._notify("tick", remaining)
+                    self._sleep(min(0.25, remaining))
+            finally:
+                with self._lock:
+                    self._waiting = max(0, self._waiting - 1)
+                self._notify("end", 0.0)
         return wait
 
     def record_rate_limit(self, client, exc) -> float | None:
@@ -160,6 +204,13 @@ class ProviderCooldownRegistry:
 
 
 _REGISTRY = ProviderCooldownRegistry()
+_STRUCTURED_LOCK = threading.Lock()
+_STRUCTURED_STATES = {}
+_STRUCTURED_PROBE_LOCKS = {}
+
+
+class ProviderWaitCancelled(RuntimeError):
+    pass
 
 
 def before_provider_request(client) -> float:
@@ -168,3 +219,162 @@ def before_provider_request(client) -> float:
 
 def record_provider_failure(client, exc) -> float | None:
     return _REGISTRY.record_rate_limit(client, exc)
+
+
+def configure_provider_wait_hooks(cancel_check=None, wait_callback=None):
+    _REGISTRY.set_hooks(cancel_check=cancel_check, wait_callback=wait_callback)
+
+
+def _is_custom_gpt5(client, model: str) -> bool:
+    base_url = str(getattr(client, "base_url", "") or "").lower().rstrip("/")
+    return (
+        (str(model or "").lower().startswith("gpt-5"))
+        and "api.openai.com" not in base_url
+        and bool(base_url)
+    )
+
+
+def _structured_key(client, model: str) -> str:
+    base_url = str(getattr(client, "base_url", "") or "").lower().rstrip("/")
+    return f"{base_url}|{str(model or '').lower()}"
+
+
+def _translation_schema_kwargs(kwargs: dict) -> dict | None:
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list):
+        return None
+    payload = None
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        try:
+            candidate = json.loads(message.get("content", ""))
+        except Exception:
+            continue
+        if isinstance(candidate, dict) and isinstance(candidate.get("tr"), list):
+            payload = candidate
+            break
+    if payload is None:
+        return None
+    ids = [
+        str(item.get("i"))
+        for item in payload["tr"]
+        if isinstance(item, dict) and "i" in item
+    ]
+    if not ids:
+        return None
+    structured = copy.deepcopy(kwargs)
+    instruction = {
+        "role": "developer",
+        "content": (
+            'Return one JSON object {"tr":[{"i":"...","t":"..."}]}. '
+            "Include every input id exactly once and no other ids."
+        ),
+    }
+    insert_at = max(
+        (index for index, message in enumerate(structured["messages"])
+         if message.get("role") == "user"),
+        default=len(structured["messages"]),
+    )
+    structured["messages"].insert(insert_at, instruction)
+    structured["response_format"] = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "subtitle_translations",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "tr": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "i": {"type": "string", "enum": ids},
+                                "t": {"type": "string"},
+                            },
+                            "required": ["i", "t"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["tr"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    return structured
+
+
+def _structured_unsupported(exc) -> bool:
+    status = _status_code(exc)
+    if status not in (400, 404, 422):
+        return False
+    text = str(exc or "").lower()
+    body = getattr(exc, "body", None)
+    if body:
+        try:
+            text += " " + json.dumps(body).lower()
+        except TypeError:
+            text += " " + str(body).lower()
+    response_text = getattr(getattr(exc, "response", None), "text", None)
+    if response_text:
+        text += " " + str(response_text).lower()
+    parameter = any(marker in text for marker in (
+        "response_format", "json_schema", "structured output", "structured_output",
+    ))
+    unsupported = any(marker in text for marker in (
+        "not support", "unsupported", "unknown parameter", "unrecognized",
+        "extra_forbidden", "invalid parameter", "invalid schema",
+        "schema for response_format", "invalid value", "supported values",
+        "must be one of", "not permitted",
+    ))
+    return parameter and unsupported
+
+
+def _chat_create_once(client, kwargs: dict):
+    before_provider_request(client)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        record_provider_failure(client, exc)
+        raise
+
+
+def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None):
+    plain = copy.deepcopy(kwargs)
+    if not _is_custom_gpt5(client, model):
+        return _chat_create_once(client, plain)
+
+    structured = copy.deepcopy(plain)
+    if requested_format is not None:
+        structured["response_format"] = copy.deepcopy(requested_format)
+    else:
+        structured = _translation_schema_kwargs(structured)
+    if structured is None:
+        return _chat_create_once(client, plain)
+
+    key = _structured_key(client, model)
+    with _STRUCTURED_LOCK:
+        state = _STRUCTURED_STATES.get(key)
+        probe_lock = _STRUCTURED_PROBE_LOCKS.setdefault(key, threading.Lock())
+    if state is False:
+        return _chat_create_once(client, plain)
+
+    lock = probe_lock if state is None else threading.Lock()
+    with lock:
+        with _STRUCTURED_LOCK:
+            state = _STRUCTURED_STATES.get(key)
+        if state is False:
+            return _chat_create_once(client, plain)
+        try:
+            result = _chat_create_once(client, structured)
+        except Exception as exc:
+            if not _structured_unsupported(exc):
+                raise
+            with _STRUCTURED_LOCK:
+                _STRUCTURED_STATES[key] = False
+            return _chat_create_once(client, plain)
+        with _STRUCTURED_LOCK:
+            _STRUCTURED_STATES[key] = True
+        return result

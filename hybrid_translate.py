@@ -1810,6 +1810,7 @@ API_REQUEST_TIMEOUT_SECONDS = 300
 
 def _safe_chat_create(client, **kwargs):
     model = kwargs.get("model", "")
+    requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
     base_url = str(getattr(client, "base_url", "")).lower().rstrip("/")
 
@@ -1867,13 +1868,9 @@ def _safe_chat_create(client, **kwargs):
     kwargs = _normalize_chat_create_kwargs(model, kwargs)
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
-    from provider_retry import before_provider_request, record_provider_failure
-    before_provider_request(client)
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as exc:
-        record_provider_failure(client, exc)
-        raise
+    from provider_retry import chat_create_with_compat
+    return chat_create_with_compat(
+        client, model, kwargs, requested_format=requested_format)
 
 
 def _normalize_chat_create_kwargs(model: str, kwargs: dict) -> dict:
@@ -5653,7 +5650,11 @@ def _extract_json_array(raw: str) -> str:
     # Direct parse
     try:
         parsed = json.loads(raw)
-        return raw if isinstance(parsed, list) else ""
+        if isinstance(parsed, list):
+            return raw
+        if isinstance(parsed, dict) and isinstance(parsed.get("tr"), list):
+            return json.dumps(parsed["tr"], ensure_ascii=False)
+        return ""
     except Exception:
         pass
     # Find first [...] block
