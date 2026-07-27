@@ -316,6 +316,21 @@ class SdhSourceDrivenTest(unittest.TestCase):
         result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
         self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "<i>Selamünaleyküm.</i>")
 
+    def test_mixed_sdh_and_location_brackets_preserve_location(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[MUSIC] [PARIS]")]
+        src_map = _src(**{"1": "[MUSIC] [PARIS]"})
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "[PARIS]")
+
+    def test_mixed_sdh_and_heading_brackets_preserve_heading(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "[MUSIC] [CHAPTER ONE]")]
+        src_map = _src(**{"1": "[MUSIC] [CHAPTER ONE]"})
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "[CHAPTER ONE]")
+
     def test_double_space_collapsed(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba (gülüyor) dünya.")]
         src_map = _src(**{"1": "Hello (laughs) world."})

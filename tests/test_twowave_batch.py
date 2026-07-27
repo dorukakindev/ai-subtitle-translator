@@ -166,5 +166,46 @@ class SaveResultsMultiIdTest(unittest.TestCase):
             self.assertEqual(count, 1)
 
 
+class TwoWaveStageSafetyTest(unittest.TestCase):
+    def test_single_wave_writes_stage_and_keeps_recovery_for_caller(self):
+        events = []
+        stub = SimpleNamespace(
+            _main_api_base_url=lambda: "https://reseller.example/v1",
+            _log=lambda *args, **kwargs: None,
+            _stop_flag=False,
+            _register_batch=lambda *args: events.append(("register", args[0])),
+            _unregister_batch=lambda bid: events.append(("unregister", bid)),
+            _update_batch_tokens=lambda *args, **kwargs: None,
+            _context_lines=20,
+            _clear_batch_recovery=lambda ids: events.append(("clear", tuple(ids))),
+        )
+        reqs = [_req("c0", [(1, "source")])]
+        fmap = _fmap("c0", [1])
+
+        with tempfile.TemporaryDirectory() as td:
+            final = Path(td) / "film.srt"
+            final.write_text("ESKI SAGLAM FINAL", encoding="utf-8")
+            stage = Path(td) / ".film.srt.twowave.stage.srt"
+
+            def fake_save(_key, _oid, _fmap, output_path, *_args, **_kwargs):
+                Path(output_path).write_text(
+                    "1\n00:00:01,000 --> 00:00:02,000\n[HATA]\n\n",
+                    encoding="utf-8",
+                )
+                return 1, 0
+
+            with patch.object(ht, "submit_batch", return_value="batch-1"), \
+                    patch.object(ht, "wait_for_batch", return_value="output-1"), \
+                    patch.object(ht, "save_results", side_effect=fake_save):
+                result = gui.App._run_twowave_batches(
+                    stub, "key", reqs, fmap, str(final),
+                    "source.srt", td, "film.srt", stage_path=stage)
+
+            self.assertEqual(result, (str(stage), ["batch-1"]))
+            self.assertEqual(final.read_text(encoding="utf-8"), "ESKI SAGLAM FINAL")
+            self.assertIn("[HATA]", stage.read_text(encoding="utf-8"))
+            self.assertFalse(any(event[0] == "clear" for event in events))
+
+
 if __name__ == "__main__":
     unittest.main()

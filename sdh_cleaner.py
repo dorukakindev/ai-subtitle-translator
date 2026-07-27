@@ -664,12 +664,20 @@ def src_is_sfx_only(src_text: str) -> bool:
         return bool(SFX_ONLY_STRUCTURAL_RE.match(text))
     if residue:
         return bool(MUSIC_NOTE_RE.search(text)) and not residue
+    has_descriptor_group = any(
+        is_sdh_descriptor(text[start + 1:end - 1].strip())
+        for start, end in spans
+    )
     for start, end in spans:
         raw = text[start:end]
         inner = raw[1:-1].strip()
         colon_follows = text[end:].lstrip().startswith(":")
-        if not (is_sdh_descriptor(inner)
-                or _is_speaker_name(inner, colon_follows=colon_follows)):
+        is_descriptor = is_sdh_descriptor(inner)
+        is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
+        if (is_speaker and not colon_follows and len(spans) > 1
+                and has_descriptor_group and not is_descriptor):
+            return False
+        if not (is_descriptor or is_speaker):
             return False
     return True
 
@@ -748,19 +756,34 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""
+    source_spans = _bracket_group_spans(src_line)
+    source_has_descriptor = any(
+        is_sdh_descriptor(src_line[start + 1:end - 1].strip())
+        for start, end in source_spans
+    )
     source_groups = []
-    for start, end in _bracket_group_spans(src_line):
+    source_has_unverified_group = False
+    for start, end in source_spans:
         raw = src_line[start:end]
         inner = raw[1:-1].strip()
         colon_follows = src_line[end:].lstrip().startswith(":")
-        if (is_sdh_descriptor(inner)
-                or _is_speaker_name(inner, colon_follows=colon_follows)):
+        is_descriptor = is_sdh_descriptor(inner)
+        is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
+        ambiguous_mixed_label = (
+            is_speaker and not colon_follows and len(source_spans) > 1
+            and source_has_descriptor and not is_descriptor
+        )
+        if (is_descriptor or is_speaker) and not ambiguous_mixed_label:
             source_groups.append(raw)
+        else:
+            source_has_unverified_group = True
     if not source_groups:
         return tr_line
     def _strip_verified(raw):
         inner = raw[1:-1].strip()
         if _is_protected_bracket_content(raw):
+            return raw
+        if source_has_unverified_group and not is_sdh_descriptor(inner):
             return raw
         return ""
     stripped = _replace_bracket_groups(tr_line, _strip_verified)

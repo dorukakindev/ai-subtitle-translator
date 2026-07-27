@@ -9180,17 +9180,32 @@ class App(ctk.CTk):
             role in getattr(self, "helper_model_vars", {})
             and self._is_custom_helper_label(self.helper_model_vars[role].get()))
         if custom_active:
-            provider = self._get_current_helper_provider(role)
             custom_key = (
                 self.helper_custom_key_vars[role].get().strip()
                 if role in self.helper_custom_key_vars else "")
-            return custom_key or self._helper_keys_cache.get(provider, "").strip()
+            return custom_key
         k = ""
         if role in self.helper_role_key_vars:
             k = self.helper_role_key_vars[role].get().strip()
         if role in self.helper_custom_key_vars:
             k = k or self.helper_custom_key_vars[role].get().strip()
         provider = self._get_current_helper_provider(role)
+        if not k and provider in {"openai", "openai_helper"}:
+            from urllib.parse import urlparse
+            helper_url_fn = getattr(self, "_helper_api_base_url", None)
+            helper_url = helper_url_fn(role) if helper_url_fn else "https://api.openai.com/v1"
+            helper_host = (urlparse(helper_url or "").hostname or "").casefold()
+            official = helper_host in {"api.openai.com", "openai.com"}
+            if not official:
+                main_custom = bool(
+                    getattr(self, "_main_custom_active", None)
+                    and self._main_custom_active())
+                main_host = (
+                    urlparse(self._main_api_base_url() or "").hostname or ""
+                ).casefold() if main_custom else ""
+                if main_custom and main_host == helper_host:
+                    return self._main_api_key()
+                return ""
         if not k:
             cache_key = "openai_helper" if provider == "openai" else provider
             k = self._helper_keys_cache.get(cache_key, "").strip()
@@ -15161,12 +15176,12 @@ class App(ctk.CTk):
 
     def _run_twowave_batches(self, openai_key, requests, fmap, out_path,
                              source_path, output_dir, fname, progress_fn=None,
-                             source_language="") -> bool:
+                             source_language="", stage_path=None):
         """İki-dalgalı zincirli batch (B3) — TEK dosya için sıralı submit-wait-submit-wait.
 
         A dalgasını gönderir, BEKLER, A'nın kuyruk çevirilerini B dalgasının ilk chunk'ına
         prev_tr enjekte eder, B'yi gönderir, bekler, iki çıktıyı out_path'e BİRLEŞİK yazar.
-        Başarıda True; başarısızlık/durdurmada False (çağıran dosyayı 'failed' işaretler).
+        Başarıda (stage_path, batch_ids); başarısızlık/durdurmada None döner.
 
         GÜVENLİK/kurtarma: her dalga ayrı bir out_path (`.wave1of2.srt`/`.wave2of2.srt`) ile
         submit_batch üzerinden batch_id.txt'ye yazılır — çökme olursa standart resume onları
@@ -15177,6 +15192,8 @@ class App(ctk.CTk):
         import hybrid_translate as ht
         from openai import OpenAI as _OAI
         b_url = self._main_api_base_url()
+        combined_stage = str(stage_path or Path(out_path).with_name(
+            f".{Path(out_path).name}.twowave.stage.srt"))
 
         wave_a, wave_b = _split_waves(requests)
 
@@ -15199,12 +15216,11 @@ class App(ctk.CTk):
             self._log(f"{fname}: iki-dalga için chunk yetersiz — tek batch (zincirsiz)", "info")
             bid, oid = _submit_wait(requests, fmap, out_path)
             if not bid or oid is None or self._stop_flag:
-                return False
-            ht.save_results(openai_key, oid, fmap, out_path, self._log,
+                return None
+            ht.save_results(openai_key, oid, fmap, combined_stage, self._log,
                             token_callback=self._update_batch_tokens, src_cues=None,
                             base_url=b_url)
-            self._clear_batch_recovery([bid])
-            return True
+            return combined_stage, [bid]
 
         cids_a = {r.get("custom_id") for r in wave_a}
         fmap_a = {c: v for c, v in fmap.items() if c in cids_a}
@@ -15216,7 +15232,7 @@ class App(ctk.CTk):
         self._log(f"{fname}: iki-dalgalı — A dalgası ({len(wave_a)} chunk) gönderiliyor", "info")
         bid_a, oid_a = _submit_wait(wave_a, fmap_a, out_a)
         if not bid_a or oid_a is None or self._stop_flag:
-            return False
+            return None
 
         # A'nın ham çevirisini al → B'ye zincir enjekte et (başarısızsa zincirsiz devam)
         try:
@@ -15232,14 +15248,13 @@ class App(ctk.CTk):
         bid_b, oid_b = _submit_wait(wave_b, fmap_b, out_b)
         if not bid_b or oid_b is None or self._stop_flag:
             # A bitti ama B alınamadı: A recovery'de kalır (resume .wave1of2.srt'ye alır)
-            return False
+            return None
 
         # ── Birleşik yazım + recovery temizliği ───────────────────────────────
-        ht.save_results(openai_key, [oid_a, oid_b], {**fmap_a, **fmap_b}, out_path,
+        ht.save_results(openai_key, [oid_a, oid_b], {**fmap_a, **fmap_b}, combined_stage,
                         self._log, token_callback=self._update_batch_tokens, src_cues=None,
                         base_url=b_url)
-        self._clear_batch_recovery([bid_a, bid_b])
-        return True
+        return combined_stage, [bid_a, bid_b]
 
     # ── Hybrid mod (Batch + gpt-5.4-mini analiz) ──────────────────────────────
     def _run_hybrid(self, openai_key, helper_key, ext_project_path):
@@ -15526,7 +15541,8 @@ class App(ctk.CTk):
                 batch_id = ht.submit_batch(
                     openai_key, requests, self._log, fmap, out_path,
                     source_path=str(filepath), output_dir=output_dir, base_url=b_url,
-                    source_language=file_src, schema_name=schema_dict.get("name", ""))
+                    source_language=file_src, schema_name=schema_dict.get("name", ""),
+                    session_fingerprint=session_fp)
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",
@@ -15578,19 +15594,23 @@ class App(ctk.CTk):
 
             try:
                 _stage_path = None
+                _tw_batch_ids = []
                 if batch_id == "__twowave__":
-                    # B3: iki-dalgalı sıralı submit-wait-submit-wait, out_path'e birleşik yazar.
+                    # B3: iki-dalgalı sıralı submit-wait-submit-wait, birleşik sonucu stage'e yazar.
                     _tw_reqs = self._twowave_pending.get(str(filepath), [])
-                    _ok = self._run_twowave_batches(
+                    _out_obj = Path(out_path)
+                    _tw_stage = _out_obj.with_name(
+                        f".{_out_obj.name}.twowave.stage.srt")
+                    _tw_result = self._run_twowave_batches(
                         openai_key, _tw_reqs, fmap, out_path,
                         str(filepath), output_dir, fname, progress_fn=_pfn,
-                        source_language=file_src)
-                    if not _ok or self._stop_flag:
+                        source_language=file_src, stage_path=_tw_stage)
+                    if not _tw_result or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
                             ht.update_batch_session(session, filepath, "failed")
                         continue
-                    # out_path yazıldı — normal post-processing'e aynen düş.
+                    _stage_path, _tw_batch_ids = _tw_result
                 else:
                     wait_result = ht.wait_for_batch(
                         openai_key, batch_id, self._log,
@@ -15897,6 +15917,8 @@ class App(ctk.CTk):
 
                 ht.clear_context_cache(filepath)
                 ht.update_batch_session(session, filepath, "completed")
+                if _tw_batch_ids:
+                    self._clear_batch_recovery(_tw_batch_ids)
 
             except Exception as e:
                 self._log(f"[{fname}] Faz-2 hatası: {e} — atlanıyor", "err")

@@ -888,6 +888,54 @@ def load_batch_session(input_dir: str) -> dict | None:
         return None
 
 
+def _recover_submitted_batch_links(session: dict, filepaths: list,
+                                   fingerprint: str) -> int:
+    if not fingerprint or not _batch_id_path().exists():
+        return 0
+    wanted = {}
+    for fp in filepaths or []:
+        try:
+            wanted[str(Path(fp).resolve())] = str(fp)
+        except OSError:
+            wanted[str(Path(fp))] = str(fp)
+    recovered = {}
+    try:
+        batch_ids = _batch_id_path().read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return 0
+    for batch_id in batch_ids:
+        batch_id = str(batch_id).strip()
+        if not is_safe_batch_id(batch_id):
+            continue
+        try:
+            data = json.loads(_batch_fmap_path(batch_id).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if (data.get("type") != "hybrid"
+                or data.get("session_fingerprint") != fingerprint
+                or not isinstance(data.get("fmap"), dict)):
+            continue
+        source_path = str(data.get("source_path") or "")
+        try:
+            source_key = str(Path(source_path).resolve())
+        except OSError:
+            source_key = str(Path(source_path))
+        filepath = wanted.get(source_key)
+        if filepath:
+            recovered[filepath] = (batch_id, data)
+    for filepath, (batch_id, data) in recovered.items():
+        entry = session["files"].setdefault(filepath, {})
+        if entry.get("status") == "completed":
+            continue
+        entry.update({
+            "status": "submitted",
+            "batch_id": batch_id,
+            "out_path": str(data.get("output_path") or ""),
+            "schema_name": str(data.get("schema_name") or ""),
+        })
+    return len(recovered)
+
+
 def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
                          fingerprint: str = "") -> dict:
     """Create or merge a batch session for the given file list.
@@ -928,6 +976,7 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
             "files": {str(fp): {"status": "pending"} for fp in filepaths},
         }
 
+    _recover_submitted_batch_links(session, filepaths, fingerprint)
     _save_batch_session(session)
     return session
 
@@ -9015,6 +9064,7 @@ def submit_batch(
     base_url: str = "",
     source_language: str = "",
     schema_name: str = "",
+    session_fingerprint: str = "",
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
 
@@ -9067,6 +9117,7 @@ def submit_batch(
                 "output_dir": output_dir or "",
                 "source_language": source_language or "",
                 "schema_name": schema_name or "",
+                "session_fingerprint": session_fingerprint or "",
                 "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
             }
             atomic_write_json(fmap_path, fmap_data)
