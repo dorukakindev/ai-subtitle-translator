@@ -194,6 +194,16 @@ class HelperRoutingAuditTests(unittest.TestCase):
             self.assertEqual(resp.usage.completion_tokens, 8)
             self.assertEqual(resp.usage.total_tokens, 20)
 
+    def test_hybrid_batch_missing_line_repair_uses_main_provider_model(self):
+        import inspect
+        src = inspect.getsource(gui.App._run_hybrid)
+        repair_at = src.index(
+            "_final_blocks, _n_repaired = _repair_untranslated_sync(")
+        block = src[repair_at:repair_at + 700]
+        self.assertIn("model=self._main_model_name()", block)
+        self.assertNotIn('model=self._helper_api_model("analysis")', block)
+        self.assertIn("Eksik satır onarımı atlandı", src)
+
 
 if __name__ == "__main__":
     unittest.main()

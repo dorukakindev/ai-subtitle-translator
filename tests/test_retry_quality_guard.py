@@ -323,6 +323,39 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual([it["i"] for it in json.loads(raw_map["chunk_1"])], [1, 2])
 
+    def test_missing_two_letter_dialogue_id_retries_whole_chunk(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._log = lambda *args, **kwargs: None
+        app._update_tokens = lambda *args, **kwargs: None
+        raw_map = {"chunk_1": json.dumps([
+            {"i": 2, "t": "Uzun diyalog çevrildi."},
+        ], ensure_ascii=False)}
+        requests = [self._req("chunk_1", [
+            {"i": 1, "t": "OK", "d": 1.0},
+            {"i": 2, "t": "THE LONG DIALOGUE WAS TRANSLATED.", "d": 2.0},
+        ])]
+        calls = []
+
+        def fake_chat_create(_client, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps([
+                    {"i": 1, "t": "Tamam."},
+                    {"i": 2, "t": "Uzun diyalog çevrildi."},
+                ], ensure_ascii=False)))],
+            )
+
+        with patch.object(gui, "_safe_chat_create", fake_chat_create):
+            unresolved = app._retry_hata(
+                object(), raw_map, requests, max_rounds=1)
+
+        self.assertEqual(unresolved, set())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            [it["i"] for it in json.loads(raw_map["chunk_1"])], [1, 2])
+
     def test_empty_sfx_does_not_trigger_strict_retry(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False

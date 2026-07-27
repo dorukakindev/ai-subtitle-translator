@@ -8384,7 +8384,7 @@ class App(ctk.CTk):
                     actual_ids = [str(it.get("i")) for it in items if "i" in it]
                     required_ids = [
                         idx for idx in expected_ids
-                        if len(_align_visible(chunk_src_map.get(idx, ""))) >= 3
+                        if _has_wordlike_text(_align_visible(chunk_src_map.get(idx, "")))
                         and not _align_is_sfx_only(chunk_src_map.get(idx, ""))
                     ]
                     required_set = set(required_ids)
@@ -14961,19 +14961,31 @@ class App(ctk.CTk):
                 sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
             except Exception:
                 pass
-            write_srt(out_path, self._maybe_merge_cues(sorted_blocks), tgt)
-            self._log(f"Kaydedildi: {out_path}", "ok")
-            self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
-            # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
-            w = scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
-                                         src_clean_map=src_blocks)
-            total_warnings += w
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
+            _has_missing = _hata_n > 0
+            _write_path = out_path
+            if _has_missing:
+                _write_path = out_path.with_name(f"{out_path.stem}.partial.srt")
+            write_srt(_write_path, self._maybe_merge_cues(sorted_blocks), tgt)
+            if _has_missing:
+                self._log(
+                    f"{Path(fp).name}: {_hata_n} eksik çeviri kaldı; "
+                    f"kısmi çıktı yazıldı ({_write_path.name}), tamamlandı sayılmayacak.",
+                    "err",
+                )
+            else:
+                self._log(f"Kaydedildi: {out_path}", "ok")
+                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
+            # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
+            w = (_hata_n if _has_missing else
+                 scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
+                                          src_clean_map=src_blocks))
+            total_warnings += w
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "total": len(sorted_blocks),
-                "hata": _hata_n + _n_filled, "cps": _cps_n,
+                "hata": _hata_n, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "rev": _rev_fixes, "warn": w,
                 "pass_fix": _pass_fix,
@@ -14983,6 +14995,11 @@ class App(ctk.CTk):
                 "pass_coverage": _pc,
                 "tm_hits": self._tm.hit_count_session(),
             })
+            if _has_missing:
+                _failed_files.append(fp)
+                if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
+                    break
+                continue
             # TM kaydı (ortak yardımcı)
             self._store_tm_pairs(sorted_blocks, src_blocks, model_name, _tgt_lang, schema_name=schema_dict.get("name", ""))
             if _hata_n == 0 and _n_filled == 0:
@@ -15595,13 +15612,13 @@ class App(ctk.CTk):
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
                         _final_blocks, _raw_map_pre, _repair_client,
                         src_lang=file_src, tgt_lang=tgt,
-                        model=self._helper_api_model("analysis"),
+                        model=self._main_model_name(),
                         schema=self._schema_by_name(file_schema_name),
                         profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=cues)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"[{fname}] Eksik satır onarımı atlandı: {e}", "warn")
                 
                 _n_filled_save = 0
                 _unresolved_missing = sum(

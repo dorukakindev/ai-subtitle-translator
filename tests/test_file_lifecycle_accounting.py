@@ -144,6 +144,16 @@ class FileLifecycleAccountingTest(unittest.TestCase):
             self.assertIn('is_recovery_complete', src,
                           f"Recovery cleanup is not tied to terminal outcomes in {name}")
 
+    def test_write_results_marks_unresolved_output_failed_and_partial(self):
+        src = inspect.getsource(gui.App._write_results)
+        self.assertIn('f"{out_path.stem}.partial.srt"', src)
+        self.assertIn("_failed_files.append(fp)", src)
+        self.assertIn("if _has_missing:", src)
+        self.assertLess(
+            src.index("_failed_files.append(fp)"),
+            src.index("_written_files.append(fp)"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
