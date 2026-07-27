@@ -5780,7 +5780,11 @@ class App(ctk.CTk):
             self._save_settings()
         except Exception:
             pass
-        self._drain_workers_for_close(time.monotonic() + 2.0)
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        self._drain_workers_for_close()
 
     def _start_worker(self, target, args=(), daemon=True):
         if not hasattr(self, "_worker_lock"):
@@ -5807,14 +5811,12 @@ class App(ctk.CTk):
         return thread
 
     def _drain_workers_for_close(self, deadline=None):
-        if deadline is None:
-            deadline = time.monotonic() + 2.0
         with self._worker_lock:
             alive = [
                 thread for thread in self._worker_threads
                 if thread.is_alive() and thread is not threading.current_thread()
             ]
-        if alive and time.monotonic() < deadline:
+        if alive:
             try:
                 self.after(50, self._drain_workers_for_close, deadline)
                 return

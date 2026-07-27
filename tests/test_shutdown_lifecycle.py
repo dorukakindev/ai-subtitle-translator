@@ -78,7 +78,7 @@ class WorkerDrainTest(unittest.TestCase):
         callback(deadline)
         finished.assert_called_once()
 
-    def test_close_drain_finishes_when_deadline_expired(self):
+    def test_close_drain_never_closes_resources_while_worker_is_alive(self):
         stub = self._stub()
         release = threading.Event()
         thread = gui.App._start_worker(stub, release.wait)
@@ -89,10 +89,13 @@ class WorkerDrainTest(unittest.TestCase):
 
         gui.App._drain_workers_for_close(stub, time.monotonic() - 1)
 
-        self.assertEqual(scheduled, [])
-        finished.assert_called_once()
+        self.assertEqual(len(scheduled), 1)
+        finished.assert_not_called()
         release.set()
         thread.join(timeout=1)
+        _, callback, deadline = scheduled.pop()
+        callback(deadline)
+        finished.assert_called_once()
 
     def test_finish_close_locks_log_and_closes_tm(self):
         log_file = io.StringIO()
