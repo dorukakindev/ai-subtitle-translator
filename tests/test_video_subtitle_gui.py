@@ -15,6 +15,9 @@ class _Var:
     def get(self):
         return self.value
 
+    def set(self, value):
+        self.value = value
+
 
 class VideoSubtitleGuiTests(unittest.TestCase):
     def test_same_folder_output_uses_original_video_directory(self):
@@ -35,7 +38,7 @@ class VideoSubtitleGuiTests(unittest.TestCase):
             output = gui._resolve_output_path(
                 "", "", str(extracted), same_folder=True)
 
-        self.assertEqual(output, video_dir / "Film.track-2.eng.tr.srt")
+        self.assertEqual(output, video_dir / "Film.mkv.track-2.eng.tr.srt")
 
     def test_extracted_subtitles_append_without_replacing_queue(self):
         with tempfile.TemporaryDirectory() as td:
@@ -44,7 +47,14 @@ class VideoSubtitleGuiTests(unittest.TestCase):
             new = root / "new.srt"
             old.write_text("old", encoding="utf-8")
             new.write_text("new", encoding="utf-8")
+            vs._write_json_atomic(vs._origin_sidecar(new), {"language": "ita"})
             messages = []
+            language_vars = {}
+
+            def refresh(message):
+                messages.append(message)
+                language_vars[str(new)] = _Var("English")
+
             stub = SimpleNamespace(
                 _selected_files=[str(old)],
                 _input_folder_explicitly_selected=False,
@@ -53,7 +63,8 @@ class VideoSubtitleGuiTests(unittest.TestCase):
                 _language_preflight_done=True,
                 _pm=object(),
                 _dedupe_paths=lambda paths: list(dict.fromkeys(paths)),
-                _refresh_selected_files_ui=messages.append,
+                _refresh_selected_files_ui=refresh,
+                _file_language_vars=language_vars,
             )
 
             added = gui.App._append_extracted_video_subtitles(
@@ -65,6 +76,7 @@ class VideoSubtitleGuiTests(unittest.TestCase):
         self.assertFalse(stub._language_preflight_done)
         self.assertIsNone(stub._pm)
         self.assertIn("Videodan +1", messages[0])
+        self.assertEqual(language_vars[str(new)].get(), "Italian")
 
     def test_drop_handler_routes_video_to_probe(self):
         with tempfile.TemporaryDirectory() as td:
@@ -104,6 +116,32 @@ class VideoSubtitleGuiTests(unittest.TestCase):
 
         self.assertEqual(len(started), 1)
         self.assertTrue(stub._video_import_busy)
+
+    def test_video_probe_worker_start_failure_releases_busy_state(self):
+        statuses = []
+        logs = []
+        stub = SimpleNamespace(
+            _is_running=False,
+            _video_import_busy=False,
+            _dedupe_paths=lambda paths: paths,
+            _set_status=statuses.append,
+            _log=lambda message, level: logs.append((message, level)),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mkv"
+            video.write_bytes(b"video")
+            with mock.patch.object(
+                    gui.App, "_start_worker", side_effect=RuntimeError("no threads")):
+                gui.App._queue_video_probe(stub, [str(video)])
+
+        self.assertFalse(stub._video_import_busy)
+        self.assertTrue(statuses)
+        self.assertEqual(logs[0][1], "err")
+
+    def test_video_track_language_uses_stream_tag_and_falls_back_to_auto(self):
+        self.assertEqual(gui._video_track_language("eng"), "English")
+        self.assertEqual(gui._video_track_language("it-IT"), "Italian")
+        self.assertEqual(gui._video_track_language("unrecognized"), gui.AUTO_LANGUAGE)
 
 
 if __name__ == "__main__":

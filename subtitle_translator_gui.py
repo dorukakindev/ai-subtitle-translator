@@ -343,6 +343,15 @@ def normalize_language_name(name: str, allow_auto: bool = True) -> str:
     return AUTO_LANGUAGE if allow_auto else ""
 
 
+def _video_track_language(tag: str) -> str:
+    """FFmpeg stream tag -> a supported per-file source language."""
+    raw = str(tag or "").strip()
+    if not raw:
+        return AUTO_LANGUAGE
+    token = raw.casefold().replace("_", "-").split("-", 1)[0]
+    return _FILENAME_LANGUAGE_TOKENS.get(token, normalize_language_name(token))
+
+
 _FILENAME_LANGUAGE_TOKENS = {
     "tur": "Turkish", "turkish": "Turkish",
     "eng": "English", "english": "English",
@@ -3784,10 +3793,14 @@ def _missing_block_items(all_items: list, current_raw: str) -> list:
     except Exception:
         parsed = []
     for it in (parsed if isinstance(parsed, list) else []):
-        if isinstance(it, dict) and "i" in it and str(it.get("t", "")).strip() not in ("", "[HATA]"):
+        if (isinstance(it, dict) and "i" in it
+                and str(it.get("t", "")).strip()
+                and not str(it.get("t", "")).strip().startswith("[HATA")):
             ok.add(str(it["i"]))
     for it in _salvage_json_objects(current_raw):
-        if isinstance(it, dict) and "i" in it and str(it.get("t", "")).strip() not in ("", "[HATA]"):
+        if (isinstance(it, dict) and "i" in it
+                and str(it.get("t", "")).strip()
+                and not str(it.get("t", "")).strip().startswith("[HATA")):
             ok.add(str(it["i"]))
     return [it for it in all_items if str(it.get("i")) not in ok]
 
@@ -8335,7 +8348,7 @@ class App(ctk.CTk):
                     return "invalid_json"
                 if any(not isinstance(it, dict) for it in items):
                     return "invalid_items"
-                if any(str(it.get("t", "")).strip() == "[HATA]" for it in items):
+                if any(str(it.get("t", "")).strip().startswith("[HATA") for it in items):
                     return "hata_line"
                 req = req_by_id.get(cid)
                 chunk_src_map = _chunk_src_map_from_request(req) if req else {}
@@ -8445,7 +8458,7 @@ class App(ctk.CTk):
             retry_reasons = {cid: _retry_reason(cid) for cid in req_by_id}
             pending = [cid for cid, reason in retry_reasons.items() if reason]
             if not pending:
-                return
+                return set()
             to_retry = [cid for cid in pending if cid not in upstream_failed]
             if not to_retry:
                 break
@@ -8496,7 +8509,7 @@ class App(ctk.CTk):
 
         # Kurtarma adımı
         if self._stop_flag:
-            return
+            return set(req_by_id)
         strict_fallback = set()
         for cid, req in req_by_id.items():
             reason = _retry_reason(cid)
@@ -8562,6 +8575,8 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+        return {cid for cid in req_by_id if _retry_reason(cid)}
+
     def _resend_missing_blocks(self, client, req: dict, current_raw: str, max_sub: int = 20):
         """Bir chunk'ta hâlâ eksik/[HATA] olan blokları, yalnızca o blokları içeren
         daha küçük isteklerle yeniden çevirir (kesilme kurtarması). Birleştirilmiş
@@ -8580,7 +8595,9 @@ class App(ctk.CTk):
         recovered = {}
         try:
             for it in json.loads(_extract_json_array(current_raw) or "[]"):
-                if isinstance(it, dict) and "i" in it and str(it.get("t", "")).strip() not in ("", "[HATA]"):
+                if (isinstance(it, dict) and "i" in it
+                        and str(it.get("t", "")).strip()
+                        and not str(it.get("t", "")).strip().startswith("[HATA")):
                     recovered[str(it["i"])] = it["t"]
         except Exception:
             pass
@@ -8619,11 +8636,11 @@ class App(ctk.CTk):
                 if resp.usage:
                     tot, cached = _get_usage_details(resp.usage)
                     self._update_tokens(tot, cached=cached)
-                txt  = (resp.choices[0].message.content or "").strip()
+                txt = _validated_chat_content(resp)
                 info = [(str(it.get("i")), "", "") for it in sub]
                 tmap = parse_response(txt, info)
                 for k, v in tmap.items():
-                    if str(v).strip() not in ("", "[HATA]"):
+                    if str(v).strip() and not str(v).strip().startswith("[HATA"):
                         recovered[k] = v
             except Exception as e:
                 self._log(f"  ↺ alt-grup hatası: {e}", "warn")
@@ -8830,7 +8847,12 @@ class App(ctk.CTk):
                 self._set_status(f"Video altyazıları taranıyor… {index}/{len(paths)}")
             _post_ui(self, self._show_video_stream_picker, results, errors)
 
-        App._start_worker(self, _probe)
+        try:
+            App._start_worker(self, _probe)
+        except Exception as exc:
+            self._video_import_busy = False
+            self._set_status("Hazır.")
+            self._log(f"Video altyazısı taraması başlatılamadı: {exc}", "err")
 
     def _show_video_stream_picker(self, results, errors):
         self._video_import_busy = False
@@ -8959,7 +8981,14 @@ class App(ctk.CTk):
                     self, self._finish_video_subtitle_import,
                     extracted, extract_errors)
 
-            App._start_worker(self, _extract)
+            try:
+                App._start_worker(self, _extract)
+            except Exception as exc:
+                self._video_import_busy = False
+                self._set_status("Hazır.")
+                self._log(f"Video altyazısı çıkarma işlemi başlatılamadı: {exc}", "err")
+                messagebox.showerror(
+                    "Video Altyazısı", f"Çıkarma işlemi başlatılamadı:\n{exc}", parent=self)
 
         ctk.CTkButton(
             buttons, text="İptal",
@@ -8989,6 +9018,10 @@ class App(ctk.CTk):
         valid = [str(Path(path)) for path in paths if Path(path).is_file()]
         if not valid:
             return 0
+        detected_languages = {
+            path: _video_track_language(video_tracks.extracted_video_language(path))
+            for path in valid
+        }
         if (not self._selected_files
                 and getattr(self, "_input_folder_explicitly_selected", False)
                 and self.input_var.get()):
@@ -9003,6 +9036,10 @@ class App(ctk.CTk):
         total = len(self._selected_files)
         self._refresh_selected_files_ui(
             f"Videodan +{added} altyazı eklendi, toplam {total} dosya")
+        for path, language in detected_languages.items():
+            var = getattr(self, "_file_language_vars", {}).get(path)
+            if var is not None:
+                var.set(language)
         return added
 
     def _add_folder_files(self):
@@ -13258,15 +13295,15 @@ class App(ctk.CTk):
                     _progress_tick()
 
         if not self._stop_flag:
-            self._retry_hata(client, raw_map, requests, max_rounds=self._max_retry)
+            unresolved = self._retry_hata(
+                client, raw_map, requests, max_rounds=self._max_retry)
+            failed[0] = len(unresolved)
+            self._set_stat(self.stat_fail_var, str(failed[0]))
             _all_written = self._write_results(raw_map, file_map, output_dir,
                                                openai_key=api_key, src=src,
                                                source_languages=_source_languages,
                                                schema_names=_effective_schema_names)
-            if _all_written:
-                is_full_success = failed[0] == 0
-            else:
-                is_full_success = False
+            is_full_success = bool(_all_written and not unresolved)
             if should_clear_sync_ckpt(self._stop_flag, is_full_success):
                 self._clear_sync_ckpt(used_ckpt_keys)
 

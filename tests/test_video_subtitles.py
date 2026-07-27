@@ -69,6 +69,16 @@ class VideoSubtitleTests(unittest.TestCase):
                 vs.probe_subtitle_streams(
                     video, runner=runner, which=lambda _name: "ffprobe.exe")
 
+    def test_probe_rejects_malformed_stream_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mp4"
+            video.write_bytes(b"video")
+            runner = mock.Mock(return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps({"streams": {"index": 2}}), stderr=""))
+            with self.assertRaisesRegex(vs.VideoSubtitleError, "geçersiz altyazı akışı listesi"):
+                vs.probe_subtitle_streams(
+                    video, runner=runner, which=lambda _name: "ffprobe.exe")
+
     def test_extracts_text_stream_atomically_and_records_origin(self):
         with tempfile.TemporaryDirectory() as td:
             video = Path(td) / "My Film.mkv"
@@ -132,6 +142,29 @@ class VideoSubtitleTests(unittest.TestCase):
         self.assertTrue(vs.is_video_path("Film.mp4"))
         self.assertFalse(vs.is_video_path("Film.srt"))
         self.assertFalse(vs.is_video_path("source.ts"))
+
+    def test_logical_paths_distinguish_same_stem_video_extensions(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mkv = root / "Film.mkv"
+            mp4 = root / "Film.mp4"
+            mkv.write_bytes(b"mkv")
+            mp4.write_bytes(b"mp4")
+            first = root / "first.srt"
+            second = root / "second.srt"
+            first.write_text("subtitle", encoding="utf-8")
+            second.write_text("subtitle", encoding="utf-8")
+            vs._write_json_atomic(vs._origin_sidecar(first), {
+                "source_video": str(mkv.resolve()), "language": "eng"})
+            vs._write_json_atomic(vs._origin_sidecar(second), {
+                "source_video": str(mp4.resolve()), "language": "ita"})
+
+            logical_first = vs.logical_subtitle_path(first)
+            logical_second = vs.logical_subtitle_path(second)
+            language = vs.extracted_video_language(first)
+
+        self.assertNotEqual(logical_first, logical_second)
+        self.assertEqual(language, "eng")
 
 
 if __name__ == "__main__":

@@ -82,6 +82,10 @@ def _run(command, runner=subprocess.run, timeout=120):
         raise VideoSubtitleError(
             f"{Path(command[0]).name} {timeout} saniye içinde tamamlanamadı."
         ) from exc
+    except OSError as exc:
+        raise VideoSubtitleError(
+            f"{Path(command[0]).name} başlatılamadı: {exc}"
+        ) from exc
 
 
 def probe_subtitle_streams(video_path, runner=subprocess.run, which=shutil.which):
@@ -102,13 +106,22 @@ def probe_subtitle_streams(video_path, runner=subprocess.run, which=shutil.which
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError as exc:
         raise VideoSubtitleError(f"ffprobe geçersiz JSON döndürdü: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise VideoSubtitleError("ffprobe geçersiz altyazı akışı verisi döndürdü.")
+    raw_streams = payload.get("streams") or []
+    if not isinstance(raw_streams, list):
+        raise VideoSubtitleError("ffprobe geçersiz altyazı akışı listesi döndürdü.")
     streams = []
-    for item in payload.get("streams") or []:
+    for item in raw_streams:
+        if not isinstance(item, dict):
+            continue
         try:
             index = int(item["index"])
         except (KeyError, TypeError, ValueError):
             continue
         tags = item.get("tags") or {}
+        if not isinstance(tags, dict):
+            tags = {}
         streams.append(SubtitleStream(
             index=index,
             codec=str(item.get("codec_name") or "unknown").strip().lower(),
@@ -160,19 +173,30 @@ def _write_json_atomic(path: Path, payload: dict):
             pass
 
 
-def extracted_video_origin(subtitle_path):
+def extracted_video_metadata(subtitle_path) -> dict:
     path = Path(subtitle_path)
     sidecar = _origin_sidecar(path)
     if not sidecar.is_file():
-        return None
+        return {}
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
-        source = Path(str(payload.get("source_video") or ""))
-        if source.is_absolute():
-            return source
+        if isinstance(payload, dict):
+            return payload
     except Exception:
         pass
+    return {}
+
+
+def extracted_video_origin(subtitle_path):
+    payload = extracted_video_metadata(subtitle_path)
+    source = Path(str(payload.get("source_video") or ""))
+    if source.is_absolute():
+        return source
     return None
+
+
+def extracted_video_language(subtitle_path) -> str:
+    return str(extracted_video_metadata(subtitle_path).get("language") or "").strip()
 
 
 def logical_subtitle_path(subtitle_path) -> Path:
@@ -180,7 +204,10 @@ def logical_subtitle_path(subtitle_path) -> Path:
     source_video = extracted_video_origin(path)
     if source_video is None:
         return path
-    return source_video.parent / path.name
+    marker = f"{source_video.stem}."
+    tail = path.name[len(marker):] if path.name.startswith(marker) else path.name
+    video_ext = source_video.suffix.lstrip(".") or "video"
+    return source_video.parent / f"{source_video.stem}.{video_ext}.{tail}"
 
 
 def extract_subtitle_stream(

@@ -74,6 +74,11 @@ class MissingBlockItemsTest(unittest.TestCase):
         miss_ids = {it["i"] for it in gui._missing_block_items(self.ALL, raw)}
         self.assertEqual(miss_ids, {190})
 
+    def test_reason_specific_hata_counts_as_missing(self):
+        raw = '[{"i":190,"t":"[HATA_NON_TURKISH_TARGET]"},{"i":191,"t":"ok"}]'
+        miss_ids = {it["i"] for it in gui._missing_block_items(self.ALL, raw)}
+        self.assertEqual(miss_ids, {190, 192, 193, 194})
+
     def test_empty_raw_all_missing(self):
         miss_ids = {it["i"] for it in gui._missing_block_items(self.ALL, "")}
         self.assertEqual(miss_ids, {190, 191, 192, 193, 194})
