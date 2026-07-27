@@ -399,7 +399,7 @@ def resolve_source_language_preflight(detected_input: dict, user_selections: dic
 
     return (should_continue, final_map)
 
-CHUNK         = 30
+CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 20  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 10  # next-chunk lines sent as read-ahead
@@ -6047,10 +6047,10 @@ class App(ctk.CTk):
                 pass
 
         # ── Model selection divided by token limits ──
-        self.limit_class_var = ctk.StringVar(value="2.5M")
+        self.limit_class_var = ctk.StringVar(value="250K")
         self.model_2_5m_var = ctk.StringVar(value="gpt-5.4-mini")
         self.model_250k_var = ctk.StringVar(value="gpt-5.4")
-        self.model_var = ctk.StringVar(value="gpt-5.4-mini")
+        self.model_var = ctk.StringVar(value="gpt-5.4")
 
         lbl("Model Limit Grubu")
         limit_fr = ctk.CTkFrame(sb, fg_color="transparent")
@@ -6082,7 +6082,7 @@ class App(ctk.CTk):
         # ── Mod ──────────────────────────────────────────────────────────────
         sep()
         section("ÇEVİRİ MODU")
-        self.mode_var = ctk.StringVar(value="batch")
+        self.mode_var = ctk.StringVar(value="sync")
         mode_fr = ctk.CTkFrame(sb, fg_color="transparent")
         mode_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         mode_fr.grid_columnconfigure((0,1), weight=1)
@@ -6204,7 +6204,7 @@ class App(ctk.CTk):
                       text_color=GREEN, command=self._clear_selected_files)
         # shown only when files are selected
 
-        self.clean_sdh_var = ctk.BooleanVar(value=False)
+        self.clean_sdh_var = ctk.BooleanVar(value=True)
         sdh_fr = ctk.CTkFrame(sb, fg_color="transparent")
         sdh_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         sdh_fr.grid_columnconfigure(1, weight=1)
@@ -6517,7 +6517,7 @@ class App(ctk.CTk):
 
         # ── Yardımcı Analiz (gpt-5.4-mini) ────────────────────────────────────
         sep()
-        self.hybrid_var = ctk.BooleanVar(value=False)
+        self.hybrid_var = ctk.BooleanVar(value=True)
         mm_hdr = ctk.CTkFrame(sb, fg_color="transparent")
         mm_hdr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         mm_hdr.grid_columnconfigure(1, weight=1)
@@ -6538,7 +6538,6 @@ class App(ctk.CTk):
         self.hybrid_frame = ctk.CTkFrame(sb, fg_color="transparent")
         self.hybrid_frame.grid(row=r, column=0, sticky="ew"); r += 1
         self.hybrid_frame.grid_columnconfigure(0, weight=1)
-        self.hybrid_frame.grid_remove()
 
         hfr = self.hybrid_frame
 
@@ -6595,7 +6594,8 @@ class App(ctk.CTk):
             role_container.pack(fill="x", pady=(0,2))
             self.helper_role_containers[role] = role_container
 
-            mvar = ctk.StringVar(value="gpt-5.4-mini")
+            default_helper_model = "GPT-5.4 (Reseller)" if role == "critic" else "gpt-5.4-mini"
+            mvar = ctk.StringVar(value=default_helper_model)
             self.helper_model_vars[role] = mvar
 
             combo = ctk.CTkComboBox(role_container, variable=mvar,
@@ -6663,7 +6663,7 @@ class App(ctk.CTk):
                          fg_color=CARD, border_color=BORDER, text_color=FG).pack(fill="x", padx=4, pady=(0,2))
         self._sync_helper_role_controls()
         hf_lbl("Analiz derinligi")
-        self.analysis_depth_var = ctk.StringVar(value="Standart")
+        self.analysis_depth_var = ctk.StringVar(value="Maksimum")
         ctk.CTkComboBox(hfr, variable=self.analysis_depth_var,
                         values=["Standart", "Gelismis", "Maksimum"],
                         height=36, font=ctk.CTkFont("Segoe UI", 12),
