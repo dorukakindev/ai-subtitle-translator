@@ -120,6 +120,29 @@ def _safe_chat_create(client, **kwargs):
         client, model, kwargs, requested_format=requested_format)
 
 
+_CLEAN_CHAT_FINISH_REASONS = {"", "stop", "end_turn", "completed"}
+
+
+def _validated_chat_content(response) -> str:
+    choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+    if not choices:
+        raise RuntimeError("API returned empty choices")
+    choice = choices[0]
+    finish_reason = (
+        choice.get("finish_reason") if isinstance(choice, dict)
+        else getattr(choice, "finish_reason", None)
+    )
+    normalized_reason = str(finish_reason or "").strip().lower()
+    if normalized_reason not in _CLEAN_CHAT_FINISH_REASONS:
+        raise RuntimeError(f"API response incomplete (finish_reason={normalized_reason})")
+    message = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    text = str(content or "").strip()
+    if not text:
+        raise RuntimeError("API returned empty content")
+    return text
+
+
 _SETTINGS_SECRET_KEY_RE = re.compile(
     r'("(?:[^"]*(?:api[_-]?key|secret|token|_key)[^"]*)"\s*:\s*")([^"]*)(")',
     re.I,
@@ -8436,12 +8459,7 @@ class App(ctk.CTk):
                 for attempt in range(3):  # up to 3 attempts per round for transient errors
                     try:
                         resp = _safe_chat_create(client, **_retry_body_for(req, retry_reasons.get(cid, "")))
-                        if not resp.choices:
-                            raise RuntimeError("empty choices")
-                        msg = resp.choices[0].message
-                        text = (msg.content or "").strip()
-                        if not text:
-                            raise RuntimeError("empty content")
+                        text = _validated_chat_content(resp)
                         tok, cached = 0, 0
                         if resp.usage:
                             tok, cached = _get_usage_details(resp.usage)
@@ -12900,12 +12918,7 @@ class App(ctk.CTk):
         def send_one(req):
             body = {k: v for k, v in req["body"].items()}
             resp = _safe_chat_create(client, **body)
-            if not resp.choices:
-                raise RuntimeError("API returned empty choices")
-            msg  = resp.choices[0].message
-            text = (msg.content or "").strip()
-            if not text:
-                raise RuntimeError("API returned empty content")
+            text = _validated_chat_content(resp)
             tok, cached = 0, 0
             if resp.usage:
                 tok, cached = _get_usage_details(resp.usage)
@@ -13049,12 +13062,7 @@ class App(ctk.CTk):
         def send_one(req):
             body = req["body"]
             resp = _safe_chat_create(client, **body)
-            if not resp.choices:
-                raise RuntimeError("API returned empty choices")
-            msg  = resp.choices[0].message
-            text = (msg.content or "").strip()
-            if not text:
-                raise RuntimeError("API returned empty content")
+            text = _validated_chat_content(resp)
             tok, cached = 0, 0
             if resp.usage:
                 tok, cached = _get_usage_details(resp.usage)
