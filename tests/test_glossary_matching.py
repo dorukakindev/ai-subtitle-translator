@@ -61,12 +61,12 @@ class GlossMissReasonTest(unittest.TestCase):
         out = ht.run_validators(tr, cues, gloss)
         self.assertEqual(out, [])
 
-    def test_short_term_skipped(self):
-        gloss = {"cat": "kedi"}  # len<=4 → atlanır (gürültü engeli)
+    def test_short_boundary_matched_term_is_checked(self):
+        gloss = {"cat": "kedi"}
         cues = [self._cue(1, "the cat sleeps")]
         tr = [(1, "00:00:01,000 --> 00:00:02,000", "uyuyor")]
         out = ht.run_validators(tr, cues, gloss)
-        self.assertEqual(out, [])
+        self.assertEqual(out[0][3], "GLOSS_MISS:cat=>kedi")
 
 
 class SchemaGlossaryInjectionTest(unittest.TestCase):

@@ -7,6 +7,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 from project_memory import ProjectMemory
 
@@ -124,6 +125,39 @@ class ProjectMemoryOpsTest(unittest.TestCase):
         notes.append("başka not")
         self.assertNotIn("other", pm.get_glossary())
         self.assertNotIn("başka not", pm.get_notes())
+
+    def test_target_languages_use_isolated_memory_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            german = ProjectMemory(td, "de")
+            german.update_glossary({"hello": "hallo"})
+            turkish = ProjectMemory(td, "tr")
+            turkish.update_glossary({"hello": "merhaba"})
+
+            self.assertEqual(
+                ProjectMemory(td, "de").get_glossary(),
+                {"hello": "hallo"},
+            )
+            self.assertEqual(
+                ProjectMemory(td, "tr").get_glossary(),
+                {"hello": "merhaba"},
+            )
+            self.assertTrue((Path(td) / ".project_memory.de.json").exists())
+            self.assertTrue((Path(td) / ".project_memory.json").exists())
+
+    def test_gui_retargets_memory_when_target_changes(self):
+        from subtitle_translator_gui import App
+
+        with tempfile.TemporaryDirectory() as td:
+            german = ProjectMemory(td, "de")
+            app = SimpleNamespace(
+                _pm=german,
+                tgt_var=SimpleNamespace(get=lambda: "Turkish"),
+            )
+
+            App._retarget_project_memory(app)
+
+            self.assertEqual(app._pm.target_language, "tr")
+            self.assertEqual(app._pm._path, Path(td) / ".project_memory.json")
 
 
 if __name__ == "__main__":

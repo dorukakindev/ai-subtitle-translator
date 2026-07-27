@@ -139,6 +139,32 @@ class PersistenceTest(unittest.TestCase):
             m = sm.SeriesMemory.load(td, "bad")   # patlamamalı
             self.assertEqual(m._data["terms"], {})
 
+    def test_target_languages_use_isolated_series_memory(self):
+        with tempfile.TemporaryDirectory() as td:
+            german = sm.SeriesMemory.load(td, "show", target_language="de")
+            german.merge_terms({"hello": "hallo"})
+            german.save()
+            turkish = sm.SeriesMemory.load(td, "show", target_language="tr")
+            turkish.merge_terms({"hello": "merhaba"})
+            turkish.save()
+
+            self.assertEqual(
+                sm.SeriesMemory.load(
+                    td, "show", target_language="de").get_terms(),
+                {"hello": "hallo"},
+            )
+            self.assertEqual(
+                sm.SeriesMemory.load(
+                    td, "show", target_language="tr").get_terms(),
+                {"hello": "merhaba"},
+            )
+            self.assertTrue(
+                (Path(td) / ".series_memory" / "de" / "show.json").exists()
+            )
+            self.assertTrue(
+                (Path(td) / ".series_memory" / "show.json").exists()
+            )
+
 
 class RunOverlayTest(unittest.TestCase):
     class _Var:
@@ -183,6 +209,19 @@ class RunOverlayTest(unittest.TestCase):
 
             self.assertIn("'Hive' → 'Kovan'", app._series_hint_for(e2))
             self.assertFalse((Path(td) / ".series_memory" / "show.json").exists())
+
+    def test_run_overlay_is_scoped_by_target_language(self):
+        with tempfile.TemporaryDirectory() as td:
+            e1 = str(Path(td) / "Show.S01E01.srt")
+            e2 = str(Path(td) / "Show.S01E02.srt")
+            app = self._app([e1, e2])
+            app._active_snapshot["tgt_lang"] = "German"
+            app._stage_series_memory_from_precontext(
+                e1, {"terms": {"hello": "hallo"}}, "German")
+            self.assertIn("'hello' → 'hallo'", app._series_hint_for(e2))
+
+            app._active_snapshot["tgt_lang"] = "Turkish"
+            self.assertEqual(app._series_hint_for(e2), "")
 
     def test_commit_persists_only_successful_episode_data(self):
         with tempfile.TemporaryDirectory() as td:

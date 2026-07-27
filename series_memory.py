@@ -33,6 +33,23 @@ def _slugify(show: str) -> str:
     return s or "dizi"
 
 
+def _target_key(value: str) -> str:
+    raw = str(value or "tr").strip().casefold()
+    aliases = {
+        "turkish": "tr",
+        "türkçe": "tr",
+        "german": "de",
+        "deutsch": "de",
+        "italian": "it",
+        "spanish": "es",
+        "french": "fr",
+        "english": "en",
+    }
+    key = aliases.get(raw, raw)
+    key = re.sub(r"[^a-z0-9_-]+", "-", key).strip("-")
+    return key or "tr"
+
+
 def parse_series_key(filename: str):
     """'Show.Name.S01E05.720p.srt' → ('show-name', 1, 5). Dizi değilse None."""
     stem = Path(filename).stem
@@ -67,18 +84,29 @@ class SeriesMemory:
     # ── Yükleme / kaydetme ────────────────────────────────────────────────────
 
     @classmethod
-    def load(cls, input_dir: str, show_slug: str) -> "SeriesMemory":
-        path = Path(input_dir) / ".series_memory" / f"{show_slug}.json"
+    def load(cls, input_dir: str, show_slug: str,
+             target_language: str = "tr") -> "SeriesMemory":
+        target_key = _target_key(target_language)
+        base = Path(input_dir) / ".series_memory"
+        path = (
+            base / f"{show_slug}.json"
+            if target_key == "tr"
+            else base / target_key / f"{show_slug}.json"
+        )
         data = None
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 data = None   # bozuk JSON'a dayanıklı — sıfırdan başla
+        if (isinstance(data, dict) and data.get("target_language")
+                and _target_key(data["target_language"]) != target_key):
+            data = None
         if not isinstance(data, dict):
             data = {}
         data.setdefault("version", cls.VERSION)
         data.setdefault("show", show_slug)
+        data.setdefault("target_language", target_key)
         data.setdefault("updated_eps", [])
         data.setdefault("terms", {})
         data.setdefault("characters", {})

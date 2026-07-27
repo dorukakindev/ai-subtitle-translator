@@ -242,6 +242,18 @@ def term_in_text(term: str, text_lower: str) -> bool:
     return pat.search(text_lower) is not None
 
 
+def _locked_source_term_present(term: str, source_text: str) -> bool:
+    value = str(source_text or "")
+    key = str(term or "").strip()
+    if not key or not value:
+        return False
+    if len(key) <= 3 and key.isupper():
+        return re.search(
+            r"(?<!\w)" + re.escape(key) + r"(?!\w)", value, re.UNICODE
+        ) is not None
+    return term_in_text(key, value.casefold())
+
+
 def _ends_sentence(text: str) -> bool:
     """True if text ends with sentence-closing punctuation (handles trailing quotes)."""
     t = text.strip().rstrip('"\'»"\u201d')
@@ -616,6 +628,86 @@ def analysis_fingerprint(source_language: str = "", target_language: str = "",
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _sanitize_analysis_aux(
+    character_examples=None,
+    pronoun_map=None,
+    character_styles=None,
+    idiom_map=None,
+    cultural_refs=None,
+):
+    examples = {}
+    if isinstance(character_examples, dict):
+        for raw_name, raw_lines in list(character_examples.items())[:12]:
+            name = str(raw_name or "").strip()[:80]
+            if not name or not isinstance(raw_lines, (list, tuple)):
+                continue
+            lines = [
+                line.strip()[:240]
+                for line in raw_lines[:2]
+                if isinstance(line, str) and line.strip()
+            ]
+            if lines:
+                examples[name] = lines
+
+    styles = {}
+    valid_registers = {"formal", "educated", "neutral", "blue_collar", "street", "young"}
+    valid_dialects = {"standard", "rural", "coastal", "eastern", "urban_slang"}
+    if isinstance(character_styles, dict):
+        for raw_name, raw_info in list(character_styles.items())[:12]:
+            if not isinstance(raw_info, dict):
+                continue
+            name = str(raw_name or "").strip()[:80]
+            register = str(raw_info.get("register") or "").strip().casefold()
+            dialect = str(raw_info.get("dialect") or "").strip().casefold()
+            info = {}
+            if register in valid_registers:
+                info["register"] = register
+            if dialect in valid_dialects:
+                info["dialect"] = dialect
+            if name and info:
+                styles[name] = info
+
+    addresses = {}
+    if isinstance(pronoun_map, dict):
+        for raw_pair, raw_form in list(pronoun_map.items())[:40]:
+            pair = str(raw_pair or "").strip()[:160]
+            form = str(raw_form or "").strip().casefold().replace("\u0307", "")
+            if pair and form in {"sen", "siz"}:
+                addresses[pair] = form
+
+    idioms = {}
+    if isinstance(idiom_map, dict):
+        for raw_source, raw_target in list(idiom_map.items())[:30]:
+            source = str(raw_source or "").strip()[:240]
+            target = str(raw_target or "").strip()[:240]
+            if source and target:
+                idioms[source] = target
+
+    refs = []
+    if isinstance(cultural_refs, list):
+        for raw_ref in cultural_refs[:30]:
+            if not isinstance(raw_ref, dict):
+                continue
+            source = str(raw_ref.get("src") or "").strip()[:200]
+            action = str(raw_ref.get("action") or "").strip().casefold()
+            target = str(raw_ref.get("target") or "").strip()[:200]
+            ref_type = str(raw_ref.get("type") or "").strip()[:80]
+            if action == "gloss":
+                action = "keep"
+            if not source or action not in {"keep", "localize"}:
+                continue
+            if action == "localize" and not target:
+                continue
+            item = {"src": source, "action": action}
+            if ref_type:
+                item["type"] = ref_type
+            if target:
+                item["target"] = target
+            refs.append(item)
+
+    return examples, addresses, styles, idioms, refs
+
+
 def save_context_cache(context, filepath: str, character_examples: dict = None,
                        pronoun_map: dict = None, character_styles: dict = None,
                        scene_emotions: list = None, idiom_map: dict = None,
@@ -630,6 +722,11 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
     if not sig or not sig.startswith("sha256:"):
         return
     path = _cache_path(filepath)
+    character_examples, pronoun_map, character_styles, idiom_map, cultural_refs = (
+        _sanitize_analysis_aux(
+            character_examples, pronoun_map, character_styles, idiom_map, cultural_refs
+        )
+    )
     data = {
         "source_language":    context.source_language,
         "summary":            context.summary,
@@ -734,14 +831,21 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
         _scene_emotions = d.get("scene_emotions", [])
         if _scene_plan_cache_is_stale(_scene_emotions):
             _scene_emotions = []
-        return (
-            memory,
+        _examples, _pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
             d.get("character_examples", {}),
             d.get("pronoun_map", {}),
-            d.get("character_styles", {}),    # v2 — empty for old caches
+            d.get("character_styles", {}),
+            d.get("idiom_map", {}),
+            d.get("cultural_refs", []),
+        )
+        return (
+            memory,
+            _examples,
+            _pronouns,
+            _styles,                          # v2 — empty for old caches
             _scene_emotions,                   # v2 — empty for old/stale-shape caches
-            d.get("idiom_map", {}),            # v2 — empty for old caches
-            d.get("cultural_refs", []),        # v2 — empty for old caches
+            _idioms,                           # v2 — empty for old caches
+            _refs,                             # v2 — empty for old caches
         )
     except Exception:
         # Bozuk/eksik önbellek → sil ve cache-miss olarak dön
@@ -1075,6 +1179,7 @@ def _generate_character_examples(
     helper_url: str,
     helper_model: str,
     log_fn=None,
+    token_callback=None,
 ):
     """Generate 2 sample dialogue lines + register/dialect classification per character.
 
@@ -1116,6 +1221,7 @@ def _generate_character_examples(
             max_tokens=900,
             temperature=0.7,
         )
+        _report_helper_usage(resp, token_callback)
         raw = resp.choices[0].message.content.strip() if resp.choices else ""
 
         if not raw:
@@ -1130,14 +1236,20 @@ def _generate_character_examples(
         def _parse(payload):
             try:
                 data = json.loads(payload)
-                return data.get("examples", {}) or {}, data.get("styles", {}) or {}
+                examples, _pronouns, styles, _idioms, _refs = _sanitize_analysis_aux(
+                    data.get("examples", {}), character_styles=data.get("styles", {})
+                )
+                return examples, styles
             except json.JSONDecodeError:
                 if "{" in payload and "}" in payload:
                     start = payload.find("{")
                     end = payload.rfind("}") + 1
                     try:
                         data = json.loads(payload[start:end])
-                        return data.get("examples", {}) or {}, data.get("styles", {}) or {}
+                        examples, _pronouns, styles, _idioms, _refs = _sanitize_analysis_aux(
+                            data.get("examples", {}), character_styles=data.get("styles", {})
+                        )
+                        return examples, styles
                     except Exception:
                         pass
                 return {}, {}
@@ -1155,6 +1267,7 @@ def _generate_pronoun_map(
     helper_api_key: str,
     helper_url: str,
     helper_model: str,
+    token_callback=None,
 ) -> dict:
     """Determine sen/siz (informal/formal) address for each character pair.
     Returns e.g. {"Sherry-Matt": "sen", "Dr.Tolin-Sherry": "siz"}.
@@ -1194,6 +1307,7 @@ def _generate_pronoun_map(
             max_tokens=400,
             temperature=0.2,
         )
+        _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
 
         # Skip empty responses
@@ -1210,7 +1324,10 @@ def _generate_pronoun_map(
 
         try:
             data = json.loads(raw)
-            return data.get("pronoun_map", {})
+            _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
+                pronoun_map=data.get("pronoun_map", {})
+            )
+            return pronouns
         except json.JSONDecodeError:
             # If JSON parsing fails, try to extract JSON object manually
             if "{" in raw and "}" in raw:
@@ -1218,7 +1335,10 @@ def _generate_pronoun_map(
                 end = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start:end])
-                    return data.get("pronoun_map", {})
+                    _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
+                        pronoun_map=data.get("pronoun_map", {})
+                    )
+                    return pronouns
                 except Exception:
                     pass
             return {}
@@ -1301,6 +1421,7 @@ def _extract_emotional_arc(
     helper_url: str,
     helper_model: str,
     log_fn=None,
+    token_callback=None,
 ) -> list:
     """Extract a per-scene semantic plan from the subtitle file.
 
@@ -1387,6 +1508,7 @@ def _extract_emotional_arc(
             max_tokens=8000,
             temperature=0.3,
         )
+        _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
             return []
@@ -1425,10 +1547,12 @@ def _generate_idiom_map(
     helper_url: str,
     helper_model: str,
     log_fn=None,
+    source_language: str = "English",
+    token_callback=None,
 ) -> dict:
-    """Detect English idiomatic expressions in cues; generate natural target-language equivalents.
+    """Detect source-language idioms in cues; generate natural target-language equivalents.
 
-    Returns dict: {"beating a dead horse": "boşa çabalamak", ...} (up to 30 entries)
+    Returns dict: {source_expression: target_equivalent, ...} (up to 30 entries)
     """
     if not cues:
         return {}
@@ -1444,14 +1568,14 @@ def _generate_idiom_map(
         prompt = (
             f"You are a translation expert specializing in {tgt_lang}.\n"
             f"Analyze the following subtitle text and identify:\n"
-            f"1. English idiomatic expressions (e.g. 'beating a dead horse', 'spill the beans')\n"
+            f"1. Idiomatic expressions in the source language ({source_language})\n"
             f"2. Colloquial phrases with non-literal meaning (e.g. 'cut me some slack', 'on thin ice')\n"
             f"3. Cultural slang that would sound unnatural if translated literally\n\n"
             f"For each, provide the most natural {tgt_lang} equivalent that preserves the MEANING "
             f"(not a word-for-word translation).\n"
             f"Only include expressions that actually appear in the text. Maximum 30 entries.\n\n"
             f"Text:\n{combined[:3000]}\n\n"
-            f'Return JSON: {{"idioms": {{"english expression": "{tgt_lang} equivalent", ...}}}}\n'
+            f'Return JSON: {{"idioms": {{"source expression": "{tgt_lang} equivalent", ...}}}}\n'
             f"Return ONLY the JSON. If no idioms found, return {{\"idioms\": {{}}}}"
         )
         resp = _safe_chat_create(
@@ -1461,6 +1585,7 @@ def _generate_idiom_map(
             max_tokens=800,
             temperature=0.3,
         )
+        _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
             return {}
@@ -1468,14 +1593,20 @@ def _generate_idiom_map(
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
         try:
             data = json.loads(raw)
-            return data["idioms"] if isinstance(data.get("idioms"), dict) else {}
+            _examples, _pronouns, _styles, idioms, _refs = _sanitize_analysis_aux(
+                idiom_map=data.get("idioms", {})
+            )
+            return idioms
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
                 start_i = raw.find("{")
                 end_i = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start_i:end_i])
-                    return data["idioms"] if isinstance(data.get("idioms"), dict) else {}
+                    _examples, _pronouns, _styles, idioms, _refs = _sanitize_analysis_aux(
+                        idiom_map=data.get("idioms", {})
+                    )
+                    return idioms
                 except Exception:
                     pass
             return {}
@@ -1493,6 +1624,7 @@ def _generate_cultural_refs(
     helper_url: str,
     helper_model: str,
     log_fn=None,
+    token_callback=None,
 ) -> list:
     """Detect cultural references (pop culture, brand names, regional references) in cues.
     Recommends keep/localize action for each.
@@ -1511,9 +1643,6 @@ def _generate_cultural_refs(
 
         # Genre hint to guide localization decisions
         genre = schema.get("name", "general") if schema else "general"
-        is_comedy = "comedy" in genre.lower() or "sitcom" in genre.lower()
-        localize_default = "localize" if not is_comedy else "keep"
-
         prompt = (
             f"Analyze this subtitle text for cultural references that a translator must handle.\n"
             f"Genre: {genre}\n\n"
@@ -1524,11 +1653,14 @@ def _generate_cultural_refs(
             f"- Historical figures or events mentioned\n\n"
             f"For each reference, decide the best translation strategy for {tgt_lang} audience:\n"
             f"  'keep'     — audience will recognize it, keep unchanged (e.g. Marvel, Netflix)\n"
-            f"  'localize' — replace with {tgt_lang} equivalent (e.g. US baseball team → Turkish equivalent)\n"
+            f"  'localize' — use only its established conventional {tgt_lang} name "
+            f"(e.g. White House → Beyaz Saray)\n"
+            f"Never replace a real person, place, institution, team, brand, work, or event with a "
+            f"different local analogue. If no established conventional name exists, use 'keep'.\n"
             f"Never add a parenthetical explanation that is absent from the source.\n\n"
-            f"Default for this genre: {localize_default}\n\n"
+            f"Default: keep.\n\n"
             f"Text:\n{combined[:2500]}\n\n"
-            f'Return JSON: {{"refs": [{{"src": "...", "type": "pop_culture|brand|regional|historical", "action": "keep|localize", "target": "Turkish equivalent if localize"}}]}}\n'
+            f'Return JSON: {{"refs": [{{"src": "...", "type": "pop_culture|brand|regional|historical", "action": "keep|localize", "target": "{tgt_lang} conventional name if localize"}}]}}\n'
             f"Only include items that clearly appear in the text. Return ONLY the JSON."
         )
         resp = _safe_chat_create(
@@ -1538,6 +1670,7 @@ def _generate_cultural_refs(
             max_tokens=600,
             temperature=0.3,
         )
+        _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
             return []
@@ -1545,24 +1678,20 @@ def _generate_cultural_refs(
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
         try:
             data = json.loads(raw)
-            refs = data["refs"] if isinstance(data.get("refs"), list) else []
-            return [
-                {**ref, "action": "keep" if ref.get("action") == "gloss" else ref.get("action")}
-                for ref in refs if isinstance(ref, dict)
-                and ref.get("action") in {"keep", "localize", "gloss"}
-            ]
+            _examples, _pronouns, _styles, _idioms, refs = _sanitize_analysis_aux(
+                cultural_refs=data.get("refs", [])
+            )
+            return refs
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
                 start_i = raw.find("{")
                 end_i = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start_i:end_i])
-                    refs = data["refs"] if isinstance(data.get("refs"), list) else []
-                    return [
-                        {**ref, "action": "keep" if ref.get("action") == "gloss" else ref.get("action")}
-                        for ref in refs if isinstance(ref, dict)
-                        and ref.get("action") in {"keep", "localize", "gloss"}
-                    ]
+                    _examples, _pronouns, _styles, _idioms, refs = _sanitize_analysis_aux(
+                        cultural_refs=data.get("refs", [])
+                    )
+                    return refs
                 except Exception:
                     pass
             return []
@@ -1982,6 +2111,16 @@ def _get_usage_details(usage):
     except Exception:
         pass
     return total, cached
+
+
+def _report_helper_usage(response, token_callback):
+    if not token_callback or not getattr(response, "usage", None):
+        return
+    total, cached = _get_usage_details(response.usage)
+    try:
+        token_callback(total, cached=cached)
+    except TypeError:
+        token_callback(total)
 
 
 def _scene_plan_payload_entry(scene: dict) -> dict | None:
@@ -2458,6 +2597,15 @@ def analyze_with_helper(
     if log_fn and merged.recurring_terms:
         log_fn(f"Sabit terimler: {merged.recurring_terms}", "ok")
 
+    def _stop_requested():
+        try:
+            return bool(stop_flag_fn and stop_flag_fn())
+        except Exception:
+            return False
+
+    if _stop_requested():
+        return None
+
     # Generate character few-shot examples + register/dialect classification (single call)
     if log_fn and merged.characters:
         log_fn(f"Karakter örnekleri oluşturuluyor ({len(merged.characters[:6])} karakter)...", "info")
@@ -2465,19 +2613,27 @@ def analyze_with_helper(
         merged.characters, target_language,
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
+        token_callback=token_callback,
     )
     if log_fn and examples:
         log_fn(f"Karakter örnekleri hazır: {', '.join(examples.keys())}", "ok")
     if log_fn and character_styles:
         log_fn(f"Karakter register: {character_styles}", "ok")
 
+    if _stop_requested():
+        return None
+
     # Generate pronoun/address map (sen vs siz per character pair)
     pronoun_map = _generate_pronoun_map(
         merged, target_language,
         helper_api_key, helper_url, helper_model,
+        token_callback=token_callback,
     )
     if log_fn and pronoun_map:
         log_fn(f"Hitap haritası: {pronoun_map}", "ok")
+
+    if _stop_requested():
+        return None
 
     # Extract per-scene semantic plan (summary/speakers/goals/referents/tone)
     if log_fn:
@@ -2486,12 +2642,16 @@ def analyze_with_helper(
         cues, target_language,
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
+        token_callback=token_callback,
     )
     if log_fn and scene_emotions:
         _with_ref = sum(1 for s in scene_emotions if isinstance(s, dict) and s.get("referents"))
         _with_goal = sum(1 for s in scene_emotions if isinstance(s, dict) and s.get("speaker_goals"))
         log_fn(f"Sahne planı: {len(scene_emotions)} sahne "
                f"({_with_ref}'inde gönderge çözümü, {_with_goal}'inde konuşmacı hedefi)", "ok")
+
+    if _stop_requested():
+        return None
 
     # Generate idiomatic expression map
     if log_fn:
@@ -2500,9 +2660,14 @@ def analyze_with_helper(
         cues, target_language,
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
+        source_language=source_language,
+        token_callback=token_callback,
     )
     if log_fn and idiom_map:
         log_fn(f"Deyim haritası: {len(idiom_map)} deyim", "ok")
+
+    if _stop_requested():
+        return None
 
     # Generate cultural reference decisions
     if log_fn:
@@ -2511,9 +2676,16 @@ def analyze_with_helper(
         cues, schema, target_language,
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
+        token_callback=token_callback,
     )
     if log_fn and cultural_refs:
         log_fn(f"Kültürel referanslar: {len(cultural_refs)} madde", "ok")
+
+    examples, pronoun_map, character_styles, idiom_map, cultural_refs = (
+        _sanitize_analysis_aux(
+            examples, pronoun_map, character_styles, idiom_map, cultural_refs
+        )
+    )
 
     # Return extended tuple:
     # (merged, examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs)
@@ -2648,18 +2820,18 @@ def build_system_prompt(
             # Enrich with register/dialect if available
             char_key = c.name
             style_info = ""
-            if character_styles:
+            if isinstance(character_styles, dict):
                 st = character_styles.get(char_key) or character_styles.get(char_key.lower())
-                if st:
+                if isinstance(st, dict):
                     reg = st.get("register", "")
                     dia = st.get("dialect", "")
                     if reg or dia:
                         style_info = f" | Register: {reg}" + (f" | Dialect: {dia}" if dia and dia != "standard" else "")
             context_lines.append(f"  - {c.name}: {style}{style_info}")
             # Attach few-shot examples if available
-            if character_examples:
+            if isinstance(character_examples, dict):
                 exs = character_examples.get(c.name) or character_examples.get(c.name.lower())
-                if exs:
+                if isinstance(exs, (list, tuple)):
                     for ex in exs[:2]:
                         context_lines.append(f'      Sample line: "{ex}"')
         context_lines.append(
@@ -2678,8 +2850,8 @@ def build_system_prompt(
     if isinstance(idiom_map, dict) and idiom_map:
         parts.append("## IDIOMATIC EXPRESSION MAPPINGS")
         parts.append(
-            "These English idioms/expressions appear in this content. "
-            "Use the given natural Turkish equivalent (NOT a literal translation):"
+            f"These {src_lang} idioms/expressions appear in this content. "
+            f"Use the given natural {tgt_lang} equivalent (NOT a literal translation):"
         )
         for en_idiom, tr_equiv in list(idiom_map.items())[:30]:
             parts.append(f"  \"{en_idiom}\" → \"{tr_equiv}\"")
@@ -2695,12 +2867,14 @@ def build_system_prompt(
             if keep_refs:
                 parts.append("Keep these references as-is (audience will recognize them):")
                 for r in keep_refs[:10]:
-                    parts.append(f"  \"{r['src']}\" → keep unchanged")
+                    parts.append(f"  \"{r.get('src', '')}\" → keep unchanged")
             if localize_refs:
-                parts.append("Localize these to Turkish equivalents:")
+                parts.append(f"Use these established {tgt_lang} names:")
                 for r in localize_refs[:10]:
                     target = r.get("target", "")
-                    parts.append(f"  \"{r['src']}\" → \"{target}\"" if target else f"  \"{r['src']}\" → find natural Turkish equivalent")
+                    source = r.get("src", "")
+                    if source and target:
+                        parts.append(f"  \"{source}\" → \"{target}\"")
             if gloss_refs:
                 parts.append("Keep these references without adding parenthetical explanations:")
                 for r in gloss_refs[:5]:
@@ -2831,7 +3005,7 @@ def build_system_prompt(
     ]
 
     # ── Pronoun/address map (Turkish sen/siz) ────────────────────────────────
-    if pronoun_map:
+    if isinstance(pronoun_map, dict) and pronoun_map:
         parts += [
             "",
             "## TURKISH ADDRESS RULES (sen / siz)",
@@ -5673,8 +5847,6 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
         if glossary and orig_dict:
             orig = orig_dict.get(str(idx), "")
             for src_term, tr_term in list(glossary.items()):
-                if len(src_term) <= 4:
-                    continue
                 if locked_term_violation(orig, text, {src_term: tr_term}):
                     reasons.append(f"GLOSS_MISS:{src_term}=>{tr_term}")
                     break
@@ -5682,8 +5854,6 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
         if series_terms and orig_dict:
             orig = orig_dict.get(str(idx), "")
             for src_term, tr_term in list(series_terms.items()):
-                if len(src_term) <= 4:
-                    continue
                 if locked_term_violation(orig, text, {src_term: tr_term}):
                     reasons.append(f"SERIES_MEMORY_FLIP:{src_term}=>{tr_term}")
                     break
@@ -5963,9 +6133,12 @@ def build_semantic_reconciliation_clusters(
 
     clusters = []
     previous_end = -1
-    for number, core in enumerate(core_groups, 1):
+    for group_index, core in enumerate(core_groups):
+        number = group_index + 1
         start = max(previous_end + 1, min(core) - window)
         end = min(len(tr_blocks) - 1, max(core) + window)
+        if group_index + 1 < len(core_groups):
+            end = min(end, min(core_groups[group_index + 1]) - 1)
         if start > end:
             continue
         items = []
@@ -5982,7 +6155,7 @@ def build_semantic_reconciliation_clusters(
         clusters.append({
             "cluster": f"c{number}",
             "items": items,
-            "suspect_ids": [str(tr_blocks[pos][0]) for pos in core],
+            "suspect_ids": [item["id"] for item in items if item["suspect"]],
         })
         previous_end = end
     return clusters
@@ -6201,7 +6374,15 @@ def semantic_reconciliation_pass(
                 continue
             seen_clusters.add(cluster_id)
             fixes = response_cluster.get("fixes")
-            if not isinstance(fixes, list) or not fixes:
+            if not isinstance(fixes, list):
+                stats["rejected"] += 1
+                stats["details"].append({
+                    "cluster": cluster_id,
+                    "status": "rejected",
+                    "reason": "fix_shape",
+                })
+                continue
+            if not fixes:
                 continue
             allowed_ids = {item["id"] for item in cluster["items"]}
             old_by_id = {
@@ -6295,12 +6476,24 @@ def semantic_reconciliation_pass(
             if not invalid_reason:
                 candidate = _candidate_from_proposals()
                 candidate_text = {str(idx): text for idx, _ts, text in candidate}
+                cluster_source = " ".join(
+                    str(src_map.get(item["id"], ""))
+                    for item in cluster["items"]
+                )
+                cluster_target = " ".join(
+                    str(candidate_text.get(item["id"], ""))
+                    for item in cluster["items"]
+                )
+                if locked_term_violation(
+                        cluster_source, cluster_target, locked_terms):
+                    invalid_reason = "locked_term_violation"
+            if not invalid_reason:
                 for sid in proposals:
                     source = str(src_map.get(sid, ""))
                     old_text = str(candidate_by_id[sid][3])
                     new_text = str(proposals[sid])
                     for locked_source, locked_target in locked_terms.items():
-                        if not term_in_text(locked_source, source.casefold()):
+                        if not _locked_source_term_present(locked_source, source):
                             continue
                         old_suffixes = _locked_suffixes(old_text, locked_target)
                         if old_suffixes and not old_suffixes.issubset(
@@ -7627,7 +7820,8 @@ def locked_term_violation(
     candidate_text: str,
     locked_terms: dict | None,
 ) -> bool:
-    source_lower = str(source_text or "").casefold()
+    source_value = str(source_text or "")
+    source_lower = source_value.casefold()
     candidate_lower = str(candidate_text or "").casefold()
     if not source_lower or not candidate_lower:
         return False
@@ -7659,7 +7853,7 @@ def locked_term_violation(
         source_term = str(source_term or "").strip()
         target_term = str(target_term or "").strip()
         if (len(source_term) > 1 and target_term
-                and term_in_text(source_term, source_lower)
+                and _locked_source_term_present(source_term, source_value)
                 and not _target_present(target_term)):
             return True
     return False
@@ -8440,6 +8634,33 @@ def build_glossary_suggestions(
         return []
 
 
+def _critic_suspicious_chunks(suspicious, frag_group_by_id, max_size=100):
+    items_by_id = {str(item[0]): item for item in suspicious}
+    chunks = []
+    current = []
+    emitted = set()
+    for item in suspicious:
+        sid = str(item[0])
+        if sid in emitted:
+            continue
+        group_ids = frag_group_by_id.get(sid, [sid])
+        unit = [
+            items_by_id[str(group_id)]
+            for group_id in group_ids
+            if str(group_id) in items_by_id and str(group_id) not in emitted
+        ]
+        if not unit:
+            unit = [item]
+        if current and len(current) + len(unit) > max_size:
+            chunks.append(current)
+            current = []
+        current.extend(unit)
+        emitted.update(str(member[0]) for member in unit)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def critic_pass_with_helper(
     cues: list,
     tr_blocks: list,
@@ -8509,6 +8730,16 @@ def critic_pass_with_helper(
                 orig_dict.get(str(idx), ""), fixed, glossary):
             result[i] = (idx, ts, fixed)
             local_fixed += 1
+            if change_log is not None:
+                change_log.append({
+                    "id": str(idx),
+                    "reason": "local_regex",
+                    "source": orig_dict.get(str(idx), ""),
+                    "before": text,
+                    "after": fixed,
+                })
+
+    tr_text_by_id = {str(b[0]): b[2] for b in result}
 
     if log_fn and local_fixed:
         log_fn(f"Critic Pass (local): {local_fixed} transliterasyon düzeltildi", "ok")
@@ -8666,8 +8897,8 @@ def critic_pass_with_helper(
         toks = [tok.split("(", 1)[0].strip() for tok in reason_str.split("|")]
         return [t for t in toks if t] or ["PATTERN_ONLY"]
 
-    for chunk_start in range(0, len(suspicious), MINIMAX_CHUNK):
-        chunk = suspicious[chunk_start:chunk_start + MINIMAX_CHUNK]
+    for chunk in _critic_suspicious_chunks(
+            suspicious, frag_group_by_id, MINIMAX_CHUNK):
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         pairs = []
         for idx, ts, text in chunk:
@@ -8802,15 +9033,33 @@ def critic_pass_with_helper(
                 if log_fn:
                     log_fn(f"Critic Helper chunk beklenmeyen format — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
-            prepared = []
+            fix_by_id = {}
+            conflicting_ids = set()
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
-                fid   = str(fix.get("id", ""))
-                ftext = fix.get("fixed", "")
+                fid = str(fix.get("id", ""))
+                ftext = str(fix.get("fixed", ""))
+                if not fid or not ftext or fid not in chunk_ids or fid not in idx_to_pos:
+                    continue
+                if fid in fix_by_id and fix_by_id[fid] != ftext:
+                    conflicting_ids.add(fid)
+                    continue
+                fix_by_id.setdefault(fid, ftext)
+            for fid in conflicting_ids:
+                fix_by_id.pop(fid, None)
+                critic_rejected += 1
+                critic_rejected_reasons["duplicate_fix_conflict"] = (
+                    critic_rejected_reasons.get("duplicate_fix_conflict", 0) + 1
+                )
+
+            prepared = []
+            for fid, ftext in fix_by_id.items():
                 if fid and ftext and fid in chunk_ids and fid in idx_to_pos:
                     pos = idx_to_pos[fid]
                     old_idx, old_ts, old_text = result[pos]
+                    if ftext.strip() == str(old_text or "").strip():
+                        continue
                     neighbor_start = max(0, pos - 2)
                     neighbor_end = min(len(result), pos + 3)
                     neighbor_texts = [
@@ -9052,7 +9301,7 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
             payload["glossary"] = quality_terms
 
         # Active idioms: only inject idioms whose source phrase appears in this chunk
-        if idiom_map:
+        if isinstance(idiom_map, dict) and idiom_map:
             active_idioms = {k: v for k, v in idiom_map.items()
                              if term_in_text(k, chunk_text_lower)}
             if active_idioms:

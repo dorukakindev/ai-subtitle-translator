@@ -118,6 +118,51 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
         self.assertTrue(any("fallback_context" in note for note in merged.scene_notes))
         self.assertTrue(any("guvenli bos baglamla devam" in msg for _level, msg in logs))
 
+    def test_stop_after_main_analysis_prevents_remaining_helper_calls(self):
+        import hybrid_translate as ht
+
+        fake_models = types.ModuleType("subtitle_localizer.models")
+
+        class ContextAnalysisRequest:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_models.ContextAnalysisRequest = ContextAnalysisRequest
+        fake_models.ContextMemory = SimpleNamespace
+        fake_pkg = types.ModuleType("subtitle_localizer")
+        fake_pkg.models = fake_models
+        memory = SimpleNamespace(
+            source_language="en",
+            summary="ok",
+            setting="",
+            tone="documentary",
+            characters=[],
+            recurring_terms={},
+            scene_notes=[],
+        )
+        stopped = {"value": False}
+
+        def finish_character_step(*_args, **_kwargs):
+            stopped["value"] = True
+            return {}, {}
+
+        with patch.dict(sys.modules, {
+            "subtitle_localizer": fake_pkg,
+            "subtitle_localizer.models": fake_models,
+        }), patch.object(ht, "_ensure_path", lambda: None), \
+             patch.object(ht, "_analyze_context_openai_compatible", return_value=memory), \
+             patch.object(ht, "_generate_character_examples",
+                          side_effect=finish_character_step), \
+             patch.object(ht, "_generate_pronoun_map") as pronoun:
+            result = ht.analyze_with_helper(
+                cues=[SimpleNamespace(index=1, text="hello")],
+                helper_api_key="key",
+                stop_flag_fn=lambda: stopped["value"],
+            )
+
+        self.assertIsNone(result)
+        pronoun.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

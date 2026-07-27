@@ -95,7 +95,17 @@ class SemanticClusterBuilderTest(unittest.TestCase):
             ids = {item["id"] for item in cluster["items"]}
             self.assertLessEqual(len(ids), 12)
             self.assertFalse(seen & ids)
+            self.assertTrue(set(cluster["suspect_ids"]).issubset(ids))
             seen |= ids
+        self.assertEqual(
+            {
+                item["id"]
+                for cluster in clusters
+                for item in cluster["items"]
+                if item["suspect"]
+            },
+            {str(i) for i in range(1, 31)},
+        )
 
     def test_expanded_validator_reasons_are_selected(self):
         blocks = [
@@ -221,6 +231,47 @@ class SemanticReconciliationPassTest(unittest.TestCase):
             "Biyoteknoloji Tedarik Laboratuvarı",
             chat.call_args.kwargs["messages"][0]["content"],
         )
+
+    def test_locked_term_split_across_cues_cannot_be_removed(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Yeni"),
+            ("2", "00:00:02 --> 00:00:03", "York geldi."),
+        ]
+        src_map = {"1": "New", "2": "York arrived."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{
+                "id": "2",
+                "text": "Şehir geldi.",
+                "reason": "wording",
+            }],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"2"},
+                locked_terms={"New York": "Yeni York"},
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["details"][-1]["reason"], "locked_term_violation")
+
+    def test_malformed_fixes_are_reported_as_rejected(self):
+        blocks = [("1", "00:00:01 --> 00:00:02", "Bir.")]
+        src_map = {"1": "One."}
+        payload = [{"cluster": "c1", "fixes": "not-a-list"}]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"},
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["rejected"], 1)
+        self.assertEqual(stats["details"][-1]["reason"], "fix_shape")
 
     def test_locked_proper_name_suffix_cannot_be_changed(self):
         blocks = [(

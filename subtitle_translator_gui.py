@@ -8756,9 +8756,23 @@ class App(ctk.CTk):
         if not self._selected_files and path and os.path.isdir(path):
             try:
                 from project_memory import ProjectMemory
-                self._pm = ProjectMemory(path)
+                self._pm = ProjectMemory(
+                    path, _lang_iso639_1(self.tgt_var.get()))
             except Exception:
                 self._pm = None
+
+    def _retarget_project_memory(self):
+        current = getattr(self, "_pm", None)
+        if current is None:
+            return
+        try:
+            from project_memory import ProjectMemory
+            self._pm = ProjectMemory(
+                str(current.input_dir),
+                _lang_iso639_1(self.tgt_var.get()),
+            )
+        except Exception:
+            self._pm = None
 
     def _pick_folder(self, var, is_input):
         if getattr(self, "_is_running", False):
@@ -8781,7 +8795,8 @@ class App(ctk.CTk):
             # ProjectMemory'yi bu klasör için başlat
             try:
                 from project_memory import ProjectMemory
-                self._pm = ProjectMemory(path)
+                self._pm = ProjectMemory(
+                    path, _lang_iso639_1(self.tgt_var.get()))
                 pm_stats = self._pm.stats()
                 if pm_stats["glossary"] > 0 or pm_stats["characters"] > 0:
                     self._log(
@@ -10198,6 +10213,7 @@ class App(ctk.CTk):
         # Ayrıca get_subtitle_files ÇIKTI alt-klasörünü girdiden dışlar, yani yeniden
         # çalıştırmada program kendi çıktısını kaynak sanmaz.
         self._save_settings()
+        App._retarget_project_memory(self)
         self._stop_flag   = False
         from provider_retry import configure_provider_wait_hooks
         configure_provider_wait_hooks(
@@ -10303,6 +10319,7 @@ class App(ctk.CTk):
             messagebox.showerror("Hata", "batch_id.txt bulunamadı.")
             return
         self._save_settings()
+        App._retarget_project_memory(self)
         self._stop_flag = False
         self._active_snapshot = self._take_run_snapshot()
         self._pause_btw_files.set()  # resume: start unpaused
@@ -10681,15 +10698,27 @@ class App(ctk.CTk):
                      else snapshot.get("input_dir") if snapshot
                      else self.input_var.get())
         input_dir = input_dir or str(Path(fp).parent)
+        tgt_var = getattr(self, "tgt_var", None)
+        target_language = (
+            snapshot.get("tgt_lang")
+            if snapshot
+            else tgt_var.get() if tgt_var is not None
+            else "Turkish"
+        ) or "Turkish"
+        target_key = _lang_iso639_1(target_language)
         try:
             if not persistent:
                 overlays = getattr(self, "_run_series_memory", None)
                 if isinstance(overlays, dict):
-                    overlay_key = (str(Path(input_dir).resolve()).casefold(), slug)
+                    overlay_key = (
+                        str(Path(input_dir).resolve()).casefold(), slug, target_key
+                    )
                     if overlay_key not in overlays:
-                        overlays[overlay_key] = series_memory.SeriesMemory.load(input_dir, slug)
+                        overlays[overlay_key] = series_memory.SeriesMemory.load(
+                            input_dir, slug, target_language=target_key)
                     return overlays[overlay_key], season, ep
-            return series_memory.SeriesMemory.load(input_dir, slug), season, ep
+            return series_memory.SeriesMemory.load(
+                input_dir, slug, target_language=target_key), season, ep
         except Exception:
             return None, None, None
 
@@ -11007,7 +11036,9 @@ class App(ctk.CTk):
                     key = series_memory.parse_series_key(fp) if enabled else None
                     if key:
                         slug, _season, _episode = key
-                        sm_obj = series_memory.SeriesMemory.load(input_dir, slug)
+                        sm_obj = series_memory.SeriesMemory.load(
+                            input_dir, slug,
+                            target_language=_lang_iso639_1(tgt))
                         terms.update(sm_obj.get_terms())
                 except Exception:
                     pass
@@ -13768,7 +13799,8 @@ class App(ctk.CTk):
                     tgt_lang=tgt,
                     log_fn=self._log,
                     glossary=self._get_locked_terms_dict(filepath, tgt),
-                    analysis_result=(context, char_examples, pronoun_map),
+                    analysis_result=(context, char_examples, pronoun_map,
+                                     character_styles),
                     change_log=_critic_change_log,
                     token_callback=self._token_callback_for_model(
                         self._helper_api_model("critic")),

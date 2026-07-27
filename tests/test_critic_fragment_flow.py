@@ -244,6 +244,92 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertEqual(result[0][2], "Emin misin, okay?")
         self.assertTrue(any("source_question" in msg for _, msg in logs))
 
+    def test_short_locked_term_is_not_skipped(self):
+        cues = [Cue(1, "Troy fell.")]
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Troy düştü.")]
+
+        hits = ht.run_validators(blocks, cues, glossary={"Troy": "Truva"})
+
+        self.assertTrue(any("GLOSS_MISS:Troy=>Truva" in hit[3] for hit in hits))
+
+    def test_uppercase_short_term_does_not_match_lowercase_pronoun(self):
+        cues = [Cue(1, "Tell us now.")]
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Bize şimdi söyle.")]
+
+        hits = ht.run_validators(blocks, cues, glossary={"US": "ABD"})
+
+        self.assertFalse(any("GLOSS_MISS:US=>ABD" in hit[3] for hit in hits))
+
+    def test_fragment_group_is_not_split_at_critic_chunk_boundary(self):
+        suspicious = [
+            (i, "00:00:00,000 --> 00:00:01,000", f"Satır {i}")
+            for i in range(1, 102)
+        ]
+        groups = {
+            "100": ["100", "101"],
+            "101": ["100", "101"],
+        }
+
+        chunks = ht._critic_suspicious_chunks(suspicious, groups, max_size=100)
+
+        containing = [
+            {str(item[0]) for item in chunk}
+            for chunk in chunks
+            if any(str(item[0]) in {"100", "101"} for item in chunk)
+        ]
+        self.assertEqual(len(containing), 1)
+        self.assertTrue({"100", "101"}.issubset(containing[0]))
+
+    def test_duplicate_and_noop_fixes_do_not_inflate_change_log(self):
+        cues = [Cue(1, "Are you sure?")]
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Emin misin, okay?")]
+        duplicate = [
+            {"id": "1", "fixed": "Emin misin?"},
+            {"id": "1", "fixed": "Emin misin?"},
+        ]
+        changes = []
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(duplicate, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                change_log=changes,
+            )
+        self.assertEqual(result[0][2], "Emin misin?")
+        self.assertEqual(len(changes), 1)
+
+        no_op_changes = []
+        no_op = [{"id": "1", "fixed": blocks[0][2]}]
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(no_op, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                change_log=no_op_changes,
+            )
+        self.assertEqual(result, blocks)
+        self.assertEqual(no_op_changes, [])
+
+    def test_local_fix_is_reported_and_fragment_context_is_fresh(self):
+        cues = [
+            Cue(1, "This metaphor,"),
+            Cue(2, "is okay?"),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Bu metafoor,"),
+            (2, "00:00:01,000 --> 00:00:02,000", "okay?"),
+        ]
+        prompts = []
+        changes = []
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                change_log=changes,
+            )
+
+        self.assertEqual(result[0][2], "Bu metafor,")
+        self.assertTrue(any(item["reason"] == "local_regex" for item in changes))
+        self.assertTrue(prompts)
+        self.assertIn("Bu metafor,", prompts[0])
+        self.assertNotIn("Bu metafoor,", prompts[0])
+
 
 class ReflowToLineCountTest(unittest.TestCase):
     def test_single_line_target_joins_all_words(self):
