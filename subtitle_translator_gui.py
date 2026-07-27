@@ -230,17 +230,33 @@ try:
 except Exception:
     pass
 
-ACCENT  = "#7B68EE"
-GREEN   = "#2ECC71"
-RED     = "#E74C3C"
-YELLOW  = "#F39C12"
-BG      = "#1a1a2a"
-PANEL   = "#242436"
-CARD    = "#2e2e48"
-BORDER  = "#3a3a55"
-FG      = "#e8e8f0"
-FG2     = "#8888aa"
-WARN    = "#E74C3C"   # sil/iptal butonları
+BG      = "#101012"
+PANEL   = "#17171a"
+CARD    = "#1e1e22"
+BORDER  = "#2b2b31"
+FG      = "#e6e6e9"
+FG2     = "#96969e"
+FG_DIS  = "#6f6f78"
+
+ACCENT       = "#4a7ebb"
+ACCENT_HOVER = "#3d6aa3"
+INFO_BLUE    = "#668bb5"
+TEAL         = "#4f9993"
+POLISH       = "#8296ad"
+
+GREEN       = "#45a37a"
+GREEN_HOVER = "#3a8a68"
+YELLOW      = "#c99a4b"
+RED         = "#c05757"
+RED_HOVER   = "#a84a4a"
+WARN        = RED
+
+ORANGE_LIVE  = "#cf8a3d"
+DANGER_BG    = "#2a1d1d"
+DANGER_HOVER = "#3d2424"
+FAILED_ROW   = "#2b2020"
+PAUSE_BG     = "#2f2a1a"
+PAUSE_HOVER  = "#463d24"
 
 MODELS_250K = [
     "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5-chat-latest", "gpt-5",
@@ -5597,7 +5613,7 @@ class App(ctk.CTk):
 
             cb = ctk.CTkCheckBox(row_fr, text="", variable=var,
                                  width=24, height=24,
-                                 fg_color=ACCENT, hover_color=GREEN,
+                                 fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                  border_color=BORDER)
             cb.grid(row=0, column=0, rowspan=3, padx=(8, 4), pady=6)
 
@@ -5625,7 +5641,7 @@ class App(ctk.CTk):
         # bu bilgiye göre ekstra onay ister (bkz. _delete_selected) — kilit (batch_owner)
         # yanlış pencereyi bastırıyor ama pencere haklı çıktığında kullanıcı hâlâ
         # kördü; 2026-07-16 olayının doğrudan devamı.
-        _STATUS_COLOR = {"live": "#F5A623", "done": GREEN, "dead": RED, "unknown": FG2}
+        _STATUS_COLOR = {"live": ORANGE_LIVE, "done": GREEN, "dead": RED, "unknown": FG2}
 
         def _apply_statuses(fetched):
             status_map.update(fetched)
@@ -5736,12 +5752,12 @@ class App(ctk.CTk):
 
         ctk.CTkButton(btn_fr, text="🗑  Seçilenleri Sil", width=120, height=32,
                        font=ctk.CTkFont("Segoe UI", 11),
-                       fg_color=RED, hover_color="#C0392B",
+                       fg_color=RED, hover_color=RED_HOVER,
                        command=_delete_selected).grid(row=0, column=2, padx=3, sticky="ew")
 
         ctk.CTkButton(btn_fr, text="▶  Seçilenleri Devam Ettir", width=160, height=32,
                        font=ctk.CTkFont("Segoe UI", 11, "bold"),
-                       fg_color=GREEN, hover_color="#27AE60",
+                       fg_color=GREEN, hover_color=GREEN_HOVER,
                        text_color="white",
                        command=_resume_selected).grid(row=0, column=3, padx=3, sticky="ew")
 
@@ -5873,7 +5889,7 @@ class App(ctk.CTk):
                      text_color="white").pack(side="left", padx=14)
         ctk.CTkLabel(hdr,
                      text=f"{pm_stats['glossary']} terim  •  {pm_stats['characters']} karakter",
-                     font=ctk.CTkFont("Segoe UI", 10), text_color="#dde").pack(side="right", padx=14)
+                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG).pack(side="right", padx=14)
 
         sf = ctk.CTkScrollableFrame(dlg, fg_color=PANEL, corner_radius=8)
         sf.pack(fill="both", expand=True, padx=12, pady=8)
@@ -5929,7 +5945,7 @@ class App(ctk.CTk):
                 self._log("Proje hafızası sıfırlandı.", "warn")
 
         ctk.CTkButton(btn_fr, text="🗑  Sıfırla",
-                      fg_color="#3a1a1a", hover_color="#5a2020",
+                      fg_color=DANGER_BG, hover_color=DANGER_HOVER,
                       text_color=RED,
                       command=_clear_pm).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="📋  Kopyala",
@@ -6162,12 +6178,12 @@ class App(ctk.CTk):
         limit_fr.grid_columnconfigure((0,1), weight=1)
 
         r1 = ctk.CTkRadioButton(limit_fr, text="2.5M / Gün", variable=self.limit_class_var, value="2.5M",
-                                font=ctk.CTkFont("Segoe UI", 11, "bold"), fg_color=ACCENT, hover_color=ACCENT,
+                                font=ctk.CTkFont("Segoe UI", 11, "bold"), fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                 text_color=FG, command=lambda: self._update_active_model())
         r1.grid(row=0, column=0, sticky="w", padx=2, pady=2)
 
         r2 = ctk.CTkRadioButton(limit_fr, text="250K / Gün", variable=self.limit_class_var, value="250K",
-                                font=ctk.CTkFont("Segoe UI", 11, "bold"), fg_color=ACCENT, hover_color=ACCENT,
+                                font=ctk.CTkFont("Segoe UI", 11, "bold"), fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                 text_color=FG, command=lambda: self._update_active_model())
         r2.grid(row=0, column=1, sticky="w", padx=2, pady=2)
 
@@ -6200,7 +6216,7 @@ class App(ctk.CTk):
             fr.grid_columnconfigure(0, weight=1)
             _mode_radio = ctk.CTkRadioButton(fr, text=txt, variable=self.mode_var, value=val,
                                font=ctk.CTkFont("Segoe UI", 12),
-                               fg_color=ACCENT, hover_color=ACCENT,
+                               fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                text_color=FG,
                                command=self._on_mode_change)
             _mode_radio.grid(row=0, column=0, padx=10, pady=4)
@@ -6291,7 +6307,7 @@ class App(ctk.CTk):
                       command=self._add_folder_files).grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.clear_files_btn = ctk.CTkButton(pick_fr, text="X", width=34, height=34,
                       font=ctk.CTkFont("Segoe UI", 13),
-                      fg_color=CARD, hover_color="#c0392b",
+                      fg_color=CARD, hover_color=RED_HOVER,
                       command=self._clear_selected_files)
         # shown only when files are selected
 
@@ -6812,7 +6828,7 @@ class App(ctk.CTk):
         self.start_btn = ctk.CTkButton(
             btn_row, text="▶  Çeviriyi Başlat", height=44,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            fg_color=ACCENT, hover_color="#5a4fd1",
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
             command=self._start)
         self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0,4))
         ctk.CTkButton(
@@ -6824,7 +6840,7 @@ class App(ctk.CTk):
         ctk.CTkButton(
             btn_row, text="💲 Maliyet", height=44, width=60,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            fg_color="#006400", hover_color="#008000",
+            fg_color=INFO_BLUE, hover_color=ACCENT_HOVER,
             command=self._show_cost_estimate).grid(row=0, column=2, sticky="ew")
 
         # Bildirimler switch
@@ -6893,7 +6909,7 @@ class App(ctk.CTk):
         self.stop_btn = ctk.CTkButton(
             sb, text="■  Durdur", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color="#3a1a1a", hover_color="#5a2020",
+            fg_color=DANGER_BG, hover_color=DANGER_HOVER,
             text_color=RED, state="disabled",
             command=self._stop)
         self.stop_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,12)); r += 1
@@ -6914,7 +6930,7 @@ class App(ctk.CTk):
             ("📊 Toplam Satır", "stat_blocks", FG),
             ("✓ Tamamlanan",   "stat_done",   GREEN),
             ("✗ Hatalı",       "stat_fail",   RED),
-            ("💾 TM Vuruş",     "stat_tm",     "#3498DB"),
+            ("💾 TM Vuruş",     "stat_tm",     INFO_BLUE),
             ("💰 Token",        "stat_tokens", YELLOW),
         ]
         sf.grid_columnconfigure((0,1,2,3,4,5), weight=1)
@@ -7762,7 +7778,7 @@ class App(ctk.CTk):
                       fg_color=CARD, hover_color=BORDER,
                       command=dlg.destroy).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="▶  Tam Çeviriyi Başlat",
-                      fg_color=ACCENT, hover_color="#5a4fd1",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=lambda: (dlg.destroy(), self._start())).grid(row=0, column=1, padx=4, sticky="ew")
 
     def _check_log_pin(self):
@@ -7787,16 +7803,16 @@ class App(ctk.CTk):
         self.log_box.configure(state="disabled")
 
     _PHASE_COLORS = {
-        "analiz":    "#5B9BD5",   # mavi
-        "çeviri":    "#2ECC71",   # yeşil
-        "critic":    "#F39C12",   # turuncu
-        "polish":    "#9B59B6",   # mor
-        "qc":        "#E74C3C",   # kırmızı
-        "sweep":     "#1ABC9C",   # teal
-        "yazıyor":   "#7B68EE",   # accent
-        "tamam":     "#2ECC71",   # yeşil
-        "hata":      "#E74C3C",   # kırmızı
-        "hazır":     "#8888aa",   # gri
+        "analiz":    INFO_BLUE,
+        "çeviri":    ACCENT,
+        "critic":    INFO_BLUE,
+        "polish":    POLISH,
+        "qc":        TEAL,
+        "sweep":     TEAL,
+        "yazıyor":   ACCENT,
+        "tamam":     GREEN,
+        "hata":      RED,
+        "hazır":     FG2,
     }
 
     def _set_phase(self, phase: str, detail: str = ""):
@@ -9164,13 +9180,13 @@ class App(ctk.CTk):
             if label:
                 label.configure(
                     text=label_text if enabled else f"{label_text} (kapali)",
-                    text_color=FG2 if enabled else "#777190",
+                    text_color=FG2 if enabled else FG_DIS,
                 )
             combo = combos.get(role)
             if combo:
                 combo.configure(
                     state="readonly" if enabled else "disabled",
-                    text_color=FG if enabled else "#8d88aa",
+                    text_color=FG if enabled else FG_DIS,
                     button_color=BORDER if enabled else CARD,
                 )
             if enabled:
@@ -9502,7 +9518,7 @@ class App(ctk.CTk):
 
         ctk.CTkButton(btn_fr, text="✓ Kaydet", height=36,
                       font=ctk.CTkFont("Segoe UI", 12),
-                      fg_color=ACCENT, hover_color="#5a4fd1",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=_save
                       ).grid(row=0, column=0, sticky="ew", padx=(0,4))
 
@@ -10243,7 +10259,7 @@ class App(ctk.CTk):
     def _toggle_pause_between_files(self):
         if self._pause_btw_files.is_set():
             self._pause_btw_files.clear()
-            self.pause_btn.configure(fg_color="#4a3510", text="\u25b6  Devam", hover_color="#6a4520")
+            self.pause_btn.configure(fg_color=PAUSE_BG, text="\u25b6  Devam", hover_color=PAUSE_HOVER)
             self._log("Duraklat\u0131ld\u0131 \u2014 mevcut dosya bitince duracak", "warn")
         else:
             self._pause_btw_files.set()
@@ -11174,7 +11190,7 @@ class App(ctk.CTk):
 
             ctk.CTkCheckBox(row, text="", variable=var,
                             width=24, height=24,
-                            fg_color=ACCENT, hover_color="#5a4fd1",
+                            fg_color=ACCENT, hover_color=ACCENT_HOVER,
                             border_color=BORDER).grid(row=0, column=0, padx=(0, 10))
             ctk.CTkLabel(row, text=label,
                          font=ctk.CTkFont("Segoe UI", 12, "bold"),
@@ -11203,7 +11219,7 @@ class App(ctk.CTk):
 
         ctk.CTkButton(btn_fr, text="▶  Başlat", height=40,
                       font=ctk.CTkFont("Segoe UI", 13, "bold"),
-                      fg_color=ACCENT, hover_color="#5a4fd1",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=confirm).grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ctk.CTkButton(btn_fr, text="✕  İptal", height=40,
                       font=ctk.CTkFont("Segoe UI", 12),
@@ -11677,7 +11693,7 @@ class App(ctk.CTk):
 
             header_txt = f"#{issue.get('id','?')}  {issue.get('problem','')}"
             ctk.CTkCheckBox(info_fr, text=header_txt, variable=var,
-                            fg_color=ACCENT, hover_color="#5a4fd1",
+                            fg_color=ACCENT, hover_color=ACCENT_HOVER,
                             font=ctk.CTkFont("Segoe UI", 12, "bold"),
                             text_color=FG).pack(anchor="w")
             ctk.CTkLabel(info_fr,
@@ -11716,7 +11732,7 @@ class App(ctk.CTk):
                       fg_color=BORDER, hover_color=ACCENT,
                       command=select_all).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="✓ Uygula",
-                      fg_color=ACCENT, hover_color="#5a4fd1",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=apply_fixes).grid(row=0, column=1, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="Atla",
                       fg_color=CARD, hover_color=BORDER,
@@ -11807,10 +11823,10 @@ class App(ctk.CTk):
             return
 
         _CATEGORY_COLORS = {
-            "proper_noun": "#7B68EE",
-            "technical":   "#2ECC71",
-            "idiom":       "#F39C12",
-            "recurring":   "#3498DB",
+            "proper_noun": ACCENT,
+            "technical":   TEAL,
+            "idiom":       YELLOW,
+            "recurring":   INFO_BLUE,
         }
 
         dlg = ctk.CTkToplevel(self)
@@ -11848,7 +11864,7 @@ class App(ctk.CTk):
             ctk.CTkCheckBox(inner,
                             text=f"{sg.get('src','')}  →  {sg.get('tgt','')}",
                             variable=var,
-                            fg_color=ACCENT, hover_color="#5a4fd1",
+                            fg_color=ACCENT, hover_color=ACCENT_HOVER,
                             font=ctk.CTkFont("Segoe UI", 12, "bold"),
                             text_color=FG).pack(anchor="w")
             meta = f"[{cat}]  {sg.get('reason','')}"
@@ -11883,7 +11899,7 @@ class App(ctk.CTk):
                       fg_color=BORDER, hover_color=ACCENT,
                       command=select_all).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="✓ Sözlüğe Ekle",
-                      fg_color=ACCENT, hover_color="#5a4fd1",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=add_selected).grid(row=0, column=1, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="Atla",
                       fg_color=CARD, hover_color=BORDER,
@@ -12065,7 +12081,7 @@ class App(ctk.CTk):
             failed = item["is_failed"]
             row = ctk.CTkFrame(
                 scroll,
-                fg_color="#3A2323" if failed else CARD,
+                fg_color=FAILED_ROW if failed else CARD,
                 corner_radius=7,
             )
             row.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
@@ -12109,7 +12125,7 @@ class App(ctk.CTk):
                             text_color=FG,
                         )
                     else:
-                        row_frames[path].configure(fg_color="#3A2323")
+                        row_frames[path].configure(fg_color=FAILED_ROW)
                         lbl_txt = f"⚠ {orig_name}"
                         row_labels[path].configure(
                             text=lbl_txt if len(lbl_txt) <= 65 else "..." + lbl_txt[-62:],
@@ -12134,7 +12150,7 @@ class App(ctk.CTk):
                 header_lbl.configure(text_color=WARN)
                 for u_fp in unres_files:
                     if u_fp in row_frames:
-                        row_frames[u_fp].configure(fg_color="#3A2323")
+                        row_frames[u_fp].configure(fg_color=FAILED_ROW)
                         orig_name = Path(u_fp).name
                         lbl_txt = f"⚠ {orig_name}"
                         row_labels[u_fp].configure(
@@ -12158,7 +12174,7 @@ class App(ctk.CTk):
         buttons.grid_columnconfigure((0, 1, 2), weight=1)
         ctk.CTkButton(
             buttons, text="Bu Dillerle Devam Et", height=36,
-            fg_color=GREEN, hover_color="#27AE60",
+            fg_color=GREEN, hover_color=GREEN_HOVER,
             command=_try_continue,
         ).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(
@@ -12370,7 +12386,7 @@ class App(ctk.CTk):
             text="Bu Türlerle Devam Et",
             height=36,
             fg_color=GREEN,
-            hover_color="#27AE60",
+            hover_color=GREEN_HOVER,
             text_color="white",
             command=_continue,
         ).grid(row=0, column=0, padx=4, sticky="ew")
@@ -14739,7 +14755,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(hdr,
                      text=f"Çıkış: {output_dir}",
                      font=ctk.CTkFont("Segoe UI", 10),
-                     text_color="#dde").pack(side="right", padx=14)
+                     text_color=FG).pack(side="right", padx=14)
 
         # Sütun başlıkları
         col_hdr = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -14787,7 +14803,7 @@ class App(ctk.CTk):
                       fg_color=CARD, hover_color=BORDER,
                       command=_open_folder).grid(row=0, column=0, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="▶  Yeni Çeviri Başlat",
-                      fg_color=ACCENT, hover_color="#5a4fd1",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=lambda: (dlg.destroy(), self._start())).grid(row=0, column=1, padx=4, sticky="ew")
         ctk.CTkButton(btn_fr, text="✕  Kapat",
                       fg_color=CARD, hover_color=BORDER,
