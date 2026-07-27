@@ -46,6 +46,20 @@ REGISTER_GUIDANCE = {
     ),
 }
 
+
+def meaning_readability_rule(target_language: str) -> str:
+    target = str(target_language or "").strip() or "the target language"
+    return (
+        f"- MEANING-FIRST / sense-for-sense: infer what the speaker or narrator intends ONLY from the visible "
+        f"source words and surrounding context before translating. Say it naturally in {target}; preserve the "
+        "speech act, implication, subtext, emotion, and cause-effect, but never add unstated ideas. "
+        "Duration/CPS beats source length: keep the translation concise for the cue duration; aim for <=21 CPS "
+        "and stay <=24 CPS when possible. When a cue already spans multiple display lines, balance them naturally "
+        "and aim for about <=42 visible characters per line. Never drop names, numbers, facts, negation, or "
+        "speaker ownership merely to meet CPS or line-width targets. Never map source words one by one."
+    )
+
+
 JSON_INSTRUCTION = (
     "\n\nInput JSON keys:\n"
     '  "ctx"        \u2014 PRECEDING subtitles in the SAME scene (do NOT translate). '

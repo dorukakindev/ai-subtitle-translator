@@ -27,7 +27,7 @@ from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json
                        atomic_write_text,
                        best_effort_cancel_remote_batch, is_safe_batch_id, mutate_batch_ids,
                        state_dir, state_path)
-from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION
+from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION, meaning_readability_rule
 from folder_picker import pick_multiple_folders
 
 # Tahmini 1M Token fiyatları (Input/Output $)
@@ -2045,12 +2045,7 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         + schema_block
         + "Rules:\n"
         f"- Natural, fluent {tgt} — never word-for-word literal\n"
-        "- MEANING-FIRST / sense-for-sense: infer what the speaker or narrator means ONLY from the visible "
-        "source words and surrounding context, then say that naturally in Turkish. Preserve the speech act, "
-        "implication, subtext, emotion, and cause-effect; change word order and wording when Turkish needs it, "
-        "but never add unstated ideas. Duration/CPS beats source length: keep Turkish concise for the cue "
-        "duration; aim for <=21 CPS and stay <=24 CPS when possible. Never translate by matching source words "
-        "one by one.\n"
+        + meaning_readability_rule(tgt) + "\n"
         "- Preserve polarity exactly: not/never/no/n't must stay negative in Turkish; never flip a denial into "
         "an affirmation or an affirmation into a denial.\n"
         "- Before translating pronouns and deictics (this/that/it/he/she/him/her/there), resolve what they refer "

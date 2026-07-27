@@ -5,7 +5,10 @@ Denetimden (Frisky Dingo 1x01-1x03) çıkan tekrarlayan çeviri hatalarını hed
 """
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+import hybrid_translate as ht
+from prompt_constants import meaning_readability_rule
 import subtitle_translator_gui as gui
 
 # Denetimde gözlemlenen birebir hata→düzeltme çiftleri
@@ -47,6 +50,22 @@ class IdiomTrapsInHybridPromptTest(unittest.TestCase):
         src += "\n" + Path("prompt_constants.py").read_text(encoding="utf-8")
         for tok in KEY_TOKENS:
             self.assertIn(tok, src, f"hybrid promptta eksik: {tok}")
+
+
+class SharedMeaningReadabilityRuleTest(unittest.TestCase):
+    def test_sync_and_hybrid_render_same_shared_rule(self):
+        expected = meaning_readability_rule("Turkish")
+        sync_prompt = gui._build_sync_system_prompt(
+            "English", "Turkish", None, "Orta")
+        context = SimpleNamespace(
+            tone="", summary="", setting="", characters=[],
+            recurring_terms={}, scene_notes=[],
+        )
+        hybrid_prompt = ht.build_system_prompt(
+            context, "English", "Turkish")
+        self.assertIn(expected, sync_prompt)
+        self.assertIn(expected, hybrid_prompt)
+        self.assertIn("<=42 visible characters per line", expected)
 
 
 class MeaningFirstInGuiReviewPromptsTest(unittest.TestCase):

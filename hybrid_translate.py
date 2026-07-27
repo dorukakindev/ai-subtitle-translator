@@ -2500,7 +2500,9 @@ def _infer_register(tone: str) -> str:
     return "general"
 
 
-from prompt_constants import PROFANITY_RULES as _PROFANITY_RULES, REGISTER_GUIDANCE as _REGISTER_GUIDANCE, JSON_INSTRUCTION
+from prompt_constants import (PROFANITY_RULES as _PROFANITY_RULES,
+                              REGISTER_GUIDANCE as _REGISTER_GUIDANCE,
+                              JSON_INSTRUCTION, meaning_readability_rule)
 
 
 def build_system_prompt(
@@ -2634,12 +2636,7 @@ def build_system_prompt(
     parts += [
         "## TRANSLATION RULES",
         f"- Natural, fluent {tgt_lang} — never word-for-word literal",
-        "- MEANING-FIRST / sense-for-sense: infer what the speaker or narrator intends ONLY from the visible source "
-        "words and surrounding context before translating. Preserve the speech act, implication, subtext, emotion, "
-        "and cause-effect; use natural Turkish phrasing when word order and wording change, but "
-        "never add unstated ideas. Duration/CPS beats source length: keep Turkish concise for the cue duration; "
-        "aim for <=21 CPS and "
-        "stay <=24 CPS when possible. Never map source words one by one.",
+        meaning_readability_rule(tgt_lang),
         "- Preserve polarity exactly: not/never/no/n't must stay negative in Turkish; never flip a denial into "
         "an affirmation or an affirmation into a denial.",
         "- Before translating pronouns and deictics (this/that/it/he/she/him/her/there), resolve what they refer "

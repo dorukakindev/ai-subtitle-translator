@@ -3,8 +3,9 @@ GERÇEK isteklere hiç bağlı değildi — hem sync (`build_requests`) hem hybr
 (`ht.build_batch_requests`) çağrıları temperature'ı 0.2 sabit kodluyordu, slider'ın
 değeri yalnızca ayar dosyasına kaydediliyordu. Artık her iki fonksiyon da bir
 `temperature` parametresi alıyor (varsayılan None -> 0.2, eski davranışla birebir
-aynı) ve App'teki 6 çağrı noktası `self._temperature`'ı geçiriyor.
+aynı) ve App'teki tüm çağrı noktaları etkin sıcaklık ayarını geçiriyor.
 """
+import ast
 import json
 import os
 import tempfile
@@ -84,12 +85,46 @@ class HybridBuildBatchRequestsTemperatureTest(unittest.TestCase):
 class AppCallSitesPassTemperatureTest(unittest.TestCase):
     """App'in build_requests/build_batch_requests çağıran metotlarının kaynak
     kodunda temperature=self._temperature geçtiğini doğrular (regresyon kilidi —
-    6 çağrı noktasından biri gelecekte eklenip bu argümanı unutursa yakalar)."""
+    gelecekte yeni bir çağrı noktası eklenip bu argüman unutulursa yakalar)."""
 
     def test_source_wires_temperature_at_every_call_site(self):
         src = Path("subtitle_translator_gui.py").read_text(encoding="utf-8")
-        call_sites = src.count("temperature=self._temperature")
-        self.assertGreaterEqual(call_sites, 6, "beklenen 6 çağrı noktasından az")
+        tree = ast.parse(src)
+        expanded_keywords = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+                continue
+            keys = {
+                key.value for key in node.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    expanded_keywords[target.id] = keys
+        calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func_name = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute)
+                else ""
+            )
+            if func_name in {"build_requests", "build_batch_requests"}:
+                calls.append(node)
+        self.assertTrue(calls, "çeviri isteği oluşturma çağrısı bulunamadı")
+        missing = []
+        for node in calls:
+            explicit = any(kw.arg == "temperature" for kw in node.keywords)
+            expanded = any(
+                kw.arg is None
+                and isinstance(kw.value, ast.Name)
+                and "temperature" in expanded_keywords.get(kw.value.id, set())
+                for kw in node.keywords
+            )
+            if not explicit and not expanded:
+                missing.append(node.lineno)
+        self.assertEqual(missing, [], f"temperature aktarılmayan çağrı satırları: {missing}")
 
 
 if __name__ == "__main__":
