@@ -134,15 +134,18 @@ class MemoryIsolationTest(unittest.TestCase):
         ht.build_batch_requests(
             [cue], "system", "model-a", tm=tm, tgt_lang="tr",
             profanity="Sert", schema_name="Anime",
+            source_language="Spanish",
         )
 
         tm.lookup.assert_called_once_with(
             "A source line.", tgt_lang="tr", model="model-a",
             profanity="Sert", schema_name="Anime",
+            source_language="Spanish",
         )
         tm.fuzzy_lookup.assert_called_once_with(
             "A source line.", threshold=0.95, tgt_lang="tr",
             model="model-a", profanity="Sert", schema_name="Anime",
+            source_language="Spanish",
         )
 
     def test_both_hybrid_flows_forward_tm_dimensions(self):
@@ -150,6 +153,16 @@ class MemoryIsolationTest(unittest.TestCase):
             source = inspect.getsource(method)
             self.assertIn("profanity=profanity", source)
             self.assertIn('schema_name=schema_dict.get("name", "")', source)
+            self.assertIn("source_language=file_src", source)
+
+    def test_plain_sync_and_tm_store_forward_source_language(self):
+        run_source = inspect.getsource(gui.App._run_sync)
+        self.assertIn('r["source_language"] = group_src', run_source)
+        self.assertIn("source_language=group_src", run_source)
+        self.assertIn("source_language=source_language", run_source)
+
+        store_source = inspect.getsource(gui.App._store_tm_pairs)
+        self.assertIn("source_language=source_language", store_source)
 
 
 class ParserAndValidationTest(unittest.TestCase):

@@ -10,6 +10,7 @@ Kapsar:
 """
 import tempfile
 import unittest
+import sqlite3
 from unittest.mock import patch
 
 import translation_memory as tm_mod
@@ -215,6 +216,71 @@ class TMSchemaLegacyFallbackIsolationTest(unittest.TestCase):
         fuzzy_legacy = tm.fuzzy_lookup("Same source text", tgt_lang="Turkish", model="gpt-4o", schema_name="")
         self.assertIsNotNone(fuzzy_legacy)
         self.assertEqual(fuzzy_legacy[0], "LEGACY")
+
+
+class TMSourceLanguageIsolationTest(unittest.TestCase):
+    def test_existing_database_is_migrated_with_source_language_column(self):
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        conn = sqlite3.connect(tmp.name)
+        conn.execute("""
+            CREATE TABLE tm (
+                hash TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+                model TEXT DEFAULT '', ts REAL DEFAULT 0, tgt_lang TEXT DEFAULT '',
+                profanity TEXT DEFAULT '', schema_name TEXT DEFAULT ''
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        tm = TranslationMemory(db_path=tmp.name)
+        columns = {
+            row[1] for row in tm._get_conn().execute("PRAGMA table_info(tm)").fetchall()
+        }
+        self.assertIn("src_lang", columns)
+        tm.close()
+
+    def test_exact_batch_and_fuzzy_are_isolated_by_source_language(self):
+        tm = _tmp_tm()
+        settings = dict(tgt_lang="Turkish", model="gpt-5.4", schema_name="Belgesel")
+        tm.store("si", "eğer", source_language="Spanish", **settings)
+        tm.store("si", "evet", source_language="French", **settings)
+        tm.store("actual value", "gerçek değer", source_language="English", **settings)
+        tm.store("actual value", "güncel değer", source_language="Spanish", **settings)
+
+        self.assertEqual(
+            tm.lookup("si", source_language="Spanish", **settings), "eğer")
+        self.assertEqual(
+            tm.lookup("si", source_language="French", **settings), "evet")
+        self.assertEqual(
+            tm.lookup_batch(["si"], source_language="Spanish", **settings)["si"], "eğer")
+        self.assertEqual(
+            tm.lookup_batch(["si"], source_language="French", **settings)["si"], "evet")
+        self.assertEqual(
+            tm.fuzzy_lookup(
+                "actual value!", threshold=0.85,
+                source_language="English", **settings)[0],
+            "gerçek değer")
+        self.assertEqual(
+            tm.fuzzy_lookup(
+                "actual value!", threshold=0.85,
+                source_language="Spanish", **settings)[0],
+            "güncel değer")
+
+    def test_known_source_language_does_not_use_legacy_sourceless_record(self):
+        tm = _tmp_tm()
+        tm.store(
+            "gift", "hediye", tgt_lang="Turkish", model="gpt-5.4",
+            schema_name="")
+
+        self.assertIsNone(tm.lookup(
+            "gift", tgt_lang="Turkish", model="gpt-5.4",
+            schema_name="", source_language="German"))
+        self.assertEqual(
+            tm.lookup(
+                "gift", tgt_lang="Turkish", model="gpt-5.4",
+                schema_name="", source_language=""),
+            "hediye")
 
 
 if __name__ == "__main__":

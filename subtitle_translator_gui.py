@@ -8221,7 +8221,8 @@ class App(ctk.CTk):
         self._update_tokens(
             added, price=None if price is None else price * 0.5, cached=cached)
 
-    def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = ""):
+    def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = "",
+                        source_language: str = ""):
         """Kaynak↔çeviri çiftlerini TM'ye yazar; eksik işaretler ve kaynak==çeviri
         (kimlik) çiftleri hariç tutulur. DÖRT akışın ortak TM-kayıt mantığı tek yerde — birebir aynıydı,
         burada toplandı ki bir daha 'şu akışta var bu akışta yok' sürüklenmesi olmasın.
@@ -8243,7 +8244,7 @@ class App(ctk.CTk):
                     profanity = self.profanity_var.get() if hasattr(self, "profanity_var") else ""
                 if not self._tm.store_batch(
                         pairs, model, tgt_lang=tgt, profanity=profanity,
-                        schema_name=schema_name):
+                        schema_name=schema_name, source_language=source_language):
                     self._log("TM toplu kayıt başarısız; çeviri çıktısı korundu", "warn")
             self._update_tm_stat()
         except Exception as _tm_e:
@@ -13141,6 +13142,7 @@ class App(ctk.CTk):
                                         temperature=self._temperature)
             for r in reqs:
                 r["schema_name"] = sname
+                r["source_language"] = group_src
             all_requests.extend(reqs)
             all_file_map.update(fmap)
         requests, file_map = all_requests, all_file_map
@@ -13150,16 +13152,20 @@ class App(ctk.CTk):
         for (sname, group_src), group in _schema_groups.items():
             _group_srcs = []
             for req in requests:
-                if req.get("schema_name") == sname:
+                if (req.get("schema_name") == sname
+                        and req.get("source_language") == group_src):
                     try:
                         _pl = json.loads(req["body"]["messages"][1]["content"])
                         _group_srcs.extend(it["t"] for it in _pl.get("tr", []) if "t" in it)
                     except Exception:
                         pass
             if _group_srcs:
-                _group_cache = self._tm.lookup_batch(_group_srcs, tgt_lang=tgt, model=self._main_model_name(), profanity=self.profanity_var.get(), schema_name=sname)
+                _group_cache = self._tm.lookup_batch(
+                    _group_srcs, tgt_lang=tgt, model=self._main_model_name(),
+                    profanity=self.profanity_var.get(), schema_name=sname,
+                    source_language=group_src)
                 for src_t, tgt_t in _group_cache.items():
-                    _tm_cache[(src_t, sname)] = tgt_t
+                    _tm_cache[(src_t, sname, group_src)] = tgt_t
 
         def _tm_fill_chunk(req: dict) -> str | None:
             """Chunk'taki tüm bloklar TM'de tam eşleşiyorsa JSON cevabı döner, yoksa None."""
@@ -13169,11 +13175,17 @@ class App(ctk.CTk):
                 if not items:
                     return None
                 sch_name = req.get("schema_name", "")
+                source_language = req.get("source_language", "")
                 results = []
                 for item in items:
-                    cached = _tm_cache.get((item["t"], sch_name))
+                    cached = _tm_cache.get((item["t"], sch_name, source_language))
                     if cached is None:
-                        fuzzy = self._tm.fuzzy_lookup(item["t"], threshold=0.95, tgt_lang=tgt, model=self._main_model_name(), profanity=self.profanity_var.get(), schema_name=sch_name)
+                        fuzzy = self._tm.fuzzy_lookup(
+                            item["t"], threshold=0.95, tgt_lang=tgt,
+                            model=self._main_model_name(),
+                            profanity=self.profanity_var.get(),
+                            schema_name=sch_name,
+                            source_language=source_language)
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
                         return None  # eksik eşleşme -> API'ye gönder
@@ -13549,6 +13561,7 @@ class App(ctk.CTk):
                                                         tgt_lang=tgt,
                                                         profanity=profanity,
                                                         schema_name=schema_dict.get("name", ""),
+                                                        source_language=file_src,
                                                         context_lines=self._context_lines,
                                                         lookahead_lines=self._lookahead_lines,
                                                         scene_gap_sec=self._scene_gap_seconds,
@@ -13891,7 +13904,9 @@ class App(ctk.CTk):
             # TM kaydı (ortak yardımcı)
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
-                                 self._main_model_name(), tgt, schema_name=schema_dict.get("name", ""))
+                                 self._main_model_name(), tgt,
+                                 schema_name=schema_dict.get("name", ""),
+                                 source_language=file_src)
             if _analysis_ok and _hata_n == 0 and _n_filled == 0:
                 self._update_series_memory_from_analysis(filepath, context, pronoun_map)
             if self.auto_glossary_var.get():
@@ -14593,7 +14608,9 @@ class App(ctk.CTk):
                                     pass
                                 self._store_tm_pairs(
                                     pp, _src_map, self._main_model_name(), tgt,
-                                    schema_name=schema_name or self._get_file_schema(str(_src_path))["name"])
+                                    schema_name=schema_name or self._get_file_schema(str(_src_path))["name"],
+                                    source_language=source_language or self._effective_file_source_language(
+                                        str(_src_path), self._snap_get("src_lang", "English")))
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -15001,7 +15018,10 @@ class App(ctk.CTk):
                     break
                 continue
             # TM kaydı (ortak yardımcı)
-            self._store_tm_pairs(sorted_blocks, src_blocks, model_name, _tgt_lang, schema_name=schema_dict.get("name", ""))
+            self._store_tm_pairs(
+                sorted_blocks, src_blocks, model_name, _tgt_lang,
+                schema_name=schema_dict.get("name", ""),
+                source_language=_file_src_lang)
             if _hata_n == 0 and _n_filled == 0:
                 self._commit_precontext_series_memory(fp, _tgt_lang)
             # Auto-Glossary (düz sync/batch'te de) — Cue nesnesi gerektiğinden kaynağı
@@ -15477,6 +15497,7 @@ class App(ctk.CTk):
                                                           tgt_lang=tgt,
                                                           profanity=profanity,
                                                           schema_name=schema_dict.get("name", ""),
+                                                          source_language=file_src,
                                                           context_lines=self._context_lines,
                                                           lookahead_lines=self._lookahead_lines,
                                                           scene_gap_sec=self._scene_gap_seconds,
@@ -15847,7 +15868,7 @@ class App(ctk.CTk):
                     pass
                 self._store_tm_pairs(
                     _final_blocks, _src_map, self._main_model_name(), tgt,
-                    schema_name=file_schema_name)
+                    schema_name=file_schema_name, source_language=file_src)
                 if analysis_ok and _n_filled == 0 and not any(
                         str(text or "").startswith("[HATA")
                         or "[ÇEVİRİ EKSİK]" in str(text or "")
