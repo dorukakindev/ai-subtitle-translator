@@ -8633,11 +8633,7 @@ def critic_pass_with_helper(
                 if log_fn:
                     log_fn(f"Critic Helper chunk beklenmeyen format — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
-            proposed_ids = {
-                str(fix.get("id", ""))
-                for fix in fixes
-                if isinstance(fix, dict) and str(fix.get("id", "")) in chunk_ids and str(fix.get("id", "")) in idx_to_pos
-            }
+            prepared = []
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
@@ -8662,22 +8658,7 @@ def critic_pass_with_helper(
                         _reason_tokens(v_reasons.get(fid, ""))
                         + list(flow_reasons_by_id.get(fid, set()))
                     ))
-                    for tok in reason_toks:
-                        reason_stats.setdefault(tok, {"suggested": 0, "accepted": 0})
-                        reason_stats[tok]["suggested"] += 1
                     final_text = str(ftext)
-                    if (
-                        any(token in flow_group_reason_tokens for token in reason_toks)
-                        and _has_dangling_fragment_word_deletion(old_text, final_text)
-                        and not all(
-                            str(group_id) in proposed_ids
-                            for group_id in frag_group_by_id.get(fid, [fid])
-                        )
-                    ):
-                        critic_rejected += 1
-                        reason = "dangling_fragment_word_deletion"
-                        critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
-                        continue
                     ok, reason = validate_polish_candidate(
                         old_text,
                         final_text,
@@ -8699,23 +8680,67 @@ def critic_pass_with_helper(
                             )
                             if ok2:
                                 ok, reason, final_text = True, reason2, reflowed
-                                reflow_recovered += 1
-                    if not ok:
-                        critic_rejected += 1
-                        critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
-                        continue
-                    result[pos] = (old_idx, old_ts, final_text)
-                    mm_fixed += 1
-                    for tok in reason_toks:
-                        reason_stats[tok]["accepted"] += 1
-                    if change_log is not None:
-                        change_log.append({
-                            "id": fid,
-                            "reason": v_reasons.get(fid, "") or "pattern/local",
-                            "source": orig_dict.get(fid, ""),
-                            "before": old_text,
-                            "after": final_text,
-                        })
+                                recovered = True
+                            else:
+                                recovered = False
+                        else:
+                            recovered = False
+                    else:
+                        recovered = False
+                    prepared.append({
+                        "fid": fid,
+                        "pos": pos,
+                        "old_idx": old_idx,
+                        "old_ts": old_ts,
+                        "old_text": old_text,
+                        "final_text": final_text,
+                        "reason_toks": reason_toks,
+                        "ok": ok,
+                        "reason": reason,
+                        "recovered": recovered,
+                    })
+
+            accepted_ids = {item["fid"] for item in prepared if item["ok"]}
+            for item in prepared:
+                fid = item["fid"]
+                old_text = item["old_text"]
+                final_text = item["final_text"]
+                reason_toks = item["reason_toks"]
+                for tok in reason_toks:
+                    reason_stats.setdefault(tok, {"suggested": 0, "accepted": 0})
+                    reason_stats[tok]["suggested"] += 1
+                ok = item["ok"]
+                reason = item["reason"]
+                if (
+                    ok
+                    and any(token in flow_group_reason_tokens for token in reason_toks)
+                    and _has_dangling_fragment_word_deletion(old_text, final_text)
+                    and not all(
+                        str(group_id) in accepted_ids
+                        for group_id in frag_group_by_id.get(fid, [fid])
+                    )
+                ):
+                    ok = False
+                    reason = "dangling_fragment_word_deletion"
+                if not ok:
+                    critic_rejected += 1
+                    critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
+                    continue
+                if item["recovered"]:
+                    reflow_recovered += 1
+                result[item["pos"]] = (
+                    item["old_idx"], item["old_ts"], final_text)
+                mm_fixed += 1
+                for tok in reason_toks:
+                    reason_stats[tok]["accepted"] += 1
+                if change_log is not None:
+                    change_log.append({
+                        "id": fid,
+                        "reason": v_reasons.get(fid, "") or "pattern/local",
+                        "source": orig_dict.get(fid, ""),
+                        "before": old_text,
+                        "after": final_text,
+                    })
         except Exception as e:
             if log_fn:
                 log_fn(f"Critic Helper chunk hatası ({len(chunk)} satır atlandı): {e}", "warn")
