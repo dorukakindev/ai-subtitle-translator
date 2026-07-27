@@ -12,7 +12,7 @@ import re
 import threading
 from pathlib import Path
 
-from app_state import atomic_write_json
+from app_state import _interprocess_lock, atomic_write_json
 
 
 def is_self_translation(src, tgt) -> bool:
@@ -50,11 +50,30 @@ class ProjectMemory:
             "series_notes": [],    # serbest metin notlar
         }
 
-    def save(self):
+    @staticmethod
+    def _merge_data(disk_data: dict, memory_data: dict) -> dict:
+        merged = {}
+        for key in ("glossary", "characters", "proper_nouns", "pronoun_map"):
+            values = dict(disk_data.get(key, {})) if isinstance(disk_data, dict) else {}
+            values.update(memory_data.get(key, {}))
+            merged[key] = values
+        disk_notes = list(disk_data.get("series_notes", [])) if isinstance(disk_data, dict) else []
+        memory_notes = list(memory_data.get("series_notes", []))
+        merged["series_notes"] = list(dict.fromkeys(disk_notes + memory_notes))
+        return merged
+
+    def save(self, merge_existing=True):
         with self._lock:
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(self._path, self._data)
+                with _interprocess_lock(self._path):
+                    if merge_existing and self._path.exists():
+                        try:
+                            disk_data = json.loads(self._path.read_text(encoding="utf-8"))
+                        except Exception:
+                            disk_data = {}
+                        self._data = self._merge_data(disk_data, self._data)
+                    atomic_write_json(self._path, self._data)
             except Exception:
                 pass
 
@@ -164,7 +183,7 @@ class ProjectMemory:
                 "glossary": {}, "characters": {}, "proper_nouns": {},
                 "pronoun_map": {}, "series_notes": [],
             }
-            self.save()
+            self.save(merge_existing=False)
 
     def stats(self) -> dict:
         with self._lock:

@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -86,6 +87,39 @@ class SavedRegularRequestSafetyTest(unittest.TestCase):
         )
         self.assertIs(requests, saved)
         self.assertEqual(reason, "")
+
+    def test_hybrid_resume_uses_saved_output_path(self):
+        saved = gui._resolve_hybrid_resume_output_path({
+            "output_path": r"D:\out\final.srt",
+            "output_dir": r"D:\other",
+            "source_path": r"D:\src\episode.srt",
+        })
+        self.assertEqual(saved, r"D:\out\final.srt")
+
+    def test_hybrid_resume_derives_path_from_saved_dir_and_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            saved = gui._resolve_hybrid_resume_output_path({
+                "output_dir": td,
+                "source_path": r"D:\src\episode.vtt",
+            })
+            self.assertEqual(saved, os.path.join(td, "episode.srt"))
+
+    def test_hybrid_resume_rejects_missing_safe_path(self):
+        self.assertEqual(gui._resolve_hybrid_resume_output_path({}), "")
+
+
+class RetryClassificationTest(unittest.TestCase):
+    def test_transient_provider_errors_are_retried(self):
+        for message in ("HTTP 408", "HTTP 429", "HTTP 529", "server error", "internal error"):
+            with self.subTest(message=message):
+                self.assertTrue(gui._is_transient_retry_error(RuntimeError(message)))
+
+    def test_permanent_http_errors_are_not_retried(self):
+        for code in ("400", "401", "403", "404", "409", "422"):
+            with self.subTest(code=code):
+                self.assertFalse(gui._is_transient_retry_error(
+                    RuntimeError(f"HTTP {code}: internal error")
+                ))
 
 
 class OrphanBatchCancellationTest(unittest.TestCase):

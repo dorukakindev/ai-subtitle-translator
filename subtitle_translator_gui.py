@@ -3733,6 +3733,33 @@ def _is_upstream_provider_error(exc) -> bool:
     return "upstream request failed" in text or "upstream error" in text
 
 
+def _is_transient_retry_error(exc) -> bool:
+    text = str(exc or "")
+    lowered = text.lower()
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    codes = {
+        int(value) for value in re.findall(
+            r"(?i)\b(?:http|status(?:\s+code)?|error\s+code)\s*[:=]?\s*(\d{3})\b",
+            text,
+        )
+    }
+    if isinstance(status, int):
+        codes.add(status)
+    if codes & {400, 401, 403, 404, 409, 422}:
+        return False
+    return (
+        bool(codes & {408, 429, 500, 502, 503, 504, 529})
+        or "rate limit" in lowered
+        or "timeout" in lowered
+        or "connection" in lowered
+        or "server error" in lowered
+        or "internal error" in lowered
+    )
+
+
 def _repaired_json_ids(items) -> list:
     """items (JSON onarım yanıtı) içindeki geçerli 'i' alanlarını sırayla döner."""
     return [str(it["i"]) for it in items if isinstance(it, dict) and "i" in it]
@@ -3830,6 +3857,17 @@ def _saved_regular_requests(fmap_data: dict, saved_fmap: dict):
     if not set(saved_fmap).issubset(request_ids):
         return None, "id_mismatch"
     return requests, ""
+
+
+def _resolve_hybrid_resume_output_path(fmap_data: dict) -> str:
+    output_path = str(fmap_data.get("output_path") or "").strip()
+    if output_path:
+        return output_path
+    output_dir = str(fmap_data.get("output_dir") or "").strip()
+    source_path = str(fmap_data.get("source_path") or "").strip()
+    if not output_dir or not source_path:
+        return ""
+    return str(Path(output_dir) / f"{Path(source_path).stem}.srt")
 
 
 def _align_visible(text) -> str:
@@ -5714,7 +5752,7 @@ class App(ctk.CTk):
             self._save_settings()
         except Exception:
             pass
-        self._drain_workers_for_close()
+        self._drain_workers_for_close(time.monotonic() + 2.0)
 
     def _start_worker(self, target, args=(), daemon=True):
         if not hasattr(self, "_worker_lock"):
@@ -5741,12 +5779,14 @@ class App(ctk.CTk):
         return thread
 
     def _drain_workers_for_close(self, deadline=None):
+        if deadline is None:
+            deadline = time.monotonic() + 2.0
         with self._worker_lock:
             alive = [
                 thread for thread in self._worker_threads
                 if thread.is_alive() and thread is not threading.current_thread()
             ]
-        if alive:
+        if alive and time.monotonic() < deadline:
             try:
                 self.after(50, self._drain_workers_for_close, deadline)
                 return
@@ -8341,8 +8381,6 @@ class App(ctk.CTk):
                         self._log(f"  ↺ {cid}: tamam", "ok")
                         break
                     except Exception as e:
-                        estr = str(e)
-                        estr_l = estr.lower()
                         if _is_upstream_provider_error(e):
                             upstream_failed.add(cid)
                             self._log(
@@ -8351,13 +8389,7 @@ class App(ctk.CTk):
                                 "warn",
                             )
                             break
-                        transient = (
-                            "429" in estr
-                            or "rate limit" in estr_l
-                            or "timeout" in estr_l
-                            or "connection" in estr_l
-                            or any(code in estr for code in ("500", "502", "503", "504"))
-                        )
+                        transient = _is_transient_retry_error(e)
                         if transient and attempt < 2:
                             wait = (2 ** attempt) + random.random()
                             time.sleep(wait)
@@ -13375,14 +13407,6 @@ class App(ctk.CTk):
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
-            # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
-            _n_filled = 0
-            try:
-                _raw_map = _raw_src_map_from_cues(cues)
-                sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
-                sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
-            except Exception:
-                pass
             if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
                 try:
                     sorted_blocks, _ = _normalize_mixed_terms(
@@ -13391,6 +13415,13 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
+            _n_filled = 0
+            try:
+                _raw_map = _raw_src_map_from_cues(cues)
+                sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
+                sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
+            except Exception:
+                pass
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks), tgt)
             completed_files.append(filepath)
             self._log(f"Kaydedildi: {out_path}", "ok")
@@ -13734,7 +13765,7 @@ class App(ctk.CTk):
                     saved_fmap = {cid: [tuple(x) for x in info]
                                   for cid, info in fmap_data["fmap"].items()}
                     if batch_type == "hybrid":
-                        out_path = fmap_data.get("output_path", "")
+                        out_path = _resolve_hybrid_resume_output_path(fmap_data)
                         # Gönderim anında saklananları kullan — UI'daki girdi/çıktı kutuları
                         # yeniden başlatma sonrası başka bir şeye dönmüş olabilir (düz-batch
                         # dalı zaten output_dir'i böyle saklıyordu; hybrid'de eksikti).
@@ -13744,6 +13775,13 @@ class App(ctk.CTk):
                         _saved_out_dir = fmap_data.get("output_dir", "")
                         if _saved_out_dir:
                             last_output_dir = _saved_out_dir
+                        if not out_path:
+                            self._log(
+                                f"[HATA] {bid}: hybrid kurtarma kaydında güvenli çıktı yolu yok; "
+                                "çalışma klasörüne yazılmayacak. Kurtarma verisi korundu.",
+                                "err")
+                            self._unregister_batch(bid)
+                            continue
                         _terminal = self._wait_batch_hybrid(client, bid, saved_fmap, out_path,
                                                 openai_key=api_key,
                                                  is_last=(i == len(batch_ids)-1),
@@ -14084,13 +14122,6 @@ class App(ctk.CTk):
                                 _record_pass_change(
                                     _pass_trace, "Final-Semantic",
                                     _before_semantic, pp, _pass_history)
-                            # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
-                            try:
-                                _raw_map = _raw_src_map_from_cues(_orig_cues)
-                                pp, _ = _fill_hata_with_source(pp, _raw_map, log_fn=self._log)
-                                pp = _restore_tags_blocks(pp, _raw_map)
-                            except Exception:
-                                pass
                             if (getattr(self, "term_normalize_var", None) and self.term_normalize_var.get()
                                     and _orig_cues):
                                 try:
@@ -14100,6 +14131,13 @@ class App(ctk.CTk):
                                         self._helper_api_model("polish"), log_fn=self._log)
                                 except Exception:
                                     pass
+                            # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
+                            try:
+                                _raw_map = _raw_src_map_from_cues(_orig_cues)
+                                pp, _ = _fill_hata_with_source(pp, _raw_map, log_fn=self._log)
+                                pp = _restore_tags_blocks(pp, _raw_map)
+                            except Exception:
+                                pass
                             write_srt(output_path, self._maybe_merge_cues(pp), tgt)
                             self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map, tgt)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
@@ -14457,13 +14495,6 @@ class App(ctk.CTk):
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
-            # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
-            _n_filled = 0
-            try:
-                sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
-                sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
-            except Exception:
-                pass
             if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
                 try:
                     sorted_blocks, _ = _normalize_mixed_terms(
@@ -14472,6 +14503,12 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), log_fn=self._log)
                 except Exception:
                     pass
+            _n_filled = 0
+            try:
+                sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
+                sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
+            except Exception:
+                pass
             write_srt(out_path, self._maybe_merge_cues(sorted_blocks), tgt)
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
@@ -15293,18 +15330,6 @@ class App(ctk.CTk):
                 _record_pass_change(
                     _pass_trace, "Final-Semantic", _before_semantic,
                     _final_blocks, _pass_history)
-                _n_filled = 0
-                try:
-                    _raw_map = _raw_src_map_from_cues(cues)
-                    _final_blocks, _n_filled = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
-                except Exception:
-                    pass
-                # toggle'ları kapalı olsa bile italik/konum etiketleri kaybolmasın) —
-                # eskiden bu adımlar yalnızca bir kalite geçişi açıkken çalışıyordu.
-                try:
-                    _final_blocks = _restore_tags_blocks(_final_blocks, _raw_src_map_from_cues(cues))
-                except Exception:
-                    pass
                 if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
                     try:
                         _final_blocks, _ = _normalize_mixed_terms(
@@ -15313,6 +15338,16 @@ class App(ctk.CTk):
                             self._helper_api_model("polish"), log_fn=self._log)
                     except Exception:
                         pass
+                _n_filled = 0
+                try:
+                    _raw_map = _raw_src_map_from_cues(cues)
+                    _final_blocks, _n_filled = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
+                except Exception:
+                    pass
+                try:
+                    _final_blocks = _restore_tags_blocks(_final_blocks, _raw_src_map_from_cues(cues))
+                except Exception:
+                    pass
                 write_srt(out_path, self._maybe_merge_cues(_final_blocks), tgt)
                 self._save_raw_backup(out_path, _raw_backup_blocks, _raw_src_map_from_cues(cues), tgt)
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}

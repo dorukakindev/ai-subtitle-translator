@@ -99,6 +99,21 @@ class ProjectMemoryOpsTest(unittest.TestCase):
             self.assertEqual(len(saved["glossary"]), workers)
             self.assertEqual(len(saved["characters"]), workers)
 
+    def test_two_instances_merge_updates_before_atomic_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = ProjectMemory(td)
+            second = ProjectMemory(td)
+            first.update_glossary({"alpha": "alfa"})
+            second.update_glossary({"beta": "beta-tr"})
+
+            saved = json.loads((Path(td) / ".project_memory.json").read_text(
+                encoding="utf-8"
+            ))
+            self.assertEqual(saved["glossary"], {
+                "alpha": "alfa",
+                "beta": "beta-tr",
+            })
+
     def test_getters_return_copies(self):
         pm = self._make_pm()
         pm.update_glossary({"term": "terim"})

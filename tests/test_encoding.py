@@ -88,6 +88,16 @@ class ReadSubtitleTextTest(unittest.TestCase):
         finally:
             os.unlink(fp)
 
+    def test_bomless_utf16_detection_uses_initial_sample(self):
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        prefix = ("Header line\n" * 500 + SRT_BODY).encode("utf-16-le")
+        Path(fp).write_bytes(prefix + (b"A" * 50000))
+        try:
+            text = read_subtitle_text(fp)
+            self.assertIn("ığdır çiçeği", text)
+        finally:
+            os.unlink(fp)
+
 
 class ParseSubtitleEncodingTest(unittest.TestCase):
     def test_parse_srt_cp1254(self):

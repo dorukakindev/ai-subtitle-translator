@@ -6,7 +6,9 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import translation_memory as tm_mod
 from translation_memory import TranslationMemory
 
 
@@ -51,3 +53,25 @@ class TMLookupExceptionTest(unittest.TestCase):
         tm._conn = None  # force _get_conn() to return None
         result = tm.lookup("hello", tgt_lang="Turkish")
         self.assertIsNone(result)
+
+    def test_connection_retry_initializes_schema_after_initial_lock(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tm.db"
+            real_connect = tm_mod.sqlite3.connect
+            calls = 0
+
+            def flaky_connect(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                return real_connect(*args, **kwargs)
+
+            with patch("translation_memory.sqlite3.connect", side_effect=flaky_connect):
+                tm = TranslationMemory(path)
+                self.assertTrue(tm.store("hello", "merhaba", tgt_lang="Turkish"))
+                self.assertEqual(
+                    tm.lookup("hello", tgt_lang="Turkish"),
+                    "merhaba",
+                )
+                tm.close()

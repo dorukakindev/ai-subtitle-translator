@@ -10,7 +10,9 @@ Kapsar:
 """
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import translation_memory as tm_mod
 from translation_memory import TranslationMemory
 
 
@@ -146,6 +148,24 @@ class TMStoreTest(unittest.TestCase):
         tm.store_batch([("A", "x"), ("B", "y"), ("C", "z")], tgt_lang="Turkish")
 
         self.assertEqual(tm.stats()["total"], 3)
+
+    def test_guard_failure_disables_only_future_stores(self):
+        old_available = tm_mod._TM_GUARD_AVAILABLE
+        old_warned = tm_mod._TM_GUARD_WARNING_EMITTED
+        try:
+            tm_mod._TM_GUARD_AVAILABLE = True
+            tm_mod._TM_GUARD_WARNING_EMITTED = False
+            tm = _tmp_tm()
+            with patch(
+                "hybrid_translate.has_non_turkish_target_leak",
+                side_effect=RuntimeError("guard unavailable"),
+            ):
+                self.assertFalse(tm.store("source", "hedef", tgt_lang="Turkish"))
+            self.assertFalse(tm_mod._TM_GUARD_AVAILABLE)
+            self.assertIsNone(tm.lookup("source", tgt_lang="Turkish"))
+        finally:
+            tm_mod._TM_GUARD_AVAILABLE = old_available
+            tm_mod._TM_GUARD_WARNING_EMITTED = old_warned
 
 
 class TMSessionHitsTest(unittest.TestCase):

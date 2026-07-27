@@ -6,12 +6,16 @@ Fuzzy eşleştirme: %85+ benzerlik için SequenceMatcher kullanır.
 import sqlite3
 import hashlib
 import re
+import sys
 import threading
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
 FUZZY_THRESHOLD = 0.85  # minimum benzerlik oranı
+_TM_GUARD_AVAILABLE = True
+_TM_GUARD_WARNING_EMITTED = False
+_TM_GUARD_LOCK = threading.Lock()
 
 _SEMANTIC_TOKEN_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)?", re.UNICODE)
 _NEGATION_TOKENS = frozenset({
@@ -69,16 +73,27 @@ def _is_safe_target(target: str) -> bool:
     plans/future-quality-guards-brief.md Görev 2: geçmişte DB'ye giren hatalı bir
     çeviri, fuzzy/exact eşleşmeyle GELECEK bölümlere geri taşınır — guard'ları
     by-pass eden tek yol). hybrid_translate döngüsel import riskine karşı
-    fonksiyon-içi lazy-import edilir; import/çalışma hatasında fail-open (True) —
-    TM kaydı kritik yol değil, bu gate'in kendisi asla dosya yazımını engellememeli."""
+    fonksiyon-içi lazy-import edilir. Guard çalışmazsa yalnız TM kaydı kapatılır;
+    lookup ve altyazı yazımı devam eder."""
+    global _TM_GUARD_AVAILABLE, _TM_GUARD_WARNING_EMITTED
+    if not _TM_GUARD_AVAILABLE:
+        return False
     try:
         import hybrid_translate as ht
         if ht.has_non_turkish_target_leak(target):
             return False
         if ht.find_garble_tokens(target):
             return False
-    except Exception:
-        return True
+    except Exception as exc:
+        with _TM_GUARD_LOCK:
+            _TM_GUARD_AVAILABLE = False
+            if not _TM_GUARD_WARNING_EMITTED:
+                print(
+                    f"[TM] Güvenlik kontrolü çalışmadı; bu oturumda TM kaydı kapatıldı: {exc}",
+                    file=sys.stderr,
+                )
+                _TM_GUARD_WARNING_EMITTED = True
+        return False
     return True
 
 
@@ -101,20 +116,30 @@ class TranslationMemory:
             if self._closed:
                 raise RuntimeError("TranslationMemory is closed")
             if self._conn is None:
-                self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
-                self._conn.execute("PRAGMA journal_mode=WAL")
+                conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    self._ensure_schema(conn)
+                except Exception:
+                    conn.close()
+                    raise
+                self._conn = conn
             return self._conn
 
     def _init_db(self):
         try:
-            conn = self._get_conn()
+            self._get_conn()
         except sqlite3.OperationalError as e:
             if "locked" in str(e).lower() or "unable" in str(e).lower():
                 self._conn = None
-                import sys
-                print(f"[TM] DB kilitli, çeviri belleği devre dışı: {e}", file=sys.stderr)
+                print(
+                    f"[TM] DB geçici olarak kullanılamıyor; sonraki işlemde tekrar denenecek: {e}",
+                    file=sys.stderr,
+                )
                 return
             raise
+
+    def _ensure_schema(self, conn):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tm (
                 hash    TEXT PRIMARY KEY,
@@ -140,6 +165,7 @@ class TranslationMemory:
                     conn.commit()
                 except Exception:
                     pass
+        conn.commit()
 
     # ── Hash ──────────────────────────────────────────────────────────────────
 
@@ -399,6 +425,11 @@ class TranslationMemory:
         with self._lock:
             self._closed = True
             if self._conn:
+                try:
+                    self._conn.execute("PRAGMA optimize")
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    pass
                 self._conn.close()
                 self._conn = None
 

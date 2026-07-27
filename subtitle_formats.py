@@ -54,9 +54,10 @@ def read_subtitle_text(filepath) -> str:
     bozuk UTF-16 olarak yorumlamamak için."""
     raw = Path(filepath).read_bytes()
     text = None
-    if raw and raw.count(b"\x00") / len(raw) >= 0.15:
-        even_nuls = raw[0::2].count(0)
-        odd_nuls = raw[1::2].count(0)
+    sample = raw[:4096]
+    if sample and sample.count(b"\x00") / len(sample) >= 0.15:
+        even_nuls = sample[0::2].count(0)
+        odd_nuls = sample[1::2].count(0)
         enc = "utf-16-be" if even_nuls > odd_nuls else "utf-16-le"
         try:
             text = raw.decode(enc)

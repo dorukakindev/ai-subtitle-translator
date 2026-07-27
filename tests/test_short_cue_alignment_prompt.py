@@ -30,6 +30,12 @@ class ShortCueAlignmentInHybridPromptTest(unittest.TestCase):
         for tok in KEY_TOKENS:
             self.assertIn(tok, src, f"hybrid promptta eksik: {tok}")
 
+    def test_informal_address_never_uses_kimse_in_both_prompts(self):
+        sync_prompt = gui._build_sync_system_prompt("English", "Turkish", None, "Orta")
+        hybrid_source = Path("hybrid_translate.py").read_text(encoding="utf-8")
+        self.assertIn("NEVER 'kimse'", sync_prompt)
+        self.assertIn("NEVER 'kimse'", hybrid_source)
+
 
 if __name__ == "__main__":
     unittest.main()

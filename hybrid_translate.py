@@ -2648,7 +2648,7 @@ def build_system_prompt(
         "minimal rebalance is needed for readable Turkish.",
         "- Keep character names, brand names, and proper nouns unchanged",
         "- Preserve ALL HTML-like inline tags exactly: <i>...</i>, <b>...</b>, <u>...</u>, <font ...>",
-        "- Informal address (man, dude, buddy, bro) → 'dostum', 'arkadaşım', 'kanka'",
+        "- Informal address (man, dude, buddy, bro) → 'dostum', 'arkadaşım', 'kanka' (NEVER 'kimse')",
         "- Titles/honorifics use Turkish convention, NOT literal: 'Mr. Smith'→'Bay Smith' or naturally "
         "'Smith Bey'; 'Mrs./Ms. Smith'→'Smith Hanım'; 'Dr. Brown'→'Doktor Brown'; 'Professor X'→'Profesör X'; "
         "ranks use the Turkish rank ('Captain'→'Yüzbaşı', 'Sergeant'→'Çavuş', 'Officer Reed'→'Memur Reed'). "

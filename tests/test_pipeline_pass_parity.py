@@ -79,6 +79,21 @@ class PipelinePassParityTest(unittest.TestCase):
                 self.assertTrue(semantic_pos < fill_pos < restore_pos)
                 self.assertIn('changed_ids=_pass_history.keys()', src)
 
+    def test_term_normalize_precedes_canonical_tail_in_all_four_flows(self):
+        flows = [
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        ]
+        for flow in flows:
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                normalize_pos = src.rfind("_normalize_mixed_terms(")
+                fill_pos = src.rfind("_fill_hata_with_source(")
+                restore_pos = src.rfind("_restore_tags_blocks(")
+                self.assertTrue(normalize_pos < fill_pos < restore_pos)
+
 
 if __name__ == "__main__":
     unittest.main()
