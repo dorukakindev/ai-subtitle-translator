@@ -45,7 +45,10 @@ class TestPackage1MojibakeGuards(unittest.TestCase):
 
     def test_causative_want_backslide_preserved(self):
         """_has_causative_want_backslide preserves existing correct behavior."""
+        self.assertNotIn("Ã", ht._POLISH_CAUSATIVE_WANT_RE.pattern)
         self.assertTrue(ht._has_causative_want_backslide("gitmek istetmek", "gitmek istiyor"))
+        self.assertTrue(ht._has_causative_want_backslide("görmek istetmek", "görmek istiyor"))
+        self.assertTrue(ht._has_causative_want_backslide("düşünmek istetmek", "düşünmek istiyor"))
         self.assertFalse(ht._has_causative_want_backslide("gitmek istiyor", "gitmek istiyor"))
 
 

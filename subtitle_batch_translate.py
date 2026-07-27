@@ -12,6 +12,7 @@ import re
 import unicodedata
 from pathlib import Path
 from openai import OpenAI
+from prompt_constants import meaning_readability_rule
 
 # === AYARLAR ===
 SOURCE_LANG = "English"     # Kaynak dil
@@ -22,7 +23,8 @@ MODEL = "gpt-4.1-nano"       # 2.5M/gün bedava token havuzunda, en hızlı
 # ===============
 
 
-def resolve_standalone_provider(settings_file: Path | None = None) -> tuple[str, str, str]:
+def resolve_standalone_provider(
+        settings_file: Path | None = None, log_fn=None) -> tuple[str, str, str]:
     """Standalone batch script'leri için API anahtarı, base_url ve servis adını çözer.
     Döner: (api_key, base_url, service_name).
     """
@@ -40,8 +42,9 @@ def resolve_standalone_provider(settings_file: Path | None = None) -> tuple[str,
             main_custom = bool(data.get("main_custom"))
             custom_url = (data.get("main_custom_url", "") or "").strip()
             api_url = (data.get("api_url", "") or "").strip()
-        except Exception:
-            pass
+        except Exception as e:
+            if log_fn:
+                log_fn(f"Ayar dosyası okunamadı, varsayılan sağlayıcı kullanılacak: {e}")
 
     if main_custom and custom_url:
         service_name = "main_custom"
@@ -54,16 +57,18 @@ def resolve_standalone_provider(settings_file: Path | None = None) -> tuple[str,
     try:
         from credential_store import load_key
         api_key = load_key(service_name)
-    except Exception:
-        pass
+    except Exception as e:
+        if log_fn:
+            log_fn(f"Credential store okunamadı: {e}")
 
     if not api_key and service_name == "openai" and settings_file.exists():
         try:
             with open(settings_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             api_key = (data.get("api_key", "") or "").strip()
-        except Exception:
-            pass
+        except Exception as e:
+            if log_fn:
+                log_fn(f"Eski API anahtarı ayarlardan okunamadı: {e}")
 
     if not api_key:
         if service_name == "main_custom":
@@ -83,7 +88,8 @@ def _load_api_key(settings_file: Path | None = None) -> str:
 
 
 def _get_client(settings_file: Path | None = None):
-    api_key, base_url, _ = resolve_standalone_provider(settings_file)
+    api_key, base_url, _ = resolve_standalone_provider(
+        settings_file, log_fn=lambda message: print(f"[!] {message}"))
     kwargs = {"api_key": api_key}
     if base_url:
         kwargs["base_url"] = base_url
@@ -135,6 +141,21 @@ def _normalize_output_text(text: str) -> str:
     return text
 
 
+def build_standalone_system_prompt(
+        source_language: str = SOURCE_LANG,
+        target_language: str = TARGET_LANG) -> str:
+    return (
+        "You are an expert professional subtitle translator.\n"
+        f"Translate the source subtitle from {source_language} to {target_language}.\n"
+        f"{meaning_readability_rule(target_language)}\n"
+        "- Return ONLY the translated subtitle text; no notes, labels, explanations, or quotes.\n"
+        "- Preserve every name, number, fact, negation, question, and speaker ownership.\n"
+        "- Preserve the input line count, dialogue dashes, and meaningful line breaks.\n"
+        "- Keep formatting tags unchanged and never invent parenthetical explanations.\n"
+        "- Use natural spoken language appropriate to the scene; avoid word-for-word translation."
+    )
+
+
 from app_state import atomic_write_text, state_path
 
 
@@ -168,10 +189,7 @@ def create_batch_requests(srt_files):
                     "messages": [
                         {
                             "role": "system",
-                            "content": (
-                                f"You are a subtitle translator. Translate the following {SOURCE_LANG} subtitle text to {TARGET_LANG}. "
-                                "Output ONLY the translated text, nothing else. Keep line breaks. Keep short and natural."
-                            )
+                            "content": build_standalone_system_prompt()
                         },
                         {"role": "user", "content": text}
                     ],

@@ -6670,7 +6670,7 @@ _POLISH_SPEAKER_LABEL_RE = re.compile(
     re.UNICODE,
 )
 _POLISH_CAUSATIVE_WANT_RE = re.compile(
-    r"\b([\wÃ§ÄŸÄ±Ã¶ÅŸÃ¼Ã‡ÄÄ°Ã–ÅÃœ]+m[ae]k)\s+istet\w*",
+    r"\b(\w+m[ae]k)\s+istet\w*",
     re.IGNORECASE | re.UNICODE,
 )
 _POLISH_LITERAL_TRAPS = (

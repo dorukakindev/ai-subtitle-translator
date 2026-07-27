@@ -57,6 +57,15 @@ class ParseSrtTest(unittest.TestCase):
 
 
 class ParseVttTest(unittest.TestCase):
+    def test_malformed_visual_format_tags_are_removed_from_translation_input(self):
+        from subtitle_formats import clean_translation_source_text
+
+        source = "< i>Hello</ i>\n< b >World</ b >\n2 < 3"
+        self.assertEqual(
+            clean_translation_source_text(source),
+            "Hello\nWorld\n2 < 3",
+        )
+
     def test_basic_vtt_parse(self):
         vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:03.000\nSubtitle text\n\n"
         path = _write_temp(vtt, ".vtt")

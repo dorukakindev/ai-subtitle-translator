@@ -13,6 +13,10 @@ from pathlib import Path
 
 
 _SOURCE_HTML_TAG = re.compile(r'</?[a-zA-Z][^>]*>')
+_SOURCE_MALFORMED_FORMAT_TAG = re.compile(
+    r'<\s*/?\s*(?:i|b|u|font)\b[^>]*>',
+    re.IGNORECASE,
+)
 _VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
 _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 _SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
@@ -26,10 +30,11 @@ _LEGACY_DETECT_ENCODINGS = {
 
 def clean_translation_source_text(text: str) -> str:
     """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
+    text = _SOURCE_MALFORMED_FORMAT_TAG.sub("", str(text or ""))
     text = _SOURCE_HTML_TAG.sub(
         lambda match: match.group(0)
         if _VTT_VOICE_TAG.fullmatch(match.group(0)) else "",
-        str(text or ""),
+        text,
     )
     text = _SOURCE_VTT_TIMESTAMP.sub("", text)
     text = _SOURCE_ASS_OVERRIDE.sub("", text)

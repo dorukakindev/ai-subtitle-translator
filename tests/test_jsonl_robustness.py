@@ -7,6 +7,31 @@ import tempfile
 from pathlib import Path
 
 class TestJsonlRobustness(unittest.TestCase):
+    def test_standalone_prompt_uses_shared_quality_rules(self):
+        from subtitle_batch_translate import build_standalone_system_prompt
+
+        prompt = build_standalone_system_prompt("English", "Turkish")
+        self.assertIn("MEANING-FIRST", prompt)
+        self.assertIn("<=21 CPS", prompt)
+        self.assertIn("Preserve every name, number, fact, negation", prompt)
+        self.assertIn("Return ONLY the translated subtitle text", prompt)
+
+    def test_provider_resolution_logs_safe_fallback_errors(self):
+        from subtitle_batch_translate import resolve_standalone_provider
+
+        messages = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings_path = Path(tmpdir) / ".gui_settings.json"
+            settings_path.write_text("{broken", encoding="utf-8")
+            with patch("credential_store.load_key", return_value="secret-key"):
+                key, _, service = resolve_standalone_provider(
+                    settings_path, log_fn=messages.append)
+
+        self.assertEqual(key, "secret-key")
+        self.assertEqual(service, "openai")
+        self.assertTrue(any("Ayar dosyası okunamadı" in item for item in messages))
+        self.assertNotIn("secret-key", "\n".join(messages))
+
     @patch("credential_store.load_key")
     def test_imports_do_not_trigger_network_or_store(self, mock_load_key):
         import subtitle_batch_translate
