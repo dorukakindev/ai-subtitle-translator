@@ -75,6 +75,38 @@ class PassSafetyGuardsTest(unittest.TestCase):
         self.assertEqual(issues[0]["original"], "Real source")
         self.assertEqual(issues[0]["current"], "Gerçek çeviri")
 
+    def test_qc_summary_reports_skipped_bad_json_chunk(self):
+        cues = [MagicMock(index=i, text=f"Source {i}") for i in range(1, 202)]
+        tr_blocks = [
+            (str(i), f"00:00:{i % 60:02d},000 --> 00:00:{i % 60:02d},900", f"Çeviri {i}")
+            for i in range(1, 202)
+        ]
+        bad = MagicMock()
+        bad.choices = [MagicMock()]
+        bad.choices[0].message.content = "this is not JSON"
+        clean = MagicMock()
+        clean.choices = [MagicMock()]
+        clean.choices[0].message.content = '{"issues":[]}'
+        logs = []
+
+        with patch("openai.OpenAI") as mock_openai:
+            client = MagicMock()
+            mock_openai.return_value = client
+            client.chat.completions.create.side_effect = [bad, clean]
+            issues = ht.quality_check_with_helper(
+                cues,
+                tr_blocks,
+                helper_api_key="test_key",
+                log_fn=lambda message, level="info": logs.append((level, message)),
+            )
+
+        self.assertEqual(issues, [])
+        self.assertTrue(any(
+            level == "warn"
+            and "1 chunk atlandı, 0 sorun bulundu" in message
+            for level, message in logs
+        ))
+
     def test_critic_context_only_id_not_applied(self):
         """1. Context-only critic ID’si uygulanmaz."""
         cues = [

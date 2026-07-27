@@ -3399,6 +3399,7 @@ def quality_check_with_helper(
                     log_fn(f"QC context injection hatası (ignored): {e}", "warn")
 
         all_issues = []
+        chunk_errors = 0
 
         for chunk_i, cs in enumerate(range(0, len(all_pairs), QC_CHUNK)):
             chunk = all_pairs[cs:cs + QC_CHUNK]
@@ -3445,14 +3446,20 @@ def quality_check_with_helper(
                 )
                 content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
                 if not content:
+                    chunk_errors += 1
                     if log_fn:
                         log_fn(f"QC chunk {chunk_num}: boş yanıt, atlanıyor", "warn")
                     continue
                 if content.startswith("```"):
                     content = "\n".join(content.split("\n")[1:]).rsplit("```", 1)[0].strip()
                 if not content:
+                    chunk_errors += 1
+                    if log_fn:
+                        log_fn(f"QC chunk {chunk_num}: boş JSON bloğu, atlanıyor", "warn")
                     continue
                 data = _extract_json_object(content)   # prose önsöz/kod-çiti toleransı
+                if not isinstance(data, dict) or "issues" not in data:
+                    raise ValueError("geçerli issues JSON nesnesi bulunamadı")
                 raw_issues = data.get("issues", []) if isinstance(data, dict) else []
                 chunk_issues = []
                 for raw_issue in raw_issues if isinstance(raw_issues, list) else []:
@@ -3475,20 +3482,23 @@ def quality_check_with_helper(
                 if log_fn and chunk_issues:
                     log_fn(f"  QC chunk {chunk_num}: {len(chunk_issues)} sorun", "warn")
             except Exception as chunk_err:
+                chunk_errors += 1
                 if log_fn:
                     log_fn(f"QC chunk {chunk_num} hatası: {chunk_err}", "err")
                 continue
 
         if log_fn:
-            if all_issues:
+            if chunk_errors:
+                log_fn(
+                    f"QC tamamlandı: {chunk_errors} chunk atlandı, "
+                    f"{len(all_issues)} sorun bulundu",
+                    "warn",
+                )
+            elif all_issues:
                 log_fn(f"QC tamamlandı: {len(all_issues)} sorun bulundu", "warn")
             else:
                 log_fn("QC tamamlandı: sorun bulunamadı ✓", "ok")
         return all_issues
-    except json.JSONDecodeError as e:
-        if log_fn:
-            log_fn(f"QC JSON parse hatası: {e} — yanıt: {content[:200] if 'content' in dir() else '?'}", "err")
-        return []
     except Exception as e:
         if log_fn:
             tb = traceback.format_exception(type(e), e, e.__traceback__)
