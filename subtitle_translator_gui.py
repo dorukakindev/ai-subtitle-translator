@@ -403,6 +403,34 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 20  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 10  # next-chunk lines sent as read-ahead
+QUALITY_PROFILE_VERSION = 1
+QUALITY_PROFILE_DEFAULTS = {
+    "model": "gpt-5.4",
+    "mode": "sync",
+    "hybrid": True,
+    "analysis_depth": "Maksimum",
+    "chunk_size": 25,
+    "context_lines": 20,
+    "lookahead_lines": 10,
+    "scene_gap_seconds": 3.0,
+    "temperature": 0.2,
+    "critic": True,
+    "helper_model_critic": "GPT-5.4 (Reseller)",
+    "semantic_reconcile": True,
+    "clean_sdh": True,
+    "backup_raw": True,
+    "linebreak": False,
+}
+
+
+def _apply_quality_profile_defaults(settings: dict) -> bool:
+    if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
+        return False
+    if "analysis_depth" not in settings or "chunk_size" not in settings:
+        return False
+    settings.update(QUALITY_PROFILE_DEFAULTS)
+    settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
+    return True
 
 MODEL_PRICE = {  # USD per 1M tokens (blended estimate)
     # 250k token/gün kotası
@@ -8839,6 +8867,7 @@ class App(ctk.CTk):
 
     def _save_settings(self):
         data = {
+            "quality_profile_version": QUALITY_PROFILE_VERSION,
             "model": self.model_var.get(), "src_lang": self.src_var.get(),
             "tgt_lang": self.tgt_var.get(), "mode": self.mode_var.get(),
             "hybrid": self.hybrid_var.get(),
@@ -9123,6 +9152,8 @@ class App(ctk.CTk):
         try:
             with open(p, encoding="utf-8") as f:
                 d = json.load(f)
+            if _apply_quality_profile_defaults(d):
+                atomic_write_json(Path(p), d)
             # Eski format yedeği: depoda yoksa JSON'daki anahtarı kullan
             if d.get("api_key") and not self.api_key_entry.get():
                 self.api_key_entry.insert(0, d["api_key"])
