@@ -771,6 +771,45 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     return stripped
 
 
+def _source_has_split_speaker_prefix(src_text: str) -> bool:
+    lines = str(src_text or "").splitlines()
+    if len(lines) < 2:
+        return False
+    first = lines[0].strip()
+    letters = [ch for ch in first if ch.isalpha()]
+    if not letters or len(first) > 40 or not all(ch.isupper() for ch in letters):
+        return False
+    second = lines[1].lstrip()
+    if _src_has_plain_speaker_label(second):
+        return True
+    m = re.match(r"^\(([^)\n]{1,40})\)\s*:?", second)
+    return bool(m and is_sdh_descriptor(m.group(1)))
+
+
+def _strip_split_speaker_prefix(tr_text: str, src_text: str) -> str:
+    if not _source_has_split_speaker_prefix(src_text):
+        return tr_text
+    lines = str(tr_text or "").splitlines()
+    if not lines:
+        return tr_text
+    first = lines[0].strip()
+    letters = [ch for ch in first if ch.isalpha()]
+    if (letters and len(first) <= 40
+            and all(ch.isupper() for ch in letters)
+            and not re.search(r"[.!?…]$", first)):
+        remainder = "\n".join(lines[1:])
+        src_remainder = "\n".join(str(src_text or "").splitlines()[1:])
+        if ":" in src_remainder:
+            trailing = src_remainder.split(":", 1)[1]
+            if (src_is_sfx_only(trailing)
+                    or re.fullmatch(
+                        r"\s*(?:\([^)\n]+\)|\[[^\]\n]+\])\s*", trailing
+                    )):
+                return ""
+        return remainder
+    return tr_text
+
+
 def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
     """src_map verilirse {idx_str: kaynak_metin}: çevirisi boş gelen bir cue YALNIZCA
     kaynağı gerçek diyalogsa korunur (modelce atlanmış gerçek repliğin sessizce
@@ -806,6 +845,7 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
                 continue
             if src_is_sfx_only(src_text):
                 continue
+            original = _strip_split_speaker_prefix(original, src_text)
             lines = []
             for line in original.split("\n"):
                 cleaned = strip_labels_by_source(line, src_text)

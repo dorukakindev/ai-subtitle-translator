@@ -130,6 +130,38 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "Bunu bilmiyordum.",
         )
 
+    def test_split_automated_voice_label_is_fully_stripped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "OTOMATİK SES\nKayıt: Günaydın.",
+        )]
+        src_map = _src(**{"1": "AUTOMATED VOICE\nRECORDING: Good morning."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "Günaydın.")
+
+    def test_split_voiceover_name_is_fully_stripped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "RAY BRADBURY\nİnsanlar sorar,",
+        )]
+        src_map = _src(**{"1": "RAY BRADBURY\n(VOICEOVER): People ask,"})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "İnsanlar sorar,")
+
+    def test_split_label_with_descriptor_only_is_dropped(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "OTOMATİK SES\n(GİDEREK KISILAN SES)",
+        )]
+        src_map = _src(**{
+            "1": "AUTOMATED VOICE\nRECORDING: (FADING VOICE)"
+        })
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result, [])
+
     def test_plain_colon_prose_preserved_without_source_label(self):
         blocks = [(
             "1",
