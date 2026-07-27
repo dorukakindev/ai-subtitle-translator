@@ -175,6 +175,32 @@ class SdhSourceDrivenTest(unittest.TestCase):
                 self.assertFalse(sdh.src_is_sfx_only(text))
         self.assertTrue(sdh.src_is_sfx_only("[door closes]"))
 
+    def test_multiline_parenthetical_prose_is_not_dropped(self):
+        cases = [
+            ("(the grandmother\nwas from Tunisia)", "(büyükanne\nTunusluydu)"),
+            ("(was originally composed\nsolely of Jews)",
+             "(başlangıçta yalnızca\nYahudilerden oluşuyordu)"),
+        ]
+        for source, translation in cases:
+            with self.subTest(source=source):
+                self.assertFalse(sdh.src_is_sfx_only(source))
+                result = sdh.clean_sdh_blocks(
+                    [("1", "00:00:01,000 --> 00:00:02,000", translation)],
+                    src_map=_src(**{"1": source}),
+                    source_driven=True,
+                )
+                self.assertEqual(result[0][2], translation)
+
+    def test_multiline_sfx_is_still_dropped(self):
+        source = "(Bells\njingling)"
+        self.assertTrue(sdh.src_is_sfx_only(source))
+        result = sdh.clean_sdh_blocks(
+            [("1", "00:00:01,000 --> 00:00:02,000", "(Çanlar\nçınlıyor)")],
+            src_map=_src(**{"1": source}),
+            source_driven=True,
+        )
+        self.assertEqual(result, [])
+
     def test_source_sdh_does_not_strip_target_technical_parentheses(self):
         self.assertEqual(
             sdh.strip_labels_by_source(

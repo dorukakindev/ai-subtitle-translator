@@ -654,6 +654,7 @@ def src_is_sfx_only(src_text: str) -> bool:
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
     text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
     text = CHEVRON_SPEAKER_RE.sub("", text).strip()
+    text = re.sub(r"\s*\n\s*", " ", text)
     if not text:
         return False
     spans = _bracket_group_spans(text)
