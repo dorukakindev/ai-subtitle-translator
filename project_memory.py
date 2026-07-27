@@ -32,6 +32,10 @@ def _target_key(value: str) -> str:
     return key or "tr"
 
 
+def _source_key(value: str) -> str:
+    return _target_key(value or "en")
+
+
 def is_self_translation(src, tgt) -> bool:
     """Kaynak==hedef mi (kelime kendine 'çevriliyor' → İngilizce sızıntısı)?
     İstisna: özel ad / kısaltma / büyük harf içeren terimler (Ayn Rand, IQ, marka
@@ -44,14 +48,22 @@ def is_self_translation(src, tgt) -> bool:
 class ProjectMemory:
     """Belirli bir giriş klasörüne bağlı proje hafızası."""
 
-    def __init__(self, input_dir: str, target_language: str = "tr"):
+    def __init__(self, input_dir: str, target_language: str = "tr",
+                 source_language: str = "en"):
         self.input_dir = Path(input_dir)
         self.target_language = _target_key(target_language)
-        filename = (
-            ".project_memory.json"
-            if self.target_language == "tr"
-            else f".project_memory.{self.target_language}.json"
-        )
+        self.source_language = _source_key(source_language)
+        if self.source_language == "en":
+            filename = (
+                ".project_memory.json"
+                if self.target_language == "tr"
+                else f".project_memory.{self.target_language}.json"
+            )
+        else:
+            filename = (
+                f".project_memory.src-{self.source_language}."
+                f"tgt-{self.target_language}.json"
+            )
         self._path = self.input_dir / filename
         self._lock = threading.RLock()
         self._data: dict = self._load()
@@ -65,14 +77,19 @@ class ProjectMemory:
                     data = json.load(f)
                 if isinstance(data, dict):
                     cached_target = data.get("target_language")
-                    if (not cached_target
-                            or _target_key(cached_target) == self.target_language):
+                    cached_source = data.get("source_language")
+                    if ((not cached_target
+                         or _target_key(cached_target) == self.target_language)
+                            and (not cached_source
+                                 or _source_key(cached_source) == self.source_language)):
                         data["target_language"] = self.target_language
+                        data["source_language"] = self.source_language
                         return data
             except Exception:
                 pass
         return {
             "target_language": self.target_language,
+            "source_language": self.source_language,
             "glossary": {},        # src → tgt terim eşlemeleri
             "characters": {},      # orijinal_isim → TR karşılığı (ya da aynısı)
             "proper_nouns": {},    # yer/kurum/marka adları
@@ -83,12 +100,20 @@ class ProjectMemory:
     @staticmethod
     def _merge_data(disk_data: dict, memory_data: dict) -> dict:
         memory_target = _target_key(memory_data.get("target_language", "tr"))
+        memory_source = _source_key(memory_data.get("source_language", "en"))
         disk_target = (
             _target_key(disk_data.get("target_language"))
             if isinstance(disk_data, dict) and disk_data.get("target_language")
             else memory_target
         )
         if disk_target != memory_target:
+            disk_data = {}
+        disk_source = (
+            _source_key(disk_data.get("source_language"))
+            if isinstance(disk_data, dict) and disk_data.get("source_language")
+            else memory_source
+        )
+        if disk_source != memory_source:
             disk_data = {}
         merged = {}
         for key in ("glossary", "characters", "proper_nouns", "pronoun_map"):
@@ -99,6 +124,7 @@ class ProjectMemory:
         memory_notes = list(memory_data.get("series_notes", []))
         merged["series_notes"] = list(dict.fromkeys(disk_notes + memory_notes))
         merged["target_language"] = memory_target
+        merged["source_language"] = memory_source
         return merged
 
     def save(self, merge_existing=True):
@@ -220,6 +246,7 @@ class ProjectMemory:
         with self._lock:
             self._data = {
                 "target_language": self.target_language,
+                "source_language": self.source_language,
                 "glossary": {}, "characters": {}, "proper_nouns": {},
                 "pronoun_map": {}, "series_notes": [],
             }

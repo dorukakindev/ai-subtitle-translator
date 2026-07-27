@@ -165,6 +165,51 @@ class PersistenceTest(unittest.TestCase):
                 (Path(td) / ".series_memory" / "show.json").exists()
             )
 
+    def test_source_languages_use_isolated_series_memory(self):
+        with tempfile.TemporaryDirectory() as td:
+            english = sm.SeriesMemory.load(
+                td, "show", target_language="tr", source_language="en")
+            english.merge_terms({"hello": "merhaba"})
+            english.save()
+            spanish = sm.SeriesMemory.load(
+                td, "show", target_language="tr", source_language="es")
+            spanish.merge_terms({"si": "evet"})
+            spanish.save()
+
+            self.assertEqual(
+                sm.SeriesMemory.load(
+                    td, "show", target_language="tr",
+                    source_language="en").get_terms(),
+                {"hello": "merhaba"},
+            )
+            self.assertEqual(
+                sm.SeriesMemory.load(
+                    td, "show", target_language="tr",
+                    source_language="es").get_terms(),
+                {"si": "evet"},
+            )
+            self.assertTrue(
+                (Path(td) / ".series_memory" / "src-es"
+                 / "tgt-tr" / "show.json").exists())
+
+    def test_different_show_slugs_never_share_series_memory(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = sm.SeriesMemory.load(td, "first-show")
+            second = sm.SeriesMemory.load(td, "second-show")
+            first.merge_terms({"term": "birinci"})
+            first.save()
+            second.merge_terms({"term": "ikinci"})
+            second.save()
+
+            self.assertEqual(
+                sm.SeriesMemory.load(td, "first-show").get_terms()["term"],
+                "birinci",
+            )
+            self.assertEqual(
+                sm.SeriesMemory.load(td, "second-show").get_terms()["term"],
+                "ikinci",
+            )
+
 
 class RunOverlayTest(unittest.TestCase):
     class _Var:

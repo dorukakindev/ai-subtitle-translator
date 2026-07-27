@@ -6,6 +6,65 @@ from unittest.mock import patch
 
 
 class AnalyzeWithHelperRetryTest(unittest.TestCase):
+    def test_auxiliary_failure_marks_analysis_degraded(self):
+        import hybrid_translate as ht
+
+        memory = SimpleNamespace(
+            source_language="en", summary="ok", setting="", tone="documentary",
+            characters=[], recurring_terms={}, scene_notes=[],
+        )
+
+        def ok_value(value, key):
+            def _call(*_args, status=None, **_kwargs):
+                status[key] = True
+                return value
+            return _call
+
+        def failed_idioms(*_args, status=None, **_kwargs):
+            status["idiom_map"] = False
+            return {}
+
+        with patch.object(ht, "_analyze_context_openai_compatible",
+                          return_value=memory), \
+             patch.object(ht, "_generate_character_examples",
+                          side_effect=ok_value(({}, {}), "character_examples")), \
+             patch.object(ht, "_generate_pronoun_map",
+                          side_effect=ok_value({}, "pronoun_map")), \
+             patch.object(ht, "_extract_emotional_arc",
+                          side_effect=ok_value([], "scene_plan")), \
+             patch.object(ht, "_generate_idiom_map", side_effect=failed_idioms), \
+             patch.object(ht, "_generate_cultural_refs",
+                          side_effect=ok_value([], "cultural_refs")):
+            result = ht.analyze_with_helper(
+                cues=[SimpleNamespace(index=1, text="hello")],
+                helper_api_key="key",
+            )
+
+        self.assertTrue(ht.analysis_result_is_degraded(result))
+
+    def test_truncated_analysis_json_is_salvaged_only_as_degraded(self):
+        import hybrid_translate as ht
+
+        response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                '{"source_language":"en","summary":"Plot",'
+                '"setting":"Room","tone":"tense","characters":['
+            )))],
+        )
+        with patch("openai.OpenAI"), \
+             patch.object(ht, "_safe_chat_create", return_value=response):
+            memory = ht._analyze_context_openai_compatible(
+                [SimpleNamespace(index=1, text="Hello")],
+                api_key="key", api_url="https://example.test/v1",
+                model="gpt-5.4", glossary={}, style="natural",
+                source_language="en", target_language="tr",
+                allow_partial=True,
+            )
+
+        self.assertEqual(memory.summary, "Plot")
+        self.assertTrue(getattr(memory, "_analysis_degraded", False))
+
     def test_invalid_json_analysis_response_is_retried(self):
         import hybrid_translate as ht
 

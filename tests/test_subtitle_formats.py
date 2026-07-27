@@ -410,6 +410,23 @@ class ParseSrtEdgeCasesTest(unittest.TestCase):
         cues = localizer_srt.parse_srt(srt)
         self.assertEqual([c.index for c in cues], [1, 3])
 
+    def test_gui_and_localizer_preserve_internal_leading_spaces_equally(self):
+        srt = (
+            "1\n00:00:01,000 --> 00:00:02,000\n"
+            "First line\n  indented continuation\n"
+        )
+        path = _write_temp(srt, ".srt")
+        import subtitle_localizer.srt as localizer_srt
+        import subtitle_translator_gui as gui
+        try:
+            gui_blocks = gui.parse_srt(path)
+            localizer_blocks = localizer_srt.parse_srt(srt)
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(gui_blocks[0][2], localizer_blocks[0].text)
+        self.assertIn("\n  indented", gui_blocks[0][2])
+
     def test_hybrid_srt_recovers_missing_separator_between_cues(self):
         srt = (
             "1\n00:00:01,000 --> 00:00:02,000\nFirst\n"

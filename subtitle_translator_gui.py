@@ -1838,7 +1838,7 @@ def parse_srt(filepath):
                     break
                 i = next_nonblank
                 continue
-            text_lines.append(lines[i].strip())
+            text_lines.append(lines[i].rstrip())
             i += 1
         text = "\n".join(text_lines).strip()
         if text:
@@ -5583,6 +5583,7 @@ class App(ctk.CTk):
         # ── Project Memory ────────────────────────────────────────────────────
         from project_memory import ProjectMemory
         self._pm: ProjectMemory | None = None  # input klasörü seçilince init edilir
+        self._project_memories = {}
 
         self._build_ui()
         self._load_settings()
@@ -7515,6 +7516,25 @@ class App(ctk.CTk):
         name = normalize_schema_name(var.get() if var else self.content_type_var.get())
         return self._schema_by_name(name)
 
+    def _load_context_cache_for_file(self, ht, filepath: str, target_language: str,
+                                     source_language: str, schema_dict: dict = None,
+                                     glossary: dict = None):
+        schema_dict = schema_dict or self._get_file_schema(filepath)
+        if glossary is None:
+            glossary = ht.load_glossary(self._get_file_glossary(filepath))
+            glossary = self._merge_schema_glossary(glossary, schema_dict)
+        return ht.load_context_cache(
+            filepath,
+            expected_target=target_language,
+            expected_analysis_depth=App._run_setting(
+                self, "analysis_depth", "analysis_depth_var", "Standart"),
+            expected_source=_lang_iso639_1(source_language),
+            helper_model=self._helper_api_model("analysis"),
+            style=App._run_setting(self, "style", "style_var", "natural"),
+            schema=schema_dict,
+            glossary=glossary,
+        )
+
     def _get_file_source_language(self, filepath: str) -> str:
         if (threading.current_thread() is not threading.main_thread()
                 and getattr(self, "_active_snapshot", None)):
@@ -7824,7 +7844,7 @@ class App(ctk.CTk):
         chain_context = self.chain_ctx_var.get()
         build_options = {
             "chunk_size": self._chunk_size,
-            "project_memory": self._pm,
+            "project_memory": self._project_memory_for(fp, src),
             "context_lines": self._context_lines,
             "lookahead_lines": self._lookahead_lines,
             "scene_gap_sec": self._scene_gap_seconds,
@@ -8852,7 +8872,9 @@ class App(ctk.CTk):
             try:
                 from project_memory import ProjectMemory
                 self._pm = ProjectMemory(
-                    path, _lang_iso639_1(self.tgt_var.get()))
+                    path, _lang_iso639_1(self.tgt_var.get()),
+                    _lang_iso639_1(self.src_var.get()))
+                self._project_memories = {}
             except Exception:
                 self._pm = None
 
@@ -8865,9 +8887,56 @@ class App(ctk.CTk):
             self._pm = ProjectMemory(
                 str(current.input_dir),
                 _lang_iso639_1(self.tgt_var.get()),
+                getattr(current, "source_language", "en"),
             )
+            self._project_memories = {}
         except Exception:
             self._pm = None
+
+    def _project_memory_for(self, filepath: str = "", source_language: str = ""):
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        selected = snapshot.get("selected_files") if snapshot else getattr(
+            self, "_selected_files", ())
+        if selected:
+            return None
+        input_dir = (
+            snapshot.get("input_dir")
+            if snapshot else getattr(getattr(self, "input_var", None), "get", lambda: "")()
+        )
+        if not input_dir and getattr(self, "_pm", None) is not None:
+            input_dir = str(self._pm.input_dir)
+        if not input_dir:
+            return None
+        if not source_language:
+            fallback = snapshot.get("src_lang", "English") if snapshot else "English"
+            source_language = (
+                self._effective_file_source_language(filepath, fallback)
+                if filepath else fallback
+            )
+        target_language = (
+            snapshot.get("tgt_lang", "Turkish")
+            if snapshot else App._run_setting(
+                self, "tgt_lang", "tgt_var", "Turkish")
+        )
+        source_key = _lang_iso639_1(source_language)
+        target_key = _lang_iso639_1(target_language)
+        key = (
+            os.path.normcase(os.path.abspath(input_dir)),
+            source_key,
+            target_key,
+        )
+        cache = getattr(self, "_project_memories", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._project_memories = cache
+        if key not in cache:
+            try:
+                from project_memory import ProjectMemory
+                cache[key] = ProjectMemory(
+                    input_dir, target_key, source_key)
+            except Exception:
+                return None
+        return cache[key]
 
     def _pick_folder(self, var, is_input):
         if getattr(self, "_is_running", False):
@@ -8892,7 +8961,9 @@ class App(ctk.CTk):
             try:
                 from project_memory import ProjectMemory
                 self._pm = ProjectMemory(
-                    path, _lang_iso639_1(self.tgt_var.get()))
+                    path, _lang_iso639_1(self.tgt_var.get()),
+                    _lang_iso639_1(self.src_var.get()))
+                self._project_memories = {}
                 pm_stats = self._pm.stats()
                 if pm_stats["glossary"] > 0 or pm_stats["characters"] > 0:
                     self._log(
@@ -10913,19 +10984,29 @@ class App(ctk.CTk):
             else "Turkish"
         ) or "Turkish"
         target_key = _lang_iso639_1(target_language)
+        source_fallback = snapshot.get("src_lang", "English") if snapshot else "English"
+        effective_source = getattr(self, "_effective_file_source_language", None)
+        source_language = (
+            effective_source(fp, source_fallback)
+            if callable(effective_source) else source_fallback
+        )
+        source_key = _lang_iso639_1(source_language)
         try:
             if not persistent:
                 overlays = getattr(self, "_run_series_memory", None)
                 if isinstance(overlays, dict):
                     overlay_key = (
-                        str(Path(input_dir).resolve()).casefold(), slug, target_key
+                        str(Path(input_dir).resolve()).casefold(), slug,
+                        source_key, target_key
                     )
                     if overlay_key not in overlays:
                         overlays[overlay_key] = series_memory.SeriesMemory.load(
-                            input_dir, slug, target_language=target_key)
+                            input_dir, slug, target_language=target_key,
+                            source_language=source_key)
                     return overlays[overlay_key], season, ep
             return series_memory.SeriesMemory.load(
-                input_dir, slug, target_language=target_key), season, ep
+                input_dir, slug, target_language=target_key,
+                source_language=source_key), season, ep
         except Exception:
             return None, None, None
 
@@ -11219,9 +11300,17 @@ class App(ctk.CTk):
                 terms.update(ht.load_glossary(self._get_file_glossary(fp)) or {})
             except Exception:
                 pass
-            if getattr(self, "_pm", None) is not None:
+            try:
+                file_source = self._effective_file_source_language(
+                    fp, self._snap_get("src_lang", "English"))
+                file_pm = self._project_memory_for(fp, file_source)
+            except Exception:
+                file_pm = getattr(self, "_pm", None)
+            if file_pm is None:
+                file_pm = getattr(self, "_pm", None)
+            if file_pm is not None:
                 try:
-                    terms.update(self._pm.get_glossary() or {})
+                    terms.update(file_pm.get_glossary() or {})
                 except Exception:
                     pass
             if fp:
@@ -11243,9 +11332,15 @@ class App(ctk.CTk):
                     key = series_memory.parse_series_key(fp) if enabled else None
                     if key:
                         slug, _season, _episode = key
+                        try:
+                            series_source = self._effective_file_source_language(
+                                fp, self._snap_get("src_lang", "English"))
+                        except Exception:
+                            series_source = "English"
                         sm_obj = series_memory.SeriesMemory.load(
                             input_dir, slug,
-                            target_language=_lang_iso639_1(tgt))
+                            target_language=_lang_iso639_1(tgt),
+                            source_language=_lang_iso639_1(series_source))
                         terms.update(sm_obj.get_terms())
                 except Exception:
                     pass
@@ -11277,9 +11372,17 @@ class App(ctk.CTk):
         try:
             locked = list(self._get_locked_terms_dict(fp, tgt).items())
             names = []
-            if getattr(self, "_pm", None) is not None:
+            try:
+                file_source = self._effective_file_source_language(
+                    fp, self._snap_get("src_lang", "English"))
+                file_pm = self._project_memory_for(fp, file_source)
+            except Exception:
+                file_pm = getattr(self, "_pm", None)
+            if file_pm is None:
+                file_pm = getattr(self, "_pm", None)
+            if file_pm is not None:
                 try:
-                    names = [n for n in (self._pm.get_characters() or {}).keys() if n]
+                    names = [n for n in (file_pm.get_characters() or {}).keys() if n]
                 except Exception:
                     names = []
             if not locked and not names:
@@ -13432,7 +13535,8 @@ class App(ctk.CTk):
                                         schema=self._schema_by_name(sname),
                                         profanity=_profanity,
                                         file_glossaries=_file_glossaries,
-                                        project_memory=self._pm,
+                                        project_memory=self._project_memory_for(
+                                            source_language=group_src),
                                         file_hints=_file_hints,
                                         block_cache=self._block_cache,
                                         context_lines=self._context_lines,
@@ -13684,6 +13788,7 @@ class App(ctk.CTk):
                 continue
             fname = Path(filepath).name
             file_src = self._effective_file_source_language(filepath, src)
+            _file_pm = self._project_memory_for(filepath, file_src)
             self._log(f"\n── [{fi+1}/{n_files}] {fname} ──", "info")
             self._update_file_progress(filepath, "Hazırlanıyor", 2)
 
@@ -13731,16 +13836,9 @@ class App(ctk.CTk):
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
 
-                cached = ht.load_context_cache(
-                    filepath,
-                    expected_target=tgt,
-                    expected_analysis_depth=self.analysis_depth_var.get(),
-                    expected_source=_lang_iso639_1(file_src),
-                    helper_model=self._helper_api_model("analysis"),
-                    style=self.style_var.get(),
-                    schema=schema_dict,
-                    glossary=glossary,
-                )
+                cached = self._load_context_cache_for_file(
+                    ht, filepath, tgt, file_src,
+                    schema_dict=schema_dict, glossary=glossary)
                 _analysis_ok = True
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
@@ -13806,17 +13904,17 @@ class App(ctk.CTk):
                                                glossary=glossary,
                                                source_language=_lang_iso639_1(file_src))
                     # Proje hafızasına kaydet
-                    if _analysis_ok and self._pm is not None:
+                    if _analysis_ok and _file_pm is not None:
                         try:
-                            self._pm.merge_glossary_from_analysis(
+                            _file_pm.merge_glossary_from_analysis(
                                 ht.sanitize_glossary_for_turkish(
                                     dict(context.recurring_terms), target_language=tgt
                                 )
                             )
-                            self._pm.update_characters([c.name for c in context.characters
+                            _file_pm.update_characters([c.name for c in context.characters
                                                         if hasattr(c, 'name')])
                             if pronoun_map:
-                                self._pm.update_pronoun_map(pronoun_map)
+                                _file_pm.update_pronoun_map(pronoun_map)
                         except Exception:
                             pass
                     self._log(f"Analiz tamam — {len(context.recurring_terms)} terim, "
@@ -13850,8 +13948,8 @@ class App(ctk.CTk):
             if _analysis_ok:
                 self._stage_series_memory_from_analysis(
                     filepath, context, pronoun_map, tgt)
-            if self._pm is not None:
-                system_prompt += self._pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+            if _file_pm is not None:
+                system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                         chunk_size=self._chunk_size, glossary=glossary,
                                                         scene_emotions=scene_emotions,
@@ -14324,7 +14422,8 @@ class App(ctk.CTk):
                                         schema=self._schema_by_name(sname),
                                         profanity=_profanity,
                                         file_glossaries=_file_glossaries,
-                                        project_memory=self._pm,
+                                        project_memory=self._project_memory_for(
+                                            source_language=group_src),
                                         file_hints=_file_hints,
                                         block_cache=self._block_cache,
                                         context_lines=self._context_lines,
@@ -14773,10 +14872,15 @@ class App(ctk.CTk):
                             _analysis_result = None
                             if _orig_cues:
                                 try:
-                                    _analysis_result = ht.load_context_cache(
-                                        str(_src_path),
-                                        expected_target=tgt,
-                                        expected_analysis_depth=self.analysis_depth_var.get(),
+                                    _resume_schema = (
+                                        self._schema_by_name(schema_name)
+                                        if schema_name else self._get_file_schema(str(_src_path))
+                                    )
+                                    _analysis_result = self._load_context_cache_for_file(
+                                        ht, str(_src_path), tgt,
+                                        source_language or self._effective_file_source_language(
+                                            str(_src_path), self._snap_get("src_lang", "English")),
+                                        schema_dict=_resume_schema,
                                     )
                                 except Exception:
                                     pass
@@ -15150,9 +15254,8 @@ class App(ctk.CTk):
                 _file_src_lang = self._effective_file_source_language(fp, src or "English")
             _analysis_result = None
             try:
-                _analysis_result = ht.load_context_cache(
-                    fp, expected_target=_tgt_lang,
-                    expected_analysis_depth=self.analysis_depth_var.get())
+                _analysis_result = self._load_context_cache_for_file(
+                    ht, fp, _tgt_lang, _file_src_lang, schema_dict=schema_dict)
             except Exception:
                 _analysis_result = None
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
@@ -15639,6 +15742,7 @@ class App(ctk.CTk):
                 continue
             fname = Path(filepath).name
             file_src = source_languages.get(filepath, self._effective_file_source_language(filepath, src))
+            _file_pm = self._project_memory_for(filepath, file_src)
             file_status = session["files"].get(str(filepath), {}).get("status", "pending")
 
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
@@ -15674,16 +15778,9 @@ class App(ctk.CTk):
                 glossary = ht.load_glossary(self._get_file_glossary(filepath))
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
 
-                cached = ht.load_context_cache(
-                    filepath,
-                    expected_target=tgt,
-                    expected_analysis_depth=self.analysis_depth_var.get(),
-                    expected_source=_lang_iso639_1(file_src),
-                    helper_model=self._helper_api_model("analysis"),
-                    style=self.style_var.get(),
-                    schema=schema_dict,
-                    glossary=glossary,
-                )
+                cached = self._load_context_cache_for_file(
+                    ht, filepath, tgt, file_src,
+                    schema_dict=schema_dict, glossary=glossary)
                 _analysis_ok = True
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
@@ -15744,17 +15841,17 @@ class App(ctk.CTk):
                                                glossary=glossary,
                                                source_language=_lang_iso639_1(file_src))
                     # Proje hafızasına kaydet
-                    if _analysis_ok and self._pm is not None:
+                    if _analysis_ok and _file_pm is not None:
                         try:
-                            self._pm.merge_glossary_from_analysis(
+                            _file_pm.merge_glossary_from_analysis(
                                 ht.sanitize_glossary_for_turkish(
                                     dict(context.recurring_terms), target_language=tgt
                                 )
                             )
-                            self._pm.update_characters([c.name for c in context.characters
+                            _file_pm.update_characters([c.name for c in context.characters
                                                         if hasattr(c, 'name')])
                             if pronoun_map:
-                                self._pm.update_pronoun_map(pronoun_map)
+                                _file_pm.update_pronoun_map(pronoun_map)
                         except Exception:
                             pass
                     self._log(f"Analiz tamam — {len(context.recurring_terms)} terim, "
@@ -15819,8 +15916,8 @@ class App(ctk.CTk):
                 if _analysis_ok:
                     self._stage_series_memory_from_analysis(
                         filepath, context, pronoun_map, tgt)
-                if self._pm is not None:
-                    system_prompt += self._pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+                if _file_pm is not None:
+                    system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
                 requests, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                           chunk_size=self._chunk_size,
                                                           glossary=glossary,

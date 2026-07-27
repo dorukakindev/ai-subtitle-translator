@@ -144,6 +144,20 @@ class ProjectMemoryOpsTest(unittest.TestCase):
             self.assertTrue((Path(td) / ".project_memory.de.json").exists())
             self.assertTrue((Path(td) / ".project_memory.json").exists())
 
+    def test_input_directories_never_share_project_memory(self):
+        with tempfile.TemporaryDirectory() as root:
+            first_dir = Path(root) / "first"
+            second_dir = Path(root) / "second"
+            first = ProjectMemory(first_dir)
+            second = ProjectMemory(second_dir)
+            first.update_glossary({"term": "birinci"})
+            second.update_glossary({"term": "ikinci"})
+
+            self.assertEqual(
+                ProjectMemory(first_dir).get_glossary()["term"], "birinci")
+            self.assertEqual(
+                ProjectMemory(second_dir).get_glossary()["term"], "ikinci")
+
     def test_gui_retargets_memory_when_target_changes(self):
         from subtitle_translator_gui import App
 

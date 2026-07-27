@@ -12,6 +12,7 @@ import hybrid_translate as ht
 import series_memory
 import subtitle_formats as sf
 import subtitle_translator_gui as gui
+from project_memory import ProjectMemory
 from translation_memory import TranslationMemory
 
 
@@ -66,8 +67,58 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
             variant = ht._session_path(str(Path(d)) + os.sep)
             self.assertEqual(canonical, variant)
 
+    def test_gui_context_cache_loader_forwards_full_fingerprint(self):
+        loader = mock.Mock(return_value="cached")
+        ht_stub = SimpleNamespace(
+            load_context_cache=loader,
+            load_glossary=lambda _path: {"User": "Kullanıcı"},
+        )
+        stub = SimpleNamespace(
+            _active_snapshot=None,
+            analysis_depth_var=SimpleNamespace(get=lambda: "Maksimum"),
+            style_var=SimpleNamespace(get=lambda: "natural"),
+            _get_file_schema=lambda _fp: {"name": "Belgesel"},
+            _get_file_glossary=lambda _fp: "terms.json",
+            _merge_schema_glossary=lambda glossary, _schema: glossary,
+            _helper_api_model=lambda _role: "gpt-5.4",
+        )
+
+        result = gui.App._load_context_cache_for_file(
+            stub, ht_stub, "movie.srt", "Turkish", "Spanish")
+
+        self.assertEqual(result, "cached")
+        loader.assert_called_once_with(
+            "movie.srt",
+            expected_target="Turkish",
+            expected_analysis_depth="Maksimum",
+            expected_source="es",
+            helper_model="gpt-5.4",
+            style="natural",
+            schema={"name": "Belgesel"},
+            glossary={"User": "Kullanıcı"},
+        )
+
 
 class MemoryIsolationTest(unittest.TestCase):
+    def test_source_languages_use_isolated_project_memory_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            english = ProjectMemory(td, "tr", "en")
+            english.update_glossary({"hello": "merhaba"})
+            spanish = ProjectMemory(td, "tr", "es")
+            spanish.update_glossary({"si": "evet"})
+
+            self.assertEqual(
+                ProjectMemory(td, "tr", "en").get_glossary(),
+                {"hello": "merhaba"},
+            )
+            self.assertEqual(
+                ProjectMemory(td, "tr", "es").get_glossary(),
+                {"si": "evet"},
+            )
+            self.assertTrue((Path(td) / ".project_memory.json").exists())
+            self.assertTrue(
+                (Path(td) / ".project_memory.src-es.tgt-tr.json").exists())
+
     def test_manual_file_selection_clears_stale_project_memory(self):
         with tempfile.TemporaryDirectory() as d:
             fp = str(Path(d) / "a.srt")

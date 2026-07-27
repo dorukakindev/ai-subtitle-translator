@@ -708,6 +708,12 @@ def _sanitize_analysis_aux(
     return examples, addresses, styles, idioms, refs
 
 
+def _analysis_aux_result(value, status: dict | None, key: str, ok: bool):
+    if isinstance(status, dict):
+        status[key] = bool(ok)
+    return value
+
+
 def save_context_cache(context, filepath: str, character_examples: dict = None,
                        pronoun_map: dict = None, character_styles: dict = None,
                        scene_emotions: list = None, idiom_map: dict = None,
@@ -1180,6 +1186,7 @@ def _generate_character_examples(
     helper_model: str,
     log_fn=None,
     token_callback=None,
+    status=None,
 ):
     """Generate 2 sample dialogue lines + register/dialect classification per character.
 
@@ -1189,7 +1196,7 @@ def _generate_character_examples(
     Used by analyze_with_helper to give the translator richer voice anchoring.
     """
     if not characters:
-        return {}, {}
+        return _analysis_aux_result(({}, {}), status, "character_examples", True)
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
@@ -1225,40 +1232,26 @@ def _generate_character_examples(
         raw = resp.choices[0].message.content.strip() if resp.choices else ""
 
         if not raw:
-            return {}, {}
+            return _analysis_aux_result(({}, {}), status, "character_examples", False)
 
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
 
         if not raw:
-            return {}, {}
+            return _analysis_aux_result(({}, {}), status, "character_examples", False)
 
-        def _parse(payload):
-            try:
-                data = json.loads(payload)
-                examples, _pronouns, styles, _idioms, _refs = _sanitize_analysis_aux(
-                    data.get("examples", {}), character_styles=data.get("styles", {})
-                )
-                return examples, styles
-            except json.JSONDecodeError:
-                if "{" in payload and "}" in payload:
-                    start = payload.find("{")
-                    end = payload.rfind("}") + 1
-                    try:
-                        data = json.loads(payload[start:end])
-                        examples, _pronouns, styles, _idioms, _refs = _sanitize_analysis_aux(
-                            data.get("examples", {}), character_styles=data.get("styles", {})
-                        )
-                        return examples, styles
-                    except Exception:
-                        pass
-                return {}, {}
-
-        return _parse(raw)
+        data = _extract_json_object(raw)
+        if not isinstance(data, dict) or not {"examples", "styles"}.issubset(data):
+            return _analysis_aux_result(({}, {}), status, "character_examples", False)
+        examples, _pronouns, styles, _idioms, _refs = _sanitize_analysis_aux(
+            data.get("examples", {}), character_styles=data.get("styles", {})
+        )
+        return _analysis_aux_result(
+            (examples, styles), status, "character_examples", True)
     except Exception as _e:
         if log_fn:
             log_fn(f"Karakter örnekleri oluşturulamadı: {_e}", "warn")
-        return {}, {}
+        return _analysis_aux_result(({}, {}), status, "character_examples", False)
 
 
 def _generate_pronoun_map(
@@ -1268,14 +1261,15 @@ def _generate_pronoun_map(
     helper_url: str,
     helper_model: str,
     token_callback=None,
+    status=None,
 ) -> dict:
     """Determine sen/siz (informal/formal) address for each character pair.
     Returns e.g. {"Sherry-Matt": "sen", "Dr.Tolin-Sherry": "siz"}.
     Only meaningful when tgt_lang is Turkish (tr)."""
     if not context.characters or len(context.characters) < 2:
-        return {}
+        return _analysis_aux_result({}, status, "pronoun_map", True)
     if "tr" not in tgt_lang.lower() and "turkish" not in tgt_lang.lower():
-        return {}
+        return _analysis_aux_result({}, status, "pronoun_map", True)
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
@@ -1312,7 +1306,7 @@ def _generate_pronoun_map(
 
         # Skip empty responses
         if not raw:
-            return {}
+            return _analysis_aux_result({}, status, "pronoun_map", False)
 
         # Strip markdown code blocks if present
         if raw.startswith("```"):
@@ -1320,14 +1314,16 @@ def _generate_pronoun_map(
 
         # Validate and parse JSON
         if not raw:
-            return {}
+            return _analysis_aux_result({}, status, "pronoun_map", False)
 
         try:
             data = json.loads(raw)
+            if not isinstance(data, dict) or "pronoun_map" not in data:
+                return _analysis_aux_result({}, status, "pronoun_map", False)
             _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
                 pronoun_map=data.get("pronoun_map", {})
             )
-            return pronouns
+            return _analysis_aux_result(pronouns, status, "pronoun_map", True)
         except json.JSONDecodeError:
             # If JSON parsing fails, try to extract JSON object manually
             if "{" in raw and "}" in raw:
@@ -1335,15 +1331,17 @@ def _generate_pronoun_map(
                 end = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start:end])
+                    if not isinstance(data, dict) or "pronoun_map" not in data:
+                        return _analysis_aux_result({}, status, "pronoun_map", False)
                     _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
                         pronoun_map=data.get("pronoun_map", {})
                     )
-                    return pronouns
+                    return _analysis_aux_result(pronouns, status, "pronoun_map", True)
                 except Exception:
                     pass
-            return {}
+            return _analysis_aux_result({}, status, "pronoun_map", False)
     except Exception:
-        return {}
+        return _analysis_aux_result({}, status, "pronoun_map", False)
 
 
 _SCENE_PLAN_MAX_SPEAKERS = 6
@@ -1422,6 +1420,7 @@ def _extract_emotional_arc(
     helper_model: str,
     log_fn=None,
     token_callback=None,
+    status=None,
 ) -> list:
     """Extract a per-scene semantic plan from the subtitle file.
 
@@ -1438,7 +1437,7 @@ def _extract_emotional_arc(
     Used by build_batch_requests/build_requests to inject per-chunk scene context.
     """
     if not cues:
-        return []
+        return _analysis_aux_result([], status, "scene_plan", True)
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
@@ -1511,11 +1510,11 @@ def _extract_emotional_arc(
         _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
-            return []
+            return _analysis_aux_result([], status, "scene_plan", False)
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
         if not raw:
-            return []
+            return _analysis_aux_result([], status, "scene_plan", False)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -1528,16 +1527,17 @@ def _extract_emotional_arc(
                 except Exception:
                     data = None
         if not isinstance(data, dict):
-            return []
+            return _analysis_aux_result([], status, "scene_plan", False)
         raw_scenes = data.get("scenes", [])
-        if not isinstance(raw_scenes, list):
-            return []
+        if "scenes" not in data or not isinstance(raw_scenes, list):
+            return _analysis_aux_result([], status, "scene_plan", False)
         sanitized = [_sanitize_scene_plan_entry(s) for s in raw_scenes]
-        return [s for s in sanitized if s]
+        return _analysis_aux_result(
+            [s for s in sanitized if s], status, "scene_plan", True)
     except Exception as e:
         if log_fn:
             log_fn(f"Sahne planı çıkarılamadı: {e}", "warn")
-        return []
+        return _analysis_aux_result([], status, "scene_plan", False)
 
 
 def _generate_idiom_map(
@@ -1549,13 +1549,14 @@ def _generate_idiom_map(
     log_fn=None,
     source_language: str = "English",
     token_callback=None,
+    status=None,
 ) -> dict:
     """Detect source-language idioms in cues; generate natural target-language equivalents.
 
     Returns dict: {source_expression: target_equivalent, ...} (up to 30 entries)
     """
     if not cues:
-        return {}
+        return _analysis_aux_result({}, status, "idiom_map", True)
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
@@ -1588,32 +1589,36 @@ def _generate_idiom_map(
         _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
-            return {}
+            return _analysis_aux_result({}, status, "idiom_map", False)
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
         try:
             data = json.loads(raw)
+            if not isinstance(data, dict) or "idioms" not in data:
+                return _analysis_aux_result({}, status, "idiom_map", False)
             _examples, _pronouns, _styles, idioms, _refs = _sanitize_analysis_aux(
                 idiom_map=data.get("idioms", {})
             )
-            return idioms
+            return _analysis_aux_result(idioms, status, "idiom_map", True)
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
                 start_i = raw.find("{")
                 end_i = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start_i:end_i])
+                    if not isinstance(data, dict) or "idioms" not in data:
+                        return _analysis_aux_result({}, status, "idiom_map", False)
                     _examples, _pronouns, _styles, idioms, _refs = _sanitize_analysis_aux(
                         idiom_map=data.get("idioms", {})
                     )
-                    return idioms
+                    return _analysis_aux_result(idioms, status, "idiom_map", True)
                 except Exception:
                     pass
-            return {}
+            return _analysis_aux_result({}, status, "idiom_map", False)
     except Exception as e:
         if log_fn:
             log_fn(f"Deyim haritası oluşturulamadı: {e}", "warn")
-        return {}
+        return _analysis_aux_result({}, status, "idiom_map", False)
 
 
 def _generate_cultural_refs(
@@ -1625,6 +1630,7 @@ def _generate_cultural_refs(
     helper_model: str,
     log_fn=None,
     token_callback=None,
+    status=None,
 ) -> list:
     """Detect cultural references (pop culture, brand names, regional references) in cues.
     Recommends keep/localize action for each.
@@ -1632,7 +1638,7 @@ def _generate_cultural_refs(
     Returns list of dicts: [{src, type, action, target}]
     """
     if not cues:
-        return []
+        return _analysis_aux_result([], status, "cultural_refs", True)
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
@@ -1673,32 +1679,36 @@ def _generate_cultural_refs(
         _report_helper_usage(resp, token_callback)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
-            return []
+            return _analysis_aux_result([], status, "cultural_refs", False)
         if raw.startswith("```"):
             raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
         try:
             data = json.loads(raw)
+            if not isinstance(data, dict) or "refs" not in data:
+                return _analysis_aux_result([], status, "cultural_refs", False)
             _examples, _pronouns, _styles, _idioms, refs = _sanitize_analysis_aux(
                 cultural_refs=data.get("refs", [])
             )
-            return refs
+            return _analysis_aux_result(refs, status, "cultural_refs", True)
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
                 start_i = raw.find("{")
                 end_i = raw.rfind("}") + 1
                 try:
                     data = json.loads(raw[start_i:end_i])
+                    if not isinstance(data, dict) or "refs" not in data:
+                        return _analysis_aux_result([], status, "cultural_refs", False)
                     _examples, _pronouns, _styles, _idioms, refs = _sanitize_analysis_aux(
                         cultural_refs=data.get("refs", [])
                     )
-                    return refs
+                    return _analysis_aux_result(refs, status, "cultural_refs", True)
                 except Exception:
                     pass
-            return []
+            return _analysis_aux_result([], status, "cultural_refs", False)
     except Exception as e:
         if log_fn:
             log_fn(f"Kültürel referanslar çıkarılamadı: {e}", "warn")
-        return []
+        return _analysis_aux_result([], status, "cultural_refs", False)
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -1763,7 +1773,7 @@ def _extract_json_object(raw: str) -> dict:
                 end_i = idx + 1
                 break
     if end_i == -1:
-        return {}
+        return _regex_extract_analysis_fields(raw)
     bracket_json = raw[start_i:end_i]
     try:
         return json.loads(bracket_json)
@@ -2287,6 +2297,7 @@ def _analyze_context_openai_compatible(
     analysis_depth: str = "standard",
     log_fn=None,
     token_callback=None,
+    allow_partial=False,
 ):
     _ensure_path()
     from openai import OpenAI
@@ -2383,19 +2394,18 @@ def _analyze_context_openai_compatible(
             token_callback(tot)
     raw = resp.choices[0].message.content if resp.choices else ""
     cleaned = _strip_code_fence(raw)
-    data = None
-    try:
-        data = json.loads(cleaned)
-    except Exception:
-        if "{" in cleaned and "}" in cleaned:
-            try:
-                data = json.loads(cleaned[cleaned.find("{"):cleaned.rfind("}") + 1])
-            except Exception:
-                data = None
+    data = _extract_json_object(cleaned)
     required = {
         "source_language", "summary", "setting", "tone",
         "characters", "recurring_terms", "scene_notes",
     }
+    partial = False
+    if (allow_partial and isinstance(data, dict)
+            and {"source_language", "summary", "setting", "tone"}.issubset(data)):
+        partial = not required.issubset(data)
+        data.setdefault("characters", [])
+        data.setdefault("recurring_terms", {})
+        data.setdefault("scene_notes", [])
     if not isinstance(data, dict) or not required.issubset(data):
         snippet = (raw or "")[:300]
         tail = (raw or "")[-300:] if len(raw or "") > 600 else ""
@@ -2429,7 +2439,7 @@ def _analyze_context_openai_compatible(
         elif isinstance(extra, str) and extra.strip():
             scene_notes.append(f"{extra_key}: {extra.strip()}")
 
-    return ContextMemory(
+    memory = ContextMemory(
         source_language=str(data.get("source_language") or source_language or ""),
         summary=str(data.get("summary") or ""),
         setting=str(data.get("setting") or ""),
@@ -2438,6 +2448,9 @@ def _analyze_context_openai_compatible(
         recurring_terms={str(k): str(v) for k, v in recurring_terms.items()},
         scene_notes=[str(x) for x in scene_notes[:int(depth_cfg["scene_note_limit"])]],
     )
+    if partial:
+        memory._analysis_degraded = True
+    return memory
 
 
 def analyze_with_helper(
@@ -2514,6 +2527,7 @@ def analyze_with_helper(
                         analysis_depth=depth_key,
                         token_callback=token_callback,
                         log_fn=log_fn,
+                        allow_partial=(attempt == 2),
                     )
                 return i, provider.analyze_context(req)
             except Exception as e:
@@ -2606,6 +2620,8 @@ def analyze_with_helper(
     if _stop_requested():
         return None
 
+    aux_status = {}
+
     # Generate character few-shot examples + register/dialect classification (single call)
     if log_fn and merged.characters:
         log_fn(f"Karakter örnekleri oluşturuluyor ({len(merged.characters[:6])} karakter)...", "info")
@@ -2614,6 +2630,7 @@ def analyze_with_helper(
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
         token_callback=token_callback,
+        status=aux_status,
     )
     if log_fn and examples:
         log_fn(f"Karakter örnekleri hazır: {', '.join(examples.keys())}", "ok")
@@ -2628,6 +2645,7 @@ def analyze_with_helper(
         merged, target_language,
         helper_api_key, helper_url, helper_model,
         token_callback=token_callback,
+        status=aux_status,
     )
     if log_fn and pronoun_map:
         log_fn(f"Hitap haritası: {pronoun_map}", "ok")
@@ -2643,6 +2661,7 @@ def analyze_with_helper(
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
         token_callback=token_callback,
+        status=aux_status,
     )
     if log_fn and scene_emotions:
         _with_ref = sum(1 for s in scene_emotions if isinstance(s, dict) and s.get("referents"))
@@ -2662,6 +2681,7 @@ def analyze_with_helper(
         log_fn=log_fn,
         source_language=source_language,
         token_callback=token_callback,
+        status=aux_status,
     )
     if log_fn and idiom_map:
         log_fn(f"Deyim haritası: {len(idiom_map)} deyim", "ok")
@@ -2677,6 +2697,7 @@ def analyze_with_helper(
         helper_api_key, helper_url, helper_model,
         log_fn=log_fn,
         token_callback=token_callback,
+        status=aux_status,
     )
     if log_fn and cultural_refs:
         log_fn(f"Kültürel referanslar: {len(cultural_refs)} madde", "ok")
@@ -2686,6 +2707,16 @@ def analyze_with_helper(
             examples, pronoun_map, character_styles, idiom_map, cultural_refs
         )
     )
+    failed_aux = sorted(key for key, ok in aux_status.items() if not ok)
+    if failed_aux:
+        merged._analysis_degraded = True
+        if log_fn:
+            log_fn(
+                "Yardımcı analiz kısmi kaldı: "
+                + ", ".join(failed_aux)
+                + " — canlı bağlam kullanılacak, cache/hafıza yazılmayacak",
+                "warn",
+            )
 
     # Return extended tuple:
     # (merged, examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs)

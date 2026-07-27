@@ -50,6 +50,10 @@ def _target_key(value: str) -> str:
     return key or "tr"
 
 
+def _source_key(value: str) -> str:
+    return _target_key(value or "en")
+
+
 def parse_series_key(filename: str):
     """'Show.Name.S01E05.720p.srt' → ('show-name', 1, 5). Dizi değilse None."""
     stem = Path(filename).stem
@@ -85,14 +89,19 @@ class SeriesMemory:
 
     @classmethod
     def load(cls, input_dir: str, show_slug: str,
-             target_language: str = "tr") -> "SeriesMemory":
+             target_language: str = "tr",
+             source_language: str = "en") -> "SeriesMemory":
         target_key = _target_key(target_language)
+        source_key = _source_key(source_language)
         base = Path(input_dir) / ".series_memory"
-        path = (
-            base / f"{show_slug}.json"
-            if target_key == "tr"
-            else base / target_key / f"{show_slug}.json"
-        )
+        if source_key == "en":
+            path = (
+                base / f"{show_slug}.json"
+                if target_key == "tr"
+                else base / target_key / f"{show_slug}.json"
+            )
+        else:
+            path = base / f"src-{source_key}" / f"tgt-{target_key}" / f"{show_slug}.json"
         data = None
         if path.exists():
             try:
@@ -102,11 +111,15 @@ class SeriesMemory:
         if (isinstance(data, dict) and data.get("target_language")
                 and _target_key(data["target_language"]) != target_key):
             data = None
+        if (isinstance(data, dict) and data.get("source_language")
+                and _source_key(data["source_language"]) != source_key):
+            data = None
         if not isinstance(data, dict):
             data = {}
         data.setdefault("version", cls.VERSION)
         data.setdefault("show", show_slug)
         data.setdefault("target_language", target_key)
+        data.setdefault("source_language", source_key)
         data.setdefault("updated_eps", [])
         data.setdefault("terms", {})
         data.setdefault("characters", {})
