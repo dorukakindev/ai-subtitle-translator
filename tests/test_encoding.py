@@ -134,6 +134,24 @@ class ReadSubtitleTextTest(unittest.TestCase):
         finally:
             os.unlink(fp)
 
+    def test_short_cp1251_detected_before_cp1254_fallback(self):
+        body = "1\n00:00:01,000 --> 00:00:03,000\n\u041f\u0440\u0438\u0432\u0435\u0442\n"
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        Path(fp).write_bytes(body.encode("cp1251"))
+        try:
+            self.assertIn("\u041f\u0440\u0438\u0432\u0435\u0442", read_subtitle_text(fp))
+        finally:
+            os.unlink(fp)
+
+    def test_short_cp1254_still_uses_cp1254(self):
+        body = "1\n00:00:01,000 --> 00:00:03,000\n\u015e\u00f6yle\n"
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        Path(fp).write_bytes(body.encode("cp1254"))
+        try:
+            self.assertIn("\u015e\u00f6yle", read_subtitle_text(fp))
+        finally:
+            os.unlink(fp)
+
 
 class ParseSubtitleEncodingTest(unittest.TestCase):
     def test_parse_srt_cp1254(self):

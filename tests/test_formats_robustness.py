@@ -52,6 +52,16 @@ class VttRobustnessTest(unittest.TestCase):
         b = parse_vtt(_w(self.d, "ids.vtt", vtt))
         self.assertEqual([x[2] for x in b], ["Merhaba", "Dunya"])
 
+    def test_numeric_and_short_alphanumeric_text_survive_without_separator(self):
+        for text in ("1984", "T-800", "A1"):
+            vtt = (
+                "WEBVTT\n\n"
+                "00:00:01.000 --> 00:00:02.000\n" + text + "\n"
+                "00:00:02.000 --> 00:00:03.000\nDunya\n"
+            )
+            b = parse_vtt(_w(self.d, f"{text}.vtt", vtt))
+            self.assertEqual([x[2] for x in b], [text, "Dunya"])
+
     def test_note_metadata_is_skipped_but_note_prefixed_id_is_kept(self):
         vtt = ("WEBVTT\n\nNOTE ignored metadata\nline\n\n"
                "NOTE-1\n00:00:01.000 --> 00:00:02.000\nGercek cue\n")

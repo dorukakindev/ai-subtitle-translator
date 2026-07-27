@@ -396,6 +396,44 @@ class ParseSrtEdgeCasesTest(unittest.TestCase):
         cues = localizer_srt.parse_srt(srt)
         self.assertEqual([c.index for c in cues], [1, 3])
 
+    def test_hybrid_srt_recovers_missing_separator_between_cues(self):
+        srt = (
+            "1\n00:00:01,000 --> 00:00:02,000\nFirst\n"
+            "2\n00:00:03,000 --> 00:00:04,000\nSecond\n"
+        )
+        path = _write_temp(srt, ".srt")
+        import hybrid_translate as ht
+        try:
+            cues = ht.load_srt(path)
+            self.assertEqual([(c.index, c.text) for c in cues], [(1, "First"), (2, "Second")])
+        finally:
+            os.unlink(path)
+
+    def test_hybrid_srt_recovers_body_after_blank_line(self):
+        srt = (
+            "1\n00:00:01,000 --> 00:00:02,000\n\nReal dialogue.\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\nSecond.\n"
+        )
+        path = _write_temp(srt, ".srt")
+        import hybrid_translate as ht
+        try:
+            cues = ht.load_srt(path)
+            self.assertEqual([(c.index, c.text) for c in cues],
+                             [(1, "Real dialogue."), (2, "Second.")])
+        finally:
+            os.unlink(path)
+
+    def test_hybrid_srt_accepts_three_digit_hours(self):
+        path = _write_temp(
+            "1\n100:00:01,000 --> 100:00:02,000\nCentury line\n", ".srt")
+        import hybrid_translate as ht
+        try:
+            cues = ht.load_srt(path)
+            self.assertEqual([(c.start, c.end, c.text) for c in cues], [
+                ("100:00:01,000", "100:00:02,000", "Century line")])
+        finally:
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()

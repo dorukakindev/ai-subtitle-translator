@@ -42,8 +42,8 @@ def clean_translation_source_text(text: str) -> str:
 def normalize_srt_timestamp_separators(text: str) -> str:
     """SRT zaman satırlarındaki hatalı saat ayraçlarını düzeltir."""
     return re.sub(
-        r'(?m)^([ \t]*\d{1,3})[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[ \t]*'
-        r'-->[ \t]*\d{1,3})[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[^\n]*)$',
+        r'(?m)^([ \t]*\d+)[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[ \t]*'
+        r'-->[ \t]*\d+)[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[^\n]*)$',
         r'\1:\2:\3\4:\5:\6\7',
         str(text or ""),
     )
@@ -72,7 +72,17 @@ def _legacy_script_ratio(text: str, encoding: str) -> float:
 
 
 def _decode_detected_legacy(raw: bytes) -> str | None:
+    if not raw:
+        return None
     if len(raw) < 80:
+        try:
+            candidate = raw.decode("cp1251")
+        except UnicodeDecodeError:
+            return None
+        letters = [ch for ch in candidate if ch.isalpha()]
+        cyrillic = sum("\u0400" <= ch <= "\u052f" for ch in letters)
+        if letters and cyrillic / len(letters) >= 0.6:
+            return candidate
         return None
     try:
         from charset_normalizer import from_bytes
@@ -312,6 +322,14 @@ _VTT_TAG = re.compile(
     re.IGNORECASE)
 _VTT_CUE_TS_TAG = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 
+
+def _adjacent_vtt_cue_id(value: str, expected_index: int) -> bool:
+    """Boş ayraç eksik VTT'de gerçek ID ile replik satırını ayır."""
+    value = value.strip()
+    if value.isdigit():
+        return value == str(expected_index)
+    return bool(re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value))
+
 def _clean_vtt_text(text: str) -> str:
     """WebVTT inline tag'lerini ve position bilgisini kaldır."""
     text = _VTT_CUE_TS_TAG.sub('', text)
@@ -375,7 +393,7 @@ def parse_vtt(filepath: str) -> list:
             if ts_re.match(current):
                 break
             if i + 1 < len(lines) and ts_re.match(lines[i + 1].strip()):
-                if re.fullmatch(r'(?:\d+|[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*)', current):
+                if _adjacent_vtt_cue_id(current, idx + 1):
                     break
                 text_lines.append(current)
                 i += 1
