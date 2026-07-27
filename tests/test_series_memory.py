@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import series_memory as sm
 
@@ -137,6 +138,83 @@ class PersistenceTest(unittest.TestCase):
             (p / "bad.json").write_text("{not valid", encoding="utf-8")
             m = sm.SeriesMemory.load(td, "bad")   # patlamamalı
             self.assertEqual(m._data["terms"], {})
+
+
+class RunOverlayTest(unittest.TestCase):
+    class _Var:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    def _app(self, selected):
+        from subtitle_translator_gui import App
+        app = SimpleNamespace(
+            series_memory_var=self._Var(True),
+            tgt_var=self._Var("Turkish"),
+            _active_snapshot={"selected_files": selected},
+            _selected_files=selected,
+            _run_series_memory={},
+            _run_precontext_data={},
+            _log=lambda *_args, **_kwargs: None,
+        )
+        for name in (
+            "_series_mem_for", "_series_hint_for",
+            "_merge_precontext_into_series_memory",
+            "_stage_series_memory_from_precontext",
+            "_commit_precontext_series_memory",
+            "_merge_analysis_into_series_memory",
+            "_stage_series_memory_from_analysis",
+            "_update_series_memory_from_analysis",
+        ):
+            setattr(app, name, getattr(App, name).__get__(app))
+        return app
+
+    def test_overlay_flows_only_to_later_episode_without_writing_disk(self):
+        with tempfile.TemporaryDirectory() as td:
+            e1 = str(Path(td) / "Show.S01E01.srt")
+            e2 = str(Path(td) / "Show.S01E02.srt")
+            app = self._app([e1, e2])
+
+            self.assertEqual(app._series_hint_for(e1), "")
+            app._stage_series_memory_from_precontext(
+                e1, {"terms": {"Hive": "Kovan"}}, "Turkish")
+
+            self.assertIn("'Hive' → 'Kovan'", app._series_hint_for(e2))
+            self.assertFalse((Path(td) / ".series_memory" / "show.json").exists())
+
+    def test_commit_persists_only_successful_episode_data(self):
+        with tempfile.TemporaryDirectory() as td:
+            e1 = str(Path(td) / "Show.S01E01.srt")
+            e2 = str(Path(td) / "Show.S01E02.srt")
+            app = self._app([e1, e2])
+            first = {"terms": {"Hive": "Kovan"}}
+            future = {"terms": {"Precinct": "Karakol"}}
+            app._run_precontext_data = {e1: first, e2: future}
+            app._stage_series_memory_from_precontext(e1, first, "Turkish")
+            app._stage_series_memory_from_precontext(e2, future, "Turkish")
+
+            app._commit_precontext_series_memory(e1, "Turkish")
+
+            persisted = sm.SeriesMemory.load(td, "show")
+            self.assertEqual(persisted.get_terms(), {"Hive": "Kovan"})
+            self.assertEqual(persisted._data["updated_eps"], ["s01e01"])
+
+    def test_hybrid_analysis_overlay_does_not_persist_until_success(self):
+        with tempfile.TemporaryDirectory() as td:
+            e1 = str(Path(td) / "Show.S01E01.srt")
+            e2 = str(Path(td) / "Show.S01E02.srt")
+            app = self._app([e1, e2])
+            context = SimpleNamespace(recurring_terms={"Hive": "Kovan"}, characters=[])
+
+            app._stage_series_memory_from_analysis(e1, context, {}, "Turkish")
+
+            self.assertIn("'Hive' → 'Kovan'", app._series_hint_for(e2))
+            self.assertFalse((Path(td) / ".series_memory" / "show.json").exists())
+            app._update_series_memory_from_analysis(e1, context, {})
+            self.assertEqual(sm.SeriesMemory.load(td, "show").get_terms(),
+                             {"Hive": "Kovan"})
 
 
 if __name__ == "__main__":

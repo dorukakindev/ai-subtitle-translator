@@ -595,10 +595,14 @@ def _cache_sig(filepath: str) -> str:
         return ""
 
 
+CONTEXT_ANALYSIS_CACHE_VER = 2
+
+
 def analysis_fingerprint(source_language: str = "", target_language: str = "",
                          analysis_depth: str = "", model: str = "", style: str = "",
                          schema: dict = None, glossary: dict = None) -> str:
     payload = {
+        "version": CONTEXT_ANALYSIS_CACHE_VER,
         "source": str(source_language or "").strip().casefold(),
         "target": str(target_language or "").strip().casefold(),
         "depth": normalize_analysis_depth(analysis_depth),

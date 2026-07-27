@@ -10,6 +10,16 @@ import subtitle_translator_gui as gui
 
 
 class CacheIntegrityTest(unittest.TestCase):
+    def test_analysis_fingerprint_changes_with_cache_version(self):
+        before = ht.analysis_fingerprint("English", "Turkish", "standard", "model")
+        old = ht.CONTEXT_ANALYSIS_CACHE_VER
+        try:
+            ht.CONTEXT_ANALYSIS_CACHE_VER = old + 1
+            after = ht.analysis_fingerprint("English", "Turkish", "standard", "model")
+        finally:
+            ht.CONTEXT_ANALYSIS_CACHE_VER = old
+        self.assertNotEqual(before, after)
+
     def test_same_length_modification_changes_sig_and_causes_cache_miss(self):
         with tempfile.TemporaryDirectory() as root:
             fp = Path(root, "sub.srt")

@@ -7864,12 +7864,16 @@ class App(ctk.CTk):
         self.pause_btn.configure(state="normal" if running else "disabled")
         self._is_running = running
         if running:
+            self._run_series_memory = {}
+            self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
         else:
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
+            self._run_series_memory = {}
+            self._run_precontext_data = {}
             self._stop_elapsed_timer()
             if self._job_rows:
                 self._set_phase("Hazır", "")
@@ -10309,7 +10313,7 @@ class App(ctk.CTk):
             files = series_memory.sort_files_by_episode(files)
         return files
 
-    def _series_mem_for(self, fp: str):
+    def _series_mem_for(self, fp: str, *, persistent: bool = False):
         """Dosya için (SeriesMemory, sezon, bölüm) döner; dizi değilse/kapalıysa (None,None,None)."""
         if not (getattr(self, "series_memory_var", None) and self.series_memory_var.get()):
             return None, None, None
@@ -10324,6 +10328,13 @@ class App(ctk.CTk):
                      else self.input_var.get())
         input_dir = input_dir or str(Path(fp).parent)
         try:
+            if not persistent:
+                overlays = getattr(self, "_run_series_memory", None)
+                if isinstance(overlays, dict):
+                    overlay_key = (str(Path(input_dir).resolve()).casefold(), slug)
+                    if overlay_key not in overlays:
+                        overlays[overlay_key] = series_memory.SeriesMemory.load(input_dir, slug)
+                    return overlays[overlay_key], season, ep
             return series_memory.SeriesMemory.load(input_dir, slug), season, ep
         except Exception:
             return None, None, None
@@ -12517,47 +12528,74 @@ class App(ctk.CTk):
                           f"{n_char} karakter, {n_term} sabit terim", "ok")
                 if n_term:
                     self._log(f"[{Path(fp).name}] Sabit terimler: {data.get('terms')}", "info")
-        # Dizi hafızasını BÖLÜM SIRASINDA işle ('files' zaten _get_srt_files'ta
-        # bölüme göre sıralı) — yoksa önbellekli E02 taze E01'den önce işlenip
-        # "ilk karar kanon" kuralını bozardı
-        for fp in files:
-            data = data_by_fp.get(fp)
-            if data is not None:
-                self._update_series_memory_from_precontext(fp, data, target_language=tgt)
+        self._run_precontext_data = data_by_fp
         return hints
 
-    def _update_series_memory_from_precontext(self, fp: str, data: dict, target_language: str = "tr"):
+    def _merge_precontext_into_series_memory(self, sm_obj, season, ep, data: dict,
+                                             target_language: str = "tr"):
+        if sm_obj is None or not isinstance(data, dict):
+            return
+        import hybrid_translate as ht
+        safe_terms = ht.sanitize_glossary_for_turkish(
+            data.get("terms") or {}, target_language=target_language, log_fn=self._log
+        )
+        sm_obj.merge_terms(safe_terms)
+        sm_obj.merge_characters(data.get("characters") or [])
+        sm_obj.merge_address_map(data.get("address_map") or [])
+        sm_obj.mark_episode(season, ep)
+
+    def _stage_series_memory_from_precontext(self, fp: str, data: dict,
+                                             target_language: str = "tr"):
         sm_obj, season, ep = self._series_mem_for(fp)
+        try:
+            self._merge_precontext_into_series_memory(
+                sm_obj, season, ep, data, target_language=target_language)
+        except Exception:
+            pass
+
+    def _commit_precontext_series_memory(self, fp: str, target_language: str = "tr"):
+        data = (getattr(self, "_run_precontext_data", None) or {}).get(fp)
+        sm_obj, season, ep = self._series_mem_for(fp, persistent=True)
         if sm_obj is None or not isinstance(data, dict):
             return
         try:
-            import hybrid_translate as ht
-            safe_terms = ht.sanitize_glossary_for_turkish(
-                data.get("terms") or {}, target_language=target_language, log_fn=self._log
-            )
-            sm_obj.merge_terms(safe_terms)
-            sm_obj.merge_characters(data.get("characters") or [])
-            sm_obj.merge_address_map(data.get("address_map") or [])
-            sm_obj.mark_episode(season, ep)
+            self._merge_precontext_into_series_memory(
+                sm_obj, season, ep, data, target_language=target_language)
             sm_obj.save()
         except Exception:
             pass
 
-    def _update_series_memory_from_analysis(self, fp: str, context, pronoun_map):
-        """Hybrid (Yardımcı Analiz) çıktısını dizi hafızasına işler (ilk karar kanon)."""
+    def _merge_analysis_into_series_memory(self, sm_obj, season, ep, context,
+                                           pronoun_map, target_language):
+        if sm_obj is None:
+            return
+        import hybrid_translate as ht
+        sm_obj.merge_terms(ht.sanitize_glossary_for_turkish(
+            dict(getattr(context, "recurring_terms", {}) or {}),
+            target_language=target_language,
+        ))
+        sm_obj.merge_characters(list(getattr(context, "characters", []) or []))
+        if pronoun_map:
+            sm_obj.merge_address_map(pronoun_map)
+        sm_obj.mark_episode(season, ep)
+
+    def _stage_series_memory_from_analysis(self, fp: str, context, pronoun_map,
+                                           target_language: str):
         sm_obj, season, ep = self._series_mem_for(fp)
+        try:
+            self._merge_analysis_into_series_memory(
+                sm_obj, season, ep, context, pronoun_map, target_language)
+        except Exception:
+            pass
+
+    def _update_series_memory_from_analysis(self, fp: str, context, pronoun_map):
+        """Hybrid analizini yalnız başarılı çıktıdan sonra kalıcı hafızaya işler."""
+        sm_obj, season, ep = self._series_mem_for(fp, persistent=True)
         if sm_obj is None:
             return
         try:
-            import hybrid_translate as ht
-            sm_obj.merge_terms(ht.sanitize_glossary_for_turkish(
-                dict(getattr(context, "recurring_terms", {}) or {}),
-                target_language=self.tgt_var.get(),
-            ))
-            sm_obj.merge_characters(list(getattr(context, "characters", []) or []))
-            if pronoun_map:
-                sm_obj.merge_address_map(pronoun_map)
-            sm_obj.mark_episode(season, ep)
+            self._merge_analysis_into_series_memory(
+                sm_obj, season, ep, context, pronoun_map, self.tgt_var.get())
             sm_obj.save()
         except Exception:
             pass
@@ -12748,6 +12786,10 @@ class App(ctk.CTk):
             if _sm_hint:
                 _file_hints[fp] = _file_hints.get(fp, "") + _sm_hint
                 _sm_used += 1
+            _pre_data = (getattr(self, "_run_precontext_data", None) or {}).get(fp)
+            if _pre_data is not None:
+                self._stage_series_memory_from_precontext(
+                    fp, _pre_data, target_language=tgt)
         if _sm_used:
             self._log(f"Dizi hafızası: {_sm_used} dosyaya önceki bölüm kararları eklendi", "info")
         all_requests, all_file_map = [], {}
@@ -13065,6 +13107,7 @@ class App(ctk.CTk):
                     schema=schema_dict,
                     glossary=glossary,
                 )
+                _analysis_ok = True
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
                     self._log(f"Önbellek bulundu — analiz atlanıyor ({fname})", "ok")
@@ -13170,6 +13213,9 @@ class App(ctk.CTk):
                 cultural_refs=cultural_refs,
             )
             system_prompt += self._series_hint_for(filepath)
+            if _analysis_ok:
+                self._stage_series_memory_from_analysis(
+                    filepath, context, pronoun_map, tgt)
             if self._pm is not None:
                 system_prompt += self._pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
@@ -13523,7 +13569,7 @@ class App(ctk.CTk):
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
                                  self._main_model_name(), tgt, schema_name=schema_dict.get("name", ""))
-            if _hata_n == 0:
+            if _analysis_ok and _hata_n == 0 and _n_filled == 0:
                 self._update_series_memory_from_analysis(filepath, context, pronoun_map)
             if self.auto_glossary_var.get():
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
@@ -13619,6 +13665,10 @@ class App(ctk.CTk):
             if _sm_hint:
                 _file_hints[fp] = _file_hints.get(fp, "") + _sm_hint
                 _sm_used += 1
+            _pre_data = (getattr(self, "_run_precontext_data", None) or {}).get(fp)
+            if _pre_data is not None:
+                self._stage_series_memory_from_precontext(
+                    fp, _pre_data, target_language=tgt)
         if _sm_used:
             self._log(f"Dizi hafızası: {_sm_used} dosyaya önceki bölüm kararları eklendi", "info")
         all_requests, all_file_map = [], {}
@@ -14612,6 +14662,8 @@ class App(ctk.CTk):
             })
             # TM kaydı (ortak yardımcı)
             self._store_tm_pairs(sorted_blocks, src_blocks, model_name, _tgt_lang, schema_name=schema_dict.get("name", ""))
+            if _hata_n == 0 and _n_filled == 0:
+                self._commit_precontext_series_memory(fp, _tgt_lang)
             # Auto-Glossary (düz sync/batch'te de) — Cue nesnesi gerektiğinden kaynağı
             # load_subtitle ile yükle (_src_cues tuple olabilir; build_glossary c.text ister)
             if self.auto_glossary_var.get():
@@ -14884,7 +14936,7 @@ class App(ctk.CTk):
         # Böylece program kapansa bile 'Devam Ettir' ile tüm dosyalar alınabilir
         # ══════════════════════════════════════════════════════════════════════
         self._log(f"Faz 1 — {n_files} dosya analiz ediliyor ve batch'ler gönderiliyor...", "info")
-        # Each entry: (filepath, fname, out_path, fmap, batch_id, cues, analysis_tuple)
+        # Each entry: (..., cues, analysis_tuple, analysis_ok, file_src, schema_name)
         submitted = []
 
         for fi, filepath in enumerate(srt_files):
@@ -14939,6 +14991,7 @@ class App(ctk.CTk):
                     schema=schema_dict,
                     glossary=glossary,
                 )
+                _analysis_ok = True
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
                     self._log(f"Önbellek bulundu — analiz atlanıyor ({fname})", "ok")
@@ -15049,8 +15102,11 @@ class App(ctk.CTk):
                             or schema_dict.get("name", "")
                         )
                         submitted.append((filepath, fname, existing_out, fmap,
-                                          existing_bid, cues, analysis_tuple, file_src,
+                                          existing_bid, cues, analysis_tuple, _analysis_ok, file_src,
                                           _existing_schema_name))
+                        if _analysis_ok:
+                            self._stage_series_memory_from_analysis(
+                                filepath, context, pronoun_map, tgt)
                         self._set_progress(int((fi + 1) / n_files * 40))
                         continue
                     # batch_id yoksa yeniden gönder (aşağı düş)
@@ -15067,6 +15123,9 @@ class App(ctk.CTk):
                     cultural_refs=cultural_refs,
                 )
                 system_prompt += self._series_hint_for(filepath)
+                if _analysis_ok:
+                    self._stage_series_memory_from_analysis(
+                        filepath, context, pronoun_map, tgt)
                 if self._pm is not None:
                     system_prompt += self._pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
                 requests, fmap = ht.build_batch_requests(cues, system_prompt, model,
@@ -15097,7 +15156,7 @@ class App(ctk.CTk):
                     ht.update_batch_session(session, filepath, "pending")
                     submitted.append((
                         filepath, fname, out_path, fmap, "__twowave__", cues,
-                        analysis_tuple, file_src, schema_dict.get("name", "")))
+                        analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", "")))
                     self._log(f"[{fname}] İki-dalgalı — Faz 2'de sıralı gönderilecek", "info")
                     self._set_progress(int((fi + 1) / n_files * 40))
                     continue
@@ -15115,7 +15174,7 @@ class App(ctk.CTk):
                     ht._save_batch_session(session)
                     submitted.append((
                         filepath, fname, out_path, fmap, batch_id, cues,
-                        analysis_tuple, file_src, schema_dict.get("name", "")))
+                        analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", "")))
                     self._set_progress(int((fi + 1) / n_files * 40))
                 else:
                     self._log(f"[{fname}] Batch gönderilemedi, atlanıyor", "err")
@@ -15142,7 +15201,7 @@ class App(ctk.CTk):
         report_rows = []   # kalite raporu satırları (dosya başına)
 
         for si, (filepath, fname, out_path, fmap, batch_id, cues,
-                 analysis_tuple, file_src, file_schema_name) in enumerate(submitted):
+                 analysis_tuple, analysis_ok, file_src, file_schema_name) in enumerate(submitted):
             if self._stop_flag:
                 break
             self._log(f"\n── [{si+1}/{n_sub}] {fname} — Batch bekleniyor ──", "info")
@@ -15449,7 +15508,7 @@ class App(ctk.CTk):
                 self._store_tm_pairs(
                     _final_blocks, _src_map, self._main_model_name(), tgt,
                     schema_name=file_schema_name)
-                if not any(
+                if analysis_ok and _n_filled == 0 and not any(
                         str(text or "").startswith("[HATA")
                         or "[ÇEVİRİ EKSİK]" in str(text or "")
                         for _idx, _ts, text in _final_blocks):
