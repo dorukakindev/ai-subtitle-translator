@@ -3453,10 +3453,10 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
             texts.append(text)
     if not texts:
         return infer_source_language_from_filename(filename)
-    if len(texts) > 90:
+    if len(texts) > 18:
         mid = len(texts) // 2
-        texts = texts[:35] + texts[mid:mid + 30] + texts[-25:]
-    sample = "\n".join(texts)[:12000]
+        texts = texts[:7] + texts[mid:mid + 6] + texts[-5:]
+    sample = "\n".join(texts)[:2400]
     language_list = ", ".join(LANGUAGES)
     prompt = (
         "Detect the dominant spoken language of this subtitle sample. "
@@ -11832,23 +11832,25 @@ class App(ctk.CTk):
         if not files:
             return results
 
-        batches = [files[i:i + 20] for i in range(0, len(files), 20)]
+        token_callback = App._token_callback_for_model(self, model)
 
-        def _one(batch):
-            cues_by_file = {}
-            for fp in batch:
-                try:
-                    cues_by_file[fp] = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
-                except Exception as e:
-                    self._log(f"[{Path(fp).name}] Kaynak dil örneği okunamadı: {e}", "warn")
-                    cues_by_file[fp] = []
-            return detect_source_languages_batch_with_ai(
-                client, cues_by_file, model, self._log,
-                token_callback=App._token_callback_for_model(self, model))
+        def _one(fp):
+            filename_language = infer_source_language_from_filename(fp)
+            if filename_language != AUTO_LANGUAGE:
+                return fp, filename_language
+            try:
+                cues = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
+            except Exception as e:
+                self._log(f"[{Path(fp).name}] Kaynak dil örneği okunamadı: {e}", "warn")
+                cues = []
+            language = detect_source_language_with_ai(
+                client, cues, model, self._log,
+                token_callback=token_callback, filename=fp)
+            return fp, language
 
-        with ThreadPoolExecutor(max_workers=min(4, len(batches))) as ex:
-            for detected in ex.map(_one, batches):
-                results.update(detected)
+        with ThreadPoolExecutor(max_workers=min(4, len(files))) as ex:
+            for fp, language in ex.map(_one, files):
+                results[fp] = language
         return results
 
     def _apply_detected_source_languages(self, detected: dict):

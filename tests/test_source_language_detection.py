@@ -452,39 +452,48 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertEqual(detected_corrupt["file0.srt"], gui.AUTO_LANGUAGE)
         self.assertNotEqual(detected_corrupt["file0.srt"], "English")
 
-    def test_parametric_batching_boundary_matrix(self):
-        """Full matrix of file counts (1, 19, 20, 21, 39, 40, 41) verifies exact batch partitioning."""
-        matrix = [
-            (1, [1]),
-            (19, [19]),
-            (20, [20]),
-            (21, [20, 1]),
-            (39, [20, 19]),
-            (40, [20, 20]),
-            (41, [20, 20, 1]),
+    def test_parallel_detection_skips_api_for_explicit_filename_labels(self):
+        files = ["movie.eng.srt", "unknown.srt", "other.1977.ITALIAN.WEBRip.srt"]
+        stub = SimpleNamespace(
+            _cached_blocks_for=lambda fp: [("1", "", "Bonjour")],
+            _update_tokens=lambda *a, **k: None,
+            _log=lambda *a, **k: None,
+        )
+        calls = []
+
+        def fake_detect(client, cues, model, log_fn=None,
+                        token_callback=None, filename=""):
+            calls.append(filename)
+            return "French"
+
+        with patch.object(gui, "detect_source_language_with_ai",
+                          side_effect=fake_detect):
+            results = gui.App._detect_source_languages_parallel(
+                stub, object(), files, "gpt-5.4")
+
+        self.assertEqual(results["movie.eng.srt"], "English")
+        self.assertEqual(results["other.1977.ITALIAN.WEBRip.srt"], "Italian")
+        self.assertEqual(results["unknown.srt"], "French")
+        self.assertEqual(calls, ["unknown.srt"])
+
+    def test_single_file_detector_samples_only_eighteen_lines(self):
+        captured = {}
+
+        def fake_create(client, **kwargs):
+            captured.update(kwargs)
+            return _response(json.dumps({"language": "French"}))
+
+        cues = [
+            (str(i), "", f"ligne unique {i}")
+            for i in range(100)
         ]
+        with patch.object(gui, "_safe_chat_create", side_effect=fake_create):
+            detected = gui.detect_source_language_with_ai(
+                object(), cues, "gpt-5.4", filename="unknown.srt")
 
-        for total_files, expected_batches in matrix:
-            captured_batch_sizes = []
-
-            def fake_batch_detect(client, file_cues, model, log_fn=None, token_callback=None):
-                captured_batch_sizes.append(len(file_cues))
-                return {fp: "Spanish" for fp in file_cues}
-
-            stub = SimpleNamespace(
-                _cached_blocks_for=lambda fp: [("1", "", "Hola")],
-                _update_tokens=lambda *a, **k: None,
-                _log=lambda *a, **k: None,
-            )
-
-            files = [f"file_{i}.srt" for i in range(total_files)]
-            with patch.object(gui, "detect_source_languages_batch_with_ai", side_effect=fake_batch_detect):
-                results = gui.App._detect_source_languages_parallel(stub, object(), files, "test-model")
-
-            self.assertEqual(captured_batch_sizes, expected_batches, f"Failed for file count {total_files}")
-            self.assertEqual(len(results), total_files, f"Failed result count for file count {total_files}")
-            # Ensure every file maps to exactly one result
-            self.assertEqual(set(results.keys()), set(files))
+        self.assertEqual(detected, "French")
+        prompt = captured["messages"][1]["content"]
+        self.assertEqual(prompt.count("ligne unique"), 18)
 
     def test_same_basename_different_paths_do_not_mix_up(self):
         """Files sharing basename (e.g. dirA/sub.srt vs dirB/sub.srt) map independently."""
