@@ -300,6 +300,50 @@ def normalize_language_name(name: str, allow_auto: bool = True) -> str:
     return AUTO_LANGUAGE if allow_auto else ""
 
 
+_FILENAME_LANGUAGE_TOKENS = {
+    "tur": "Turkish", "turkish": "Turkish",
+    "eng": "English", "english": "English",
+    "deu": "German", "ger": "German", "german": "German",
+    "fra": "French", "fre": "French", "french": "French",
+    "spa": "Spanish", "spanish": "Spanish",
+    "ita": "Italian", "italian": "Italian",
+    "por": "Portuguese", "portuguese": "Portuguese",
+    "rus": "Russian", "russian": "Russian",
+    "jpn": "Japanese", "japanese": "Japanese",
+    "kor": "Korean", "korean": "Korean",
+    "zho": "Chinese", "chi": "Chinese", "chinese": "Chinese",
+    "ara": "Arabic", "arabic": "Arabic",
+    "nld": "Dutch", "dut": "Dutch", "dutch": "Dutch",
+    "pol": "Polish", "polish": "Polish",
+    "swe": "Swedish", "swedish": "Swedish",
+    "nor": "Norwegian", "norwegian": "Norwegian",
+    "dan": "Danish", "danish": "Danish",
+    "fin": "Finnish", "finnish": "Finnish",
+}
+
+
+def infer_source_language_from_filename(filename: str) -> str:
+    """Yalnız açık release etiketi olan dosya adlarında muhafazakâr dil fallback'i."""
+    stem = Path(str(filename or "")).stem.casefold()
+    tokens = re.findall(r"[a-z]+|\d+", stem)
+    if not tokens:
+        return AUTO_LANGUAGE
+    has_prior_release_number = False
+    candidates = set()
+    for pos, token in enumerate(tokens):
+        if token.isdigit() and len(token) >= 3:
+            has_prior_release_number = True
+            continue
+        language = _FILENAME_LANGUAGE_TOKENS.get(token)
+        if not language:
+            continue
+        is_code = len(token) == 3
+        is_last_token = pos == len(tokens) - 1
+        if is_last_token or has_prior_release_number or (is_code and pos >= len(tokens) - 2):
+            candidates.add(language)
+    return next(iter(candidates)) if len(candidates) == 1 else AUTO_LANGUAGE
+
+
 def prepare_source_language_confirm_items(detected: dict) -> dict:
     """Prepares items for the source language preflight confirmation dialog.
     Returns: {fp: {"initial": str, "is_failed": bool}}
@@ -3408,7 +3452,7 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
         if text:
             texts.append(text)
     if not texts:
-        return AUTO_LANGUAGE
+        return infer_source_language_from_filename(filename)
     if len(texts) > 90:
         mid = len(texts) // 2
         texts = texts[:35] + texts[mid:mid + 30] + texts[-25:]
@@ -3454,7 +3498,7 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
     except Exception as e:
         if log_fn:
             log_fn(f"[{Path(filename).name}] Kaynak dil tespiti başarısız: {e}", "warn")
-    return AUTO_LANGUAGE
+    return infer_source_language_from_filename(filename)
 
 
 def parse_source_languages_response(content: str) -> tuple[dict, set]:
@@ -3529,6 +3573,8 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
         })
     results = {filepath: AUTO_LANGUAGE for filepath in file_cues}
     if not items:
+        for filepath in results:
+            results[filepath] = infer_source_language_from_filename(filepath)
         return results
     prompt = (
         "Detect the dominant spoken language of every subtitle sample independently. "
@@ -3574,6 +3620,9 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
     except Exception as e:
         if log_fn:
             log_fn(f"Toplu kaynak dil tespiti başarısız: {e}", "warn")
+    for filepath, language in list(results.items()):
+        if language == AUTO_LANGUAGE:
+            results[filepath] = infer_source_language_from_filename(filepath)
     return results
 
 
@@ -12011,7 +12060,10 @@ class App(ctk.CTk):
                     client, auto_files, detect_model)
             except Exception as e:
                 self._log(f"Kaynak dil ön analizi başarısız: {e}", "warn")
-                detected = {fp: AUTO_LANGUAGE for fp in auto_files}
+                detected = {
+                    fp: infer_source_language_from_filename(fp)
+                    for fp in auto_files
+                }
 
             def _finish():
                 if getattr(self, "_is_shutting_down", False):

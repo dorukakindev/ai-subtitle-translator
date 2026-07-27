@@ -40,6 +40,44 @@ class SourceLanguageDetectionTest(unittest.TestCase):
                 object(), [("1", "", "Come stai?")], "test-model")
         self.assertEqual(detected, "Italian")
 
+    def test_filename_fallback_recognizes_explicit_release_labels(self):
+        cases = {
+            "Blind Vaysha 2016 1080i HDTV x264 SiSO - eng.srt": "English",
+            "Fortini-Cani.1976.ITALIAN.WEBRip.x264-VXT.srt": "Italian",
+            "Moses.und.Aron.1975.1080p.BluRay.DTS.x264-nstr_track3_eng.srt": "English",
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(
+                    gui.infer_source_language_from_filename(filename), expected)
+
+    def test_filename_fallback_does_not_treat_title_words_as_language_labels(self):
+        self.assertEqual(
+            gui.infer_source_language_from_filename(
+                "The.Italian.Job.1969.1080p.BluRay.srt"),
+            gui.AUTO_LANGUAGE,
+        )
+        self.assertEqual(
+            gui.infer_source_language_from_filename(
+                "Le.camion.1977.DVDRip.XviD.srt"),
+            gui.AUTO_LANGUAGE,
+        )
+
+    def test_batch_api_failure_uses_filename_fallback_only_when_explicit(self):
+        with patch.object(
+            gui, "_safe_chat_create", side_effect=RuntimeError("network"),
+        ):
+            detected = gui.detect_source_languages_batch_with_ai(
+                object(),
+                {
+                    "movie.eng.srt": [("1", "", "Hello")],
+                    "unknown.srt": [("1", "", "Bonjour")],
+                },
+                "test-model",
+            )
+        self.assertEqual(detected["movie.eng.srt"], "English")
+        self.assertEqual(detected["unknown.srt"], gui.AUTO_LANGUAGE)
+
     def test_detector_rejects_unsupported_language(self):
         with patch.object(
             gui, "_safe_chat_create",
