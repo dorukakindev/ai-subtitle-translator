@@ -118,6 +118,21 @@ class UIDispatcherTest(unittest.TestCase):
 
         self.assertEqual(results, ["success"], "Subsequent callbacks must execute despite earlier exception")
 
+    def test_drain_yields_when_time_budget_is_exhausted(self):
+        stub = self._make_dispatcher_stub()
+        delays = []
+        stub.after = lambda delay, fn, *args: delays.append(delay)
+        results = []
+        for value in range(3):
+            stub._ui_queue.put((lambda item=value: results.append(item), (), {}))
+
+        with mock.patch.object(gui.time, "monotonic", side_effect=[0.0, 0.02]):
+            stub._drain_ui_queue()
+
+        self.assertEqual(results, [0])
+        self.assertEqual(stub._ui_queue.qsize(), 2)
+        self.assertEqual(delays, [1])
+
     def test_shutdown_prevents_callback_execution_and_rescheduling(self):
         """4. Shutdown prevents further callback execution and cancels rescheduling."""
         stub = self._make_dispatcher_stub()

@@ -51,6 +51,7 @@ MAX_PARALLEL = 3
 CONTENT_TYPE_DETECT_MODEL = "gpt-5.4"
 API_REQUEST_TIMEOUT_SECONDS = 300
 FILE_LIST_PAGE_SIZE = 60
+UI_DISPATCH_BUDGET_SECONDS = 0.008
 
 
 def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
@@ -7565,6 +7566,7 @@ class App(ctk.CTk):
 
         max_per_tick = 50
         count = 0
+        started = time.monotonic()
         while count < max_per_tick:
             try:
                 item = self._ui_queue.get_nowait()
@@ -7580,10 +7582,13 @@ class App(ctk.CTk):
                     print(f"[UI Dispatcher Error] {fn}: {e}")
                 except Exception:
                     pass
+            if time.monotonic() - started >= UI_DISPATCH_BUDGET_SECONDS:
+                break
 
         if not getattr(self, "_is_shutting_down", False):
             try:
-                self._drain_ui_queue_id = self.after(20, self._drain_ui_queue)
+                delay = 1 if not self._ui_queue.empty() else 20
+                self._drain_ui_queue_id = self.after(delay, self._drain_ui_queue)
             except Exception:
                 pass
 
