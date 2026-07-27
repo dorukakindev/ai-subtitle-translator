@@ -2871,6 +2871,7 @@ def native_reader_pass(
     analysis_result=None,  # Optional: (context, char_examples, pronoun_map, ...) tuple
     token_callback=None,
     src_map: dict = None,
+    locked_terms: dict | None = None,
 ) -> list:
     """Native reader reflex pass — Helper reads translated subtitles as a native viewer
     and naturally rewrites lines that 'sound translated'.
@@ -2931,6 +2932,11 @@ def native_reader_pass(
                                  + "; ".join(f"{k}→{v}" for k, v in list(idiom_map.items())[:8]))
         except Exception:
             pass
+    if locked_terms:
+        context_info += "\nKilitli terimler (kaynak -> zorunlu karşılık): " + "; ".join(
+            f"{source} -> {target}"
+            for source, target in list(locked_terms.items())[:80]
+        )
 
     result = list(tr_blocks)
     idx_to_pos = {str(b[0]): i for i, b in enumerate(result)}
@@ -3081,6 +3087,7 @@ def native_reader_pass(
                         source_text,
                         neighbor_texts=neighbor_texts,
                         fragment_tag=frag_tags.get(old_idx, "none"),
+                        locked_terms=locked_terms,
                     )
                     if not ok:
                         total_rejected += 1
@@ -5663,29 +5670,19 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
 
         if glossary and orig_dict:
             orig = orig_dict.get(str(idx), "")
-            orig_lower = orig.lower()
-            text_lower = text.lower()
             for src_term, tr_term in list(glossary.items()):
                 if len(src_term) <= 4:
                     continue
-                src_pat = r'\b' + re.escape(src_term.lower()) + r'\b'
-                tr_pat  = r'\b' + re.escape(tr_term.lower()) + r'\b'
-                if (re.search(src_pat, orig_lower)
-                        and not re.search(tr_pat, text_lower)):
+                if locked_term_violation(orig, text, {src_term: tr_term}):
                     reasons.append(f"GLOSS_MISS:{src_term}=>{tr_term}")
                     break
 
         if series_terms and orig_dict:
             orig = orig_dict.get(str(idx), "")
-            orig_lower = orig.lower()
-            text_lower = text.lower()
             for src_term, tr_term in list(series_terms.items()):
                 if len(src_term) <= 4:
                     continue
-                src_pat = r'\b' + re.escape(src_term.lower()) + r'\b'
-                tr_pat  = r'\b' + re.escape(tr_term.lower()) + r'\b'
-                if (re.search(src_pat, orig_lower)
-                        and not re.search(tr_pat, text_lower)):
+                if locked_term_violation(orig, text, {src_term: tr_term}):
                     reasons.append(f"SERIES_MEMORY_FLIP:{src_term}=>{tr_term}")
                     break
 
@@ -5774,6 +5771,7 @@ _SEMANTIC_RECONCILIATION_REASONS = (
     "EN_TURKISH_SUFFIX_LEFTOVER",
     "GARBLE_TOKEN",
     "GREEK_WORD_EXPLANATION_LOSS",
+    "GLOSS_MISS",
     "IDIOM_MISTRANSLATION",
     "LENGTH_RATIO_OUTLIER",
     "NEGATION_LOSS",
@@ -5829,9 +5827,10 @@ def _semantic_validator_cues(src_map: dict, tr_blocks: list, cues: list = None) 
     return result
 
 
-def _semantic_reason_map(tr_blocks: list, cues: list) -> dict:
+def _semantic_reason_map(tr_blocks: list, cues: list, locked_terms: dict | None = None) -> dict:
     result = {}
-    for idx, _ts, _text, reason_str in run_validators(tr_blocks, cues=cues):
+    for idx, _ts, _text, reason_str in run_validators(
+            tr_blocks, cues=cues, glossary=locked_terms):
         result[str(idx)] = {
             reason for reason in str(reason_str or "").split("|") if reason
         }
@@ -5909,6 +5908,7 @@ def build_semantic_reconciliation_clusters(
     cues: list = None,
     changed_ids=None,
     extra_suspect_reasons: dict | None = None,
+    locked_terms: dict | None = None,
     window: int = 2,
     max_cluster_items: int = 12,
 ) -> list:
@@ -5916,7 +5916,7 @@ def build_semantic_reconciliation_clusters(
     if not src_map or not tr_blocks:
         return []
     validator_cues = _semantic_validator_cues(src_map, tr_blocks, cues)
-    reason_map = _semantic_reason_map(tr_blocks, validator_cues)
+    reason_map = _semantic_reason_map(tr_blocks, validator_cues, locked_terms)
     suspects = {}
     for sid, reasons in reason_map.items():
         semantic = {reason for reason in reasons if _is_semantic_reconciliation_reason(reason)}
@@ -6032,9 +6032,15 @@ def semantic_reconciliation_pass(
     token_callback=None,
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
+    locked_terms = {
+        str(source).strip(): str(target).strip()
+        for source, target in (locked_terms or {}).items()
+        if str(source).strip() and str(target).strip()
+    }
     clusters = build_semantic_reconciliation_clusters(
         src_map, tr_blocks, cues=cues, changed_ids=changed_ids,
         extra_suspect_reasons=extra_suspect_reasons,
+        locked_terms=locked_terms,
     )
     batches = _semantic_cluster_batches(clusters)
     covered_ids = {
@@ -6070,7 +6076,7 @@ def semantic_reconciliation_pass(
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=base_url)
     validator_cues = _semantic_validator_cues(src_map, result, cues)
-    before_reason_map = _semantic_reason_map(result, validator_cues)
+    before_reason_map = _semantic_reason_map(result, validator_cues, locked_terms)
     all_cluster_ids = {cluster["cluster"] for cluster in clusters}
     system_prompt = (
         f"You are the final bilingual subtitle semantic reconciler for {src_lang} to {tgt_lang}. "
@@ -6084,11 +6090,6 @@ def semantic_reconciliation_pass(
         "{\"id\":\"12\",\"text\":\"...\",\"reason\":\"...\"}]}]. "
         "Omit clusters with no real error and omit unchanged cues."
     )
-    locked_terms = {
-        str(source).strip(): str(target).strip()
-        for source, target in (locked_terms or {}).items()
-        if str(source).strip() and str(target).strip()
-    }
     if locked_terms:
         rows = "; ".join(
             f"{source} -> {target}"
@@ -6263,6 +6264,7 @@ def semantic_reconciliation_pass(
                     old_text, new_text,
                     source_text=str(src_map.get(sid, "")),
                     neighbor_texts=neighbors,
+                    locked_terms=locked_terms,
                 )
                 if not ok and reason == "linebreak_count":
                     reflowed = _reflow_to_line_count(
@@ -6279,6 +6281,7 @@ def semantic_reconciliation_pass(
                         old_text, reflowed,
                         source_text=str(src_map.get(sid, "")),
                         neighbor_texts=retry_neighbors,
+                        locked_terms=locked_terms,
                     )
                     if ok:
                         proposals[sid] = reflowed
@@ -6295,12 +6298,8 @@ def semantic_reconciliation_pass(
                     old_text = str(candidate_by_id[sid][3])
                     new_text = str(proposals[sid])
                     for locked_source, locked_target in locked_terms.items():
-                        if locked_source.casefold() not in source.casefold():
+                        if not term_in_text(locked_source, source.casefold()):
                             continue
-                        if (locked_target.casefold() in old_text.casefold()
-                                and locked_target.casefold() not in new_text.casefold()):
-                            invalid_reason = "locked_term_violation"
-                            break
                         old_suffixes = _locked_suffixes(old_text, locked_target)
                         if old_suffixes and not old_suffixes.issubset(
                                 _locked_suffixes(new_text, locked_target)):
@@ -6309,7 +6308,8 @@ def semantic_reconciliation_pass(
                     if invalid_reason:
                         break
             if not invalid_reason:
-                after_reason_map = _semantic_reason_map(candidate, validator_cues)
+                after_reason_map = _semantic_reason_map(
+                    candidate, validator_cues, locked_terms)
                 for sid in allowed_ids:
                     new_reasons = after_reason_map.get(sid, set()) - before_reason_map.get(sid, set())
                     if any(_is_semantic_reconciliation_reason(reason) for reason in new_reasons):
@@ -6336,7 +6336,8 @@ def semantic_reconciliation_pass(
                 continue
 
             result = candidate
-            before_reason_map = _semantic_reason_map(result, validator_cues)
+            before_reason_map = _semantic_reason_map(
+                result, validator_cues, locked_terms)
             stats["fixed"] += len(proposals)
             stats["reflow_recovered"] += reflow_recovered
             stats["details"].append({
@@ -7619,12 +7620,56 @@ def _reflow_to_line_count(text: str, target_lines: int) -> str:
     return "\n".join(lines)
 
 
+def locked_term_violation(
+    source_text: str,
+    candidate_text: str,
+    locked_terms: dict | None,
+) -> bool:
+    source_lower = str(source_text or "").casefold()
+    candidate_lower = str(candidate_text or "").casefold()
+    if not source_lower or not candidate_lower:
+        return False
+
+    def _target_present(target: str) -> bool:
+        target_lower = target.casefold()
+        if target_lower in candidate_lower:
+            return True
+        target_words = re.findall(r"\w+", target_lower, re.UNICODE)
+        candidate_words = re.findall(r"\w+", candidate_lower, re.UNICODE)
+        if not target_words or not candidate_words:
+            return False
+        width = len(target_words)
+        for pos in range(0, len(candidate_words) - width + 1):
+            window = candidate_words[pos:pos + width]
+            candidate_last = _turkish_stem(window[-1])
+            target_last = _turkish_stem(target_words[-1])
+            softened_target = (
+                target_last[:-1] + {"k": "ğ", "p": "b", "t": "d", "ç": "c"}.get(
+                    target_last[-1:], target_last[-1:])
+            )
+            if (window[:-1] == target_words[:-1]
+                    and (_share_stem(window[-1], target_words[-1])
+                         or candidate_last == softened_target)):
+                return True
+        return False
+
+    for source_term, target_term in (locked_terms or {}).items():
+        source_term = str(source_term or "").strip()
+        target_term = str(target_term or "").strip()
+        if (len(source_term) > 1 and target_term
+                and term_in_text(source_term, source_lower)
+                and not _target_present(target_term)):
+            return True
+    return False
+
+
 def validate_polish_candidate(
     original_text: str,
     candidate_text: str,
     source_text: str = "",
     neighbor_texts: list[str] | None = None,
     fragment_tag: str = "",
+    locked_terms: dict | None = None,
 ) -> tuple[bool, str]:
     """Fail closed when a polish suggestion breaks subtitle structure or hard tokens."""
     old = "" if original_text is None else str(original_text)
@@ -7632,6 +7677,8 @@ def validate_polish_candidate(
     src = "" if source_text is None else str(source_text)
     if not new.strip():
         return False, "empty"
+    if locked_term_violation(src, new, locked_terms):
+        return False, "locked_term_violation"
     if not old.strip() and new.strip():
         return False, "old_empty"
     if old.startswith("[HATA"):
@@ -7770,6 +7817,7 @@ def validate_semantic_reconciliation_candidate(
     candidate_text: str,
     source_text: str = "",
     neighbor_texts: list[str] | None = None,
+    locked_terms: dict | None = None,
 ) -> tuple[bool, str]:
     """Allow a source-driven retranslation while retaining structural and source guards."""
     old = str(original_text or "")
@@ -7785,6 +7833,7 @@ def validate_semantic_reconciliation_candidate(
     ok, reason = validate_polish_candidate(
         original_text, candidate_text,
         source_text=source_text, neighbor_texts=neighbor_texts,
+        locked_terms=locked_terms,
     )
     if ok or reason not in _SEMANTIC_REWRITE_REJECTIONS:
         return ok, reason
@@ -7801,6 +7850,7 @@ def validate_semantic_reconciliation_candidate(
         return False, "speaker_dash"
     return validate_polish_candidate(
         new, new, source_text=source_text, neighbor_texts=neighbor_texts,
+        locked_terms=locked_terms,
     )
 
 
@@ -8430,7 +8480,8 @@ def critic_pass_with_helper(
         if not text or text == "[HATA]":
             continue
         fixed, n = _apply_local_fixes(text, allow_context_sensitive=False)
-        if n:
+        if n and not locked_term_violation(
+                orig_dict.get(str(idx), ""), fixed, glossary):
             result[i] = (idx, ts, fixed)
             local_fixed += 1
 
@@ -8758,6 +8809,7 @@ def critic_pass_with_helper(
                         source_text=orig_dict.get(fid, ""),
                         neighbor_texts=neighbor_texts,
                         fragment_tag=fragment_tag,
+                        locked_terms=glossary,
                     )
                     # Öneri SADECE satır sayısı yüzünden reddedildiyse atmadan önce
                     # orijinalin satır sayısına yeniden sarmayı dene (bkz.
@@ -8770,6 +8822,7 @@ def critic_pass_with_helper(
                                 source_text=orig_dict.get(fid, ""),
                                 neighbor_texts=neighbor_texts,
                                 fragment_tag=fragment_tag,
+                                locked_terms=glossary,
                             )
                             if ok2:
                                 ok, reason, final_text = True, reason2, reflowed

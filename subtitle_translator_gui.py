@@ -10456,7 +10456,8 @@ class App(ctk.CTk):
                     _mm_mdl = self._helper_api_model("polish")
                     blocks = self._polish_pass(
                         blocks, tgt, _mm_key, _mm_url, _mm_mdl,
-                        src_map=_src_map_from_cues(cues))
+                        src_map=_src_map_from_cues(cues),
+                        locked_terms=self._get_locked_terms_dict(orig_path, tgt))
                     self._log("Polish Pass tamamlandı", "ok")
                     blocks, _ = ht.final_consistency_sweep(cues, blocks, log_fn=self._log)
 
@@ -11071,6 +11072,8 @@ class App(ctk.CTk):
             'Output: JSON array of ONLY the corrected items [{"i":N,"t":"fixed translation"}]. '
             "Return [] if nothing needs fixing. Return ONLY the JSON array."
         )
+        locked_getter = getattr(self, "_get_locked_terms_dict", None)
+        locked_terms = locked_getter(fp, tgt) if callable(locked_getter) else {}
         sys_prompt += self._locked_terms_hint(fp, tgt)   # kilitli sözlük/isim referansı (#7)
 
         # Fragment gruplarını hesapla (EARLY_VERB_CLOSURE tespiti için)
@@ -11169,6 +11172,7 @@ class App(ctk.CTk):
                             source_text=src_map.get(str(old_idx), ""),
                             neighbor_texts=neighbor_texts,
                             fragment_tag=fragment_tag,
+                            locked_terms=locked_terms,
                         )
                         if not ok:
                             review_rejected += 1
@@ -11202,7 +11206,8 @@ class App(ctk.CTk):
     # ── Polish Pass ───────────────────────────────────────────────────────────
     def _polish_pass(self, sorted_blocks: list, tgt: str,
                      helper_key: str, helper_url: str, helper_model: str,
-                     src_map: dict = None, analysis_result=None) -> list:
+                     src_map: dict = None, analysis_result=None,
+                     locked_terms: dict | None = None) -> list:
         """Second-pass naturalisation using the helper model gpt-5.4-mini (cost-efficient).
 
         src_map: {idx_str: kaynak metin} — verilirse her satıra 'en' alanı eklenir;
@@ -11404,6 +11409,7 @@ class App(ctk.CTk):
                                 src_map.get(sid, ""),
                                 neighbor_texts=neighbor_texts_by_id.get(sid, []),
                                 fragment_tag=fragment_tag,
+                                locked_terms=locked_terms,
                             )
                             chunk_proposals[sid] = (new_text, ok, reason, group_id)
                     # Bir fragment grubunda değişen üyelerden biri reddedildiyse, model grubun
@@ -11572,7 +11578,6 @@ class App(ctk.CTk):
         helper_keys = job.get("helper_keys") or {}
         helper_urls = job.get("helper_urls") or {}
         helper_models = job.get("helper_models") or {}
-        file_glossaries = job.get("file_glossaries") or {}
         try:
             ht.set_project_path(job.get("ext_project_path", ""))
             tgt = job.get("tgt_lang", "Turkish")
@@ -11626,18 +11631,10 @@ class App(ctk.CTk):
                     self._update_file_progress(fp, "Atlandı", 0, "skip")
                     continue
 
-                # Kaynağı + analiz önbelleğini DOSYA BAŞINA BİR KEZ yükle (critic/native/qc
-                # paylaşır) — eskiden her geçiş dosyayı yeniden parse edip önbelleği tekrar okuyordu.
+                # Post-işlem girdisi çevrilmiş hedef dosyadır; gerçek kaynak seçilmediği
+                # için bunu kaynak/analiz önbelleği gibi kullanma.
                 orig_cues = None
-                try:
-                    orig_cues = ht.load_subtitle(fp)
-                except Exception:
-                    orig_cues = None
-                analysis_result = (ht.load_context_cache(
-                    fp,
-                    expected_target=tgt,
-                    expected_analysis_depth=job.get("analysis_depth"),
-                ) if (do_critic or do_polish or do_native or do_qc) else None)
+                analysis_result = None
 
                 # Critic Pass
                 if do_critic:
@@ -11652,8 +11649,8 @@ class App(ctk.CTk):
                             helper_url=helper_urls.get("critic", ""),
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             log_fn=self._log,
-                             glossary=ht.load_glossary(file_glossaries.get(fp, "")),
-                             analysis_result=analysis_result,
+                            glossary=None,
+                            analysis_result=analysis_result,
                             change_log=_critic_change_log,
                             token_callback=self._token_callback_for_model(
                                 helper_models.get("critic", "gpt-5.4-mini")))
@@ -11699,7 +11696,7 @@ class App(ctk.CTk):
                 if do_sdh:
                     try:
                         self._update_file_progress(fp, "SDH Temizle", 85)
-                        blocks = clean_sdh(blocks, src_map=_src_map_from_cues(orig_cues) if orig_cues else None, source_driven=True)
+                        blocks = clean_sdh(blocks, src_map=None, source_driven=False)
                     except Exception as e:
                         self._log(f"SDH temizleme hatası: {e}", "warn")
 
@@ -11712,7 +11709,7 @@ class App(ctk.CTk):
                         self._log(f"Satır kırma hatası: {e}", "warn")
 
                 # QC Kontrolü
-                if do_qc:
+                if do_qc and orig_cues:
                     try:
                         self._update_file_progress(fp, "QC Kontrolü", 72)
                         self._set_phase("QC Kontrolü", f"{fname}  ({i+1}/{n})")
@@ -11726,6 +11723,11 @@ class App(ctk.CTk):
                             use_passed_credentials=True)
                     except Exception as e:
                         self._log(f"QC hatası: {e}", "warn")
+                elif do_qc:
+                    self._log(
+                        "QC atlandı: post-işlemde gerçek kaynak altyazı seçilmedi.",
+                        "warn",
+                    )
 
                 # Parçalı cue birleştirme (en son — dengeli 2 satır, senkron korunur)
                 # AI segmentasyon seçiliyse onun (anlamsal) sürümü, değilse hızlı algoritma.
@@ -13721,7 +13723,7 @@ class App(ctk.CTk):
                     helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
                     tgt_lang=tgt,
                     log_fn=self._log,
-                    glossary=glossary,
+                    glossary=self._get_locked_terms_dict(filepath, tgt),
                     analysis_result=(context, char_examples, pronoun_map),
                     change_log=_critic_change_log,
                     token_callback=self._token_callback_for_model(
@@ -13743,7 +13745,8 @@ class App(ctk.CTk):
                     self._helper_api_model("polish"),
                     src_map=_src_map_from_cues(cues),
                     analysis_result=(context, char_examples, pronoun_map,
-                                     character_styles, scene_emotions, idiom_map, cultural_refs))
+                                     character_styles, scene_emotions, idiom_map, cultural_refs),
+                    locked_terms=self._get_locked_terms_dict(filepath, tgt))
                 _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 self._log("Polish Pass tamamlandı", "ok")
 
@@ -13763,6 +13766,7 @@ class App(ctk.CTk):
                     token_callback=self._token_callback_for_model(
                         self._helper_api_model("critic")),
                     src_map=_src_map_from_cues(cues),
+                    locked_terms=self._get_locked_terms_dict(filepath, tgt),
                 )
                 _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
 
@@ -14498,6 +14502,7 @@ class App(ctk.CTk):
                                     helper_url=self._helper_api_base_url("critic"),
                                     helper_model=self._helper_api_model("critic"),
                                     tgt_lang=tgt, log_fn=self._log,
+                                    glossary=self._get_locked_terms_dict(str(_src_path), tgt),
                                     analysis_result=_analysis_result,
                                     change_log=_critic_change_log,
                                     token_callback=self._token_callback_for_model(
@@ -14509,7 +14514,8 @@ class App(ctk.CTk):
                                 _before_pass = list(pp)
                                 pp = self._polish_pass(pp, tgt, self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
                                                        src_map=_src_map_from_cues(_orig_cues),
-                                                       analysis_result=_analysis_result)
+                                                       analysis_result=_analysis_result,
+                                                       locked_terms=self._get_locked_terms_dict(str(_src_path), tgt))
                                 _record_pass_change(_pass_trace, "Polish", _before_pass, pp, _pass_history)
                             if self.native_var.get() and pp:
                                 self._set_status("Native Okuyucu...")
@@ -14519,7 +14525,8 @@ class App(ctk.CTk):
                                     analysis_result=_analysis_result,
                                     token_callback=self._token_callback_for_model(
                                         self._helper_api_model("critic")),
-                                    src_map=_src_map_from_cues(_orig_cues))
+                                    src_map=_src_map_from_cues(_orig_cues),
+                                    locked_terms=self._get_locked_terms_dict(str(_src_path), tgt))
                                 _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                                 _before_pass = list(pp)
@@ -14881,6 +14888,7 @@ class App(ctk.CTk):
                         helper_url=self._helper_api_base_url("critic"),
                         helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
+                        glossary=self._get_locked_terms_dict(fp, _tgt_lang),
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log,
                         token_callback=self._token_callback_for_model(
@@ -14896,7 +14904,8 @@ class App(ctk.CTk):
                         sorted_blocks, _tgt_lang,
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), src_map=src_blocks,
-                        analysis_result=_analysis_result)
+                        analysis_result=_analysis_result,
+                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
                     _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Polish Pass hatası: {e}", "warn")
@@ -14912,7 +14921,8 @@ class App(ctk.CTk):
                         analysis_result=_analysis_result,
                         token_callback=self._token_callback_for_model(
                             self._helper_api_model("critic")),
-                        src_map=src_blocks)
+                        src_map=src_blocks,
+                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
                     _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Native Pass hatası: {e}", "warn")
@@ -15740,7 +15750,8 @@ class App(ctk.CTk):
                             pp_blocks = ht.critic_pass_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
-                                log_fn=self._log, glossary=glossary,
+                                log_fn=self._log,
+                                glossary=self._get_locked_terms_dict(filepath, tgt),
                                 analysis_result=_full_analysis,
                                 change_log=_critic_change_log,
                                 token_callback=self._token_callback_for_model(
@@ -15753,7 +15764,8 @@ class App(ctk.CTk):
                             _before_pass = list(pp_blocks)
                             pp_blocks = self._polish_pass(pp_blocks, tgt, self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
                                                           src_map=_src_map_from_cues(cues),
-                                                          analysis_result=_full_analysis)
+                                                          analysis_result=_full_analysis,
+                                                          locked_terms=self._get_locked_terms_dict(filepath, tgt))
                             _record_pass_change(_pass_trace, "Polish", _before_pass, pp_blocks, _pass_history)
                             self._log("Polish Pass tamamlandı", "ok")
                         if self.native_var.get() and pp_blocks:
@@ -15767,7 +15779,8 @@ class App(ctk.CTk):
                                 analysis_result=_full_analysis,
                                 token_callback=self._token_callback_for_model(
                                     self._helper_api_model("critic")),
-                                src_map=_src_map_from_cues(cues))
+                                src_map=_src_map_from_cues(cues),
+                                locked_terms=self._get_locked_terms_dict(filepath, tgt))
                             _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                             _before_pass = list(pp_blocks)

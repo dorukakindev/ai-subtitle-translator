@@ -6,13 +6,17 @@ import subtitle_translator_gui as gui
 
 class PipelinePassParityTest(unittest.TestCase):
 
-    def test_post_process_flow_restores_tags_without_polluting_tm(self):
-        """Existing translated SRT is not an authoritative TM source."""
+    def test_post_process_flow_is_explicitly_source_less(self):
+        """Existing translated SRT must not be reused as its own source."""
         src = inspect.getsource(gui.App._run_post_process)
-        self.assertIn("_fill_hata_with_source", src, "_run_post_process must call _fill_hata_with_source!")
-        self.assertIn("_restore_tags_blocks", src, "_run_post_process must call _restore_tags_blocks!")
         self.assertNotIn("_store_tm_pairs", src, "post-process must not store translation-to-translation TM pairs")
-        self.assertIn("source_driven=True", src, "_run_post_process must use source-driven SDH clean!")
+        self.assertIn("orig_cues = None", src)
+        self.assertIn("analysis_result = None", src)
+        self.assertNotIn("ht.load_subtitle(fp)", src)
+        self.assertNotIn("ht.load_context_cache(", src)
+        self.assertIn("source_driven=False", src)
+        self.assertIn("if do_qc and orig_cues:", src)
+        self.assertIn("QC atlandı: post-işlemde gerçek kaynak altyazı seçilmedi.", src)
 
     def test_write_results_condense_order(self):
         """Verify _maybe_condense runs after critic/polish/native in _write_results."""
