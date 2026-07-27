@@ -317,6 +317,19 @@ def parse_vtt(filepath: str) -> list:
     return blocks
 
 
+def _ass_lyric_track(style: str):
+    compact = re.sub(r'[\s._-]+', '', style).casefold()
+    for family in ('op', 'ed'):
+        if not compact.startswith(family):
+            continue
+        suffix = compact[len(family):]
+        if suffix in {'e', 'en', 'eng', 'english'}:
+            return family, 'en'
+        if suffix in {'j', 'jp', 'jpn', 'jap', 'japanese', 'romaji'}:
+            return family, 'jp'
+    return None
+
+
 def parse_ass(filepath: str) -> list:
     """ASS/SSA dosyasını parse eder. Anlam taşıyan diyalog/ekran metnini alır,
     yalnız salt efekt, karaoke, kredi ve çevirmen notu stillerini atlar.
@@ -346,8 +359,7 @@ def parse_ass(filepath: str) -> list:
     except ValueError:
         return []
 
-    blocks = []
-    idx = 1
+    entries = []
     # Yalnızca salt efekt/çevirmen notu stillerini atla. Sign/Caption/Title/OP/ED
     # ekrandaki anlamlı metin veya şarkı sözü taşıyabilir.
     _SKIP_STYLES = re.compile(
@@ -377,8 +389,22 @@ def parse_ass(filepath: str) -> list:
         if not _clean_ass_text(text).strip():
             continue
 
-        blocks.append((str(idx), timestamp, text))
-        idx += 1
+        entries.append((timestamp, text, style))
+
+    english_lyric_keys = {
+        (track[0], timestamp)
+        for timestamp, _, style in entries
+        if (track := _ass_lyric_track(style)) and track[1] == 'en'
+    }
+    blocks = [
+        (str(i + 1), timestamp, text)
+        for i, (timestamp, text, style) in enumerate(entries)
+        if not (
+            (track := _ass_lyric_track(style))
+            and track[1] == 'jp'
+            and (track[0], timestamp) in english_lyric_keys
+        )
+    ]
 
     # Zaman damgasına göre sırala (ASS dosyaları her zaman sıralı olmayabilir)
     def _ts_key(block):

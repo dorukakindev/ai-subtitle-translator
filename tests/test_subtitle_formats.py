@@ -216,6 +216,30 @@ class ParseAssTest(unittest.TestCase):
         self.assertIn("Normal text", texts)
         os.unlink(path)
 
+    def test_ass_prefers_english_bilingual_lyric_track(self):
+        content = (
+            self._HEADER +
+            "Dialogue: 0,0:00:01.00,0:00:02.00,OP J,,0,0,0,,UMI WA ARETERU\n"
+            "Dialogue: 0,0:00:01.00,0:00:02.00,OP E,,0,0,0,,THE SEA IS ROUGH\n"
+            "Dialogue: 0,0:00:03.00,0:00:04.00,EDJ,,0,0,0,,Ame no shizuku\n"
+            "Dialogue: 0,0:00:03.00,0:00:04.00,EDE,,0,0,0,,Drops of rain\n"
+            "Dialogue: 0,0:00:05.00,0:00:06.00,OP J,,0,0,0,,Unpaired romaji\n"
+            "Dialogue: 0,0:00:07.00,0:00:08.00,OP,,0,0,0,,Generic opening lyric\n"
+            "Dialogue: 0,0:00:09.00,0:00:10.00,Sign,,0,0,0,,Meaningful sign\n"
+        )
+        path = _write_temp(content, ".ass")
+        from subtitle_formats import parse_any
+        blocks = parse_any(path)
+        texts = [b[2] for b in blocks]
+        self.assertNotIn("UMI WA ARETERU", texts)
+        self.assertNotIn("Ame no shizuku", texts)
+        self.assertIn("THE SEA IS ROUGH", texts)
+        self.assertIn("Drops of rain", texts)
+        self.assertIn("Unpaired romaji", texts)
+        self.assertIn("Generic opening lyric", texts)
+        self.assertIn("Meaningful sign", texts)
+        os.unlink(path)
+
     def test_ass_events_format_ignores_brackets_before_custom_columns(self):
         content = (
             "[Script Info]\n\n[Events]\n"
