@@ -41,11 +41,21 @@ class VideoSubtitleTests(unittest.TestCase):
         self.assertIn("-select_streams", command)
 
     def test_probe_reports_missing_ffprobe(self):
+        with self.assertRaisesRegex(vs.VideoSubtitleError, "bulunamadı"):
+            vs._tool_path(
+                "definitely-missing-video-tool",
+                which=lambda _name: None,
+            )
+
+    def test_tool_path_falls_back_to_project_local_binary(self):
         with tempfile.TemporaryDirectory() as td:
-            video = Path(td) / "film.mp4"
-            video.write_bytes(b"video")
-            with self.assertRaisesRegex(vs.VideoSubtitleError, "ffprobe bulunamadı"):
-                vs.probe_subtitle_streams(video, which=lambda _name: None)
+            root = Path(td)
+            binary = root / "tools" / "ffmpeg" / "ffprobe.exe"
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b"binary")
+            with mock.patch.object(vs, "__file__", str(root / "video_subtitles.py")):
+                resolved = vs._tool_path("ffprobe", which=lambda _name: None)
+        self.assertEqual(resolved, str(binary))
 
     def test_probe_timeout_is_reported_without_hanging(self):
         with tempfile.TemporaryDirectory() as td:
@@ -121,6 +131,7 @@ class VideoSubtitleTests(unittest.TestCase):
         self.assertTrue(vs.is_video_path("Film.MKV"))
         self.assertTrue(vs.is_video_path("Film.mp4"))
         self.assertFalse(vs.is_video_path("Film.srt"))
+        self.assertFalse(vs.is_video_path("source.ts"))
 
 
 if __name__ == "__main__":

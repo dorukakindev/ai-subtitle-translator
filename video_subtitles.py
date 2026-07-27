@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 VIDEO_EXTENSIONS = {
-    ".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".ts", ".m2ts",
+    ".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".m2ts",
 }
 
 TEXT_SUBTITLE_CODECS = {
@@ -54,9 +54,14 @@ def is_video_path(path) -> bool:
 def _tool_path(name: str, which=shutil.which) -> str:
     path = which(name)
     if not path:
+        exe_name = f"{name}.exe" if os.name == "nt" else name
+        local_path = Path(__file__).resolve().parent / "tools" / "ffmpeg" / exe_name
+        if local_path.is_file():
+            path = str(local_path)
+    if not path:
         raise VideoSubtitleError(
             f"{name} bulunamadı. Video içinden altyazı çıkarmak için "
-            "FFmpeg kurulmalı ve PATH'e eklenmelidir.")
+            "FFmpeg kurulmalı veya tools/ffmpeg klasörüne yerleştirilmelidir.")
     return path
 
 

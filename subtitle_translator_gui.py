@@ -8791,7 +8791,7 @@ class App(ctk.CTk):
             parent=self,
             title="İçinden Altyazı Alınacak Videoları Seç",
             filetypes=[
-                ("Video dosyaları", "*.mkv *.mp4 *.m4v *.mov *.avi *.webm *.ts *.m2ts"),
+                ("Video dosyaları", "*.mkv *.mp4 *.m4v *.mov *.avi *.webm *.m2ts"),
                 ("Matroska (.mkv)", "*.mkv"),
                 ("MP4 (.mp4 *.m4v)", "*.mp4 *.m4v"),
                 ("Tümü", "*.*"),

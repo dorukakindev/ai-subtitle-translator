@@ -51,5 +51,6 @@ quiz-tavern.zip
 smoke_test_tr.srt
 smoke_test_tr_tr.srt
 tools/old_outputs_report.txt
+tools/ffmpeg/
 retry_and_resend_restored.py
 retry_recovered.py
