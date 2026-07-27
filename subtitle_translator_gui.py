@@ -50,6 +50,28 @@ ESTIMATED_PRICES = {
 MAX_PARALLEL = 3
 CONTENT_TYPE_DETECT_MODEL = "gpt-5.4"
 API_REQUEST_TIMEOUT_SECONDS = 300
+FILE_LIST_PAGE_SIZE = 60
+
+
+def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
+    items = list(files or [])
+    size = max(1, int(page_size))
+    pages = max(1, math.ceil(len(items) / size))
+    current = min(max(0, int(page)), pages - 1)
+    start = current * size
+    return items[start:start + size], current, pages
+
+
+def _scan_subtitle_folders(paths):
+    files = []
+    empty = []
+    for path in paths:
+        found = get_subtitle_files(path, recursive=True)
+        if found:
+            files.extend(found)
+        else:
+            empty.append(path)
+    return files, empty
 
 
 def _safe_chat_create(client, **kwargs):
@@ -5501,6 +5523,11 @@ class App(ctk.CTk):
         self._worker_lock    = threading.Lock()
         self._worker_threads = set()
         self._selected_files = []   # manually picked files; empty = use input folder
+        self._file_list_files = []
+        self._file_list_root = ""
+        self._file_list_page = 0
+        self._folder_scan_busy = False
+        self._folder_scan_token = None
         self._input_folder_explicitly_selected = False
         self._input_entry_focus_val = None
         self._removed_queue_files = set()
@@ -6061,15 +6088,16 @@ class App(ctk.CTk):
         subtitle_exts = {'.srt', '.vtt', '.ass', '.ssa'}
         valid = []
         videos = []
+        folders = []
         for f in files:
             p = Path(f)
             if p.is_dir():
-                valid.extend(get_subtitle_files(str(p), recursive=True))
+                folders.append(str(p))
             elif p.suffix.lower() in subtitle_exts and p.exists():
                 valid.append(str(p))
             elif video_tracks.is_video_path(p) and p.exists():
                 videos.append(str(p))
-        if not valid and not videos:
+        if not valid and not videos and not folders:
             self._log("Sürüklenen dosyalarda geçerli altyazı veya video yok.", "warn")
             return
         if valid:
@@ -6083,6 +6111,12 @@ class App(ctk.CTk):
                 f"Sürükle-bırak: +{added} yeni, toplam {total} dosya — "
                 + ", ".join(Path(f).name for f in valid[:5])
                 + ("…" if len(valid) > 5 else ""))
+        if folders:
+            queue_scan = getattr(self, "_queue_append_folder_files", None)
+            if callable(queue_scan):
+                queue_scan(folders)
+            else:
+                App._append_folder_files(self, folders)
         if videos:
             self._queue_video_probe(videos)
 
@@ -6370,10 +6404,12 @@ class App(ctk.CTk):
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._pick_files).grid(row=0, column=0, sticky="ew")
-        ctk.CTkButton(pick_fr, text="📂  Klasörler Ekle", height=34,
-                      font=ctk.CTkFont("Segoe UI", 12),
-                      fg_color=BORDER, hover_color=ACCENT,
-                      command=self._add_folder_files).grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.add_folders_btn = ctk.CTkButton(
+            pick_fr, text="📂  Klasörler Ekle", height=34,
+            font=ctk.CTkFont("Segoe UI", 12),
+            fg_color=BORDER, hover_color=ACCENT,
+            command=self._add_folder_files)
+        self.add_folders_btn.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         ctk.CTkButton(pick_fr, text="🎞  Videodan Altyazı Ekle", height=34,
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=BORDER, hover_color=ACCENT,
@@ -7150,10 +7186,29 @@ class App(ctk.CTk):
                                             font=ctk.CTkFont("Segoe UI", 11, "bold"),
                                             text_color=FG2)
         self._file_list_lbl.grid(row=0, column=0, sticky="w")
+        self._file_prev_btn = ctk.CTkButton(
+            fl_hdr, text="‹", width=28, height=24,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            fg_color=CARD, hover_color=BORDER,
+            command=lambda: self._change_file_list_page(-1))
+        self._file_prev_btn.grid(row=0, column=1, padx=(4, 2))
+        self._file_page_lbl = ctk.CTkLabel(
+            fl_hdr, text="", width=54,
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2)
+        self._file_page_lbl.grid(row=0, column=2, padx=2)
+        self._file_next_btn = ctk.CTkButton(
+            fl_hdr, text="›", width=28, height=24,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            fg_color=CARD, hover_color=BORDER,
+            command=lambda: self._change_file_list_page(1))
+        self._file_next_btn.grid(row=0, column=3, padx=(2, 6))
         ctk.CTkButton(fl_hdr, text="Tümüne Uygula", width=110, height=24,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
-                      command=self._apply_schema_to_all).grid(row=0, column=1)
+                      command=self._apply_schema_to_all).grid(row=0, column=4)
+        self._file_prev_btn.grid_remove()
+        self._file_page_lbl.grid_remove()
+        self._file_next_btn.grid_remove()
 
         self._file_rows_frame = ctk.CTkScrollableFrame(
             self._file_list_outer, fg_color="transparent", height=148,
@@ -7249,20 +7304,31 @@ class App(ctk.CTk):
                           lambda e: self.after(80, self._check_log_pin))
 
     # ── Per-file şema ─────────────────────────────────────────────────────────
-    def _populate_file_list(self, files: list):
-        """Input klasörü seçilince her dosya için şema dropdown'u oluştur."""
+    def _populate_file_list(self, files: list, reset_page: bool = True):
+        """Dosya ayarlarını korur; yalnızca görünür sayfanın widget'larını oluşturur."""
+        files = sorted(self._dedupe_paths(files), key=lambda p: Path(p).name.lower())
+        file_set = set(files)
+        self._file_schema_vars = {
+            fp: var for fp, var in getattr(self, "_file_schema_vars", {}).items()
+            if fp in file_set
+        }
+        self._file_language_vars = {
+            fp: var for fp, var in getattr(self, "_file_language_vars", {}).items()
+            if fp in file_set
+        }
+        self._file_list_files = files
+        if reset_page:
+            self._file_list_page = 0
+        page_files, page, pages = _file_list_page(
+            files, getattr(self, "_file_list_page", 0))
+        self._file_list_page = page
+
         for w in self._file_rows_frame.winfo_children():
             w.destroy()
-        old_languages = {
-            fp: var.get() for fp, var in getattr(self, "_file_language_vars", {}).items()
-            if fp in files
-        }
-        self._file_schema_vars = {}
-        self._file_language_vars = {}
         schema_names = [v["name"] for v in CONTENT_SCHEMAS.values()]
         default = normalize_schema_name(self.content_type_var.get())
         default_language = normalize_language_name(self.src_var.get())
-        for fp in sorted(files, key=lambda p: Path(p).name.lower()):
+        for fp in page_files:
             row_fr = ctk.CTkFrame(self._file_rows_frame, fg_color=CARD, corner_radius=6)
             row_fr.pack(fill="x", padx=2, pady=(0, 3))
             row_fr.grid_columnconfigure(0, weight=1)
@@ -7273,8 +7339,10 @@ class App(ctk.CTk):
                          font=ctk.CTkFont("Segoe UI", 11),
                          text_color=FG, anchor="w").grid(
                          row=0, column=0, sticky="ew", padx=(10,4), pady=5)
-            lang_var = ctk.StringVar(value=old_languages.get(fp, default_language))
-            self._file_language_vars[fp] = lang_var
+            lang_var = self._file_language_vars.get(fp)
+            if lang_var is None:
+                lang_var = ctk.StringVar(value=default_language)
+                self._file_language_vars[fp] = lang_var
             ctk.CTkOptionMenu(row_fr, variable=lang_var, values=SOURCE_LANGUAGES,
                               width=105, height=26,
                               font=ctk.CTkFont("Segoe UI", 10),
@@ -7282,8 +7350,10 @@ class App(ctk.CTk):
                               button_hover_color=ACCENT,
                               dropdown_fg_color=CARD, text_color=FG,
                               ).grid(row=0, column=1, padx=(4, 2), pady=4)
-            var = ctk.StringVar(value=default)
-            self._file_schema_vars[fp] = var
+            var = self._file_schema_vars.get(fp)
+            if var is None:
+                var = ctk.StringVar(value=default)
+                self._file_schema_vars[fp] = var
             ctk.CTkOptionMenu(row_fr, variable=var, values=schema_names,
                               width=155, height=26,
                               font=ctk.CTkFont("Segoe UI", 10),
@@ -7299,8 +7369,32 @@ class App(ctk.CTk):
                           command=lambda p=fp: self._remove_file_from_list(p)
                           ).grid(row=0, column=3, padx=(0, 6), pady=4)
         self._file_list_lbl.configure(text=f"DOSYALAR ({len(files)})")
+        if pages > 1:
+            self._file_page_lbl.configure(text=f"{page + 1}/{pages}")
+            self._file_prev_btn.configure(state="normal" if page > 0 else "disabled")
+            self._file_next_btn.configure(
+                state="normal" if page + 1 < pages else "disabled")
+            self._file_prev_btn.grid()
+            self._file_page_lbl.grid()
+            self._file_next_btn.grid()
+        else:
+            self._file_prev_btn.grid_remove()
+            self._file_page_lbl.grid_remove()
+            self._file_next_btn.grid_remove()
         self._job_board.grid_remove()   # iş panosu varsa gizle
         self._file_list_outer.grid()
+
+    def _change_file_list_page(self, delta: int):
+        files = list(getattr(self, "_file_list_files", ()) or ())
+        if not files:
+            return
+        _visible, current, pages = _file_list_page(
+            files, getattr(self, "_file_list_page", 0))
+        target = min(max(0, current + int(delta)), pages - 1)
+        if target == current:
+            return
+        self._file_list_page = target
+        self._populate_file_list(files, reset_page=False)
 
     def _remove_file_from_list(self, filepath: str):
         """Seçili dosyayı listeden kaldır."""
@@ -8752,6 +8846,7 @@ class App(ctk.CTk):
                 return
         self._input_entry_focus_val = cur_val
         self._input_folder_explicitly_selected = True
+        self._file_list_root = ""
         path = (cur_val or "").strip()
         if not self._selected_files and path and os.path.isdir(path):
             try:
@@ -8787,6 +8882,7 @@ class App(ctk.CTk):
         if is_input:
             # Clear any manually selected files when a folder is chosen
             self._selected_files = []
+            self._file_list_root = ""
             self._input_folder_explicitly_selected = True
             self._content_type_preflight_done = False
             self._language_preflight_done = False
@@ -8804,18 +8900,75 @@ class App(ctk.CTk):
                         f"{pm_stats['characters']} karakter", "ok")
             except Exception:
                 self._pm = None
-            files = get_subtitle_files(path, recursive=True)
+            self._queue_input_folder_scan(path)
+        else:
+            self._log(f"Çıkış klasörü: {path}", "info")
+
+    def _set_folder_scan_busy(self, busy: bool):
+        self._folder_scan_busy = bool(busy)
+        button = getattr(self, "add_folders_btn", None)
+        if button is not None:
+            button.configure(
+                state="disabled" if busy else "normal",
+                text="⏳  Klasörler Taranıyor…" if busy else "📂  Klasörler Ekle",
+            )
+        if busy:
+            self._set_status("Klasörler taranıyor…")
+        elif not getattr(self, "_is_running", False):
+            self._set_status("Hazır")
+
+    def _run_folder_scan(self, work, finish):
+        token = object()
+        self._folder_scan_token = token
+        self._set_folder_scan_busy(True)
+
+        def _work():
+            try:
+                result = work()
+                error = None
+            except Exception as exc:
+                result = None
+                error = exc
+            _post_ui(
+                self, App._finish_folder_scan,
+                self, token, finish, result, error)
+
+        try:
+            App._start_worker(self, _work)
+        except Exception as exc:
+            self._folder_scan_token = None
+            self._set_folder_scan_busy(False)
+            self._log(f"Klasör taraması başlatılamadı: {exc}", "err")
+
+    def _finish_folder_scan(self, token, finish, result, error):
+        if token is not getattr(self, "_folder_scan_token", None):
+            return
+        self._folder_scan_token = None
+        self._set_folder_scan_busy(False)
+        if error is not None:
+            self._log(f"Klasör taraması başarısız: {error}", "err")
+            return
+        finish(result)
+
+    def _queue_input_folder_scan(self, path: str):
+        def _finish(files):
+            if self.input_var.get() != path:
+                return
             if files:
+                self._file_list_root = path
                 self._estimate_async(
                     files,
-                    lambda tb, ek, n=len(files): f"✓  {n} dosya  •  {tb} satır  •  ~{ek} token")
+                    lambda tb, ek, n=len(files):
+                    f"✓  {n} dosya  •  {tb} satır  •  ~{ek} token")
                 self._log(f"Klasör: {path}  ({len(files)} dosya)", "ok")
                 self._populate_file_list(files)
             else:
+                self._file_list_root = path
                 self.file_info_var.set("⚠  .srt bulunamadı!")
                 self._log(f"'{path}' içinde .srt yok.", "warn")
-        else:
-            self._log(f"Çıkış klasörü: {path}", "info")
+
+        self._run_folder_scan(
+            lambda: get_subtitle_files(path, recursive=True), _finish)
 
     def _pick_files(self):
         if getattr(self, "_is_running", False):
@@ -9083,7 +9236,10 @@ class App(ctk.CTk):
             f"Videodan +{added} altyazı eklendi, toplam {total} dosya")
         for path, language in detected_languages.items():
             var = getattr(self, "_file_language_vars", {}).get(path)
-            if var is not None:
+            if var is None:
+                var = ctk.StringVar(value=language)
+                self._file_language_vars[path] = var
+            else:
                 var.set(language)
         return added
 
@@ -9122,7 +9278,38 @@ class App(ctk.CTk):
         if not paths:
             return
 
-        self._append_folder_files(paths)
+        queue_scan = getattr(self, "_queue_append_folder_files", None)
+        if callable(queue_scan):
+            queue_scan(paths)
+        else:
+            self._append_folder_files(paths)
+
+    def _queue_append_folder_files(self, paths: list[str]):
+        paths = self._dedupe_paths(paths)
+        selected_before = list(self._selected_files)
+        base_input = (
+            self.input_var.get()
+            if not selected_before
+            and getattr(self, "_input_folder_explicitly_selected", False)
+            else ""
+        )
+
+        def _work():
+            base_files = (
+                get_subtitle_files(base_input, recursive=True)
+                if base_input else []
+            )
+            files, empty = _scan_subtitle_folders(paths)
+            return base_files, files, empty
+
+        def _finish(result):
+            base_files, files, empty = result
+            if (not self._selected_files and base_input
+                    and self.input_var.get() == base_input):
+                self._selected_files = base_files
+            App._apply_scanned_folder_files(self, paths, files, empty)
+
+        self._run_folder_scan(_work, _finish)
 
     def _append_folder_files(self, paths: list[str]):
         """Bir veya daha fazla klasörün altyazılarını mevcut seçime ekle."""
@@ -9133,20 +9320,18 @@ class App(ctk.CTk):
                 and getattr(self, "_input_folder_explicitly_selected", False)
                 and self.input_var.get()):
             self._selected_files = self._get_srt_files()
-        files = []
-        empty = []
-        for path in self._dedupe_paths(paths):
-            found = get_subtitle_files(path, recursive=True)
-            if found:
-                files.extend(found)
-            else:
-                empty.append(path)
+        paths = self._dedupe_paths(paths)
+        files, empty = _scan_subtitle_folders(paths)
+        return App._apply_scanned_folder_files(self, paths, files, empty)
+
+    def _apply_scanned_folder_files(self, paths, files, empty):
         if not files:
             for path in empty:
                 self._log(f"'{path}' içinde altyazı yok.", "warn")
             return 0
         before = len(self._selected_files)
         self._content_type_preflight_done = False
+        self._language_preflight_done = False
         self._selected_files = self._dedupe_paths(list(self._selected_files) + files)
         self._pm = None
         added = len(self._selected_files) - before
@@ -9472,6 +9657,22 @@ class App(ctk.CTk):
 
     def _clear_selected_files(self):
         self._selected_files = []
+        self._file_list_files = []
+        self._file_list_root = ""
+        self._file_list_page = 0
+        self._file_schema_vars = {}
+        self._file_language_vars = {}
+        rows = getattr(self, "_file_rows_frame", None)
+        if rows is not None:
+            for widget in rows.winfo_children():
+                widget.destroy()
+        for name in ("_file_prev_btn", "_file_page_lbl", "_file_next_btn"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.grid_remove()
+        outer = getattr(self, "_file_list_outer", None)
+        if outer is not None:
+            outer.grid_remove()
         self._input_folder_explicitly_selected = True
         self._content_type_preflight_done = False
         self._language_preflight_done = False
@@ -10674,7 +10875,13 @@ class App(ctk.CTk):
             root = (self.input_var.get() or "").strip()
             if not root:
                 return []
-            files = get_subtitle_files(root, recursive=True)
+            cached_root = str(getattr(self, "_file_list_root", "") or "").strip()
+            if (cached_root
+                    and os.path.normcase(os.path.abspath(cached_root))
+                    == os.path.normcase(os.path.abspath(root))):
+                files = list(getattr(self, "_file_list_files", ()) or ())
+            else:
+                files = get_subtitle_files(root, recursive=True)
         else:
             files = []
         dedupe = getattr(self, "_dedupe_paths", None)

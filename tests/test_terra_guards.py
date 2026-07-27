@@ -16,6 +16,21 @@ class _EmptyInputApp:
 
 
 class TerraGuardTests(unittest.TestCase):
+    def test_completed_input_scan_is_reused_on_start(self):
+        cached = [r"C:\subs\one.srt", r"C:\subs\two.srt"]
+        app = SimpleNamespace(
+            _selected_files=[],
+            _input_folder_explicitly_selected=True,
+            input_var=SimpleNamespace(get=lambda: r"C:\subs"),
+            _file_list_root=r"C:\subs",
+            _file_list_files=cached,
+        )
+        with patch.object(gui, "get_subtitle_files") as scan:
+            files = gui.App._get_srt_files(app)
+
+        self.assertEqual(files, cached)
+        scan.assert_not_called()
+
     def test_empty_input_does_not_scan_filesystem(self):
         with patch.object(gui, "get_subtitle_files") as scan:
             self.assertEqual(gui.App._get_srt_files(_EmptyInputApp()), [])

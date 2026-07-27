@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def _write_temp(content: str, suffix: str) -> str:
@@ -256,6 +257,19 @@ class ParseAssTest(unittest.TestCase):
 
 
 class GetSubtitleFilesTest(unittest.TestCase):
+    def test_recursive_discovery_walks_tree_once_for_all_formats(self):
+        import subtitle_formats
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("one.srt", "two.vtt", "three.ass", "four.ssa"):
+                Path(d, name).write_text("", encoding="utf-8")
+            real_walk = subtitle_formats.os.walk
+            with mock.patch.object(
+                    subtitle_formats.os, "walk", wraps=real_walk) as walk:
+                files = subtitle_formats.get_subtitle_files(d, recursive=True)
+
+        self.assertEqual(len(files), 4)
+        walk.assert_called_once()
+
     def test_deterministic_ordering(self):
         """Aynı klasör iki kez tarandığında aynı sıra döner."""
         from subtitle_formats import get_subtitle_files

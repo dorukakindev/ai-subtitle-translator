@@ -6,6 +6,7 @@ Her format → (index_str, timestamp_str, text) üçlülerine dönüştürülür
 """
 
 import glob as _glob
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -539,29 +540,41 @@ def get_subtitle_files(directory: str, recursive: bool = True,
     klasörün KENDİSİ bu adı taşısa bile dışlanmaz (Kural 2'de Downloads/ÇIKTI seçilebilir).
     exclude_suffixes: bu son-eklerle biten dosyalar dışlanır (varsayılan '.ham.srt' ham
     yedekleri — asla girdi olmamalı, yoksa yeniden çalıştırmada kendi çıktısını çevirir)."""
-    exts = ('*.srt', '*.vtt', '*.ass', '*.ssa')
-    seen = {}  # path → None, ekleme sırasını korur (dict insertion order)
     base = Path(directory)
-    for ext in exts:
-        iterator = base.rglob(ext) if recursive else base.glob(ext)
-        for fp in iterator:
-            seen[str(fp)] = None
+    if not base.is_dir():
+        return []
+
     def _path_key(value: str) -> str:
         return unicodedata.normalize("NFKD", str(value)).casefold().replace("ı", "i")
+
     excl_dirs = {_path_key(d) for d in (exclude_dir_names or ())}
     excl_sfx = tuple(s.lower() for s in (exclude_suffixes or ()))
+    allowed_exts = {".srt", ".vtt", ".ass", ".ssa"}
     result = []
-    for fp in seen:
-        low = fp.lower()
-        if excl_sfx and low.endswith(excl_sfx):
-            continue
-        if excl_dirs:
-            try:
-                rel = Path(fp).relative_to(base)
-                dir_parts = {_path_key(p) for p in rel.parts[:-1]}  # sadece dizin bileşenleri
-            except Exception:
-                dir_parts = set()
-            if dir_parts & excl_dirs:
+
+    if recursive:
+        for root, dirnames, filenames in os.walk(base):
+            if excl_dirs:
+                dirnames[:] = [
+                    name for name in dirnames
+                    if _path_key(name) not in excl_dirs
+                ]
+            for name in filenames:
+                low = name.lower()
+                if Path(name).suffix.lower() not in allowed_exts:
+                    continue
+                if excl_sfx and low.endswith(excl_sfx):
+                    continue
+                result.append(str(Path(root) / name))
+    else:
+        try:
+            entries = base.iterdir()
+        except OSError:
+            return []
+        for fp in entries:
+            if not fp.is_file() or fp.suffix.lower() not in allowed_exts:
                 continue
-        result.append(fp)
+            if excl_sfx and fp.name.lower().endswith(excl_sfx):
+                continue
+            result.append(str(fp))
     return sorted(result)  # alfabetik sıra — tekrarlanabilir

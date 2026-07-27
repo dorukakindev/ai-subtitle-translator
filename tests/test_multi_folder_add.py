@@ -8,6 +8,35 @@ import subtitle_translator_gui as gui
 
 
 class MultiFolderAddTest(unittest.TestCase):
+    def test_file_list_pagination_caps_live_rows(self):
+        files = [f"file-{index}.srt" for index in range(2050)]
+
+        first, page, pages = gui._file_list_page(files, 0)
+        last, last_page, _ = gui._file_list_page(files, 999)
+
+        self.assertEqual(len(first), gui.FILE_LIST_PAGE_SIZE)
+        self.assertEqual(page, 0)
+        self.assertEqual(pages, 35)
+        self.assertEqual(last_page, 34)
+        self.assertEqual(len(last), 10)
+
+    def test_add_folder_prefers_background_scan_queue(self):
+        selected = [r"C:\one", r"D:\two"]
+        app = SimpleNamespace(_is_running=False, queued=None, logs=[])
+        app._log = lambda *args: app.logs.append(args)
+        app.winfo_id = lambda: 123
+        app._queue_append_folder_files = (
+            lambda paths: setattr(app, "queued", paths))
+        app._append_folder_files = lambda _paths: self.fail(
+            "UI callback must not scan folders synchronously")
+
+        with mock.patch(
+                "subtitle_translator_gui.pick_multiple_folders",
+                return_value=selected):
+            gui.App._add_folder_files(app)
+
+        self.assertEqual(app.queued, selected)
+
     def test_add_folder_uses_single_native_multi_select_dialog(self):
         selected = [r"C:\one", r"D:\two"]
         app = SimpleNamespace(_is_running=False, received=None, logs=[])
