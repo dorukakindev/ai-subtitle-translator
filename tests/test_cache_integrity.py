@@ -103,6 +103,47 @@ class CacheIntegrityTest(unittest.TestCase):
             self.assertIsNotNone(ht.load_context_cache(str(fp), expected_target="tr"))
             self.assertIsNone(ht.load_context_cache(str(fp), expected_target="en"))
 
+    def test_degraded_analysis_is_not_cached(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "degraded.srt")
+            fp.write_bytes(b"degraded analysis")
+            ctx = SimpleNamespace(
+                source_language="en", summary="fallback", setting="", tone="fallback",
+                characters=[], recurring_terms={}, scene_notes=[],
+                _analysis_degraded=True,
+            )
+
+            ht.save_context_cache(ctx, str(fp), target_language="tr")
+
+            self.assertFalse(ht._cache_path(str(fp)).exists())
+
+    def test_incomplete_precontext_is_used_but_not_cached(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "partial.srt")
+            fp.write_bytes(b"partial precontext")
+            app = SimpleNamespace(
+                precontext_var=SimpleNamespace(get=lambda: True),
+                hybrid_var=SimpleNamespace(get=lambda: False),
+                _stop_flag=False,
+                _log=lambda *args: None,
+                _cached_blocks_for=lambda _p: [("1", "ts", "source")],
+                _update_tokens=lambda _n, **_kwargs: None,
+                _update_series_memory_from_precontext=lambda *args, **kwargs: None,
+            )
+            partial = {
+                "summary": "usable now",
+                "terms": {},
+                "_analysis_complete": False,
+            }
+            with mock.patch(
+                    "subtitle_translator_gui.analyze_file_precontext",
+                    return_value=partial):
+                hints = gui.App._get_precontext_hints(
+                    app, None, [str(fp)], "en", "tr", "gpt-5.4")
+
+            self.assertIn(str(fp), hints)
+            self.assertFalse(gui._precontext_cache_path(str(fp)).exists())
+
     def test_analysis_depth_mismatch_causes_cache_miss(self):
         with tempfile.TemporaryDirectory() as root:
             fp = Path(root, "depth.srt")

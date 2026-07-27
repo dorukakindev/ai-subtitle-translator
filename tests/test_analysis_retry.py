@@ -114,6 +114,7 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
         merged, *_ = result
         self.assertEqual(analyze_mock.call_count, 3)
         self.assertEqual(merged.tone, "fallback")
+        self.assertTrue(ht.analysis_result_is_degraded(result))
         self.assertTrue(any("fallback_context" in note for note in merged.scene_notes))
         self.assertTrue(any("guvenli bos baglamla devam" in msg for _level, msg in logs))
 

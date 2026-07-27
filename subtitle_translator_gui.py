@@ -3112,7 +3112,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
 # ── Ön-Bağlam Analizi (hybrid kapalıyken dosya düzeyi bağlam) ────────────────
 PRECONTEXT_SAMPLE_HEAD = 150   # baştan alınan satır sayısı
 PRECONTEXT_SAMPLE_REST = 100   # kalanından eşit aralıkla örneklenen satır sayısı
-PRECONTEXT_CACHE_VER   = 2   # +1: _sig alanı eklendi
+PRECONTEXT_CACHE_VER   = 3
 
 def _precontext_cache_path(filepath: str) -> Path:
     p = Path(filepath)
@@ -3303,6 +3303,7 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
         s, e = rawtxt.find("{"), rawtxt.rfind("}")
         if s == -1 or e <= s:
             raise ValueError("cevapta JSON nesnesi yok")
+        complete = True
         try:
             parsed = json.loads(rawtxt[s:e + 1])
         except json.JSONDecodeError:
@@ -3312,9 +3313,17 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
                 if log_fn:
                     log_fn("Ön-bağlam JSON kısmen kurtarıldı (yanıt kesilmişti)", "warn")
                 parsed = salvaged
+                complete = False
             else:
                 raise
-        return _sanitize_precontext_data(parsed, tgt, log_fn)
+        required = {"summary", "tone", "characters", "address_map", "terms"}
+        if not isinstance(parsed, dict) or not required.issubset(parsed):
+            complete = False
+            if log_fn:
+                log_fn("Ön-bağlam yanıtı eksik; bu çalıştırmada kullanılacak ama önbelleğe alınmayacak", "warn")
+        parsed = _sanitize_precontext_data(parsed, tgt, log_fn)
+        parsed["_analysis_complete"] = complete
+        return parsed
     except Exception as ex:
         if log_fn:
             log_fn(f"Ön-bağlam analizi başarısız: {ex}", "warn")
@@ -12449,6 +12458,7 @@ class App(ctk.CTk):
             except Exception:
                 data = None
             if data is not None:
+                data.pop("_analysis_complete", None)
                 data_by_fp[fp] = data
             else:
                 to_analyze.append(fp)
@@ -12475,7 +12485,10 @@ class App(ctk.CTk):
                 for fp, data in ex.map(_one, to_analyze):
                     if data is None:
                         continue
+                    cacheable = bool(data.pop("_analysis_complete", False))
                     data_by_fp[fp] = data
+                    if not cacheable:
+                        continue
                     try:
                         sig = _precontext_cache_sig(fp)
                         if sig and sig.startswith("sha256:"):
@@ -13084,7 +13097,16 @@ class App(ctk.CTk):
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
-                    _analysis_ok = result is not None
+                    _analysis_ok = (
+                        result is not None
+                        and not ht.analysis_result_is_degraded(result)
+                    )
+                    if result is not None and not _analysis_ok:
+                        self._log(
+                            f"[{fname}] Analiz kısmi kaldı; canlı bağlam kullanılacak "
+                            "ama önbellek ve hafızaya yazılmayacak",
+                            "warn",
+                        )
                     if result is None:
                         if self._stop_flag:
                             break
@@ -14945,7 +14967,16 @@ class App(ctk.CTk):
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
-                    _analysis_ok = result is not None
+                    _analysis_ok = (
+                        result is not None
+                        and not ht.analysis_result_is_degraded(result)
+                    )
+                    if result is not None and not _analysis_ok:
+                        self._log(
+                            f"[{fname}] Analiz kısmi kaldı; canlı bağlam kullanılacak "
+                            "ama önbellek ve hafızaya yazılmayacak",
+                            "warn",
+                        )
                     if result is None:
                         if self._stop_flag:
                             break

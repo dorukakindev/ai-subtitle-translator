@@ -620,6 +620,8 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
                        style: str = "", schema: dict = None, glossary: dict = None,
                        source_language: str = ""):
     _ensure_path()
+    if getattr(context, "_analysis_degraded", False):
+        return
     sig = _cache_sig(filepath)
     if not sig or not sig.startswith("sha256:"):
         return
@@ -1783,7 +1785,7 @@ def _fallback_context_memory(cues: list, source_language: str = "en", reason: st
     if reason:
         notes.append(f"analysis_error: {str(reason)[:180]}")
 
-    return ContextMemory(
+    memory = ContextMemory(
         source_language=source_language or "en",
         summary=f"Fallback context for cues {start}-{end}.",
         setting="",
@@ -1795,6 +1797,17 @@ def _fallback_context_memory(cues: list, source_language: str = "en", reason: st
         recurring_terms={},
         scene_notes=notes,
     )
+    memory._analysis_degraded = True
+    return memory
+
+
+def analysis_result_is_degraded(result) -> bool:
+    if not result:
+        return True
+    try:
+        return bool(getattr(result[0], "_analysis_degraded", False))
+    except Exception:
+        return True
 
 
 def _is_deepseek_endpoint(api_url: str, model: str) -> bool:
@@ -2177,12 +2190,25 @@ def _analyze_context_openai_compatible(
         except TypeError:
             token_callback(tot)
     raw = resp.choices[0].message.content if resp.choices else ""
-    data = _extract_json_object(raw)
-    if not data:
+    cleaned = _strip_code_fence(raw)
+    data = None
+    try:
+        data = json.loads(cleaned)
+    except Exception:
+        if "{" in cleaned and "}" in cleaned:
+            try:
+                data = json.loads(cleaned[cleaned.find("{"):cleaned.rfind("}") + 1])
+            except Exception:
+                data = None
+    required = {
+        "source_language", "summary", "setting", "tone",
+        "characters", "recurring_terms", "scene_notes",
+    }
+    if not isinstance(data, dict) or not required.issubset(data):
         snippet = (raw or "")[:300]
         tail = (raw or "")[-300:] if len(raw or "") > 600 else ""
         raise RuntimeError(
-            f"context analysis returned invalid JSON "
+            f"context analysis returned invalid JSON or incomplete shape "
             f"[raw head: {snippet}]" + (f" [raw tail: {tail}]" if tail else "")
         )
 
@@ -2372,6 +2398,10 @@ def analyze_with_helper(
         log_fn(f"{chunk_errors} chunk atlandı, {len(successful)} başarılı analizle devam", "warn")
     # Sadece başarılı analizleri birleştir — None backfill özet kirlenmesine yol açıyordu
     merged = _merge_memories(successful, target_language=target_language, log_fn=log_fn)
+    if chunk_errors or any(
+            getattr(memory, "_analysis_degraded", False)
+            for memory in successful):
+        merged._analysis_degraded = True
     if log_fn and merged.recurring_terms:
         log_fn(f"Sabit terimler: {merged.recurring_terms}", "ok")
 
