@@ -57,6 +57,46 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         fixes = app._maybe_backtranslation_check("out.srt", {"1": "Text"}, blocks)
         self.assertEqual(fixes, 0)
 
+    def test_backtranslation_fix_cannot_replace_locked_term(self):
+        app = gui.App.__new__(gui.App)
+        app.backtrans_var = MagicMock()
+        app.backtrans_var.get.return_value = True
+        app._log = MagicMock()
+        app._helper_api_key = MagicMock(return_value="test_key")
+        app._helper_api_base_url = MagicMock(return_value="https://api.openai.com/v1")
+        app._helper_api_model = MagicMock(return_value="gpt-5.4-mini")
+        app._get_locked_terms_dict = MagicMock(
+            return_value={"Emperor": "İmparator"})
+        app.src_var = MagicMock()
+        app.src_var.get.return_value = "English"
+        app.tgt_var = MagicMock()
+        app.tgt_var.get.return_value = "Turkish"
+        blocks = [(1, "00:00:01 -> 00:00:03", "İmparator geliyor.")]
+        flags = [{
+            "idx": "1",
+            "src": "The Emperor is coming.",
+            "tr": "İmparator geliyor.",
+            "back": "The ruler is coming.",
+            "reason": "Meaning mismatch",
+        }]
+        choice = MagicMock()
+        choice.message.content = "Hükümdar geliyor."
+        response = MagicMock(choices=[choice])
+        with patch("hybrid_translate.back_translation_check",
+                   return_value=flags), \
+             patch("hybrid_translate._safe_chat_create",
+                   return_value=response), \
+             patch("builtins.open", unittest.mock.mock_open()):
+            fixed = app._maybe_backtranslation_check(
+                "out.srt",
+                {"1": "The Emperor is coming."},
+                blocks,
+                src_lang="English",
+                source_path="source.srt",
+            )
+        self.assertEqual(fixed, 0)
+        self.assertEqual(blocks[0][2], "İmparator geliyor.")
+
     def test_pipeline_order_in_gui_flows(self):
         """Verify _fill_hata_with_source and _restore_tags_blocks presence in _run_hybrid phase 2 success path."""
         import inspect

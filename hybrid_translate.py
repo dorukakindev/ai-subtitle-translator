@@ -3154,6 +3154,7 @@ def condense_fast_lines(
     log_fn=None,
     token_callback=None,
     src_map: dict = None,
+    locked_terms: dict | None = None,
 ) -> tuple:
     """Okuma hızı sınırını aşan satırları, anlamı ve tonu koruyarak kısaltır.
     Profesyonel altyazıcının 'ekrana sığdırma' refleksini taklit eder.
@@ -3245,7 +3246,8 @@ def condense_fast_lines(
                     new_cps = cps(short, _block_duration(old_ts))
                     if new_cps < old_cps and new_cps <= max(cps_limit, CPS_WARN_LIMIT):
                         en_src = src_map.get(fid, "") if src_map else ""
-                        ok, reason = validate_condense_candidate(old_text, short, en_src)
+                        ok, reason = validate_condense_candidate(
+                            old_text, short, en_src, locked_terms=locked_terms)
                         if not ok:
                             reject_counts[reason] = reject_counts.get(reason, 0) + 1
                             continue
@@ -7856,7 +7858,8 @@ def validate_semantic_reconciliation_candidate(
 
 def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
                               group_expected: dict | None = None,
-                              src_map: dict | None = None) -> tuple[dict, int, dict]:
+                              src_map: dict | None = None,
+                              locked_terms: dict | None = None) -> tuple[dict, int, dict]:
     """Grup-atomik Polish kabul mantığı (bkz. plans/polish-group-atomicity-brief.md,
     plans/quality-round2-fixes-brief.md Görev B).
 
@@ -7944,7 +7947,8 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
                     (src_map or {}).get(s, "").strip() for s in expected_members
                 ) if s2)
             joined_ok, joined_reason = validate_polish_candidate(
-                old_joined, new_joined, source_text=src_joined)
+                old_joined, new_joined, source_text=src_joined,
+                locked_terms=locked_terms)
             if not joined_ok:
                 key = "group_atomic_joined:" + str(joined_reason)
                 rejected += len(changed)
@@ -7958,7 +7962,8 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
 
 
 def validate_condense_candidate(original_text: str, candidate_text: str,
-                                source_text: str = "") -> tuple[bool, str]:
+                                source_text: str = "",
+                                locked_terms: dict | None = None) -> tuple[bool, str]:
     """condense_fast_lines için DAR güvenlik doğrulaması. validate_polish_candidate'in
     yalnızca güvenlik-kritik, KISALTMAYLA ÇATIŞMAYAN alt-kümesi — kelime-kaybı/çok-kısa
     kontrolleri BİLEREK yok (condense kelime atmayı kasıtlı yapar). fail-closed:
@@ -7968,6 +7973,8 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
     src = "" if source_text is None else str(source_text)
     if not new.strip():
         return False, "empty"
+    if locked_term_violation(src, new, locked_terms):
+        return False, "locked_term_violation"
     if _POLISH_FORMAT_RE.findall(old) != _POLISH_FORMAT_RE.findall(new):
         return False, "format_tags"
     if _POLISH_BRACKET_LABEL_RE.findall(old) != _POLISH_BRACKET_LABEL_RE.findall(new):
@@ -8115,6 +8122,7 @@ def final_consistency_sweep(
     tr_blocks: list,
     log_fn=None,
     min_words: int = 3,
+    locked_terms: dict | None = None,
 ) -> tuple:
     """Run a second, safety-checked consistency sweep after critic/polish edits."""
     swept, fixes = consistency_sweep(cues, tr_blocks, log_fn=None, min_words=min_words)
@@ -8142,6 +8150,7 @@ def final_consistency_sweep(
             old_text,
             new_text,
             source_text=orig_dict.get(str(old_idx), ""),
+            locked_terms=locked_terms,
         )
         if ok:
             result[pos] = (old_idx, old_ts, new_text)
@@ -8163,6 +8172,7 @@ def qc_auto_fix(
     helper_url: str = "",
     log_fn=None,
     helper_api_key: str = None,
+    locked_terms: dict | None = None,
 ) -> list:
     """Re-translate QC-flagged blocks with explicit error feedback via OpenAI / Helper LLM.
 
@@ -8233,6 +8243,17 @@ def qc_auto_fix(
             f"Hint: {suggestion}\n\n"
             f"Provide the corrected {tgt_lang} translation:"
         )
+        if locked_terms:
+            active_terms = {
+                src_term: target_term
+                for src_term, target_term in locked_terms.items()
+                if term_in_text(str(src_term), str(source).casefold())
+            }
+            if active_terms:
+                user_msg += (
+                    "\nRequired source-to-target terms: "
+                    + json.dumps(active_terms, ensure_ascii=False)
+                )
 
         api_applied = False
         try:
@@ -8248,7 +8269,9 @@ def qc_auto_fix(
             )
             new_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if new_text and new_text != "[HATA]":
-                ok, _reason = validate_polish_candidate(old_text, new_text, source_text=source)
+                ok, _reason = validate_polish_candidate(
+                    old_text, new_text, source_text=source,
+                    locked_terms=locked_terms)
                 if ok:
                     result[pos] = (old_idx, old_ts, new_text)
                     fixed += 1
@@ -8266,7 +8289,9 @@ def qc_auto_fix(
         if suggestion:
             sugg_text = str(suggestion).strip()
             if sugg_text and sugg_text != "[HATA]":
-                ok_sugg, _reason_sugg = validate_polish_candidate(old_text, sugg_text, source_text=source)
+                ok_sugg, _reason_sugg = validate_polish_candidate(
+                    old_text, sugg_text, source_text=source,
+                    locked_terms=locked_terms)
                 if ok_sugg:
                     result[pos] = (old_idx, old_ts, sugg_text)
                     fixed += 1

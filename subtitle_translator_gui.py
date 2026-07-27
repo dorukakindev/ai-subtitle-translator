@@ -4482,7 +4482,8 @@ def _mixed_term_suspect_ids(blocks: list, src_map: dict) -> set:
     return suspects
 
 
-def _mixed_term_autofix_plan(blocks: list, src_map: dict) -> dict:
+def _mixed_term_autofix_plan(blocks: list, src_map: dict,
+                             locked_terms: dict | None = None) -> dict:
     """Karışık-terim kümelerinden GÜVENLİ otomatik-düzeltme planı çıkarır.
 
     Yalnızca 'çevrilmeden kalmış İngilizce sızıntısı' durumunu hedefler: bir terim
@@ -4514,7 +4515,12 @@ def _mixed_term_autofix_plan(blocks: list, src_map: dict) -> dict:
         if real_clusters[other_i][0][1].lower() == term_l:
             continue  # her iki küme de kaynakla aynı — belirsiz, atla
         wrong_literal = real_clusters[leak_i][0][1]
-        correct_literal = real_clusters[other_i][0][1]
+        locked_target = next(
+            (str(target) for source, target in (locked_terms or {}).items()
+             if str(source).casefold() == term.casefold() and str(target).strip()),
+            "",
+        )
+        correct_literal = locked_target or real_clusters[other_i][0][1]
         for idx, _tok in real_clusters[leak_i]:
             plan.setdefault(idx, []).append((wrong_literal, correct_literal))
     return plan
@@ -4552,7 +4558,8 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
 
 
 def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, helper_url: str,
-                           helper_model: str, log_fn=None) -> tuple:
+                           helper_model: str, log_fn=None,
+                           locked_terms: dict | None = None) -> tuple:
     """_mixed_term_autofix_plan'ın GÜVENLİ bulduğu (yalnızca çevrilmeden-kalmış-
     İngilizce-sızıntısı sınıfı) karışık-terim örneklerini yardımcı modelle düzeltir.
     Riskli/belirsiz durumlar (bkz. plan fonksiyonunun docstring'i) dokunulmadan
@@ -4560,7 +4567,8 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
 
     Saf modül fonksiyonu — App'e bağlı değil, çağıran helper_key/url/model'i
     kendi rolünden (ör. 'polish') çözüp geçirir. Döner: (yeni_blocks, düzeltilen_sayısı)."""
-    plan = _mixed_term_autofix_plan(sorted_blocks, src_map)
+    plan = _mixed_term_autofix_plan(
+        sorted_blocks, src_map, locked_terms=locked_terms)
     if not plan:
         return sorted_blocks, 0
 
@@ -8100,7 +8108,8 @@ class App(ctk.CTk):
 
         _post_ui(self, _upd)
 
-    def _maybe_condense(self, blocks, mm_k, mm_u, mm_m, tgt, src_map=None):
+    def _maybe_condense(self, blocks, mm_k, mm_u, mm_m, tgt, src_map=None,
+                        locked_terms=None):
         """condense_var açıksa CPS sınırını aşan satırları kısaltır. Aksi halde blocks aynen döner."""
         if not getattr(self, "condense_var", None) or not self.condense_var.get():
             return blocks
@@ -8118,7 +8127,8 @@ class App(ctk.CTk):
                     self._token_callback_for_model(mm_m)
                     if hasattr(self, "_token_callback_for_model")
                     else self._update_tokens),
-                src_map=src_map)
+                src_map=src_map,
+                locked_terms=locked_terms)
             return new_blocks
         except Exception as e:
             self._log_exc("Kısaltma pass hatası", e)
@@ -10459,7 +10469,9 @@ class App(ctk.CTk):
                         src_map=_src_map_from_cues(cues),
                         locked_terms=self._get_locked_terms_dict(orig_path, tgt))
                     self._log("Polish Pass tamamlandı", "ok")
-                    blocks, _ = ht.final_consistency_sweep(cues, blocks, log_fn=self._log)
+                    blocks, _ = ht.final_consistency_sweep(
+                        cues, blocks, log_fn=self._log,
+                        locked_terms=self._get_locked_terms_dict(orig_path, tgt))
 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 if missing:
@@ -10743,7 +10755,8 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
 
-    def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks, src_lang=None) -> int:
+    def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks,
+                                     src_lang=None, source_path=None) -> int:
         """Geri çeviri anlam kontrolü. Açıksa çalışır: Türkçeyi tekrar
         kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
         log'a yazar. Flag'lenen satırları helper model ile düzeltir. Düzeltilen
@@ -10769,6 +10782,11 @@ class App(ctk.CTk):
             else:
                 run_src_lang = run_src_lang or self.src_var.get()
                 run_tgt_lang = self.tgt_var.get()
+            locked_getter = getattr(self, "_get_locked_terms_dict", None)
+            locked_terms = (
+                locked_getter(source_path, run_tgt_lang or "Turkish")
+                if callable(locked_getter) and source_path else {}
+            )
             flags = ht.back_translation_check(
                 src_map=src_clean_map, tr_blocks=blocks,
                 api_key=self._helper_api_key("qc"),
@@ -10805,6 +10823,16 @@ class App(ctk.CTk):
                         f"Translate the source '{src}' correctly into natural Turkish. "
                         f"Output ONLY the fixed Turkish text, nothing else."
                     )
+                    active_terms = {
+                        src_term: target_term
+                        for src_term, target_term in locked_terms.items()
+                        if ht.term_in_text(str(src_term), str(src).casefold())
+                    }
+                    if active_terms:
+                        fix_prompt += (
+                            "\nRequired source-to-target terms: "
+                            + json.dumps(active_terms, ensure_ascii=False)
+                        )
                     resp = _safe_chat_create(
                         fix_client, model=fix_model,
                         messages=[{"role": "user", "content": fix_prompt}],
@@ -10814,7 +10842,9 @@ class App(ctk.CTk):
                     if not fixed_text:
                         continue
                     fixed_text = fixed_text.strip("\"'")
-                    ok, _reason = validate_polish_candidate(tr, fixed_text, source_text=src)
+                    ok, _reason = validate_polish_candidate(
+                        tr, fixed_text, source_text=src,
+                        locked_terms=locked_terms)
                     if ok:
                         for i, (b_idx, b_ts, b_text) in enumerate(blocks):
                             if str(b_idx) == idx:
@@ -10929,8 +10959,17 @@ class App(ctk.CTk):
     def _run_final_semantic_checks(self, out_path, src_clean_map, blocks,
                                    src_lang=None, cues=None, changed_ids=None,
                                    source_path=None) -> int:
+        before_backtranslation = {
+            str(idx): text for idx, _ts, text in (blocks or [])
+        }
         fixed = self._maybe_backtranslation_check(
-            out_path, src_clean_map, blocks, src_lang=src_lang)
+            out_path, src_clean_map, blocks, src_lang=src_lang,
+            source_path=source_path)
+        changed_ids = set(changed_ids or [])
+        changed_ids.update(
+            str(idx) for idx, _ts, text in (blocks or [])
+            if before_backtranslation.get(str(idx), text) != text
+        )
         fixed += self._maybe_semantic_reconciliation(
             out_path, src_clean_map, blocks, src_lang=src_lang,
             cues=cues, changed_ids=changed_ids, source_path=source_path)
@@ -11417,7 +11456,8 @@ class App(ctk.CTk):
                     # grubun tamamı geri alınır — cümle bütünlüğü tek-tek kabulle bozulmasın.
                     chunk_result, chunk_rejected, chunk_reasons = ht.apply_polish_group_atomic(
                         chunk_proposals, original_by_id,
-                        group_expected=chunk_group_expected, src_map=src_map)
+                        group_expected=chunk_group_expected, src_map=src_map,
+                        locked_terms=locked_terms)
                     result_map.update(chunk_result)
                     rejected += chunk_rejected
                     for _reason_key, _count in chunk_reasons.items():
@@ -11792,6 +11832,8 @@ class App(ctk.CTk):
         yalnızca o yeniden-çeviri başarısız/güvenlik-filtresinden dönerse öneri metni
         aynen uygulanıyor. Kullanıcı gerçek sonucu görmeden onaylamış oluyordu."""
         import hybrid_translate as ht
+        locked_getter = getattr(self, "_get_locked_terms_dict", None)
+        locked_terms = locked_getter(fp, tgt) if callable(locked_getter) else {}
         if use_passed_credentials or not hasattr(self, "_helper_api_key"):
             qc_key, qc_url, qc_model = mm_key, mm_url, mm_model
         else:
@@ -11844,6 +11886,7 @@ class App(ctk.CTk):
                 tgt_lang=tgt,
                 base_url=qc_url,
                 log_fn=self._log,
+                locked_terms=locked_terms,
             )
             before_count = len(applied_records)
             _record(auto_issues, before_map, blocks)
@@ -11876,6 +11919,7 @@ class App(ctk.CTk):
                 tgt_lang=tgt,
                 base_url=qc_url,
                 log_fn=self._log,
+                locked_terms=locked_terms,
             )
             before_count = len(applied_records)
             _record(approved_fixes, before_map, blocks)
@@ -13772,7 +13816,9 @@ class App(ctk.CTk):
 
             if sorted_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                 _before_pass = list(sorted_blocks)
-                sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(cues, sorted_blocks, log_fn=self._log)
+                sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
+                    cues, sorted_blocks, log_fn=self._log,
+                    locked_terms=self._get_locked_terms_dict(filepath, tgt))
                 if _final_cons_fixes:
                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
 
@@ -13791,7 +13837,8 @@ class App(ctk.CTk):
                 self._helper_api_key("analysis"),
                 self._helper_api_base_url("analysis"),
                 self._helper_api_model("analysis"),
-                tgt, src_map=_src_map_for_condense)
+                tgt, src_map=_src_map_for_condense,
+                locked_terms=self._get_locked_terms_dict(filepath, tgt))
             _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
 
             if self.clean_sdh_var.get():
@@ -13828,6 +13875,7 @@ class App(ctk.CTk):
                             tgt_lang=tgt,
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
+                            locked_terms=self._get_locked_terms_dict(filepath, tgt),
                         )
                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_auto
@@ -13852,6 +13900,7 @@ class App(ctk.CTk):
                             tgt_lang=tgt,
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
+                            locked_terms=self._get_locked_terms_dict(filepath, tgt),
                         )
                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_approved
@@ -13883,7 +13932,8 @@ class App(ctk.CTk):
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, {str(c.index): _clean_src(c.text) for c in cues},
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
-                        self._helper_api_model("polish"), log_fn=self._log)
+                        self._helper_api_model("polish"), log_fn=self._log,
+                        locked_terms=self._get_locked_terms_dict(filepath, tgt))
                 except Exception:
                     pass
             _n_filled = 0
@@ -14530,7 +14580,10 @@ class App(ctk.CTk):
                                 _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                                 _before_pass = list(pp)
-                                pp, _final_cons_fixes = ht.final_consistency_sweep(_orig_cues, pp, log_fn=self._log)
+                                pp, _final_cons_fixes = ht.final_consistency_sweep(
+                                    _orig_cues, pp, log_fn=self._log,
+                                    locked_terms=self._get_locked_terms_dict(
+                                        str(_src_path), tgt))
                                 if _final_cons_fixes:
                                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp, _pass_history)
                             _before_pass = list(pp)
@@ -14540,7 +14593,9 @@ class App(ctk.CTk):
                                 self._helper_api_base_url("analysis"),
                                 self._helper_api_model("analysis"),
                                 tgt,
-                                src_map=_src_map_from_cues(_orig_cues))
+                                src_map=_src_map_from_cues(_orig_cues),
+                                locked_terms=self._get_locked_terms_dict(
+                                    str(_src_path), tgt))
                             _record_pass_change(_pass_trace, "Condense", _before_pass, pp, _pass_history)
                             if self.clean_sdh_var.get():
                                 _before_pass = list(pp)
@@ -14565,7 +14620,10 @@ class App(ctk.CTk):
                                             issues=_auto_qc, tr_blocks=pp,
                                             helper_api_key=self._helper_api_key("qc"),
                                             model=self._helper_api_model("qc"),
-                                            tgt_lang=tgt, base_url=self._helper_api_base_url("qc"), log_fn=self._log)
+                                            tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
+                                            log_fn=self._log,
+                                            locked_terms=self._get_locked_terms_dict(
+                                                str(_src_path), tgt))
                                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_auto
                                         _qc_auto_fixes += _n_auto
@@ -14585,7 +14643,10 @@ class App(ctk.CTk):
                                             issues=_appr, tr_blocks=pp,
                                             helper_api_key=self._helper_api_key("qc"),
                                             model=self._helper_api_model("qc"),
-                                            tgt_lang=tgt, base_url=self._helper_api_base_url("qc"), log_fn=self._log)
+                                            tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
+                                            log_fn=self._log,
+                                            locked_terms=self._get_locked_terms_dict(
+                                                str(_src_path), tgt))
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
                             # CPS uyarısı — diğer akışlarla paritede
@@ -14608,7 +14669,9 @@ class App(ctk.CTk):
                                     pp, _ = _normalize_mixed_terms(
                                         pp, {str(c.index): _clean_src(c.text) for c in _orig_cues},
                                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
-                                        self._helper_api_model("polish"), log_fn=self._log)
+                                        self._helper_api_model("polish"), log_fn=self._log,
+                                        locked_terms=self._get_locked_terms_dict(
+                                            str(_src_path), tgt))
                                 except Exception:
                                     pass
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
@@ -14929,7 +14992,9 @@ class App(ctk.CTk):
             if sorted_blocks and not self._stop_flag and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                 try:
                     _before_pass = list(sorted_blocks)
-                    sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(_src_cues, sorted_blocks, log_fn=self._log)
+                    sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
+                        _src_cues, sorted_blocks, log_fn=self._log,
+                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
                     if _final_cons_fixes:
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
@@ -14941,7 +15006,10 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks, self._helper_api_key("analysis"),
-                    self._helper_api_base_url("analysis"), self._helper_api_model("analysis"), _tgt_lang, src_map=src_blocks)
+                    self._helper_api_base_url("analysis"),
+                    self._helper_api_model("analysis"), _tgt_lang,
+                    src_map=src_blocks,
+                    locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
             if self.clean_sdh_var.get():
                 _before_pass = list(sorted_blocks)
@@ -14994,7 +15062,8 @@ class App(ctk.CTk):
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, src_blocks,
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
-                        self._helper_api_model("polish"), log_fn=self._log)
+                        self._helper_api_model("polish"), log_fn=self._log,
+                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
                 except Exception:
                     pass
             _n_filled = 0
@@ -15784,7 +15853,10 @@ class App(ctk.CTk):
                             _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                             _before_pass = list(pp_blocks)
-                            pp_blocks, _final_cons_fixes = ht.final_consistency_sweep(cues, pp_blocks, log_fn=self._log)
+                            pp_blocks, _final_cons_fixes = ht.final_consistency_sweep(
+                                cues, pp_blocks, log_fn=self._log,
+                                locked_terms=self._get_locked_terms_dict(
+                                    filepath, tgt))
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)
@@ -15793,7 +15865,8 @@ class App(ctk.CTk):
                             self._helper_api_key("analysis"),
                             self._helper_api_base_url("analysis"),
                             self._helper_api_model("analysis"),
-                            tgt, src_map=_src_map_from_cues(cues))
+                            tgt, src_map=_src_map_from_cues(cues),
+                            locked_terms=self._get_locked_terms_dict(filepath, tgt))
                         _record_pass_change(_pass_trace, "Condense", _before_pass, pp_blocks, _pass_history)
                         if self.clean_sdh_var.get():
                             _before_pass = list(pp_blocks)
@@ -15823,6 +15896,8 @@ class App(ctk.CTk):
                                         tgt_lang=tgt,
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
+                                        locked_terms=self._get_locked_terms_dict(
+                                            filepath, tgt),
                                     )
                                     _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_auto
@@ -15847,6 +15922,8 @@ class App(ctk.CTk):
                                         tgt_lang=tgt,
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
+                                        locked_terms=self._get_locked_terms_dict(
+                                            filepath, tgt),
                                     )
                                     _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_approved
@@ -15876,7 +15953,8 @@ class App(ctk.CTk):
                         _final_blocks, _ = _normalize_mixed_terms(
                             _final_blocks, {str(c.index): _clean_src(c.text) for c in cues},
                             self._helper_api_key("polish"), self._helper_api_base_url("polish"),
-                            self._helper_api_model("polish"), log_fn=self._log)
+                            self._helper_api_model("polish"), log_fn=self._log,
+                            locked_terms=self._get_locked_terms_dict(filepath, tgt))
                     except Exception:
                         pass
                 _raw_map = _raw_src_map_from_cues(cues)
