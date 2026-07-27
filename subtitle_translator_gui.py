@@ -114,7 +114,13 @@ def _safe_chat_create(client, **kwargs):
         pass
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
-    return client.chat.completions.create(**kwargs)
+    from provider_retry import before_provider_request, record_provider_failure
+    before_provider_request(client)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        record_provider_failure(client, exc)
+        raise
 
 
 _SETTINGS_SECRET_KEY_RE = re.compile(

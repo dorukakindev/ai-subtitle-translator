@@ -1867,7 +1867,13 @@ def _safe_chat_create(client, **kwargs):
     kwargs = _normalize_chat_create_kwargs(model, kwargs)
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
-    return client.chat.completions.create(**kwargs)
+    from provider_retry import before_provider_request, record_provider_failure
+    before_provider_request(client)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        record_provider_failure(client, exc)
+        raise
 
 
 def _normalize_chat_create_kwargs(model: str, kwargs: dict) -> dict:
