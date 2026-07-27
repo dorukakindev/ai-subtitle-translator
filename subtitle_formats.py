@@ -123,6 +123,16 @@ def _ass_ts_to_srt(ts: str) -> str:
 
 _LEAD_OVERRIDE_RE = re.compile(r'^(?:\{[^}]*\})+')                       # {\an8}{\c&H..}
 _TRAIL_OVERRIDE_RE = re.compile(r'(?:\{[^}]*\})+$')                     # {\i0}{\b0}
+_ASS_OVERRIDE_BLOCK_RE = re.compile(r'\{\\[^}]*\}')
+_SRT_SAFE_ASS_OVERRIDE_RE = re.compile(r'^\{(?:\\[ibus][01])+\}$', re.IGNORECASE)
+
+
+def _strip_srt_unsafe_ass_overrides(text: str) -> str:
+    return _ASS_OVERRIDE_BLOCK_RE.sub(
+        lambda match: match.group(0)
+        if _SRT_SAFE_ASS_OVERRIDE_RE.fullmatch(match.group(0)) else "",
+        text,
+    )
 
 
 def _match_full_wrap(src_body: str):
@@ -200,7 +210,7 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
                 out_line += line_tail
             restored.append(out_line)
         out = "\n".join(restored)
-    return out
+    return _strip_srt_unsafe_ass_overrides(out)
 
 
 # ── ASS stil/tag temizleme ────────────────────────────────────────────────────

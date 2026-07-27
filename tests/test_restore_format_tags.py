@@ -36,14 +36,13 @@ class RestoreFormatTagsTest(unittest.TestCase):
         out = restore_format_tags('<font color="#ffff00">Hello.</font>', "Merhaba.")
         self.assertEqual(out, '<font color="#ffff00">Merhaba.</font>')
 
-    def test_leading_position_tag(self):
-        # {\an8} konum etiketi (ekran üstü) geri gelmeli
+    def test_leading_position_tag_is_removed_from_srt(self):
         self.assertEqual(restore_format_tags(r"{\an8}STREET SIGN", "SOKAK TABELASI"),
-                         r"{\an8}SOKAK TABELASI")
+                         "SOKAK TABELASI")
 
     def test_position_plus_italic(self):
         out = restore_format_tags(r"{\an8}<i>narrator voice</i>", "anlatıcı sesi")
-        self.assertEqual(out, r"{\an8}<i>anlatıcı sesi</i>")
+        self.assertEqual(out, "<i>anlatıcı sesi</i>")
 
     def test_per_line_wrap(self):
         src = "<i>line one</i>\n<i>line two</i>"
@@ -63,7 +62,7 @@ class RestoreFormatTagsTest(unittest.TestCase):
         self.assertEqual(restore_format_tags("<i>Hi.</i>", "<i>Selam.</i>"),
                          "<i>Selam.</i>")
         self.assertEqual(restore_format_tags(r"{\an8}Sign", r"{\an8}Tabela"),
-                         r"{\an8}Tabela")
+                         "Tabela")
 
     def test_hata_lines_untouched(self):
         self.assertEqual(restore_format_tags("<i>Hi.</i>", "[HATA]"), "[HATA]")
@@ -90,9 +89,15 @@ class RestoreFormatTagsTest(unittest.TestCase):
 
     def test_ass_override_tags_restored(self):
         self.assertEqual(restore_format_tags(r"{\an8}{\c&H00FFFF&}Top text", "Üst metin"),
-                         r"{\an8}{\c&H00FFFF&}Üst metin")
+                         "Üst metin")
         self.assertEqual(restore_format_tags(r"{\i1}Italic ASS{\i0}", "İtalik ASS"),
                          r"{\i1}İtalik ASS{\i0}")
+
+    def test_ass_position_and_rotation_are_removed_from_srt(self):
+        self.assertEqual(
+            restore_format_tags(r"{\frz345.405\pos(302, 129)}YELLOW LINE", "SARI ÇİZGİLİ"),
+            "SARI ÇİZGİLİ",
+        )
 
 
 
