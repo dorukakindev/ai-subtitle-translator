@@ -209,7 +209,8 @@ class ParserAndValidationTest(unittest.TestCase):
             )
 
     def test_hybrid_array_extractor_rejects_object(self):
-        self.assertEqual(ht._extract_json_array('{"tr": []}'), "")
+        self.assertEqual(ht._extract_json_array('{"items": []}'), "")
+        self.assertEqual(json.loads(ht._extract_json_array('{"tr": []}')), [])
         self.assertEqual(json.loads(ht._extract_json_array('[{"i": 1}]')),
                          [{"i": 1}])
 

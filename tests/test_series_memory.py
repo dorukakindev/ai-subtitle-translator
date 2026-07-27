@@ -201,6 +201,23 @@ class RunOverlayTest(unittest.TestCase):
             self.assertEqual(persisted.get_terms(), {"Hive": "Kovan"})
             self.assertEqual(persisted._data["updated_eps"], ["s01e01"])
 
+    def test_incomplete_precontext_never_enters_overlay_or_disk(self):
+        with tempfile.TemporaryDirectory() as td:
+            e1 = str(Path(td) / "Show.S01E01.srt")
+            e2 = str(Path(td) / "Show.S01E02.srt")
+            app = self._app([e1, e2])
+            partial = {
+                "terms": {"Hive": "Kovan"},
+                "_analysis_complete": False,
+            }
+            app._run_precontext_data = {e1: partial}
+
+            app._stage_series_memory_from_precontext(e1, partial, "Turkish")
+            app._commit_precontext_series_memory(e1, "Turkish")
+
+            self.assertEqual(app._series_hint_for(e2), "")
+            self.assertFalse((Path(td) / ".series_memory" / "show.json").exists())
+
     def test_hybrid_analysis_overlay_does_not_persist_until_success(self):
         with tempfile.TemporaryDirectory() as td:
             e1 = str(Path(td) / "Show.S01E01.srt")

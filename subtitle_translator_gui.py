@@ -12771,7 +12771,9 @@ class App(ctk.CTk):
                             and isinstance(cached_sig, str)
                             and cached_sig.startswith("sha256:")
                             and cached_sig == cur_sig):
-                        data = cached.get("data")
+                        cached_data = cached.get("data")
+                        if isinstance(cached_data, dict):
+                            data = cached_data
             except Exception:
                 data = None
             if data is not None:
@@ -12802,7 +12804,7 @@ class App(ctk.CTk):
                 for fp, data in ex.map(_one, to_analyze):
                     if data is None:
                         continue
-                    cacheable = bool(data.pop("_analysis_complete", False))
+                    cacheable = bool(data.get("_analysis_complete", False))
                     data_by_fp[fp] = data
                     if not cacheable:
                         continue
@@ -12810,11 +12812,13 @@ class App(ctk.CTk):
                         sig = _precontext_cache_sig(fp)
                         if sig and sig.startswith("sha256:"):
                             cpath = _precontext_cache_path(fp)
+                            cache_data = dict(data)
+                            cache_data.pop("_analysis_complete", None)
                             atomic_write_json(cpath, {
                                 "_ver": PRECONTEXT_CACHE_VER,
                                 "_tgt": tgt,
                                 "_src": (source_languages or {}).get(fp, src),
-                                "data": data,
+                                "data": cache_data,
                                 "_sig": sig,
                             })
                     except Exception as e:
@@ -12852,6 +12856,8 @@ class App(ctk.CTk):
 
     def _stage_series_memory_from_precontext(self, fp: str, data: dict,
                                              target_language: str = "tr"):
+        if not isinstance(data, dict) or data.get("_analysis_complete") is False:
+            return
         sm_obj, season, ep = self._series_mem_for(fp)
         try:
             self._merge_precontext_into_series_memory(
@@ -12861,8 +12867,10 @@ class App(ctk.CTk):
 
     def _commit_precontext_series_memory(self, fp: str, target_language: str = "tr"):
         data = (getattr(self, "_run_precontext_data", None) or {}).get(fp)
+        if not isinstance(data, dict) or data.get("_analysis_complete") is False:
+            return
         sm_obj, season, ep = self._series_mem_for(fp, persistent=True)
-        if sm_obj is None or not isinstance(data, dict):
+        if sm_obj is None:
             return
         try:
             self._merge_precontext_into_series_memory(

@@ -153,6 +153,8 @@ class CacheIntegrityTest(unittest.TestCase):
 
             self.assertIn(str(fp), hints)
             self.assertFalse(gui._precontext_cache_path(str(fp)).exists())
+            self.assertIs(
+                app._run_precontext_data[str(fp)]["_analysis_complete"], False)
 
     def test_analysis_depth_mismatch_causes_cache_miss(self):
         with tempfile.TemporaryDirectory() as root:
@@ -197,6 +199,46 @@ class CacheIntegrityTest(unittest.TestCase):
             with mock.patch("subtitle_translator_gui.analyze_file_precontext", return_value={"terms": {}}):
                 hints = gui.App._get_precontext_hints(app, None, [str(fp)], "en", "tr", "gpt-4o-mini")
             self.assertEqual(hints, {})
+
+    def test_non_mapping_precontext_cache_data_causes_reanalysis(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "invalid_data.srt")
+            fp.write_bytes(b"invalid cache data")
+            cpath = gui._precontext_cache_path(str(fp))
+            cpath.parent.mkdir(parents=True, exist_ok=True)
+            app = SimpleNamespace(precontext_var=SimpleNamespace(get=lambda: True),
+                                  hybrid_var=SimpleNamespace(get=lambda: False),
+                                  _stop_flag=False,
+                                  _log=lambda *args: None,
+                                  _cached_blocks_for=lambda _p: [],
+                                  _update_tokens=lambda _n: None,
+                                  _update_series_memory_from_precontext=lambda *args, **kwargs: None)
+            fresh = {
+                "summary": "fresh analysis",
+                "characters": [],
+                "terms": {},
+                "_analysis_complete": True,
+            }
+
+            for cached_data in (["not", "a", "mapping"], "bad", 42):
+                with self.subTest(cached_data=cached_data):
+                    cpath.write_text(json.dumps({
+                        "_ver": gui.PRECONTEXT_CACHE_VER,
+                        "_tgt": "tr",
+                        "_src": "en",
+                        "_sig": gui._precontext_cache_sig(str(fp)),
+                        "data": cached_data,
+                    }), encoding="utf-8")
+                    with mock.patch(
+                            "subtitle_translator_gui.analyze_file_precontext",
+                            return_value=dict(fresh)) as analyze:
+                        hints = gui.App._get_precontext_hints(
+                            app, None, [str(fp)], "en", "tr", "gpt-5.4")
+
+                    analyze.assert_called_once()
+                    self.assertIn("fresh analysis", hints[str(fp)])
+                    saved = json.loads(cpath.read_text(encoding="utf-8"))
+                    self.assertEqual(saved["data"]["summary"], "fresh analysis")
 
     def test_context_atomic_write_error_preserves_existing_cache(self):
         with tempfile.TemporaryDirectory() as root:
