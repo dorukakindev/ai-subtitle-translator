@@ -3343,17 +3343,23 @@ def _match_category(detected: str, categories: list):
     for cat in categories:
         if _schema_name_key(cat) == d:
             return cat
-    contains = [c for c in categories if _schema_name_key(c) in d]
+    contains = [
+        c for c in categories
+        if re.search(
+            rf"(?<!\w){re.escape(_schema_name_key(c))}(?!\w)",
+            d,
+        )
+    ]
     if contains:
         return max(contains, key=len)
-    contained = [c for c in categories if d in _schema_name_key(c)]
+    contained = [
+        c for c in categories
+        if re.search(
+            rf"(?<!\w){re.escape(d)}(?!\w)",
+            _schema_name_key(c),
+        )
+    ]
     if contained:
-        word_matches = [
-            c for c in contained
-            if re.search(rf"(?<!\w){re.escape(d)}(?!\w)", _schema_name_key(c))
-        ]
-        if word_matches:
-            return min(word_matches, key=len)
         return min(contained, key=len)
     return None
 

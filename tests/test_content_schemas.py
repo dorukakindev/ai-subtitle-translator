@@ -95,6 +95,10 @@ class MatchCategoryTest(unittest.TestCase):
         self.assertIsNone(gui._match_category("", self.CATS))
         self.assertIsNone(gui._match_category(None, self.CATS))
 
+    def test_partial_word_is_not_a_category_match(self):
+        self.assertIsNone(gui._match_category("Çocuklar", ["Çocuk"]))
+        self.assertIsNone(gui._match_category("Çocuk", ["Çocuklar"]))
+
     def test_real_schema_list_resolves_old_detection_names(self):
         # Eski tespit listesindeki sorunlu adlar artık gerçek şemalara çözülmeli
         cats = gui._detect_categories()
