@@ -2941,6 +2941,24 @@ def _src_text_is_all_caps(src_text: str) -> bool:
     return bool(toks) and bool(alpha) and alpha.isupper()
 
 
+def _src_is_proper_name_phrase(src_text: str) -> bool:
+    text = str(src_text or "").strip()
+    if not text or re.search(r"[.!?…,:;]$", text):
+        return False
+    tokens = re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text, re.UNICODE)
+    if not 2 <= len(tokens) <= 6:
+        return False
+    if not all(token[0].isupper() for token in tokens):
+        return False
+    verb_like = {
+        "am", "is", "are", "was", "were", "be", "been",
+        "have", "has", "had", "do", "does", "did",
+        "can", "could", "will", "would", "shall", "should",
+        "may", "might", "must", "ran", "went", "came", "said",
+    }
+    return not any(token.casefold() in verb_like for token in tokens)
+
+
 def _is_untranslated(src_text: str, tr_text: str) -> bool:
     import re
     if not src_text:
@@ -2980,7 +2998,8 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
     if src_norm == tr_norm and src_norm not in _LOANWORDS:
-        if not _src_is_sdh_only(src_text) and not _src_all_caps:
+        if (not _src_is_sdh_only(src_text) and not _src_all_caps
+                and not _src_is_proper_name_phrase(src_text)):
             return True
     src_words = src_text.split()
     if len(src_words) <= 2:
@@ -10259,11 +10278,6 @@ class App(ctk.CTk):
             return
         self._save_settings()
         self._stop_flag = False
-        from provider_retry import configure_provider_wait_hooks
-        configure_provider_wait_hooks(
-            cancel_check=lambda: self._stop_flag,
-            wait_callback=self._provider_wait_callback,
-        )
         self._active_snapshot = self._take_run_snapshot()
         self._pause_btw_files.set()  # resume: start unpaused
         with self._batch_lock:
@@ -10282,6 +10296,11 @@ class App(ctk.CTk):
             messagebox.showerror("Hata", "batch_id.txt boş veya bozuk.")
             return
 
+        from provider_retry import configure_provider_wait_hooks
+        configure_provider_wait_hooks(
+            cancel_check=lambda: self._stop_flag,
+            wait_callback=self._provider_wait_callback,
+        )
         self._token_total = 0
         self._token_cached = 0
         self._cost_total = 0.0

@@ -47,7 +47,7 @@ class MultiFolderAddTest(unittest.TestCase):
 
         with mock.patch("subtitle_translator_gui.pick_multiple_folders", return_value=None), \
              mock.patch("subtitle_translator_gui.filedialog.askdirectory", side_effect=[r"C:\dir1", r"C:\dir2"]), \
-             mock.patch("tkinter.messagebox.askyesno", side_effect=[True, False]):
+             mock.patch("subtitle_translator_gui.messagebox.askyesno", side_effect=[True, False]):
             gui.App._add_folder_files(app)
 
         self.assertEqual(app.received, [r"C:\dir1", r"C:\dir2"])
@@ -62,7 +62,7 @@ class MultiFolderAddTest(unittest.TestCase):
 
         with mock.patch("subtitle_translator_gui.pick_multiple_folders", return_value=None), \
              mock.patch("subtitle_translator_gui.filedialog.askdirectory", side_effect=[r"C:\dir1", ""]), \
-             mock.patch("tkinter.messagebox.askyesno", side_effect=[True]):
+             mock.patch("subtitle_translator_gui.messagebox.askyesno", side_effect=[True]):
             gui.App._add_folder_files(app)
 
         self.assertEqual(app.received, [r"C:\dir1"])

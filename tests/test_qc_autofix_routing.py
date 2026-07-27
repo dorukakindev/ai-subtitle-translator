@@ -28,7 +28,9 @@ class QCAutoFixRoutingTest(unittest.TestCase):
 
     def test_qc_auto_fix_uses_helper_api_key_and_custom_provider(self):
         """Verify ht.qc_auto_fix routes through _safe_chat_create using the helper key/model/url."""
-        with patch("hybrid_translate._safe_chat_create") as mock_safe_create:
+        fake_client = SimpleNamespace()
+        with patch("openai.OpenAI", return_value=fake_client) as openai_ctor, \
+                patch("hybrid_translate._safe_chat_create") as mock_safe_create:
             mock_resp = MagicMock()
             mock_resp.choices = [SimpleNamespace(message=SimpleNamespace(content="Günaydın!"))]
             mock_safe_create.return_value = mock_resp
@@ -47,8 +49,11 @@ class QCAutoFixRoutingTest(unittest.TestCase):
             client_used = mock_safe_create.call_args[0][0]
             model_used = mock_safe_create.call_args[1].get("model")
 
-            self.assertEqual(client_used.api_key, "sk-qc-helper-key")
-            self.assertEqual(str(client_used.base_url).rstrip("/"), "https://api.anthropic.com/v1")
+            openai_ctor.assert_called_once_with(
+                api_key="sk-qc-helper-key",
+                base_url="https://api.anthropic.com/v1",
+            )
+            self.assertIs(client_used, fake_client)
             self.assertEqual(model_used, "claude-3-5-sonnet")
             self.assertEqual(result[0][2], "Günaydın!")
 

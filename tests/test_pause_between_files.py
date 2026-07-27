@@ -179,7 +179,10 @@ class PauseBetweenFilesTest(unittest.TestCase):
         resume = inspect.getsource(gui.App._resume_batches)
         write_results = inspect.getsource(gui.App._write_results)
 
-        self.assertIn("if _all_written:", run_sync)
+        self.assertIn(
+            "is_full_success = bool(_all_written and not unresolved)", run_sync)
+        self.assertIn(
+            "should_clear_sync_ckpt(self._stop_flag, is_full_success)", run_sync)
         self.assertIn("final_written = self._write_results(", run_batch)
         self.assertIn("regular_written = self._write_results(", resume)
         self.assertIn('if not summary["is_full_success"]:', write_results)

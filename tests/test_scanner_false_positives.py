@@ -35,6 +35,11 @@ class ScannerFalsePositiveTest(unittest.TestCase):
         blk = [("1", "00:00:01,000 --> 00:00:08,000", "he ran away very fast")]
         self.assertEqual(_scan(src, blk), 1)
 
+    def test_title_case_sentence_with_verb_still_flagged(self):
+        src = {"1": "He Ran Away"}
+        blk = [("1", "00:00:01,000 --> 00:00:03,000", "He Ran Away")]
+        self.assertEqual(_scan(src, blk), 1)
+
     def test_properly_translated_not_flagged(self):
         src = {"1": "he ran away very fast"}
         blk = [("1", "00:00:01,000 --> 00:00:08,000", "çok hızlı kaçıp gitti")]

@@ -39,6 +39,7 @@ class ResumeLifecycleTest(unittest.TestCase):
             _set_eta=MagicMock(),
             _set_running=lambda value: running.append(value),
             _resume_batches=MagicMock(),
+            _provider_wait_callback=lambda *_args: None,
             _log=MagicMock(),
             _log_exc=MagicMock(),
         )

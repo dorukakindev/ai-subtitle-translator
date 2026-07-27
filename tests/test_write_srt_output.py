@@ -93,7 +93,7 @@ class WriteSrtOutputTest(unittest.TestCase):
     def test_write_normalizes_cyrillic_latin_homoglyphs(self):
         p = os.path.join(self.d, "homoglyph.srt")
         gui.write_srt(p, [("1", "00:00:01,000 --> 00:00:02,000", "O da BАNA geldi.")])
-        raw = open(p, encoding="utf-8").read()
+        raw = Path(p).read_text(encoding="utf-8")
         self.assertIn("BANA", raw)
         self.assertNotIn("\u0410", raw)
 

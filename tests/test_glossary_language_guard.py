@@ -413,13 +413,15 @@ class SeriesMemoryGlossaryGuardTest(unittest.TestCase):
             Path(fp).write_text("1\n00:00:01,000 --> 00:00:02,000\nHello.\n", encoding="utf-8")
             self.app.series_memory_var.set(True)
             self.app.input_var.set(td)
+            self.app._run_series_memory = {}
+            self.app._active_snapshot = {"selected_files": [fp]}
             data = {
                 "terms": {
                     "Armed Forces": "Qawweyaha Xoogga Dalka",
                     "Karbala": "Kerbela",
                 },
             }
-            self.app._update_series_memory_from_precontext(fp, data, target_language="tr")
+            self.app._stage_series_memory_from_precontext(fp, data, target_language="tr")
             sm_obj, _season, _ep = self.app._series_mem_for(fp)
             self.assertIsNotNone(sm_obj)
             self.assertNotIn("Armed Forces", sm_obj._data["terms"])
