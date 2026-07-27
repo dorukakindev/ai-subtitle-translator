@@ -29,6 +29,7 @@ from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json
                        state_dir, state_path)
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION, meaning_readability_rule
 from folder_picker import pick_multiple_folders
+import video_subtitles as video_tracks
 
 # Tahmini 1M Token fiyatları (Input/Output $)
 ESTIMATED_PRICES = {
@@ -2037,7 +2038,7 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
         yol özeti kullanılır; aynı adlı farklı klasörler birbirine çarpmaz.
 
     Yol her zaman .srt uzantılıdır (çıktı daima SRT)."""
-    src = Path(filepath)
+    src = video_tracks.logical_subtitle_path(filepath)
     source_key = src.stem if src.suffix.lower() == ".srt" else src.name
     output_name = f"{source_key}.srt"
     if same_folder:
@@ -6002,7 +6003,7 @@ class App(ctk.CTk):
             self.drop_target_register(DND_FILES)
             self.dnd_bind('<<Drop>>', self._on_drop)
             self._drag_drop_available = True
-            self._log("Sürükle-bırak aktif (.srt/.vtt/.ass)", "ok")
+            self._log("Sürükle-bırak aktif (altyazı/klasör/video)", "ok")
         except Exception:
             self._drag_drop_available = False
 
@@ -6017,28 +6018,33 @@ class App(ctk.CTk):
             import re as _re
             paths = _re.findall(r'\{([^}]+)\}|(\S+)', event.data)
             files = [p[0] or p[1] for p in paths]
-        # Sadece altyazı dosyalarını al
         subtitle_exts = {'.srt', '.vtt', '.ass', '.ssa'}
         valid = []
+        videos = []
         for f in files:
             p = Path(f)
             if p.is_dir():
                 valid.extend(get_subtitle_files(str(p), recursive=True))
             elif p.suffix.lower() in subtitle_exts and p.exists():
                 valid.append(str(p))
-        if not valid:
-            self._log("Sürüklenen dosyalarda geçerli altyazı yok.", "warn")
+            elif video_tracks.is_video_path(p) and p.exists():
+                videos.append(str(p))
+        if not valid and not videos:
+            self._log("Sürüklenen dosyalarda geçerli altyazı veya video yok.", "warn")
             return
-        before = len(self._selected_files)
-        self._content_type_preflight_done = False
-        self._language_preflight_done = False
-        self._selected_files = self._dedupe_paths(list(self._selected_files) + valid)
-        added = len(self._selected_files) - before
-        total = len(self._selected_files)
-        self._refresh_selected_files_ui(
-            f"Sürükle-bırak: +{added} yeni, toplam {total} dosya — "
-            + ", ".join(Path(f).name for f in valid[:5])
-            + ("…" if len(valid) > 5 else ""))
+        if valid:
+            before = len(self._selected_files)
+            self._content_type_preflight_done = False
+            self._language_preflight_done = False
+            self._selected_files = self._dedupe_paths(list(self._selected_files) + valid)
+            added = len(self._selected_files) - before
+            total = len(self._selected_files)
+            self._refresh_selected_files_ui(
+                f"Sürükle-bırak: +{added} yeni, toplam {total} dosya — "
+                + ", ".join(Path(f).name for f in valid[:5])
+                + ("…" if len(valid) > 5 else ""))
+        if videos:
+            self._queue_video_probe(videos)
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -6328,6 +6334,10 @@ class App(ctk.CTk):
                       font=ctk.CTkFont("Segoe UI", 12),
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._add_folder_files).grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ctk.CTkButton(pick_fr, text="🎞  Videodan Altyazı Ekle", height=34,
+                      font=ctk.CTkFont("Segoe UI", 12),
+                      fg_color=BORDER, hover_color=ACCENT,
+                      command=self._pick_video_files).grid(row=2, column=0, sticky="ew", pady=(6, 0))
         self.clear_files_btn = ctk.CTkButton(pick_fr, text="X", width=34, height=34,
                       font=ctk.CTkFont("Segoe UI", 13),
                       fg_color=CARD, hover_color=RED_HOVER,
@@ -8771,6 +8781,229 @@ class App(ctk.CTk):
             f"{n} dosya seçildi: "
             + ", ".join(Path(p).name for p in self._selected_files[:5])
             + ("…" if n > 5 else ""))
+
+    def _pick_video_files(self):
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken video eklenemez.", "warn")
+            return
+        self.attributes("-topmost", True)
+        paths = filedialog.askopenfilenames(
+            parent=self,
+            title="İçinden Altyazı Alınacak Videoları Seç",
+            filetypes=[
+                ("Video dosyaları", "*.mkv *.mp4 *.m4v *.mov *.avi *.webm *.ts *.m2ts"),
+                ("Matroska (.mkv)", "*.mkv"),
+                ("MP4 (.mp4 *.m4v)", "*.mp4 *.m4v"),
+                ("Tümü", "*.*"),
+            ],
+        )
+        self.attributes("-topmost", False)
+        if paths:
+            self._queue_video_probe(list(paths))
+
+    def _queue_video_probe(self, video_paths):
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri çalışırken video eklenemez.", "warn")
+            return
+        if getattr(self, "_video_import_busy", False):
+            self._log("Video altyazıları zaten taranıyor veya çıkarılıyor.", "warn")
+            return
+        paths = [
+            str(Path(path)) for path in self._dedupe_paths(video_paths)
+            if video_tracks.is_video_path(path) and Path(path).is_file()
+        ]
+        if not paths:
+            self._log("Geçerli video dosyası bulunamadı.", "warn")
+            return
+        self._video_import_busy = True
+        self._set_status(f"Video altyazıları taranıyor… 0/{len(paths)}")
+
+        def _probe():
+            results = []
+            errors = []
+            for index, path in enumerate(paths, 1):
+                try:
+                    streams = video_tracks.probe_subtitle_streams(path)
+                    results.append((path, streams))
+                except Exception as exc:
+                    errors.append(f"{Path(path).name}: {exc}")
+                self._set_status(f"Video altyazıları taranıyor… {index}/{len(paths)}")
+            _post_ui(self, self._show_video_stream_picker, results, errors)
+
+        App._start_worker(self, _probe)
+
+    def _show_video_stream_picker(self, results, errors):
+        self._video_import_busy = False
+        self._set_status("Hazır.")
+        for error in errors:
+            self._log(f"Video altyazısı: {error}", "warn")
+        supported_count = sum(
+            1 for _path, streams in results for stream in streams
+            if stream.supported
+        )
+        if not supported_count:
+            detail = "\n".join(errors[:4])
+            if not detail:
+                detail = (
+                    "Seçilen videolarda metin tabanlı altyazı bulunamadı. "
+                    "PGS/DVD gibi görüntü altyazıları OCR gerektirir ve otomatik eklenmez."
+                )
+            messagebox.showwarning("Video Altyazısı Bulunamadı", detail, parent=self)
+            return
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Video Altyazı Akışlarını Seç")
+        dlg.geometry("760x620")
+        dlg.minsize(620, 420)
+        dlg.configure(fg_color=BG)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        ctk.CTkLabel(
+            dlg,
+            text="Çıkarılacak altyazı akışlarını seç",
+            font=ctk.CTkFont("Segoe UI", 17, "bold"),
+            text_color=FG,
+        ).pack(anchor="w", padx=18, pady=(18, 4))
+        ctk.CTkLabel(
+            dlg,
+            text=(
+                "Metin altyazıları SRT'ye çevrilip mevcut dosya sırasına eklenir. "
+                "PGS/DVD görüntü altyazıları OCR gerektirdiği için seçilemez."
+            ),
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=FG2,
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 12))
+
+        scroll = ctk.CTkScrollableFrame(
+            dlg, fg_color=PANEL, corner_radius=10,
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=ACCENT,
+        )
+        scroll.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+        selections = []
+        for path, streams in results:
+            ctk.CTkLabel(
+                scroll,
+                text=Path(path).name,
+                font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                text_color=FG,
+                anchor="w",
+            ).pack(fill="x", padx=10, pady=(12, 4))
+            supported = [stream for stream in streams if stream.supported]
+            preferred = next(
+                (stream for stream in supported
+                 if stream.language.lower() in {"eng", "en", "english"}),
+                supported[0] if supported else None,
+            )
+            if not streams:
+                ctk.CTkLabel(
+                    scroll, text="Altyazı akışı yok",
+                    font=ctk.CTkFont("Segoe UI", 11),
+                    text_color=FG_DIS,
+                ).pack(anchor="w", padx=18, pady=(2, 6))
+                continue
+            for stream in streams:
+                if stream.supported:
+                    var = ctk.BooleanVar(value=(stream == preferred))
+                    selections.append((path, stream, var))
+                    ctk.CTkCheckBox(
+                        scroll,
+                        text=stream.label,
+                        variable=var,
+                        font=ctk.CTkFont("Segoe UI", 11),
+                        text_color=FG,
+                        fg_color=ACCENT,
+                        hover_color=ACCENT_HOVER,
+                        border_color=BORDER,
+                    ).pack(anchor="w", fill="x", padx=18, pady=3)
+                else:
+                    ctk.CTkLabel(
+                        scroll,
+                        text=f"⚠ {stream.label} — görüntü tabanlı, OCR gerekli",
+                        font=ctk.CTkFont("Segoe UI", 11),
+                        text_color=FG_DIS,
+                        anchor="w",
+                    ).pack(fill="x", padx=18, pady=3)
+
+        buttons = ctk.CTkFrame(dlg, fg_color="transparent")
+        buttons.pack(fill="x", padx=18, pady=(0, 18))
+        buttons.grid_columnconfigure((0, 1), weight=1)
+
+        def _extract_selected():
+            chosen = [
+                (path, stream) for path, stream, var in selections if var.get()
+            ]
+            if not chosen:
+                messagebox.showwarning(
+                    "Seçim Yok", "En az bir metin altyazısı seçin.", parent=dlg)
+                return
+            dlg.destroy()
+            self._video_import_busy = True
+            self._set_status(f"Video altyazıları çıkarılıyor… 0/{len(chosen)}")
+
+            def _extract():
+                extracted = []
+                extract_errors = []
+                for index, (path, stream) in enumerate(chosen, 1):
+                    try:
+                        extracted.append(str(
+                            video_tracks.extract_subtitle_stream(path, stream)))
+                    except Exception as exc:
+                        extract_errors.append(f"{Path(path).name} / {stream.label}: {exc}")
+                    self._set_status(
+                        f"Video altyazıları çıkarılıyor… {index}/{len(chosen)}")
+                _post_ui(
+                    self, self._finish_video_subtitle_import,
+                    extracted, extract_errors)
+
+            App._start_worker(self, _extract)
+
+        ctk.CTkButton(
+            buttons, text="İptal",
+            fg_color=CARD, hover_color=BORDER,
+            command=dlg.destroy,
+        ).grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkButton(
+            buttons, text="Seçilenleri Çıkar ve Ekle",
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=_extract_selected,
+        ).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+
+    def _finish_video_subtitle_import(self, extracted, errors):
+        self._video_import_busy = False
+        self._set_status("Hazır.")
+        for error in errors:
+            self._log(f"Video altyazısı çıkarılamadı: {error}", "warn")
+        added = self._append_extracted_video_subtitles(extracted)
+        if errors and not added:
+            messagebox.showwarning(
+                "Video Altyazısı Çıkarılamadı",
+                "\n".join(errors[:5]),
+                parent=self,
+            )
+
+    def _append_extracted_video_subtitles(self, paths):
+        valid = [str(Path(path)) for path in paths if Path(path).is_file()]
+        if not valid:
+            return 0
+        if (not self._selected_files
+                and getattr(self, "_input_folder_explicitly_selected", False)
+                and self.input_var.get()):
+            self._selected_files = self._get_srt_files()
+        before = len(self._selected_files)
+        self._content_type_preflight_done = False
+        self._language_preflight_done = False
+        self._selected_files = self._dedupe_paths(
+            list(self._selected_files) + valid)
+        self._pm = None
+        added = len(self._selected_files) - before
+        total = len(self._selected_files)
+        self._refresh_selected_files_ui(
+            f"Videodan +{added} altyazı eklendi, toplam {total} dosya")
+        return added
 
     def _add_folder_files(self):
         if getattr(self, "_is_running", False):

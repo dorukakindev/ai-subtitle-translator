@@ -1,0 +1,127 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import video_subtitles as vs
+
+
+class VideoSubtitleTests(unittest.TestCase):
+    def test_probe_returns_text_and_bitmap_streams(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mkv"
+            video.write_bytes(b"video")
+            payload = {
+                "streams": [
+                    {
+                        "index": 2,
+                        "codec_name": "subrip",
+                        "tags": {"language": "eng", "title": "English"},
+                    },
+                    {
+                        "index": 4,
+                        "codec_name": "hdmv_pgs_subtitle",
+                        "tags": {"language": "tur"},
+                    },
+                ]
+            }
+            runner = mock.Mock(return_value=SimpleNamespace(
+                returncode=0, stdout=json.dumps(payload), stderr=""))
+            streams = vs.probe_subtitle_streams(
+                video, runner=runner, which=lambda _name: "ffprobe.exe")
+
+        self.assertEqual([stream.index for stream in streams], [2, 4])
+        self.assertTrue(streams[0].supported)
+        self.assertFalse(streams[1].supported)
+        command = runner.call_args.args[0]
+        self.assertEqual(command[0], "ffprobe.exe")
+        self.assertEqual(command[-1], str(video))
+        self.assertIn("-select_streams", command)
+
+    def test_probe_reports_missing_ffprobe(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mp4"
+            video.write_bytes(b"video")
+            with self.assertRaisesRegex(vs.VideoSubtitleError, "ffprobe bulunamadı"):
+                vs.probe_subtitle_streams(video, which=lambda _name: None)
+
+    def test_probe_timeout_is_reported_without_hanging(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mp4"
+            video.write_bytes(b"video")
+
+            def runner(command, **_kwargs):
+                raise vs.subprocess.TimeoutExpired(command, 30)
+
+            with self.assertRaisesRegex(vs.VideoSubtitleError, "30 saniye"):
+                vs.probe_subtitle_streams(
+                    video, runner=runner, which=lambda _name: "ffprobe.exe")
+
+    def test_extracts_text_stream_atomically_and_records_origin(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "My Film.mkv"
+            video.write_bytes(b"video")
+            stream = vs.SubtitleStream(3, "subrip", "eng", "English")
+
+            def runner(command, **_kwargs):
+                Path(command[-1]).write_text(
+                    "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
+                output = vs.extract_subtitle_stream(
+                    video, stream, runner=runner,
+                    which=lambda name: f"{name}.exe")
+
+            self.assertTrue(output.is_file())
+            self.assertEqual(vs.extracted_video_origin(output), video.resolve())
+            self.assertEqual(vs.logical_subtitle_path(output).parent, video.parent)
+            self.assertIn("track-3.eng.srt", output.name)
+
+    def test_cached_extraction_skips_second_ffmpeg_call(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mkv"
+            video.write_bytes(b"video")
+            stream = vs.SubtitleStream(2, "ass", "ita")
+            calls = []
+
+            def runner(command, **_kwargs):
+                calls.append(command)
+                Path(command[-1]).write_text("subtitle", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
+                first = vs.extract_subtitle_stream(
+                    video, stream, runner=runner,
+                    which=lambda name: f"{name}.exe")
+                second = vs.extract_subtitle_stream(
+                    video, stream, runner=runner,
+                    which=lambda name: f"{name}.exe")
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(calls), 1)
+
+    def test_rejects_bitmap_stream_without_running_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mkv"
+            video.write_bytes(b"video")
+            runner = mock.Mock()
+            stream = vs.SubtitleStream(5, "dvd_subtitle", "eng")
+            with self.assertRaisesRegex(vs.VideoSubtitleError, "OCR"):
+                vs.extract_subtitle_stream(
+                    video, stream, runner=runner,
+                    which=lambda name: f"{name}.exe")
+            runner.assert_not_called()
+
+    def test_video_extension_detection_is_case_insensitive(self):
+        self.assertTrue(vs.is_video_path("Film.MKV"))
+        self.assertTrue(vs.is_video_path("Film.mp4"))
+        self.assertFalse(vs.is_video_path("Film.srt"))
+
+
+if __name__ == "__main__":
+    unittest.main()
