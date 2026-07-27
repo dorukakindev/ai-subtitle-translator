@@ -94,6 +94,18 @@ class PipelinePassParityTest(unittest.TestCase):
                 restore_pos = src.rfind("_restore_tags_blocks(")
                 self.assertTrue(normalize_pos < fill_pos < restore_pos)
 
+    def test_plain_sync_without_chain_can_run_opt_in_review(self):
+        src = inspect.getsource(gui.App._write_results)
+        self.assertIn("or not self.chain_ctx_var.get()", src)
+        self.assertIn("ek API maliyeti", src)
+
+    def test_hybrid_final_tail_reuses_single_raw_map(self):
+        src = inspect.getsource(gui.App._run_hybrid)
+        tail = src[src.rfind("_run_final_semantic_checks("):src.find(
+            "write_srt(", src.rfind("_run_final_semantic_checks(")
+        )]
+        self.assertEqual(tail.count("_raw_src_map_from_cues(cues)"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

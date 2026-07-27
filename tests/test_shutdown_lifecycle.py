@@ -98,15 +98,24 @@ class WorkerDrainTest(unittest.TestCase):
         log_file = io.StringIO()
         tm = MagicMock()
         destroyed = MagicMock()
+        current_value = []
+        var = SimpleNamespace(get=lambda: "güncel")
+        original_get = var.get
         stub = SimpleNamespace(
             _tm=tm,
             _log_lock=threading.Lock(),
             _log_file=log_file,
+            _active_snapshot={"value": "eski"},
+            _frozen_run_var_getters=[(var, original_get)],
+            _save_settings=lambda: current_value.append(var.get()),
             destroy=destroyed,
         )
+        var.get = lambda: "eski"
 
         gui.App._finish_close(stub)
 
+        self.assertEqual(current_value, ["güncel"])
+        self.assertIsNone(stub._active_snapshot)
         tm.close.assert_called_once()
         self.assertTrue(log_file.closed)
         self.assertIsNone(stub._log_file)

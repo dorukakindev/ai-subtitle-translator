@@ -121,6 +121,11 @@ class RetryClassificationTest(unittest.TestCase):
                     RuntimeError(f"HTTP {code}: internal error")
                 ))
 
+    def test_upstream_server_error_uses_small_request_fallback(self):
+        self.assertTrue(gui._is_upstream_provider_error(
+            RuntimeError("upstream server error")
+        ))
+
 
 class OrphanBatchCancellationTest(unittest.TestCase):
     def setUp(self):

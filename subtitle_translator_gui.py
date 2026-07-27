@@ -3345,6 +3345,12 @@ def _match_category(detected: str, categories: list):
         return max(contains, key=len)
     contained = [c for c in categories if d in _schema_name_key(c)]
     if contained:
+        word_matches = [
+            c for c in contained
+            if re.search(rf"(?<!\w){re.escape(d)}(?!\w)", _schema_name_key(c))
+        ]
+        if word_matches:
+            return min(word_matches, key=len)
         return min(contained, key=len)
     return None
 
@@ -3730,7 +3736,11 @@ def _missing_block_items(all_items: list, current_raw: str) -> list:
 
 def _is_upstream_provider_error(exc) -> bool:
     text = str(exc or "").lower()
-    return "upstream request failed" in text or "upstream error" in text
+    return any(marker in text for marker in (
+        "upstream request failed",
+        "upstream server error",
+        "upstream error",
+    ))
 
 
 def _is_transient_retry_error(exc) -> bool:
@@ -5795,6 +5805,12 @@ class App(ctk.CTk):
         self._finish_close()
 
     def _finish_close(self):
+        try:
+            App._unfreeze_run_variable_reads(self)
+            self._active_snapshot = None
+            self._save_settings()
+        except Exception:
+            pass
         try:
             if hasattr(self, "_tm") and self._tm:
                 self._tm.close()
@@ -14377,8 +14393,17 @@ class App(ctk.CTk):
             except Exception:
                 pass
             # Bağlam incelemesi — Batch'te zincirleme bağlam yoktur, bu geçiş telafi eder
-            if (self.review_pass_var.get() and self.mode_var.get() == "batch"
+            _review_needed = (
+                self.mode_var.get() == "batch"
+                or not self.chain_ctx_var.get()
+            )
+            if (self.review_pass_var.get() and _review_needed
                     and sorted_blocks and not self._stop_flag):
+                if self.mode_var.get() != "batch":
+                    self._log(
+                        "Zincirleme bağlam kapalı: tutarlılık için tam dosya "
+                        "Bağlam İncelemesi çalışacak (ek API maliyeti).",
+                        "info")
                 self._set_status(f"Bağlam incelemesi: {Path(fp).name}")
                 self._log(f"Bağlam incelemesi başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
@@ -15338,18 +15363,18 @@ class App(ctk.CTk):
                             self._helper_api_model("polish"), log_fn=self._log)
                     except Exception:
                         pass
+                _raw_map = _raw_src_map_from_cues(cues)
                 _n_filled = 0
                 try:
-                    _raw_map = _raw_src_map_from_cues(cues)
                     _final_blocks, _n_filled = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
                 except Exception:
                     pass
                 try:
-                    _final_blocks = _restore_tags_blocks(_final_blocks, _raw_src_map_from_cues(cues))
+                    _final_blocks = _restore_tags_blocks(_final_blocks, _raw_map)
                 except Exception:
                     pass
                 write_srt(out_path, self._maybe_merge_cues(_final_blocks), tgt)
-                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_src_map_from_cues(cues), tgt)
+                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
                 _w = 0

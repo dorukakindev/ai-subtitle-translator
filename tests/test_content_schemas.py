@@ -86,6 +86,10 @@ class MatchCategoryTest(unittest.TestCase):
         # Model sadece 'Komedi' demiş — en kısa komedi kategorisi (genel sitcom) seçilir
         self.assertEqual(gui._match_category("Komedi", self.CATS), "Komedi (Sitcom)")
 
+    def test_partial_answer_prefers_whole_word_over_prefix(self):
+        cats = ["Tarihi / Dönem", "Tarih Belgeseli"]
+        self.assertEqual(gui._match_category("Tarih", cats), "Tarih Belgeseli")
+
     def test_no_match_returns_none(self):
         self.assertIsNone(gui._match_category("Western", self.CATS))
         self.assertIsNone(gui._match_category("", self.CATS))
