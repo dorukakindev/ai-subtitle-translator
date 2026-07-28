@@ -59,6 +59,22 @@ class NumberShiftTest(unittest.TestCase):
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "number_shift" for f in findings))
 
+    def test_number_moved_across_ellipsis_continuation_is_benign(self):
+        blocks = _b(
+            (190, "Jetin"),
+            (191, "Öz Savunma Kuvvetleri'nin kullandığı bir F-16-J olduğu belirlendi."),
+            (289, "Girişten hedefe kadar olan mesafe"),
+            (290, "neredeyse 1.200 metre."),
+        )
+        src = _s(**{
+            "190": "The jet is an F-16-J...",
+            "191": "used by the Japan Self Defense Force.",
+            "289": "It's nearly 1,200 meters...",
+            "290": "from the entrance across to the target.",
+        })
+        findings = gui.detect_alignment_issues(blocks, src)
+        self.assertFalse(any(f["type"] == "number_shift" for f in findings))
+
 
 class MissingDialogueTest(unittest.TestCase):
     def test_real_dialogue_absent_from_output_fires(self):
@@ -187,6 +203,39 @@ class AdjacentDuplicateTest(unittest.TestCase):
                     "313": "ALL BEGIN WITHIN SIGHT OF GOBEKLI TEPE, AND THAT'S NO COINCIDENCE."})
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "adjacent_duplicate" for f in findings))
+
+    def test_semantically_related_neighbor_lines_from_live_run_are_benign(self):
+        cases = [
+            (
+                _b((309, "Amerikan ordusu da..."), (314, "Amerikan ordusundan")),
+                _s(**{
+                    "309": "The U.S. Military...",
+                    "314": "It's a group of U.S. Military advisers...",
+                }),
+            ),
+            (
+                _b((452, "Baba oğula karşı bölünecek..."),
+                   (453, "oğul da babaya karşı bölünecek...")),
+                _s(**{
+                    "452": "The father shall be divided against the son...",
+                    "453": "and the son against the father...",
+                }),
+            ),
+            (
+                _b((229, "Neden saklandın?"), (230, "Benden mi saklandın?")),
+                _s(**{"229": "Why did you hide?", "230": "You hid from me?"}),
+            ),
+            (
+                _b((572, "Aman, bizi rahat bırakır mısın."),
+                   (578, "Aa, rahat bırakır mısın.")),
+                _s(**{"572": "Oh spare us will you.", "578": "Oh do you mind."}),
+            ),
+        ]
+        for blocks, src in cases:
+            with self.subTest(blocks=blocks):
+                findings = gui.detect_alignment_issues(blocks, src)
+                self.assertFalse(any(f["type"] == "adjacent_duplicate"
+                                     for f in findings))
 
     def test_ordinary_distinct_lines_no_findings(self):
         # Sıradan, birbirinden belirgin şekilde farklı ardışık satırlar — TETİKLEMEMELİ.

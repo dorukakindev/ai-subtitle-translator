@@ -4139,7 +4139,7 @@ def _align_lcs_len(a: str, b: str) -> int:
     return difflib.SequenceMatcher(None, a, b).find_longest_match(0, len(a), 0, len(b)).size
 
 
-_DUP_WIN, _DUP_TR, _DUP_SRC, _DUP_LCS = 8, 0.75, 0.60, 15
+_DUP_WIN, _DUP_TR, _DUP_SRC, _DUP_LCS = 8, 0.90, 0.60, 15
 
 
 def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
@@ -4293,7 +4293,10 @@ def detect_alignment_issues(blocks: list, src_map: dict, window: int = 6) -> lis
         Türkçe söz dizimi (SOV) yeniden dağıtımıdır — KAYMA DEĞİL, meşru."""
         lo, hi = sorted((pa, pb))
         for p in range(lo, hi):
-            if _ends_sentence_gui(src_map.get(seq[p][0], "")):
+            cur = src_map.get(seq[p][0], "")
+            nxt = src_map.get(seq[p + 1][0], "") if p + 1 < len(seq) else ""
+            if (_ends_sentence_gui(cur)
+                    and not _ellipsis_continues_gui(cur, nxt)):
                 return False
         return True
 
