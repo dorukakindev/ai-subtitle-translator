@@ -98,12 +98,17 @@ class ProductionFolderAppendTest(unittest.TestCase):
             _selected_files=[], _content_type_preflight_done=True,
             _input_folder_explicitly_selected=input_selected,
             _is_running=False, input_var=SimpleNamespace(get=lambda: input_dir),
+            _file_list_root="", _file_list_files=[],
             logs=[], refreshes=[],
         )
         app._dedupe_paths = lambda paths: gui.App._dedupe_paths(app, paths)
         app._get_srt_files = lambda: gui.App._get_srt_files(app)
         app._log = lambda *args: app.logs.append(args)
         app._refresh_selected_files_ui = lambda text: app.refreshes.append(text)
+        def _complete_input_scan(path):
+            app._file_list_root = path
+            app._file_list_files = gui.get_subtitle_files(path, recursive=True)
+        app._queue_input_folder_scan = _complete_input_scan
         return app
 
     def test_multiple_folders_append_supported_files_recursively(self):

@@ -535,8 +535,9 @@ def parse_any(filepath: str) -> list:
 
 
 def get_subtitle_files(directory: str, recursive: bool = True,
-                       exclude_dir_names=("ÇIKTI",),
-                       exclude_suffixes=(".ham.srt",)) -> list:
+                        exclude_dir_names=("ÇIKTI",),
+                        exclude_suffixes=(".ham.srt",),
+                        cancel_check=None) -> list:
     """Bir klasördeki tüm altyazı dosyalarını listeler (.srt, .vtt, .ass, .ssa).
     Sıra deterministik (set() kullanılmaz): aynı giriş klasörü için aynı sıra garantili.
 
@@ -557,14 +558,26 @@ def get_subtitle_files(directory: str, recursive: bool = True,
     allowed_exts = {".srt", ".vtt", ".ass", ".ssa"}
     result = []
 
+    def _cancelled() -> bool:
+        if cancel_check is None:
+            return False
+        try:
+            return bool(cancel_check())
+        except Exception:
+            return True
+
     if recursive:
         for root, dirnames, filenames in os.walk(base):
+            if _cancelled():
+                return []
             if excl_dirs:
                 dirnames[:] = [
                     name for name in dirnames
                     if _path_key(name) not in excl_dirs
                 ]
-            for name in filenames:
+            for pos, name in enumerate(filenames):
+                if pos % 64 == 0 and _cancelled():
+                    return []
                 low = name.lower()
                 if Path(name).suffix.lower() not in allowed_exts:
                     continue
@@ -576,7 +589,9 @@ def get_subtitle_files(directory: str, recursive: bool = True,
             entries = base.iterdir()
         except OSError:
             return []
-        for fp in entries:
+        for pos, fp in enumerate(entries):
+            if pos % 64 == 0 and _cancelled():
+                return []
             if not fp.is_file() or fp.suffix.lower() not in allowed_exts:
                 continue
             if excl_sfx and fp.name.lower().endswith(excl_sfx):

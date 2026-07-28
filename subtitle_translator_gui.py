@@ -64,11 +64,16 @@ def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
     return items[start:start + size], current, pages
 
 
-def _scan_subtitle_folders(paths):
+def _scan_subtitle_folders(paths, cancel_check=None):
     files = []
     empty = []
     for path in paths:
-        found = get_subtitle_files(path, recursive=True)
+        if cancel_check is not None and cancel_check():
+            break
+        found = get_subtitle_files(
+            path, recursive=True, cancel_check=cancel_check)
+        if cancel_check is not None and cancel_check():
+            break
         if found:
             files.extend(found)
         else:
@@ -2130,13 +2135,17 @@ def _resolve_report_dir(input_dir: str, output_dir: str) -> Path:
     return Path(out_dir)
 
 
-def estimate_tokens(srt_files, chunk_size=None):
+def estimate_tokens(srt_files, chunk_size=None, cancel_check=None):
     """Token tahmini. chunk_size belirtilmezse mevcut mod CHUNK değeri kullanılır."""
     if chunk_size is None:
         chunk_size = CHUNK
     total_chars, total_blocks = 0, 0
-    for fp in srt_files:
+    for pos, fp in enumerate(srt_files):
+        if pos % 8 == 0 and cancel_check is not None and cancel_check():
+            return None, None
         blocks = list(parse_subtitle(fp))
+        if cancel_check is not None and cancel_check():
+            return None, None
         total_blocks += len(blocks)
         for _, _, text in blocks:
             total_chars += len(text)
@@ -5554,6 +5563,12 @@ class App(ctk.CTk):
         self._file_list_page = 0
         self._folder_scan_busy = False
         self._folder_scan_token = None
+        self._folder_scan_cancel = None
+        self._folder_scan_pending = None
+        self._estimate_busy = False
+        self._estimate_token = None
+        self._estimate_cancel = None
+        self._estimate_pending = None
         self._input_folder_explicitly_selected = False
         self._input_entry_focus_val = None
         self._removed_queue_files = set()
@@ -5909,6 +5924,12 @@ class App(ctk.CTk):
             except queue.Empty:
                 break
         self._stop_flag = True
+        for attr in ("_folder_scan_cancel", "_estimate_cancel"):
+            cancel = getattr(self, attr, None)
+            if cancel is not None:
+                cancel.set()
+        self._folder_scan_pending = None
+        self._estimate_pending = None
         canceller = self.__dict__.get("_helper_request_canceller")
         if canceller is not None:
             canceller.cancel()
@@ -6293,11 +6314,19 @@ class App(ctk.CTk):
         # rengi vb. bozulur). try/except: tests/customtkinter.py (saf-mantık
         # testleri için hafif stub) ._entry'yi sahte bir fonksiyona düşürür —
         # gerçek Tk yoksa bu bağ isteğe bağlıdır, sessizce atlanır.
-        for _mc_w in (self.main_custom_model_entry, self.main_custom_url_entry, self.main_custom_key_entry):
+        for _mc_w in (self.main_custom_model_entry, self.main_custom_url_entry):
             try:
-                _mc_w._entry.bind("<FocusOut>", lambda _e: self._save_settings(), add="+")
+                _mc_w._entry.bind(
+                    "<FocusOut>",
+                    lambda _e: self._save_settings(save_credentials=False),
+                    add="+")
             except Exception:
                 pass
+        try:
+            self.main_custom_key_entry._entry.bind(
+                "<FocusOut>", lambda _e: self._save_settings(), add="+")
+        except Exception:
+            pass
 
         # ── Model selection divided by token limits ──
         self.limit_class_var = ctk.StringVar(value="250K")
@@ -6327,10 +6356,6 @@ class App(ctk.CTk):
         lbl("Zeki Modeller (250K Limit)")
         self.model_250k_combo = combo(self.model_250k_var, MODELS_250K)
         self.model_250k_combo.configure(command=lambda _: self._update_active_model("250K"))
-
-        # Trace updates
-        self.model_2_5m_var.trace_add("write", lambda *args: self._update_active_model())
-        self.model_250k_var.trace_add("write", lambda *args: self._update_active_model())
 
         # ── Mod ──────────────────────────────────────────────────────────────
         sep()
@@ -8096,7 +8121,7 @@ class App(ctk.CTk):
         if threading.current_thread() is not threading.main_thread():
             _post_ui(self, self._set_running, running)
             return
-        s = "disabled" if running else "normal"
+        s = "disabled" if (running or getattr(self, "_folder_scan_busy", False)) else "normal"
         self.start_btn.configure(state=s)
         self.resume_btn.configure(state=s)
         self.jsonl_btn.configure(state=s)
@@ -8868,7 +8893,7 @@ class App(ctk.CTk):
                 self.model_250k_combo.configure(border_color=ACCENT)
 
         try:
-            self._save_settings()
+            self._save_settings(save_credentials=False)
         except Exception:
             pass
 
@@ -8916,14 +8941,9 @@ class App(ctk.CTk):
         self._file_list_root = ""
         path = (cur_val or "").strip()
         if not self._selected_files and path and os.path.isdir(path):
-            try:
-                from project_memory import ProjectMemory
-                self._pm = ProjectMemory(
-                    path, _lang_iso639_1(self.tgt_var.get()),
-                    _lang_iso639_1(self.src_var.get()))
-                self._project_memories = {}
-            except Exception:
-                self._pm = None
+            self._pm = None
+            self._project_memories = {}
+            self._queue_input_folder_scan(path)
 
     def _retarget_project_memory(self):
         current = getattr(self, "_pm", None)
@@ -9004,20 +9024,8 @@ class App(ctk.CTk):
             self._language_preflight_done = False
             self.clear_files_btn.grid_remove()
             self.clear_info_btn.grid_remove()
-            # ProjectMemory'yi bu klasör için başlat
-            try:
-                from project_memory import ProjectMemory
-                self._pm = ProjectMemory(
-                    path, _lang_iso639_1(self.tgt_var.get()),
-                    _lang_iso639_1(self.src_var.get()))
-                self._project_memories = {}
-                pm_stats = self._pm.stats()
-                if pm_stats["glossary"] > 0 or pm_stats["characters"] > 0:
-                    self._log(
-                        f"Proje hafızası yüklendi: {pm_stats['glossary']} terim, "
-                        f"{pm_stats['characters']} karakter", "ok")
-            except Exception:
-                self._pm = None
+            self._pm = None
+            self._project_memories = {}
             self._queue_input_folder_scan(path)
         else:
             self._log(f"Çıkış klasörü: {path}", "info")
@@ -9030,6 +9038,10 @@ class App(ctk.CTk):
                 state="disabled" if busy else "normal",
                 text="⏳  Klasörler Taranıyor…" if busy else "📂  Klasörler Ekle",
             )
+        start_button = getattr(self, "start_btn", None)
+        if start_button is not None:
+            start_button.configure(
+                state="disabled" if busy or getattr(self, "_is_running", False) else "normal")
         if busy:
             self._set_status("Klasörler taranıyor…")
         elif not getattr(self, "_is_running", False):
@@ -9037,41 +9049,98 @@ class App(ctk.CTk):
 
     def _run_folder_scan(self, work, finish):
         token = object()
+        if getattr(self, "_folder_scan_busy", False):
+            previous = getattr(self, "_folder_scan_cancel", None)
+            if previous is not None:
+                previous.set()
+            self._folder_scan_pending = (token, work, finish)
+            return
+        App._start_folder_scan(self, token, work, finish)
+
+    def _start_folder_scan(self, token, work, finish):
+        cancel = threading.Event()
         self._folder_scan_token = token
+        self._folder_scan_cancel = cancel
         self._set_folder_scan_busy(True)
 
         def _work():
             try:
-                result = work()
+                result = work(cancel.is_set)
                 error = None
             except Exception as exc:
                 result = None
                 error = exc
             _post_ui(
                 self, App._finish_folder_scan,
-                self, token, finish, result, error)
+                self, token, finish, result, error, cancel.is_set())
 
         try:
             App._start_worker(self, _work)
         except Exception as exc:
-            self._folder_scan_token = None
-            self._set_folder_scan_busy(False)
-            self._log(f"Klasör taraması başlatılamadı: {exc}", "err")
+            if token is getattr(self, "_folder_scan_token", None):
+                self._folder_scan_token = None
+                self._folder_scan_cancel = None
+                self._set_folder_scan_busy(False)
+                self._log(f"Klasör taraması başlatılamadı: {exc}", "err")
 
-    def _finish_folder_scan(self, token, finish, result, error):
+    def _finish_folder_scan(self, token, finish, result, error, cancelled=False):
         if token is not getattr(self, "_folder_scan_token", None):
             return
+        pending = getattr(self, "_folder_scan_pending", None)
+        if pending is not None:
+            self._folder_scan_pending = None
+            self._folder_scan_token = None
+            self._folder_scan_cancel = None
+            App._start_folder_scan(self, *pending)
+            return
         self._folder_scan_token = None
+        self._folder_scan_cancel = None
         self._set_folder_scan_busy(False)
+        if cancelled:
+            return
         if error is not None:
             self._log(f"Klasör taraması başarısız: {error}", "err")
             return
         finish(result)
 
     def _queue_input_folder_scan(self, path: str):
-        def _finish(files):
+        target_key = _lang_iso639_1(self.tgt_var.get())
+        source_key = _lang_iso639_1(self.src_var.get())
+
+        def _work(cancel_check):
+            files = get_subtitle_files(
+                path, recursive=True, cancel_check=cancel_check)
+            if cancel_check():
+                return None
+            try:
+                from project_memory import ProjectMemory
+                memory = ProjectMemory(path, target_key, source_key)
+                stats = memory.stats()
+            except Exception:
+                memory = None
+                stats = None
+            if cancel_check():
+                return None
+            return files, memory, stats
+
+        def _finish(result):
+            if result is None:
+                return
+            files, memory, stats = result
             if self.input_var.get() != path:
                 return
+            current_target = _lang_iso639_1(self.tgt_var.get())
+            current_source = _lang_iso639_1(self.src_var.get())
+            if current_target != target_key or current_source != source_key:
+                self._pm = None
+                self._queue_input_folder_scan(path)
+                return
+            self._pm = memory
+            self._project_memories = {}
+            if stats and (stats["glossary"] > 0 or stats["characters"] > 0):
+                self._log(
+                    f"Proje hafızası yüklendi: {stats['glossary']} terim, "
+                    f"{stats['characters']} karakter", "ok")
             if files:
                 self._file_list_root = path
                 self._estimate_async(
@@ -9086,7 +9155,7 @@ class App(ctk.CTk):
                 self._log(f"'{path}' içinde .srt yok.", "warn")
 
         self._run_folder_scan(
-            lambda: get_subtitle_files(path, recursive=True), _finish)
+            _work, _finish)
 
     def _pick_files(self):
         if getattr(self, "_is_running", False):
@@ -9412,15 +9481,22 @@ class App(ctk.CTk):
             else ""
         )
 
-        def _work():
+        def _work(cancel_check):
             base_files = (
-                get_subtitle_files(base_input, recursive=True)
+                get_subtitle_files(
+                    base_input, recursive=True, cancel_check=cancel_check)
                 if base_input else []
             )
-            files, empty = _scan_subtitle_folders(paths)
+            if cancel_check():
+                return None
+            files, empty = _scan_subtitle_folders(paths, cancel_check=cancel_check)
+            if cancel_check():
+                return None
             return base_files, files, empty
 
         def _finish(result):
+            if result is None:
+                return
             base_files, files, empty = result
             if (not self._selected_files and base_input
                     and self.input_var.get() == base_input):
@@ -9607,7 +9683,7 @@ class App(ctk.CTk):
         kadar beklemek bu durumda dolduruşu sessizce kaybettirir."""
         self._sync_main_custom_visibility()
         try:
-            self._save_settings()
+            self._save_settings(save_credentials=False)
         except Exception:
             pass
 
@@ -9621,7 +9697,7 @@ class App(ctk.CTk):
                 return models[role]
         return self._helper_model_config(role).label
 
-    def _save_settings(self):
+    def _save_settings(self, save_credentials: bool = True):
         data = {
             "quality_profile_version": QUALITY_PROFILE_VERSION,
             "model": self.model_var.get(), "src_lang": self.src_var.get(),
@@ -9687,6 +9763,9 @@ class App(ctk.CTk):
             atomic_write_json(_sp, data)
         except Exception:
             pass
+
+        if not save_credentials:
+            return
 
         # API anahtarlarını güvenli depoya kaydet
         try:
@@ -10517,6 +10596,10 @@ class App(ctk.CTk):
 
     def _start(self):
 
+        if getattr(self, "_folder_scan_busy", False):
+            self._set_status("Klasör taraması tamamlanmadan çeviri başlatılamaz.")
+            self._log("Klasör taraması sürerken çeviri başlatılamaz.", "warn")
+            return
         if self._is_running:          # double-click guard — ikinci tık state'i bozmasın
             return
         self._is_running = True       # TOCTOU: hemen set et — _validate boyunca ikinci tık блокlanır
@@ -11075,28 +11158,75 @@ class App(ctk.CTk):
         n = len(files)
         self._set_stat(self.stat_files_var, str(n))
         self.file_info_var.set(f"⏳  {n} dosya  •  token hesaplanıyor…")
+        token = object()
+        if getattr(self, "_estimate_busy", False):
+            previous = getattr(self, "_estimate_cancel", None)
+            if previous is not None:
+                previous.set()
+            self._estimate_pending = (token, files, label_fn, n)
+            return
+        App._start_token_estimate(self, token, files, label_fn, n)
+
+    def _start_token_estimate(self, token, files, label_fn, n):
+        cancel = threading.Event()
+        self._estimate_busy = True
+        self._estimate_token = token
+        self._estimate_cancel = cancel
         _cs = self._chunk_size
+
         def _work():
             try:
-                est, total_blocks = estimate_tokens(files, chunk_size=_cs)
+                if cancel.is_set():
+                    result = None
+                    error = None
+                else:
+                    result = estimate_tokens(
+                        files, chunk_size=_cs, cancel_check=cancel.is_set)
+                    error = None
+            except Exception as exc:
+                result = None
+                error = exc
+            _post_ui(
+                self, App._finish_token_estimate,
+                self, token, label_fn, n, result, error, cancel.is_set())
+
+        try:
+            App._start_worker(self, _work)
+        except Exception as exc:
+            if token is getattr(self, "_estimate_token", None):
+                self._estimate_busy = False
+                self._estimate_token = None
+                self._estimate_cancel = None
+                self.file_info_var.set(
+                    f"⚠  {n} dosya  •  token tahmini yapılamadı: {exc}")
+
+    def _finish_token_estimate(self, token, label_fn, n, result, error, cancelled=False):
+        if token is not getattr(self, "_estimate_token", None):
+            return
+        pending = getattr(self, "_estimate_pending", None)
+        if pending is not None:
+            self._estimate_pending = None
+            self._estimate_token = None
+            self._estimate_cancel = None
+            App._start_token_estimate(self, *pending)
+            return
+        self._estimate_busy = False
+        self._estimate_token = None
+        self._estimate_cancel = None
+        if cancelled or error is not None or not result or result[0] is None:
+            try:
+                self.file_info_var.set(
+                    f"⚠  {n} dosya  •  token tahmini yapılamadı")
             except Exception:
-                def _failed():
-                    try:
-                        self.file_info_var.set(
-                            f"⚠  {n} dosya  •  token tahmini yapılamadı")
-                    except Exception:
-                        pass
-                _post_ui(self, _failed)
-                return
-            est_k = f"{est/1000:.0f}k"
-            def _upd():
-                try:
-                    self.file_info_var.set(label_fn(total_blocks, est_k))
-                    self._set_stat(self.stat_blocks_var, str(total_blocks))
-                except Exception:
-                    pass
-            _post_ui(self, _upd)
-        App._start_worker(self, _work)
+                pass
+            return
+        est, total_blocks = result
+        est_k = f"{est/1000:.0f}k"
+        try:
+            self.file_info_var.set(label_fn(total_blocks, est_k))
+            self._set_stat(self.stat_blocks_var, str(total_blocks))
+        except Exception:
+            pass
 
     # ── Bağlam İncelemesi (Batch sonrası ikinci geçiş) ────────────────────────
     def _save_raw_backup(self, out_path, raw_blocks, raw_map, target_language="Turkish"):
