@@ -35,6 +35,34 @@ class ParseSeriesKeyTest(unittest.TestCase):
         self.assertEqual((s, e), (2, 10))
         self.assertIn("ukur", slug)  # slug Türkçe harfi koruyabilir veya sadeleştirir
 
+    def test_tv_root_episode_directory(self):
+        fp = Path("flag.(2006).tv.s01.fre.13cd fransızca") / "episode 3" / "Flag.03.srt"
+        self.assertEqual(sm.parse_series_key(str(fp)), ("flag", 1, 3))
+
+    def test_tv_root_puntata_filename(self):
+        fp = Path("a.come.andromeda.(1972).tv.s01.eng.5cd") / "subs" / "A Come Andromeda - Puntata 4.srt"
+        self.assertEqual(
+            sm.parse_series_key(str(fp)), ("a-come-andromeda", 1, 4))
+
+    def test_tv_root_n_of_total_filename(self):
+        fp = Path("cold.lazarus.(1996).tv.s01.eng.5cd") / "subs" / "Cold Lazarus BBC 1996 2 of 4 eng sub.srt"
+        self.assertEqual(
+            sm.parse_series_key(str(fp)), ("cold-lazarus", 1, 2))
+
+    def test_tv_root_overrides_release_name_for_consistent_slug(self):
+        fp = Path("doomed.megalopolis.(1991).tv.s01.eng.4cd") / "episode 1" / "Doomed.Megalopolis.Release.S01E01.srt"
+        self.assertEqual(
+            sm.parse_series_key(str(fp)), ("doomed-megalopolis", 1, 1))
+
+    def test_episode_words_without_tv_root_are_not_series(self):
+        fp = Path("movies") / "episode 3" / "Film - Puntata 3.srt"
+        self.assertIsNone(sm.parse_series_key(str(fp)))
+
+    def test_series_memory_root_uses_marked_tv_parent(self):
+        root = Path("flag.(2006).tv.s01.fre.13cd fransızca")
+        fp = root / "episode 3" / "Flag.03.srt"
+        self.assertEqual(sm.series_memory_root(str(fp)), root)
+
 
 class MergeTest(unittest.TestCase):
     def _mem(self):

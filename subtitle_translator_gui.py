@@ -11109,7 +11109,7 @@ class App(ctk.CTk):
         slug, season, ep = key
         snapshot = getattr(self, "_active_snapshot", None) or {}
         selected = snapshot.get("selected_files") if snapshot else getattr(self, "_selected_files", ())
-        input_dir = (str(Path(fp).parent) if selected
+        input_dir = (str(series_memory.series_memory_root(fp)) if selected
                      else snapshot.get("input_dir") if snapshot
                      else self.input_var.get())
         input_dir = input_dir or str(Path(fp).parent)
@@ -11527,14 +11527,14 @@ class App(ctk.CTk):
                             and getattr(self, "_active_snapshot", None)):
                         enabled = bool(self._active_snapshot.get("series_memory"))
                         selected = self._active_snapshot.get("selected_files") or ()
-                        input_dir = (str(Path(fp).parent) if selected
+                        input_dir = (str(series_memory.series_memory_root(fp)) if selected
                                      else self._active_snapshot.get("input_dir") or str(Path(fp).parent))
                     else:
                         enabled = bool(
                             getattr(self, "series_memory_var", None)
                             and self.series_memory_var.get()
                         )
-                        input_dir = (str(Path(fp).parent)
+                        input_dir = (str(series_memory.series_memory_root(fp))
                                      if self.__dict__.get("_selected_files")
                                      else self.input_var.get() or str(Path(fp).parent))
                     key = series_memory.parse_series_key(fp) if enabled else None

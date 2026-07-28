@@ -24,6 +24,13 @@ _SXXEXX = re.compile(
 # 'Show Name 1x05' → show + season + ep (ayraç zorunlu: çözünürlük '1280x720' eşleşmez)
 _NXNN = re.compile(
     r'^(?P<show>.+?)[ ._\-]+(?P<season>\d{1,2})x(?P<ep>\d{1,3})(?:\D|$)')
+_TV_ROOT = re.compile(
+    r'(?i)(?:^|[ ._\-])tv[ ._\-]*s(?P<season>\d{1,2})(?=$|[ ._\-])')
+_EPISODE_DIR = re.compile(r'(?i)^episode[ ._\-]*(?P<ep>\d{1,3})$')
+_PUNTATA = re.compile(
+    r'(?i)(?:^|[ ._\-])puntata[ ._\-]*(?P<ep>\d{1,3})(?:\D|$)')
+_N_OF_TOTAL = re.compile(
+    r'(?i)(?:^|[ ._\-])(?P<ep>\d{1,3})[ ._\-]+of[ ._\-]+\d{1,3}(?:\D|$)')
 
 
 def _slugify(show: str) -> str:
@@ -54,13 +61,44 @@ def _source_key(value: str) -> str:
     return _target_key(value or "en")
 
 
+def _tv_root_info(filename: str):
+    path = Path(filename)
+    for parent in path.parents:
+        match = _TV_ROOT.search(parent.name)
+        if not match:
+            continue
+        show = parent.name[:match.start()]
+        show = re.sub(
+            r'[ ._\-]*[\(\[]?\d{4}[\)\]]?[ ._\-]*$', '', show)
+        return parent, _slugify(show), int(match.group("season"))
+    return None
+
+
+def series_memory_root(filename: str) -> Path:
+    """Seçilmiş bölüm alt klasörlerini ortak dizi köküne bağlar."""
+    info = _tv_root_info(filename)
+    return info[0] if info else Path(filename).parent
+
+
 def parse_series_key(filename: str):
     """'Show.Name.S01E05.720p.srt' → ('show-name', 1, 5). Dizi değilse None."""
-    stem = Path(filename).stem
+    path = Path(filename)
+    stem = path.stem
+    root_info = _tv_root_info(filename)
     for rx in (_SXXEXX, _NXNN):
         m = rx.match(stem)
         if m:
-            return _slugify(m.group("show")), int(m.group("season")), int(m.group("ep"))
+            slug = root_info[1] if root_info else _slugify(m.group("show"))
+            return slug, int(m.group("season")), int(m.group("ep"))
+    if root_info:
+        _root, slug, season = root_info
+        parent_match = _EPISODE_DIR.match(path.parent.name)
+        if parent_match:
+            return slug, season, int(parent_match.group("ep"))
+        for rx in (_PUNTATA, _N_OF_TOTAL):
+            match = rx.search(stem)
+            if match:
+                return slug, season, int(match.group("ep"))
     return None
 
 

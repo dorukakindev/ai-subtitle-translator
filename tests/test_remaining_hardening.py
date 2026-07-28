@@ -155,6 +155,22 @@ class MemoryIsolationTest(unittest.TestCase):
             self.assertEqual(result, ("memory", 1, 2))
             self.assertEqual(Path(load.call_args.args[0]), Path(d))
 
+    def test_selected_episode_subfolder_uses_common_tv_root_for_series_memory(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "Show.(2001).tv.s01.eng.2cd"
+            fp = str(root / "episode 2" / "Show - Puntata 2.srt")
+            stub = SimpleNamespace(
+                series_memory_var=SimpleNamespace(get=lambda: True),
+                input_var=SimpleNamespace(get=lambda: r"C:\stale"),
+                _selected_files=[fp],
+                _active_snapshot=None,
+            )
+            with mock.patch.object(series_memory.SeriesMemory, "load",
+                                   return_value="memory") as load:
+                result = gui.App._series_mem_for(stub, fp)
+            self.assertEqual(result, ("memory", 1, 2))
+            self.assertEqual(Path(load.call_args.args[0]), root)
+
     def test_fuzzy_tm_isolates_model_profanity_and_schema(self):
         with tempfile.TemporaryDirectory() as d:
             tm = TranslationMemory(str(Path(d) / "tm.db"))
