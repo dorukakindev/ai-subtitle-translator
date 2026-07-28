@@ -20,8 +20,8 @@ class QualityProfileDefaultsTest(unittest.TestCase):
     def test_context_and_request_defaults(self):
         expected = {
             "CHUNK": "25",
-            "CONTEXT_LINES": "20",
-            "LOOKAHEAD_LINES": "10",
+            "CONTEXT_LINES": "30",
+            "LOOKAHEAD_LINES": "15",
             "SCENE_GAP_SEC": "3.0",
         }
         for name, value in expected.items():
@@ -38,13 +38,14 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             'self.mode_var = ctk.StringVar(value="sync")',
             "self.clean_sdh_var = ctk.BooleanVar(value=True)",
             "self.critic_var = ctk.BooleanVar(value=True)",
+            "self.native_var = ctk.BooleanVar(value=True)",
             "self.semantic_reconcile_var = ctk.BooleanVar(value=True)",
             "self.backup_raw_var = ctk.BooleanVar(value=True)",
             "self.linebreak_var = ctk.BooleanVar(value=False)",
             "self.hybrid_var = ctk.BooleanVar(value=True)",
             "self.chain_ctx_var = ctk.BooleanVar(value=True)",
             'self.analysis_depth_var = ctk.StringVar(value="Maksimum")',
-            '"GPT-5.4 (Reseller)" if role == "critic"',
+            'if role in ("analysis", "critic") else "gpt-5.4-mini"',
         ]
         for snippet in expected:
             self.assertIn(snippet, self.source)
@@ -81,12 +82,14 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "hybrid": True,
                 "analysis_depth": "Maksimum",
                 "chunk_size": 25,
-                "context_lines": 20,
-                "lookahead_lines": 10,
+                "context_lines": 30,
+                "lookahead_lines": 15,
                 "scene_gap_seconds": 3.0,
                 "temperature": 0.2,
                 "critic": True,
+                "helper_model_analysis": "GPT-5.4 (Reseller)",
                 "helper_model_critic": "GPT-5.4 (Reseller)",
+                "native": True,
                 "semantic_reconcile": True,
                 "clean_sdh": True,
                 "backup_raw": True,

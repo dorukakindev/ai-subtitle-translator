@@ -135,10 +135,10 @@ class BuildRequestsBlockCacheTest(unittest.TestCase):
         # bkz. fable5-planning-protocol / mini-main-model-quality hafızası).
         # Test'in amacı DEĞİŞMEDİ: gui.py ile hybrid_translate.py'nin kopyaları
         # SENKRON kalmalı — yalnızca hedef değerler güncellendi.
-        self.assertEqual(gui.CONTEXT_LINES, 20)
-        self.assertEqual(gui.LOOKAHEAD_LINES, 10)
-        self.assertEqual(ht.CONTEXT_LINES, 20)
-        self.assertEqual(ht.LOOKAHEAD_LINES, 10)
+        self.assertEqual(gui.CONTEXT_LINES, 30)
+        self.assertEqual(gui.LOOKAHEAD_LINES, 15)
+        self.assertEqual(ht.CONTEXT_LINES, 30)
+        self.assertEqual(ht.LOOKAHEAD_LINES, 15)
 
 
 class ChainPairsFromResultTest(unittest.TestCase):

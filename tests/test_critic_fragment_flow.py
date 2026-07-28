@@ -82,6 +82,29 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertIn("MANDATORY FLOW FIX", prompts[0])
         self.assertIn("Return [] only if", prompts[0])
 
+    def test_critic_expands_suspicious_line_to_full_sentence_context(self):
+        cues = [
+            Cue(1, "Although the rain had stopped,"),
+            Cue(2, "the streets were still empty."),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Yağmur okay durmuş olsa da,"),
+            (2, "00:00:01,000 --> 00:00:02,000", "sokaklar hala boştu."),
+        ]
+        prompts = []
+
+        with patch("hybrid_translate.run_validators", return_value=[]), \
+             patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test")
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("CROSS_CUE_SENTENCE_REVIEW", prompts[0])
+        self.assertIn('"group_orig"', prompts[0])
+        self.assertIn('"id": "1"', prompts[0])
+        self.assertIn('"id": "2"', prompts[0])
+
     def test_critic_can_apply_group_rewrite_without_polish(self):
         cues = [
             Cue(1, "Throughout history, humanity has struggled,"),

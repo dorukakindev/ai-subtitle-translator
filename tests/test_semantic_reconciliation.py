@@ -148,6 +148,31 @@ class SemanticClusterBuilderTest(unittest.TestCase):
         )
         self.assertIn("MIXED_TERM_INCONSISTENCY", suspect["reasons"])
 
+    def test_adaptive_review_reaches_requested_coverage_without_full_file(self):
+        blocks = [
+            (str(i), f"00:00:{i:02d} --> 00:00:{i + 1:02d}", f"Çeviri {i}.")
+            for i in range(1, 101)
+        ]
+        src_map = {str(i): "Ordinary source." for i in range(1, 101)}
+
+        with patch("hybrid_translate._semantic_reason_map", return_value={}), \
+             patch("hybrid_translate._source_wordplay_risk_ids", return_value=set()):
+            clusters = ht.build_semantic_reconciliation_clusters(
+                src_map, blocks, target_coverage=0.65)
+
+        covered = {
+            item["id"] for cluster in clusters for item in cluster["items"]
+        }
+        reasons = {
+            reason
+            for cluster in clusters
+            for item in cluster["items"]
+            for reason in item["reasons"]
+        }
+        self.assertGreaterEqual(len(covered), 65)
+        self.assertLess(len(covered), 100)
+        self.assertIn("ADAPTIVE_COVERAGE_REVIEW", reasons)
+
     def test_mixed_term_helper_returns_concrete_cue_ids(self):
         clusters = {
             "Laboratory": [
@@ -581,13 +606,14 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         }
 
         with patch("hybrid_translate.semantic_reconciliation_pass",
-                   return_value=([("1", blocks[0][1], "Yeni.")], stats)), \
+                   return_value=([("1", blocks[0][1], "Yeni.")], stats)) as semantic, \
              patch("builtins.open", mock_open()):
             fixed = app._run_final_semantic_checks(
                 "out.srt", {"1": "Source."}, blocks, changed_ids={"1"}
             )
 
         self.assertEqual(fixed, 1)
+        self.assertEqual(semantic.call_args.kwargs["target_coverage"], 0.65)
         self.assertEqual(blocks[0][2], "Yeni.")
         app._helper_api_key.assert_called_with("critic")
         app._helper_api_base_url.assert_called_with("critic")

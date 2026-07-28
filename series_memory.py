@@ -115,9 +115,9 @@ def sort_files_by_episode(files: list) -> list:
 
 class SeriesMemory:
     VERSION   = 1
-    MAX_TERMS = 40
-    MAX_CHARS = 15
-    MAX_ADDR  = 12
+    MAX_TERMS = 80
+    MAX_CHARS = 24
+    MAX_ADDR  = 24
 
     def __init__(self, path: Path, data: dict):
         self._path = path
@@ -186,15 +186,19 @@ class SeriesMemory:
         if not isinstance(terms, dict):
             return
         t = self._data["terms"]
+        known = {str(key).strip().casefold() for key in t}
         for src, tgt in terms.items():
-            if not (src and tgt) or str(src) in t:
+            if not (src and tgt):
                 continue
             # Kaynak==hedef (küçük-harf sıradan kelime) İngilizce sızıntısı üretir;
             # özel ad/kısaltma (büyük harf içeren) korunur.
             s, v = str(src).strip(), str(tgt).strip()
+            if not s or s.casefold() in known:
+                continue
             if s.lower() == v.lower() and s.islower():
                 continue
-            t[str(src)] = str(tgt)
+            t[s] = v
+            known.add(s.casefold())
 
     def merge_characters(self, chars):
         """chars: {name: style} | [{name, style|speaking_style}] | [CharacterVoice]."""
@@ -208,14 +212,27 @@ class SeriesMemory:
                     items.append((ch["name"], ch.get("style") or ch.get("speaking_style") or ""))
                 elif hasattr(ch, "name"):
                     items.append((ch.name, getattr(ch, "speaking_style", "") or ""))
+        known = {str(key).strip().casefold(): key for key in c}
         for name, style in items:
-            if name and str(name) not in c:
-                c[str(name)] = {"style": str(style or "")}
+            clean_name = str(name or "").strip()
+            if not clean_name:
+                continue
+            canonical = known.get(clean_name.casefold())
+            if canonical is None:
+                c[clean_name] = {"style": str(style or "").strip()}
+                known[clean_name.casefold()] = clean_name
+            elif (isinstance(c.get(canonical), dict)
+                  and not c[canonical].get("style") and str(style or "").strip()):
+                c[canonical]["style"] = str(style).strip()
 
     def merge_address_map(self, pairs):
         """pairs: [{a, b, register}] (pairwise) | {name: register} (per-character)."""
         amap = self._data["address_map"]
-        seen = {(p.get("a"), p.get("b")) for p in amap if isinstance(p, dict)}
+        seen = {
+            (str(p.get("a") or "").strip().casefold(),
+             str(p.get("b") or "").strip().casefold())
+            for p in amap if isinstance(p, dict)
+        }
         entries = []
         if isinstance(pairs, dict):
             for name, reg in pairs.items():
@@ -227,7 +244,7 @@ class SeriesMemory:
                     entries.append({"a": str(p["a"]), "b": str(p.get("b") or ""),
                                     "register": str(p["register"])})
         for e in entries:
-            key = (e["a"], e["b"])
+            key = (e["a"].strip().casefold(), e["b"].strip().casefold())
             if key not in seen:
                 seen.add(key)
                 amap.append(e)
@@ -242,6 +259,14 @@ class SeriesMemory:
 
     # ── Prompt hint'i ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _core_and_recent(items, limit):
+        items = list(items)
+        if len(items) <= limit:
+            return items
+        core_count = limit // 2
+        return items[:core_count] + items[-(limit - core_count):]
+
     def build_hint(self) -> str:
         terms = self._data.get("terms") or {}
         chars = self._data.get("characters") or {}
@@ -251,15 +276,18 @@ class SeriesMemory:
         lines = ["\n## SERIES MEMORY (decisions from earlier episodes — follow strictly)"]
         if terms:
             lines.append("Fixed term translations (use EXACTLY these, never re-decide):")
-            lines.extend(f"- '{s}' → '{t}'" for s, t in list(terms.items())[:self.MAX_TERMS])
+            lines.extend(
+                f"- '{s}' → '{t}'"
+                for s, t in self._core_and_recent(terms.items(), self.MAX_TERMS)
+            )
         if chars:
             lines.append("Characters (keep each voice consistent across episodes):")
-            for name, meta in list(chars.items())[:self.MAX_CHARS]:
+            for name, meta in self._core_and_recent(chars.items(), self.MAX_CHARS):
                 style = meta.get("style") if isinstance(meta, dict) else ""
                 lines.append(f"- {name}" + (f": {style}" if style else ""))
         if addr:
             lines.append("Address register (Turkish sen/siz — keep consistent):")
-            for a in addr[:self.MAX_ADDR]:
+            for a in self._core_and_recent(addr, self.MAX_ADDR):
                 if not isinstance(a, dict):
                     continue
                 aa, bb, reg = a.get("a"), a.get("b"), a.get("register")

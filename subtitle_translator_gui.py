@@ -548,21 +548,23 @@ def resolve_source_language_preflight(detected_input: dict, user_selections: dic
 
 CHUNK         = 25
 SYNC_CHUNK    = 40
-CONTEXT_LINES    = 20  # preceding lines sent as rolling context
-LOOKAHEAD_LINES  = 10  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 1
+CONTEXT_LINES    = 30  # preceding lines sent as rolling context
+LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
+QUALITY_PROFILE_VERSION = 2
 QUALITY_PROFILE_DEFAULTS = {
     "model": "gpt-5.4",
     "mode": "sync",
     "hybrid": True,
     "analysis_depth": "Maksimum",
     "chunk_size": 25,
-    "context_lines": 20,
-    "lookahead_lines": 10,
+    "context_lines": 30,
+    "lookahead_lines": 15,
     "scene_gap_seconds": 3.0,
     "temperature": 0.2,
     "critic": True,
+    "helper_model_analysis": "GPT-5.4 (Reseller)",
     "helper_model_critic": "GPT-5.4 (Reseller)",
+    "native": True,
     "semantic_reconcile": True,
     "clean_sdh": True,
     "backup_raw": True,
@@ -6709,7 +6711,7 @@ class App(ctk.CTk):
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Native Okuyucu Pass
-        self.native_var = ctk.BooleanVar(value=False)
+        self.native_var = ctk.BooleanVar(value=True)
         native_fr = ctk.CTkFrame(sb, fg_color="transparent")
         native_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         native_fr.grid_columnconfigure(1, weight=1)
@@ -6750,7 +6752,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(sr_fr, text="Nihai Anlam Mutabakatı",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Şüpheli cue'ları kaynakla ±2 komşu içinde\nyeniden karşılaştırır; zor dosyada kapsam ve\nmaliyet genişleyebilir. Küme güvenli değilse\nhiçbir değişiklik yapmaz. (Ek maliyet)",
+        ctk.CTkLabel(sb, text="Riskli ve çoklu-cue cümleleri kaynakla ±2 komşu\niçinde karşılaştırır; kapsam yaklaşık en az %65'tir.\nKüme güvenli değilse hiçbir değişiklik yapmaz.\n(Yüksek ek maliyet)",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -6930,7 +6932,10 @@ class App(ctk.CTk):
             role_container.pack(fill="x", pady=(0,2))
             self.helper_role_containers[role] = role_container
 
-            default_helper_model = "GPT-5.4 (Reseller)" if role == "critic" else "gpt-5.4-mini"
+            default_helper_model = (
+                "GPT-5.4 (Reseller)"
+                if role in ("analysis", "critic") else "gpt-5.4-mini"
+            )
             mvar = ctk.StringVar(value=default_helper_model)
             self.helper_model_vars[role] = mvar
 
@@ -11523,6 +11528,7 @@ class App(ctk.CTk):
                 changed_ids=changed_ids,
                 extra_suspect_reasons=extra_suspect_reasons,
                 locked_terms=locked_terms,
+                target_coverage=0.65,
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),

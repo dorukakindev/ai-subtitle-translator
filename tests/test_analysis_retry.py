@@ -6,6 +6,24 @@ from unittest.mock import patch
 
 
 class AnalyzeWithHelperRetryTest(unittest.TestCase):
+    def test_failed_auxiliary_component_is_retried_once(self):
+        import hybrid_translate as ht
+
+        status = {}
+        calls = []
+
+        def call():
+            calls.append(True)
+            status["scene_plan"] = len(calls) > 1
+            return ["recovered"] if status["scene_plan"] else []
+
+        result = ht._retry_failed_analysis_aux(
+            "scene_plan", "Sahne planı", status, None, call)
+
+        self.assertEqual(result, ["recovered"])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(status["scene_plan"])
+
     def test_stop_before_analysis_prevents_any_helper_request(self):
         import hybrid_translate as ht
 

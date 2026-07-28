@@ -76,6 +76,13 @@ class MergeTest(unittest.TestCase):
         m.merge_terms({"the Precinct": "Merkez"})   # ezmemeli
         self.assertEqual(m._data["terms"]["the Precinct"], "Karakol")
 
+    def test_term_keys_are_case_insensitive_for_canonical_decisions(self):
+        m = self._mem()
+        m.merge_terms({"Security Services": "Güvenlik Servisi"})
+        m.merge_terms({"security services": "Emniyet Birimi"})
+        self.assertEqual(
+            m._data["terms"], {"Security Services": "Güvenlik Servisi"})
+
     def test_merge_characters_list_of_dicts(self):
         m = self._mem()
         m.merge_characters([{"name": "Sam", "speaking_style": "blunt"}])
@@ -88,6 +95,13 @@ class MergeTest(unittest.TestCase):
         m = self._mem()
         m.merge_characters([C("Lee", "calm")])
         self.assertEqual(m._data["characters"]["Lee"]["style"], "calm")
+
+    def test_character_case_variant_does_not_create_duplicate(self):
+        m = self._mem()
+        m.merge_characters({"Sam": ""})
+        m.merge_characters({"sam": "blunt"})
+        self.assertEqual(list(m._data["characters"]), ["Sam"])
+        self.assertEqual(m._data["characters"]["Sam"]["style"], "blunt")
 
     def test_merge_address_map_pairwise_and_dict(self):
         m = self._mem()
@@ -134,6 +148,8 @@ class BuildHintTest(unittest.TestCase):
             "terms": terms, "characters": {}, "address_map": []})
         h = m.build_hint()
         self.assertEqual(h.count("→"), sm.SeriesMemory.MAX_TERMS)
+        self.assertIn("'t0'", h)
+        self.assertIn("'t99'", h)
 
 
 class SortTest(unittest.TestCase):
