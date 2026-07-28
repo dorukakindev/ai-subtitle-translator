@@ -289,6 +289,55 @@ try:
 except Exception:
     pass
 
+
+def _install_customtkinter_dpi_guard(root_cls=None, toplevel_cls=None):
+    """CustomTkinter 5.2.2'nin monitör geçişindeki boyut kilidi hatasını düzelt."""
+    if root_cls is None or toplevel_cls is None:
+        try:
+            from customtkinter.windows.ctk_tk import CTk as root_cls
+            from customtkinter.windows.ctk_toplevel import CTkToplevel as toplevel_cls
+        except Exception:
+            return False
+
+    def _block_dimensions(self):
+        self._block_update_dimensions_event = True
+
+    def _unblock_dimensions(self):
+        self._block_update_dimensions_event = False
+        callback = getattr(self, "_after_dpi_scaling", None)
+        if callable(callback):
+            try:
+                self.after_idle(callback)
+            except Exception:
+                pass
+
+    for cls in (root_cls, toplevel_cls):
+        if getattr(cls, "_subtitle_dpi_guard_installed", False):
+            continue
+        cls.block_update_dimensions_event = _block_dimensions
+        cls.unblock_update_dimensions_event = _unblock_dimensions
+        cls._subtitle_dpi_guard_installed = True
+    return True
+
+
+def _refresh_scrollable_frame_after_dpi(frame):
+    canvas = getattr(frame, "_parent_canvas", None)
+    if canvas is None:
+        return False
+    try:
+        old_view = canvas.yview()
+        bounds = canvas.bbox("all")
+        if bounds:
+            canvas.configure(scrollregion=bounds)
+        if old_view:
+            canvas.yview_moveto(max(0.0, min(1.0, float(old_view[0]))))
+        return True
+    except Exception:
+        return False
+
+
+_install_customtkinter_dpi_guard()
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 # Scaling değerlerini açıkça 1.0'a sabitle (bazı sürümlerde 0 ile başlar)
@@ -5602,6 +5651,7 @@ class App(ctk.CTk):
         self._active_snapshot    = None
         self._drain_ui_queue_id  = None
         self._pending_batches_after_id = None
+        self._dpi_refresh_after_id = None
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -7081,6 +7131,7 @@ class App(ctk.CTk):
     # ── Sağ panel ─────────────────────────────────────────────────────────────
     def _build_main(self):
         main = ctk.CTkFrame(self, fg_color="transparent")
+        self._main_frame = main
         main.grid(row=0, column=1, sticky="nsew", padx=(6,12), pady=12)
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(4, weight=1)
@@ -7321,6 +7372,7 @@ class App(ctk.CTk):
 
         # ── Log ───────────────────────────────────────────────────────────────
         log_fr = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
+        self._log_frame = log_fr
         log_fr.grid(row=4, column=0, sticky="nsew")
         log_fr.grid_columnconfigure(0, weight=1)
         log_fr.grid_rowconfigure(1, weight=1)
@@ -7357,6 +7409,49 @@ class App(ctk.CTk):
                           lambda e: self.after(80, self._check_log_pin))
         self.log_box.bind("<Button-5>",
                           lambda e: self.after(80, self._check_log_pin))
+
+    def _after_dpi_scaling(self):
+        if getattr(self, "_is_shutting_down", False):
+            return
+        pending = getattr(self, "_dpi_refresh_after_id", None)
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass
+        try:
+            self._dpi_refresh_after_id = self.after(120, self._refresh_after_dpi_scaling)
+        except Exception:
+            self._dpi_refresh_after_id = None
+
+    def _refresh_after_dpi_scaling(self):
+        self._dpi_refresh_after_id = None
+        if getattr(self, "_is_shutting_down", False):
+            return
+        try:
+            self.update_idletasks()
+        except Exception:
+            return
+        main = getattr(self, "_main_frame", None)
+        if main is not None:
+            try:
+                main.grid_rowconfigure(4, weight=1)
+                main.grid_columnconfigure(0, weight=1)
+            except Exception:
+                pass
+        for frame in (
+            getattr(self, "_sb", None),
+            getattr(self, "_job_rows_frame", None),
+            getattr(self, "_file_rows_frame", None),
+        ):
+            if frame is not None:
+                _refresh_scrollable_frame_after_dpi(frame)
+        try:
+            self.update_idletasks()
+            if getattr(self, "_log_pinned", False):
+                self.log_box.see("end")
+        except Exception:
+            pass
 
     # ── Per-file şema ─────────────────────────────────────────────────────────
     def _populate_file_list(self, files: list, reset_page: bool = True):
