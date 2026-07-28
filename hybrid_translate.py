@@ -2505,6 +2505,20 @@ def analyze_with_helper(
     done_count  = 0
     failed      = False
 
+    def _stop_requested():
+        try:
+            return bool(stop_flag_fn and stop_flag_fn())
+        except Exception:
+            return False
+
+    def _wait_retry(delay):
+        deadline = time.monotonic() + delay
+        while time.monotonic() < deadline:
+            if _stop_requested():
+                return False
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        return True
+
     def _analyze(i):
         """Geçici hatalarda (429 / 5xx) en fazla 3 kez yeniden dener."""
         req = ContextAnalysisRequest(
@@ -2516,6 +2530,8 @@ def analyze_with_helper(
         )
         last_exc = None
         for attempt in range(3):
+            if _stop_requested():
+                return i, None
             try:
                 if use_openai_compatible:
                     return i, _analyze_context_openai_compatible(
@@ -2549,7 +2565,8 @@ def analyze_with_helper(
                             f"  Chunk {i+1} analiz cevabi JSON degil; yeniden deneniyor ({attempt+2}/3){detail}",
                             "warn",
                         )
-                    time.sleep(2 ** attempt)
+                    if not _wait_retry(2 ** attempt):
+                        return i, None
                     continue
                 if invalid_json:
                     if log_fn:
@@ -2566,7 +2583,7 @@ def analyze_with_helper(
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(_analyze, i): i for i in range(len(chunks))}
         for fut in _as_completed(futures):
-            if stop_flag_fn and stop_flag_fn():
+            if _stop_requested():
                 failed = True
                 break
             i = futures[fut]   # chunk index — fut.result() fırlatsa bile bağlı olmalı
@@ -2585,6 +2602,9 @@ def analyze_with_helper(
                     log_fn(f"  Chunk {i+1} beklenmeyen hata: {e} | {compact}", "err")
                 continue
 
+            if memory is None and _stop_requested():
+                failed = True
+                break
             memories[i] = memory
             done_count  += 1
 
@@ -2613,12 +2633,6 @@ def analyze_with_helper(
         merged._analysis_degraded = True
     if log_fn and merged.recurring_terms:
         log_fn(f"Sabit terimler: {merged.recurring_terms}", "ok")
-
-    def _stop_requested():
-        try:
-            return bool(stop_flag_fn and stop_flag_fn())
-        except Exception:
-            return False
 
     if _stop_requested():
         return None

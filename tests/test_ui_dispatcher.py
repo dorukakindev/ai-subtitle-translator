@@ -440,6 +440,7 @@ class UIDispatcherTest(unittest.TestCase):
             postprocess_btn=button,
             stop_btn=button,
             pause_btn=button,
+            _is_running=True,
             _active_snapshot={"marker": "stale"},
             _take_run_snapshot=lambda: snapshot,
             _start_elapsed_timer=lambda: None,
@@ -447,6 +448,8 @@ class UIDispatcherTest(unittest.TestCase):
             _job_rows={},
         )
 
+        gui.App._set_running(stub, True)
+        self.assertIs(stub._active_snapshot, snapshot)
         gui.App._set_running(stub, True)
         self.assertIs(stub._active_snapshot, snapshot)
         gui.App._set_running(stub, False)

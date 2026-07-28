@@ -7709,6 +7709,8 @@ class App(ctk.CTk):
         }
 
     def _freeze_run_variable_reads(self):
+        if getattr(self, "_frozen_run_var_getters", None):
+            return
         self._frozen_run_var_getters = []
         mapping = {
             "input_var": "input_dir", "output_var": "output_dir",
@@ -8083,13 +8085,15 @@ class App(ctk.CTk):
         self.stop_btn.configure(state="normal" if running else "disabled")
         self.pause_btn.configure(state="normal" if running else "disabled")
         self._is_running = running
-        if running:
+        if running and not getattr(self, "_run_state_initialized", False):
+            self._run_state_initialized = True
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
-        else:
+        elif not running:
+            self._run_state_initialized = False
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
             self._run_series_memory = {}
@@ -9583,6 +9587,10 @@ class App(ctk.CTk):
         pass
 
     def _helper_display_name(self, role: str):
+        if threading.current_thread() is not threading.main_thread():
+            models = (getattr(self, "_active_snapshot", None) or {}).get("helper_models") or {}
+            if role in models:
+                return models[role]
         return self._helper_model_config(role).label
 
     def _save_settings(self):
@@ -11491,14 +11499,35 @@ class App(ctk.CTk):
 
         result      = list(sorted_blocks)
         pos_by_idx  = {str(b[0]): k for k, b in enumerate(result)}
-        total_chunks = math.ceil(len(result) / REVIEW_CHUNK)
+        review_ranges = []
+        range_start = 0
+        while range_start < len(result):
+            range_end = min(len(result), range_start + REVIEW_CHUNK)
+            if range_end < len(result):
+                prev_idx = result[range_end - 1][0]
+                next_idx = result[range_end][0]
+                prev_gid = review_frag_group_ids.get(
+                    prev_idx, review_frag_group_ids.get(str(prev_idx)))
+                next_gid = review_frag_group_ids.get(
+                    next_idx, review_frag_group_ids.get(str(next_idx)))
+                if prev_gid is not None and prev_gid == next_gid:
+                    while range_end < len(result):
+                        idx = result[range_end][0]
+                        gid = review_frag_group_ids.get(
+                            idx, review_frag_group_ids.get(str(idx)))
+                        if gid != prev_gid:
+                            break
+                        range_end += 1
+            review_ranges.append((range_start, range_end))
+            range_start = range_end
+        total_chunks = len(review_ranges)
         fixed_total = 0
         review_rejected = 0
         review_rejected_reasons = {}
-        for cs in range(0, len(result), REVIEW_CHUNK):
+        for chunk_no, (cs, chunk_end) in enumerate(review_ranges, 1):
             if self._stop_flag:
                 break
-            chunk = result[cs:cs + REVIEW_CHUNK]
+            chunk = result[cs:chunk_end]
             current_idxs = {str(idx) for idx, ts, text in chunk}   # yalnız bu chunk'ın id'leri
             items = [{"i": idx, "src": src_map.get(str(idx), ""), "tr": text}
                      for idx, ts, text in chunk
@@ -11526,7 +11555,6 @@ class App(ctk.CTk):
                        if not str(text).startswith("[HATA")]
                 if ctx:
                     payload["ctx"] = ctx
-            chunk_no = cs // REVIEW_CHUNK + 1
             try:
                 resp = _safe_chat_create(
                     client, model=model,
@@ -11543,42 +11571,99 @@ class App(ctk.CTk):
                 fixes = json.loads(raw) if raw.strip() else []
                 if not isinstance(fixes, list):
                     fixes = []
+                fix_by_id = {}
+                conflicting_ids = set()
                 for it in fixes:
                     if not (isinstance(it, dict) and "i" in it and "t" in it):
                         continue
-                    if str(it["i"]) not in current_idxs:
+                    sid = str(it["i"])
+                    if sid not in current_idxs:
                         continue   # model ctx satırının idx'ini döndürdü → önceki chunk'ı EZME
-                    pos   = pos_by_idx.get(str(it["i"]))
                     new_t = str(it["t"]).strip()
-                    if pos is None or not new_t:
+                    if not new_t:
+                        continue
+                    if sid in fix_by_id and fix_by_id[sid] != new_t:
+                        conflicting_ids.add(sid)
+                    else:
+                        fix_by_id.setdefault(sid, new_t)
+                for sid in conflicting_ids:
+                    fix_by_id.pop(sid, None)
+                if conflicting_ids:
+                    review_rejected += len(conflicting_ids)
+                    review_rejected_reasons["duplicate_fix_conflict"] = (
+                        review_rejected_reasons.get("duplicate_fix_conflict", 0)
+                        + len(conflicting_ids)
+                    )
+
+                active_group_ids = set()
+                for sid in current_idxs:
+                    pos = pos_by_idx.get(sid)
+                    if pos is None:
+                        continue
+                    old_idx = result[pos][0]
+                    gid = review_frag_group_ids.get(
+                        old_idx, review_frag_group_ids.get(sid))
+                    if gid is not None:
+                        active_group_ids.add(gid)
+                chunk_group_expected = {}
+                original_by_id = {}
+                for old_idx, _old_ts, old_t in result:
+                    sid = str(old_idx)
+                    original_by_id[sid] = old_t
+                    gid = review_frag_group_ids.get(
+                        old_idx, review_frag_group_ids.get(sid))
+                    if gid in active_group_ids:
+                        chunk_group_expected.setdefault(gid, []).append(sid)
+
+                chunk_proposals = {}
+                for sid, new_t in fix_by_id.items():
+                    pos = pos_by_idx.get(sid)
+                    if pos is None:
                         continue
                     old_idx, old_ts, old_t = result[pos]
-                    if new_t != old_t and not old_t.startswith("[HATA"):
-                        neighbor_start = max(0, pos - 2)
-                        neighbor_end = min(len(result), pos + 3)
-                        neighbor_texts = [
-                            result[n][2] for n in range(neighbor_start, neighbor_end)
-                            if n != pos
-                        ]
-                        fragment_tag = (
-                            review_frag_tags.get(old_idx)
-                            or review_frag_tags.get(str(old_idx))
-                            or review_frag_tags.get(it["i"])
-                            or review_frag_tags.get(str(it["i"]))
-                            or "none"
-                        )
-                        ok, reason = ht.validate_polish_candidate(
-                            old_t,
-                            new_t,
-                            source_text=src_map.get(str(old_idx), ""),
-                            neighbor_texts=neighbor_texts,
-                            fragment_tag=fragment_tag,
-                            locked_terms=locked_terms,
-                        )
-                        if not ok:
-                            review_rejected += 1
-                            review_rejected_reasons[reason] = review_rejected_reasons.get(reason, 0) + 1
-                            continue
+                    if old_t.startswith("[HATA"):
+                        continue
+                    neighbor_start = max(0, pos - 2)
+                    neighbor_end = min(len(result), pos + 3)
+                    neighbor_texts = [
+                        result[n][2] for n in range(neighbor_start, neighbor_end)
+                        if n != pos
+                    ]
+                    fragment_tag = (
+                        review_frag_tags.get(old_idx)
+                        or review_frag_tags.get(str(old_idx))
+                        or review_frag_tags.get(sid)
+                        or "none"
+                    )
+                    ok, reason = ht.validate_polish_candidate(
+                        old_t,
+                        new_t,
+                        source_text=src_map.get(str(old_idx), ""),
+                        neighbor_texts=neighbor_texts,
+                        fragment_tag=fragment_tag,
+                        locked_terms=locked_terms,
+                    )
+                    group_id = review_frag_group_ids.get(
+                        old_idx, review_frag_group_ids.get(sid))
+                    chunk_proposals[sid] = (new_t, ok, reason, group_id)
+
+                chunk_result, chunk_rejected, chunk_reasons = ht.apply_polish_group_atomic(
+                    chunk_proposals,
+                    original_by_id,
+                    group_expected=chunk_group_expected,
+                    src_map=src_map,
+                    locked_terms=locked_terms,
+                )
+                review_rejected += chunk_rejected
+                for reason, count in chunk_reasons.items():
+                    review_rejected_reasons[reason] = (
+                        review_rejected_reasons.get(reason, 0) + count)
+                for sid, new_t in chunk_result.items():
+                    pos = pos_by_idx.get(sid)
+                    if pos is None:
+                        continue
+                    old_idx, old_ts, old_t = result[pos]
+                    if new_t != old_t:
                         result[pos] = (old_idx, old_ts, new_t)
                         fixed_total += 1
                         self._log(f"  ✏ İnceleme #{old_idx}: {old_t!r}", "warn")

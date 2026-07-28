@@ -6,6 +6,35 @@ from unittest.mock import patch
 
 
 class AnalyzeWithHelperRetryTest(unittest.TestCase):
+    def test_stop_before_analysis_prevents_any_helper_request(self):
+        import hybrid_translate as ht
+
+        fake_models = types.ModuleType("subtitle_localizer.models")
+
+        class ContextAnalysisRequest:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_models.ContextAnalysisRequest = ContextAnalysisRequest
+        fake_pkg = types.ModuleType("subtitle_localizer")
+        fake_pkg.models = fake_models
+
+        with patch.dict(sys.modules, {
+            "subtitle_localizer": fake_pkg,
+            "subtitle_localizer.models": fake_models,
+        }), patch.object(ht, "_ensure_path", lambda: None), \
+             patch.object(ht, "_analyze_context_openai_compatible") as analyze:
+            result = ht.analyze_with_helper(
+                cues=[SimpleNamespace(index=i, text=f"line {i}") for i in range(5)],
+                helper_api_key="key",
+                chunk_size=1,
+                max_workers=2,
+                stop_flag_fn=lambda: True,
+            )
+
+        self.assertIsNone(result)
+        analyze.assert_not_called()
+
     def test_auxiliary_failure_marks_analysis_degraded(self):
         import hybrid_translate as ht
 
