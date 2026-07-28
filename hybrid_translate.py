@@ -5235,6 +5235,11 @@ _GLOSSARY_GLOSS_BRACKET_RE = re.compile(r"[()\[\]]")
 # Eğik çizgi kuralı yalnızca BOŞLUKLU " / " biçimini yakalar (seçenek ayırıcısı);
 # bitişik "AC/DC", "24/7" gibi gerçek terimler yanlış-pozitif almasın diye.
 _GLOSSARY_GLOSS_SLASH_RE = re.compile(r"\s/\s")
+_GLOSSARY_TIGHT_SLASH_RE = re.compile(r"(?u)([^\W_]+)/([^\W_]+)")
+_GLOSSARY_SLASH_UNITS = frozenset({
+    ("km", "h"), ("m", "s"), ("m", "h"), ("cm", "s"), ("mm", "s"),
+    ("kg", "m"), ("g", "l"), ("mg", "l"), ("mb", "s"), ("gb", "s"),
+})
 _GLOSSARY_META_CLAUSE_RE = re.compile(
     r";\s*(?:"
     r"bağlama\s+göre|spiritüel\s+bağlamda|italik\b|çeviri\s+yok\b|"
@@ -5255,6 +5260,21 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
         return "parantez/köşeli-parantez gloss"
     if _GLOSSARY_GLOSS_SLASH_RE.search(value_s):
         return "eğik çizgili seçenek"
+    tight_option_count = 0
+    for match in _GLOSSARY_TIGHT_SLASH_RE.finditer(value_s):
+        left, right = match.groups()
+        if left.isdigit() and right.isdigit():
+            continue
+        if (left.isupper() and right.isupper()
+                and len(left) <= 4 and len(right) <= 4):
+            continue
+        if (left.casefold(), right.casefold()) in _GLOSSARY_SLASH_UNITS:
+            continue
+        tight_option_count += 1
+    if tight_option_count:
+        word_count = len(re.findall(r"(?u)[^\W_]+", value_s))
+        if tight_option_count > 1 or word_count != 3:
+            return "bitişik eğik çizgili seçenek"
     if _GLOSSARY_META_CLAUSE_RE.search(value_s):
         return "noktalı virgüllü talimat"
     return None
@@ -5356,13 +5376,13 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if verbose_reason:
             gloss_dropped_terms[str(key)] = (value_s, verbose_reason)
             continue
+        gloss_reason = _glossary_gloss_or_instruction_marker(value_s)
         # Kaynağın kendi kelimeleri aynen (özel isim) kaldıysa hiçbir dil-sızıntı
-        # kontrolü çalıştırılmaz -- ne wqx ne de non_turkish_leak_token. Bkz.
-        # yukarıdaki _glossary_target_is_source_kept_asis blok yorumu.
-        if _glossary_target_is_source_kept_asis(key, value_s):
+        # kontrolü çalıştırılmaz -- ancak seçenek/talimat içeren bir değer, kaynak
+        # kelime kümesini de içeriyor diye bu istisnadan yararlanamaz.
+        if not gloss_reason and _glossary_target_is_source_kept_asis(key, value_s):
             cleaned[str(key)] = value_s
             continue
-        gloss_reason = _glossary_gloss_or_instruction_marker(value_s)
         normalized_value = normalize_latin_homoglyphs(value_s)
         gloss_wqx_words = [
             word for word in _GLOSSARY_WORD_RE.findall(normalized_value)
@@ -5390,7 +5410,6 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if has_non_turkish_target_leak(value_s, glossary_target=True, glossary_key=key):
             dropped_terms[str(key)] = value_s
             continue
-        gloss_reason = _glossary_gloss_or_instruction_marker(value_s)
         if gloss_reason:
             # SADECE bu terim atılır -- whole-glossary-drop DEĞİL (bkz. yukarıdaki
             # politika-farkı yorumu). wqx_hits zaten yukarıda unconditional

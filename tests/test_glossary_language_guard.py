@@ -264,6 +264,27 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         cleaned = ht.sanitize_glossary_for_turkish({"band": "AC/DC"})
         self.assertEqual(cleaned, {"band": "AC/DC"})
 
+    def test_compact_slash_options_from_live_analysis_are_dropped(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "roof": "çatı/teras bağlama göre; bu sahnede muhtemelen teras",
+            "the big one": "büyük vurgun/büyük buluş",
+            "solid": "somut/gövdesi var gibi",
+        })
+        self.assertEqual(cleaned, {})
+
+    def test_source_token_set_does_not_hide_slash_options(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "Jeonwonsa Film Co.": "Jeonwonsa Film Co. / Jeonwonsa Film",
+        })
+        self.assertEqual(cleaned, {})
+
+    def test_numeric_and_unit_slashes_survive(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "always": "24/7",
+            "speed": "km/h",
+        })
+        self.assertEqual(cleaned, {"always": "24/7", "speed": "km/h"})
+
     def test_lowercase_source_loanword_with_turkish_suffix_is_preserved(self):
         cleaned = ht.sanitize_glossary_for_turkish({
             "drag queens": "drag queen'ler",

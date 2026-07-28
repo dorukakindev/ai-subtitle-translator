@@ -19,6 +19,38 @@ class ScannerFalsePositiveTest(unittest.TestCase):
         blk = [("1", "00:00:01,000 --> 00:00:03,000", "Hurlan Hambrosia Boons")]
         self.assertEqual(_scan(src, blk), 0)
 
+    def test_punctuated_single_names_from_live_run_not_flagged(self):
+        for value in ("- Colly!", "- Peter.", "Taskerlands?", "Brock.", "Jill, Jill."):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    _scan({"1": value},
+                          [("1", "00:00:01,000 --> 00:00:03,000", value)]),
+                    0,
+                )
+
+    def test_punctuated_multiword_name_not_flagged(self):
+        value = "William Crawshaw."
+        self.assertEqual(
+            _scan({"1": value}, [("1", "00:00:01,000 --> 00:00:03,000", value)]),
+            0,
+        )
+
+    def test_title_list_with_commas_not_flagged(self):
+        value = "Coronation Street, Double\nYour Money, Come Dancing,"
+        self.assertEqual(
+            _scan({"1": value}, [("1", "00:00:01,000 --> 00:00:03,000", value)]),
+            0,
+        )
+
+    def test_short_title_case_commands_still_flagged(self):
+        for value in ("Come Here", "Wait Here", "Please Stop"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    _scan({"1": value},
+                          [("1", "00:00:01,000 --> 00:00:03,000", value)]),
+                    1,
+                )
+
     def test_sdh_effect_line_not_flagged(self):
         src = {"1": "(door slams loudly)"}
         blk = [("1", "00:00:01,000 --> 00:00:03,000", "(door slams loudly)")]

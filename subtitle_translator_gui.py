@@ -3072,20 +3072,36 @@ def _src_text_is_all_caps(src_text: str) -> bool:
 
 def _src_is_proper_name_phrase(src_text: str) -> bool:
     text = str(src_text or "").strip()
-    if not text or re.search(r"[.!?…,:;]$", text):
+    if not text:
         return False
+    text = re.sub(r"^\s*[-–—]\s*", "", text)
+    text = re.sub(r"[\s.!?…,:;]+$", "", text)
     tokens = re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text, re.UNICODE)
-    if not 2 <= len(tokens) <= 6:
+    if not 1 <= len(tokens) <= 8:
         return False
     if not all(token[0].isupper() for token in tokens):
         return False
+    dialogue_starters = {
+        "i", "you", "he", "she", "it", "we", "they",
+        "this", "that", "these", "those", "who", "what", "where", "when",
+        "why", "how", "hello", "thanks", "thank", "please", "sorry",
+        "wait", "stop", "listen", "look", "help", "yes", "no", "okay",
+    }
     verb_like = {
         "am", "is", "are", "was", "were", "be", "been",
         "have", "has", "had", "do", "does", "did",
         "can", "could", "will", "would", "shall", "should",
-        "may", "might", "must", "ran", "went", "came", "said",
+        "may", "might", "must", "run", "ran", "go", "went", "come", "came",
+        "say", "said", "tell", "told", "get", "got", "make", "made",
+        "know", "knew", "think", "thought", "want", "need", "love", "hate",
+        "see", "saw", "hear", "heard", "leave", "left", "stay",
     }
-    return not any(token.casefold() in verb_like for token in tokens)
+    folded = [token.casefold() for token in tokens]
+    if folded[0] in dialogue_starters:
+        return False
+    if any(token in verb_like for token in folded):
+        return len(tokens) > 4 and bool(re.search(r"[,\n]", text))
+    return True
 
 
 def _is_untranslated(src_text: str, tr_text: str) -> bool:
@@ -3122,7 +3138,7 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         return True
     _LOANWORDS = frozenset([
         "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah",
-        "robot", "laser", "internet", "pizza", "taxi",
+        "robot", "laser", "internet", "pizza", "taxi", "stereo",
     ])
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
@@ -3279,7 +3295,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                                 for line in str(translated).splitlines()
                             ]
                             translated = "\n".join(line for line in cleaned_lines if line)
-                            if translated.strip():
+                            if translated.strip() and not _is_untranslated(_src, translated):
                                 out[block_pos] = (idx, ts, translated)
                                 repaired += 1
                     break  # success
@@ -12208,7 +12224,7 @@ class App(ctk.CTk):
                 try:
                     terms.update(file_pm.get_glossary() or {})
                 except RequestCancelled:
-                    return n_fixed
+                    raise
                 except Exception:
                     pass
             if fp:
@@ -12257,6 +12273,8 @@ class App(ctk.CTk):
                     or not str(source).strip().islower()
                 )
             }
+        except RequestCancelled:
+            raise
         except Exception:
             return {}
 

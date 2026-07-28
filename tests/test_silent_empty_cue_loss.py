@@ -305,6 +305,21 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
         self.assertEqual(repaired, 1)
         self.assertEqual(out[0][2], "Rapé ve hapé--")
 
+    def test_unchanged_model_response_is_not_counted_as_repaired(self):
+        blocks = [("8", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
+        raw_src_map = {"8": "Please come here."}
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"8","t":"Please come here."}]'))],
+            usage=None,
+        )
+        with mock.patch("subtitle_translator_gui._safe_chat_create", return_value=response):
+            out, repaired = gui._repair_untranslated_sync(
+                blocks, raw_src_map, client=object(),
+                src_lang="English", tgt_lang="Turkish")
+        self.assertEqual(repaired, 0)
+        self.assertEqual(out[0][2], "[HATA]")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -689,6 +689,18 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         self.assertEqual(terms["Project Term"], "Proje Terimi")
         self.assertEqual(terms["King Behemoth"], "Kral Behemoth")
 
+    def test_locked_terms_propagates_project_memory_cancellation(self):
+        app = gui.App.__new__(gui.App)
+        app._pm = MagicMock()
+        app._pm.get_glossary.side_effect = gui.RequestCancelled("cancelled")
+        app._get_file_glossary = MagicMock(return_value="")
+        app._get_file_schema = MagicMock(return_value={})
+        app._effective_file_source_language = MagicMock(return_value="English")
+        app._project_memory_for = MagicMock(return_value=app._pm)
+
+        with self.assertRaises(gui.RequestCancelled):
+            app._get_locked_terms_dict("C:/subs/episode.srt", "Turkish")
+
 
 if __name__ == "__main__":
     unittest.main()
