@@ -1,8 +1,10 @@
 import io
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import subtitle_translator_gui as gui
 
@@ -45,6 +47,35 @@ class LoggingIntegrityTest(unittest.TestCase):
         self.assertNotIn(secret, log_box.text)
         self.assertIn("…", log_box.text)
         self.assertNotIn(tail, log_box.text)
+
+    def test_copy_log_uses_complete_disk_log_not_truncated_ui(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "session.log"
+            full_text = "[12:00:00] ›  " + ("x" * 900) + "TAIL\n"
+            log_file = path.open("w", encoding="utf-8")
+            log_file.write(full_text)
+            clipboard_append = MagicMock()
+            stub = SimpleNamespace(
+                _log_file=log_file,
+                _log_lock=threading.Lock(),
+                log_box=SimpleNamespace(get=lambda *_args: "TRUNCATED"),
+                clipboard_clear=MagicMock(),
+                clipboard_append=clipboard_append,
+                update_idletasks=MagicMock(),
+                _copy_log_btn=None,
+                _log=MagicMock(),
+            )
+            stub._complete_session_log_text = (
+                lambda: gui.App._complete_session_log_text(stub))
+            try:
+                result = gui.App._copy_complete_log_to_clipboard(stub)
+            finally:
+                log_file.close()
+
+        self.assertTrue(result)
+        clipboard_append.assert_called_once_with(full_text)
+        self.assertIn("TAIL", clipboard_append.call_args.args[0])
+        stub._log.assert_not_called()
 
 
 if __name__ == "__main__":

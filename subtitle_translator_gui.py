@@ -7416,10 +7416,16 @@ class App(ctk.CTk):
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
                       command=self._pin_log_bottom).grid(row=0, column=1, padx=(0,4))
+        self._copy_log_btn = ctk.CTkButton(
+            log_hdr, text="📋 Logları Kopyala", width=112, height=26,
+            font=ctk.CTkFont("Segoe UI", 10),
+            fg_color=CARD, hover_color=BORDER,
+            command=self._copy_complete_log_to_clipboard)
+        self._copy_log_btn.grid(row=0, column=2, padx=(0,4))
         ctk.CTkButton(log_hdr, text="Temizle", width=70, height=26,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
-                      command=self._clear_log).grid(row=0, column=2)
+                      command=self._clear_log).grid(row=0, column=3)
 
         self.log_box = ctk.CTkTextbox(log_fr, font=ctk.CTkFont("Consolas", 11),
                                       fg_color=CARD, corner_radius=8,
@@ -8169,6 +8175,53 @@ class App(ctk.CTk):
             self.log_box.see("end")
         except Exception:
             pass
+
+    def _complete_session_log_text(self):
+        log_file = getattr(self, "_log_file", None)
+        lock = getattr(self, "_log_lock", None)
+
+        def _read_disk_log():
+            if log_file is None:
+                return ""
+            log_file.flush()
+            path = getattr(log_file, "name", None)
+            if not isinstance(path, (str, os.PathLike)):
+                return ""
+            return Path(path).read_text(encoding="utf-8")
+
+        try:
+            if lock is not None:
+                with lock:
+                    content = _read_disk_log()
+            else:
+                content = _read_disk_log()
+            if content:
+                return content
+        except Exception:
+            pass
+
+        try:
+            return self.log_box.get("1.0", "end-1c")
+        except Exception:
+            return ""
+
+    def _copy_complete_log_to_clipboard(self):
+        try:
+            content = self._complete_session_log_text()
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.update_idletasks()
+            button = getattr(self, "_copy_log_btn", None)
+            if button is not None:
+                button.configure(text="✓ Kopyalandı")
+                self.after(1500, lambda: button.configure(text="📋 Logları Kopyala"))
+            return True
+        except Exception as e:
+            self._log(f"Loglar panoya kopyalanamadı: {e}", "warn")
+            messagebox.showwarning(
+                "Pano kullanılamıyor",
+                "Loglar panoya kopyalanamadı. Başka bir uygulama panoyu kilitlemiş olabilir.")
+            return False
 
     def _clear_log(self):
         self.log_box.configure(state="normal")
