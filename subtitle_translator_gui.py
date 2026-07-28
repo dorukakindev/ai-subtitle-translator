@@ -546,6 +546,16 @@ def resolve_source_language_preflight(detected_input: dict, user_selections: dic
 
     return (should_continue, final_map)
 
+
+def centered_dialog_geometry(parent_x: int, parent_y: int, parent_width: int,
+                             parent_height: int, dialog_width: int,
+                             dialog_height: int) -> str:
+    """Dialogu, negatif koordinatlı ikinci monitörlerde de ebeveynin içinde ortalar."""
+    x = int(parent_x) + max((int(parent_width) - int(dialog_width)) // 2, 0)
+    y = int(parent_y) + max((int(parent_height) - int(dialog_height)) // 2, 0)
+    return f"{int(dialog_width)}x{int(dialog_height)}{x:+d}{y:+d}"
+
+
 CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
@@ -13742,6 +13752,34 @@ class App(ctk.CTk):
         elif len(all_languages) > 1:
             self.src_var.set(AUTO_LANGUAGE)
 
+    def _present_preflight_dialog(self, dlg, width: int, height: int):
+        """Ön analiz dialogunu ana pencerenin üzerinde ve görünür konumda açar."""
+        dlg.transient(self)
+        self.update_idletasks()
+        dlg.geometry(centered_dialog_geometry(
+            self.winfo_rootx(),
+            self.winfo_rooty(),
+            max(self.winfo_width(), 1),
+            max(self.winfo_height(), 1),
+            width,
+            height,
+        ))
+        dlg.deiconify()
+        dlg.lift()
+        dlg.attributes("-topmost", True)
+
+        def _release_topmost():
+            try:
+                if dlg.winfo_exists():
+                    dlg.attributes("-topmost", False)
+                    dlg.lift()
+            except Exception:
+                pass
+
+        dlg.after(250, _release_topmost)
+        dlg.focus_force()
+        dlg.grab_set()
+
     def _show_source_language_confirm_dialog(self, detected: dict) -> bool:
         files = list(detected)
         if not files:
@@ -13752,12 +13790,9 @@ class App(ctk.CTk):
         result = {"action": "cancel"}
 
         dlg = ctk.CTkToplevel(self)
+        dlg.withdraw()
         dlg.title("Kaynak Dil Ön Analizi")
-        dlg.geometry("700x500")
         dlg.configure(fg_color=BG)
-        dlg.grab_set()
-        dlg.lift()
-        dlg.focus_force()
         dlg.grid_columnconfigure(0, weight=1)
         dlg.grid_rowconfigure(2, weight=1)
 
@@ -13909,6 +13944,7 @@ class App(ctk.CTk):
             hover_color=BORDER, command=lambda: _finish("cancel"),
         ).grid(row=0, column=2, padx=4, sticky="ew")
         dlg.protocol("WM_DELETE_WINDOW", lambda: _finish("cancel"))
+        self._present_preflight_dialog(dlg, 700, 500)
         self.wait_window(dlg)
         self._apply_detected_source_languages(detected)
         return result["action"] == "continue"
@@ -13941,7 +13977,15 @@ class App(ctk.CTk):
             def _finish():
                 if getattr(self, "_is_shutting_down", False):
                     return
-                should_continue = self._show_source_language_confirm_dialog(detected)
+                try:
+                    should_continue = self._show_source_language_confirm_dialog(detected)
+                except Exception as e:
+                    self._log_exc("Kaynak dil onay penceresi açılamadı", e)
+                    self._apply_detected_source_languages(detected)
+                    self._language_preflight_done = False
+                    self._set_running(False)
+                    self._set_status("Kaynak diller uygulandı; yeniden Başlat'a basın.")
+                    return
                 if should_continue:
                     self._language_preflight_done = True
                     self._set_running(False)
@@ -14013,12 +14057,9 @@ class App(ctk.CTk):
 
         result = {"action": "cancel"}
         dlg = ctk.CTkToplevel(self)
+        dlg.withdraw()
         dlg.title("İçerik Türü Ön Analizi")
-        dlg.geometry("760x520")
         dlg.configure(fg_color=BG)
-        dlg.grab_set()
-        dlg.lift()
-        dlg.focus_force()
         dlg.grid_columnconfigure(0, weight=1)
         dlg.grid_rowconfigure(2, weight=1)
 
@@ -14129,6 +14170,7 @@ class App(ctk.CTk):
             command=_cancel,
         ).grid(row=0, column=2, padx=4, sticky="ew")
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        self._present_preflight_dialog(dlg, 760, 520)
         self.wait_window(dlg)
         self._apply_detected_content_types(detected)
         return result["action"] == "continue"
@@ -14163,7 +14205,18 @@ class App(ctk.CTk):
                 detected = {fp: "Otomatik" for fp in auto_files}
 
             def _finish():
-                should_continue = self._show_content_type_confirm_dialog(detected)
+                if getattr(self, "_is_shutting_down", False):
+                    return
+                self._log("İçerik türü ön analizi tamamlandı; onay penceresi açılıyor.", "ok")
+                try:
+                    should_continue = self._show_content_type_confirm_dialog(detected)
+                except Exception as e:
+                    self._log_exc("İçerik türü onay penceresi açılamadı", e)
+                    self._apply_detected_content_types(detected)
+                    self._content_type_preflight_done = False
+                    self._set_running(False)
+                    self._set_status("İçerik türleri uygulandı; yeniden Başlat'a basın.")
+                    return
                 if should_continue:
                     self._content_type_preflight_done = True
                     self._set_running(False)

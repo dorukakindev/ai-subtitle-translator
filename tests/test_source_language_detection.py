@@ -15,6 +15,105 @@ def _response(content, tokens=7):
 
 
 class SourceLanguageDetectionTest(unittest.TestCase):
+    def test_centered_dialog_geometry_stays_over_parent_on_negative_monitor(self):
+        self.assertEqual(
+            gui.centered_dialog_geometry(-1920, 40, 1920, 1040, 760, 520),
+            "760x520-1340+300",
+        )
+        self.assertEqual(
+            gui.centered_dialog_geometry(100, 80, 500, 400, 700, 500),
+            "700x500+100+80",
+        )
+
+    def test_present_preflight_dialog_maps_before_grab_and_centers(self):
+        calls = []
+
+        class Dialog:
+            def transient(self, parent):
+                calls.append(("transient", parent))
+
+            def geometry(self, value):
+                calls.append(("geometry", value))
+
+            def deiconify(self):
+                calls.append(("deiconify",))
+
+            def lift(self):
+                calls.append(("lift",))
+
+            def attributes(self, *args):
+                calls.append(("attributes",) + args)
+
+            def after(self, _ms, fn):
+                fn()
+
+            def winfo_exists(self):
+                return True
+
+            def focus_force(self):
+                calls.append(("focus",))
+
+            def grab_set(self):
+                calls.append(("grab",))
+
+        parent = SimpleNamespace(
+            update_idletasks=lambda: calls.append(("idle",)),
+            winfo_rootx=lambda: -1920,
+            winfo_rooty=lambda: 40,
+            winfo_width=lambda: 1920,
+            winfo_height=lambda: 1040,
+        )
+        dialog = Dialog()
+        gui.App._present_preflight_dialog(parent, dialog, 760, 520)
+
+        self.assertIn(("geometry", "760x520-1340+300"), calls)
+        self.assertLess(calls.index(("deiconify",)), calls.index(("grab",)))
+        self.assertIn(("attributes", "-topmost", False), calls)
+
+    def test_content_preflight_dialog_failure_reenables_ui_and_keeps_results(self):
+        done = threading.Event()
+        running = []
+        applied = []
+        statuses = []
+
+        def post_ui_immediate(_app, fn):
+            fn()
+
+        def set_status(value):
+            statuses.append(value)
+            if "yeniden" in value:
+                done.set()
+
+        stub = SimpleNamespace(
+            _auto_content_type_files=lambda files: list(files),
+            _set_running=lambda value: running.append(value),
+            _set_phase=lambda *_args: None,
+            _set_status=set_status,
+            _main_custom_active=lambda: True,
+            _main_model_name=lambda: "test-model",
+            _main_api_base_url=lambda: "",
+            _log=lambda *_args: None,
+            _log_exc=lambda *_args: None,
+            _detect_content_types_parallel=lambda _client, files, _model: {
+                fp: "Film" for fp in files
+            },
+            _show_content_type_confirm_dialog=lambda _detected: (
+                (_ for _ in ()).throw(RuntimeError("dialog failed"))
+            ),
+            _apply_detected_content_types=lambda detected: applied.append(dict(detected)),
+            _content_type_preflight_done=False,
+            _is_shutting_down=False,
+        )
+
+        with patch("openai.OpenAI.__init__", return_value=None), \
+             patch.object(gui, "_post_ui", side_effect=post_ui_immediate):
+            gui.App._start_content_type_preflight(stub, "fake-key", ["a.srt"])
+            self.assertTrue(done.wait(timeout=2.0))
+
+        self.assertEqual(running, [True, False])
+        self.assertEqual(applied, [{"a.srt": "Film"}])
+        self.assertFalse(stub._content_type_preflight_done)
+
     def test_normalize_display_name_code_and_auto(self):
         self.assertEqual(gui.normalize_language_name("spanish"), "Spanish")
         self.assertEqual(gui.normalize_language_name("it"), "Italian")
