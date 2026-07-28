@@ -4764,6 +4764,9 @@ _GARBLE_NOT_AFTER_APOS = r"(?<!['’])"
 # R1: başıboş tek harf (gerçek örnekler: "a astronom", "orada a olduğunu", "kıtasını a").
 # 'o' (zamir) ve 'e' (ünlem) kasıtlı hariç.
 _GARBLE_STRAY_LETTER_RE = re.compile(_GARBLE_NOT_AFTER_APOS + r'\b[aıuüö]\b')
+_GARBLE_LINEBREAK_DUP_INITIAL_RE = re.compile(
+    r"\n[ \t]*([bcçdfgğhjklmnprsştvyz])[ \t]+(?=\1[^\W\d_])"
+)
 # R2: küçük-harf w/q/x içeren token (ör. "simwolika"); allowlist'te olanlar ve
 # büyük-harfle başlayanlar (özel isim) hariç.
 _GARBLE_WQX_RE = re.compile(_GARBLE_NOT_AFTER_APOS + r'\b[a-zçğıöşü]*[wqx][a-zçğıöşü]*\b')
@@ -4843,6 +4846,9 @@ def find_garble_tokens(text) -> list:
         if _garble_neighbor_is_capitalized(s, m.start(), m.end()):
             continue  # özel-isim dizisinin parçası olabilir (ör. "Monumento a la Humanidad")
         found.append((m.group(0), "R1_stray_letter"))
+
+    for m in _GARBLE_LINEBREAK_DUP_INITIAL_RE.finditer(s):
+        found.append((m.group(1), "R1_stray_letter"))
 
     for m in _GARBLE_WQX_RE.finditer(s):
         tok = m.group(0)

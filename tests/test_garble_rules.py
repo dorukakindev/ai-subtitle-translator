@@ -48,6 +48,15 @@ class StrayLetterR1Test(unittest.TestCase):
         hits = ht.find_garble_tokens("Bu, uzayda yol almak için\na bir sistem mi?")
         self.assertIn(("a", "R1_stray_letter"), hits)
 
+    def test_repeated_initial_stray_consonant_after_line_break_flagged(self):
+        hits = ht.find_garble_tokens(
+            "Gerekli etkinlikle işinizi yapıp yeterli enerji merkezlerden\ng geçtiğinde,"
+        )
+        self.assertIn(("g", "R1_stray_letter"), hits)
+
+    def test_lowercase_variable_without_repeated_initial_not_flagged(self):
+        self.assertEqual(ht.find_garble_tokens("x ekseni ile g kuvvetini ölçtük."), [])
+
 
 class WqxTokenR2Test(unittest.TestCase):
     def test_simwolika_flagged(self):
