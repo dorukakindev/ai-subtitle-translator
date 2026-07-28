@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 from app_state import (atomic_write_json, atomic_write_text, best_effort_cancel_remote_batch,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
 from subtitle_formats import clean_translation_source_text
+from request_cancellation import RequestCancelled
 
 _SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -1190,6 +1191,7 @@ def _generate_character_examples(
     log_fn=None,
     token_callback=None,
     status=None,
+    cancel_context=None,
 ):
     """Generate 2 sample dialogue lines + register/dialect classification per character.
 
@@ -1226,6 +1228,7 @@ def _generate_character_examples(
         )
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=900,
@@ -1265,6 +1268,7 @@ def _generate_pronoun_map(
     helper_model: str,
     token_callback=None,
     status=None,
+    cancel_context=None,
 ) -> dict:
     """Determine sen/siz (informal/formal) address for each character pair.
     Returns e.g. {"Sherry-Matt": "sen", "Dr.Tolin-Sherry": "siz"}.
@@ -1299,6 +1303,7 @@ def _generate_pronoun_map(
         )
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=400,
@@ -1424,6 +1429,7 @@ def _extract_emotional_arc(
     log_fn=None,
     token_callback=None,
     status=None,
+    cancel_context=None,
 ) -> list:
     """Extract a per-scene semantic plan from the subtitle file.
 
@@ -1499,6 +1505,7 @@ def _extract_emotional_arc(
         )
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             # Ölçülen teorik max ~8000 (30 sahne, tüm alanlar dolu); eski 3000 sınırı
@@ -1553,6 +1560,7 @@ def _generate_idiom_map(
     source_language: str = "English",
     token_callback=None,
     status=None,
+    cancel_context=None,
 ) -> dict:
     """Detect source-language idioms in cues; generate natural target-language equivalents.
 
@@ -1584,6 +1592,7 @@ def _generate_idiom_map(
         )
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=800,
@@ -1634,6 +1643,7 @@ def _generate_cultural_refs(
     log_fn=None,
     token_callback=None,
     status=None,
+    cancel_context=None,
 ) -> list:
     """Detect cultural references (pop culture, brand names, regional references) in cues.
     Recommends keep/localize action for each.
@@ -1674,6 +1684,7 @@ def _generate_cultural_refs(
         )
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=600,
@@ -2016,11 +2027,13 @@ def _is_openai_compatible_endpoint(api_url: str, model: str) -> bool:
 API_REQUEST_TIMEOUT_SECONDS = 300
 
 
-def _safe_chat_create(client, **kwargs):
+def _safe_chat_create(client, cancel_context=None, **kwargs):
     model = kwargs.get("model", "")
     requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
     base_url = str(getattr(client, "base_url", "")).lower().rstrip("/")
+    if cancel_context is not None:
+        cancel_context.raise_if_cancelled()
 
     # Bedrock and Anthropic provider check
     is_bedrock = False
@@ -2077,8 +2090,21 @@ def _safe_chat_create(client, **kwargs):
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
     from provider_retry import chat_create_with_compat
-    return chat_create_with_compat(
-        client, model, kwargs, requested_format=requested_format)
+    if cancel_context is None:
+        return chat_create_with_compat(
+            client, model, kwargs, requested_format=requested_format)
+    cancel_context.register(client)
+    try:
+        result = chat_create_with_compat(
+            client, model, kwargs, requested_format=requested_format)
+        cancel_context.raise_if_cancelled()
+        return result
+    except Exception as exc:
+        if cancel_context.is_cancelled():
+            raise RequestCancelled("request cancelled") from exc
+        raise
+    finally:
+        cancel_context.unregister(client)
 
 
 def _normalize_chat_create_kwargs(model: str, kwargs: dict) -> dict:
@@ -2301,6 +2327,7 @@ def _analyze_context_openai_compatible(
     log_fn=None,
     token_callback=None,
     allow_partial=False,
+    cancel_context=None,
 ):
     _ensure_path()
     from openai import OpenAI
@@ -2383,6 +2410,7 @@ def _analyze_context_openai_compatible(
 
     resp = _safe_chat_create(
         client,
+        cancel_context=cancel_context,
         model=model,
         messages=_messages,
         max_tokens=int(depth_cfg["max_tokens"]),
@@ -2473,6 +2501,7 @@ def analyze_with_helper(
     schema: dict = None,  # Content schema for cultural ref genre-aware decisions
     analysis_depth: str = "standard",
     token_callback=None,
+    cancel_context=None,
 ):
     """Returns (ContextMemory, character_examples_dict) or None on failure."""
     _ensure_path()
@@ -2547,6 +2576,7 @@ def analyze_with_helper(
                         token_callback=token_callback,
                         log_fn=log_fn,
                         allow_partial=(attempt == 2),
+                        cancel_context=cancel_context,
                     )
                 return i, provider.analyze_context(req)
             except Exception as e:
@@ -2648,6 +2678,7 @@ def analyze_with_helper(
         log_fn=log_fn,
         token_callback=token_callback,
         status=aux_status,
+        cancel_context=cancel_context,
     )
     if log_fn and examples:
         log_fn(f"Karakter örnekleri hazır: {', '.join(examples.keys())}", "ok")
@@ -2663,6 +2694,7 @@ def analyze_with_helper(
         helper_api_key, helper_url, helper_model,
         token_callback=token_callback,
         status=aux_status,
+        cancel_context=cancel_context,
     )
     if log_fn and pronoun_map:
         log_fn(f"Hitap haritası: {pronoun_map}", "ok")
@@ -2679,6 +2711,7 @@ def analyze_with_helper(
         log_fn=log_fn,
         token_callback=token_callback,
         status=aux_status,
+        cancel_context=cancel_context,
     )
     if log_fn and scene_emotions:
         _with_ref = sum(1 for s in scene_emotions if isinstance(s, dict) and s.get("referents"))
@@ -2699,6 +2732,7 @@ def analyze_with_helper(
         source_language=source_language,
         token_callback=token_callback,
         status=aux_status,
+        cancel_context=cancel_context,
     )
     if log_fn and idiom_map:
         log_fn(f"Deyim haritası: {len(idiom_map)} deyim", "ok")
@@ -2715,6 +2749,7 @@ def analyze_with_helper(
         log_fn=log_fn,
         token_callback=token_callback,
         status=aux_status,
+        cancel_context=cancel_context,
     )
     if log_fn and cultural_refs:
         log_fn(f"Kültürel referanslar: {len(cultural_refs)} madde", "ok")
@@ -3094,6 +3129,7 @@ def native_reader_pass(
     token_callback=None,
     src_map: dict = None,
     locked_terms: dict | None = None,
+    cancel_context=None,
 ) -> list:
     """Native reader reflex pass — Helper reads translated subtitles as a native viewer
     and naturally rewrites lines that 'sound translated'.
@@ -3188,6 +3224,8 @@ def native_reader_pass(
     total_chunks = math.ceil(len(result) / CHUNK_SIZE)
 
     for chunk_i in range(0, len(result), CHUNK_SIZE):
+        if cancel_context is not None and cancel_context.is_cancelled():
+            break
         chunk = result[chunk_i:chunk_i + CHUNK_SIZE]
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         chunk_num = chunk_i // CHUNK_SIZE + 1
@@ -3264,6 +3302,7 @@ def native_reader_pass(
         try:
             resp = _safe_chat_create(
                 client,
+                cancel_context=cancel_context,
                 model=helper_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=len(chunk) * 80,
@@ -3317,6 +3356,8 @@ def native_reader_pass(
                         continue
                     result[pos] = (old_idx, old_ts, ftext)
                     total_fixed += 1
+        except RequestCancelled:
+            break
         except Exception as chunk_err:
             if log_fn:
                 log_fn(f"Native Pass chunk {chunk_num} hatası: {chunk_err}", "warn")
@@ -3377,6 +3418,7 @@ def condense_fast_lines(
     token_callback=None,
     src_map: dict = None,
     locked_terms: dict | None = None,
+    cancel_context=None,
 ) -> tuple:
     """Okuma hızı sınırını aşan satırları, anlamı ve tonu koruyarak kısaltır.
     Profesyonel altyazıcının 'ekrana sığdırma' refleksini taklit eder.
@@ -3408,6 +3450,8 @@ def condense_fast_lines(
     reject_counts = {}
 
     for chunk_i in range(0, len(fast), CHUNK_SIZE):
+        if cancel_context is not None and cancel_context.is_cancelled():
+            break
         chunk = fast[chunk_i:chunk_i + CHUNK_SIZE]
         items = [{"id": fid, "text": txt, "max_chars": budget}
                  for fid, txt, budget in chunk]
@@ -3432,6 +3476,7 @@ def condense_fast_lines(
         try:
             resp = _safe_chat_create(
                 client,
+                cancel_context=cancel_context,
                 model=helper_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=len(chunk) * 60,
@@ -3475,6 +3520,8 @@ def condense_fast_lines(
                             continue
                         result[pos] = (old_idx, old_ts, short)
                         total += 1
+        except RequestCancelled:
+            break
         except Exception as e:
             if log_fn:
                 log_fn(f"Kısaltma chunk hatası: {e}", "warn")
@@ -3504,6 +3551,7 @@ def back_translation_check(
     log_fn=None,
     token_callback=None,
     chunk_size: int = 40,
+    cancel_context=None,
 ) -> list:
     """Geri Ã§eviri anlam kontrolÃ¼ (RAPOR-ONLY â€” Ã§eviriyi DEÄÄ°ÅTÄ°RMEZ).
 
@@ -3542,6 +3590,8 @@ def back_translation_check(
 
     flagged = []
     for start in range(0, len(items), chunk_size):
+        if cancel_context is not None and cancel_context.is_cancelled():
+            break
         chunk = items[start:start + chunk_size]
 
         # ── Stage 1: kör geri çeviri (kaynak GÖSTERİLMEZ) ──
@@ -3555,7 +3605,7 @@ def back_translation_check(
         back_map = {}
         try:
             resp = _safe_chat_create(
-                client, model=model,
+                client, cancel_context=cancel_context, model=model,
                 messages=[{"role": "user", "content": bt_prompt}],
                 max_tokens=len(chunk) * 60 + 300, temperature=0.0,
             )
@@ -3569,6 +3619,8 @@ def back_translation_check(
             for o in json.loads(_extract_json_array(content) or "[]"):
                 if isinstance(o, dict) and o.get("id") is not None:
                     back_map[str(o["id"])] = str(o.get("en", "")).strip()
+        except RequestCancelled:
+            break
         except Exception as e:
             if log_fn:
                 log_fn(f"Geri çeviri stage-1 chunk hatası: {e}", "warn")
@@ -3591,7 +3643,7 @@ def back_translation_check(
         )
         try:
             resp = _safe_chat_create(
-                client, model=model,
+                client, cancel_context=cancel_context, model=model,
                 messages=[{"role": "user", "content": cmp_prompt}],
                 max_tokens=len(chunk) * 40 + 300, temperature=0.0,
             )
@@ -3612,6 +3664,8 @@ def back_translation_check(
                     it = by_idx[fid]
                     flagged.append({"idx": fid, "src": it["src"], "tr": it["tr"],
                                     "back": back_map.get(fid, ""), "reason": reason})
+        except RequestCancelled:
+            break
         except Exception as e:
             if log_fn:
                 log_fn(f"Geri çeviri stage-2 chunk hatası: {e}", "warn")
@@ -3632,6 +3686,7 @@ def quality_check_with_helper(
     tgt_lang: str = "Turkish",
     log_fn=None,
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
+    cancel_context=None,
 ) -> list:
     """
     Compare original cues with translated blocks.
@@ -3716,6 +3771,8 @@ def quality_check_with_helper(
         chunk_errors = 0
 
         for chunk_i, cs in enumerate(range(0, len(all_pairs), QC_CHUNK)):
+            if cancel_context is not None and cancel_context.is_cancelled():
+                break
             chunk = all_pairs[cs:cs + QC_CHUNK]
             chunk_by_id = {pair["id"]: pair for pair in chunk}
             chunk_num = chunk_i + 1
@@ -3753,6 +3810,7 @@ def quality_check_with_helper(
             try:
                 resp = _safe_chat_create(
                     client,
+                    cancel_context=cancel_context,
                     model=helper_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=12000,   # 3000 yetersizdi: çok hatalı dosyalarda JSON kesilip TÜM sorunlar düşüyordu
@@ -3795,6 +3853,8 @@ def quality_check_with_helper(
                 all_issues.extend(chunk_issues)
                 if log_fn and chunk_issues:
                     log_fn(f"  QC chunk {chunk_num}: {len(chunk_issues)} sorun", "warn")
+            except RequestCancelled:
+                break
             except Exception as chunk_err:
                 chunk_errors += 1
                 if log_fn:
@@ -6258,6 +6318,7 @@ def semantic_reconciliation_pass(
     locked_terms: dict | None = None,
     log_fn=None,
     token_callback=None,
+    cancel_context=None,
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
     locked_terms = {
@@ -6339,11 +6400,14 @@ def semantic_reconciliation_pass(
         }
 
     for batch_pos, batch in enumerate(batches):
+        if cancel_context is not None and cancel_context.is_cancelled():
+            break
         batch_cluster_by_id = {cluster["cluster"]: cluster for cluster in batch}
         payload = {"clusters": batch}
         try:
             resp = _safe_chat_create(
                 client,
+                cancel_context=cancel_context,
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -6362,6 +6426,8 @@ def semantic_reconciliation_pass(
             parsed = json.loads(_extract_json_array(raw) or "[]")
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
+        except RequestCancelled:
+            break
         except Exception as exc:
             stats["details"].append({"clusters": [c["cluster"] for c in batch],
                                      "status": "api_error", "reason": str(exc)})
@@ -8420,6 +8486,7 @@ def qc_auto_fix(
     log_fn=None,
     helper_api_key: str = None,
     locked_terms: dict | None = None,
+    cancel_context=None,
 ) -> list:
     """Re-translate QC-flagged blocks with explicit error feedback via OpenAI / Helper LLM.
 
@@ -8458,6 +8525,8 @@ def qc_auto_fix(
     fixed = 0
     seen_issue_ids = set()
     for issue in issues:
+        if cancel_context is not None and cancel_context.is_cancelled():
+            break
         if not isinstance(issue, dict):
             continue
         issue_id   = str(issue.get("id", ""))
@@ -8506,6 +8575,7 @@ def qc_auto_fix(
         try:
             resp = _safe_chat_create(
                 client,
+                cancel_context=cancel_context,
                 model=model,
                 messages=[
                     {"role": "system", "content": system},
@@ -8525,6 +8595,8 @@ def qc_auto_fix(
                     api_applied = True
                 elif log_fn:
                     log_fn(f"QC Auto-Fix #{issue_id} güvenlik filtresinden döndü ({_reason}) — öneri denecek", "warn")
+        except RequestCancelled:
+            break
         except Exception as e:
             if log_fn:
                 log_fn(f"QC Auto-Fix #{issue_id} hatası: {e} — öneri denecek", "warn")
@@ -8726,6 +8798,7 @@ def critic_pass_with_helper(
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
     change_log: list | None = None,
     token_callback=None,
+    cancel_context=None,
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
@@ -8953,6 +9026,8 @@ def critic_pass_with_helper(
 
     for chunk in _critic_suspicious_chunks(
             suspicious, frag_group_by_id, MINIMAX_CHUNK):
+        if cancel_context is not None and cancel_context.is_cancelled():
+            break
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         pairs = []
         for idx, ts, text in chunk:
@@ -9061,6 +9136,7 @@ def critic_pass_with_helper(
         try:
             resp = _safe_chat_create(
                 client,
+                cancel_context=cancel_context,
                 model=helper_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=len(chunk) * 60,
@@ -9215,6 +9291,8 @@ def critic_pass_with_helper(
                         "before": old_text,
                         "after": final_text,
                     })
+        except RequestCancelled:
+            break
         except Exception as e:
             if log_fn:
                 log_fn(f"Critic Helper chunk hatası ({len(chunk)} satır atlandı): {e}", "warn")

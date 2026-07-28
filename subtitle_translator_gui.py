@@ -29,6 +29,7 @@ from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json
                        state_dir, state_path)
 from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION, meaning_readability_rule
 from folder_picker import pick_multiple_folders
+from request_cancellation import RequestCancelled, RunRequestCanceller
 import video_subtitles as video_tracks
 
 # Tahmini 1M Token fiyatları (Input/Output $)
@@ -75,11 +76,13 @@ def _scan_subtitle_folders(paths):
     return files, empty
 
 
-def _safe_chat_create(client, **kwargs):
+def _safe_chat_create(client, cancel_context=None, **kwargs):
     model = kwargs.get("model", "")
     requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
     base_url = str(getattr(client, "base_url", "")).lower().rstrip("/")
+    if cancel_context is not None:
+        cancel_context.raise_if_cancelled()
 
     # Bedrock and Anthropic provider check
     is_bedrock = False
@@ -140,8 +143,21 @@ def _safe_chat_create(client, **kwargs):
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
     from provider_retry import chat_create_with_compat
-    return chat_create_with_compat(
-        client, model, kwargs, requested_format=requested_format)
+    if cancel_context is None:
+        return chat_create_with_compat(
+            client, model, kwargs, requested_format=requested_format)
+    cancel_context.register(client)
+    try:
+        result = chat_create_with_compat(
+            client, model, kwargs, requested_format=requested_format)
+        cancel_context.raise_if_cancelled()
+        return result
+    except Exception as exc:
+        if cancel_context.is_cancelled():
+            raise RequestCancelled("request cancelled") from exc
+        raise
+    finally:
+        cancel_context.unregister(client)
 
 
 _CLEAN_CHAT_FINISH_REASONS = {"", "stop", "end_turn", "completed"}
@@ -5893,6 +5909,9 @@ class App(ctk.CTk):
             except queue.Empty:
                 break
         self._stop_flag = True
+        canceller = self.__dict__.get("_helper_request_canceller")
+        if canceller is not None:
+            canceller.cancel()
         self._stop_elapsed_timer()
         try:
             self._save_settings()
@@ -8087,6 +8106,7 @@ class App(ctk.CTk):
         self._is_running = running
         if running and not getattr(self, "_run_state_initialized", False):
             self._run_state_initialized = True
+            self._helper_request_canceller = RunRequestCanceller()
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
@@ -8096,6 +8116,7 @@ class App(ctk.CTk):
             self._run_state_initialized = False
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
+            self._helper_request_canceller = None
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._stop_elapsed_timer()
@@ -8250,6 +8271,7 @@ class App(ctk.CTk):
             return blocks
         import hybrid_translate as ht
         try:
+            cancel_context = self.__dict__.get("_helper_request_canceller")
             self._set_status("Okuma hızı kısaltma...")
             new_blocks, _n = ht.condense_fast_lines(
                 tr_blocks=blocks,
@@ -8261,8 +8283,14 @@ class App(ctk.CTk):
                     if hasattr(self, "_token_callback_for_model")
                     else self._update_tokens),
                 src_map=src_map,
-                locked_terms=locked_terms)
+                locked_terms=locked_terms,
+                cancel_context=cancel_context)
+            if self.__dict__.get("_stop_flag", False) or (
+                    cancel_context is not None and cancel_context.is_cancelled()):
+                return blocks
             return new_blocks
+        except RequestCancelled:
+            return blocks
         except Exception as e:
             self._log_exc("Kısaltma pass hatası", e)
             return blocks
@@ -10947,6 +10975,9 @@ class App(ctk.CTk):
 
     def _stop(self):
         self._stop_flag = True
+        canceller = self.__dict__.get("_helper_request_canceller")
+        if canceller is not None:
+            canceller.cancel()
         self._pause_btw_files.set()
         self._log("Durduruluyor...", "warn")
         self._set_status("Durduruluyor...")
@@ -11136,7 +11167,10 @@ class App(ctk.CTk):
                 tgt_lang=run_tgt_lang or "Turkish",
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
-                    self._helper_api_model("qc")))
+                    self._helper_api_model("qc")),
+                cancel_context=self.__dict__.get("_helper_request_canceller"))
+            if self.__dict__.get("_stop_flag", False):
+                return 0
             if not flags:
                 return 0
             # Fix mode: flagged satırları helper ile düzelt
@@ -11146,6 +11180,8 @@ class App(ctk.CTk):
             fix_model = self._helper_api_model("qc")
             n_fixed = 0
             for f in flags:
+                if self.__dict__.get("_stop_flag", False):
+                    return n_fixed
                 try:
                     src, tr, back, reason = f.get("src",""), f.get("tr",""), f.get("back",""), f.get("reason","")
                     idx = f["idx"]
@@ -11177,7 +11213,10 @@ class App(ctk.CTk):
                         fix_client, model=fix_model,
                         messages=[{"role": "user", "content": fix_prompt}],
                         max_tokens=200, temperature=0.2,
+                        cancel_context=self.__dict__.get("_helper_request_canceller"),
                     )
+                    if self.__dict__.get("_stop_flag", False):
+                        return n_fixed
                     fixed_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
                     if not fixed_text:
                         continue
@@ -11240,6 +11279,11 @@ class App(ctk.CTk):
                 sid: {"MIXED_TERM_INCONSISTENCY"}
                 for sid in _mixed_term_suspect_ids(blocks, src_clean_map)
             }
+            cancel_context = self.__dict__.get("_helper_request_canceller")
+            cancel_kwargs = (
+                {"cancel_context": cancel_context}
+                if cancel_context is not None else {}
+            )
             result, stats = ht.semantic_reconciliation_pass(
                 src_map=src_clean_map,
                 tr_blocks=blocks,
@@ -11255,7 +11299,11 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
+                **cancel_kwargs,
             )
+            if self.__dict__.get("_stop_flag", False) or (
+                    cancel_context is not None and cancel_context.is_cancelled()):
+                return 0
             blocks[:] = result
             if stats.get("clusters"):
                 try:
@@ -11339,6 +11387,8 @@ class App(ctk.CTk):
             if file_pm is not None:
                 try:
                     terms.update(file_pm.get_glossary() or {})
+                except RequestCancelled:
+                    return n_fixed
                 except Exception:
                     pass
             if fp:
@@ -11558,6 +11608,8 @@ class App(ctk.CTk):
             try:
                 resp = _safe_chat_create(
                     client, model=model,
+                    cancel_context=self.__dict__.get(
+                        "_helper_request_canceller"),
                     messages=[{"role": "system", "content": sys_prompt},
                               {"role": "user",
                                "content": json.dumps(payload, ensure_ascii=False)}],
@@ -11669,6 +11721,8 @@ class App(ctk.CTk):
                         self._log(f"  ✏ İnceleme #{old_idx}: {old_t!r}", "warn")
                         self._log(f"       → {new_t!r}", "ok")
                 self._set_status(f"Bağlam incelemesi {chunk_no}/{total_chunks} — {Path(fp).name}")
+            except RequestCancelled:
+                break
             except Exception as e:
                 self._log_exc(f"Bağlam incelemesi chunk {chunk_no}/{total_chunks} hatası", e)
         if review_rejected:
@@ -11693,7 +11747,8 @@ class App(ctk.CTk):
     def _polish_pass(self, sorted_blocks: list, tgt: str,
                      helper_key: str, helper_url: str, helper_model: str,
                      src_map: dict = None, analysis_result=None,
-                     locked_terms: dict | None = None) -> list:
+                     locked_terms: dict | None = None,
+                     cancel_context=None) -> list:
         """Second-pass naturalisation using the helper model gpt-5.4-mini (cost-efficient).
 
         src_map: {idx_str: kaynak metin} — verilirse her satıra 'en' alanı eklenir;
@@ -11703,6 +11758,7 @@ class App(ctk.CTk):
         from openai import OpenAI as _OAI
         import hybrid_translate as ht
         client = _OAI(api_key=helper_key, base_url=helper_url)
+        cancel_context = cancel_context or self.__dict__.get("_helper_request_canceller")
         src_map = src_map or {}
         
         # Reconstruct mock cues for fragment tagging
@@ -11783,7 +11839,8 @@ class App(ctk.CTk):
         rejected = 0
         rejected_reasons = {}
         for cs in range(0, len(sorted_blocks), POLISH_CHUNK):
-            if self._stop_flag:
+            if self.__dict__.get("_stop_flag", False) or (
+                    cancel_context is not None and cancel_context.is_cancelled()):
                 break
             chunk = sorted_blocks[cs:cs + POLISH_CHUNK]
             items = []
@@ -11850,6 +11907,7 @@ class App(ctk.CTk):
                 try:
                     resp = _safe_chat_create(
                         client,
+                        cancel_context=cancel_context,
                         model=helper_model,
                         messages=[
                             {"role": "system", "content": sys_prompt},
@@ -11858,6 +11916,9 @@ class App(ctk.CTk):
                         max_tokens=max(1000, len(items) * 120),
                         temperature=0.4,
                     )
+                    if self.__dict__.get("_stop_flag", False) or (
+                            cancel_context is not None and cancel_context.is_cancelled()):
+                        return list(sorted_blocks)
                     if not resp.choices:
                         raise RuntimeError("Polish: empty choices")
                     content = resp.choices[0].message.content or ""
@@ -11910,6 +11971,8 @@ class App(ctk.CTk):
                     for _reason_key, _count in chunk_reasons.items():
                         rejected_reasons[_reason_key] = rejected_reasons.get(_reason_key, 0) + _count
                     break
+                except RequestCancelled:
+                    return list(sorted_blocks)
                 except Exception as e:
                     if attempt == 0:
                         self._log(f"Polish chunk {chunk_num}/{total_chunks} — retry...", "warn")
@@ -11917,6 +11980,9 @@ class App(ctk.CTk):
                     else:
                         self._log_exc(f"Polish chunk {chunk_num}/{total_chunks} hatası", e)
 
+        if self.__dict__.get("_stop_flag", False) or (
+                cancel_context is not None and cancel_context.is_cancelled()):
+            return list(sorted_blocks)
         final = []
         changed = 0
         orig_by_id = {str(idx): text for idx, ts, text in sorted_blocks}
@@ -12140,7 +12206,9 @@ class App(ctk.CTk):
                             analysis_result=analysis_result,
                             change_log=_critic_change_log,
                             token_callback=self._token_callback_for_model(
-                                helper_models.get("critic", "gpt-5.4-mini")))
+                                helper_models.get("critic", "gpt-5.4-mini")),
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                         self._write_critic_change_report(fp, _critic_change_log)
                     except Exception as e:
                         self._log(f"Critic Pass hatası: {e}", "warn")
@@ -12175,7 +12243,8 @@ class App(ctk.CTk):
                             log_fn=self._log, analysis_result=analysis_result,
                             token_callback=self._token_callback_for_model(
                                 helper_models.get("critic", "gpt-5.4-mini")),
-                            src_map=_src_map_from_cues(orig_cues) if orig_cues else None)
+                            src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
+                            cancel_context=self.__dict__.get("_helper_request_canceller"))
                     except Exception as e:
                         self._log(f"Native Pass hatası: {e}", "warn")
 
@@ -12287,6 +12356,7 @@ class App(ctk.CTk):
             qc_key = self._helper_api_key("qc")
             qc_url = self._helper_api_base_url("qc")
             qc_model = self._helper_api_model("qc")
+        cancel_context = self.__dict__.get("_helper_request_canceller")
         try:
             issues = ht.quality_check_with_helper(
                 cues=orig_cues,
@@ -12297,9 +12367,13 @@ class App(ctk.CTk):
                 tgt_lang=tgt,
                 log_fn=self._log,
                 analysis_result=analysis_result,
+                cancel_context=cancel_context,
             )
         except Exception as e:
             self._log_exc("QC hatası", e)
+            return blocks
+        if self.__dict__.get("_stop_flag", False) or (
+                cancel_context is not None and cancel_context.is_cancelled()):
             return blocks
 
         if not issues:
@@ -12334,7 +12408,14 @@ class App(ctk.CTk):
                 base_url=qc_url,
                 log_fn=self._log,
                 locked_terms=locked_terms,
+                cancel_context=cancel_context,
             )
+            if self.__dict__.get("_stop_flag", False) or (
+                    cancel_context is not None and cancel_context.is_cancelled()):
+                return [
+                    (idx, ts, before_map.get(str(idx), text))
+                    for idx, ts, text in blocks
+                ]
             before_count = len(applied_records)
             _record(auto_issues, before_map, blocks)
             if stats is not None:
@@ -12367,7 +12448,14 @@ class App(ctk.CTk):
                 base_url=qc_url,
                 log_fn=self._log,
                 locked_terms=locked_terms,
+                cancel_context=cancel_context,
             )
+            if self.__dict__.get("_stop_flag", False) or (
+                    cancel_context is not None and cancel_context.is_cancelled()):
+                return [
+                    (idx, ts, before_map.get(str(idx), text))
+                    for idx, ts, text in blocks
+                ]
             before_count = len(applied_records)
             _record(approved_fixes, before_map, blocks)
             if stats is not None:
@@ -13978,9 +14066,13 @@ class App(ctk.CTk):
                              schema=schema_dict,
                             analysis_depth=self.analysis_depth_var.get(),
                             token_callback=self._token_callback_for_model(
-                                self._helper_api_model("analysis")))
+                                self._helper_api_model("analysis")),
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
+                        result = None
+                    if self._stop_flag:
                         result = None
                     _analysis_ok = (
                         result is not None
@@ -14220,6 +14312,8 @@ class App(ctk.CTk):
                     change_log=_critic_change_log,
                     token_callback=self._token_callback_for_model(
                         self._helper_api_model("critic")),
+                    cancel_context=self.__dict__.get(
+                        "_helper_request_canceller"),
                 )
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                 self._write_critic_change_report(out_path, _critic_change_log)
@@ -14259,6 +14353,7 @@ class App(ctk.CTk):
                         self._helper_api_model("critic")),
                     src_map=_src_map_from_cues(cues),
                     locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                    cancel_context=self.__dict__.get("_helper_request_canceller"),
                 )
                 _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
 
@@ -14309,6 +14404,7 @@ class App(ctk.CTk):
                     tgt_lang=tgt,
                     log_fn=self._log,
                     analysis_result=(context, char_examples, pronoun_map),
+                    cancel_context=self.__dict__.get("_helper_request_canceller"),
                 )
                 if issues:
                     auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
@@ -14324,6 +14420,7 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
                             locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                            cancel_context=self.__dict__.get("_helper_request_canceller"),
                         )
                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_auto
@@ -14349,6 +14446,7 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("qc"),
                             log_fn=self._log,
                             locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                            cancel_context=self.__dict__.get("_helper_request_canceller"),
                         )
                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_approved
@@ -15045,7 +15143,9 @@ class App(ctk.CTk):
                                     analysis_result=_analysis_result,
                                     change_log=_critic_change_log,
                                     token_callback=self._token_callback_for_model(
-                                        self._helper_api_model("critic")))
+                                        self._helper_api_model("critic")),
+                                    cancel_context=self.__dict__.get(
+                                        "_helper_request_canceller"))
                                 _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
                                 self._write_critic_change_report(output_path, _critic_change_log)
                             if self.polish_var.get() and pp:
@@ -15065,7 +15165,8 @@ class App(ctk.CTk):
                                     token_callback=self._token_callback_for_model(
                                         self._helper_api_model("critic")),
                                     src_map=_src_map_from_cues(_orig_cues),
-                                    locked_terms=self._get_locked_terms_dict(str(_src_path), tgt))
+                                    locked_terms=self._get_locked_terms_dict(str(_src_path), tgt),
+                                    cancel_context=self.__dict__.get("_helper_request_canceller"))
                                 _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                                 _before_pass = list(pp)
@@ -15099,7 +15200,8 @@ class App(ctk.CTk):
                                 _issues = ht.quality_check_with_helper(
                                     cues=_orig_cues, tr_blocks=pp,
                                     helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt, log_fn=self._log,
-                                    analysis_result=_analysis_result)
+                                    analysis_result=_analysis_result,
+                                    cancel_context=self.__dict__.get("_helper_request_canceller"))
                                 if _issues:
                                     _auto_qc, _review_qc = ht.split_qc_issues_for_review(_issues)
                                     if _auto_qc:
@@ -15112,7 +15214,8 @@ class App(ctk.CTk):
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
                                             log_fn=self._log,
                                             locked_terms=self._get_locked_terms_dict(
-                                                str(_src_path), tgt))
+                                                str(_src_path), tgt),
+                                            cancel_context=self.__dict__.get("_helper_request_canceller"))
                                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_auto
                                         _qc_auto_fixes += _n_auto
@@ -15135,7 +15238,8 @@ class App(ctk.CTk):
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
                                             log_fn=self._log,
                                             locked_terms=self._get_locked_terms_dict(
-                                                str(_src_path), tgt))
+                                                str(_src_path), tgt),
+                                            cancel_context=self.__dict__.get("_helper_request_canceller"))
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
                             # CPS uyarısı — diğer akışlarla paritede
@@ -15443,7 +15547,9 @@ class App(ctk.CTk):
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log,
                         token_callback=self._token_callback_for_model(
-                            self._helper_api_model("critic")))
+                            self._helper_api_model("critic")),
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"))
                     _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
@@ -15473,7 +15579,8 @@ class App(ctk.CTk):
                         token_callback=self._token_callback_for_model(
                             self._helper_api_model("critic")),
                         src_map=src_blocks,
-                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang),
+                        cancel_context=self.__dict__.get("_helper_request_canceller"))
                     _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Native Pass hatası: {e}", "warn")
@@ -15954,9 +16061,13 @@ class App(ctk.CTk):
                              schema=schema_dict,
                             analysis_depth=self.analysis_depth_var.get(),
                             token_callback=self._token_callback_for_model(
-                                self._helper_api_model("analysis")))
+                                self._helper_api_model("analysis")),
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
+                        result = None
+                    if self._stop_flag:
                         result = None
                     _analysis_ok = (
                         result is not None
@@ -16311,7 +16422,9 @@ class App(ctk.CTk):
                                 analysis_result=_full_analysis,
                                 change_log=_critic_change_log,
                                 token_callback=self._token_callback_for_model(
-                                    self._helper_api_model("critic")))
+                                    self._helper_api_model("critic")),
+                                cancel_context=self.__dict__.get(
+                                    "_helper_request_canceller"))
                             _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
                             self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
@@ -16336,7 +16449,8 @@ class App(ctk.CTk):
                                 token_callback=self._token_callback_for_model(
                                     self._helper_api_model("critic")),
                                 src_map=_src_map_from_cues(cues),
-                                locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                                locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                                cancel_context=self.__dict__.get("_helper_request_canceller"))
                             _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                             _before_pass = list(pp_blocks)
@@ -16369,7 +16483,8 @@ class App(ctk.CTk):
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt,
                                 log_fn=self._log,
-                                analysis_result=_full_analysis)
+                                analysis_result=_full_analysis,
+                                cancel_context=self.__dict__.get("_helper_request_canceller"))
                             if issues:
                                 auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
                                 if auto_issues:
@@ -16385,6 +16500,7 @@ class App(ctk.CTk):
                                         log_fn=self._log,
                                         locked_terms=self._get_locked_terms_dict(
                                             filepath, tgt),
+                                        cancel_context=self.__dict__.get("_helper_request_canceller"),
                                     )
                                     _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_auto
@@ -16411,6 +16527,7 @@ class App(ctk.CTk):
                                         log_fn=self._log,
                                         locked_terms=self._get_locked_terms_dict(
                                             filepath, tgt),
+                                        cancel_context=self.__dict__.get("_helper_request_canceller"),
                                     )
                                     _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_approved
