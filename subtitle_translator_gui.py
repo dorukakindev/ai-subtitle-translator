@@ -340,8 +340,10 @@ _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-# Scaling değerlerini açıkça 1.0'a sabitle (bazı sürümlerde 0 ile başlar)
+# Çok bileşenli arayüzü monitör sınırında tekrar tekrar ölçeklemek taşıma
+# sırasında ana döngüyü kilitliyor. Windows tek sabit ölçeği uygulasın.
 try:
+    ctk.deactivate_automatic_dpi_awareness()
     ctk.set_widget_scaling(1.0)
     ctk.set_window_scaling(1.0)
 except Exception:

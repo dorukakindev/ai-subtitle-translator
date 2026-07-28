@@ -39,6 +39,13 @@ class _FakeCanvas:
 
 
 class MultiMonitorDpiTest(unittest.TestCase):
+    def test_runtime_uses_fixed_scaling(self):
+        try:
+            from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+        except Exception:
+            self.skipTest("Gerçek CustomTkinter paketi devrede değil")
+        self.assertTrue(ScalingTracker.deactivate_automatic_dpi_awareness)
+
     def test_dpi_guard_blocks_dimension_events_during_scaling(self):
         root_cls = type("Root", (_FakeWindow,), {})
         top_cls = type("Top", (_FakeToplevel,), {})
