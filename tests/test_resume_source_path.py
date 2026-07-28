@@ -19,6 +19,7 @@ KÖK SORUN (2026-07-17): resume, kaynak dosyayı ÇIKTI YOLUNDAN GERİYE HESAPLI
 bunları kullanıyor. Eski (source_path'siz) fmap'ler için eski yönteme düşülür.
 """
 import json
+import inspect
 import os
 import tempfile
 import unittest
@@ -26,6 +27,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import hybrid_translate as ht
+import subtitle_translator_gui as gui
 from app_state import STATE_DIR_ENV
 
 
@@ -63,12 +65,14 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
                                 output_path=r"C:\out\ÇIKTI\Film\Film.srt",
                                 source_path=r"C:\in\Film.vtt",
                                 output_dir=r"C:\out\ÇIKTI",
-                                source_language="Spanish")
+                                source_language="Spanish",
+                                target_language="Turkish")
             data = json.loads(fmap_path.read_text(encoding="utf-8"))
             self.assertEqual(data["source_path"], r"C:\in\Film.vtt")
             self.assertEqual(data["output_dir"], r"C:\out\ÇIKTI")
             self.assertEqual(data["output_path"], r"C:\out\ÇIKTI\Film\Film.srt")
             self.assertEqual(data["source_language"], "Spanish")
+            self.assertEqual(data["target_language"], "Turkish")
             self.assertEqual(data["type"], "hybrid")
         finally:
             fmap_path.unlink(missing_ok=True)
@@ -90,6 +94,7 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
             self.assertEqual(data["source_path"], "")
             self.assertEqual(data["output_dir"], "")
             self.assertEqual(data["source_language"], "")
+            self.assertEqual(data["target_language"], "")
         finally:
             fmap_path.unlink(missing_ok=True)
             if saved_bid is not None:
@@ -170,6 +175,31 @@ class ResumeSourceResolutionTest(unittest.TestCase):
             resolved = self._resolve(str(base / "yok" / "Film.srt"), str(out),
                                      str(base / "in"), str(base / "out"))
             self.assertEqual(resolved, src)
+
+
+class HybridResumeRepairOrderTest(unittest.TestCase):
+    def test_repair_runs_before_missing_output_is_moved_to_partial(self):
+        source = inspect.getsource(gui.App._wait_batch_hybrid)
+        repair_pos = source.index("_repair_untranslated_sync(")
+        missing_pos = source.index("_missing_count = sum(")
+        partial_pos = source.index("_stage_path.replace(_partial_path)")
+
+        self.assertLess(repair_pos, missing_pos)
+        self.assertLess(missing_pos, partial_pos)
+        self.assertIn("write_srt(_stage_path, pp, tgt)", source[missing_pos:partial_pos])
+
+    def test_resume_uses_saved_or_snapshotted_language_settings(self):
+        source = inspect.getsource(gui.App._wait_batch_hybrid)
+        self.assertIn(
+            'target_language or self._snap_get("tgt_lang", "Turkish")',
+            source,
+        )
+        self.assertIn('self._snap_get("profanity", "Orta")', source)
+
+    def test_resume_dispatch_passes_persisted_target_language(self):
+        source = inspect.getsource(gui.App._resume_batches)
+        self.assertIn('fmap_data.get("target_language", "") or tgt', source)
+        self.assertIn("target_language=_saved_target_language", source)
 
 
 if __name__ == "__main__":

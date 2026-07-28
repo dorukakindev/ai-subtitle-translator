@@ -9430,6 +9430,7 @@ def submit_batch(
     output_dir: str = None,
     base_url: str = "",
     source_language: str = "",
+    target_language: str = "",
     schema_name: str = "",
     session_fingerprint: str = "",
 ) -> str | None:
@@ -9483,6 +9484,7 @@ def submit_batch(
                 "source_path": source_path or "",
                 "output_dir": output_dir or "",
                 "source_language": source_language or "",
+                "target_language": target_language or "",
                 "schema_name": schema_name or "",
                 "session_fingerprint": session_fingerprint or "",
                 "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},

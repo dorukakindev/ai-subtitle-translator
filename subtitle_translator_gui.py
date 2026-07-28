@@ -14662,6 +14662,7 @@ class App(ctk.CTk):
                         # dalı zaten output_dir'i böyle saklıyordu; hybrid'de eksikti).
                         _saved_src = fmap_data.get("source_path", "")
                         _saved_source_language = fmap_data.get("source_language", "")
+                        _saved_target_language = fmap_data.get("target_language", "") or tgt
                         _saved_schema_name = fmap_data.get("schema_name", "")
                         _saved_out_dir = fmap_data.get("output_dir", "")
                         if _saved_out_dir:
@@ -14679,6 +14680,7 @@ class App(ctk.CTk):
                                                   report_rows=_resume_report_rows,
                                                   source_path=_saved_src,
                                                   source_language=_saved_source_language,
+                                                  target_language=_saved_target_language,
                                                   schema_name=_saved_schema_name)
                         if _terminal:
                             hybrid_completed_bids.append(bid)
@@ -14766,7 +14768,7 @@ class App(ctk.CTk):
 
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
                            openai_key, is_last=True, report_rows=None, source_path="",
-                           source_language="", schema_name=""):
+                           source_language="", target_language="", schema_name=""):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -14823,27 +14825,10 @@ class App(ctk.CTk):
                     # Post-processing: Consistency Sweep + Critic Pass + Polish Pass + SDH
                     if True:  # consistency sweep always runs; others are gated
                         try:
-                            tgt   = self.tgt_var.get()
+                            tgt   = target_language or self._snap_get("tgt_lang", "Turkish")
                             pp    = list(parse_srt(str(_stage_path)))
                             if not pp:
                                 raise ValueError("İndirilen batch çıktısı boş")
-                            _missing_count = sum(
-                                1 for _idx, _ts, text in pp
-                                if str(text or "").startswith("[HATA")
-                                or "[ÇEVİRİ EKSİK]" in str(text or ""))
-                            if _missing_count:
-                                _partial_path = _out_obj.with_name(
-                                    f"{_out_obj.stem}.partial.srt")
-                                _stage_path.replace(_partial_path)
-                                self._log(
-                                    f"Resume: {_missing_count} eksik çeviri kaldı; "
-                                    f"nihai çıktı korunup {_partial_path.name} yazıldı.",
-                                    "err")
-                                break
-                            _raw_backup_blocks = list(pp)   # kalite geçişleri öncesi ham çeviri (yedek)
-                            self._save_raw_backup(
-                                output_path, _raw_backup_blocks, {}, tgt)
-                            
                             # Kaynak cue'ları yükle (consistency sweep + etiket geri yükleme +
                             # [HATA] işaretleme + TM/QC bunlara bağlı; bulunamazsa hepsi atlanır).
                             # ÖNCE fmap'te saklanan kaynak yolu kullanılır. Geriye-hesaplama
@@ -14872,6 +14857,60 @@ class App(ctk.CTk):
                             if _orig_cues is None:
                                 self._log("Resume: kaynak dosya bulunamadı — etiket geri yükleme / "
                                           "[HATA] işaretleme ve TM/QC bu dosyada atlanacak", "warn")
+                            try:
+                                _resume_schema = (
+                                    self._schema_by_name(schema_name)
+                                    if schema_name else (
+                                        self._get_file_schema(str(_src_path))
+                                        if _src_path is not None else self._get_schema()
+                                    )
+                                )
+                            except Exception:
+                                _resume_schema = self._schema_by_name("Otomatik")
+
+                            if _orig_cues and not self._stop_flag:
+                                try:
+                                    _raw_map_pre = _raw_src_map_from_cues(_orig_cues)
+                                    _repair_client = OpenAI(
+                                        api_key=openai_key,
+                                        base_url=self._main_api_base_url() or None)
+                                    pp, _n_repaired = _repair_untranslated_sync(
+                                        pp, _raw_map_pre, _repair_client,
+                                        src_lang=(
+                                            source_language
+                                            or self._effective_file_source_language(
+                                                str(_src_path),
+                                                self._snap_get("src_lang", "English"))),
+                                        tgt_lang=tgt,
+                                        model=self._main_model_name(),
+                                        schema=_resume_schema,
+                                        profanity=self._snap_get("profanity", "Orta"),
+                                        log_fn=self._log,
+                                        token_cb=self._update_tokens,
+                                        source_cues=_orig_cues)
+                                except Exception as repair_exc:
+                                    self._log(
+                                        f"Resume: eksik satır onarımı atlandı: {repair_exc}",
+                                        "warn")
+
+                            _missing_count = sum(
+                                1 for _idx, _ts, text in pp
+                                if str(text or "").startswith("[HATA")
+                                or "[ÇEVİRİ EKSİK]" in str(text or ""))
+                            if _missing_count:
+                                _partial_path = _out_obj.with_name(
+                                    f"{_out_obj.stem}.partial.srt")
+                                write_srt(_stage_path, pp, tgt)
+                                _stage_path.replace(_partial_path)
+                                self._log(
+                                    f"Resume: {_missing_count} eksik çeviri kaldı; "
+                                    f"nihai çıktı korunup {_partial_path.name} yazıldı.",
+                                    "err")
+                                break
+
+                            _raw_backup_blocks = list(pp)
+                            self._save_raw_backup(
+                                output_path, _raw_backup_blocks, {}, tgt)
                             if pp:
                                 self._set_status("Consistency sweep...")
                                 pp, _cons_fixes = ht.consistency_sweep(_orig_cues, pp, log_fn=self._log)
@@ -14898,10 +14937,6 @@ class App(ctk.CTk):
                             _analysis_result = None
                             if _orig_cues:
                                 try:
-                                    _resume_schema = (
-                                        self._schema_by_name(schema_name)
-                                        if schema_name else self._get_file_schema(str(_src_path))
-                                    )
                                     _analysis_result = self._load_context_cache_for_file(
                                         ht, str(_src_path), tgt,
                                         source_language or self._effective_file_source_language(
@@ -15624,7 +15659,7 @@ class App(ctk.CTk):
 
     def _run_twowave_batches(self, openai_key, requests, fmap, out_path,
                              source_path, output_dir, fname, progress_fn=None,
-                             source_language="", stage_path=None):
+                             source_language="", target_language="", stage_path=None):
         """İki-dalgalı zincirli batch (B3) — TEK dosya için sıralı submit-wait-submit-wait.
 
         A dalgasını gönderir, BEKLER, A'nın kuyruk çevirilerini B dalgasının ilk chunk'ına
@@ -15648,7 +15683,8 @@ class App(ctk.CTk):
         def _submit_wait(reqs, this_fmap, this_out):
             bid = ht.submit_batch(openai_key, reqs, self._log, this_fmap, this_out,
                                   source_path=source_path, output_dir=output_dir,
-                                  base_url=b_url, source_language=source_language)
+                                  base_url=b_url, source_language=source_language,
+                                  target_language=target_language)
             if not bid:
                 return None, None
             self._register_batch(bid, openai_key, b_url)
@@ -15984,7 +16020,8 @@ class App(ctk.CTk):
                 batch_id = ht.submit_batch(
                     openai_key, requests, self._log, fmap, out_path,
                     source_path=str(filepath), output_dir=output_dir, base_url=b_url,
-                    source_language=file_src, schema_name=schema_dict.get("name", ""),
+                    source_language=file_src, target_language=tgt,
+                    schema_name=schema_dict.get("name", ""),
                     session_fingerprint=session_fp)
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
@@ -16047,7 +16084,8 @@ class App(ctk.CTk):
                     _tw_result = self._run_twowave_batches(
                         openai_key, _tw_reqs, fmap, out_path,
                         str(filepath), output_dir, fname, progress_fn=_pfn,
-                        source_language=file_src, stage_path=_tw_stage)
+                        source_language=file_src, target_language=tgt,
+                        stage_path=_tw_stage)
                     if not _tw_result or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
