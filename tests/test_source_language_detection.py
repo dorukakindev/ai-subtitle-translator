@@ -114,6 +114,53 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertEqual(applied, [{"a.srt": "Film"}])
         self.assertFalse(stub._content_type_preflight_done)
 
+    def test_resume_after_preflight_sets_flag_and_starts_on_idle(self):
+        events = []
+        stub = SimpleNamespace(
+            _content_type_preflight_done=False,
+            _set_running=lambda value: events.append(("running", value)),
+            _log=lambda message, tag="info": events.append(("log", message, tag)),
+            after_idle=lambda fn: (events.append(("idle",)), fn()),
+            _start=lambda: events.append(("start",)),
+            _is_shutting_down=False,
+        )
+
+        gui.App._resume_after_preflight(
+            stub, "_content_type_preflight_done", "İçerik türü ön analizi")
+
+        self.assertTrue(stub._content_type_preflight_done)
+        self.assertEqual(events[0], ("running", False))
+        self.assertIn(("idle",), events)
+        self.assertEqual(events[-1], ("start",))
+
+    def test_resume_after_preflight_surfaces_start_failure(self):
+        logged = []
+        statuses = []
+        running = []
+
+        def fail_start():
+            raise RuntimeError("boom")
+
+        stub = SimpleNamespace(
+            _language_preflight_done=False,
+            _set_running=lambda value: running.append(value),
+            _log=lambda *_args: None,
+            _log_exc=lambda label, exc: logged.append((label, str(exc))),
+            _set_status=lambda value: statuses.append(value),
+            after_idle=lambda fn: fn(),
+            _start=fail_start,
+            _is_shutting_down=False,
+        )
+
+        gui.App._resume_after_preflight(
+            stub, "_language_preflight_done", "Kaynak dil ön analizi")
+
+        self.assertEqual(running, [False, False])
+        self.assertEqual(logged, [
+            ("Kaynak dil ön analizi sonrasında çeviri başlatılamadı", "boom")
+        ])
+        self.assertIn("başlatılamadı", statuses[-1])
+
     def test_normalize_display_name_code_and_auto(self):
         self.assertEqual(gui.normalize_language_name("spanish"), "Spanish")
         self.assertEqual(gui.normalize_language_name("it"), "Italian")

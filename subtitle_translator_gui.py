@@ -13780,6 +13780,27 @@ class App(ctk.CTk):
         dlg.focus_force()
         dlg.grab_set()
 
+    def _resume_after_preflight(self, flag_name: str, label: str):
+        """Onaydan sonra yeni bir UI turunda ana başlatma akışına güvenle döner."""
+        setattr(self, flag_name, True)
+        self._set_running(False)
+        self._log(f"{label} onaylandı; çeviri başlatılıyor.", "ok")
+
+        def _resume():
+            if getattr(self, "_is_shutting_down", False):
+                return
+            try:
+                self._start()
+            except Exception as e:
+                self._log_exc(f"{label} sonrasında çeviri başlatılamadı", e)
+                self._set_running(False)
+                self._set_status("Çeviri başlatılamadı; ayrıntı loga yazıldı.")
+
+        try:
+            self.after_idle(_resume)
+        except Exception:
+            self.after(20, _resume)
+
     def _show_source_language_confirm_dialog(self, detected: dict) -> bool:
         files = list(detected)
         if not files:
@@ -13987,9 +14008,9 @@ class App(ctk.CTk):
                     self._set_status("Kaynak diller uygulandı; yeniden Başlat'a basın.")
                     return
                 if should_continue:
-                    self._language_preflight_done = True
-                    self._set_running(False)
-                    self.after(20, self._start)
+                    App._resume_after_preflight(
+                        self,
+                        "_language_preflight_done", "Kaynak dil ön analizi")
                 else:
                     self._language_preflight_done = False
                     self._set_running(False)
@@ -14218,9 +14239,9 @@ class App(ctk.CTk):
                     self._set_status("İçerik türleri uygulandı; yeniden Başlat'a basın.")
                     return
                 if should_continue:
-                    self._content_type_preflight_done = True
-                    self._set_running(False)
-                    self.after(20, self._start)
+                    App._resume_after_preflight(
+                        self,
+                        "_content_type_preflight_done", "İçerik türü ön analizi")
                 else:
                     self._content_type_preflight_done = False
                     self._set_running(False)
