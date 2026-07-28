@@ -2173,7 +2173,10 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
     if matching_roots:
         selected_root = max(matching_roots, key=lambda root: len(root.parts))
         rel = src.relative_to(selected_root)
-        return (Path(out_dir) / selected_root.name / rel.parent
+        selected_base = Path(out_dir)
+        if selected_base.name.casefold() != selected_root.name.casefold():
+            selected_base /= selected_root.name
+        return (selected_base / rel.parent
                 / source_key / output_name)
     if in_dir:
         try:

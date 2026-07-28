@@ -86,6 +86,22 @@ class ResolveOutputPathTest(unittest.TestCase):
             / "Show B S01E02.srt",
         )
 
+    def test_output_already_named_as_selected_root_is_not_duplicated(self):
+        root = "/downloads/cold.lazarus.(1996).tv.s01.eng.5cd"
+        output = "/downloads/ÇIKIŞ/cold.lazarus.(1996).tv.s01.eng.5cd"
+        source = f"{root}/episode 2/Cold Lazarus S01E02.srt"
+
+        p = gui._resolve_output_path(
+            root, output, source, selected_roots=[root])
+
+        self.assertEqual(
+            p,
+            Path(output)
+            / "episode 2"
+            / "Cold Lazarus S01E02"
+            / "Cold Lazarus S01E02.srt",
+        )
+
     def test_recursive_input_preserves_substructure_rule1(self):
         # Kural 1 recursive girdide göreli substructure'ı korur
         p = gui._resolve_output_path("/x", "/x", "/x/sub/dir/f.srt")
