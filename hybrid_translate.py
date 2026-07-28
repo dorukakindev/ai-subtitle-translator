@@ -3143,6 +3143,66 @@ def build_system_prompt(
 
 # ── Native Okuyucu Refleks Pass ──────────────────────────────────────────────
 
+def _verify_native_candidates(
+    client,
+    helper_model: str,
+    candidates: list[dict],
+    token_callback=None,
+    cancel_context=None,
+) -> set[str]:
+    """Kaynakla doğrulanmayan Native yeniden yazımlarını fail-closed reddet."""
+    if not candidates:
+        return set()
+    prompt = (
+        "Sen altyazı son-kontrol editörüsün. Aşağıdaki Native Okuyucu önerilerini "
+        "İngilizce kaynak ve komşu bağlamla karşılaştır.\n"
+        "Bir öneriyi SADECE şu iki koşul birlikte sağlanıyorsa kabul et:\n"
+        "1) Önceki Türkçe gerçekten yapay, bozuk veya bağlama uymuyor.\n"
+        "2) Yeni Türkçe kaynaktaki bütün anlamı, özneyi, yüklemi, zamanı, göndergeleri "
+        "ve cümleler arası dağılımı koruyarak açıkça daha doğal hale getiriyor.\n"
+        "İki sürüm de kabul edilebilir Türkçeyse değişikliği reddet. Salt üslup tercihini, "
+        "eş anlamlı değişimini, daha konuşma dili olsun diye ekleme/çıkarma yapmayı reddet. "
+        "Yazım hatası, anlamsız kalıp, yanlış ek, eksik kelime, şarkı/diyalog satırları "
+        "arasında bozulan bütünlük veya komşu cue'dan anlam çalma varsa reddet. "
+        "frag alanlı bir cümlede yalnız tek satıra değil tüm komşu frag dizisine bak.\n\n"
+        f"Öneriler:\n{json.dumps(candidates, ensure_ascii=False)}\n\n"
+        'Yalnız JSON array döndür: [{"id":"N","accept":true}] veya '
+        '[{"id":"N","accept":false}]. Her girdi için tam bir karar ver; açıklama yazma.'
+    )
+    resp = _safe_chat_create(
+        client,
+        cancel_context=cancel_context,
+        model=helper_model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max(300, len(candidates) * 30),
+        temperature=0.0,
+    )
+    if token_callback and resp.usage:
+        tot, cached = _get_usage_details(resp.usage)
+        try:
+            token_callback(tot, cached=cached)
+        except TypeError:
+            token_callback(tot)
+    content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+    content = _extract_json_array(content)
+    if not content:
+        return set()
+    decisions = json.loads(content)
+    if not isinstance(decisions, list):
+        return set()
+    allowed = {str(item.get("id", "")) for item in candidates}
+    by_id = {}
+    for item in decisions:
+        if not isinstance(item, dict):
+            continue
+        fid = str(item.get("id", ""))
+        if fid in allowed:
+            by_id.setdefault(fid, []).append(item.get("accept"))
+    return {
+        fid for fid, values in by_id.items()
+        if values == [True]
+    }
+
 def native_reader_pass(
     tr_blocks: list,
     helper_api_key: str,
@@ -3226,6 +3286,8 @@ def native_reader_pass(
     
     # Reconstruct mock cues for fragment tagging if src_map is provided
     frag_tags = {}
+    frag_group_by_idx = {}
+    frag_group_members = {}
     if src_map:
         class MockCue:
             def __init__(self, index, text):
@@ -3237,8 +3299,15 @@ def native_reader_pass(
             mock_cues.append(MockCue(idx, src_t))
         try:
             frag_tags = _tag_fragments(mock_cues)
+            frag_group_by_idx, groups = _fragment_groups(mock_cues, frag_tags)
+            frag_group_members = {
+                group["id"]: [str(item) for item in group["items"]]
+                for group in groups
+            }
         except Exception:
             frag_tags = {}
+            frag_group_by_idx = {}
+            frag_group_members = {}
             
     eligible_count = sum(1 for _, _, text in result if text and text != "[HATA]")
     max_total_fixes = max(1, math.ceil(eligible_count * MAX_FIX_RATIO)) if eligible_count else 0
@@ -3316,6 +3385,8 @@ def native_reader_pass(
             f"- Doğal Türkçe konuşma sesine kavuştur\n"
             f"- Anlamı değiştirme, sadece doğallığı artır\n"
             f"- Zaten iyi olan satırları değiştirme\n"
+            f"- Bir 'frag' grubundaki tek satırı değiştiriyorsan grubun TÜM satırlarını "
+            f"(değişmeyenler dahil) JSON'da döndür; kısmi frag düzeltmesi yapma\n"
             f"{frag_instruction}\n"
             f"En fazla {max_total_fixes} satır düzelt (yaklaşık %20 sınırı). "
             f"Sadece en emin olduğun satırları seç.\n\n"
@@ -3349,17 +3420,25 @@ def native_reader_pass(
             if not isinstance(fixes, list):
                 continue
             chunk_pos_by_id = {str(idx): pos for pos, (idx, _ts, _text) in enumerate(chunk)}
+            fix_by_id = {
+                str(fix.get("id", "")): fix.get("fixed", "")
+                for fix in fixes
+                if isinstance(fix, dict)
+                and str(fix.get("id", "")) in chunk_ids
+                and isinstance(fix.get("fixed"), str)
+                and fix.get("fixed")
+            }
+            pending = {}
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
                 fid   = str(fix.get("id", ""))
                 ftext = fix.get("fixed", "")
                 if fid and ftext and fid in chunk_ids and fid in idx_to_pos:
-                    if total_fixed >= max_total_fixes:
-                        total_cap_rejected += 1
-                        continue
                     pos = idx_to_pos[fid]
                     old_idx, old_ts, old_text = result[pos]
+                    if ftext == old_text:
+                        continue
                     source_text = src_map.get(fid, "") if src_map else ""
                     chunk_pos = chunk_pos_by_id.get(fid)
                     neighbor_texts = []
@@ -3379,6 +3458,104 @@ def native_reader_pass(
                         total_rejected += 1
                         reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
                         continue
+                    pending[fid] = (pos, old_idx, old_ts, old_text, ftext)
+
+            incomplete_groups = set()
+            for fid in pending:
+                raw_idx = result[pending[fid][0]][0]
+                gid = frag_group_by_idx.get(raw_idx)
+                if not gid:
+                    continue
+                expected = set(frag_group_members.get(gid, []))
+                if expected and not expected.issubset(fix_by_id):
+                    incomplete_groups.add(gid)
+
+            for fid in list(pending):
+                raw_idx = pending[fid][1]
+                gid = frag_group_by_idx.get(raw_idx)
+                if gid in incomplete_groups:
+                    pending.pop(fid)
+                    total_rejected += 1
+                    reason = "fragment_group_partial"
+                    reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
+
+            accepted = set(pending)
+            if src_map and pending:
+                review_items = []
+                for fid, (pos, old_idx, _old_ts, old_text, ftext) in pending.items():
+                    start = max(0, pos - 2)
+                    end = min(len(result), pos + 3)
+                    neighbors = []
+                    for npos in range(start, end):
+                        if npos == pos:
+                            continue
+                        nidx, _nts, ntext = result[npos]
+                        neighbors.append({
+                            "id": str(nidx),
+                            "en": src_map.get(str(nidx), ""),
+                            "before": ntext,
+                            "after": fix_by_id.get(str(nidx), ntext),
+                            "frag": frag_tags.get(nidx, "none"),
+                        })
+                    review_items.append({
+                        "id": fid,
+                        "en": src_map.get(fid, ""),
+                        "before": old_text,
+                        "after": ftext,
+                        "frag": frag_tags.get(old_idx, "none"),
+                        "neighbors": neighbors,
+                    })
+                try:
+                    accepted = _verify_native_candidates(
+                        client,
+                        helper_model,
+                        review_items,
+                        token_callback=token_callback,
+                        cancel_context=cancel_context,
+                    )
+                except RequestCancelled:
+                    raise
+                except Exception:
+                    accepted = set()
+
+                touched_groups = {}
+                for fid in pending:
+                    gid = frag_group_by_idx.get(pending[fid][1])
+                    if gid:
+                        touched_groups.setdefault(gid, set()).add(fid)
+                for members in touched_groups.values():
+                    if not members.issubset(accepted):
+                        accepted.difference_update(members)
+
+                for fid in set(pending) - accepted:
+                    total_rejected += 1
+                    reason = "native_second_review"
+                    reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
+
+            apply_units = []
+            grouped = set()
+            for fid in pending:
+                if fid not in accepted or fid in grouped:
+                    continue
+                gid = frag_group_by_idx.get(pending[fid][1])
+                if gid:
+                    unit = [
+                        member for member in frag_group_members.get(gid, [])
+                        if member in pending and member in accepted
+                    ]
+                    grouped.update(unit)
+                    if unit:
+                        apply_units.append(unit)
+                else:
+                    grouped.add(fid)
+                    apply_units.append([fid])
+
+            for unit in apply_units:
+                if total_fixed + len(unit) > max_total_fixes:
+                    total_cap_rejected += len(unit)
+                    continue
+                for fid in unit:
+                    pos, old_idx, old_ts, _old_text, ftext = pending[fid]
                     result[pos] = (old_idx, old_ts, ftext)
                     total_fixed += 1
         except RequestCancelled:

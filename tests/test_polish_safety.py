@@ -301,6 +301,35 @@ class NativeReaderPassSafetyTest(unittest.TestCase):
 
         return SimpleNamespace(OpenAI=FakeOpenAI)
 
+    def _fake_openai_sequence(self, responses, prompts=None):
+        queued = list(responses)
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                if prompts is not None:
+                    prompts.append(kwargs["messages"][0]["content"])
+                payload = queued.pop(0)
+                if isinstance(payload, Exception):
+                    raise payload
+                return SimpleNamespace(
+                    usage=None,
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content=ht.json.dumps(payload, ensure_ascii=False)
+                            )
+                        )
+                    ],
+                )
+
+        class FakeOpenAI:
+            def __init__(self, api_key=None, base_url=None):
+                self.api_key = api_key
+                self.base_url = base_url
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        return SimpleNamespace(OpenAI=FakeOpenAI)
+
     def test_native_reader_pass_caps_changes_to_twenty_percent(self):
         blocks = [(i, "00:00:00,000 --> 00:00:01,000", f"Satır {i}.") for i in range(1, 11)]
         fixes = [{"id": str(i), "fixed": f"Düzeltilmiş satır {i}."} for i in range(1, 6)]
@@ -368,6 +397,118 @@ class NativeReaderPassSafetyTest(unittest.TestCase):
 
         self.assertEqual(result[1][2], "ölümcül olabilecek patojenler\niçerebilir.")
         self.assertTrue(any("neighbor_echo" in msg for _, msg in logs))
+
+    def test_native_reader_source_aware_change_requires_second_review(self):
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Bu sabahın nesi iyi?")]
+        fixes = [{"id": "1", "fixed": "Bu sabahta iyi olan ne?"}]
+        decisions = [{"id": "1", "accept": False}]
+        prompts = []
+        logs = []
+
+        with patch.dict(
+            "sys.modules",
+            {"openai": self._fake_openai_sequence([fixes, decisions], prompts)},
+        ):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                src_map={"1": "What's good about this morning?"},
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('"before": "Bu sabahın nesi iyi?"', prompts[1])
+        self.assertIn('"after": "Bu sabahta iyi olan ne?"', prompts[1])
+        self.assertTrue(any("native_second_review" in msg for _, msg in logs))
+
+    def test_native_reader_second_review_accepts_clear_improvement(self):
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Ne yapıyorsun sen burada?")]
+        fixes = [{"id": "1", "fixed": "Sen burada ne yapıyorsun?"}]
+        decisions = [{"id": "1", "accept": True}]
+
+        with patch.dict(
+            "sys.modules",
+            {"openai": self._fake_openai_sequence([fixes, decisions])},
+        ):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                src_map={"1": "What are you doing here?"},
+            )
+
+        self.assertEqual(result[0][2], "Sen burada ne yapıyorsun?")
+
+    def test_native_reader_second_review_rejects_duplicate_decisions(self):
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Ne yapıyorsun sen burada?")]
+        fixes = [{"id": "1", "fixed": "Sen burada ne yapıyorsun?"}]
+        decisions = [
+            {"id": "1", "accept": True},
+            {"id": "1", "accept": False},
+        ]
+
+        with patch.dict(
+            "sys.modules",
+            {"openai": self._fake_openai_sequence([fixes, decisions])},
+        ):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                src_map={"1": "What are you doing here?"},
+            )
+
+        self.assertEqual(result, blocks)
+
+    def test_native_reader_rejects_partial_fragment_rewrite(self):
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Onları görünce"),
+            (2, "00:00:01,000 --> 00:00:02,000", "eski aşkım gelir aklıma."),
+        ]
+        fixes = [{"id": "2", "fixed": "eski aşkım gelir aklıma ya."}]
+        logs = []
+
+        with patch.dict("sys.modules", {"openai": self._fake_openai_module(fixes)}):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                src_map={
+                    "1": "Seeing them reminds me",
+                    "2": "of an old love.",
+                },
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertTrue(any("fragment_group_partial" in msg for _, msg in logs))
+
+    def test_native_reader_fragment_review_is_atomic(self):
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Onları görünce"),
+            (2, "00:00:01,000 --> 00:00:02,000", "eski aşkım gelir aklıma."),
+        ]
+        fixes = [
+            {"id": "1", "fixed": "Onları görünce ya"},
+            {"id": "2", "fixed": "eski aşkım gelir aklıma ya."},
+        ]
+        decisions = [
+            {"id": "1", "accept": True},
+            {"id": "2", "accept": False},
+        ]
+
+        with patch.dict(
+            "sys.modules",
+            {"openai": self._fake_openai_sequence([fixes, decisions])},
+        ):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                src_map={
+                    "1": "Seeing them reminds me",
+                    "2": "of an old love.",
+                },
+            )
+
+        self.assertEqual(result, blocks)
 
 
 class QcSeveritySplitTest(unittest.TestCase):
