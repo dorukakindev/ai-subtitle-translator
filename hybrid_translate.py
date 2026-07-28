@@ -5260,7 +5260,6 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
         return "parantez/köşeli-parantez gloss"
     if _GLOSSARY_GLOSS_SLASH_RE.search(value_s):
         return "eğik çizgili seçenek"
-    tight_option_count = 0
     for match in _GLOSSARY_TIGHT_SLASH_RE.finditer(value_s):
         left, right = match.groups()
         if left.isdigit() and right.isdigit():
@@ -5270,11 +5269,7 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
             continue
         if (left.casefold(), right.casefold()) in _GLOSSARY_SLASH_UNITS:
             continue
-        tight_option_count += 1
-    if tight_option_count:
-        word_count = len(re.findall(r"(?u)[^\W_]+", value_s))
-        if tight_option_count > 1 or word_count != 3:
-            return "bitişik eğik çizgili seçenek"
+        return "bitişik eğik çizgili seçenek"
     if _GLOSSARY_META_CLAUSE_RE.search(value_s):
         return "noktalı virgüllü talimat"
     return None

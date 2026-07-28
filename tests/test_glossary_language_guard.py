@@ -168,7 +168,7 @@ class WqxTargetGuardTest(unittest.TestCase):
             "trial": "dava/mahkeme süreci",
         }
         cleaned = ht.sanitize_glossary_for_turkish(real_glossary)
-        self.assertEqual(cleaned, real_glossary)
+        self.assertEqual(cleaned, {"Newsweeks": "Newsweek'ler"})
 
     def test_actual_foreign_drift_still_caught_even_if_key_shares_a_word(self):
         # Kaynakla hedef kelime kümesi FARKLIYSA (gerçek çeviri denenmiş ama
