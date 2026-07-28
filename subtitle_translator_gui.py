@@ -7153,7 +7153,11 @@ class App(ctk.CTk):
 
     # ── Sağ panel ─────────────────────────────────────────────────────────────
     def _build_main(self):
-        main = ctk.CTkFrame(self, fg_color="transparent")
+        main = ctk.CTkScrollableFrame(
+            self, fg_color="transparent", corner_radius=0,
+            scrollbar_fg_color=BG,
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=ACCENT)
         self._main_frame = main
         main.grid(row=0, column=1, sticky="nsew", padx=(6,12), pady=12)
         main.grid_columnconfigure(0, weight=1)
@@ -7463,6 +7467,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
         for frame in (
+            getattr(self, "_main_frame", None),
             getattr(self, "_sb", None),
             getattr(self, "_job_rows_frame", None),
             getattr(self, "_file_rows_frame", None),

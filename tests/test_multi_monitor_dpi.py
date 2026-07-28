@@ -1,4 +1,5 @@
 import unittest
+import inspect
 
 import subtitle_translator_gui as gui
 
@@ -39,6 +40,11 @@ class _FakeCanvas:
 
 
 class MultiMonitorDpiTest(unittest.TestCase):
+    def test_main_panel_is_vertically_scrollable(self):
+        source = inspect.getsource(gui.App._build_main)
+        self.assertIn("main = ctk.CTkScrollableFrame(", source)
+        self.assertIn("scrollbar_button_color=BORDER", source)
+
     def test_runtime_uses_fixed_scaling(self):
         try:
             from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
