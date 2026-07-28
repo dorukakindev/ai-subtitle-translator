@@ -52,6 +52,40 @@ class ResolveOutputPathTest(unittest.TestCase):
         self.assertEqual(p.parent.name, "Film.English(US).vtt")
         self.assertEqual(p.name, "Film.English(US).vtt.srt")
 
+    def test_single_selected_series_folder_keeps_series_root(self):
+        root = "/downloads/cold.lazarus.(1996).tv.s01.eng.5cd"
+        source = f"{root}/episode 1/Cold Lazarus S01E01.srt"
+
+        p = gui._resolve_output_path(
+            root, "/downloads/ÇIKIŞ", source, selected_roots=[root])
+
+        self.assertEqual(
+            p,
+            Path("/downloads/ÇIKIŞ")
+            / "cold.lazarus.(1996).tv.s01.eng.5cd"
+            / "episode 1"
+            / "Cold Lazarus S01E01"
+            / "Cold Lazarus S01E01.srt",
+        )
+
+    def test_multiple_selected_roots_keep_each_root_without_common_parent(self):
+        roots = ["/downloads/show-a", "/downloads/show-b"]
+        source = "/downloads/show-b/episode 2/Show B S01E02.srt"
+
+        p = gui._resolve_output_path(
+            "/downloads", "/downloads/ÇIKIŞ", source,
+            selected_roots=roots,
+        )
+
+        self.assertEqual(
+            p,
+            Path("/downloads/ÇIKIŞ")
+            / "show-b"
+            / "episode 2"
+            / "Show B S01E02"
+            / "Show B S01E02.srt",
+        )
+
     def test_recursive_input_preserves_substructure_rule1(self):
         # Kural 1 recursive girdide göreli substructure'ı korur
         p = gui._resolve_output_path("/x", "/x", "/x/sub/dir/f.srt")

@@ -2128,7 +2128,8 @@ def _paths_equal(a, b) -> bool:
 
 
 def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
-                          same_folder: bool = False) -> Path:
+                          same_folder: bool = False,
+                          selected_roots=None) -> Path:
     """Çıktı .srt yolunu çözer (bkz. plans/output-folder-rules-brief.md).
 
     same_folder=True — Giriş/Çıkış klasörü alanları YOK SAYILIR: çıktı, dosyanın
@@ -2139,7 +2140,8 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
     Kural 1 — çıktı klasörü girdiyle aynı (veya boş):
         <girdi>/ÇIKTI/<göreli-yol>.srt   (göreli substructure korunur, kaynağın yanına yazılmaz)
     Kural 2 — çıktı ayrı bir klasör:
-        <çıktı>/<dosya-adı-uzantısız>/<dosya-adı>.srt   (her dosya kendi klasöründe)
+        Klasör seçimiyle eklenen kaynaklarda seçilen üst klasör ve göreli yol korunur.
+        Tek tek eklenen dosyalarda <çıktı>/<dosya-adı>/<dosya-adı>.srt kullanılır.
         Girdi kökü dışından eklenen dosyalarda kaynak klasör adı + kararlı kısa
         yol özeti kullanılır; aynı adlı farklı klasörler birbirine çarpmaz.
 
@@ -2160,6 +2162,19 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
         except Exception:
             rel = Path(src.name)
         return base / "ÇIKTI" / rel.parent / output_name
+    matching_roots = []
+    for root in selected_roots or ():
+        try:
+            root_path = Path(root)
+            src.relative_to(root_path)
+            matching_roots.append(root_path)
+        except Exception:
+            continue
+    if matching_roots:
+        selected_root = max(matching_roots, key=lambda root: len(root.parts))
+        rel = src.relative_to(selected_root)
+        return (Path(out_dir) / selected_root.name / rel.parent
+                / source_key / output_name)
     if in_dir:
         try:
             rel = src.relative_to(Path(in_dir))
@@ -5611,6 +5626,7 @@ class App(ctk.CTk):
         self._worker_lock    = threading.Lock()
         self._worker_threads = set()
         self._selected_files = []   # manually picked files; empty = use input folder
+        self._selected_folder_roots = []
         self._file_list_files = []
         self._file_list_root = ""
         self._file_list_page = 0
@@ -7852,6 +7868,8 @@ class App(ctk.CTk):
             "file_schemas": file_schemas,
             "file_glossaries": file_glossaries,
             "selected_files": tuple(getattr(self, "_selected_files", ()) or ()),
+            "selected_folder_roots": tuple(
+                getattr(self, "_selected_folder_roots", ()) or ()),
         }
 
     def _freeze_run_variable_reads(self):
@@ -9120,6 +9138,7 @@ class App(ctk.CTk):
         if is_input:
             # Clear any manually selected files when a folder is chosen
             self._selected_files = []
+            self._selected_folder_roots = [path]
             self._file_list_root = ""
             self._input_folder_explicitly_selected = True
             self._content_type_preflight_done = False
@@ -9278,6 +9297,7 @@ class App(ctk.CTk):
             return
         self._content_type_preflight_done = False
         self._input_folder_explicitly_selected = False
+        self._selected_folder_roots = []
         self._selected_files = self._dedupe_paths(list(paths))
         self._pm = None
         n = len(self._selected_files)
@@ -9629,6 +9649,8 @@ class App(ctk.CTk):
         self._content_type_preflight_done = False
         self._language_preflight_done = False
         self._selected_files = self._dedupe_paths(list(self._selected_files) + files)
+        self._selected_folder_roots = self._dedupe_paths(
+            list(getattr(self, "_selected_folder_roots", ()) or ()) + list(paths))
         self._pm = None
         added = len(self._selected_files) - before
         total = len(self._selected_files)
@@ -9960,6 +9982,7 @@ class App(ctk.CTk):
 
     def _clear_selected_files(self):
         self._selected_files = []
+        self._selected_folder_roots = []
         self._file_list_files = []
         self._file_list_root = ""
         self._file_list_page = 0
@@ -11200,6 +11223,12 @@ class App(ctk.CTk):
         if getattr(self, "series_memory_var", None) and self.series_memory_var.get():
             files = series_memory.sort_files_by_episode(files)
         return files
+
+    def _output_selection_roots(self):
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        if "selected_folder_roots" in snapshot:
+            return snapshot["selected_folder_roots"]
+        return tuple(getattr(self, "_selected_folder_roots", ()) or ())
 
     def _series_mem_for(self, fp: str, *, persistent: bool = False):
         """Dosya için (SeriesMemory, sezon, bölüm) döner; dizi değilse/kapalıysa (None,None,None)."""
@@ -14232,7 +14261,8 @@ class App(ctk.CTk):
                     continue
                 # ── Çıktı dosyası zaten varsa ve tamamsa atla ───────────────
                 out_path = _resolve_output_path(input_dir, output_dir, filepath,
-                                                 same_folder=self.same_folder_var.get())
+                                                 same_folder=self.same_folder_var.get(),
+                                                 selected_roots=self._output_selection_roots())
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
@@ -14697,7 +14727,8 @@ class App(ctk.CTk):
             except Exception:
                 pass
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
-                                             same_folder=self.same_folder_var.get())
+                                             same_folder=self.same_folder_var.get(),
+                                             selected_roots=self._output_selection_roots())
             _before_semantic = list(sorted_blocks)
             self._run_final_semantic_checks(
                 out_path, {str(c.index): _clean_src(c.text) for c in cues},
@@ -14896,7 +14927,8 @@ class App(ctk.CTk):
         input_dir = self.input_var.get()
         output_paths = {
             fp: str(_resolve_output_path(
-                input_dir, output_dir, fp, same_folder=self.same_folder_var.get()))
+                input_dir, output_dir, fp, same_folder=self.same_folder_var.get(),
+                selected_roots=self._output_selection_roots()))
             for fp in valid_files
         }
         batch_ids = []
@@ -15713,7 +15745,8 @@ class App(ctk.CTk):
             saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
             out_path = (Path(saved_out) if saved_out else
                         _resolve_output_path(input_dir, output_dir, fp,
-                                             same_folder=self.same_folder_var.get()))
+                                             same_folder=self.same_folder_var.get(),
+                                             selected_roots=self._output_selection_roots()))
             sorted_blocks = [blocks_dict[k] for k in sorted(blocks_dict, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k)))]
             _raw_backup_blocks = list(sorted_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
             _cons_fixes, _rev_fixes = 0, 0
@@ -16428,7 +16461,8 @@ class App(ctk.CTk):
                 self._log(f"{len(requests)} istek oluşturuldu", "info")
 
                 out_path = str(_resolve_output_path(input_dir, output_dir, filepath,
-                                                     same_folder=self.same_folder_var.get()))  # çıktı her zaman SRT
+                                                     same_folder=self.same_folder_var.get(),
+                                                     selected_roots=self._output_selection_roots()))  # çıktı her zaman SRT
 
                 # ── B3: İki-dalgalı zincirli batch ────────────────────────────
                 # Doğası gereği "gönder-bekle-gönder-bekle" olduğundan Faz1'de GÖNDERİLMEZ;
