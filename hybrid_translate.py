@@ -4957,7 +4957,12 @@ _GLOSSARY_GLOSS_BRACKET_RE = re.compile(r"[()\[\]]")
 # bitişik "AC/DC", "24/7" gibi gerçek terimler yanlış-pozitif almasın diye.
 _GLOSSARY_GLOSS_SLASH_RE = re.compile(r"\s/\s")
 _GLOSSARY_META_CLAUSE_RE = re.compile(
-    r";\s*(?:bağlama\s+göre|spiritüel\s+bağlamda|italik\b|çeviri\s+yok\b)",
+    r";\s*(?:"
+    r"bağlama\s+göre|spiritüel\s+bağlamda|italik\b|çeviri\s+yok\b|"
+    r"Türkçede\b|özel\s+(?:ad|isim|terim)\b|model\s+kodu\b|"
+    r"aile\s*/\s*şirket\s+adı\b|isim\s+aynen\b|"
+    r"[^;]*\b(?:aynen\s+korun|korunmalı|çevrilebilir)\w*"
+    r")",
     re.IGNORECASE,
 )
 

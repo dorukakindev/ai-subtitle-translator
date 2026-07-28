@@ -240,6 +240,17 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"DMT": "DMT"})
 
+    def test_short_semicolon_meta_instructions_are_dropped(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "TA": "TA; Türkçede teknik terim olarak aynen korunacak",
+            "Fake": "Fake; özel ad gibi korunmalı",
+            "XF-4": "XF-4; model kodu aynen",
+            "invitator": "invitator; özel terim olarak aynen ya da tutarlı çevrilebilir",
+            "Gowa": "Gowa; aile/şirket adı, aynen",
+            "Captain Gowa": "Yüzbaşı Gowa",
+        })
+        self.assertEqual(cleaned, {"Captain Gowa": "Yüzbaşı Gowa"})
+
     def test_clean_terms_survive_alongside(self):
         # POLİTİKA TESTİ: bir terim gloss nedeniyle atılırken TÜM sözlük atılmamalı.
         cleaned = ht.sanitize_glossary_for_turkish({
