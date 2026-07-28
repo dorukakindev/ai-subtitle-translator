@@ -3221,6 +3221,15 @@ def _precontext_cache_sig(filepath: str) -> str:
         return ""
 
 
+def _precontext_analysis_fingerprint(model: str, base_url: str = "") -> str:
+    payload = {
+        "model": str(model or "").strip().casefold(),
+        "endpoint": _normalize_api_base_url(str(base_url or "")),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def build_precontext_hint(data: dict, target_language: str = "tr") -> str:
     """Ön-analiz JSON'ını system prompt'a eklenecek metin bloğuna çevirir.
 
@@ -7531,6 +7540,7 @@ class App(ctk.CTk):
                 self, "analysis_depth", "analysis_depth_var", "Standart"),
             expected_source=_lang_iso639_1(source_language),
             helper_model=self._helper_api_model("analysis"),
+            helper_url=self._helper_api_base_url("analysis"),
             style=App._run_setting(self, "style", "style_var", "natural"),
             schema=schema_dict,
             glossary=glossary,
@@ -11302,6 +11312,11 @@ class App(ctk.CTk):
             import hybrid_translate as ht
             terms = {}
             try:
+                schema_dict = self._get_file_schema(fp) if fp else self._get_schema()
+                terms.update((schema_dict or {}).get("glossary") or {})
+            except Exception:
+                pass
+            try:
                 terms.update(ht.load_glossary(self._get_file_glossary(fp)) or {})
             except Exception:
                 pass
@@ -11462,14 +11477,15 @@ class App(ctk.CTk):
         sys_prompt += self._locked_terms_hint(fp, tgt)   # kilitli sözlük/isim referansı (#7)
 
         # Fragment gruplarını hesapla (EARLY_VERB_CLOSURE tespiti için)
+        review_cues = ht._semantic_validator_cues(src_map, sorted_blocks, src_cues)
         review_frag_tags = {}
         review_frag_group_ids = {}
         review_fragment_groups = []
         try:
-            if src_cues:
-                review_frag_tags = ht._tag_fragments([
-                    c for c in src_cues if hasattr(c, "text")])
-                review_frag_group_ids, review_fragment_groups = ht._fragment_groups(src_cues, review_frag_tags)
+            if review_cues:
+                review_frag_tags = ht._tag_fragments(review_cues)
+                review_frag_group_ids, review_fragment_groups = ht._fragment_groups(
+                    review_cues, review_frag_tags)
         except Exception:
             pass
 
@@ -13180,6 +13196,8 @@ class App(ctk.CTk):
         hints = {}
         if not self.precontext_var.get() or self.hybrid_var.get():
             return hints
+        analysis_fp = _precontext_analysis_fingerprint(
+            model, getattr(client, "base_url", ""))
 
         # 1) Önbellekten çöz, eksikleri topla
         data_by_fp, to_analyze = {}, []
@@ -13195,6 +13213,7 @@ class App(ctk.CTk):
                     if (cached.get("_ver") == PRECONTEXT_CACHE_VER
                             and cached.get("_tgt") == tgt
                             and cached.get("_src") == file_src
+                            and cached.get("_analysis_fp") == analysis_fp
                             and isinstance(cached_sig, str)
                             and cached_sig.startswith("sha256:")
                             and cached_sig == cur_sig):
@@ -13245,6 +13264,7 @@ class App(ctk.CTk):
                                 "_ver": PRECONTEXT_CACHE_VER,
                                 "_tgt": tgt,
                                 "_src": (source_languages or {}).get(fp, src),
+                                "_analysis_fp": analysis_fp,
                                 "data": cache_data,
                                 "_sig": sig,
                             })
@@ -13904,6 +13924,7 @@ class App(ctk.CTk):
                                                target_language=tgt,
                                                analysis_depth=self.analysis_depth_var.get(),
                                                helper_model=self._helper_api_model("analysis"),
+                                               helper_url=self._helper_api_base_url("analysis"),
                                                style=self.style_var.get(),
                                                schema=schema_dict,
                                                glossary=glossary,
@@ -15424,7 +15445,7 @@ class App(ctk.CTk):
             _write_path = out_path
             if _has_missing:
                 _write_path = out_path.with_name(f"{out_path.stem}.partial.srt")
-            write_srt(_write_path, self._maybe_merge_cues(sorted_blocks), tgt)
+            write_srt(_write_path, self._maybe_merge_cues(sorted_blocks), _tgt_lang)
             if _has_missing:
                 self._log(
                     f"{Path(fp).name}: {_hata_n} eksik çeviri kaldı; "
@@ -15433,7 +15454,8 @@ class App(ctk.CTk):
                 )
             else:
                 self._log(f"Kaydedildi: {out_path}", "ok")
-                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
+                self._save_raw_backup(
+                    out_path, _raw_backup_blocks, _raw_map, _tgt_lang)
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
             w = (_hata_n if _has_missing else
                  scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
@@ -15841,6 +15863,7 @@ class App(ctk.CTk):
                                                target_language=tgt,
                                                analysis_depth=self.analysis_depth_var.get(),
                                                helper_model=self._helper_api_model("analysis"),
+                                               helper_url=self._helper_api_base_url("analysis"),
                                                style=self.style_var.get(),
                                                schema=schema_dict,
                                                glossary=glossary,

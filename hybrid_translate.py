@@ -612,13 +612,15 @@ CONTEXT_ANALYSIS_CACHE_VER = 2
 
 def analysis_fingerprint(source_language: str = "", target_language: str = "",
                          analysis_depth: str = "", model: str = "", style: str = "",
-                         schema: dict = None, glossary: dict = None) -> str:
+                         schema: dict = None, glossary: dict = None,
+                         helper_url: str = "") -> str:
     payload = {
         "version": CONTEXT_ANALYSIS_CACHE_VER,
         "source": str(source_language or "").strip().casefold(),
         "target": str(target_language or "").strip().casefold(),
         "depth": normalize_analysis_depth(analysis_depth),
         "model": str(model or "").strip().casefold(),
+        "endpoint": str(helper_url or "").strip().rstrip("/"),
         "style": str(style or "").strip().casefold(),
         "schema": schema or {},
         "glossary": glossary or {},
@@ -720,7 +722,7 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
                        cultural_refs: list = None, target_language: str = "",
                        analysis_depth: str = "standard", helper_model: str = "",
                        style: str = "", schema: dict = None, glossary: dict = None,
-                       source_language: str = ""):
+                       source_language: str = "", helper_url: str = ""):
     _ensure_path()
     if getattr(context, "_analysis_degraded", False):
         return
@@ -755,7 +757,7 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
         "_source_hint":       source_language or context.source_language,
         "_analysis_fp":       analysis_fingerprint(
             source_language or context.source_language, target_language, analysis_depth,
-            helper_model, style, schema, glossary),
+            helper_model, style, schema, glossary, helper_url),
     }
     # Atomik yazım: yarım kalan dosya bozuk önbellek bırakmasın
     try:
@@ -776,7 +778,8 @@ def _scene_plan_cache_is_stale(scenes) -> bool:
 
 def load_context_cache(filepath: str, expected_target: str = "", expected_analysis_depth: str = "",
                        expected_source: str = "", helper_model: str = "", style: str = "",
-                       schema: dict = None, glossary: dict = None):
+                       schema: dict = None, glossary: dict = None,
+                       helper_url: str = ""):
     """Returns 7-tuple or None:
     (ContextMemory, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs)
     Old v1 caches (missing new fields) are handled gracefully with empty defaults.
@@ -813,12 +816,12 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
                 return None
         if expected_source and str(d.get("_source_hint") or "").strip().casefold() != str(expected_source).strip().casefold():
             return None
-        if any((helper_model, style, schema, glossary)):
+        if any((helper_model, style, schema, glossary, helper_url)):
             expected_fp = analysis_fingerprint(
                 expected_source or d.get("_source_hint", ""),
                 expected_target or d.get("target_language", ""),
                 expected_analysis_depth or d.get("analysis_depth", "standard"),
-                helper_model, style, schema, glossary)
+                helper_model, style, schema, glossary, helper_url)
             if d.get("_analysis_fp") != expected_fp:
                 return None
         memory = ContextMemory(
@@ -8728,6 +8731,7 @@ def critic_pass_with_helper(
     if not tr_blocks:
         return tr_blocks
 
+    cues = _semantic_validator_cues({}, tr_blocks, cues)
     result     = list(tr_blocks)
     idx_to_pos = {str(b[0]): i for i, b in enumerate(result)}
     orig_dict  = {str(c.index): c.text for c in cues} if cues else {}

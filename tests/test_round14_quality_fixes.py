@@ -54,8 +54,8 @@ class FinalConsistencySweepTest(unittest.TestCase):
 class ReviewPassFragmentGuardTest(unittest.TestCase):
     def test_review_pass_rejects_fragment_terminal_backslide(self):
         cues = [
-            _Cue("1", "00:00:01,000", "00:00:02,000", "Hello"),
-            _Cue("2", "00:00:02,100", "00:00:03,000", "world."),
+            ("1", "00:00:01,000 --> 00:00:02,000", "Hello"),
+            ("2", "00:00:02,100 --> 00:00:03,000", "world."),
         ]
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba"),

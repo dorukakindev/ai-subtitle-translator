@@ -20,6 +20,74 @@ class CacheIntegrityTest(unittest.TestCase):
             ht.CONTEXT_ANALYSIS_CACHE_VER = old
         self.assertNotEqual(before, after)
 
+    def test_analysis_fingerprint_changes_with_helper_endpoint(self):
+        official = ht.analysis_fingerprint(
+            "English", "Turkish", "standard", "gpt-5.4-mini",
+            helper_url="https://api.openai.com/v1")
+        reseller = ht.analysis_fingerprint(
+            "English", "Turkish", "standard", "gpt-5.4-mini",
+            helper_url="https://reseller.example/v1")
+        self.assertNotEqual(official, reseller)
+
+    def test_context_cache_misses_when_helper_endpoint_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "endpoint.srt")
+            fp.write_bytes(b"endpoint cache")
+            ctx = SimpleNamespace(
+                source_language="en", summary="s", setting="st", tone="t",
+                characters=[], recurring_terms={}, scene_notes=[]
+            )
+            ht.save_context_cache(
+                ctx, str(fp), target_language="tr",
+                helper_model="gpt-5.4-mini",
+                helper_url="https://api.openai.com/v1")
+
+            self.assertIsNotNone(ht.load_context_cache(
+                str(fp), expected_target="tr",
+                helper_model="gpt-5.4-mini",
+                helper_url="https://api.openai.com/v1"))
+            self.assertIsNone(ht.load_context_cache(
+                str(fp), expected_target="tr",
+                helper_model="gpt-5.4-mini",
+                helper_url="https://reseller.example/v1"))
+
+    def test_precontext_cache_misses_when_model_or_endpoint_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "precontext-endpoint.srt")
+            fp.write_bytes(b"precontext endpoint")
+            app = SimpleNamespace(
+                precontext_var=SimpleNamespace(get=lambda: True),
+                hybrid_var=SimpleNamespace(get=lambda: False),
+                _stop_flag=False,
+                _log=lambda *args: None,
+                _cached_blocks_for=lambda _p: [("1", "ts", "source")],
+                _update_tokens=lambda _n, **_kwargs: None,
+                _update_series_memory_from_precontext=lambda *args, **kwargs: None,
+            )
+            complete = {
+                "summary": "first",
+                "characters": [],
+                "terms": {},
+                "_analysis_complete": True,
+            }
+            first_client = SimpleNamespace(base_url="https://api.openai.com/v1")
+            with mock.patch(
+                    "subtitle_translator_gui.analyze_file_precontext",
+                    return_value=dict(complete)) as analyze:
+                gui.App._get_precontext_hints(
+                    app, first_client, [str(fp)], "en", "tr", "same-model")
+                analyze.assert_called_once()
+
+            fresh = dict(complete, summary="fresh")
+            second_client = SimpleNamespace(base_url="https://reseller.example/v1")
+            with mock.patch(
+                    "subtitle_translator_gui.analyze_file_precontext",
+                    return_value=fresh) as analyze:
+                hints = gui.App._get_precontext_hints(
+                    app, second_client, [str(fp)], "en", "tr", "same-model")
+                analyze.assert_called_once()
+            self.assertIn("fresh", hints[str(fp)])
+
     def test_same_length_modification_changes_sig_and_causes_cache_miss(self):
         with tempfile.TemporaryDirectory() as root:
             fp = Path(root, "sub.srt")

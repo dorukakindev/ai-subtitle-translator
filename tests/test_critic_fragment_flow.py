@@ -47,6 +47,16 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertEqual(str(hits[0][0]), "1")
         self.assertIn("EARLY_VERB_CLOSURE", hits[0][3])
 
+    def test_critic_accepts_parser_tuple_cues(self):
+        cues = [("1", "00:00:00,000 --> 00:00:01,000", "Hello.")]
+        blocks = [("1", "00:00:00,000 --> 00:00:01,000", "Merhaba.")]
+
+        with patch("hybrid_translate.run_validators", return_value=[]):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test")
+
+        self.assertEqual(result, blocks)
+
     def test_critic_sends_full_fragment_group_for_early_closure(self):
         cues = [
             Cue(1, "Throughout history, humanity has struggled,"),

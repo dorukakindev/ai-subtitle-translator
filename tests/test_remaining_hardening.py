@@ -81,6 +81,7 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
             _get_file_glossary=lambda _fp: "terms.json",
             _merge_schema_glossary=lambda glossary, _schema: glossary,
             _helper_api_model=lambda _role: "gpt-5.4",
+            _helper_api_base_url=lambda _role: "https://helper.example/v1",
         )
 
         result = gui.App._load_context_cache_for_file(
@@ -93,6 +94,7 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
             expected_analysis_depth="Maksimum",
             expected_source="es",
             helper_model="gpt-5.4",
+            helper_url="https://helper.example/v1",
             style="natural",
             schema={"name": "Belgesel"},
             glossary={"User": "Kullanıcı"},

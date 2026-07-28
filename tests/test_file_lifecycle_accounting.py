@@ -154,6 +154,17 @@ class FileLifecycleAccountingTest(unittest.TestCase):
             src.index("_written_files.append(fp)"),
         )
 
+    def test_write_results_uses_its_captured_target_language(self):
+        src = inspect.getsource(gui.App._write_results)
+        self.assertIn(
+            "write_srt(_write_path, self._maybe_merge_cues(sorted_blocks), _tgt_lang)",
+            src,
+        )
+        self.assertIn(
+            "out_path, _raw_backup_blocks, _raw_map, _tgt_lang",
+            src,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

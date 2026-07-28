@@ -640,6 +640,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         app._pm = MagicMock()
         app._pm.get_glossary.return_value = {"Project Term": "Proje Terimi"}
         app._get_file_glossary = MagicMock(return_value="glossary.json")
+        app._get_file_schema = MagicMock(return_value={
+            "glossary": {"Schema Term": "Şema Terimi"}
+        })
         app.series_memory_var = SimpleNamespace(get=lambda: True)
         app.input_var = SimpleNamespace(get=lambda: "C:/subs")
         app._log = MagicMock()
@@ -656,6 +659,7 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
             )
 
         self.assertEqual(terms["Provision Laboratory"], "Tedarik Laboratuvarı")
+        self.assertEqual(terms["Schema Term"], "Şema Terimi")
         self.assertEqual(terms["Project Term"], "Proje Terimi")
         self.assertEqual(terms["King Behemoth"], "Kral Behemoth")
 
