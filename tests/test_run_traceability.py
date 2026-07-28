@@ -12,6 +12,35 @@ import subtitle_translator_gui as gui
 
 
 class RunTraceabilityTest(unittest.TestCase):
+    def test_begin_run_record_builds_nested_log_path_with_two_arg_state_path(self):
+        stub = SimpleNamespace(
+            _active_snapshot={},
+            _log_lock=threading.Lock(),
+            _log_file=None,
+            _run_record_lock=threading.RLock(),
+            _active_run_record=None,
+            _quality_issues={},
+            _quality_issue_seq=0,
+            _diagnostic_run_settings=lambda _snapshot: {},
+            _log=MagicMock(),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            def strict_state_path(_anchor, name):
+                return root / name
+
+            with patch.object(gui, "state_path", side_effect=strict_state_path), \
+                    patch.object(gui, "_new_run_id", return_value="run-test"):
+                run_id = gui.App._begin_run_record(stub, ["a.srt"])
+            try:
+                expected = root / "logs" / f"run_run-test.pid{gui.os.getpid()}.log"
+                self.assertEqual(Path(stub._active_run_record["log_path"]), expected)
+                self.assertTrue(expected.exists())
+                self.assertEqual(run_id, "run-test")
+            finally:
+                stub._log_file.close()
+
     def test_run_id_is_timestamped_and_unique_suffix_is_preserved(self):
         now = datetime.datetime(2026, 7, 28, 14, 5, 9)
         self.assertEqual(

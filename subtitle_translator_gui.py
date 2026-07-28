@@ -8109,8 +8109,10 @@ class App(ctk.CTk):
         import datetime as _dt
         run_id = _new_run_id()
         snapshot = dict(getattr(self, "_active_snapshot", {}) or {})
-        log_path = state_path(
-            __file__, "logs", f"run_{run_id}.pid{os.getpid()}.log")
+        log_path = (
+            state_path(__file__, "logs")
+            / f"run_{run_id}.pid{os.getpid()}.log"
+        )
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with self._log_lock:
             old_log = getattr(self, "_log_file", None)
