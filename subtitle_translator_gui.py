@@ -4790,7 +4790,8 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
 
 
 def scan_translation_quality(fp: str, blocks: list, log_fn=None,
-                             src_clean_map: dict = None) -> int:
+                             src_clean_map: dict = None,
+                             issue_fn=None) -> int:
     """Çeviri sonrası kalite taraması.
     - Kaynak ile aynı kalan satırları (çevrilmemiş) tespit eder
     - Anormal uzunluk oranı olanları (< 0.12 veya > 5.0) tespit eder
@@ -4817,6 +4818,37 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     warnings = 0
     untranslated = []
     ratio_issues = []
+    target_map = {str(idx): str(text) for idx, _ts, text in blocks}
+
+    def _emit_issue(kind: str, ids: list, message: str, tag: str = "warn",
+                    extra: dict = None):
+        clean_ids = list(dict.fromkeys(str(idx) for idx in ids if str(idx)))
+        issue_id = None
+        if issue_fn is not None:
+            issue = {
+                "kind": kind,
+                "source_path": str(fp),
+                "message": message,
+                "items": [
+                    {
+                        "id": idx,
+                        "source": str(orig.get(idx, "")),
+                        "translation": str(target_map.get(idx, "")),
+                    }
+                    for idx in clean_ids
+                ],
+            }
+            if extra:
+                issue.update(extra)
+            try:
+                issue_id = issue_fn(issue)
+            except Exception:
+                issue_id = None
+        if log_fn is not None:
+            try:
+                log_fn(message, tag, issue_id=issue_id)
+            except TypeError:
+                log_fn(message, tag)
 
     for (idx, ts, tr_text) in blocks:
         if tr_text == "[HATA]":
@@ -4841,13 +4873,17 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         if untranslated:
             sample = ", ".join(untranslated[:5])
             more   = f" …+{len(untranslated)-5}" if len(untranslated) > 5 else ""
-            log_fn(f"  ⚠ {fname}: {len(untranslated)} satır çevrilmemiş görünüyor "
-                   f"(idx: {sample}{more})", "warn")
+            _emit_issue(
+                "untranslated", untranslated,
+                f"  ⚠ {fname}: {len(untranslated)} satır çevrilmemiş görünüyor "
+                f"(idx: {sample}{more})")
         if ratio_issues:
             sample = ", ".join(f"#{i}({r}x)" for i, r in ratio_issues[:4])
             more   = f" …+{len(ratio_issues)-4}" if len(ratio_issues) > 4 else ""
-            log_fn(f"  ⚠ {fname}: {len(ratio_issues)} satırda anormal uzunluk oranı "
-                   f"({sample}{more})", "warn")
+            _emit_issue(
+                "length_ratio", [idx for idx, _ratio in ratio_issues],
+                f"  ⚠ {fname}: {len(ratio_issues)} satırda anormal uzunluk oranı "
+                f"({sample}{more})")
 
     # Non-Latin script detection (Arabic, Tamil, Devanagari, Cyrillic, CJK, etc.)
     _NON_LATIN = re.compile(
@@ -4873,8 +4909,10 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     if log_fn and script_issues:
         sample = ", ".join(script_issues[:5])
         more   = f" …+{len(script_issues)-5}" if len(script_issues) > 5 else ""
-        log_fn(f"  🚨 {fname}: {len(script_issues)} satırda Türkçe dışı alfabe var "
-               f"(Arabic/Tamil/Kiril vb.) — idx: {sample}{more}", "err")
+        _emit_issue(
+            "foreign_script", script_issues,
+            f"  🚨 {fname}: {len(script_issues)} satırda Türkçe dışı alfabe var "
+            f"(Arabic/Tamil/Kiril vb.) — idx: {sample}{more}", "err")
 
     # Cue hizalama/kayma taraması (deterministik) — çeviri satırlarının yanlış cue'ya
     # kaymış olabileceği bölümleri işaretler (id<->içerik uyuşmazlığı). Ayrı tutulur
@@ -4894,9 +4932,11 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 else:
                     all_ids.extend(f.get("ids", []))
             types = sorted({f["type"] for f in align_findings})
-            log_fn(f"  🚨 {fname}: OLASI CUE HİZALAMA/KAYMA SORUNU ({', '.join(types)}) "
-                   f"— çeviri satırları yanlış cue'ya kaymış olabilir. Şu cue'ları "
-                   f"kaynakla ELLE KARŞILAŞTIRIN: {_fmt_align_ranges(all_ids)}", "err")
+            _emit_issue(
+                "alignment", all_ids,
+                f"  🚨 {fname}: OLASI CUE HİZALAMA/KAYMA SORUNU ({', '.join(types)}) "
+                f"— çeviri satırları yanlış cue'ya kaymış olabilir. Şu cue'ları "
+                f"kaynakla ELLE KARŞILAŞTIRIN: {_fmt_align_ranges(all_ids)}", "err")
 
     # Bozuk/yabancı token taraması (deterministik, run_validators'la aynı kurallar) —
     # critic API'ye gitmeyen sync akışında veya critic'in kaçırdığı satırlarda son
@@ -4919,8 +4959,10 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     if log_fn and garble_lines:
         sample = ", ".join(f"#{i} '{tok}'" for i, tok in garble_lines[:5])
         more   = f" …+{len(garble_lines)-5}" if len(garble_lines) > 5 else ""
-        log_fn(f"  ⚠ {fname}: {len(garble_lines)} satırda bozuk/yabancı token — "
-               f"örn: {sample}{more}", "warn")
+        _emit_issue(
+            "garble_token", [idx for idx, _token in garble_lines],
+            f"  ⚠ {fname}: {len(garble_lines)} satırda bozuk/yabancı token — "
+            f"örn: {sample}{more}")
 
     # Karışık-terim raporu (deterministik) — aynı özel ismin dosya içinde farklı
     # biçimlerde çevrildiğini işaretler; helper-model consistency sweep'in
@@ -4930,10 +4972,22 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     except Exception:
         mixed_terms = []
     if log_fn and mixed_terms:
+        mixed_clusters = _mixed_term_clusters(blocks, orig)
         for mt in mixed_terms:
+            mixed_ids = sorted(
+                {
+                    str(idx)
+                    for cluster in mixed_clusters.get(mt["term"], [])
+                    if len(cluster) >= 2
+                    for idx, _token in cluster
+                },
+                key=lambda value: int(value) if str(value).isdigit() else str(value))
             renderings_str = " / ".join(f"{k}×{v}" for k, v in mt["renderings"].items())
-            log_fn(f"  ⚠ {fname}: '{mt['term']}' dosya içinde karışık çevrilmiş "
-                   f"({renderings_str}) — tutarlılık kontrolü önerilir", "warn")
+            _emit_issue(
+                "mixed_term", mixed_ids,
+                f"  ⚠ {fname}: '{mt['term']}' dosya içinde karışık çevrilmiş "
+                f"({renderings_str}) — tutarlılık kontrolü önerilir",
+                extra={"term": mt["term"]})
         warnings += len(mixed_terms)
 
     return warnings
@@ -5000,6 +5054,76 @@ def summarize_file_outcomes(
     }
 
 # ── UI Dispatcher & Thread Safety Helper ────────────────────────────────────
+def _new_run_id(now=None, suffix: str = "") -> str:
+    import datetime as _dt
+    import uuid
+    stamp = (now or _dt.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{suffix or uuid.uuid4().hex[:8]}"
+
+
+def _load_last_run_record() -> dict | None:
+    try:
+        path = state_path(__file__, "last_run_summary.json")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _run_summary_data(record: dict) -> dict:
+    statuses = {"done": [], "error": [], "skip": [], "pending": []}
+    for path, state in dict(record.get("files") or {}).items():
+        status = str((state or {}).get("status") or "pending")
+        statuses[status if status in statuses else "pending"].append(path)
+    return {
+        "run_id": record.get("run_id", ""),
+        "started_at": record.get("started_at", ""),
+        "ended_at": record.get("ended_at", ""),
+        "status": record.get("status", ""),
+        "counts": {key: len(value) for key, value in statuses.items()},
+        "files": statuses,
+        "fixes_applied": int(record.get("fixes_applied", 0) or 0),
+        "suggestions_rejected": int(record.get("suggestions_rejected", 0) or 0),
+        "warnings": int(record.get("warnings", 0) or 0),
+        "errors": int(record.get("errors", 0) or 0),
+        "outputs": list(dict.fromkeys(record.get("outputs") or [])),
+        "reports": list(dict.fromkeys(record.get("reports") or [])),
+        "log_path": record.get("log_path", ""),
+    }
+
+
+def build_run_summary_text(record: dict) -> str:
+    data = _run_summary_data(record)
+    counts = data["counts"]
+    lines = [
+        "SON ÇALIŞTIRMA ÖZETİ",
+        f"Çalışma kimliği : {data['run_id']}",
+        f"Başlangıç        : {data['started_at']}",
+        f"Bitiş            : {data['ended_at'] or 'devam ediyor'}",
+        f"Durum            : {data['status'] or 'çalışıyor'}",
+        "",
+        f"Toplam dosya     : {sum(counts.values())}",
+        f"Tamamlanan       : {counts['done']}",
+        f"Başarısız        : {counts['error']}",
+        f"Atlanan          : {counts['skip']}",
+        f"Bekleyen         : {counts['pending']}",
+        f"Düzeltme         : {data['fixes_applied']}",
+        f"Reddedilen öneri : {data['suggestions_rejected']}",
+        f"Uyarı / hata     : {data['warnings']} / {data['errors']}",
+    ]
+    for title, values in (
+        ("Başarısız dosyalar", data["files"]["error"]),
+        ("Üretilen çıktılar", data["outputs"]),
+        ("Üretilen raporlar", data["reports"]),
+    ):
+        if values:
+            lines.extend(["", f"{title}:"])
+            lines.extend(f"  - {value}" for value in values)
+    if data["log_path"]:
+        lines.extend(["", f"Log: {data['log_path']}"])
+    return "\n".join(lines) + "\n"
+
+
 def _post_ui(self, fn, *args, **kwargs):
     """Worker thread'lerden veya ana thread'den UI callback'lerini güvenli şekilde kuyruğa ekler.
     Worker thread'deyse Tcl/Tk çağrısı YAPMAZ; sadece Python queue.Queue'ya koyar.
@@ -5173,7 +5297,8 @@ def _detect_pass_overrides(history: dict, max_items: int = 5) -> tuple[int, str]
 
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                               total_tokens: int, actual_cost: float = None,
-                              unknown_cost_tokens: int = 0) -> str:
+                              unknown_cost_tokens: int = 0,
+                              run_id: str = "") -> str:
     """ceviri_raporu.txt içeriğini üretir. Satırlardaki alanlar opsiyoneldir —
     yalnızca mevcut olanlar yazılır (düz mod 'rev', hybrid 'pass_fix'/'qc' taşır)."""
     import datetime as _dt
@@ -5193,6 +5318,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     price = MODEL_PRICE.get(model_name, 0.60)
     lines = [
         "ÇEVİRİ KALİTE RAPORU",
+        f"Çalışma kimliği: {run_id or '-'}",
         f"Tarih  : {_dt.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         f"Model  : {model_name}  |  Hedef dil: {tgt}  |  Mod: {mode}",
         "=" * 72,
@@ -5672,6 +5798,11 @@ class App(ctk.CTk):
         self._drain_ui_queue_id  = None
         self._pending_batches_after_id = None
         self._dpi_refresh_after_id = None
+        self._run_record_lock = threading.RLock()
+        self._active_run_record = None
+        self._last_run_record = _load_last_run_record()
+        self._quality_issues = {}
+        self._quality_issue_seq = 0
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -7422,10 +7553,22 @@ class App(ctk.CTk):
             fg_color=CARD, hover_color=BORDER,
             command=self._copy_complete_log_to_clipboard)
         self._copy_log_btn.grid(row=0, column=2, padx=(0,4))
+        self._diagnostic_btn = ctk.CTkButton(
+            log_hdr, text="🩺 Tanı Paketi", width=94, height=26,
+            font=ctk.CTkFont("Segoe UI", 10),
+            fg_color=CARD, hover_color=BORDER,
+            command=self._copy_diagnostic_package)
+        self._diagnostic_btn.grid(row=0, column=3, padx=(0,4))
+        ctk.CTkButton(
+            log_hdr, text="Son Özet", width=68, height=26,
+            font=ctk.CTkFont("Segoe UI", 10),
+            fg_color=CARD, hover_color=BORDER,
+            command=self._show_last_run_summary).grid(
+                row=0, column=4, padx=(0,4))
         ctk.CTkButton(log_hdr, text="Temizle", width=70, height=26,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
-                      command=self._clear_log).grid(row=0, column=3)
+                      command=self._clear_log).grid(row=0, column=5)
 
         self.log_box = ctk.CTkTextbox(log_fr, font=ctk.CTkFont("Consolas", 11),
                                       fg_color=CARD, corner_radius=8,
@@ -7930,11 +8073,174 @@ class App(ctk.CTk):
         self._frozen_run_var_getters = []
 
     # ── Log yardımcıları ──────────────────────────────────────────────────────
-    def _log(self, msg, tag=""):
+    def _diagnostic_run_settings(self, snapshot: dict) -> dict:
+        scalar_keys = (
+            "input_dir", "output_dir", "src_lang", "tgt_lang", "mode",
+            "hybrid_mode", "analysis_depth", "style", "content_type",
+            "profanity", "same_folder", "auto_glossary", "term_normalize",
+            "critic", "polish", "native", "qc", "condense", "backtrans",
+            "semantic_reconcile", "review", "twowave", "clean_sdh",
+            "linebreak", "ai_segment", "merge_cues", "chain_ctx",
+            "precontext", "series_memory", "main_model_name",
+            "main_api_base_url",
+        )
+        result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
+        result["helper_models"] = dict(snapshot.get("helper_models") or {})
+        result["helper_urls"] = dict(snapshot.get("helper_urls") or {})
+        result["file_source_languages"] = dict(
+            snapshot.get("file_source_languages") or {})
+        return json.loads(_sanitize_settings_backup_text(
+            json.dumps(result, ensure_ascii=False, default=str)))
+
+    def _begin_run_record(self, files: list, resume: bool = False):
+        import datetime as _dt
+        run_id = _new_run_id()
+        snapshot = dict(getattr(self, "_active_snapshot", {}) or {})
+        log_path = state_path(
+            __file__, "logs", f"run_{run_id}.pid{os.getpid()}.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._log_lock:
+            old_log = getattr(self, "_log_file", None)
+            try:
+                if old_log is not None:
+                    old_log.flush()
+                    old_log.close()
+            except Exception:
+                pass
+            self._log_file = open(log_path, "w", encoding="utf-8")
+        record = {
+            "run_id": run_id,
+            "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "ended_at": "",
+            "status": "çalışıyor",
+            "resume": bool(resume),
+            "settings": self._diagnostic_run_settings(snapshot),
+            "files": {
+                str(path): {"status": "pending", "phase": "Bekliyor"}
+                for path in files
+            },
+            "fixes_applied": 0,
+            "suggestions_rejected": 0,
+            "warnings": 0,
+            "errors": 0,
+            "outputs": [],
+            "reports": [],
+            "log_path": str(log_path),
+            "last_traceback": "",
+        }
+        with self._run_record_lock:
+            self._active_run_record = record
+            self._quality_issues = {}
+            self._quality_issue_seq = 0
+        self._log(f"Çalıştırma kimliği: {run_id}", "info")
+        return run_id
+
+    def _record_file_status(self, filepath: str, phase: str, status: str):
+        with self._run_record_lock:
+            record = self._active_run_record
+            if not record:
+                return
+            item = record["files"].setdefault(
+                str(filepath), {"status": "pending", "phase": ""})
+            item["phase"] = str(phase)
+            if status in {"done", "error", "skip"}:
+                item["status"] = status
+            elif status == "running" and item.get("status") == "pending":
+                item["status"] = "running"
+
+    def _record_log_metadata(self, msg: str, tag: str):
+        with self._run_record_lock:
+            record = self._active_run_record
+            if not record:
+                return
+            if tag == "warn":
+                record["warnings"] += 1
+            elif tag == "err":
+                record["errors"] += 1
+            folded = str(msg).casefold()
+            if "redded" in folded or "filtresinden döndü" in folded:
+                match = re.search(r"(\d+)\s+(?:öneri|küme)", folded)
+                if match:
+                    record["suggestions_rejected"] += int(match.group(1))
+            saved = re.search(
+                r"(?:Kaydedildi|Çıktı)\s*:\s*(.+?\.srt)(?:\s|$)", str(msg))
+            if saved:
+                record["outputs"].append(saved.group(1).strip())
+            report = re.search(
+                r"(?:rapor(?:u)?|Rapor)\s*:\s*(.+?\.txt)(?:\s|$)", str(msg))
+            if report:
+                record["reports"].append(report.group(1).strip())
+
+    def _record_quality_report(self, rows: list, report_paths: list):
+        fix_keys = ("cons", "rev", "pass_fix", "qc_auto", "qc")
+        fixes = sum(
+            int(row.get(key, 0) or 0)
+            for row in (rows or []) for key in fix_keys)
+        completed_names = {str(row.get("name", "")) for row in (rows or [])}
+        with self._run_record_lock:
+            record = self._active_run_record
+            if not record:
+                return
+            record["fixes_applied"] = max(record["fixes_applied"], fixes)
+            record["reports"].extend(str(path) for path in report_paths if path)
+            for path, item in record["files"].items():
+                if Path(path).name in completed_names and item.get("status") != "error":
+                    item["status"] = "done"
+
+    def _finalize_run_record(self):
+        import datetime as _dt
+        with self._run_record_lock:
+            record = self._active_run_record
+            if not record:
+                return None
+            record["ended_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+            states = [item.get("status", "pending") for item in record["files"].values()]
+            if self._stop_flag:
+                record["status"] = "durduruldu"
+            elif states and all(state == "done" for state in states):
+                record["status"] = "tamamlandı"
+            elif any(state == "done" for state in states):
+                record["status"] = "kısmen tamamlandı"
+            elif any(state == "error" for state in states):
+                record["status"] = "başarısız"
+            elif any(state in {"pending", "running"} for state in states):
+                record["status"] = "eksik"
+            else:
+                record["status"] = "tamamlandı"
+            snapshot = copy.deepcopy(record)
+
+        settings = snapshot.get("settings") or {}
+        try:
+            report_dir = _resolve_report_dir(
+                settings.get("input_dir", ""), settings.get("output_dir", ""))
+            report_dir.mkdir(parents=True, exist_ok=True)
+            base = report_dir / f"calistirma_{snapshot['run_id']}_ozet"
+            txt_path = base.with_suffix(".txt")
+            json_path = base.with_suffix(".json")
+            snapshot["reports"] = list(dict.fromkeys(
+                list(snapshot.get("reports") or []) +
+                [str(txt_path), str(json_path)]))
+            atomic_write_text(
+                txt_path, build_run_summary_text(snapshot), encoding="utf-8")
+            atomic_write_json(json_path, snapshot)
+            atomic_write_json(
+                state_path(__file__, "last_run_summary.json"), snapshot)
+        except Exception as exc:
+            self._log(f"Çalıştırma özeti yazılamadı: {exc}", "warn")
+
+        with self._run_record_lock:
+            self._last_run_record = snapshot
+            self._active_run_record = None
+        return snapshot
+
+    def _log(self, msg, tag="", issue_id=None):
         import datetime
         icons = {"ok": "✓", "err": "✗", "warn": "⚠", "info": "›"}
         icon  = icons.get(tag, " ")
         disk_msg = _sanitize_settings_backup_text(str(msg))
+        recorder = getattr(self, "_record_log_metadata", None)
+        if callable(recorder):
+            recorder(disk_msg, tag)
         ui_msg = disk_msg
         if len(ui_msg) > 500:
             ui_msg = ui_msg[:497] + "…"
@@ -7952,7 +8258,24 @@ class App(ctk.CTk):
         def _write():
             try:
                 self.log_box.configure(state="normal")
-                self.log_box.insert("end", line)
+                tags = (f"quality_issue_{issue_id}",) if issue_id else ()
+                if tags:
+                    self.log_box.insert("end", line, tags)
+                else:
+                    self.log_box.insert("end", line)
+                if issue_id:
+                    tag_name = tags[0]
+                    self.log_box.tag_config(
+                        tag_name, foreground=INFO_BLUE, underline=True)
+                    self.log_box.tag_bind(
+                        tag_name, "<Button-1>",
+                        lambda _event, iid=issue_id: self._open_quality_issue(iid))
+                    self.log_box.tag_bind(
+                        tag_name, "<Enter>",
+                        lambda _event: self.log_box.configure(cursor="hand2"))
+                    self.log_box.tag_bind(
+                        tag_name, "<Leave>",
+                        lambda _event: self.log_box.configure(cursor=""))
                 if self._log_pinned:
                     self.log_box.see("end")
                 self.log_box.configure(state="disabled")
@@ -7979,6 +8302,12 @@ class App(ctk.CTk):
         tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
         # Son 2 frame'i al (çok uzun olmasın)
         compact = "".join(tb_lines[-3:]).strip().replace("\n", " | ")
+        lock = getattr(self, "_run_record_lock", None)
+        if lock is not None:
+            with lock:
+                record = getattr(self, "_active_run_record", None)
+                if record is not None:
+                    record["last_traceback"] = "".join(tb_lines)
         self._log(f"{label}: {exc}", "err")
         self._log(f"  ↳ {compact}", "err")
 
@@ -8223,6 +8552,150 @@ class App(ctk.CTk):
                 "Loglar panoya kopyalanamadı. Başka bir uygulama panoyu kilitlemiş olabilir.")
             return False
 
+    def _current_run_record_snapshot(self):
+        with self._run_record_lock:
+            record = self._active_run_record or self._last_run_record
+            return copy.deepcopy(record) if record else None
+
+    def _record_quality_issue(self, issue: dict):
+        with self._run_record_lock:
+            self._quality_issue_seq += 1
+            run_id = str((self._active_run_record or {}).get("run_id") or "run")
+            issue_id = f"{run_id}-{self._quality_issue_seq}"
+            self._quality_issues[issue_id] = copy.deepcopy(issue)
+            return issue_id
+
+    def _open_quality_issue(self, issue_id: str):
+        with self._run_record_lock:
+            issue = copy.deepcopy(self._quality_issues.get(issue_id))
+        if not issue:
+            messagebox.showinfo(
+                "Cue İnceleyici", "Bu uyarının cue ayrıntıları artık bellekte değil.")
+            return
+        items = list(issue.get("items") or [])
+        dlg = ctk.CTkToplevel(self)
+        dlg.title(f"Cue İnceleyici — {Path(issue.get('source_path', '')).name}")
+        dlg.geometry("1100x650")
+        dlg.minsize(760, 420)
+        dlg.configure(fg_color=BG)
+        dlg.grid_columnconfigure((0, 1), weight=1)
+        dlg.grid_rowconfigure(2, weight=1)
+        ctk.CTkLabel(
+            dlg, text=issue.get("message", ""), anchor="w",
+            justify="left", wraplength=1040,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            text_color=YELLOW).grid(
+                row=0, column=0, columnspan=2, sticky="ew",
+                padx=16, pady=(14, 8))
+        ctk.CTkLabel(
+            dlg, text="KAYNAK", text_color=FG2,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=1, column=0, sticky="w", padx=16)
+        ctk.CTkLabel(
+            dlg, text="ÇEVİRİ", text_color=FG2,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=1, column=1, sticky="w", padx=16)
+        source_box = ctk.CTkTextbox(
+            dlg, font=ctk.CTkFont("Consolas", 12),
+            fg_color=PANEL, text_color=FG, wrap="word")
+        target_box = ctk.CTkTextbox(
+            dlg, font=ctk.CTkFont("Consolas", 12),
+            fg_color=PANEL, text_color=FG, wrap="word")
+        source_box.grid(row=2, column=0, sticky="nsew", padx=(16, 6), pady=(6, 12))
+        target_box.grid(row=2, column=1, sticky="nsew", padx=(6, 16), pady=(6, 12))
+        source_text = []
+        target_text = []
+        for item in items:
+            cue_id = item.get("id", "?")
+            source_text.append(f"#{cue_id}\n{item.get('source', '')}\n{'─' * 44}")
+            target_text.append(f"#{cue_id}\n{item.get('translation', '')}\n{'─' * 44}")
+        source_box.insert("1.0", "\n".join(source_text) or "Cue bulunamadı.")
+        target_box.insert("1.0", "\n".join(target_text) or "Cue bulunamadı.")
+        source_box.configure(state="disabled")
+        target_box.configure(state="disabled")
+        dlg.lift()
+        dlg.focus_force()
+
+    def _diagnostic_package_text(self, record: dict) -> str:
+        import platform
+        import subprocess
+        import sys
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(Path(__file__).resolve().parent),
+                text=True, encoding="utf-8", errors="replace",
+                timeout=3).strip()
+        except Exception:
+            commit = "bilinmiyor"
+        log_text = ""
+        log_path = str(record.get("log_path") or "")
+        active = getattr(self, "_active_run_record", None)
+        if active and active.get("run_id") == record.get("run_id"):
+            log_text = self._complete_session_log_text()
+        else:
+            try:
+                if log_path:
+                    log_text = Path(log_path).read_text(encoding="utf-8")
+            except Exception:
+                log_text = ""
+        sections = [
+            "SUBTITLE TRANSLATOR TANI PAKETİ",
+            "=" * 72,
+            build_run_summary_text(record).rstrip(),
+            "",
+            "SÜRÜM / ORTAM",
+            f"Commit            : {commit}",
+            f"Python            : {sys.version.split()[0]}",
+            f"CustomTkinter     : {getattr(ctk, '__version__', 'bilinmiyor')}",
+            f"Sistem            : {platform.platform()}",
+            "",
+            "AYARLAR (ANAHTARLAR HARİÇ)",
+            json.dumps(record.get("settings") or {}, ensure_ascii=False, indent=2),
+            "",
+            "SON TRACEBACK",
+            str(record.get("last_traceback") or "Yok"),
+            "",
+            "EKSİKSİZ OTURUM LOGU",
+            log_text or "Log bulunamadı.",
+        ]
+        return _sanitize_settings_backup_text("\n".join(sections))
+
+    def _copy_diagnostic_package(self):
+        record = self._current_run_record_snapshot()
+        if not record:
+            messagebox.showinfo(
+                "Tanı Paketi", "Henüz kaydedilmiş bir çalıştırma bulunmuyor.")
+            return False
+        try:
+            content = self._diagnostic_package_text(record)
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.update_idletasks()
+            button = getattr(self, "_diagnostic_btn", None)
+            if button is not None:
+                button.configure(text="✓ Kopyalandı")
+                self.after(
+                    1500, lambda: button.configure(text="🩺 Tanı Paketi"))
+            return True
+        except Exception as exc:
+            self._log(f"Tanı paketi kopyalanamadı: {exc}", "warn")
+            messagebox.showwarning(
+                "Pano kullanılamıyor",
+                "Tanı paketi panoya kopyalanamadı. Başka bir uygulama panoyu kilitlemiş olabilir.")
+            return False
+
+    def _show_last_run_summary(self):
+        record = self._current_run_record_snapshot()
+        if not record:
+            messagebox.showinfo(
+                "Son Çalıştırma Özeti",
+                "Henüz kaydedilmiş bir çalıştırma bulunmuyor.")
+            return
+        self._show_report_dialog(
+            build_run_summary_text(record),
+            str(record.get("reports", [""])[-1] if record.get("reports") else ""))
+
     def _clear_log(self):
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
@@ -8316,6 +8789,9 @@ class App(ctk.CTk):
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
         elif not running:
+            finalizer = getattr(self, "_finalize_run_record", None)
+            if callable(finalizer):
+                finalizer()
             self._run_state_initialized = False
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
@@ -8432,6 +8908,9 @@ class App(ctk.CTk):
                                pct: float, status: str = "running"):
         """Tek dosya satırını günceller. Thread-safe.
         status: 'running' | 'done' | 'error' | 'skip'"""
+        recorder = getattr(self, "_record_file_status", None)
+        if callable(recorder):
+            recorder(filepath, phase, status)
         row = self._job_rows.get(filepath)
         if not row:
             return
@@ -10879,6 +11358,9 @@ class App(ctk.CTk):
         self._language_preflight_done = False
         self._content_type_preflight_done = False
         self._active_snapshot = self._take_run_snapshot()
+        begin_run = getattr(self, "_begin_run_record", None)
+        if callable(begin_run):
+            begin_run(srt_files)
 
         def _guarded_worker(target, *args):
             try:
@@ -10942,6 +11424,9 @@ class App(ctk.CTk):
             getattr(self, attr).set("0")
         self._set_eta("")
         self._set_running(True)
+        begin_run = getattr(self, "_begin_run_record", None)
+        if callable(begin_run):
+            begin_run(self._get_srt_files(), resume=True)
 
         def _guarded_resume():
             try:
@@ -13141,17 +13626,27 @@ class App(ctk.CTk):
                 tok = self._token_total
                 actual_cost = self._cost_total
                 unknown_cost_tokens = self._unknown_cost_tokens
+            with self._run_record_lock:
+                active_record = self._active_run_record or {}
+                run_id = str(active_record.get("run_id") or "")
             txt = build_quality_report_text(rows, self._main_model_name(),
                                             self.tgt_var.get(),
                                             self.mode_var.get(), tok,
                                             actual_cost=actual_cost,
-                                            unknown_cost_tokens=unknown_cost_tokens)
+                                            unknown_cost_tokens=unknown_cost_tokens,
+                                            run_id=run_id)
             # Rapor, çıktı .srt'lerle aynı 'efektif tabana' gider (Kural 1: <girdi>/ÇIKTI,
             # Kural 2: çıktı kökü) — bkz. plans/output-folder-rules-brief.md.
             rep_dir = _resolve_report_dir(self.input_var.get(), output_dir)
             rep_dir.mkdir(parents=True, exist_ok=True)
             p = rep_dir / "ceviri_raporu.txt"
             atomic_write_text(p, txt, encoding="utf-8")
+            report_paths = [p]
+            if run_id:
+                run_path = rep_dir / f"ceviri_raporu_{run_id}.txt"
+                atomic_write_text(run_path, txt, encoding="utf-8")
+                report_paths.append(run_path)
+            self._record_quality_report(rows, report_paths)
             self._log(f"Kalite raporu: {p}", "ok")
             return p
         except Exception:
@@ -14820,7 +15315,8 @@ class App(ctk.CTk):
             try:
                 _w = scan_translation_quality(
                     filepath, sorted_blocks, log_fn=self._log,
-                    src_clean_map={str(c.index): _clean_src(c.text) for c in cues})
+                    src_clean_map={str(c.index): _clean_src(c.text) for c in cues},
+                    issue_fn=self._record_quality_issue)
             except Exception:
                 pass
             # Rapor satırı
@@ -15604,7 +16100,8 @@ class App(ctk.CTk):
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
                                 try:
                                     scan_translation_quality(str(_src_path), pp,
-                                                             log_fn=self._log, src_clean_map=_src_map)
+                                                             log_fn=self._log, src_clean_map=_src_map,
+                                                             issue_fn=self._record_quality_issue)
                                 except Exception:
                                     pass
                                 self._store_tm_pairs(
@@ -16010,7 +16507,8 @@ class App(ctk.CTk):
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
             w = (_hata_n if _has_missing else
                  scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
-                                          src_clean_map=src_blocks))
+                                           src_clean_map=src_blocks,
+                                           issue_fn=self._record_quality_issue))
             total_warnings += w
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
@@ -16903,7 +17401,8 @@ class App(ctk.CTk):
                 _w = 0
                 try:
                     _w = scan_translation_quality(filepath, _final_blocks,
-                                                  log_fn=self._log, src_clean_map=_src_map)
+                                                  log_fn=self._log, src_clean_map=_src_map,
+                                                  issue_fn=self._record_quality_issue)
                 except Exception:
                     pass
                 self._store_tm_pairs(

@@ -2,6 +2,7 @@
 .credentials.tmp
 .gui_settings.json
 .gui_settings.json.bak.*
+last_run_summary.json
 batch_fmap_*.json
 batch_id.txt
 _batch_sessions/
