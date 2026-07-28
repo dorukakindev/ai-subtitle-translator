@@ -200,18 +200,20 @@ class PathsEqualTest(unittest.TestCase):
 class ResolveReportDirTest(unittest.TestCase):
     def test_same_dir_report_goes_into_cikti(self):
         d = gui._resolve_report_dir("/data/subs", "/data/subs")
-        self.assertEqual(d.name, "ÇIKTI")
-        self.assertEqual(d.parent.name, "subs")
+        self.assertEqual(d.name, "Raporlar")
+        self.assertEqual(d.parent.name, "ÇIKTI")
+        self.assertEqual(d.parent.parent.name, "subs")
 
     def test_empty_output_report_goes_into_cikti(self):
         d = gui._resolve_report_dir("/data/subs", "")
-        self.assertEqual(d.name, "ÇIKTI")
+        self.assertEqual(d.name, "Raporlar")
+        self.assertEqual(d.parent.name, "ÇIKTI")
 
     def test_separate_output_report_stays_at_root(self):
-        # Kural 2: rapor çıktı KÖKÜNDE (dosya alt-klasörlerinin üstünde)
+        # Kural 2: raporlar çıktı kökündeki ayrı klasörde.
         d = gui._resolve_report_dir("/a", "/b/ÇIKTI")
-        self.assertEqual(d.name, "ÇIKTI")
-        self.assertEqual(d.parent.name, "b")
+        self.assertEqual(d.name, "Raporlar")
+        self.assertEqual(d.parent.name, "ÇIKTI")
 
 
 if __name__ == "__main__":

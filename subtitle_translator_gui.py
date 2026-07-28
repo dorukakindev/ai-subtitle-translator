@@ -2204,16 +2204,16 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
 
 
 def _resolve_report_dir(input_dir: str, output_dir: str) -> Path:
-    """ceviri_raporu.txt'nin gideceği 'efektif çıktı tabanı'.
+    """Çalıştırma/kalite raporlarının gideceği ayrı rapor klasörü.
 
-    Kural 1 (çıktı==girdi veya boş): <girdi>/ÇIKTI  (çıktı .srt'lerin yanı, kaynağı kirletmez)
-    Kural 2 (ayrı çıktı klasörü):    <çıktı>        (dosya-adı alt-klasörlerinin üstünde, kök)."""
+    Kural 1 (çıktı==girdi veya boş): <girdi>/ÇIKTI/Raporlar
+    Kural 2 (ayrı çıktı klasörü):    <çıktı>/Raporlar"""
     in_dir = (input_dir or "").strip()
     out_dir = (output_dir or "").strip()
     if not out_dir or _paths_equal(in_dir, out_dir):
         base = Path(in_dir) if in_dir else Path(".")
-        return base / "ÇIKTI"
-    return Path(out_dir)
+        return base / "ÇIKTI" / "Raporlar"
+    return Path(out_dir) / "Raporlar"
 
 
 def estimate_tokens(srt_files, chunk_size=None, cancel_check=None):
@@ -13671,8 +13671,8 @@ class App(ctk.CTk):
                                             actual_cost=actual_cost,
                                             unknown_cost_tokens=unknown_cost_tokens,
                                             run_id=run_id)
-            # Rapor, çıktı .srt'lerle aynı 'efektif tabana' gider (Kural 1: <girdi>/ÇIKTI,
-            # Kural 2: çıktı kökü) — bkz. plans/output-folder-rules-brief.md.
+            # Raporlar altyazı klasörlerini karıştırmamak için efektif çıktı
+            # tabanındaki Raporlar alt-klasörüne gider.
             rep_dir = _resolve_report_dir(self.input_var.get(), output_dir)
             rep_dir.mkdir(parents=True, exist_ok=True)
             p = rep_dir / "ceviri_raporu.txt"
@@ -13694,7 +13694,8 @@ class App(ctk.CTk):
         if not p.exists():
             messagebox.showinfo("Kalite Raporu",
                                 "Henüz rapor yok.\nBir çeviri tamamlandığında çıktı "
-                                "klasörüne 'ceviri_raporu.txt' yazılır.")
+                                "klasöründeki Raporlar alt-klasörüne "
+                                "'ceviri_raporu.txt' yazılır.")
             return
         try:
             self._show_report_dialog(p.read_text(encoding="utf-8"), str(p))
@@ -16669,7 +16670,7 @@ class App(ctk.CTk):
             key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))
         )] if _last_fp else []
         def _show_done():
-            _rapor_line = "\nRapor: ceviri_raporu.txt\n" if _report_path else "\n"
+            _rapor_line = "\nRapor: Raporlar\\ceviri_raporu.txt\n" if _report_path else "\n"
             ans = messagebox.askyesno(
                 summary["title_text"],
                 f"{summary['summary_text']}!\n\nKonum: {output_dir}{_rapor_line}\n"
