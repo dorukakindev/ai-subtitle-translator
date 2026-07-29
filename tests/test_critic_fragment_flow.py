@@ -125,6 +125,31 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertEqual(result[0][2], "Tarih boyunca insanlık,")
         self.assertEqual(result[1][2], "Armageddon korkularıyla boğuştu.")
 
+    def test_critic_rejects_partial_fragment_rewrite_atomically(self):
+        cues = [
+            Cue(1, "Seeing them reminded me,"),
+            Cue(2, "of an old love."),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Onları görmek hatırlattı,"),
+            (2, "00:00:01,000 --> 00:00:02,000", "eski bir aşkı."),
+        ]
+        fixes = [{"id": "1", "fixed": "Onları görünce işte,"}]
+        logs = []
+
+        with patch.dict(
+                sys.modules, {"openai": self._fake_openai_module(fixes, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues,
+                tr_blocks=blocks,
+                helper_api_key="test",
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertTrue(any(
+            "fragment_group_partial" in msg for _, msg in logs))
+
 
     def test_critic_sends_full_fragment_group_for_dangling_flow(self):
         cues = [

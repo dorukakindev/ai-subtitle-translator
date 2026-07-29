@@ -9721,6 +9721,19 @@ def critic_pass_with_helper(
                     })
 
             accepted_ids = {item["fid"] for item in prepared if item["ok"]}
+            partial_flow_group_ids = set()
+            for item in prepared:
+                if not item["ok"] or not any(
+                        token in flow_group_reason_tokens
+                        for token in item["reason_toks"]):
+                    continue
+                group_ids = {
+                    str(group_id)
+                    for group_id in frag_group_by_id.get(
+                        item["fid"], [item["fid"]])
+                }
+                if not group_ids.issubset(accepted_ids):
+                    partial_flow_group_ids.update(group_ids)
             for item in prepared:
                 fid = item["fid"]
                 old_text = item["old_text"]
@@ -9731,17 +9744,14 @@ def critic_pass_with_helper(
                     reason_stats[tok]["suggested"] += 1
                 ok = item["ok"]
                 reason = item["reason"]
-                if (
-                    ok
-                    and any(token in flow_group_reason_tokens for token in reason_toks)
-                    and _has_dangling_fragment_word_deletion(old_text, final_text)
-                    and not all(
-                        str(group_id) in accepted_ids
-                        for group_id in frag_group_by_id.get(fid, [fid])
-                    )
-                ):
+                if ok and fid in partial_flow_group_ids:
                     ok = False
-                    reason = "dangling_fragment_word_deletion"
+                    reason = (
+                        "dangling_fragment_word_deletion"
+                        if _has_dangling_fragment_word_deletion(
+                            old_text, final_text)
+                        else "fragment_group_partial"
+                    )
                 if not ok:
                     critic_rejected += 1
                     critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
