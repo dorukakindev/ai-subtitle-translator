@@ -116,6 +116,43 @@ class RunRequestCancellerTest(unittest.TestCase):
                 messages=[{"role": "user", "content": "x"}],
             )
 
+    def test_anthropic_adapter_returns_promptly_when_cancelled(self):
+        canceller = RunRequestCanceller()
+        client = _Client()
+        client.base_url = "https://proxy.example/v1/messages"
+        started = threading.Event()
+        release = threading.Event()
+        errors = []
+
+        def blocked_adapter(**_kwargs):
+            started.set()
+            release.wait(timeout=2)
+            return SimpleNamespace(choices=[])
+
+        def worker():
+            try:
+                ht._safe_chat_create(
+                    client,
+                    cancel_context=canceller,
+                    model="custom-claude",
+                    messages=[{"role": "user", "content": "x"}],
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch("helper_models.call_anthropic_messages",
+                   side_effect=blocked_adapter):
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(started.wait(timeout=1))
+            self.assertEqual(canceller.cancel(), 1)
+            thread.join(timeout=1)
+            release.set()
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RequestCancelled)
+
 
 def _late_success(canceller):
     """Return a response only after marking its owning run cancelled."""

@@ -48,3 +48,42 @@ class RunRequestCanceller:
             except Exception:
                 pass
         return len(clients)
+
+
+def run_cancellable_call(call, cancel_context, poll_interval=0.05):
+    if cancel_context is None:
+        return call()
+
+    done = threading.Event()
+    wake = threading.Event()
+    outcome = {}
+
+    class _CallHandle:
+        def close(self):
+            wake.set()
+
+    handle = _CallHandle()
+
+    def _worker():
+        try:
+            outcome["result"] = call()
+        except BaseException as exc:
+            outcome["error"] = exc
+        finally:
+            done.set()
+            wake.set()
+
+    cancel_context.register(handle)
+    try:
+        thread = threading.Thread(
+            target=_worker, name="cancellable-provider-call", daemon=True)
+        thread.start()
+        while not done.is_set():
+            wake.wait(poll_interval)
+            cancel_context.raise_if_cancelled()
+        cancel_context.raise_if_cancelled()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome.get("result")
+    finally:
+        cancel_context.unregister(handle)

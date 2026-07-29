@@ -119,25 +119,33 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     if is_bedrock:
         api_key = getattr(client, "api_key", None)
         from helper_models import call_bedrock_converse
-        return call_bedrock_converse(
-            model_id=model,
-            messages=kwargs.get("messages", []),
-            temperature=kwargs.get("temperature"),
-            max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
-            api_key_str=api_key,
-            base_url=base_url
+        from request_cancellation import run_cancellable_call
+        return run_cancellable_call(
+            lambda: call_bedrock_converse(
+                model_id=model,
+                messages=kwargs.get("messages", []),
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
+                api_key_str=api_key,
+                base_url=base_url
+            ),
+            cancel_context,
         )
 
     if is_anthropic:
         api_key = getattr(client, "api_key", None)
         from helper_models import call_anthropic_messages
-        return call_anthropic_messages(
-            model_id=model,
-            messages=kwargs.get("messages", []),
-            temperature=kwargs.get("temperature"),
-            max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
-            api_key_str=api_key,
-            base_url=base_url
+        from request_cancellation import run_cancellable_call
+        return run_cancellable_call(
+            lambda: call_anthropic_messages(
+                model_id=model,
+                messages=kwargs.get("messages", []),
+                temperature=kwargs.get("temperature"),
+                max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
+                api_key_str=api_key,
+                base_url=base_url
+            ),
+            cancel_context,
         )
 
     try:
