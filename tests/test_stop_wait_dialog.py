@@ -111,6 +111,32 @@ class StopWaitDialogTest(unittest.TestCase):
                 if ".wait(timeout=300)" in line:
                     self.fail(f"Found unhandled direct 300s wait in {name}: '{line.strip()}'")
 
+    def test_translation_flows_stop_before_recording_or_writing_after_helper_calls(self):
+        flows = (
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        )
+        checkpoints = [
+            ("ht.critic_pass_with_helper(", "_record_pass_change(_pass_trace, \"Critic\""),
+            ("self._polish_pass(", "_record_pass_change(_pass_trace, \"Polish\""),
+            ("ht.native_reader_pass(", "_record_pass_change(_pass_trace, \"Native\""),
+            ("self._maybe_condense(", "_record_pass_change(_pass_trace, \"Condense\""),
+            ("self._run_final_semantic_checks(", "_normalize_mixed_terms("),
+            ("_normalize_mixed_terms(", "_fill_hata_with_source("),
+        ]
+        for flow in flows:
+            src = inspect.getsource(flow)
+            for call, next_step in checkpoints:
+                with self.subTest(flow=flow.__name__, call=call):
+                    start = src.find(call)
+                    end = src.find(next_step, start + len(call))
+                    self.assertGreaterEqual(start, 0)
+                    self.assertGreater(end, start)
+                    self.assertIn("if self._stop_flag:", src[start:end])
+                    self.assertIn("break", src[start:end])
+
     def test_auto_glossary_does_not_write_file_when_stopped(self):
         """Verify _run_auto_glossary does not append to glossary file if dialog wait returns 'stopped' or 'timeout'."""
         with tempfile.TemporaryDirectory() as tmpdir:

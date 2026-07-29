@@ -15230,6 +15230,8 @@ class App(ctk.CTk):
                     cancel_context=self.__dict__.get(
                         "_helper_request_canceller"),
                 )
+                if self._stop_flag:
+                    break
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                 self._write_critic_change_report(out_path, _critic_change_log)
 
@@ -15248,6 +15250,8 @@ class App(ctk.CTk):
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions, idiom_map, cultural_refs),
                     locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                if self._stop_flag:
+                    break
                 _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 self._log("Polish Pass tamamlandı", "ok")
 
@@ -15270,6 +15274,8 @@ class App(ctk.CTk):
                     locked_terms=self._get_locked_terms_dict(filepath, tgt),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
                 )
+                if self._stop_flag:
+                    break
                 _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
 
             if sorted_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
@@ -15297,6 +15303,8 @@ class App(ctk.CTk):
                 self._helper_api_model("analysis"),
                 tgt, src_map=_src_map_for_condense,
                 locked_terms=self._get_locked_terms_dict(filepath, tgt))
+            if self._stop_flag:
+                break
             _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
 
             if self.clean_sdh_var.get():
@@ -15366,6 +15374,9 @@ class App(ctk.CTk):
                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_approved
 
+            if self._stop_flag:
+                break
+
             # Çevrilemeyen satırları sync ile onarma denemesi
             try:
                 _raw_map_pre = _raw_src_map_from_cues(cues)
@@ -15375,9 +15386,11 @@ class App(ctk.CTk):
                     model=model,
                     schema=schema_dict, profanity=self.profanity_var.get(),
                     log_fn=self._log, token_cb=self._update_tokens,
-                    source_cues=cues)
+                     source_cues=cues)
             except Exception:
                 pass
+            if self._stop_flag:
+                break
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                              same_folder=self.same_folder_var.get(),
                                              selected_roots=self._output_selection_roots())
@@ -15389,6 +15402,8 @@ class App(ctk.CTk):
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
+            if self._stop_flag:
+                break
             if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
                 try:
                     sorted_blocks, _ = _normalize_mixed_terms(
@@ -15398,6 +15413,8 @@ class App(ctk.CTk):
                         locked_terms=self._get_locked_terms_dict(filepath, tgt))
                 except Exception:
                     pass
+            if self._stop_flag:
+                break
             _n_filled = 0
             try:
                 _raw_map = _raw_src_map_from_cues(cues)
@@ -15993,6 +16010,8 @@ class App(ctk.CTk):
                                     self._log(
                                         f"Resume: eksik satır onarımı atlandı: {repair_exc}",
                                         "warn")
+                            if self._stop_flag:
+                                break
 
                             _missing_count = sum(
                                 1 for _idx, _ts, text in pp
@@ -16032,6 +16051,8 @@ class App(ctk.CTk):
                                     _before_rev = list(pp)
                                     pp, _rev_fixes = self._review_pass(
                                         str(_src_path), pp, self._main_model_name(), tgt)
+                                    if self._stop_flag:
+                                        break
                                     _record_pass_change(_pass_trace, "Review", _before_rev, pp, _pass_history)
                                 except Exception as e:
                                     self._log(f"Bağlam incelemesi hatası: {e}", "warn")
@@ -16064,6 +16085,8 @@ class App(ctk.CTk):
                                         self._helper_api_model("critic")),
                                     cancel_context=self.__dict__.get(
                                         "_helper_request_canceller"))
+                                if self._stop_flag:
+                                    break
                                 _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
                                 self._write_critic_change_report(output_path, _critic_change_log)
                             if self.polish_var.get() and pp:
@@ -16073,6 +16096,8 @@ class App(ctk.CTk):
                                                        src_map=_src_map_from_cues(_orig_cues),
                                                        analysis_result=_analysis_result,
                                                        locked_terms=self._get_locked_terms_dict(str(_src_path), tgt))
+                                if self._stop_flag:
+                                    break
                                 _record_pass_change(_pass_trace, "Polish", _before_pass, pp, _pass_history)
                             if self.native_var.get() and pp:
                                 self._set_status("Native Okuyucu...")
@@ -16085,6 +16110,8 @@ class App(ctk.CTk):
                                     src_map=_src_map_from_cues(_orig_cues),
                                     locked_terms=self._get_locked_terms_dict(str(_src_path), tgt),
                                     cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                if self._stop_flag:
+                                    break
                                 _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                                 _before_pass = list(pp)
@@ -16104,6 +16131,8 @@ class App(ctk.CTk):
                                 src_map=_src_map_from_cues(_orig_cues),
                                 locked_terms=self._get_locked_terms_dict(
                                     str(_src_path), tgt))
+                            if self._stop_flag:
+                                break
                             _record_pass_change(_pass_trace, "Condense", _before_pass, pp, _pass_history)
                             if self.clean_sdh_var.get():
                                 _before_pass = list(pp)
@@ -16160,6 +16189,8 @@ class App(ctk.CTk):
                                             cancel_context=self.__dict__.get("_helper_request_canceller"))
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
+                            if self._stop_flag:
+                                break
                             # CPS uyarısı — diğer akışlarla paritede
                             _log_cps_warning(pp, self._log)
                             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
@@ -16174,6 +16205,8 @@ class App(ctk.CTk):
                                 _record_pass_change(
                                     _pass_trace, "Final-Semantic",
                                     _before_semantic, pp, _pass_history)
+                            if self._stop_flag:
+                                break
                             if (getattr(self, "term_normalize_var", None) and self.term_normalize_var.get()
                                     and _orig_cues):
                                 try:
@@ -16185,6 +16218,8 @@ class App(ctk.CTk):
                                             str(_src_path), tgt))
                                 except Exception:
                                     pass
+                            if self._stop_flag:
+                                break
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
                             try:
                                 _raw_map = _raw_src_map_from_cues(_orig_cues)
@@ -16470,6 +16505,8 @@ class App(ctk.CTk):
                             self._helper_api_model("critic")),
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"))
+                    if self._stop_flag:
+                        break
                     _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
@@ -16483,6 +16520,8 @@ class App(ctk.CTk):
                         self._helper_api_model("polish"), src_map=src_blocks,
                         analysis_result=_analysis_result,
                         locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                    if self._stop_flag:
+                        break
                     _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Polish Pass hatası: {e}", "warn")
@@ -16501,6 +16540,8 @@ class App(ctk.CTk):
                         src_map=src_blocks,
                         locked_terms=self._get_locked_terms_dict(fp, _tgt_lang),
                         cancel_context=self.__dict__.get("_helper_request_canceller"))
+                    if self._stop_flag:
+                        break
                     _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Native Pass hatası: {e}", "warn")
@@ -16525,6 +16566,8 @@ class App(ctk.CTk):
                     self._helper_api_model("analysis"), _tgt_lang,
                     src_map=src_blocks,
                     locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                if self._stop_flag:
+                    break
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
             if self.clean_sdh_var.get():
                 _before_pass = list(sorted_blocks)
@@ -16550,6 +16593,8 @@ class App(ctk.CTk):
                     _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"QC hatası: {e}", "warn")
+            if self._stop_flag:
+                break
             # Çevrilemeyen satırları sync ile onarma denemesi
             try:
                 if openai_key:
@@ -16563,6 +16608,8 @@ class App(ctk.CTk):
                         source_cues=_src_cues)
             except Exception as e:
                 self._log(f"Onarım geçişi atlandı: {e}", "warn")
+            if self._stop_flag:
+                break
             # CPS uyarısı — sync-hybrid ile paritede (düz-batch loglarında da görünsün)
             _log_cps_warning(sorted_blocks, self._log)
             _before_semantic = list(sorted_blocks)
@@ -16572,6 +16619,8 @@ class App(ctk.CTk):
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
+            if self._stop_flag:
+                break
             if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
                 try:
                     sorted_blocks, _ = _normalize_mixed_terms(
@@ -16581,6 +16630,8 @@ class App(ctk.CTk):
                         locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
                 except Exception:
                     pass
+            if self._stop_flag:
+                break
             _n_filled = 0
             try:
                 sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
@@ -17259,6 +17310,8 @@ class App(ctk.CTk):
                         source_cues=cues)
                 except Exception as e:
                     self._log(f"[{fname}] Eksik satır onarımı atlandı: {e}", "warn")
+                if self._stop_flag:
+                    break
                 
                 _n_filled_save = 0
                 _unresolved_missing = sum(
@@ -17316,6 +17369,8 @@ class App(ctk.CTk):
                         self._log(f"Bağlam incelemesi başlıyor ({len(_final_blocks)} satır)...", "info")
                         _before_rev = list(_final_blocks)
                         _final_blocks, _rev_fixes = self._review_pass(filepath, _final_blocks, model, tgt)
+                        if self._stop_flag:
+                            break
                         _record_pass_change(_pass_trace, "Review", _before_rev, _final_blocks, _pass_history)
                     except Exception as e:
                         self._log(f"Bağlam incelemesi hatası: {e}", "warn")
@@ -17347,6 +17402,8 @@ class App(ctk.CTk):
                                     self._helper_api_model("critic")),
                                 cancel_context=self.__dict__.get(
                                     "_helper_request_canceller"))
+                            if self._stop_flag:
+                                break
                             _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
                             self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
@@ -17357,6 +17414,8 @@ class App(ctk.CTk):
                                                           src_map=_src_map_from_cues(cues),
                                                           analysis_result=_full_analysis,
                                                           locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                            if self._stop_flag:
+                                break
                             _record_pass_change(_pass_trace, "Polish", _before_pass, pp_blocks, _pass_history)
                             self._log("Polish Pass tamamlandı", "ok")
                         if self.native_var.get() and pp_blocks:
@@ -17373,6 +17432,8 @@ class App(ctk.CTk):
                                 src_map=_src_map_from_cues(cues),
                                 locked_terms=self._get_locked_terms_dict(filepath, tgt),
                                 cancel_context=self.__dict__.get("_helper_request_canceller"))
+                            if self._stop_flag:
+                                break
                             _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                             _before_pass = list(pp_blocks)
@@ -17390,6 +17451,8 @@ class App(ctk.CTk):
                             self._helper_api_model("analysis"),
                             tgt, src_map=_src_map_from_cues(cues),
                             locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                        if self._stop_flag:
+                            break
                         _record_pass_change(_pass_trace, "Condense", _before_pass, pp_blocks, _pass_history)
                         if self.clean_sdh_var.get():
                             _before_pass = list(pp_blocks)
@@ -17453,6 +17516,8 @@ class App(ctk.CTk):
                                     )
                                     _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_approved
+                        if self._stop_flag:
+                            break
                         # Kalite geçişi düzeltmeleri (etiketten bağımsız karşılaştır)
                         _pass_fix = sum(
                             1 for b in pp_blocks
@@ -17474,6 +17539,8 @@ class App(ctk.CTk):
                 _record_pass_change(
                     _pass_trace, "Final-Semantic", _before_semantic,
                     _final_blocks, _pass_history)
+                if self._stop_flag:
+                    break
                 if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
                     try:
                         _final_blocks, _ = _normalize_mixed_terms(
@@ -17483,6 +17550,8 @@ class App(ctk.CTk):
                             locked_terms=self._get_locked_terms_dict(filepath, tgt))
                     except Exception:
                         pass
+                if self._stop_flag:
+                    break
                 _raw_map = _raw_src_map_from_cues(cues)
                 _n_filled = 0
                 try:
