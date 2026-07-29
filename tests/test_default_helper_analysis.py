@@ -205,6 +205,61 @@ class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
         )
         self.assertEqual(refs, [{"src": "Yankees", "action": "keep"}])
 
+    def test_long_file_analysis_samples_include_final_cue(self):
+        idiom_cues = [
+            SimpleNamespace(text=f"Ordinary line {i}.", index=i)
+            for i in range(1, 301)
+        ]
+        idiom_cues.append(
+            SimpleNamespace(text="At last, spill the beans.", index=301))
+        ref_cues = [
+            SimpleNamespace(text=f"Ordinary line {i}.", index=i)
+            for i in range(1, 201)
+        ]
+        ref_cues.append(
+            SimpleNamespace(text="The White House responded.", index=201))
+        idiom_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "idioms": {"spill the beans": "ağzındaki baklayı çıkar"},
+            })))],
+        )
+        refs_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "refs": [{
+                    "src": "White House", "action": "localize",
+                    "target": "Beyaz Saray",
+                }],
+            })))],
+        )
+
+        with patch("openai.OpenAI"), \
+             patch.object(
+                 ht, "_safe_chat_create",
+                 side_effect=[idiom_response, refs_response],
+             ) as chat:
+            idioms = ht._generate_idiom_map(
+                idiom_cues, "Turkish", "key",
+                "https://example.test/v1", "gpt-5.4")
+            refs = ht._generate_cultural_refs(
+                ref_cues, {"name": "Film"}, "Turkish",
+                "key", "https://example.test/v1", "gpt-5.4")
+
+        self.assertEqual(
+            idioms, {"spill the beans": "ağzındaki baklayı çıkar"})
+        self.assertEqual(
+            refs, [{
+                "src": "White House", "action": "localize",
+                "target": "Beyaz Saray",
+            }])
+        self.assertIn(
+            "spill the beans",
+            chat.call_args_list[0].kwargs["messages"][0]["content"])
+        self.assertIn(
+            "White House",
+            chat.call_args_list[1].kwargs["messages"][0]["content"])
+
     def test_main_analysis_recurring_terms_must_exist_in_source_text(self):
         cues = [
             SimpleNamespace(

@@ -1634,6 +1634,17 @@ def _extract_emotional_arc(
         return _analysis_aux_result([], status, "scene_plan", False)
 
 
+def _evenly_sample_cues(cues: list, limit: int) -> list:
+    if limit <= 0 or not cues:
+        return []
+    if len(cues) <= limit:
+        return list(cues)
+    if limit == 1:
+        return [cues[-1]]
+    last = len(cues) - 1
+    return [cues[round(i * last / (limit - 1))] for i in range(limit)]
+
+
 def _generate_idiom_map(
     cues: list,
     tgt_lang: str,
@@ -1656,9 +1667,10 @@ def _generate_idiom_map(
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
 
-        # Sample up to 300 cues evenly to stay within token limits
-        sample_step = max(1, len(cues) // 300)
-        sample_texts = [_clean_source_text(c.text) for c in cues[::sample_step]][:300]
+        # Sample the whole timeline, including both the first and last cue.
+        sample_texts = [
+            _clean_source_text(c.text) for c in _evenly_sample_cues(cues, 300)
+        ]
         combined = "\n".join(sample_texts)
 
         prompt = (
@@ -1670,7 +1682,7 @@ def _generate_idiom_map(
             f"For each, provide the most natural {tgt_lang} equivalent that preserves the MEANING "
             f"(not a word-for-word translation).\n"
             f"Only include expressions that actually appear in the text. Maximum 30 entries.\n\n"
-            f"Text:\n{combined[:3000]}\n\n"
+            f"Text:\n{combined}\n\n"
             f'Return JSON: {{"idioms": {{"source expression": "{tgt_lang} equivalent", ...}}}}\n'
             f"Return ONLY the JSON. If no idioms found, return {{\"idioms\": {{}}}}"
         )
@@ -1748,8 +1760,9 @@ def _generate_cultural_refs(
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
 
-        sample_step = max(1, len(cues) // 200)
-        sample_texts = [_clean_source_text(c.text) for c in cues[::sample_step]][:200]
+        sample_texts = [
+            _clean_source_text(c.text) for c in _evenly_sample_cues(cues, 200)
+        ]
         combined = "\n".join(sample_texts)
 
         # Genre hint to guide localization decisions
@@ -1770,7 +1783,7 @@ def _generate_cultural_refs(
             f"different local analogue. If no established conventional name exists, use 'keep'.\n"
             f"Never add a parenthetical explanation that is absent from the source.\n\n"
             f"Default: keep.\n\n"
-            f"Text:\n{combined[:2500]}\n\n"
+            f"Text:\n{combined}\n\n"
             f'Return JSON: {{"refs": [{{"src": "...", "type": "pop_culture|brand|regional|historical", "action": "keep|localize", "target": "{tgt_lang} conventional name if localize"}}]}}\n'
             f"Only include items that clearly appear in the text. Return ONLY the JSON."
         )
