@@ -442,6 +442,8 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(chat.call_count, 1)
         self.assertEqual(stats["rejected"], 2)
+        self.assertEqual(stats["processed_cues"], 0)
+        self.assertEqual(stats["processed_coverage_pct"], 0.0)
         self.assertEqual(stats["details"][-1]["reason"], "permanent_api_error")
         self.assertEqual(stats["details"][-1]["count"], 1)
 
@@ -679,6 +681,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
             )
             report = out_path.with_suffix(".anlamsal_mutabakat.txt")
             self.assertTrue(report.exists())
+            report_text = report.read_text(encoding="utf-8")
+            self.assertIn("Planlanan kapsam: 1/1", report_text)
+            self.assertIn("İşlenen kapsam: 0/1", report_text)
 
     def test_locked_terms_merge_file_project_and_series_memory(self):
         app = gui.App.__new__(gui.App)

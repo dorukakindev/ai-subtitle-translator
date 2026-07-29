@@ -6780,6 +6780,8 @@ def semantic_reconciliation_pass(
         "suspects": sum(len(cluster["suspect_ids"]) for cluster in clusters),
         "covered_cues": len(covered_ids),
         "coverage_pct": coverage_pct,
+        "processed_cues": 0,
+        "processed_coverage_pct": 0.0,
         "target_coverage_pct": min(100.0, max(0.0, float(target_coverage or 0.0) * 100.0)),
         "api_requests": len(batches),
         "proposed": 0,
@@ -6804,6 +6806,7 @@ def semantic_reconciliation_pass(
     validator_cues = _semantic_validator_cues(src_map, result, cues)
     before_reason_map = _semantic_reason_map(result, validator_cues, locked_terms)
     all_cluster_ids = {cluster["cluster"] for cluster in clusters}
+    processed_covered_ids = set()
     system_prompt = (
         f"You are the final bilingual subtitle semantic reconciler for {src_lang} to {tgt_lang}. "
         "Inspect each small cluster across neighboring cues. Correct only real meaning errors: "
@@ -6894,6 +6897,17 @@ def semantic_reconciliation_pass(
                 log_fn(f"Nihai anlam mutabakatı yanıtı atlandı: {exc}", "warn")
             continue
 
+        processed_covered_ids.update({
+            str(item.get("id", ""))
+            for cluster in batch
+            for item in cluster.get("items", [])
+            if item.get("id") is not None
+        })
+        stats["processed_cues"] = len(processed_covered_ids)
+        stats["processed_coverage_pct"] = (
+            stats["processed_cues"] * 100.0 / len(tr_blocks)
+            if tr_blocks else 0.0
+        )
         response_counts = {}
         for response_cluster in parsed:
             if isinstance(response_cluster, dict):

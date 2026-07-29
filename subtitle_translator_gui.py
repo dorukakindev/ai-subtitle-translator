@@ -12149,8 +12149,10 @@ class App(ctk.CTk):
                     lines = [
                         "# Nihai Anlam Mutabakatı",
                         f"# Küme: {stats['clusters']} | Şüpheli cue: {stats['suspects']} | "
-                        f"Kapsam: {stats.get('covered_cues', 0)}/{len(blocks)} "
+                        f"Planlanan kapsam: {stats.get('covered_cues', 0)}/{len(blocks)} "
                         f"(%{stats.get('coverage_pct', 0.0):.1f}) | "
+                        f"İşlenen kapsam: {stats.get('processed_cues', 0)}/{len(blocks)} "
+                        f"(%{stats.get('processed_coverage_pct', 0.0):.1f}) | "
                         f"Tahmini API isteği: {stats.get('api_requests', 0)} | "
                         f"Öneri: {stats['proposed']} | Düzeltme: {stats['fixed']} | "
                         f"Satır sarma kurtarma: {stats.get('reflow_recovered', 0)} | "
