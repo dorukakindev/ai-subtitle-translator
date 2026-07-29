@@ -3316,9 +3316,11 @@ def native_reader_pass(
     total_cap_rejected = 0
     reject_reasons = {}
     total_chunks = math.ceil(len(result) / CHUNK_SIZE)
+    cancelled = False
 
     for chunk_i in range(0, len(result), CHUNK_SIZE):
         if cancel_context is not None and cancel_context.is_cancelled():
+            cancelled = True
             break
         chunk = result[chunk_i:chunk_i + CHUNK_SIZE]
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
@@ -3559,11 +3561,17 @@ def native_reader_pass(
                     result[pos] = (old_idx, old_ts, ftext)
                     total_fixed += 1
         except RequestCancelled:
+            cancelled = True
             break
         except Exception as chunk_err:
             if log_fn:
                 log_fn(f"Native Pass chunk {chunk_num} hatası: {chunk_err}", "warn")
             continue
+
+    if cancelled:
+        if log_fn:
+            log_fn("Native Pass durduruldu; kısmi değişiklikler uygulanmadı", "warn")
+        return list(tr_blocks)
 
     if log_fn:
         if total_rejected:
@@ -9351,6 +9359,8 @@ def critic_pass_with_helper(
     critic_rejected = 0
     critic_rejected_reasons: dict[str, int] = {}
     reason_stats: dict[str, dict[str, int]] = {}
+    change_log_start = len(change_log) if change_log is not None else 0
+    cancelled = False
 
     def _reason_tokens(reason_str: str) -> list[str]:
         if not reason_str:
@@ -9361,6 +9371,7 @@ def critic_pass_with_helper(
     for chunk in _critic_suspicious_chunks(
             suspicious, frag_group_by_id, MINIMAX_CHUNK):
         if cancel_context is not None and cancel_context.is_cancelled():
+            cancelled = True
             break
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         pairs = []
@@ -9629,10 +9640,18 @@ def critic_pass_with_helper(
                         "after": final_text,
                     })
         except RequestCancelled:
+            cancelled = True
             break
         except Exception as e:
             if log_fn:
                 log_fn(f"Critic Helper chunk hatası ({len(chunk)} satır atlandı): {e}", "warn")
+
+    if cancelled:
+        if change_log is not None:
+            del change_log[change_log_start:]
+        if log_fn:
+            log_fn("Critic Pass durduruldu; kısmi değişiklikler uygulanmadı", "warn")
+        return list(tr_blocks)
 
     if log_fn:
         if critic_rejected:

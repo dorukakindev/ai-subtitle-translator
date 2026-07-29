@@ -155,6 +155,61 @@ class DefaultHelperPassCancellationTest(unittest.TestCase):
 
         self.assertEqual(result, blocks)
 
+    def test_native_pass_rolls_back_completed_chunk_when_next_chunk_is_cancelled(self):
+        blocks = [
+            (i, "00:00:00,000 --> 00:00:01,000", f"Eski çeviri {i}.")
+            for i in range(1, 152)
+        ]
+        first = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"id":"1","fixed":"Daha doğal çeviri 1."}]'
+            ))],
+        )
+
+        with patch("openai.OpenAI", return_value=_Client()), \
+             patch("hybrid_translate._safe_chat_create",
+                   side_effect=[first, RequestCancelled("cancelled")]):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="key",
+                cancel_context=RunRequestCanceller(),
+            )
+
+        self.assertEqual(result, blocks)
+
+    def test_critic_pass_rolls_back_completed_chunk_and_change_log_on_cancel(self):
+        cues = [SimpleNamespace(index=i, text=f"Source {i}") for i in range(1, 102)]
+        blocks = [
+            (i, "00:00:00,000 --> 00:00:01,000", f"Eski çeviri {i}.")
+            for i in range(1, 102)
+        ]
+        suspicious = [
+            (i, "00:00:00,000 --> 00:00:01,000", f"Eski çeviri {i}.", "TEST")
+            for i in range(1, 102)
+        ]
+        first = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"id":"1","fixed":"Daha doğal çeviri 1."}]'
+            ))],
+        )
+        changes = [{"id": "existing"}]
+
+        with patch("openai.OpenAI", return_value=_Client()), \
+             patch("hybrid_translate.run_validators", return_value=suspicious), \
+             patch("hybrid_translate._safe_chat_create",
+                   side_effect=[first, RequestCancelled("cancelled")]):
+            result = ht.critic_pass_with_helper(
+                cues,
+                blocks,
+                helper_api_key="key",
+                change_log=changes,
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(changes, [{"id": "existing"}])
+
     def test_condense_pass_discards_late_result_and_stops_after_first_chunk(self):
         blocks = [(1, "00:00:00,000 --> 00:00:00,100", "x" * 100)]
 

@@ -72,6 +72,16 @@ class ParseSeriesKeyTest(unittest.TestCase):
         self.assertEqual(sm.series_memory_root(str(first)), root)
         self.assertEqual(sm.series_memory_root(str(second)), root)
 
+    def test_generic_tv_library_keeps_show_memories_separate(self):
+        library = Path("TV")
+        first = library / "Show One" / "Season 1" / "Show.One.S01E01.srt"
+        second = library / "Show Two" / "Season 1" / "Show.Two.S01E01.srt"
+
+        self.assertEqual(sm.parse_series_key(str(first)), ("show-one", 1, 1))
+        self.assertEqual(sm.parse_series_key(str(second)), ("show-two", 1, 1))
+        self.assertEqual(sm.series_memory_root(str(first)), library / "Show One")
+        self.assertEqual(sm.series_memory_root(str(second)), library / "Show Two")
+
 
 class MergeTest(unittest.TestCase):
     def _mem(self):

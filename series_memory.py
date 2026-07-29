@@ -77,18 +77,25 @@ def _tv_root_info(filename: str):
         match = _TV_COMMON_ROOT.search(parent.name)
         if not match:
             continue
+        relative_parts = path.parent.relative_to(parent).parts
         season = None
-        for part in path.parent.relative_to(parent).parts:
+        season_pos = None
+        for pos, part in enumerate(relative_parts):
             season_match = _SEASON_DIR.match(part)
             if season_match:
                 season = int(season_match.group("season"))
+                season_pos = pos
                 break
         if season is None:
             continue
         show = parent.name[:match.start()]
         show = re.sub(
             r'[ ._\-]*[\(\[]?\d{4}[\)\]]?[ ._\-]*$', '', show)
-        return parent, _slugify(show), season
+        if show.strip():
+            return parent, _slugify(show), season
+        if season_pos:
+            show_root = parent.joinpath(*relative_parts[:season_pos])
+            return show_root, _slugify(relative_parts[season_pos - 1]), season
     return None
 
 
