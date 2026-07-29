@@ -26,6 +26,8 @@ _NXNN = re.compile(
     r'^(?P<show>.+?)[ ._\-]+(?P<season>\d{1,2})x(?P<ep>\d{1,3})(?:\D|$)')
 _TV_ROOT = re.compile(
     r'(?i)(?:^|[ ._\-])tv[ ._\-]*s(?P<season>\d{1,2})(?=$|[ ._\-])')
+_TV_COMMON_ROOT = re.compile(r'(?i)(?:^|[ ._\-])tv(?=$|[ ._\-])')
+_SEASON_DIR = re.compile(r'(?i)^(?:season[ ._\-]*|s)(?P<season>\d{1,2})$')
 _EPISODE_DIR = re.compile(r'(?i)^episode[ ._\-]*(?P<ep>\d{1,3})$')
 _PUNTATA = re.compile(
     r'(?i)(?:^|[ ._\-])puntata[ ._\-]*(?P<ep>\d{1,3})(?:\D|$)')
@@ -71,6 +73,22 @@ def _tv_root_info(filename: str):
         show = re.sub(
             r'[ ._\-]*[\(\[]?\d{4}[\)\]]?[ ._\-]*$', '', show)
         return parent, _slugify(show), int(match.group("season"))
+    for parent in path.parents:
+        match = _TV_COMMON_ROOT.search(parent.name)
+        if not match:
+            continue
+        season = None
+        for part in path.parent.relative_to(parent).parts:
+            season_match = _SEASON_DIR.match(part)
+            if season_match:
+                season = int(season_match.group("season"))
+                break
+        if season is None:
+            continue
+        show = parent.name[:match.start()]
+        show = re.sub(
+            r'[ ._\-]*[\(\[]?\d{4}[\)\]]?[ ._\-]*$', '', show)
+        return parent, _slugify(show), season
     return None
 
 

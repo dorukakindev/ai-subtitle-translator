@@ -63,6 +63,15 @@ class ParseSeriesKeyTest(unittest.TestCase):
         fp = root / "episode 3" / "Flag.03.srt"
         self.assertEqual(sm.series_memory_root(str(fp)), root)
 
+    def test_common_tv_root_shares_memory_across_seasons(self):
+        root = Path("the.big.o.(1999).tv")
+        first = root / "season 1" / "episode 3" / "BigO03.srt"
+        second = root / "season 2" / "episode 3" / "BigO16.srt"
+        self.assertEqual(sm.parse_series_key(str(first)), ("the-big-o", 1, 3))
+        self.assertEqual(sm.parse_series_key(str(second)), ("the-big-o", 2, 3))
+        self.assertEqual(sm.series_memory_root(str(first)), root)
+        self.assertEqual(sm.series_memory_root(str(second)), root)
+
 
 class MergeTest(unittest.TestCase):
     def _mem(self):
