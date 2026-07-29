@@ -111,6 +111,53 @@ class SanitizeScenePlanEntryTest(unittest.TestCase):
         self.assertEqual(entry["tone"], "")
 
 
+class BindScenePlanToRequestedTest(unittest.TestCase):
+    def test_rejects_fabricated_broad_range(self):
+        result, complete = ht._bind_scene_plan_to_requested(
+            [{"start": 1, "end": 999999, "summary": "Whole file"}],
+            [{"start": 1, "end": 10}, {"start": 11, "end": 20}],
+        )
+        self.assertEqual(result, [])
+        self.assertFalse(complete)
+
+    def test_drops_conflicting_duplicate_range(self):
+        result, complete = ht._bind_scene_plan_to_requested(
+            [
+                {"start": 1, "end": 10, "summary": "Calm discussion"},
+                {"start": 1, "end": 10, "summary": "Violent argument"},
+                {"start": 11, "end": 20, "summary": "They leave"},
+            ],
+            [{"start": 1, "end": 10}, {"start": 11, "end": 20}],
+        )
+        self.assertEqual(
+            [(scene["start"], scene["end"]) for scene in result],
+            [(11, 20)],
+        )
+        self.assertFalse(complete)
+
+    def test_returns_exact_entries_in_requested_order(self):
+        result, complete = ht._bind_scene_plan_to_requested(
+            [
+                {"start": 11, "end": 20, "summary": "Second"},
+                {"start": "1", "end": "10", "summary": "First"},
+            ],
+            [{"start": 1, "end": 10}, {"start": 11, "end": 20}],
+        )
+        self.assertEqual([scene["summary"] for scene in result], ["First", "Second"])
+        self.assertTrue(complete)
+
+    def test_missing_requested_range_is_incomplete(self):
+        result, complete = ht._bind_scene_plan_to_requested(
+            [{"start": 1, "end": 10, "summary": "First"}],
+            [{"start": 1, "end": 10}, {"start": 11, "end": 20}],
+        )
+        self.assertEqual(
+            [(scene["start"], scene["end"]) for scene in result],
+            [(1, 10)],
+        )
+        self.assertFalse(complete)
+
+
 class ScenePlanPayloadEntryTest(unittest.TestCase):
     def test_drops_start_end_bookkeeping(self):
         entry = ht._scene_plan_payload_entry({

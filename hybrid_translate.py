@@ -1463,6 +1463,46 @@ def _sanitize_scene_plan_entry(raw: dict) -> dict | None:
     }
 
 
+def _bind_scene_plan_to_requested(raw_scenes: list, requested_scenes: list) -> tuple[list, bool]:
+    requested_ranges = []
+    for scene in requested_scenes:
+        if not isinstance(scene, dict):
+            return [], False
+        try:
+            key = (int(scene["start"]), int(scene["end"]))
+        except (KeyError, TypeError, ValueError):
+            return [], False
+        if key in requested_ranges:
+            return [], False
+        requested_ranges.append(key)
+
+    accepted = {}
+    conflicted = set()
+    valid = isinstance(raw_scenes, list)
+    for raw in raw_scenes if isinstance(raw_scenes, list) else []:
+        scene = _sanitize_scene_plan_entry(raw)
+        if not scene:
+            valid = False
+            continue
+        key = (scene["start"], scene["end"])
+        if key not in requested_ranges:
+            valid = False
+            continue
+        if key in accepted:
+            accepted.pop(key, None)
+            conflicted.add(key)
+            valid = False
+            continue
+        if key in conflicted:
+            valid = False
+            continue
+        accepted[key] = scene
+
+    if len(accepted) != len(requested_ranges):
+        valid = False
+    return [accepted[key] for key in requested_ranges if key in accepted], valid
+
+
 def _extract_emotional_arc(
     cues: list,
     tgt_lang: str,
@@ -1584,9 +1624,10 @@ def _extract_emotional_arc(
         raw_scenes = data.get("scenes", [])
         if "scenes" not in data or not isinstance(raw_scenes, list):
             return _analysis_aux_result([], status, "scene_plan", False)
-        sanitized = [_sanitize_scene_plan_entry(s) for s in raw_scenes]
+        bound_scenes, complete = _bind_scene_plan_to_requested(
+            raw_scenes, scenes_json)
         return _analysis_aux_result(
-            [s for s in sanitized if s], status, "scene_plan", True)
+            bound_scenes, status, "scene_plan", complete)
     except Exception as e:
         if log_fn:
             log_fn(f"Sahne planı çıkarılamadı: {e}", "warn")
