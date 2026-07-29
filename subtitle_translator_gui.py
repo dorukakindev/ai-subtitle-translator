@@ -7,6 +7,7 @@ import re
 import time
 import hashlib
 import queue
+import subprocess
 import threading
 import traceback
 import unicodedata
@@ -53,6 +54,29 @@ CONTENT_TYPE_DETECT_MODEL = "gpt-5.4"
 API_REQUEST_TIMEOUT_SECONDS = 300
 FILE_LIST_PAGE_SIZE = 60
 UI_DISPATCH_BUDGET_SECONDS = 0.008
+
+
+def _desktop_directory() -> Path:
+    if os.name == "nt":
+        try:
+            import winreg
+            key_path = (
+                r"Software\Microsoft\Windows\CurrentVersion"
+                r"\Explorer\User Shell Folders"
+            )
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, "Desktop")
+            path = Path(os.path.expandvars(str(value))).expanduser()
+            if path:
+                return path
+        except Exception:
+            pass
+    home = Path.home()
+    for name in ("Desktop", "Masaüstü"):
+        candidate = home / name
+        if candidate.exists():
+            return candidate
+    return home / "Desktop"
 
 
 def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
@@ -5944,6 +5968,7 @@ class App(ctk.CTk):
         self._last_run_record = _load_last_run_record()
         self._quality_issues = {}
         self._quality_issue_seq = 0
+        self._auto_shutdown_scheduled_run_id = ""
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -7364,6 +7389,21 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 11),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
 
+        shutdown_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        shutdown_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
+        shutdown_fr.grid_columnconfigure(1, weight=1)
+        self.shutdown_when_done_var = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(
+            shutdown_fr, text="", variable=self.shutdown_when_done_var,
+            width=44, height=22, fg_color=BORDER,
+            progress_color=ORANGE_LIVE,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            shutdown_fr, text="⏻  Bitince bilgisayarı kapat",
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+
         self.resume_btn = ctk.CTkButton(
             sb, text="↺  Batch'i Devam Ettir", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
@@ -8132,6 +8172,7 @@ class App(ctk.CTk):
                                and self.backup_raw_var.get()),
             "ext_project_path": self.ext_project_path_var.get().strip(),
             "notify_desktop": self.notify_var.get(),
+            "shutdown_when_done": self.shutdown_when_done_var.get(),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
             "critic": self.critic_var.get(),
             "polish": self.polish_var.get(),
@@ -8180,6 +8221,7 @@ class App(ctk.CTk):
             "analysis_depth_var": "analysis_depth",
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
+            "shutdown_when_done_var": "shutdown_when_done",
             "critic_var": "critic", "polish_var": "polish",
             "native_var": "native", "qc_var": "qc",
             "condense_var": "condense", "backtrans_var": "backtrans",
@@ -8223,7 +8265,7 @@ class App(ctk.CTk):
             "semantic_reconcile", "review", "twowave", "clean_sdh",
             "linebreak", "ai_segment", "merge_cues", "chain_ctx",
             "precontext", "series_memory", "main_model_name",
-            "main_api_base_url",
+            "main_api_base_url", "shutdown_when_done",
         )
         result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
         result["helper_models"] = dict(snapshot.get("helper_models") or {})
@@ -8695,6 +8737,94 @@ class App(ctk.CTk):
                 "Loglar panoya kopyalanamadı. Başka bir uygulama panoyu kilitlemiş olabilir.")
             return False
 
+    def _export_log_and_shutdown(self, record: dict):
+        run_id = re.sub(
+            r"[^0-9A-Za-z_-]+", "_", str(record.get("run_id") or "son"))
+        self._log(
+            "Tüm çeviriler tamamlandı; oturum logu kaydedilip bilgisayar kapatılacak.",
+            "info",
+        )
+        content = self._complete_session_log_text()
+        if not content.strip():
+            self._log(
+                "Otomatik kapanış iptal edildi: kaydedilecek oturum logu bulunamadı.",
+                "err",
+            )
+            return False
+
+        try:
+            desktop = _desktop_directory()
+            desktop.mkdir(parents=True, exist_ok=True)
+            log_path = desktop / f"ceviri_logu_{run_id}.txt"
+            atomic_write_text(log_path, content, encoding="utf-8")
+        except Exception as exc:
+            self._log(
+                f"Otomatik kapanış iptal edildi: log Masaüstüne kaydedilemedi: {exc}",
+                "err",
+            )
+            return False
+
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.update_idletasks()
+        except Exception as exc:
+            self._log(
+                f"Log Masaüstüne kaydedildi fakat panoya kopyalanamadı: {exc}",
+                "warn",
+            )
+
+        self._log(f"Tam oturum logu Masaüstüne kaydedildi: {log_path}", "ok")
+        try:
+            shutdown_exe = (
+                Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                / "System32" / "shutdown.exe"
+            )
+            subprocess.Popen(
+                [
+                    str(shutdown_exe), "/s", "/t", "30", "/c",
+                    "Altyazı çevirileri tamamlandı. Bilgisayar 30 saniye içinde kapanacak.",
+                ],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._log(
+                "Windows kapanışı başlatıldı (30 saniye; iptal için: shutdown /a).",
+                "info",
+            )
+            return True
+        except Exception as exc:
+            self._log(f"Bilgisayar kapatma komutu başlatılamadı: {exc}", "err")
+            return False
+
+    def _schedule_shutdown_after_success(self, record: dict | None):
+        if not record or record.get("status") != "tamamlandı":
+            return False
+        snapshot = getattr(self, "_active_snapshot", {}) or {}
+        if not snapshot.get("shutdown_when_done"):
+            return False
+        run_id = str(record.get("run_id") or "")
+        if not run_id or run_id == self._auto_shutdown_scheduled_run_id:
+            return False
+        self._auto_shutdown_scheduled_run_id = run_id
+        try:
+            self.shutdown_when_done_var.set(False)
+        except Exception:
+            pass
+        self._log(
+            "Otomatik kapanış etkin: son log ve rapor işlemlerinin tamamlanması bekleniyor.",
+            "info",
+        )
+        try:
+            self.after(
+                2500,
+                lambda _record=copy.deepcopy(record):
+                    self._export_log_and_shutdown(_record),
+            )
+            return True
+        except Exception as exc:
+            self._log(f"Otomatik kapanış zamanlanamadı: {exc}", "err")
+            return False
+
     def _current_run_record_snapshot(self):
         with self._run_record_lock:
             record = self._active_run_record or self._last_run_record
@@ -8933,8 +9063,12 @@ class App(ctk.CTk):
             self._start_elapsed_timer()
         elif not running:
             finalizer = getattr(self, "_finalize_run_record", None)
+            finalized_record = None
             if callable(finalizer):
-                finalizer()
+                finalized_record = finalizer()
+            scheduler = getattr(self, "_schedule_shutdown_after_success", None)
+            if callable(scheduler):
+                scheduler(finalized_record)
             self._run_state_initialized = False
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None

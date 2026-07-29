@@ -296,6 +296,7 @@ class UIDispatcherTest(unittest.TestCase):
             analysis_depth_var=SimpleNamespace(get=lambda: "standard"),
             ext_project_path_var=SimpleNamespace(get=lambda: SimpleNamespace(strip=lambda: "")),
             notify_var=SimpleNamespace(get=lambda: True),
+            shutdown_when_done_var=SimpleNamespace(get=lambda: False),
             term_normalize_var=SimpleNamespace(get=lambda: False),
             critic_var=SimpleNamespace(get=lambda: True),
             polish_var=SimpleNamespace(get=lambda: True),
@@ -333,6 +334,7 @@ class UIDispatcherTest(unittest.TestCase):
         self.assertEqual(snap["input_dir"], "D:/in")
         self.assertEqual(snap["src_lang"], "en")
         self.assertTrue(snap["notify_desktop"])
+        self.assertFalse(snap["shutdown_when_done"])
         self.assertTrue(snap["hybrid_mode"])
         # New fields
         self.assertEqual(snap["main_api_key"], "sk-test")
