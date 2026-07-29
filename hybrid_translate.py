@@ -8800,6 +8800,7 @@ def consistency_sweep(
     log_fn=None,
     minority_threshold: float | None = None,
     min_words: int = 3,
+    locked_terms: dict | None = None,
 ) -> tuple:
     """Normalize recurring source phrases to their most common translation.
     By default, only normalizes when a strict majority (>50%) of occurrences agree.
@@ -8812,12 +8813,17 @@ def consistency_sweep(
         return tr_blocks, 0
 
     orig_dict: dict = {}
+    orig_text_dict: dict = {}
     for c in cues:
         # Dikkat: tuple'ın yerleşik .index METODU vardır — ayrımı .text ile yap
         if hasattr(c, "text"):
-            orig_dict[str(c.index)] = _clean_source_text(c.text).strip().lower()
+            source_text = _clean_source_text(c.text).strip()
+            orig_dict[str(c.index)] = source_text.lower()
+            orig_text_dict[str(c.index)] = source_text
         else:
-            orig_dict[str(c[0])] = _clean_source_text(c[2]).strip().lower()
+            source_text = _clean_source_text(c[2]).strip()
+            orig_dict[str(c[0])] = source_text.lower()
+            orig_text_dict[str(c[0])] = source_text
     result = list(tr_blocks)
 
     # Group translated lines by their normalized source text
@@ -8859,6 +8865,16 @@ def consistency_sweep(
             for pos, tr in positions:
                 if tr != best_tr:
                     old_idx, old_ts, _ = result[pos]
+                    if locked_terms:
+                        ok, _reason = validate_polish_candidate(
+                            tr,
+                            best_tr,
+                            source_text=orig_text_dict.get(
+                                str(old_idx), ""),
+                            locked_terms=locked_terms,
+                        )
+                        if not ok:
+                            continue
                     result[pos] = (old_idx, old_ts, best_tr)
                     fixes += 1
 
@@ -8879,7 +8895,9 @@ def final_consistency_sweep(
     locked_terms: dict | None = None,
 ) -> tuple:
     """Run a second, safety-checked consistency sweep after critic/polish edits."""
-    swept, fixes = consistency_sweep(cues, tr_blocks, log_fn=None, min_words=min_words)
+    swept, fixes = consistency_sweep(
+        cues, tr_blocks, log_fn=None, min_words=min_words,
+        locked_terms=locked_terms)
     if not fixes:
         # first_seen fallback kaldırıldı — bağlam-kördü: majority sweep anlaşamadığında
         # (yani bağlam-bağımlılığın en olası olduğu durumda) ilk görülen çeviriyi diğer

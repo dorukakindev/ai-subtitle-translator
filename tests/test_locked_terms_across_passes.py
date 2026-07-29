@@ -73,6 +73,28 @@ class LockedTermGuardTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(fixed, 0)
 
+    def test_initial_consistency_cannot_replace_locked_term(self):
+        ts = "00:00:00,000 --> 00:00:01,000"
+        cues = [
+            (1, ts, "The Emperor is coming."),
+            (2, ts, "The Emperor is coming."),
+            (3, ts, "The Emperor is coming."),
+        ]
+        blocks = [
+            (1, ts, "İmparator geliyor."),
+            (2, ts, "Hükümdar geliyor."),
+            (3, ts, "Hükümdar geliyor."),
+        ]
+
+        result, fixed = ht.consistency_sweep(
+            cues,
+            blocks,
+            locked_terms={"Emperor": "İmparator"},
+        )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(fixed, 0)
+
     def test_fragment_group_enforces_split_multiword_term(self):
         proposals = {
             "1": ("Büyük", True, "", "fg"),

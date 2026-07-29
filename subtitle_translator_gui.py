@@ -15201,7 +15201,9 @@ class App(ctk.CTk):
 
             # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
             self._update_file_progress(filepath, "Tutarlılık taraması", 87)
-            sorted_blocks, _cons_fixes = ht.consistency_sweep(cues, sorted_blocks, log_fn=self._log)
+            sorted_blocks, _cons_fixes = ht.consistency_sweep(
+                cues, sorted_blocks, log_fn=self._log,
+                locked_terms=self._get_locked_terms_dict(filepath, tgt))
             # Rapor için taban çizgisi: kalite geçişleri öncesi metinler
             _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
             _qc_fixes = 0
@@ -16034,7 +16036,10 @@ class App(ctk.CTk):
                                 output_path, _raw_backup_blocks, {}, tgt)
                             if pp:
                                 self._set_status("Consistency sweep...")
-                                pp, _cons_fixes = ht.consistency_sweep(_orig_cues, pp, log_fn=self._log)
+                                pp, _cons_fixes = ht.consistency_sweep(
+                                    _orig_cues, pp, log_fn=self._log,
+                                    locked_terms=self._get_locked_terms_dict(
+                                        str(_src_path), tgt))
                             else:
                                 _cons_fixes = 0
                             _pre_pass = {str(b[0]): b[2] for b in pp}
@@ -16466,7 +16471,9 @@ class App(ctk.CTk):
                 _analysis_result = None
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
             try:
-                sorted_blocks, _cons_fixes = ht.consistency_sweep(_src_cues, sorted_blocks, log_fn=self._log)
+                sorted_blocks, _cons_fixes = ht.consistency_sweep(
+                    _src_cues, sorted_blocks, log_fn=self._log,
+                    locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
             except Exception:
                 pass
             # Bağlam incelemesi — Batch'te zincirleme bağlam yoktur, bu geçiş telafi eder
@@ -17353,7 +17360,9 @@ class App(ctk.CTk):
                 _cons_fixes = 0
                 try:
                     _final_blocks, _cons_fixes = ht.consistency_sweep(
-                        cues, _final_blocks, log_fn=self._log)
+                        cues, _final_blocks, log_fn=self._log,
+                        locked_terms=self._get_locked_terms_dict(
+                            filepath, tgt))
                 except Exception:
                     pass
                 _pre_pass = {str(b[0]): b[2] for b in _final_blocks}
