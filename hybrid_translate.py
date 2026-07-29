@@ -608,7 +608,7 @@ def _cache_sig(filepath: str) -> str:
         return ""
 
 
-CONTEXT_ANALYSIS_CACHE_VER = 2
+CONTEXT_ANALYSIS_CACHE_VER = 3
 
 
 def analysis_fingerprint(source_language: str = "", target_language: str = "",
@@ -2517,6 +2517,15 @@ def _analyze_context_openai_compatible(
     )
     if not isinstance(recurring_terms, dict):
         recurring_terms = {}
+    source_blob = " ".join(
+        _clean_source_text(getattr(cue, "text", str(cue)))
+        for cue in cues
+    )
+    recurring_terms = {
+        source: target
+        for source, target in recurring_terms.items()
+        if _locked_source_term_present(source, source_blob)
+    }
     scene_notes = data.get("scene_notes", [])
     if not isinstance(scene_notes, list):
         scene_notes = []

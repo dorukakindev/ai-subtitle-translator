@@ -205,6 +205,44 @@ class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
         )
         self.assertEqual(refs, [{"src": "Yankees", "action": "keep"}])
 
+    def test_main_analysis_recurring_terms_must_exist_in_source_text(self):
+        cues = [
+            SimpleNamespace(
+                text="The Osprey landed safely.",
+                index=1,
+            )
+        ]
+        response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "source_language": "en",
+                "summary": "An aircraft lands.",
+                "setting": "airfield",
+                "tone": "calm",
+                "characters": [],
+                "recurring_terms": {
+                    "Osprey": "Osprey",
+                    "Black Hawk": "Kara Şahin",
+                },
+                "scene_notes": [],
+            })))],
+        )
+
+        with patch("openai.OpenAI"), \
+             patch.object(ht, "_safe_chat_create", return_value=response):
+            memory = ht._analyze_context_openai_compatible(
+                cues,
+                api_key="key",
+                api_url="https://example.test/v1",
+                model="gpt-5.4",
+                glossary={},
+                style="natural",
+                source_language="en",
+                target_language="tr",
+            )
+
+        self.assertEqual(memory.recurring_terms, {"Osprey": "Osprey"})
+
     def test_cultural_reference_prompt_forbids_factual_substitution(self):
         cue = SimpleNamespace(text="The Yankees won.", index=1)
         response = SimpleNamespace(
