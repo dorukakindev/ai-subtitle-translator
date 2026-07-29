@@ -111,6 +111,100 @@ class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
         self.assertIn("source language (Italian)", prompt)
         self.assertNotIn("English idiomatic expressions", prompt)
 
+    def test_character_and_pronoun_auxiliary_data_is_bound_to_known_characters(self):
+        characters = [
+            SimpleNamespace(name="Alice", speaking_style="calm"),
+            SimpleNamespace(name="Bob", speaking_style="formal"),
+        ]
+        examples_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "examples": {
+                    "alice": ["Merhaba."],
+                    "Ghost": ["Ben yokum."],
+                },
+                "styles": {
+                    "Alice": {"register": "neutral", "dialect": "standard"},
+                    "Ghost": {"register": "street", "dialect": "urban_slang"},
+                },
+            })))],
+        )
+        pronoun_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "pronoun_map": {
+                    "alice-bob": "sen",
+                    "Ghost-Bob": "siz",
+                },
+            })))],
+        )
+        context = SimpleNamespace(
+            characters=characters,
+            setting="",
+            summary="",
+        )
+
+        with patch("openai.OpenAI"), \
+             patch.object(
+                 ht, "_safe_chat_create",
+                 side_effect=[examples_response, pronoun_response],
+             ):
+            examples, styles = ht._generate_character_examples(
+                characters, "Turkish", "key", "https://example.test/v1", "gpt-5.4")
+            pronouns = ht._generate_pronoun_map(
+                context, "Turkish", "key", "https://example.test/v1", "gpt-5.4")
+
+        self.assertEqual(examples, {"Alice": ["Merhaba."]})
+        self.assertEqual(
+            styles,
+            {"Alice": {"register": "neutral", "dialect": "standard"}},
+        )
+        self.assertEqual(pronouns, {"Alice-Bob": "sen"})
+
+    def test_idiom_and_cultural_refs_must_exist_in_source_text(self):
+        cues = [
+            SimpleNamespace(
+                text="He will spill the beans after the Yankees game.",
+                index=1,
+            )
+        ]
+        idiom_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "idioms": {
+                    "spill the beans": "ağzındaki baklayı çıkarmak",
+                    "kick the bucket": "nalları dikmek",
+                },
+            })))],
+        )
+        refs_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "refs": [
+                    {"src": "Yankees", "action": "keep"},
+                    {"src": "White House", "action": "localize",
+                     "target": "Beyaz Saray"},
+                ],
+            })))],
+        )
+
+        with patch("openai.OpenAI"), \
+             patch.object(
+                 ht, "_safe_chat_create",
+                 side_effect=[idiom_response, refs_response],
+             ):
+            idioms = ht._generate_idiom_map(
+                cues, "Turkish", "key", "https://example.test/v1", "gpt-5.4")
+            refs = ht._generate_cultural_refs(
+                cues, {"name": "Film"}, "Turkish",
+                "key", "https://example.test/v1", "gpt-5.4")
+
+        self.assertEqual(
+            idioms,
+            {"spill the beans": "ağzındaki baklayı çıkarmak"},
+        )
+        self.assertEqual(refs, [{"src": "Yankees", "action": "keep"}])
+
     def test_cultural_reference_prompt_forbids_factual_substitution(self):
         cue = SimpleNamespace(text="The Yankees won.", index=1)
         response = SimpleNamespace(

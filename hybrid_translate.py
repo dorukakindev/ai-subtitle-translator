@@ -1262,6 +1262,21 @@ def _generate_character_examples(
         examples, _pronouns, styles, _idioms, _refs = _sanitize_analysis_aux(
             data.get("examples", {}), character_styles=data.get("styles", {})
         )
+        known_names = {
+            str(character.name or "").strip().casefold(): str(character.name or "").strip()
+            for character in characters[:6]
+            if str(character.name or "").strip()
+        }
+        examples = {
+            known_names[name.casefold()]: lines
+            for name, lines in examples.items()
+            if name.casefold() in known_names
+        }
+        styles = {
+            known_names[name.casefold()]: info
+            for name, info in styles.items()
+            if name.casefold() in known_names
+        }
         return _analysis_aux_result(
             (examples, styles), status, "character_examples", True)
     except Exception as _e:
@@ -1341,6 +1356,15 @@ def _generate_pronoun_map(
             _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
                 pronoun_map=data.get("pronoun_map", {})
             )
+            valid_pairs = {
+                f"{left}-{right}".casefold(): f"{left}-{right}"
+                for left in chars for right in chars if left != right
+            }
+            pronouns = {
+                valid_pairs[pair.casefold()]: form
+                for pair, form in pronouns.items()
+                if pair.casefold() in valid_pairs
+            }
             return _analysis_aux_result(pronouns, status, "pronoun_map", True)
         except json.JSONDecodeError:
             # If JSON parsing fails, try to extract JSON object manually
@@ -1354,6 +1378,15 @@ def _generate_pronoun_map(
                     _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
                         pronoun_map=data.get("pronoun_map", {})
                     )
+                    valid_pairs = {
+                        f"{left}-{right}".casefold(): f"{left}-{right}"
+                        for left in chars for right in chars if left != right
+                    }
+                    pronouns = {
+                        valid_pairs[pair.casefold()]: form
+                        for pair, form in pronouns.items()
+                        if pair.casefold() in valid_pairs
+                    }
                     return _analysis_aux_result(pronouns, status, "pronoun_map", True)
                 except Exception:
                     pass
@@ -1621,6 +1654,10 @@ def _generate_idiom_map(
             _examples, _pronouns, _styles, idioms, _refs = _sanitize_analysis_aux(
                 idiom_map=data.get("idioms", {})
             )
+            idioms = {
+                source: target for source, target in idioms.items()
+                if _locked_source_term_present(source, combined)
+            }
             return _analysis_aux_result(idioms, status, "idiom_map", True)
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
@@ -1633,6 +1670,10 @@ def _generate_idiom_map(
                     _examples, _pronouns, _styles, idioms, _refs = _sanitize_analysis_aux(
                         idiom_map=data.get("idioms", {})
                     )
+                    idioms = {
+                        source: target for source, target in idioms.items()
+                        if _locked_source_term_present(source, combined)
+                    }
                     return _analysis_aux_result(idioms, status, "idiom_map", True)
                 except Exception:
                     pass
@@ -1713,6 +1754,10 @@ def _generate_cultural_refs(
             _examples, _pronouns, _styles, _idioms, refs = _sanitize_analysis_aux(
                 cultural_refs=data.get("refs", [])
             )
+            refs = [
+                ref for ref in refs
+                if _locked_source_term_present(ref.get("src", ""), combined)
+            ]
             return _analysis_aux_result(refs, status, "cultural_refs", True)
         except json.JSONDecodeError:
             if "{" in raw and "}" in raw:
@@ -1725,6 +1770,10 @@ def _generate_cultural_refs(
                     _examples, _pronouns, _styles, _idioms, refs = _sanitize_analysis_aux(
                         cultural_refs=data.get("refs", [])
                     )
+                    refs = [
+                        ref for ref in refs
+                        if _locked_source_term_present(ref.get("src", ""), combined)
+                    ]
                     return _analysis_aux_result(refs, status, "cultural_refs", True)
                 except Exception:
                     pass
