@@ -67,6 +67,29 @@ class ContentSchemaIntegrityTest(unittest.TestCase):
                                     f"{key}: {len(schema['rules'])} kural — çok zayıf")
 
 
+    def test_art_cinema_schemas_exist_and_are_detectable(self):
+        names = {
+            "Deneysel / Deneme Sineması",
+            "Politik / Toplumsal Sanat Sineması",
+            "Felsefi / Teolojik Diyalog Sineması",
+            "Sanatçı Biyografisi / Dönem",
+            "Psikolojik / Kurumsal Dram",
+        }
+        schema_names = {v["name"] for v in gui.CONTENT_SCHEMAS.values()}
+        self.assertTrue(names.issubset(schema_names))
+        self.assertTrue(names.issubset(set(gui._detect_categories())))
+        for name in names:
+            self.assertEqual(gui._match_category(name, gui._detect_categories()), name)
+
+    def test_detection_lines_include_disambiguating_descriptions(self):
+        lines = "\n".join(gui._detect_category_lines())
+        self.assertIn("Sinema / Film Belgeseli:", lines)
+        self.assertIn("never scripted fiction", lines)
+        self.assertIn("Tıbbi Dram / Hastane:", lines)
+        self.assertIn("not merely a film set in a psychiatric institution", lines)
+        self.assertIn("Deneysel / Deneme Sineması:", lines)
+
+
 class MatchCategoryTest(unittest.TestCase):
     CATS = ["Komedi (Sitcom)", "Sketch Komedi / Absürt", "Stand-up Komedi",
             "Bilim Kurgu / Fantastik", "Film", "Dizi"]
@@ -130,6 +153,28 @@ class MatchCategoryTest(unittest.TestCase):
         system_prompt = call.call_args.kwargs["messages"][0]["content"]
         self.assertNotIn("'Gaming'", system_prompt)
         self.assertNotIn("'Akademik Anlatım'", system_prompt)
+
+
+    def test_content_detection_prompt_disambiguates_form_from_setting(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"category": "Felsefi / Teolojik Diyalog Sineması"}'
+                )
+            )],
+            usage=None,
+        )
+        with patch("hybrid_translate._safe_chat_create", return_value=response) as call:
+            result = gui.detect_content_type_with_ai(
+                None,
+                [("1", "00:00:01,000", "What is evil, and may one resist it with force?")],
+                "test",
+                filename="Malmkrog.srt",
+            )
+        self.assertEqual(result, "Felsefi / Teolojik Diyalog Sineması")
+        messages = call.call_args.kwargs["messages"]
+        self.assertIn("hospital setting alone is not a medical procedural", messages[0]["content"])
+        self.assertIn("Felsefi / Teolojik Diyalog Sineması:", messages[1]["content"])
 
 
 class SchemaNameNormalizeTest(unittest.TestCase):

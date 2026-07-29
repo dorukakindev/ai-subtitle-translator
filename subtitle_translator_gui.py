@@ -748,6 +748,7 @@ CONTENT_SCHEMAS = {
     },
     "film": {
         "name": "Film",
+        "detect": "Conventional scripted fiction whose dominant need is general cinematic dialogue; use only when no more specific fiction category fits.",
         "rules": [
             "- [TONE & REGISTER] Use controlled cinematic Turkish: natural and clean, but never sitcom-casual and never stage-play theatrical.",
             "- [CONTEXT & TONE] Translate subtext, not just meaning; a restrained threat, confession, or apology must still feel loaded.",
@@ -761,8 +762,84 @@ CONTENT_SCHEMAS = {
             "- [TR_ERROR] A common TR error here is fake prestige: avoid archaic, bookish, or overwritten Turkish actors would never say.",
         ],
     },
+    "experimental_essay_film": {
+        "name": "Deneysel / Deneme Sineması",
+        "detect": "Essay film, docufiction, surreal or avant-garde fiction built from collage, fragmentation, metafiction, unstable narration, invented language or deliberate ambiguity.",
+        "rules": [
+            "- [CONTEXT & TONE] Preserve fragmentation, collage logic, discontinuity, repetition, and abrupt shifts; do not repair an intentionally non-linear film into conventional narration.",
+            "- [FLOW & TIMING] Keep intertitles, quotations, voice-over, archival speech, staged scenes, and direct address distinct; never merge their voices into one fluent register.",
+            "- [TONE & REGISTER] Deliberate ambiguity, paradox, deadpan humor, and estrangement must survive without explanatory additions.",
+            "- [TERMINOLOGY] Philosophical, historical, political, linguistic, anthropological, and film-theory terms require precise established Turkish equivalents.",
+            "- [TERMINOLOGY] Invented words, invented languages, recurrent verbal motifs, and opaque proper names must remain stable; do not guess a meaning the film withholds.",
+            "- [DIALECT & CHARACTER] Multilingual passages and register collisions are part of the form; do not make every speaker sound like the same standard-Turkish narrator.",
+            "- [FLOW & TIMING] Sentence fragments may connect across distant cues or montage cuts; use surrounding context before deciding that a fragment is defective.",
+            "- [CONTEXT & TONE] Metafictional remarks about images, history, language, memory, performance, or narration should remain self-aware and exact.",
+            "- [TR_ERROR] A major error here is normalization: never explain surreal images, resolve contradictions, add causal links, or turn montage into ordinary plot exposition.",
+        ],
+    },
+    "political_art_cinema": {
+        "name": "Politik / Toplumsal Sanat Sineması",
+        "detect": "Scripted art cinema centered on ideology, class, labor, state power, institutions, propaganda, terrorism, historical memory or political satire; not a factual documentary.",
+        "rules": [
+            "- [TERMINOLOGY] Ideologies, parties, institutions, labor relations, state offices, legal procedure, and political movements must use precise established Turkish terminology.",
+            "- [TONE & REGISTER] Keep official speech, slogans, propaganda, private doubt, worker speech, intellectual debate, and bureaucratic language clearly distinct.",
+            "- [CONTEXT & TONE] Preserve irony, satire, Brechtian distance, and contradictions between what characters say and what the film shows; do not editorialize.",
+            "- [FLOW & TIMING] Arguments about power, responsibility, class, history, and collective action must retain their logical connectors and cause-effect structure.",
+            "- [DIALECT & CHARACTER] Social position matters: official, worker, activist, journalist, investigator, academic, and bourgeois voices must not collapse into one neutral register.",
+            "- [TERMINOLOGY] Period-specific political vocabulary, organization names, quotations, slogans, and coded phrases must remain consistent throughout the film.",
+            "- [TONE & REGISTER] Dry, absurd, or blackly comic political dialogue should stay deadpan when the source is deadpan; do not turn it into broad comedy.",
+            "- [CONTEXT & TONE] Institutional euphemisms often conceal coercion or violence; translate the euphemism accurately without exposing the subtext in added words.",
+            "- [TR_ERROR] A major error here is political simplification: never replace a precise position with generic 'system', 'freedom', 'people', or 'government' language.",
+        ],
+    },
+    "philosophical_theological_dialogue": {
+        "name": "Felsefi / Teolojik Diyalog Sineması",
+        "detect": "Dialogue-led fiction or literary adaptation dominated by sustained philosophical, theological, ethical or doctrinal argument rather than ordinary plot dialogue.",
+        "rules": [
+            "- [FLOW & TIMING] Preserve the full argument: claim, premise, objection, reply, example, qualification, and conclusion must remain linked across cue boundaries.",
+            "- [TERMINOLOGY] Philosophical, theological, doctrinal, liturgical, and ethical terms must use precise established Turkish forms and remain consistent.",
+            "- [TONE & REGISTER] Keep differences between formal disputation, confession, sermon, irony, polite disagreement, and intimate conversation.",
+            "- [CONTEXT & TONE] Do not simplify a difficult idea merely to sound conversational; clarity must come from accurate syntax, not loss of conceptual content.",
+            "- [PRONOUNS] Rank, clergy hierarchy, aristocratic etiquette, and intellectual distance must be reflected consistently in address and sen/siz choices.",
+            "- [FLOW & TIMING] Long periodic sentences may span many cues; reconstruct their grammar before translating individual fragments.",
+            "- [TERMINOLOGY] Scriptural quotations, named doctrines, philosophical works, Latin phrases, and recurring propositions need one stable rendering.",
+            "- [CONTEXT & TONE] Preserve uncertainty, paradox, rhetorical questions, and unresolved disagreement; never make the film endorse one speaker by adding certainty.",
+            "- [TR_ERROR] A major error here is logical drift: a changed negation, pronoun referent, modal verb, or connective can reverse the argument and must be guarded closely.",
+        ],
+    },
+    "artist_biography_period": {
+        "name": "Sanatçı Biyografisi / Dönem",
+        "detect": "Fiction, docudrama or hybrid biography of an artist, writer, musician or performer, with letters, works, public debate and period scenes central to the film.",
+        "rules": [
+            "- [TERMINOLOGY] Names of works, characters, journals, institutions, artistic movements, and historical figures must remain exact and consistent.",
+            "- [TONE & REGISTER] Distinguish private conversation, public speech, rehearsal, performance, interview, narration, diary, and letter-reading registers.",
+            "- [CONTEXT & TONE] Preserve the artist's intellectual and emotional contradictions; do not turn difficult or abrasive speech into respectful museum narration.",
+            "- [TERMINOLOGY] Use established Turkish titles for well-known works where they exist; otherwise retain the original title instead of inventing one.",
+            "- [FLOW & TIMING] Quotations from plays, poems, songs, essays, and correspondence should sound authored and period-aware without becoming fake Ottoman Turkish.",
+            "- [DIALECT & CHARACTER] Critics, collaborators, family members, patrons, workers, and the artist must retain distinct social and professional voices.",
+            "- [TERMINOLOGY] Artistic craft vocabulary must be precise for the relevant field: theatre, literature, music, painting, dance, or cinema.",
+            "- [TONE & REGISTER] Period politics, gender relations, class conflict, and scandal must keep the source's historical distance and intensity.",
+            "- [TR_ERROR] A major error here is flattening a hybrid biography into documentary prose or translating quoted creative work like ordinary conversation.",
+        ],
+    },
+    "psychological_institutional_drama": {
+        "name": "Psikolojik / Kurumsal Dram",
+        "detect": "Serious fiction about a psychiatric, medical, educational, penal, military or bureaucratic institution where ethics, coercion and authority dominate; not a routine hospital procedural.",
+        "rules": [
+            "- [CONTEXT & TONE] Institutional power is central: preserve the contrast between official procedure, private conscience, coercion, compliance, and resistance.",
+            "- [TERMINOLOGY] Psychiatric, medical, legal, administrative, and ethical terminology must be precise without making every scene sound like a modern hospital series.",
+            "- [TONE & REGISTER] Distinguish clinical observation, bureaucratic euphemism, ideological speech, humane care, cruelty, and frightened patient language.",
+            "- [DIALECT & CHARACTER] Hierarchy must remain audible among directors, doctors, staff, officials, patients, prisoners, students, or recruits.",
+            "- [CONTEXT & TONE] Unreliable perception, delusion, trauma, or moral uncertainty must remain ambiguous when the source is ambiguous; do not diagnose in added words.",
+            "- [FLOW & TIMING] Ethical arguments and institutional decisions often span several cues; preserve referents, negation, and responsibility precisely.",
+            "- [TERMINOLOGY] Historical institutions and obsolete diagnoses or procedures require period-appropriate Turkish, not casual modern substitutions.",
+            "- [TONE & REGISTER] Violence expressed through calm administrative language should stay calm and chilling; do not add melodrama.",
+            "- [TR_ERROR] A major error here is genre drift: do not translate an institutional moral drama as emergency-room banter, thriller exposition, or generic period dialogue.",
+        ],
+    },
     "horror_thriller": {
         "name": "Korku / Gerilim",
+        "detect": "Scripted horror or thriller driven by dread, haunting, threat, investigation, violence or survival; includes found-footage and TV-reenactment horror.",
         "rules": [
             "- [FLOW & TIMING] Atmosphere is built from silence and short lines — never complete or expand half-finished sentences, the half-finished quality IS the dread.",
             "- [CONTEXT & TONE] Threat foreshadowing must stay subtextual; if the character knows something is wrong but isn't saying it, the Turkish keeps the same ambiguity.",
@@ -807,6 +884,7 @@ CONTENT_SCHEMAS = {
     },
     "historical": {
         "name": "Tarihi / Dönem",
+        "detect": "Conventional period fiction where historical setting and period register dominate; not primarily philosophical debate, political art cinema or artist biography.",
         "rules": [
             "- [TONE & REGISTER] Period-appropriate register MUST be selected: 1700s ('lütfederek bildirmek', 'arz etmek'), 1800-1900 ('muhterem', 'zat-ı âliniz'), early Cumhuriyet (öz-Türkçe), 1950-60 ('efendim', 'beyefendi', 'hanımefendi').",
             "- [TERMINOLOGY] Ottoman setting: layer in Arabic-Persian vocabulary that fits the era (selâm aleyküm, eyvallah, mübarek, hâlâ, vakıf, ferman) without mixing in modern Turkish.",
@@ -922,6 +1000,7 @@ CONTENT_SCHEMAS = {
     },
     "anime": {
         "name": "Anime",
+        "detect": "Japanese animated film or series, including adult, historical, musical and philosophical anime; choose this over general film or period drama when animation is clear.",
         "rules": [
             "- [TERMINOLOGY] Honorifics ('senpai', 'kun', 'chan', 'sama', 'sensei') need ONE consistent strategy: either keep all, drop all, or keep only relationally-significant ones.",
             "- [TERMINOLOGY] Attack names, special-move incantations, titles, and transformation phrases need ONE fixed Turkish (or kept-original) treatment.",
@@ -1193,6 +1272,7 @@ CONTENT_SCHEMAS = {
     },
     "scifi_fantasy": {
         "name": "Bilim Kurgu / Fantastik",
+        "detect": "Scripted science fiction or fantasy whose invented world, technology, speculative premise or magic system is the dominant translation need.",
         "rules": [
             "- [TERMINOLOGY] World-building terminology (ships, planets, species, factions, magic systems, spells, orders, technologies) gets ONE fixed Turkish-or-original treatment.",
             "- [TERMINOLOGY] Follow established Turkish franchise conventions: 'the Force'→'Güç', 'lightsaber'→'ışın kılıcı', 'Middle-earth'→'Orta Dünya', 'White Walkers'→'Ak Gezenler', 'muggle'→'muggle'.",
@@ -1208,6 +1288,7 @@ CONTENT_SCHEMAS = {
     },
     "medical": {
         "name": "Tıbbi Dram / Hastane",
+        "detect": "Hospital or medical procedural centered on diagnosis, treatment, emergency work and clinician-patient communication; not merely a film set in a psychiatric institution.",
         "rules": [
             "- [TERMINOLOGY] Use the vocabulary real Turkish doctors use: entübe et, taburcu, konsültasyon, sevk, nöbet, anamnez, vaka — never dictionary-translate medical jargon.",
             "- [TONE & REGISTER] Emergency commands are short and imperative: 'Tansiyon düşüyor', 'Adrenalin ver', 'Şok hazırla', '200'e şarj', 'Entübe ediyorum' — never polite full sentences in a code blue.",
@@ -1279,6 +1360,7 @@ CONTENT_SCHEMAS = {
     },
     "cinema_film": {
         "name": "Sinema / Film Belgeseli",
+        "detect": "Non-fiction documentary, interview program or video essay ABOUT real films, directors, actors, film history or criticism; never scripted fiction merely involving a film crew or cinema.",
         "rules": [
             "- [CONTEXT & TONE] Documentary or video-essay ABOUT cinema (film history, criticism, a director's work) — NOT fiction film dialogue; register is analytical.",
             "- [TERMINOLOGY] Film titles: use the ESTABLISHED Turkish release title if one exists ('The Godfather'→'Baba', 'Vertigo'→'Ölüm Korkusu'); otherwise keep original.",
@@ -3566,6 +3648,17 @@ def _detect_categories() -> list:
     return [v["name"] for v in CONTENT_SCHEMAS.values() if v["name"] != "Otomatik"]
 
 
+def _detect_category_lines() -> list[str]:
+    lines = []
+    for schema in CONTENT_SCHEMAS.values():
+        name = schema["name"]
+        if name == "Otomatik":
+            continue
+        description = str(schema.get("detect") or "").strip()
+        lines.append(f"- {name}: {description}" if description else f"- {name}")
+    return lines
+
+
 def _schema_name_key(value) -> str:
     """Şema adlarını Türkçe dotted-I farkı olmadan karşılaştırmak için anahtar."""
     return unicodedata.normalize("NFKC", str(value or "").strip()).casefold().replace("\u0307", "")
@@ -3639,17 +3732,25 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
     sample = "\n".join(sample_lines)
 
     categories = _detect_categories()
-    cat_list = "\n".join("- " + c for c in categories)
+    cat_list = "\n".join(_detect_category_lines())
     hint = f" (from file: {Path(filename).stem})" if filename else ""
     system_msg = (
         "You are a media genre classification assistant with expertise in television, film, "
         "and online content. Given a subtitle sample, determine the single most fitting "
-        "content type from the provided category list.\n\n"
+        "content type from the provided category list. Classify by the work's form and dominant "
+        "translation needs, not by isolated vocabulary or setting. A hospital setting alone is "
+        "not a medical procedural; dialogue about cinema inside fiction is not a film documentary; "
+        "historical setting alone does not override philosophical, political, experimental, or "
+        "artist-biography form.\n\n"
         "Examples:\n"
         "- Sample with scripted dialogue, laugh track, multiple episodes → 'Komedi (Sitcom)'\n"
         "- Sample with presenter, hidden-camera reactions, challenge segments → 'Reality Show'\n"
         "- Sample with narrative voiceover, archival footage, historical events → 'Belgesel'\n"
-        "- Sample with formal interview, talking heads, news-style editing → 'Söyleşi / Podcast'\n\n"
+        "- Sample with formal interview, talking heads, news-style editing → 'Söyleşi / Podcast'\n"
+        "- Fragmented collage mixing fiction, archive, intertitles and essay voice → "
+        "'Deneysel / Deneme Sineması'\n"
+        "- Long sustained debate about theology, ethics and doctrine → "
+        "'Felsefi / Teolojik Diyalog Sineması'\n\n"
         "Return ONLY a JSON object: {\"category\": \"exact category name\"}. Nothing else."
     )
     prompt = (
