@@ -222,6 +222,25 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertEqual(stats["rejected"], 0)
         self.assertEqual(stats["details"], [])
 
+    def test_non_string_proposal_is_rejected_instead_of_stringified(self):
+        blocks = [("1", "00:00:01 --> 00:00:02", "Doğru çeviri.")]
+        src_map = {"1": "Correct translation."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{"id": "1", "text": None, "reason": "meaning"}],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create",
+                   return_value=_response(payload)):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"}
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["details"][-1]["reason"], "fix_id_or_text")
+
     def test_locked_term_cannot_be_removed(self):
         blocks = [(
             "1", "00:00:01 --> 00:00:02",

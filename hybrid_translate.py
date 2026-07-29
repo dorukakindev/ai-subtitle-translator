@@ -3422,21 +3422,27 @@ def native_reader_pass(
             if not isinstance(fixes, list):
                 continue
             chunk_pos_by_id = {str(idx): pos for pos, (idx, _ts, _text) in enumerate(chunk)}
-            fix_by_id = {
-                str(fix.get("id", "")): fix.get("fixed", "")
-                for fix in fixes
-                if isinstance(fix, dict)
-                and str(fix.get("id", "")) in chunk_ids
-                and isinstance(fix.get("fixed"), str)
-                and fix.get("fixed")
-            }
-            pending = {}
+            fix_by_id = {}
+            conflicting_fix_ids = set()
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
-                fid   = str(fix.get("id", ""))
-                ftext = fix.get("fixed", "")
-                if fid and ftext and fid in chunk_ids and fid in idx_to_pos:
+                fid = str(fix.get("id", ""))
+                ftext = fix.get("fixed")
+                if fid not in chunk_ids or not isinstance(ftext, str) or not ftext:
+                    continue
+                if fid in fix_by_id and fix_by_id[fid] != ftext:
+                    conflicting_fix_ids.add(fid)
+                    continue
+                fix_by_id.setdefault(fid, ftext)
+            for fid in conflicting_fix_ids:
+                fix_by_id.pop(fid, None)
+                total_rejected += 1
+                reason = "duplicate_fix_conflict"
+                reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
+            pending = {}
+            for fid, ftext in fix_by_id.items():
+                if fid in idx_to_pos:
                     pos = idx_to_pos[fid]
                     old_idx, old_ts, old_text = result[pos]
                     if ftext == old_text:
@@ -6839,7 +6845,8 @@ def semantic_reconciliation_pass(
                     invalid_reason = "fix_shape"
                     break
                 sid = str(fix.get("id", ""))
-                text = str(fix.get("text", "")).strip()
+                raw_text = fix.get("text")
+                text = raw_text.strip() if isinstance(raw_text, str) else ""
                 if sid not in allowed_ids or sid in proposals or not text:
                     invalid_reason = "fix_id_or_text"
                     break
@@ -9516,7 +9523,10 @@ def critic_pass_with_helper(
                 if not isinstance(fix, dict):
                     continue
                 fid = str(fix.get("id", ""))
-                ftext = str(fix.get("fixed", ""))
+                raw_fixed = fix.get("fixed")
+                if not isinstance(raw_fixed, str):
+                    continue
+                ftext = raw_fixed
                 if (not fid or not ftext or fid not in chunk_ids
                         or fid not in editable_ids or fid not in idx_to_pos):
                     continue

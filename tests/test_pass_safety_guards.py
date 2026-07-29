@@ -155,6 +155,25 @@ class PassSafetyGuardsTest(unittest.TestCase):
                 res = ht.critic_pass_with_helper(cues, tr_blocks, helper_api_key="test_key")
                 self.assertEqual(res[1][2], "Gideceğim yapacağım ben efendim")
 
+    def test_critic_ignores_non_string_fixed_value(self):
+        cues = [MagicMock(index=1, text="Hello world")]
+        tr_blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba dünya")]
+        with patch(
+            "hybrid_translate.run_validators",
+            return_value=[(1, "ts", "text", "TEST")],
+        ):
+            mock_resp = MagicMock()
+            mock_resp.choices = [MagicMock()]
+            mock_resp.choices[0].message.content = '[{"id":"1","fixed":null}]'
+
+            with patch("openai.OpenAI") as mock_openai:
+                mock_openai.return_value = MagicMock()
+                mock_openai.return_value.chat.completions.create.return_value = mock_resp
+                result = ht.critic_pass_with_helper(
+                    cues, tr_blocks, helper_api_key="test_key")
+
+        self.assertEqual(result, tr_blocks)
+
     def test_native_reader_cross_chunk_id_not_applied(self):
         """3. Native başka chunk ID’sini değiştiremez."""
         tr_blocks = [(str(i), f"00:00:{i:02d},000 --> 00:00:{i:02d},900", f"Tarih boyunca insanlık {i}") for i in range(1, 201)]

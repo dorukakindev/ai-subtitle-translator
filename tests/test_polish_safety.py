@@ -459,6 +459,24 @@ class NativeReaderPassSafetyTest(unittest.TestCase):
 
         self.assertEqual(result, blocks)
 
+    def test_native_reader_rejects_conflicting_duplicate_fixes(self):
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Eski çeviri.")]
+        fixes = [
+            {"id": "1", "fixed": "İlk öneri."},
+            {"id": "1", "fixed": "Çelişen ikinci öneri."},
+        ]
+        logs = []
+
+        with patch.dict("sys.modules", {"openai": self._fake_openai_module(fixes)}):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                log_fn=lambda msg, level="info": logs.append((level, msg)),
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertTrue(any("duplicate_fix_conflict" in msg for _, msg in logs))
+
     def test_native_reader_rejects_partial_fragment_rewrite(self):
         blocks = [
             (1, "00:00:00,000 --> 00:00:01,000", "Onları görünce"),
