@@ -201,8 +201,8 @@ def _ass_ts_to_srt(ts: str) -> str:
 # metnine geri uygular. Model etiketleri hiç görmez; konum ({\an8}) ve
 # tam-blok/tam-satır sarmalama (italik iç ses, şarkı sözü) burada geri gelir.
 
-_LEAD_OVERRIDE_RE = re.compile(r'^(?:\{[^}]*\})+')                       # {\an8}{\c&H..}
-_TRAIL_OVERRIDE_RE = re.compile(r'(?:\{[^}]*\})+$')                     # {\i0}{\b0}
+_LEAD_OVERRIDE_RE = re.compile(r'^(?:\{\\[^}]*\})+')                    # {\an8}{\c&H..}
+_TRAIL_OVERRIDE_RE = re.compile(r'(?:\{\\[^}]*\})+$')                  # {\i0}{\b0}
 _ASS_OVERRIDE_BLOCK_RE = re.compile(r'\{\\[^}]*\}')
 _SRT_SAFE_ASS_OVERRIDE_RE = re.compile(r'^\{(?:\\[ibus][01])+\}$', re.IGNORECASE)
 

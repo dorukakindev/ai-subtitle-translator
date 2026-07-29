@@ -99,6 +99,22 @@ class RestoreFormatTagsTest(unittest.TestCase):
             "SARI ÇİZGİLİ",
         )
 
+    def test_literal_braced_dialogue_is_not_reappended_from_source(self):
+        self.assertEqual(
+            restore_format_tags(
+                "(TV/Radio) {Now he is lying paralysed,\nbut I can assure you of...}",
+                "(TV/Radio) {Şimdi felçli yatıyor,\nama size şunun sözünü verebilirim:}",
+            ),
+            "(TV/Radio) {Şimdi felçli yatıyor,\nama size şunun sözünü verebilirim:}",
+        )
+        self.assertEqual(
+            restore_format_tags(
+                "...{what has happened with Patel,\nwon't let it happen to you...}",
+                "...{Patel'in başına gelenlerin\nsize de olmasına izin vermeyeceğiz...}",
+            ),
+            "...{Patel'in başına gelenlerin\nsize de olmasına izin vermeyeceğiz...}",
+        )
+
 
 
 class RestoreTagsBlocksTest(unittest.TestCase):
