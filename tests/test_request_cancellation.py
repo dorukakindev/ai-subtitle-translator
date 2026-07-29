@@ -197,6 +197,8 @@ class DefaultHelperPassCancellationTest(unittest.TestCase):
         changes = [{"id": "existing"}]
 
         with patch("openai.OpenAI", return_value=_Client()), \
+             patch("hybrid_translate._apply_local_fixes",
+                   side_effect=lambda text, **_kwargs: (text + " yerel", 1)), \
              patch("hybrid_translate.run_validators", return_value=suspicious), \
              patch("hybrid_translate._safe_chat_create",
                    side_effect=[first, RequestCancelled("cancelled")]):

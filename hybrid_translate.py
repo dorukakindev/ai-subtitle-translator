@@ -9149,6 +9149,7 @@ def critic_pass_with_helper(
 
     cues = _semantic_validator_cues({}, tr_blocks, cues)
     result     = list(tr_blocks)
+    change_log_start = len(change_log) if change_log is not None else 0
     idx_to_pos = {str(b[0]): i for i, b in enumerate(result)}
     orig_dict  = {str(c.index): c.text for c in cues} if cues else {}
     result_ids = [str(b[0]) for b in result]
@@ -9366,7 +9367,6 @@ def critic_pass_with_helper(
     critic_rejected = 0
     critic_rejected_reasons: dict[str, int] = {}
     reason_stats: dict[str, dict[str, int]] = {}
-    change_log_start = len(change_log) if change_log is not None else 0
     cancelled = False
 
     def _reason_tokens(reason_str: str) -> list[str]:
