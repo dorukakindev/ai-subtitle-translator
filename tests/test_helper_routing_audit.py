@@ -29,8 +29,7 @@ class HelperRoutingAuditTests(unittest.TestCase):
         self.assertIn('fix_key = self._helper_api_key("qc")', src,
                       "_maybe_backtranslation_check fix mode must use _helper_api_key('qc')")
 
-    def test_helper_api_key_uses_general_helper_key_for_non_openai_provider(self):
-        """The shared helper key is the documented fallback for every helper provider."""
+    def test_general_helper_key_is_not_sent_to_non_openai_provider(self):
         helper_entry = SimpleNamespace(get=lambda: "shared-helper-key")
         api_entry = SimpleNamespace(get=lambda: "sk-proj-main-key")
         
@@ -44,10 +43,26 @@ class HelperRoutingAuditTests(unittest.TestCase):
         )
         
         anthropic_key = gui.App._helper_api_key(stub, "critic")
-        self.assertEqual(anthropic_key, "shared-helper-key")
+        self.assertEqual(anthropic_key, "")
 
         openai_key = gui.App._helper_api_key(stub, "analysis")
         self.assertEqual(openai_key, "shared-helper-key")
+
+    def test_non_openai_provider_uses_only_its_scoped_cache(self):
+        stub = SimpleNamespace(
+            helper_role_key_vars={},
+            helper_custom_key_vars={},
+            _helper_keys_cache={
+                "deepseek": "deepseek-key",
+                "openai_helper": "openai-helper-key",
+            },
+            helper_key_entry=SimpleNamespace(get=lambda: "openai-helper-key"),
+            api_key_entry=SimpleNamespace(get=lambda: "main-openai-key"),
+            _get_current_helper_provider=lambda role: "deepseek",
+        )
+
+        self.assertEqual(
+            gui.App._helper_api_key(stub, "analysis"), "deepseek-key")
 
     def test_helper_api_key_does_not_leak_main_openai_key_to_anthropic(self):
         """Only an OpenAI helper role may fall back to the main OpenAI key."""

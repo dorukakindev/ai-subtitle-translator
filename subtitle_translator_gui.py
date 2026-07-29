@@ -10306,7 +10306,8 @@ class App(ctk.CTk):
         if not k:
             cache_key = "openai_helper" if provider == "openai" else provider
             k = self._helper_keys_cache.get(cache_key, "").strip()
-        if not k and hasattr(self, "helper_key_entry") and self.helper_key_entry:
+        if (not k and provider in {"openai", "openai_helper"}
+                and hasattr(self, "helper_key_entry") and self.helper_key_entry):
             k = self.helper_key_entry.get().strip()
         if (not k and provider in {"openai", "openai_helper"}
                 and hasattr(self, "api_key_entry") and self.api_key_entry):
