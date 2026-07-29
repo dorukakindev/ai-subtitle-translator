@@ -10286,8 +10286,6 @@ class App(ctk.CTk):
         k = ""
         if role in self.helper_role_key_vars:
             k = self.helper_role_key_vars[role].get().strip()
-        if role in self.helper_custom_key_vars:
-            k = k or self.helper_custom_key_vars[role].get().strip()
         provider = self._get_current_helper_provider(role)
         if not k and provider in {"openai", "openai_helper"}:
             from urllib.parse import urlparse

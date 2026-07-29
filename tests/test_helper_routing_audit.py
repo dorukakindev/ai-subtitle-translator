@@ -119,6 +119,24 @@ class HelperRoutingAuditTests(unittest.TestCase):
         )
         self.assertEqual(gui.App._helper_api_key(stub, "critic"), "")
 
+    def test_reseller_preset_does_not_receive_stale_custom_provider_key(self):
+        stub = SimpleNamespace(
+            helper_model_vars={"critic": SimpleNamespace(
+                get=lambda: "GPT-5.4 (Reseller)")},
+            helper_custom_key_vars={"critic": SimpleNamespace(
+                get=lambda: "stale-anthropic-secret")},
+            helper_role_key_vars={"critic": SimpleNamespace(get=lambda: "")},
+            _helper_keys_cache={"openai_helper": "official-openai-secret"},
+            helper_key_entry=SimpleNamespace(get=lambda: "official-openai-secret"),
+            api_key_entry=SimpleNamespace(get=lambda: "official-openai-secret"),
+            _is_custom_helper_label=lambda label: False,
+            _get_current_helper_provider=lambda role: "openai_helper",
+            _helper_api_base_url=lambda role: "https://api.shuaiapi.com/v1",
+            _main_custom_active=lambda: False,
+        )
+
+        self.assertEqual(gui.App._helper_api_key(stub, "critic"), "")
+
     def test_reseller_preset_can_reuse_same_host_main_custom_key(self):
         stub = SimpleNamespace(
             helper_model_vars={"critic": SimpleNamespace(get=lambda: "GPT-5.4 (Reseller)")},
