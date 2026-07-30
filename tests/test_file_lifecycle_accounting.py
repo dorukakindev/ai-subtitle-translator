@@ -146,7 +146,7 @@ class FileLifecycleAccountingTest(unittest.TestCase):
 
     def test_write_results_marks_unresolved_output_failed_and_partial(self):
         src = inspect.getsource(gui.App._write_results)
-        self.assertIn('f"{out_path.stem}.partial.srt"', src)
+        self.assertIn("_partial_output_path(out_path)", src)
         self.assertIn("_failed_files.append(fp)", src)
         self.assertIn("if _has_missing:", src)
         self.assertLess(

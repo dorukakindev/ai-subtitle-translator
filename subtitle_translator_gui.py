@@ -5723,6 +5723,57 @@ def _count_hata_cps(blocks) -> tuple:
     return hata, cps_n
 
 
+def _blocks_have_translation_failures(blocks) -> bool:
+    return any(
+        str(text or "").startswith("[HATA")
+        or "[ÇEVİRİ EKSİK]" in str(text or "")
+        for _idx, _ts, text in (blocks or [])
+    )
+
+
+def _partial_output_path(out_path) -> Path:
+    path = Path(out_path)
+    return path.with_name(f"{path.stem}.partial{path.suffix}")
+
+
+def _quarantine_incomplete_final(out_path) -> Path | None:
+    path = Path(out_path)
+    if not path.exists():
+        return None
+    target = path.with_name(f"{path.stem}.incomplete.bak")
+    serial = 2
+    while target.exists():
+        target = path.with_name(f"{path.stem}.incomplete.{serial}.bak")
+        serial += 1
+    path.replace(target)
+    return target
+
+
+def _existing_output_is_complete(out_blocks, source_cues) -> bool:
+    if not out_blocks or _blocks_have_translation_failures(out_blocks):
+        return False
+    translated_ids = {
+        str(idx) for idx, _ts, text in out_blocks
+        if str(text or "").strip()
+        and not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
+    }
+    required_ids = set()
+    for cue in source_cues or []:
+        if hasattr(cue, "index") and not callable(getattr(cue, "index")):
+            idx = cue.index
+            text = cue.text
+        else:
+            try:
+                idx, _ts, text = cue
+            except (TypeError, ValueError):
+                continue
+        value = str(text or "")
+        if (_has_wordlike_text(_align_visible(value))
+                and not _src_is_sdh_only(value)):
+            required_ids.add(str(idx))
+    return bool(required_ids) and required_ids <= translated_ids
+
+
 def _cps_stats(blocks) -> tuple:
     """(cps_avg, cps_max) — CPS dağılım istatistiklerini döndürür."""
     values = []
@@ -10317,6 +10368,7 @@ class App(ctk.CTk):
         self._json_repair_pass(client, raw_map, requests_list)
         req_by_id = {r["custom_id"]: r for r in requests_list}
         upstream_failed = set()
+        permanent_failure = False
 
         def _retry_reason(cid):
             raw = raw_map.get(cid)
@@ -10471,6 +10523,14 @@ class App(ctk.CTk):
                         self._log(f"  ↺ {cid}: tamam", "ok")
                         break
                     except Exception as e:
+                        if _is_permanent_provider_error(e):
+                            permanent_failure = True
+                            self._log(
+                                "  Kalıcı API/bakiye hatası; kalan chunk ve alt-istek "
+                                "kurtarmaları gönderilmeyecek",
+                                "warn",
+                            )
+                            break
                         if _is_upstream_provider_error(e):
                             upstream_failed.add(cid)
                             self._log(
@@ -10486,9 +10546,13 @@ class App(ctk.CTk):
                             continue
                         self._log(f"  ↺ {cid}: başarısız — {e}", "err")
                         break
+                if permanent_failure:
+                    break
+            if permanent_failure:
+                break
 
         # Kurtarma adımı
-        if self._stop_flag:
+        if self._stop_flag or permanent_failure:
             return set(req_by_id)
         strict_fallback = set()
         for cid, req in req_by_id.items():
@@ -16152,16 +16216,13 @@ class App(ctk.CTk):
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
-                        if out_blocks and len(out_blocks) == len(cues):
-                            has_hata = any(
-                                str(blk[2]).startswith("[HATA") or str(blk[2]).startswith("[ÇEVİRİ EKSİK]") for blk in out_blocks)
-                            if not has_hata:
-                                self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
-                                self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
-                                completed_files.append(filepath)
-                                file_pct = int((fi + 1) / n_files * 100)
-                                self._set_progress(file_pct)
-                                continue
+                        if _existing_output_is_complete(out_blocks, cues):
+                            self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
+                            self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
+                            completed_files.append(filepath)
+                            file_pct = int((fi + 1) / n_files * 100)
+                            self._set_progress(file_pct)
+                            continue
                     except Exception:
                         pass  # parse edilemediyse yeniden çevir
                 # ─────────────────────────────────────────────────────────────
@@ -16431,6 +16492,26 @@ class App(ctk.CTk):
             sorted_blocks = [srt_blocks[k] for k in sorted(
                 srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k)))]
             _raw_backup_blocks = list(sorted_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
+            _raw_map_pre = _raw_src_map_from_cues(cues)
+            _n_repaired = 0
+            try:
+                sorted_blocks, _n_repaired = _repair_untranslated_sync(
+                    sorted_blocks, _raw_map_pre, client,
+                    src_lang=file_src, tgt_lang=tgt,
+                    model=model,
+                    schema=schema_dict, profanity=self.profanity_var.get(),
+                    log_fn=self._log, token_cb=self._update_tokens,
+                    source_cues=cues)
+            except Exception as exc:
+                self._log(f"Onarım geçişi atlandı: {exc}", "warn")
+            _quality_api_allowed = not _blocks_have_translation_failures(
+                sorted_blocks)
+            if not _quality_api_allowed:
+                self._log(
+                    f"{fname}: eksik çeviri kaldığı için Critic/Polish/Native/"
+                    "Condense/QC/Nihai Anlam API geçişleri atlandı.",
+                    "warn",
+                )
 
             # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
             self._update_file_progress(filepath, "Tutarlılık taraması", 87)
@@ -16445,7 +16526,7 @@ class App(ctk.CTk):
             _pass_history = {}
 
             # ── Critic Pass (otomatik düzeltme) ──────────────────────────────
-            if self.critic_var.get() and sorted_blocks:
+            if self.critic_var.get() and sorted_blocks and _quality_api_allowed:
                 self._set_phase("Critic Pass", f"{fname}  —  {len(sorted_blocks)} satır")
                 self._update_file_progress(filepath, "Critic Pass", 89)
                 self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
@@ -16472,7 +16553,7 @@ class App(ctk.CTk):
                 self._write_critic_change_report(out_path, _critic_change_log)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
-            if self.polish_var.get() and sorted_blocks:
+            if self.polish_var.get() and sorted_blocks and _quality_api_allowed:
                 self._set_phase("Polish Pass", f"{fname}  —  doğallaştırma")
                 self._update_file_progress(filepath, "Polish Pass", 92)
                 self._log(f"Polish Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
@@ -16492,7 +16573,7 @@ class App(ctk.CTk):
                 self._log("Polish Pass tamamlandı", "ok")
 
             # ── Native Okuyucu Pass ───────────────────────────────────────────
-            if self.native_var.get() and sorted_blocks:
+            if self.native_var.get() and sorted_blocks and _quality_api_allowed:
                 self._set_phase("Native Okuyucu", f"{fname}  —  doğallık taraması")
                 self._update_file_progress(filepath, "Native Okuyucu", 94)
                 self._log(f"Native Okuyucu Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
@@ -16514,7 +16595,9 @@ class App(ctk.CTk):
                     break
                 _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
 
-            if sorted_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
+            if (sorted_blocks and _quality_api_allowed
+                    and (self.critic_var.get() or self.polish_var.get()
+                         or self.native_var.get())):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                     cues, sorted_blocks, log_fn=self._log,
@@ -16532,13 +16615,14 @@ class App(ctk.CTk):
             # Okuma hızı kısaltma (satır kırmadan ÖNCE — kısaltılmış metni kırar)
             _before_pass = list(sorted_blocks)
             _src_map_for_condense = {str(c.index): _clean_src(c.text) for c in cues} if cues else {}
-            sorted_blocks = self._maybe_condense(
-                sorted_blocks,
-                self._helper_api_key("analysis"),
-                self._helper_api_base_url("analysis"),
-                self._helper_api_model("analysis"),
-                tgt, src_map=_src_map_for_condense,
-                locked_terms=self._get_locked_terms_dict(filepath, tgt))
+            if _quality_api_allowed:
+                sorted_blocks = self._maybe_condense(
+                    sorted_blocks,
+                    self._helper_api_key("analysis"),
+                    self._helper_api_base_url("analysis"),
+                    self._helper_api_model("analysis"),
+                    tgt, src_map=_src_map_for_condense,
+                    locked_terms=self._get_locked_terms_dict(filepath, tgt))
             if self._stop_flag:
                 break
             _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
@@ -16554,7 +16638,7 @@ class App(ctk.CTk):
                 _record_pass_change(_pass_trace, "Line-break", _before_pass, sorted_blocks, _pass_history)
 
             # ── QC Kontrolü (kullanıcı onayı ile) ────────────────────────────
-            if self.qc_var.get() and sorted_blocks:
+            if self.qc_var.get() and sorted_blocks and _quality_api_allowed:
                 self._set_status(f"{self._helper_display_name('qc')} QC: {fname}")
                 issues = ht.quality_check_with_helper(
                     cues=cues,
@@ -16613,34 +16697,25 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
 
-            # Çevrilemeyen satırları sync ile onarma denemesi
-            try:
-                _raw_map_pre = _raw_src_map_from_cues(cues)
-                sorted_blocks, _n_repaired = _repair_untranslated_sync(
-                    sorted_blocks, _raw_map_pre, client,
-                    src_lang=file_src, tgt_lang=tgt,
-                    model=model,
-                    schema=schema_dict, profanity=self.profanity_var.get(),
-                    log_fn=self._log, token_cb=self._update_tokens,
-                     source_cues=cues)
-            except Exception:
-                pass
             if self._stop_flag:
                 break
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                              same_folder=self.same_folder_var.get(),
                                              selected_roots=self._output_selection_roots())
             _before_semantic = list(sorted_blocks)
-            self._run_final_semantic_checks(
-                out_path, {str(c.index): _clean_src(c.text) for c in cues},
-                sorted_blocks, src_lang=file_src, cues=cues,
-                changed_ids=_pass_history.keys(), source_path=filepath)
+            if _quality_api_allowed:
+                self._run_final_semantic_checks(
+                    out_path, {str(c.index): _clean_src(c.text) for c in cues},
+                    sorted_blocks, src_lang=file_src, cues=cues,
+                    changed_ids=_pass_history.keys(), source_path=filepath)
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
-            if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
+            if (_quality_api_allowed
+                    and getattr(self, "term_normalize_var", None)
+                    and self.term_normalize_var.get()):
                 try:
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, {str(c.index): _clean_src(c.text) for c in cues},
@@ -16660,10 +16735,29 @@ class App(ctk.CTk):
                 pass
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_merge_cues(sorted_blocks), tgt, self._log)
-            write_srt(out_path, _delivery_blocks, tgt)
-            completed_files.append(filepath)
-            self._log(f"Kaydedildi: {out_path}", "ok")
-            self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
+            _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
+            _has_missing = _hata_n > 0
+            _write_path = _partial_output_path(out_path) if _has_missing else out_path
+            _quarantined = (
+                _quarantine_incomplete_final(out_path) if _has_missing else None)
+            write_srt(_write_path, _delivery_blocks, tgt)
+            self._save_raw_backup(
+                _write_path, _raw_backup_blocks, _raw_map, tgt)
+            if _has_missing:
+                self._log(
+                    f"{fname}: {_hata_n} eksik çeviri kaldı; kısmi çıktı "
+                    f"{_write_path.name} olarak ayrıldı ve tamamlandı sayılmadı.",
+                    "err",
+                )
+                if _quarantined:
+                    self._log(
+                        f"Önceki eksik nihai çıktı karantinaya alındı: "
+                        f"{_quarantined.name}",
+                        "warn",
+                    )
+            else:
+                completed_files.append(filepath)
+                self._log(f"Kaydedildi: {out_path}", "ok")
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
             try:
@@ -16674,7 +16768,6 @@ class App(ctk.CTk):
             except Exception:
                 pass
             # Rapor satırı
-            _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
@@ -16689,6 +16782,13 @@ class App(ctk.CTk):
                 "pass_coverage": _pc,
                 "tm_hits": self._tm.hit_count_session(),
             })
+            if _has_missing:
+                failed_files.append(filepath)
+                self._update_file_progress(
+                    filepath, f"Eksik çeviri: {_hata_n}", 100, "error")
+                if self._wait_between_files(fi, n_files, fname) == "stopped":
+                    break
+                continue
             # TM kaydı (ortak yardımcı)
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
@@ -17708,6 +17808,29 @@ class App(ctk.CTk):
                     ht, fp, _tgt_lang, _file_src_lang, schema_dict=schema_dict)
             except Exception:
                 _analysis_result = None
+            _n_repaired = 0
+            try:
+                if openai_key:
+                    _repair_client = OpenAI(
+                        api_key=openai_key,
+                        base_url=self._main_api_base_url() or None)
+                    sorted_blocks, _n_repaired = _repair_untranslated_sync(
+                        sorted_blocks, _raw_map, _repair_client,
+                        src_lang=_file_src_lang, tgt_lang=_tgt_lang,
+                        model=self._main_model_name(),
+                        schema=schema_dict, profanity=self.profanity_var.get(),
+                        log_fn=self._log, token_cb=self._update_tokens,
+                        source_cues=_src_cues)
+            except Exception as exc:
+                self._log(f"Onarım geçişi atlandı: {exc}", "warn")
+            _quality_api_allowed = not _blocks_have_translation_failures(
+                sorted_blocks)
+            if not _quality_api_allowed:
+                self._log(
+                    f"{Path(fp).name}: eksik çeviri kaldığı için model tabanlı "
+                    "kalite geçişleri atlandı.",
+                    "warn",
+                )
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
@@ -17721,6 +17844,7 @@ class App(ctk.CTk):
                 or not self.chain_ctx_var.get()
             )
             if (self.review_pass_var.get() and _review_needed
+                    and _quality_api_allowed
                     and sorted_blocks and not self._stop_flag):
                 if self.mode_var.get() != "batch":
                     self._log(
@@ -17734,7 +17858,8 @@ class App(ctk.CTk):
                 _record_pass_change(_pass_trace, "Review", _before_pass, sorted_blocks, _pass_history)
             _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
             # ── Kalite geçişleri (tüm modlarda, toggle açıksa) ──────────────
-            if self.critic_var.get() and sorted_blocks and not self._stop_flag:
+            if (self.critic_var.get() and sorted_blocks
+                    and _quality_api_allowed and not self._stop_flag):
                 try:
                     self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                     _before_pass = list(sorted_blocks)
@@ -17758,7 +17883,8 @@ class App(ctk.CTk):
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
                     self._log(f"Critic Pass hatası: {e}", "warn")
-            if self.polish_var.get() and sorted_blocks and not self._stop_flag:
+            if (self.polish_var.get() and sorted_blocks
+                    and _quality_api_allowed and not self._stop_flag):
                 try:
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = self._polish_pass(
@@ -17772,7 +17898,8 @@ class App(ctk.CTk):
                     _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Polish Pass hatası: {e}", "warn")
-            if self.native_var.get() and sorted_blocks and not self._stop_flag:
+            if (self.native_var.get() and sorted_blocks
+                    and _quality_api_allowed and not self._stop_flag):
                 try:
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = ht.native_reader_pass(
@@ -17792,7 +17919,9 @@ class App(ctk.CTk):
                     _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Native Pass hatası: {e}", "warn")
-            if sorted_blocks and not self._stop_flag and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
+            if (sorted_blocks and _quality_api_allowed and not self._stop_flag
+                    and (self.critic_var.get() or self.polish_var.get()
+                         or self.native_var.get())):
                 try:
                     _before_pass = list(sorted_blocks)
                     sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
@@ -17805,7 +17934,7 @@ class App(ctk.CTk):
             _pass_fix = sum(
                 1 for block in sorted_blocks
                 if _pre_pass.get(str(block[0])) not in (None, block[2]))
-            if sorted_blocks and not self._stop_flag:
+            if sorted_blocks and _quality_api_allowed and not self._stop_flag:
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks, self._helper_api_key("analysis"),
@@ -17828,7 +17957,8 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = apply_line_breaks(sorted_blocks)
                 _record_pass_change(_pass_trace, "Line-break", _before_pass, sorted_blocks, _pass_history)
-            if self.qc_var.get() and sorted_blocks and not self._stop_flag:
+            if (self.qc_var.get() and sorted_blocks
+                    and _quality_api_allowed and not self._stop_flag):
                 try:
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = self._run_quality_check_inline(
@@ -17842,33 +17972,22 @@ class App(ctk.CTk):
                     self._log(f"QC hatası: {e}", "warn")
             if self._stop_flag:
                 break
-            # Çevrilemeyen satırları sync ile onarma denemesi
-            try:
-                if openai_key:
-                    _repair_client = OpenAI(api_key=openai_key, base_url=self._main_api_base_url() or None)
-                    sorted_blocks, _n_repaired = _repair_untranslated_sync(
-                        sorted_blocks, _raw_map, _repair_client,
-                        src_lang=_file_src_lang, tgt_lang=_tgt_lang,
-                        model=self._main_model_name(),
-                        schema=schema_dict, profanity=self.profanity_var.get(),
-                        log_fn=self._log, token_cb=self._update_tokens,
-                        source_cues=_src_cues)
-            except Exception as e:
-                self._log(f"Onarım geçişi atlandı: {e}", "warn")
-            if self._stop_flag:
-                break
             # CPS uyarısı — sync-hybrid ile paritede (düz-batch loglarında da görünsün)
             _log_cps_warning(sorted_blocks, self._log)
             _before_semantic = list(sorted_blocks)
-            self._run_final_semantic_checks(
-                out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
-                cues=_src_cues, changed_ids=_pass_history.keys(), source_path=fp)
+            if _quality_api_allowed:
+                self._run_final_semantic_checks(
+                    out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
+                    cues=_src_cues, changed_ids=_pass_history.keys(),
+                    source_path=fp)
             _record_pass_change(
                 _pass_trace, "Final-Semantic", _before_semantic,
                 sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
-            if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
+            if (_quality_api_allowed
+                    and getattr(self, "term_normalize_var", None)
+                    and self.term_normalize_var.get()):
                 try:
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, src_blocks,
@@ -17889,7 +18008,10 @@ class App(ctk.CTk):
             _has_missing = _hata_n > 0
             _write_path = out_path
             if _has_missing:
-                _write_path = out_path.with_name(f"{out_path.stem}.partial.srt")
+                _write_path = _partial_output_path(out_path)
+                _quarantined = _quarantine_incomplete_final(out_path)
+            else:
+                _quarantined = None
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log)
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
@@ -17899,6 +18021,12 @@ class App(ctk.CTk):
                     f"kısmi çıktı yazıldı ({_write_path.name}), tamamlandı sayılmayacak.",
                     "err",
                 )
+                if _quarantined:
+                    self._log(
+                        f"Önceki eksik nihai çıktı karantinaya alındı: "
+                        f"{_quarantined.name}",
+                        "warn",
+                    )
             else:
                 self._log(f"Kaydedildi: {out_path}", "ok")
                 self._save_raw_backup(
@@ -18570,12 +18698,17 @@ class App(ctk.CTk):
                 )
                 if _unresolved_missing:
                     try:
-                        _out_obj = Path(out_path)
-                        _partial_path = _out_obj.with_name(
-                            f"{_out_obj.stem}.partial.srt")
+                        _partial_path = _partial_output_path(out_path)
+                        _quarantined = _quarantine_incomplete_final(out_path)
                         write_srt(
                             str(_partial_path),
                             self._maybe_merge_cues(_final_blocks), tgt)
+                        if _quarantined:
+                            self._log(
+                                f"Önceki eksik nihai çıktı karantinaya alındı: "
+                                f"{_quarantined.name}",
+                                "warn",
+                            )
                     except Exception:
                         pass
                     self._log(

@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import subtitle_translator_gui as gui
@@ -73,6 +75,94 @@ class PermanentQuotaFailureTest(unittest.TestCase):
             "kalan onarım istekleri gönderilmeyecek" in str(call.args[0])
             for call in log.call_args_list
         ))
+
+    def test_chunk_retry_stops_before_subrequest_salvage_on_permanent_error(self):
+        class QuotaError(RuntimeError):
+            status_code = 403
+
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._log = MagicMock()
+        app._json_repair_pass = MagicMock()
+        app._resend_missing_blocks = MagicMock()
+        request = {
+            "custom_id": "chunk_1",
+            "body": {
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "system", "content": "translate"},
+                    {"role": "user", "content": '{"tr":[{"i":1,"t":"Hello"}]}'},
+                ],
+            },
+        }
+
+        with patch(
+            "subtitle_translator_gui._safe_chat_create",
+            side_effect=QuotaError(
+                "token quota is not enough: pre_consume_token_quota_failed"
+            ),
+        ) as create:
+            unresolved = app._retry_hata(
+                client=object(),
+                raw_map={},
+                requests_list=[request],
+                max_rounds=3,
+            )
+
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(unresolved, {"chunk_1"})
+        app._resend_missing_blocks.assert_not_called()
+        self.assertTrue(any(
+            "kalan chunk ve alt-istek kurtarmaları gönderilmeyecek"
+            in str(call.args[0])
+            for call in app._log.call_args_list
+        ))
+
+    def test_partial_output_path_never_overwrites_final(self):
+        self.assertEqual(
+            gui._partial_output_path(r"C:\out\episode.srt"),
+            gui.Path(r"C:\out\episode.partial.srt"),
+        )
+
+    def test_incomplete_existing_final_is_quarantined_outside_srt_set(self):
+        with TemporaryDirectory() as root:
+            final = gui.Path(root, "episode.srt")
+            final.write_text("[ÇEVİRİ EKSİK]", encoding="utf-8")
+
+            quarantined = gui._quarantine_incomplete_final(final)
+
+            self.assertFalse(final.exists())
+            self.assertEqual(quarantined.suffix, ".bak")
+            self.assertEqual(
+                quarantined.read_text(encoding="utf-8"),
+                "[ÇEVİRİ EKSİK]",
+            )
+
+    def test_delivery_credits_and_dropped_sfx_do_not_force_retranslation(self):
+        source = [
+            SimpleNamespace(index=1, text="Hello."),
+            SimpleNamespace(index=2, text="[door closes]"),
+            SimpleNamespace(index=3, text="Goodbye."),
+        ]
+        output = [
+            ("0", "00:00:00,000 --> 00:00:00,999", "discord: ceviri2"),
+            ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba."),
+            ("3", "00:00:03,000 --> 00:00:04,000", "Hoşça kal."),
+            ("4", "00:00:04,001 --> 00:00:06,001", "discord: ceviri2"),
+        ]
+
+        self.assertTrue(gui._existing_output_is_complete(output, source))
+
+    def test_existing_output_with_missing_dialogue_is_not_complete(self):
+        source = [
+            SimpleNamespace(index=1, text="Hello."),
+            SimpleNamespace(index=2, text="Where are you?"),
+        ]
+        output = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba."),
+        ]
+
+        self.assertFalse(gui._existing_output_is_complete(output, source))
 
 
 if __name__ == "__main__":

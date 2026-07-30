@@ -192,7 +192,8 @@ class PauseBetweenFilesTest(unittest.TestCase):
         """A fully written file stays visibly complete if Stop is pressed while paused."""
         src = inspect.getsource(gui.App._run_sync_hybrid)
         done_at = src.index('f"Tamamlandı  {len(sorted_blocks)} satır"')
-        pause_at = src.index("self._wait_between_files(fi, n_files, fname)")
+        pause_at = src.index(
+            "self._wait_between_files(fi, n_files, fname)", done_at)
         self.assertLess(done_at, pause_at)
 
 
