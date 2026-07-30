@@ -233,6 +233,23 @@ class SdhSourceDrivenTest(unittest.TestCase):
         )
         self.assertEqual(result, [])
 
+    def test_dash_prefixed_multiline_sfx_is_dropped(self):
+        source = "- [scream]\n- [glass shattering]"
+        self.assertTrue(sdh.src_is_sfx_only(source))
+        self.assertFalse(sdh.src_is_sfx_only("- [scream]\n- Get out!"))
+        result = sdh.clean_sdh_blocks(
+            [("1", "00:00:01,000 --> 00:00:02,000", "[ÇEVİRİ EKSİK]")],
+            src_map=_src(**{"1": source}),
+            source_driven=True,
+        )
+        self.assertEqual(result, [])
+
+    def test_translated_exhale_label_is_stripped_by_source(self):
+        self.assertEqual(
+            sdh.strip_labels_by_source("[nefes verir] Ah!", "[exhales] Oh!"),
+            "Ah!",
+        )
+
     def test_source_sdh_does_not_strip_target_technical_parentheses(self):
         self.assertEqual(
             sdh.strip_labels_by_source(

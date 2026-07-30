@@ -66,6 +66,7 @@ _SDH_KEYWORDS = {
     "laugh", "laughs", "laughing", "laughter", "chuckle", "chuckles",
     "chuckling", "giggle", "giggles", "giggling",
     "sigh", "sighs", "sighing", "gasp", "gasps", "gasping",
+    "exhale", "exhales", "exhaling", "inhale", "inhales", "inhaling",
     "groan", "groans", "groaning", "moan", "moans", "moaning",
     "scream", "screams", "screaming", "crying", "cries", "sobbing",
     "sniffles", "cough", "coughs", "coughing", "sneeze", "sneezes",
@@ -654,6 +655,7 @@ def src_is_sfx_only(src_text: str) -> bool:
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
     text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
     text = CHEVRON_SPEAKER_RE.sub("", text).strip()
+    text = re.sub(r"(?m)^\s*[-–—]\s*(?=[\[(])", "", text)
     text = re.sub(r"\s*\n\s*", " ", text)
     if not text:
         return False
