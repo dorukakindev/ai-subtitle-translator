@@ -612,6 +612,86 @@ QUALITY_PROFILE_DEFAULTS = {
     "backup_raw": True,
     "linebreak": False,
 }
+WORKFLOW_PROFILES = {
+    "Maksimum kalite": {
+        "hybrid_var": True,
+        "analysis_depth_var": "Maksimum",
+        "critic_var": True,
+        "polish_var": True,
+        "native_var": True,
+        "backtrans_var": True,
+        "semantic_reconcile_var": True,
+        "review_pass_var": True,
+        "term_normalize_var": True,
+        "chain_ctx_var": True,
+        "precontext_var": False,
+        "series_memory_var": True,
+        "clean_sdh_var": True,
+        "linebreak_var": False,
+        "qc_var": False,
+    },
+    "Normal": {
+        "hybrid_var": True,
+        "analysis_depth_var": "Gelişmiş",
+        "critic_var": True,
+        "polish_var": True,
+        "native_var": True,
+        "backtrans_var": False,
+        "semantic_reconcile_var": True,
+        "review_pass_var": True,
+        "term_normalize_var": True,
+        "chain_ctx_var": True,
+        "precontext_var": False,
+        "series_memory_var": True,
+        "clean_sdh_var": True,
+        "linebreak_var": False,
+        "qc_var": False,
+    },
+    "Hızlı kontrol": {
+        "hybrid_var": False,
+        "analysis_depth_var": "Standart",
+        "critic_var": False,
+        "polish_var": False,
+        "native_var": False,
+        "backtrans_var": False,
+        "semantic_reconcile_var": False,
+        "review_pass_var": False,
+        "term_normalize_var": True,
+        "chain_ctx_var": True,
+        "precontext_var": True,
+        "series_memory_var": False,
+        "clean_sdh_var": True,
+        "linebreak_var": False,
+        "qc_var": False,
+    },
+}
+
+
+def _content_detection_detail(value) -> dict:
+    if isinstance(value, dict):
+        category = normalize_schema_name(value.get("category", "Otomatik"))
+        raw_confidence = value.get("confidence")
+    else:
+        category = normalize_schema_name(value or "Otomatik")
+        raw_confidence = None
+    try:
+        confidence = max(0.0, min(1.0, float(raw_confidence)))
+    except (TypeError, ValueError):
+        confidence = None
+    return {"category": category, "confidence": confidence}
+
+
+def _set_windows_sleep_prevention(enabled: bool) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        es_continuous = 0x80000000
+        es_system_required = 0x00000001
+        flags = es_continuous | (es_system_required if enabled else 0)
+        return bool(ctypes.windll.kernel32.SetThreadExecutionState(flags))
+    except Exception:
+        return False
 
 
 def _apply_quality_profile_defaults(settings: dict) -> bool:
@@ -2317,6 +2397,102 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
     return Path(out_dir) / source_key / output_name
 
 
+def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
+                            same_folder=False, selected_roots=(),
+                            expected_source_language=AUTO_LANGUAGE):
+    issues = []
+    seen_sources = {}
+    output_sources = {}
+    for raw_path in files or ():
+        path = Path(raw_path)
+        source_key = os.path.normcase(os.path.abspath(str(path)))
+        if source_key in seen_sources:
+            issues.append({
+                "severity": "warning", "code": "duplicate",
+                "path": str(path), "message": "Aynı kaynak dosya birden fazla kez seçilmiş.",
+            })
+            continue
+        seen_sources[source_key] = str(path)
+        filename_language = infer_source_language_from_filename(str(path))
+        if (expected_source_language != AUTO_LANGUAGE
+                and filename_language != AUTO_LANGUAGE
+                and _lang_iso639_1(filename_language)
+                != _lang_iso639_1(expected_source_language)):
+            issues.append({
+                "severity": "warning", "code": "wrong_language",
+                "path": str(path),
+                "message": (
+                    f"Dosya adı {filename_language} işaretli; seçili kaynak dili "
+                    f"{expected_source_language}."
+                ),
+            })
+        if not path.exists() or not path.is_file():
+            issues.append({
+                "severity": "error", "code": "missing",
+                "path": str(path), "message": "Dosya bulunamadı veya okunamıyor.",
+            })
+            continue
+        try:
+            if path.stat().st_size == 0:
+                raise ValueError("Dosya boş.")
+            text = read_subtitle_text(path)
+        except Exception as exc:
+            issues.append({
+                "severity": "error", "code": "read_error",
+                "path": str(path), "message": f"Altyazı okunamadı: {exc}",
+            })
+            continue
+        if not text.strip():
+            issues.append({
+                "severity": "error", "code": "empty",
+                "path": str(path), "message": "Altyazı metni boş.",
+            })
+            continue
+        control_count = sum(
+            1 for ch in text
+            if ord(ch) < 32 and ch not in "\n\r\t"
+        )
+        if "\x00" in text or control_count > max(3, len(text) // 500):
+            issues.append({
+                "severity": "error", "code": "encoding",
+                "path": str(path),
+                "message": "Bozuk encoding veya ikili veri işaretleri bulundu.",
+            })
+        try:
+            cues = list(parse_subtitle(str(path)))
+        except Exception as exc:
+            issues.append({
+                "severity": "error", "code": "parse_error",
+                "path": str(path), "message": f"Altyazı ayrıştırılamadı: {exc}",
+            })
+            cues = []
+        if not cues:
+            issues.append({
+                "severity": "error", "code": "no_cues",
+                "path": str(path), "message": "Geçerli altyazı cue'su bulunamadı.",
+            })
+        output = _resolve_output_path(
+            input_dir, output_dir, str(path),
+            same_folder=same_folder, selected_roots=selected_roots)
+        output_key = os.path.normcase(os.path.abspath(str(output)))
+        output_sources.setdefault(output_key, []).append(str(path))
+        if output_key == source_key:
+            issues.append({
+                "severity": "error", "code": "overwrite_source",
+                "path": str(path), "message": "Hedef yol kaynak dosyanın üzerine yazıyor.",
+            })
+    for sources in output_sources.values():
+        if len(sources) < 2:
+            continue
+        for source in sources:
+            issues.append({
+                "severity": "error", "code": "output_collision",
+                "path": source,
+                "message": "Başka bir seçili dosyayla aynı hedefe yazacak.",
+            })
+    return issues
+
+
 def _resolve_report_dir(input_dir: str, output_dir: str) -> Path:
     """Çalıştırma/kalite raporlarının gideceği ayrı rapor klasörü.
 
@@ -3731,7 +3907,7 @@ def normalize_schema_name(name: str) -> str:
 
 
 def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback=None,
-                                 filename: str = "") -> str:
+                                 filename: str = "", return_details: bool = False):
     """Detects content type from sampled subtitle cues using the selected OpenAI model.
     Baş+orta+son örnekleme: tür sinyali her zaman ilk sahnede olmaz (örn. aksiyonla
     açılan romantik dram)."""
@@ -3745,7 +3921,8 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             sample_texts.append(txt)
 
     if not sample_texts:
-        return "Otomatik"
+        empty = {"category": "Otomatik", "confidence": None}
+        return empty if return_details else empty["category"]
     if len(sample_texts) > 180:
         mid = len(sample_texts) // 2
         sample_lines = (sample_texts[:80]
@@ -3775,7 +3952,8 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
         "'Deneysel / Deneme Sineması'\n"
         "- Long sustained debate about theology, ethics and doctrine → "
         "'Felsefi / Teolojik Diyalog Sineması'\n\n"
-        "Return ONLY a JSON object: {\"category\": \"exact category name\"}. Nothing else."
+        "Return ONLY a JSON object with your calibrated confidence from 0 to 1: "
+        "{\"category\": \"exact category name\", \"confidence\": 0.92}. Nothing else."
     )
     prompt = (
         "Analyze the following subtitle sample (beginning, middle and end of the file)"
@@ -3784,11 +3962,12 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
         f"You MUST choose exactly one of these categories:\n{cat_list}\n\n"
         "Subtitle Sample:\n"
         f"{sample}\n\n"
-        "Return ONLY a JSON object: {\"category\": \"exact category name as written above\"}. "
+        "Return ONLY a JSON object: "
+        "{\"category\": \"exact category name as written above\", \"confidence\": 0.92}. "
         "Nothing else."
     )
 
-    def _call(prompt_text: str) -> tuple[str | None, bool]:
+    def _call(prompt_text: str) -> tuple[dict | None, bool]:
         try:
             from hybrid_translate import _safe_chat_create
             resp = _safe_chat_create(
@@ -3814,22 +3993,26 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
                 data = json.loads(content)
                 cat = data.get("category", "").strip()
                 if cat:
-                    return cat, True
+                    return _content_detection_detail(data), True
             except Exception:
                 pass
             # fallback: try plain-text match
-            return _match_category(content, categories), content != ""
+            cat = _match_category(content, categories)
+            return ({"category": cat, "confidence": None} if cat else None), content != ""
         except Exception as e:
             if log_fn:
                 log_fn(f"İçerik türü tespit hatası: {e}", "warn")
             return None, False
 
     for attempt in range(2):
-        result, ok = _call(prompt)
-        if result:
+        detail, ok = _call(prompt)
+        if detail:
+            result = detail["category"]
             if log_fn:
-                log_fn(f"İçerik Türü Analizi: '{result}' olarak tespit edildi.", "ok")
-            return result
+                confidence = detail.get("confidence")
+                suffix = f" (güven %{confidence * 100:.0f})" if confidence is not None else ""
+                log_fn(f"İçerik Türü Analizi: '{result}' olarak tespit edildi{suffix}.", "ok")
+            return detail if return_details else result
         if not ok:
             break
         # Retry: remind model about format
@@ -3837,14 +4020,16 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             log_fn("İçerik türü eşleşmedi, yeniden deneniyor...", "warn")
         prompt = (
             "The previous response could not be matched to any category.\n"
-            f"Pick EXACTLY one from the list below. Return {{\"category\": \"...\"}}.\n"
+            "Pick EXACTLY one from the list below. Return "
+            "{\"category\": \"...\", \"confidence\": 0.0}.\n"
             f"{cat_list}\n\n"
             f"Subtitle Sample:\n{sample[:800]}..."
         )
 
     if log_fn:
         log_fn("İçerik türü otomatik tespit edilemedi — Otomatik kullanılacak", "warn")
-    return "Otomatik"
+    fallback = {"category": "Otomatik", "confidence": None}
+    return fallback if return_details else fallback["category"]
 
 
 def detect_source_language_with_ai(client, cues, model, log_fn=None,
@@ -5235,6 +5420,23 @@ def _load_last_run_record() -> dict | None:
         return None
 
 
+def _active_run_state_path() -> Path:
+    return state_path(__file__, "active_run.json")
+
+
+def _load_interrupted_run_record() -> dict | None:
+    try:
+        data = json.loads(_active_run_state_path().read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        pid = int(data.get("pid") or 0)
+        if pid and _pid_alive(pid):
+            return None
+        return data
+    except Exception:
+        return None
+
+
 def _run_summary_data(record: dict) -> dict:
     statuses = {"done": [], "error": [], "skip": [], "pending": []}
     for path, state in dict(record.get("files") or {}).items():
@@ -5934,6 +6136,8 @@ class App(ctk.CTk):
         self._removed_queue_files = set()
         self._content_type_preflight_done = False
         self._language_preflight_done = False
+        self._file_integrity_preflight_done = False
+        self._file_integrity_preflight_signature = None
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
         self._batch_lock     = threading.RLock()   # _active_batches eşzamanlı erişimi
         self._ckpt_lock      = threading.Lock()   # sync checkpoint dosyasına eşzamanlı yazım
@@ -5969,6 +6173,14 @@ class App(ctk.CTk):
         self._quality_issues = {}
         self._quality_issue_seq = 0
         self._auto_shutdown_scheduled_run_id = ""
+        self._shutdown_countdown_dialog = None
+        self._shutdown_countdown_after_id = None
+        self._sleep_prevention_active = False
+        self._auto_retry_attempts = {}
+        self._auto_retry_continuation = False
+        self._run_log_paths = []
+        self._crash_resume_dialog = None
+        self._crash_resume_after_id = None
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -6011,7 +6223,143 @@ class App(ctk.CTk):
             self._pending_batches_after_id = self.after(500, self._check_pending_batches)
         except Exception:
             self._pending_batches_after_id = None
+        try:
+            self.after(1800, self._check_interrupted_run)
+        except Exception:
+            pass
 
+
+    def _cancel_crash_resume(self, forget: bool = True):
+        after_id = self._crash_resume_after_id
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._crash_resume_after_id = None
+        dlg = self._crash_resume_dialog
+        self._crash_resume_dialog = None
+        try:
+            if dlg is not None and dlg.winfo_exists():
+                dlg.destroy()
+        except Exception:
+            pass
+        if forget:
+            try:
+                _active_run_state_path().unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._log("Çökme sonrası otomatik devam iptal edildi.", "warn")
+
+    def _restore_interrupted_run(self, record: dict):
+        self._cancel_crash_resume(forget=False)
+        settings = dict(record.get("settings") or {})
+        files = [
+            path for path, state in dict(record.get("files") or {}).items()
+            if (state or {}).get("status") not in {"done", "skip"}
+            and Path(path).is_file()
+        ]
+        if not files:
+            try:
+                _active_run_state_path().unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
+        self._selected_files = files
+        self._input_folder_explicitly_selected = False
+        self.input_var.set(str(settings.get("input_dir") or ""))
+        self.output_var.set(str(settings.get("output_dir") or ""))
+        self.mode_var.set("sync")
+        self.hybrid_var.set(bool(settings.get("hybrid_mode")))
+        self._toggle_hybrid()
+        for filepath, language in dict(
+                settings.get("file_source_languages") or {}).items():
+            if filepath in files:
+                self._file_language_vars[filepath] = ctk.StringVar(value=language)
+        for filepath, schema_name in dict(
+                settings.get("file_schema_names") or {}).items():
+            if filepath in files:
+                self._file_schema_vars[filepath] = ctk.StringVar(
+                    value=normalize_schema_name(schema_name))
+        self._refresh_selected_files_ui(
+            f"Çökme kurtarması: {len(files)} tamamlanmamış dosya sıraya alındı")
+        self._language_preflight_done = True
+        self._content_type_preflight_done = True
+        self._file_integrity_preflight_done = False
+        self._log(
+            f"Yarım kalan çalışma {record.get('run_id', '')} otomatik sürdürülüyor; "
+            "tamamlanan dosyalar atlandı.",
+            "warn",
+        )
+        self.after(100, self._start)
+
+    def _check_interrupted_run(self):
+        if self._is_running or not self.auto_resume_crash_var.get():
+            return
+        record = _load_interrupted_run_record()
+        if not record:
+            return
+        settings = dict(record.get("settings") or {})
+        if settings.get("mode") != "sync":
+            return
+        pending = [
+            path for path, state in dict(record.get("files") or {}).items()
+            if (state or {}).get("status") not in {"done", "skip"}
+            and Path(path).is_file()
+        ]
+        if not pending:
+            try:
+                _active_run_state_path().unlink(missing_ok=True)
+            except Exception:
+                pass
+            return
+        dlg = ctk.CTkToplevel(self)
+        self._crash_resume_dialog = dlg
+        dlg.title("Yarım Kalan Çalışma")
+        dlg.configure(fg_color=BG)
+        dlg.resizable(False, False)
+        label = ctk.CTkLabel(
+            dlg, text="", font=ctk.CTkFont("Segoe UI", 16, "bold"),
+            text_color=YELLOW)
+        label.pack(fill="x", padx=26, pady=(24, 10))
+        ctk.CTkLabel(
+            dlg,
+            text=f"{len(pending)} tamamlanmamış dosya bulundu.\n"
+                 "Tamamlanan dosyalar atlanacak.",
+            font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
+        ).pack(fill="x", padx=26, pady=(0, 16))
+        buttons = ctk.CTkFrame(dlg, fg_color="transparent")
+        buttons.pack(fill="x", padx=26, pady=(0, 24))
+        ctk.CTkButton(
+            buttons, text="Şimdi Devam Et", fg_color=GREEN,
+            hover_color=GREEN_HOVER,
+            command=lambda: self._restore_interrupted_run(record),
+        ).pack(side="left", expand=True, fill="x", padx=(0, 4))
+        ctk.CTkButton(
+            buttons, text="İptal Et", fg_color=CARD, hover_color=BORDER,
+            command=self._cancel_crash_resume,
+        ).pack(side="left", expand=True, fill="x", padx=(4, 0))
+        dlg.protocol("WM_DELETE_WINDOW", self._cancel_crash_resume)
+        dlg.geometry(centered_dialog_geometry(
+            self.winfo_rootx(), self.winfo_rooty(),
+            max(self.winfo_width(), 1), max(self.winfo_height(), 1),
+            480, 230,
+        ))
+        dlg.lift()
+        dlg.attributes("-topmost", True)
+
+        def _tick(remaining):
+            if self._crash_resume_dialog is not dlg:
+                return
+            label.configure(text=f"{remaining} saniye sonra otomatik devam edecek")
+            if remaining <= 0:
+                self._crash_resume_after_id = None
+                self._restore_interrupted_run(record)
+                return
+            self._crash_resume_after_id = self.after(
+                1000, _tick, remaining - 1)
+
+        _tick(10)
 
     def _check_pending_batches(self):
         """Program açılışında batch_id.txt varsa seçim penceresi gösterir."""
@@ -6350,6 +6698,9 @@ class App(ctk.CTk):
         self._finish_close()
 
     def _finish_close(self):
+        if getattr(self, "_sleep_prevention_active", False):
+            _set_windows_sleep_prevention(False)
+            self._sleep_prevention_active = False
         try:
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
@@ -7351,6 +7702,21 @@ class App(ctk.CTk):
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._pick_glossary).grid(row=0, column=1, padx=(6,0))
 
+        hf_lbl("Çalışma profili")
+        self.workflow_profile_var = ctk.StringVar(value="Özel")
+        ctk.CTkOptionMenu(
+            hfr,
+            variable=self.workflow_profile_var,
+            values=list(WORKFLOW_PROFILES) + ["Özel"],
+            command=self._apply_workflow_profile,
+            height=34,
+            fg_color=CARD,
+            button_color=BORDER,
+            button_hover_color=ACCENT,
+            dropdown_fg_color=CARD,
+            text_color=FG,
+        ).pack(fill="x", padx=4, pady=(0, 4))
+
         # ── Butonlar ──────────────────────────────────────────────────────────
         sep()
         # Başlat + Test yan yana
@@ -7402,6 +7768,45 @@ class App(ctk.CTk):
             shutdown_fr, text="⏻  Bitince bilgisayarı kapat",
             font=ctk.CTkFont("Segoe UI", 11),
             text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+
+        safety_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        safety_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 6)); r += 1
+        safety_fr.grid_columnconfigure(1, weight=1)
+        self.prevent_sleep_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            safety_fr, text="", variable=self.prevent_sleep_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            safety_fr, text="Çalışırken uyku modunu engelle",
+            font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+
+        retry_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        retry_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 6)); r += 1
+        retry_fr.grid_columnconfigure(1, weight=1)
+        self.auto_retry_files_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            retry_fr, text="", variable=self.auto_retry_files_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            retry_fr, text="Başarısız dosyaları otomatik yeniden dene",
+            font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+
+        resume_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        resume_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 6)); r += 1
+        resume_fr.grid_columnconfigure(1, weight=1)
+        self.auto_resume_crash_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            resume_fr, text="", variable=self.auto_resume_crash_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            resume_fr, text="Çökme sonrası otomatik devam",
+            font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
         self.resume_btn = ctk.CTkButton(
@@ -8173,6 +8578,15 @@ class App(ctk.CTk):
             "ext_project_path": self.ext_project_path_var.get().strip(),
             "notify_desktop": self.notify_var.get(),
             "shutdown_when_done": self.shutdown_when_done_var.get(),
+            "prevent_sleep": bool(getattr(self, "prevent_sleep_var", None)
+                                  and self.prevent_sleep_var.get()),
+            "auto_retry_files": bool(getattr(self, "auto_retry_files_var", None)
+                                     and self.auto_retry_files_var.get()),
+            "auto_resume_crash": bool(getattr(self, "auto_resume_crash_var", None)
+                                     and self.auto_resume_crash_var.get()),
+            "workflow_profile": (
+                self.workflow_profile_var.get()
+                if getattr(self, "workflow_profile_var", None) else "Özel"),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
             "critic": self.critic_var.get(),
             "polish": self.polish_var.get(),
@@ -8222,6 +8636,10 @@ class App(ctk.CTk):
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
             "shutdown_when_done_var": "shutdown_when_done",
+            "prevent_sleep_var": "prevent_sleep",
+            "auto_retry_files_var": "auto_retry_files",
+            "auto_resume_crash_var": "auto_resume_crash",
+            "workflow_profile_var": "workflow_profile",
             "critic_var": "critic", "polish_var": "polish",
             "native_var": "native", "qc_var": "qc",
             "condense_var": "condense", "backtrans_var": "backtrans",
@@ -8266,12 +8684,18 @@ class App(ctk.CTk):
             "linebreak", "ai_segment", "merge_cues", "chain_ctx",
             "precontext", "series_memory", "main_model_name",
             "main_api_base_url", "shutdown_when_done",
+            "prevent_sleep", "auto_retry_files", "auto_resume_crash",
+            "workflow_profile",
         )
         result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
         result["helper_models"] = dict(snapshot.get("helper_models") or {})
         result["helper_urls"] = dict(snapshot.get("helper_urls") or {})
         result["file_source_languages"] = dict(
             snapshot.get("file_source_languages") or {})
+        result["file_schema_names"] = {
+            path: str((schema or {}).get("name") or "Otomatik")
+            for path, schema in dict(snapshot.get("file_schemas") or {}).items()
+        }
         return json.loads(_sanitize_settings_backup_text(
             json.dumps(result, ensure_ascii=False, default=str)))
 
@@ -8284,6 +8708,12 @@ class App(ctk.CTk):
             / f"run_{run_id}.pid{os.getpid()}.log"
         )
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not getattr(self, "_auto_retry_continuation", False):
+            self._run_log_paths = []
+            self._auto_retry_attempts = {}
+        self._auto_retry_continuation = False
+        self._run_log_paths = list(getattr(self, "_run_log_paths", ()) or ())
+        self._run_log_paths.append(str(log_path))
         with self._log_lock:
             old_log = getattr(self, "_log_file", None)
             try:
@@ -8295,6 +8725,7 @@ class App(ctk.CTk):
             self._log_file = open(log_path, "w", encoding="utf-8")
         record = {
             "run_id": run_id,
+            "pid": os.getpid(),
             "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "ended_at": "",
             "status": "çalışıyor",
@@ -8317,6 +8748,10 @@ class App(ctk.CTk):
             self._active_run_record = record
             self._quality_issues = {}
             self._quality_issue_seq = 0
+        try:
+            atomic_write_json(_active_run_state_path(), record)
+        except Exception as exc:
+            self._log(f"Çökme kurtarma kaydı yazılamadı: {exc}", "warn")
         self._log(f"Çalıştırma kimliği: {run_id}", "info")
         return run_id
 
@@ -8332,6 +8767,10 @@ class App(ctk.CTk):
                 item["status"] = status
             elif status == "running" and item.get("status") == "pending":
                 item["status"] = "running"
+            try:
+                atomic_write_json(_active_run_state_path(), record)
+            except Exception:
+                pass
 
     def _record_log_metadata(self, msg: str, tag: str):
         with self._run_record_lock:
@@ -8371,6 +8810,10 @@ class App(ctk.CTk):
             for path, item in record["files"].items():
                 if Path(path).name in completed_names and item.get("status") != "error":
                     item["status"] = "done"
+            try:
+                atomic_write_json(_active_run_state_path(), record)
+            except Exception:
+                pass
 
     def _finalize_run_record(self):
         import datetime as _dt
@@ -8416,6 +8859,10 @@ class App(ctk.CTk):
         with self._run_record_lock:
             self._last_run_record = snapshot
             self._active_run_record = None
+        try:
+            _active_run_state_path().unlink(missing_ok=True)
+        except Exception:
+            pass
         return snapshot
 
     def _log(self, msg, tag="", issue_id=None):
@@ -8698,10 +9145,19 @@ class App(ctk.CTk):
             if log_file is None:
                 return ""
             log_file.flush()
-            path = getattr(log_file, "name", None)
-            if not isinstance(path, (str, os.PathLike)):
-                return ""
-            return Path(path).read_text(encoding="utf-8")
+            paths = list(getattr(self, "_run_log_paths", ()) or ())
+            current = getattr(log_file, "name", None)
+            if isinstance(current, (str, os.PathLike)):
+                paths.append(str(current))
+            chunks = []
+            for raw_path in dict.fromkeys(paths):
+                try:
+                    text = Path(raw_path).read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                if text:
+                    chunks.append(text.rstrip())
+            return "\n\n".join(chunks)
 
         try:
             if lock is not None:
@@ -8791,10 +9247,92 @@ class App(ctk.CTk):
                 "Windows kapanışı başlatıldı (30 saniye; iptal için: shutdown /a).",
                 "info",
             )
+            countdown = getattr(self, "_show_shutdown_countdown", None)
+            if callable(countdown):
+                countdown(30)
             return True
         except Exception as exc:
             self._log(f"Bilgisayar kapatma komutu başlatılamadı: {exc}", "err")
             return False
+
+    def _cancel_scheduled_shutdown(self):
+        try:
+            shutdown_exe = (
+                Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                / "System32" / "shutdown.exe"
+            )
+            subprocess.run(
+                [str(shutdown_exe), "/a"],
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._log("Windows kapanışı kullanıcı tarafından iptal edildi.", "warn")
+        finally:
+            after_id = self._shutdown_countdown_after_id
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
+            self._shutdown_countdown_after_id = None
+            dlg = self._shutdown_countdown_dialog
+            self._shutdown_countdown_dialog = None
+            try:
+                if dlg is not None and dlg.winfo_exists():
+                    dlg.destroy()
+            except Exception:
+                pass
+
+    def _show_shutdown_countdown(self, seconds: int = 30):
+        if getattr(self, "_is_shutting_down", False):
+            return
+        dlg = ctk.CTkToplevel(self)
+        self._shutdown_countdown_dialog = dlg
+        dlg.title("Bilgisayar Kapanacak")
+        dlg.configure(fg_color=BG)
+        dlg.resizable(False, False)
+        dlg.protocol("WM_DELETE_WINDOW", self._cancel_scheduled_shutdown)
+        label = ctk.CTkLabel(
+            dlg,
+            text="",
+            font=ctk.CTkFont("Segoe UI", 18, "bold"),
+            text_color=YELLOW,
+        )
+        label.pack(fill="x", padx=30, pady=(28, 16))
+        ctk.CTkLabel(
+            dlg,
+            text="Tam oturum logu Masaüstüne kaydedildi.",
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=FG2,
+        ).pack(fill="x", padx=30, pady=(0, 18))
+        ctk.CTkButton(
+            dlg,
+            text="Kapatmayı İptal Et",
+            height=40,
+            fg_color=RED,
+            hover_color=RED_HOVER,
+            command=self._cancel_scheduled_shutdown,
+        ).pack(fill="x", padx=30, pady=(0, 28))
+        dlg.transient(self)
+        dlg.geometry(centered_dialog_geometry(
+            self.winfo_rootx(), self.winfo_rooty(),
+            max(self.winfo_width(), 1), max(self.winfo_height(), 1),
+            460, 220,
+        ))
+        dlg.lift()
+        dlg.attributes("-topmost", True)
+
+        def _tick(remaining):
+            if self._shutdown_countdown_dialog is not dlg:
+                return
+            label.configure(text=f"{remaining} saniye sonra bilgisayar kapanacak")
+            if remaining <= 0:
+                self._shutdown_countdown_after_id = None
+                return
+            self._shutdown_countdown_after_id = self.after(
+                1000, _tick, remaining - 1)
+
+        _tick(max(0, int(seconds)))
 
     def _schedule_shutdown_after_success(self, record: dict | None):
         if not record or record.get("status") != "tamamlandı":
@@ -8823,6 +9361,43 @@ class App(ctk.CTk):
             return True
         except Exception as exc:
             self._log(f"Otomatik kapanış zamanlanamadı: {exc}", "err")
+            return False
+
+    def _schedule_failed_file_retry(self, record: dict | None) -> bool:
+        if not record or record.get("status") in {"tamamlandı", "durduruldu"}:
+            return False
+        snapshot = getattr(self, "_active_snapshot", {}) or {}
+        if not snapshot.get("auto_retry_files"):
+            return False
+        failed = []
+        for filepath, item in dict(record.get("files") or {}).items():
+            if item.get("status") in {"done", "skip"}:
+                continue
+            if not Path(filepath).is_file():
+                continue
+            attempt = int(self._auto_retry_attempts.get(filepath, 0))
+            if attempt < 2:
+                self._auto_retry_attempts[filepath] = attempt + 1
+                failed.append(filepath)
+        if not failed:
+            return False
+        self._selected_files = failed
+        self._input_folder_explicitly_selected = False
+        self._language_preflight_done = True
+        self._content_type_preflight_done = True
+        self._file_integrity_preflight_done = False
+        self._auto_retry_continuation = True
+        attempt_no = max(self._auto_retry_attempts[path] for path in failed)
+        self._log(
+            f"{len(failed)} başarısız/eksik dosya otomatik yeniden denenecek "
+            f"(deneme {attempt_no}/2).",
+            "warn",
+        )
+        try:
+            self.after(1500, self._start)
+            return True
+        except Exception as exc:
+            self._log(f"Otomatik dosya yeniden denemesi başlatılamadı: {exc}", "err")
             return False
 
     def _current_run_record_snapshot(self):
@@ -9061,14 +9636,26 @@ class App(ctk.CTk):
             self._active_snapshot = self._take_run_snapshot()
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
+            if (getattr(self, "_active_snapshot", {}) or {}).get("prevent_sleep"):
+                self._sleep_prevention_active = _set_windows_sleep_prevention(True)
+                if self._sleep_prevention_active:
+                    self._log("Çeviri boyunca Windows uyku modu engellendi.", "info")
         elif not running:
             finalizer = getattr(self, "_finalize_run_record", None)
             finalized_record = None
             if callable(finalizer):
                 finalized_record = finalizer()
+            retry_scheduler = getattr(self, "_schedule_failed_file_retry", None)
+            retry_scheduled = (
+                retry_scheduler(finalized_record)
+                if callable(retry_scheduler) else False
+            )
             scheduler = getattr(self, "_schedule_shutdown_after_success", None)
-            if callable(scheduler):
+            if not retry_scheduled and callable(scheduler):
                 scheduler(finalized_record)
+            if getattr(self, "_sleep_prevention_active", False):
+                _set_windows_sleep_prevention(False)
+                self._sleep_prevention_active = False
             self._run_state_initialized = False
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
@@ -9831,6 +10418,17 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _apply_workflow_profile(self, profile_name: str):
+        profile = WORKFLOW_PROFILES.get(profile_name)
+        if not profile:
+            return
+        for attr, value in profile.items():
+            var = getattr(self, attr, None)
+            if var is not None:
+                var.set(value)
+        self._toggle_hybrid()
+        self._log(f"Çalışma profili uygulandı: {profile_name}", "info")
+
     def _on_mode_change(self):
         if self.mode_var.get() == "sync" and not self.hybrid_var.get():
             self.hybrid_var.set(True)
@@ -10350,6 +10948,8 @@ class App(ctk.CTk):
         before = len(self._selected_files)
         self._content_type_preflight_done = False
         self._language_preflight_done = False
+        self._file_integrity_preflight_done = False
+        self._file_integrity_preflight_signature = None
         self._selected_files = self._dedupe_paths(
             list(self._selected_files) + valid)
         self._pm = None
@@ -10669,6 +11269,18 @@ class App(ctk.CTk):
             "merge_max_chars": self._merge_max_chars,
             "merge_max_gap_ms": self._merge_max_gap_ms,
             "notify": self.notify_var.get(),
+            "prevent_sleep": (
+                self.prevent_sleep_var.get()
+                if getattr(self, "prevent_sleep_var", None) else True),
+            "auto_retry_files": (
+                self.auto_retry_files_var.get()
+                if getattr(self, "auto_retry_files_var", None) else True),
+            "auto_resume_crash": (
+                self.auto_resume_crash_var.get()
+                if getattr(self, "auto_resume_crash_var", None) else True),
+            "workflow_profile": (
+                self.workflow_profile_var.get()
+                if getattr(self, "workflow_profile_var", None) else "Özel"),
             "api_url": _normalize_api_base_url(self.api_url_var.get()),
             "main_custom": self.main_custom_var.get(),
             "main_custom_model": self.main_custom_model_var.get(),
@@ -11077,6 +11689,14 @@ class App(ctk.CTk):
                 self.review_pass_var.set(bool(d["review_pass"]))
             if "notify" in d:
                 self.notify_var.set(d["notify"])
+            if "prevent_sleep" in d:
+                self.prevent_sleep_var.set(bool(d["prevent_sleep"]))
+            if "auto_retry_files" in d:
+                self.auto_retry_files_var.set(bool(d["auto_retry_files"]))
+            if "auto_resume_crash" in d:
+                self.auto_resume_crash_var.set(bool(d["auto_resume_crash"]))
+            if d.get("workflow_profile") in (*WORKFLOW_PROFILES.keys(), "Özel"):
+                self.workflow_profile_var.set(d["workflow_profile"])
             # Load advanced settings
             if isinstance(d.get("chunk_size"), int):
                 self._chunk_size = d["chunk_size"]
@@ -11597,6 +12217,8 @@ class App(ctk.CTk):
                 return
 
         srt_files = self._get_srt_files()
+        if srt_files and self._start_file_integrity_preflight(srt_files):
+            return
         if srt_files and _lang_iso639_1(self.tgt_var.get()) == "tr":
             import hybrid_translate as ht
             turkish_files = []
@@ -11633,6 +12255,7 @@ class App(ctk.CTk):
                 return
         self._language_preflight_done = False
         self._content_type_preflight_done = False
+        self._file_integrity_preflight_done = False
         self._active_snapshot = self._take_run_snapshot()
         begin_run = getattr(self, "_begin_run_record", None)
         if callable(begin_run):
@@ -14020,6 +14643,97 @@ class App(ctk.CTk):
         elif len(all_languages) > 1:
             self.src_var.set(AUTO_LANGUAGE)
 
+    def _file_preflight_signature(self, files: list):
+        items = []
+        for filepath in files:
+            try:
+                stat = Path(filepath).stat()
+                items.append((os.path.normcase(os.path.abspath(filepath)),
+                              stat.st_size, stat.st_mtime_ns))
+            except OSError:
+                items.append((os.path.normcase(os.path.abspath(filepath)), None, None))
+        return (
+            tuple(items),
+            (self.input_var.get() or "").strip(),
+            (self.output_var.get() or "").strip(),
+            bool(self.same_folder_var.get()),
+            tuple(self._selected_folder_roots or ()),
+            self.src_var.get(),
+        )
+
+    def _start_file_integrity_preflight(self, files: list) -> bool:
+        signature = self._file_preflight_signature(files)
+        if (self._file_integrity_preflight_done
+                and signature == self._file_integrity_preflight_signature):
+            return False
+        self._set_running(True)
+        self._set_phase("Dosya ön kontrolü", f"{len(files)} dosya denetleniyor")
+        self._set_status("Dosyalar çeviri öncesinde denetleniyor")
+        self._log(
+            f"{len(files)} dosya encoding, boş içerik, yinelenme ve hedef çakışması için denetleniyor...",
+            "info",
+        )
+
+        input_dir = (self.input_var.get() or "").strip()
+        output_dir = (self.output_var.get() or "").strip()
+        same_folder = bool(self.same_folder_var.get())
+        selected_roots = tuple(self._selected_folder_roots or ())
+        expected_source_language = self.src_var.get()
+
+        def _worker():
+            issues = scan_subtitle_preflight(
+                files, input_dir, output_dir,
+                same_folder=same_folder, selected_roots=selected_roots,
+                expected_source_language=expected_source_language)
+
+            def _finish():
+                if getattr(self, "_is_shutting_down", False):
+                    return
+                errors = [item for item in issues if item["severity"] == "error"]
+                warnings = [item for item in issues if item["severity"] == "warning"]
+                lines = [
+                    f"• {Path(item['path']).name}: {item['message']}"
+                    for item in issues
+                ]
+                if errors:
+                    self._log(
+                        f"Dosya ön kontrolü {len(errors)} engelleyici sorun buldu.",
+                        "err",
+                    )
+                    messagebox.showerror(
+                        "Dosya Ön Kontrolü",
+                        "Çeviri başlatılmadı:\n\n" + "\n".join(lines[:24]),
+                        parent=self,
+                    )
+                    self._file_integrity_preflight_done = False
+                    self._set_running(False)
+                    self._set_status("Dosya ön kontrolü sorunlarının düzeltilmesi gerekiyor.")
+                    return
+                if warnings:
+                    should_continue = messagebox.askyesno(
+                        "Dosya Ön Kontrolü",
+                        "\n".join(lines[:24]) + "\n\nYine de devam edilsin mi?",
+                        parent=self,
+                    )
+                    if not should_continue:
+                        self._file_integrity_preflight_done = False
+                        self._set_running(False)
+                        self._set_status("Dosya ön kontrolü kullanıcı tarafından durduruldu.")
+                        return
+                self._file_integrity_preflight_signature = signature
+                self._file_integrity_preflight_done = True
+                self._log(
+                    "Dosya ön kontrolü tamamlandı; kaynak dil kontrolüne geçiliyor.",
+                    "ok",
+                )
+                App._resume_after_preflight(
+                    self, "_file_integrity_preflight_done", "Dosya ön kontrolü")
+
+            _post_ui(self, _finish)
+
+        App._start_worker(self, _worker)
+        return True
+
     def _present_preflight_dialog(self, dlg, width: int, height: int):
         """Ön analiz dialogunu ana pencerenin üzerinde ve görünür konumda açar."""
         dlg.transient(self)
@@ -14302,10 +15016,10 @@ class App(ctk.CTk):
                 return fp, detect_content_type_with_ai(
                     client, cues, model, self._log,
                     token_callback=self._token_callback_for_model(model),
-                    filename=fp)
+                    filename=fp, return_details=True)
             except Exception as e:
                 self._log(f"[{Path(fp).name}] Tür tespiti hatası: {e}", "warn")
-                return fp, "Otomatik"
+                return fp, {"category": "Otomatik", "confidence": None}
         with ThreadPoolExecutor(max_workers=min(4, len(files))) as ex:
             for fp, sname in ex.map(_one, files):
                 results[fp] = sname
@@ -14322,7 +15036,7 @@ class App(ctk.CTk):
             return
         schema_names = [v["name"] for v in CONTENT_SCHEMAS.values()]
         for fp, raw_name in detected.items():
-            name = normalize_schema_name(raw_name)
+            name = _content_detection_detail(raw_name)["category"]
             if name not in schema_names:
                 name = "Otomatik"
             var = self._file_schema_vars.get(fp)
@@ -14331,7 +15045,7 @@ class App(ctk.CTk):
                 self._file_schema_vars[fp] = var
             else:
                 var.set(name)
-        resolved = {normalize_schema_name(v) for v in detected.values()}
+        resolved = {_content_detection_detail(v)["category"] for v in detected.values()}
         if len(resolved) == 1:
             only = next(iter(resolved))
             if only != "Otomatik":
@@ -14383,6 +15097,7 @@ class App(ctk.CTk):
             row = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=7)
             row.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
             row.grid_columnconfigure(0, weight=1)
+            detail = _content_detection_detail(detected.get(fp))
             name = Path(fp).name
             ctk.CTkLabel(
                 row,
@@ -14391,7 +15106,24 @@ class App(ctk.CTk):
                 text_color=FG,
                 anchor="w",
             ).grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=6)
-            value = normalize_schema_name(detected.get(fp, "Otomatik"))
+            confidence = detail.get("confidence")
+            confidence_text = (
+                f"Güven %{confidence * 100:.0f}"
+                if confidence is not None else "Güven belirtilmedi"
+            )
+            confidence_color = (
+                YELLOW if confidence is None or confidence < 0.70
+                else GREEN if confidence >= 0.85
+                else INFO_BLUE
+            )
+            ctk.CTkLabel(
+                row,
+                text=confidence_text,
+                font=ctk.CTkFont("Segoe UI", 10, "bold"),
+                text_color=confidence_color,
+                anchor="e",
+            ).grid(row=0, column=1, sticky="e", padx=(4, 8), pady=6)
+            value = detail["category"]
             if value not in schema_names:
                 value = "Otomatik"
             var = ctk.StringVar(value=value)
@@ -14408,7 +15140,7 @@ class App(ctk.CTk):
                 button_hover_color=ACCENT,
                 dropdown_fg_color=CARD,
                 text_color=FG,
-            ).grid(row=0, column=1, sticky="e", padx=(4, 10), pady=5)
+            ).grid(row=0, column=2, sticky="e", padx=(4, 10), pady=5)
 
         btn_fr = ctk.CTkFrame(dlg, fg_color="transparent")
         btn_fr.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 12))
@@ -14491,7 +15223,10 @@ class App(ctk.CTk):
                 )
             except Exception as e:
                 self._log(f"İçerik türü ön analizi başarısız: {e}", "warn")
-                detected = {fp: "Otomatik" for fp in auto_files}
+                detected = {
+                    fp: {"category": "Otomatik", "confidence": None}
+                    for fp in auto_files
+                }
 
             def _finish():
                 if getattr(self, "_is_shutting_down", False):
