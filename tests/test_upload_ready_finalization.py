@@ -67,6 +67,29 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("Film ve Video", "\n".join(text for _i, _ts, text in result))
         self.assertIn("Gerçek diyalog.", "\n".join(text for _i, _ts, text in result))
 
+    def test_html_wrapped_resync_credit_is_removed(self):
+        blocks = [
+            (
+                "12",
+                "00:00:02,000 --> 00:00:04,000",
+                '<font color="#ff65b4"><i>Yeniden eşitleyen: M_I_S\n'
+                "www.opensubtitles.org</i></font>",
+            ),
+            (
+                "13",
+                "00:00:04,100 --> 00:00:04,900",
+                '<font color="#ff65b4"><i>Senkron: M_I_S\n'
+                "www.opensubtitles.org</i></font>",
+            ),
+            ("14", "00:00:05,000 --> 00:00:06,000", "Gerçek diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        joined = "\n".join(text for _idx, _ts, text in result)
+        self.assertNotIn("M_I_S", joined)
+        self.assertNotIn("opensubtitles.org", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
     def test_production_credit_and_dialogue_url_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Müzik:"),

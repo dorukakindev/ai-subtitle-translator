@@ -2330,7 +2330,9 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
-    r"\bçevir(?:i|en)\s*:\s*\S|film\s+ve\s+video\s+altyazılama|"
+    r"\bçevir(?:i|en)\s*:\s*\S|"
+    r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
+    r"film\s+ve\s+video\s+altyazılama|"
     r"gerhard\s+lehmann\s+ag)",
     re.IGNORECASE | re.DOTALL,
 )
@@ -2355,7 +2357,7 @@ def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
 
 
 def _is_delivery_credit(text: str) -> bool:
-    value = str(text or "").strip()
+    value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
     if not value:
         return False
     if _DELIVERY_CREDIT_STRONG_RE.search(value):
