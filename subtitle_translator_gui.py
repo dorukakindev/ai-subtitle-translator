@@ -8800,15 +8800,34 @@ class App(ctk.CTk):
         fixes = sum(
             int(row.get(key, 0) or 0)
             for row in (rows or []) for key in fix_keys)
-        completed_names = {str(row.get("name", "")) for row in (rows or [])}
+        rows_by_name = {
+            str(row.get("name", "")): row
+            for row in (rows or []) if row.get("name")
+        }
+        rows_by_source = {
+            os.path.normcase(os.path.abspath(str(row["source_path"]))): row
+            for row in (rows or []) if row.get("source_path")
+        }
         with self._run_record_lock:
             record = self._active_run_record
             if not record:
                 return
             record["fixes_applied"] = max(record["fixes_applied"], fixes)
             record["reports"].extend(str(path) for path in report_paths if path)
+            name_counts = {}
+            for path in record["files"]:
+                name = Path(path).name
+                name_counts[name] = name_counts.get(name, 0) + 1
             for path, item in record["files"].items():
-                if Path(path).name in completed_names and item.get("status") != "error":
+                source_key = os.path.normcase(os.path.abspath(str(path)))
+                row = rows_by_source.get(source_key)
+                if row is None and name_counts.get(Path(path).name) == 1:
+                    row = rows_by_name.get(Path(path).name)
+                if not row:
+                    continue
+                if row.get("run_status") == "error":
+                    item["status"] = "error"
+                elif item.get("status") != "error":
                     item["status"] = "done"
             try:
                 atomic_write_json(_active_run_state_path(), record)
@@ -9247,13 +9266,20 @@ class App(ctk.CTk):
                 "Windows kapanışı başlatıldı (30 saniye; iptal için: shutdown /a).",
                 "info",
             )
-            countdown = getattr(self, "_show_shutdown_countdown", None)
-            if callable(countdown):
-                countdown(30)
-            return True
         except Exception as exc:
             self._log(f"Bilgisayar kapatma komutu başlatılamadı: {exc}", "err")
             return False
+        countdown = getattr(self, "_show_shutdown_countdown", None)
+        if callable(countdown):
+            try:
+                countdown(30)
+            except Exception as exc:
+                self._log(
+                    "Windows kapanışı başlatıldı fakat geri sayım penceresi "
+                    f"açılamadı: {exc}. İptal için: shutdown /a",
+                    "err",
+                )
+        return True
 
     def _cancel_scheduled_shutdown(self):
         try:
@@ -9261,27 +9287,37 @@ class App(ctk.CTk):
                 Path(os.environ.get("SystemRoot", r"C:\Windows"))
                 / "System32" / "shutdown.exe"
             )
-            subprocess.run(
+            completed = subprocess.run(
                 [str(shutdown_exe), "/a"],
                 check=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            self._log("Windows kapanışı kullanıcı tarafından iptal edildi.", "warn")
-        finally:
-            after_id = self._shutdown_countdown_after_id
-            if after_id is not None:
-                try:
-                    self.after_cancel(after_id)
-                except Exception:
-                    pass
-            self._shutdown_countdown_after_id = None
-            dlg = self._shutdown_countdown_dialog
-            self._shutdown_countdown_dialog = None
+        except Exception as exc:
+            self._log(f"Windows kapanışı iptal edilemedi: {exc}", "err")
+            return False
+        if completed.returncode != 0:
+            self._log(
+                f"Windows kapanışı iptal edilemedi (kod {completed.returncode}). "
+                "Komut satırında shutdown /a deneyin.",
+                "err",
+            )
+            return False
+        self._log("Windows kapanışı kullanıcı tarafından iptal edildi.", "warn")
+        after_id = self._shutdown_countdown_after_id
+        if after_id is not None:
             try:
-                if dlg is not None and dlg.winfo_exists():
-                    dlg.destroy()
+                self.after_cancel(after_id)
             except Exception:
                 pass
+        self._shutdown_countdown_after_id = None
+        dlg = self._shutdown_countdown_dialog
+        self._shutdown_countdown_dialog = None
+        try:
+            if dlg is not None and dlg.winfo_exists():
+                dlg.destroy()
+        except Exception:
+            pass
+        return True
 
     def _show_shutdown_countdown(self, seconds: int = 30):
         if getattr(self, "_is_shutting_down", False):
@@ -16423,7 +16459,8 @@ class App(ctk.CTk):
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
-                "name": fname, "total": len(sorted_blocks),
+                "name": fname, "source_path": filepath,
+                "total": len(sorted_blocks),
                 "hata": _hata_n + _n_filled, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "pass_fix": _pass_fix,
@@ -17238,6 +17275,7 @@ class App(ctk.CTk):
                                     and _clean_src(_pre_pass[str(b[0])]) != _clean_src(b[2]))
                                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                                 report_rows.append({"name": Path(output_path).name,
+                                                    "source_path": str(_src_path),
                                                     "total": len(pp), "hata": _hn, "cps": _cn,
                                                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                                                     "cons": _cons_fixes,
@@ -17651,7 +17689,8 @@ class App(ctk.CTk):
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
-                "name": Path(fp).name, "total": len(sorted_blocks),
+                "name": Path(fp).name, "source_path": fp,
+                "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "rev": _rev_fixes, "warn": w,
@@ -18324,13 +18363,15 @@ class App(ctk.CTk):
                     _hata_n, _cps_n = _count_hata_cps(_final_blocks)
                     _cps_avg, _cps_max = _cps_stats(_final_blocks)
                     report_rows.append({
-                        "name": fname, "total": len(_final_blocks),
+                        "name": fname, "source_path": filepath,
+                        "total": len(_final_blocks),
                         "hata": max(_hata_n, _unresolved_missing), "cps": _cps_n,
                         "cps_avg": _cps_avg, "cps_max": _cps_max,
                         "cons": 0, "pass_fix": 0,
                         "qc_auto": 0, "qc": 0, "warn": _unresolved_missing,
                         "pass_trace": {}, "pass_history": {},
                         "pass_coverage": "skipped_missing",
+                        "run_status": "error",
                         "tm_hits": self._tm.hit_count_session(),
                     })
                     ht.update_batch_session(session, filepath, "failed")
@@ -18581,7 +18622,8 @@ class App(ctk.CTk):
                 _cps_avg, _cps_max = _cps_stats(_final_blocks)
                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
-                    "name": fname, "total": len(_final_blocks),
+                    "name": fname, "source_path": filepath,
+                    "total": len(_final_blocks),
                     "hata": _hata_n + _n_filled, "cps": _cps_n,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                     "cons": _cons_fixes, "pass_fix": _pass_fix,

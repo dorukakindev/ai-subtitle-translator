@@ -73,6 +73,43 @@ class ShutdownWhenDoneTest(unittest.TestCase):
         self.assertFalse(result)
         popen.assert_not_called()
 
+    def test_countdown_dialog_failure_does_not_misreport_shutdown_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            stub = SimpleNamespace(
+                _complete_session_log_text=lambda: "FULL SESSION LOG\n",
+                _log=MagicMock(),
+                clipboard_clear=MagicMock(),
+                clipboard_append=MagicMock(),
+                update_idletasks=MagicMock(),
+                _show_shutdown_countdown=MagicMock(
+                    side_effect=RuntimeError("Tk unavailable")),
+            )
+            with patch.object(gui, "_desktop_directory", return_value=Path(td)), \
+                    patch.object(gui.subprocess, "Popen") as popen:
+                result = gui.App._export_log_and_shutdown(
+                    stub, {"run_id": "20260730-test"})
+        self.assertTrue(result)
+        popen.assert_called_once()
+        self.assertTrue(any(
+            "geri sayım penceresi" in str(call.args[0])
+            for call in stub._log.call_args_list
+        ))
+
+    def test_failed_shutdown_abort_keeps_countdown_open(self):
+        dialog = MagicMock()
+        stub = SimpleNamespace(
+            _shutdown_countdown_after_id="after-1",
+            _shutdown_countdown_dialog=dialog,
+            after_cancel=MagicMock(),
+            _log=MagicMock(),
+        )
+        completed = SimpleNamespace(returncode=1)
+        with patch.object(gui.subprocess, "run", return_value=completed):
+            result = gui.App._cancel_scheduled_shutdown(stub)
+        self.assertFalse(result)
+        stub.after_cancel.assert_not_called()
+        dialog.destroy.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

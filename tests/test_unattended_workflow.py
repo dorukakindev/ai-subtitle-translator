@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -134,6 +135,47 @@ class AutomaticRetryTest(unittest.TestCase):
             self.assertEqual(stub._selected_files, [str(failed)])
             self.assertEqual(stub._auto_retry_attempts[str(failed)], 1)
             self.assertEqual(len(scheduled), 1)
+
+    def test_failed_quality_row_cannot_be_promoted_to_done(self):
+        source = str(Path("movie.srt"))
+        record = {
+            "files": {source: {"status": "pending", "phase": "Bekliyor"}},
+            "fixes_applied": 0,
+            "reports": [],
+        }
+        stub = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record,
+        )
+        rows = [{
+            "name": "movie.srt",
+            "run_status": "error",
+            "pass_coverage": "skipped_missing",
+        }]
+        with patch.object(gui, "atomic_write_json"):
+            gui.App._record_quality_report(stub, rows, [])
+        self.assertEqual(record["files"][source]["status"], "error")
+
+    def test_duplicate_basenames_are_not_cross_marked_by_report_name(self):
+        first = str(Path("folder-a") / "movie.srt")
+        second = str(Path("folder-b") / "movie.srt")
+        record = {
+            "files": {
+                first: {"status": "pending", "phase": "Bekliyor"},
+                second: {"status": "pending", "phase": "Bekliyor"},
+            },
+            "fixes_applied": 0,
+            "reports": [],
+        }
+        stub = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record,
+        )
+        with patch.object(gui, "atomic_write_json"):
+            gui.App._record_quality_report(
+                stub, [{"name": "movie.srt"}], [])
+        self.assertEqual(record["files"][first]["status"], "pending")
+        self.assertEqual(record["files"][second]["status"], "pending")
 
 
 if __name__ == "__main__":
