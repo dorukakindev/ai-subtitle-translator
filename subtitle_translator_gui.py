@@ -3436,6 +3436,8 @@ def _fill_hata_with_source(blocks: list, raw_src_map: dict, log_fn=None):
         if str(text).startswith("[HATA"):
             src = raw_src_map.get(str(idx))
             if src:
+                if _src_is_sdh_only(src):
+                    continue
                 out.append((idx, ts, "[ÇEVİRİ EKSİK]"))
                 marked += 1
                 continue
@@ -3505,6 +3507,7 @@ def _src_is_sdh_only(src_text: str) -> bool:
     (gerçek diyalog kelimesi yok). _is_untranslated'daki iki ayrı kontrolde
     (boş çeviri + source==target) aynı mantık kullanılıyor, tek yerden."""
     src_text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
+    src_text = re.sub(r'(?m)^\s*[-–—]\s*(?=[(\[])', '', src_text)
     no_sdh = re.sub(r'\([^)]*\)|\[[^\]]*\]|[♪_]+', '', src_text).strip()
     if re.search(r'\([^)]*\)|\[[^\]]*\]', src_text):
         no_sdh = re.sub(
@@ -3709,6 +3712,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         sys_prompt = _build_sync_system_prompt(src_lang, tgt_lang, schema, profanity)
 
         # Küçük gruplar halinde çevir
+        permanent_failure = False
         for batch_start in range(0, len(hata_indices), max_per_call):
             batch = hata_indices[batch_start:batch_start + max_per_call]
             tr_items = [{"i": idx, "t": _clean_src(src)} for (_, idx, _, src) in batch]
@@ -3763,10 +3767,21 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 except Exception as e:
                     if log_fn:
                         log_fn(f"  ?? Onarim batch basarisiz: {e}", "warn")
+                    if _is_permanent_provider_error(e):
+                        permanent_failure = True
+                        if log_fn:
+                            log_fn(
+                                "  ↪ Kalıcı API/bakiye hatası; kalan onarım "
+                                "istekleri gönderilmeyecek",
+                                "warn",
+                            )
+                        break
                     if attempt == 0:
                         time.sleep(2)
                         continue
                     break
+            if permanent_failure:
+                break
 
         if log_fn:
             if repaired:
@@ -4500,6 +4515,20 @@ def _is_transient_retry_error(exc) -> bool:
         or "connection" in lowered
         or "server error" in lowered
         or "internal error" in lowered
+    )
+
+
+def _is_permanent_provider_error(exc) -> bool:
+    text = str(exc or "").lower()
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    return (
+        status in {401, 403}
+        or "token quota is not enough" in text
+        or "pre_consume_token_quota_failed" in text
+        or "insufficient_quota" in text
+        or "invalid_api_key" in text
     )
 
 
@@ -7902,11 +7931,12 @@ class App(ctk.CTk):
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
             command=self._start)
         self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0,4))
-        ctk.CTkButton(
+        self.test_btn = ctk.CTkButton(
             btn_row, text="🧪", height=44, width=44,
             font=ctk.CTkFont("Segoe UI", 16),
             fg_color=CARD, hover_color=BORDER,
-            command=self._test_translate).grid(row=0, column=1, padx=(0,4), sticky="ew")
+            command=self._test_translate)
+        self.test_btn.grid(row=0, column=1, padx=(0,4), sticky="ew")
 
         ctk.CTkButton(
             btn_row, text="💲 Maliyet", height=44, width=60,
@@ -9167,6 +9197,9 @@ class App(ctk.CTk):
 
     def _test_translate(self):
         """İlk dosyanın ilk 3 chunk'ını sync çevirip önizleme dialog'u açar."""
+        if getattr(self, "_is_running", False) or getattr(self, "_folder_scan_busy", False):
+            self._log("Test çevirisi çalışan çeviri sırasında başlatılamaz.", "warn")
+            return
         api_key = self._main_api_key()
         if not api_key:
             messagebox.showerror("API Key", "OpenAI API key girilmemiş!")
@@ -9829,6 +9862,9 @@ class App(ctk.CTk):
             return
         s = "disabled" if (running or getattr(self, "_folder_scan_busy", False)) else "normal"
         self.start_btn.configure(state=s)
+        test_btn = getattr(self, "test_btn", None)
+        if test_btn is not None:
+            test_btn.configure(state=s)
         self.resume_btn.configure(state=s)
         self.jsonl_btn.configure(state=s)
         self.postprocess_btn.configure(state=s)
