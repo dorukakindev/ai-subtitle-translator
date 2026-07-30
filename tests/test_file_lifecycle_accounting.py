@@ -157,7 +157,11 @@ class FileLifecycleAccountingTest(unittest.TestCase):
     def test_write_results_uses_its_captured_target_language(self):
         src = inspect.getsource(gui.App._write_results)
         self.assertIn(
-            "write_srt(_write_path, self._maybe_merge_cues(sorted_blocks), _tgt_lang)",
+            "self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log",
+            src,
+        )
+        self.assertIn(
+            "write_srt(_write_path, _delivery_blocks, _tgt_lang)",
             src,
         )
         self.assertIn(

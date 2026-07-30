@@ -2307,6 +2307,171 @@ def write_srt(filepath, blocks, target_language="Turkish"):
         raise
 
 
+_DELIVERY_SIGNATURE = "discord: ceviri2"
+_DELIVERY_SIGNATURE_RE = re.compile(
+    r"^\s*(?:discord\s*:\s*)?ceviri2\s*$", re.IGNORECASE)
+_DELIVERY_HAT_MAP = str.maketrans({
+    "â": "a", "î": "i", "û": "u",
+    "Â": "A", "Î": "I", "Û": "U",
+})
+_DELIVERY_ASS_BLOCK_RE = re.compile(r"\{([^{}]*)\}")
+_DELIVERY_ASS_POSITION_RE = re.compile(
+    r"\\(?:pos|move|org|clip|iclip)\([^)]*\)"
+    r"|\\fr[xyz]?-?\d+(?:\.\d+)?"
+    r"|\\an\d+|\\a\d+",
+    re.IGNORECASE,
+)
+_DELIVERY_CREDIT_ROLE_RE = re.compile(
+    r"(?:^|,)\s*(?:translator|translation|timing|typesetter|quality check|"
+    r"editor|çeviri|çevirmen|zamanlama|dizgi|kalite kontrol|editör)\s*$",
+    re.IGNORECASE,
+)
+_DELIVERY_CREDIT_STRONG_RE = re.compile(
+    r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
+    r"#[\w-]*fansubs?\b|\bfansubs?\b|"
+    r"\bsubtitles?\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
+    r"\bçevir(?:i|en)\s*:\s*\S|film\s+ve\s+video\s+altyazılama|"
+    r"gerhard\s+lehmann\s+ag)",
+    re.IGNORECASE | re.DOTALL,
+)
+_DELIVERY_CREDIT_COMPANION_RE = re.compile(
+    r"^\s*(?:or|veya|ya da)\s+(?:our\s+)?(?:web\s*site|website|internet\s+sitemiz)"
+    r"\s*:?\s*$|^\s*(?:visit\s+us|bizi\s+ziyaret\s+edin)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
+    removed = 0
+
+    def _clean(match):
+        nonlocal removed
+        body = match.group(1)
+        cleaned, count = _DELIVERY_ASS_POSITION_RE.subn("", body)
+        removed += count
+        return "{" + cleaned + "}" if cleaned else ""
+
+    return _DELIVERY_ASS_BLOCK_RE.sub(_clean, str(text or "")), removed
+
+
+def _is_delivery_credit(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if _DELIVERY_CREDIT_STRONG_RE.search(value):
+        return True
+    role_lines = sum(
+        1 for line in value.splitlines()
+        if _DELIVERY_CREDIT_ROLE_RE.search(line.strip()))
+    return role_lines >= 2
+
+
+def _srt_timestamp_ms(value: str) -> int:
+    match = re.fullmatch(
+        r"\s*(\d+):(\d{2}):(\d{2})[,.](\d{3})\s*", str(value or ""))
+    if not match:
+        raise ValueError(f"Geçersiz SRT zamanı: {value!r}")
+    hour, minute, second, millis = map(int, match.groups())
+    return (((hour * 60) + minute) * 60 + second) * 1000 + millis
+
+
+def _srt_ms_timestamp(value: int) -> str:
+    value = max(0, int(value))
+    millis = value % 1000
+    seconds_total = value // 1000
+    second = seconds_total % 60
+    minutes_total = seconds_total // 60
+    minute = minutes_total % 60
+    hour = minutes_total // 60
+    return f"{hour:02d}:{minute:02d}:{second:02d},{millis:03d}"
+
+
+def _srt_timestamp_bounds(ts: str) -> tuple[int, int]:
+    parts = re.split(r"\s*-->\s*", str(ts or ""), maxsplit=1)
+    if len(parts) != 2:
+        raise ValueError(f"Geçersiz SRT zaman aralığı: {ts!r}")
+    return _srt_timestamp_ms(parts[0]), _srt_timestamp_ms(parts[1].split()[0])
+
+
+def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
+                                 log_fn=None) -> list:
+    if normalize_language_name(target_language, allow_auto=False) != "Turkish":
+        return list(blocks or [])
+
+    work = []
+    hats_removed = 0
+    position_tags_removed = 0
+    for idx, ts, text in blocks or []:
+        value = str(text or "")
+        if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
+            continue
+        value, removed = _strip_delivery_position_tags(value)
+        position_tags_removed += removed
+        hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
+        value = value.translate(_DELIVERY_HAT_MAP).strip()
+        work.append((idx, ts, value))
+
+    strong_timestamps = {
+        str(ts) for _idx, ts, text in work if _is_delivery_credit(text)}
+    cleaned = []
+    credits_removed = 0
+    for idx, ts, text in work:
+        if (_is_delivery_credit(text)
+                or (str(ts) in strong_timestamps
+                    and _DELIVERY_CREDIT_COMPANION_RE.fullmatch(text.strip()))):
+            credits_removed += 1
+            continue
+        cleaned.append((idx, ts, text))
+
+    unresolved = any(
+        str(text or "").startswith("[HATA")
+        or "[ÇEVİRİ EKSİK]" in str(text or "")
+        for _idx, _ts, text in cleaned)
+    if cleaned and not unresolved:
+        first_start, _ = _srt_timestamp_bounds(cleaned[0][1])
+        _, last_end = _srt_timestamp_bounds(cleaned[-1][1])
+        if first_start > 0:
+            head_end = first_start - 1
+            head_start = max(0, head_end - 2000)
+        else:
+            head_start, head_end = 0, 1
+        numeric_ids = [
+            int(str(idx)) for idx, _ts, _text in cleaned
+            if str(idx).isdigit()]
+        tail_id = max(numeric_ids, default=len(cleaned)) + 1
+        cleaned = [
+            (
+                "0",
+                f"{_srt_ms_timestamp(head_start)} --> {_srt_ms_timestamp(head_end)}",
+                _DELIVERY_SIGNATURE,
+            ),
+            *cleaned,
+            (
+                str(tail_id),
+                f"{_srt_ms_timestamp(last_end + 1)} --> "
+                f"{_srt_ms_timestamp(last_end + 2001)}",
+                _DELIVERY_SIGNATURE,
+            ),
+        ]
+
+    if log_fn:
+        if unresolved:
+            log_fn(
+                "Nihai teslim koruması: eksik çeviri işareti kaldığı için "
+                "baş/son imza eklenmedi",
+                "warn",
+            )
+        elif cleaned:
+            log_fn(
+                "Nihai teslim koruması: baş/son discord imzası yenilendi; "
+                f"{credits_removed} eski kredi cue'su, "
+                f"{hats_removed} şapkalı harf, "
+                f"{position_tags_removed} konum/döndürme kodu temizlendi",
+                "ok",
+            )
+    return cleaned
+
+
 def _create_postprocess_backup(filepath) -> Path:
     src = Path(filepath)
     candidate = src.with_name(f"{src.stem}.postprocess.bak{src.suffix}")
@@ -12527,7 +12692,9 @@ class App(ctk.CTk):
                     except Exception:
                         pass
 
-                write_srt(out_path, self._maybe_merge_cues(blocks), tgt)
+                _delivery_blocks = _prepare_upload_ready_blocks(
+                    self._maybe_merge_cues(blocks), tgt, self._log)
+                write_srt(out_path, _delivery_blocks, tgt)
                 self._log(f"Kaydedildi: {out_path}  ({len(blocks)} satır, {missing} eksik)", "ok")
                 _post_ui(self, messagebox.showinfo, "Tamamlandı",
                               f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
@@ -14062,7 +14229,9 @@ class App(ctk.CTk):
                     blocks, _ = _fill_hata_with_source(blocks, _raw_map, log_fn=self._log)
                     blocks = _restore_tags_blocks(blocks, _raw_map)
 
-                write_srt(fp, blocks, tgt)
+                _delivery_blocks = _prepare_upload_ready_blocks(
+                    blocks, tgt, self._log)
+                write_srt(fp, _delivery_blocks, tgt)
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
                 self._update_file_progress(fp,
                     f"Tamamlandı  {len(blocks)} satır", 100, "done")
@@ -16441,7 +16610,9 @@ class App(ctk.CTk):
                 sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
             except Exception:
                 pass
-            write_srt(out_path, self._maybe_merge_cues(sorted_blocks), tgt)
+            _delivery_blocks = _prepare_upload_ready_blocks(
+                self._maybe_merge_cues(sorted_blocks), tgt, self._log)
+            write_srt(out_path, _delivery_blocks, tgt)
             completed_files.append(filepath)
             self._log(f"Kaydedildi: {out_path}", "ok")
             self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
@@ -17250,7 +17421,9 @@ class App(ctk.CTk):
                                 pp = _restore_tags_blocks(pp, _raw_map)
                             except Exception:
                                 pass
-                            write_srt(output_path, self._maybe_merge_cues(pp), tgt)
+                            _delivery_blocks = _prepare_upload_ready_blocks(
+                                self._maybe_merge_cues(pp), tgt, self._log)
+                            write_srt(output_path, _delivery_blocks, tgt)
                             self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map, tgt)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
                             if _orig_cues:
@@ -17669,7 +17842,9 @@ class App(ctk.CTk):
             _write_path = out_path
             if _has_missing:
                 _write_path = out_path.with_name(f"{out_path.stem}.partial.srt")
-            write_srt(_write_path, self._maybe_merge_cues(sorted_blocks), _tgt_lang)
+            _delivery_blocks = _prepare_upload_ready_blocks(
+                self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log)
+            write_srt(_write_path, _delivery_blocks, _tgt_lang)
             if _has_missing:
                 self._log(
                     f"{Path(fp).name}: {_hata_n} eksik çeviri kaldı; "
@@ -18593,7 +18768,9 @@ class App(ctk.CTk):
                     _final_blocks = _restore_tags_blocks(_final_blocks, _raw_map)
                 except Exception:
                     pass
-                write_srt(out_path, self._maybe_merge_cues(_final_blocks), tgt)
+                _delivery_blocks = _prepare_upload_ready_blocks(
+                    self._maybe_merge_cues(_final_blocks), tgt, self._log)
+                write_srt(out_path, _delivery_blocks, tgt)
                 self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede

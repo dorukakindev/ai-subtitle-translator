@@ -37,7 +37,7 @@ class PostProcessBackupTest(unittest.TestCase):
         source = inspect.getsource(gui.App._run_post_process)
         self.assertLess(
             source.index("_create_postprocess_backup(fp)"),
-            source.index("write_srt(fp, blocks, tgt)"),
+            source.index("write_srt(fp, _delivery_blocks, tgt)"),
         )
         self.assertIn("orijinal dosyaya dokunulmadı", source)
 
