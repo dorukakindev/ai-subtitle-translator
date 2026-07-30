@@ -3581,6 +3581,12 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
     if any(match.group(0).lower() in tr_text.lower()
            for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text)):
         return True
+    try:
+        import hybrid_translate as ht
+        if ht.has_source_english_overlap(src_text, tr_text):
+            return True
+    except Exception:
+        pass
     _src_all_caps = _src_text_is_all_caps(src_text)
     # Gerçek olay (Louis Theroux Behind Bars, 2026-07-20): kaynak parantezsiz
     # BÜYÜK HARF bir SDH açıklaması ("BANGING AND LAUGHTER"), çeviri bunu doğru
@@ -13185,6 +13191,12 @@ class App(ctk.CTk):
                 sid: {"MIXED_TERM_INCONSISTENCY"}
                 for sid in _mixed_term_suspect_ids(blocks, src_clean_map)
             }
+            for finding in detect_alignment_issues(blocks, src_clean_map):
+                finding_ids = finding.get("ids") or [finding.get("idx")]
+                reason = f"ALIGNMENT_{str(finding.get('type', 'issue')).upper()}"
+                for sid in finding_ids:
+                    if sid is not None:
+                        extra_suspect_reasons.setdefault(str(sid), set()).add(reason)
             cancel_context = self.__dict__.get("_helper_request_canceller")
             cancel_kwargs = (
                 {"cancel_context": cancel_context}
