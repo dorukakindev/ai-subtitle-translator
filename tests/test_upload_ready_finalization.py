@@ -106,6 +106,48 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertIn("Kenji Kawai", joined)
         self.assertIn("https://example.com", joined)
 
+    def test_residual_sdh_and_music_only_cues_are_removed(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "[HEPSİ AYNI ANDA KONUŞUR]"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "[LAUGHTER]"),
+            ("3", "00:00:04,000 --> 00:00:05,000", "*"),
+            ("4", "00:00:05,000 --> 00:00:06,000", "[KAMERA DEKLANŞÖR SESİ]"),
+            ("5", "00:00:06,000 --> 00:00:07,000", "[Fransızca konuşan erkekler]"),
+            ("6", "00:00:07,000 --> 00:00:08,000", "[SEYİRCİ NEFESİ KESİLİR]"),
+            ("7", "00:00:08,000 --> 00:00:09,000", "[SİS DÜDÜĞÜ ÇALAR]"),
+            ("8", "00:00:09,000 --> 00:00:10,000", "[Penguen cıvıltıları]"),
+            ("9", "00:00:10,000 --> 00:00:11,000", "[ERKEKLERİN BAĞRIŞMALARI]"),
+            ("10", "00:00:11,000 --> 00:00:12,000", "Gerçek diyalog."),
+        ]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        by_id = {str(idx): text for idx, _ts, text in result}
+        self.assertNotIn("1", by_id)
+        self.assertNotIn("2", by_id)
+        self.assertNotIn("3", by_id)
+        self.assertNotIn("4", by_id)
+        self.assertNotIn("5", by_id)
+        self.assertNotIn("6", by_id)
+        self.assertNotIn("7", by_id)
+        self.assertNotIn("8", by_id)
+        self.assertNotIn("9", by_id)
+        self.assertEqual(by_id["10"], "Gerçek diyalog.")
+
+    def test_parenthetical_dialogue_and_bracketed_ui_text_are_preserved(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "(No.)"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "[OK]"),
+            ("3", "00:00:04,000 --> 00:00:05,000", "(f(x))"),
+            ("4", "00:00:05,000 --> 00:00:06,000", "[404 ERROR]"),
+            ("5", "00:00:06,000 --> 00:00:07,000", "[Sesame Street]"),
+        ]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        texts = {str(idx): text for idx, _ts, text in result}
+        self.assertEqual(texts["1"], "(No.)")
+        self.assertEqual(texts["2"], "[OK]")
+        self.assertEqual(texts["3"], "(f(x))")
+        self.assertEqual(texts["4"], "[404 ERROR]")
+        self.assertEqual(texts["5"], "[Sesame Street]")
+
     def test_unresolved_translation_is_not_signed_as_complete(self):
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", "[ÇEVİRİ EKSİK]"),

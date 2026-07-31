@@ -2341,6 +2341,19 @@ _DELIVERY_CREDIT_COMPANION_RE = re.compile(
     r"\s*:?\s*$|^\s*(?:visit\s+us|bizi\s+ziyaret\s+edin)\s*:?\s*$",
     re.IGNORECASE,
 )
+_DELIVERY_SDH_TOKEN_RE = re.compile(
+    r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
+_DELIVERY_TURKISH_SDH_RE = re.compile(
+    r"\b(?:müzik\w*|şarkı\w*|kahkaha\w*|gülüş\w*|alkış\w*|"
+    r"ses(?:i|ler(?:i)?|siz(?:lik)?)?|gürültü\w*|konuşur\w*|"
+    r"konuşuyor\w*|bağırır\w*|bağırıyor\w*|fısıldar\w*|"
+    r"fısıldıyor\w*|konuşan\w*|konuşma\w*|iç çeker\w*|"
+    r"nefes\w*|ağlar\w*|ağlıyor\w*|telefon çalar\w*|tüfek\w*|"
+    r"silah\w*|parazit\w*|düdü(?:k|ğ)\w*|cıvıltı\w*|ıslık\w*|"
+    r"bağrış\w*|deklanşör\w*|kamera\w*|patlama\w*|çarpma\w*|"
+    r"alarm\w*|motor\w*|rüzgar\w*)\b",
+    re.IGNORECASE,
+)
 
 
 def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
@@ -2366,6 +2379,22 @@ def _is_delivery_credit(text: str) -> bool:
         1 for line in value.splitlines()
         if _DELIVERY_CREDIT_ROLE_RE.search(line.strip()))
     return role_lines >= 2
+
+
+def _is_delivery_sdh_only(text: str) -> bool:
+    value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
+    if not value:
+        return False
+    if re.fullmatch(r"[\s*♪♫_]+", value) and re.search(r"[*♪♫_]", value):
+        return True
+    tokens = list(_DELIVERY_SDH_TOKEN_RE.finditer(value))
+    if not tokens or "".join(match.group(0) for match in tokens).strip() != value:
+        return False
+    return all(
+        sdh_cleaner.is_sdh_descriptor(match.group(2), bare_text=False)
+        or bool(_DELIVERY_TURKISH_SDH_RE.search(match.group(2)))
+        for match in tokens
+    )
 
 
 def _srt_timestamp_ms(value: str) -> int:
@@ -2403,6 +2432,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     work = []
     hats_removed = 0
     position_tags_removed = 0
+    sdh_removed = 0
     for idx, ts, text in blocks or []:
         value = str(text or "")
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
@@ -2411,6 +2441,9 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         position_tags_removed += removed
         hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
         value = value.translate(_DELIVERY_HAT_MAP).strip()
+        if _is_delivery_sdh_only(value):
+            sdh_removed += 1
+            continue
         work.append((idx, ts, value))
 
     strong_timestamps = {
@@ -2468,7 +2501,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 "Nihai teslim koruması: baş/son discord imzası yenilendi; "
                 f"{credits_removed} eski kredi cue'su, "
                 f"{hats_removed} şapkalı harf, "
-                f"{position_tags_removed} konum/döndürme kodu temizlendi",
+                f"{position_tags_removed} konum/döndürme kodu, "
+                f"{sdh_removed} SDH/müzik cue'su temizlendi",
                 "ok",
             )
     return cleaned
