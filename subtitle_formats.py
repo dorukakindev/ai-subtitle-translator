@@ -541,6 +541,7 @@ def parse_any(filepath: str) -> list:
 def get_subtitle_files(directory: str, recursive: bool = True,
                         exclude_dir_names=("ÇIKTI",),
                         exclude_suffixes=(".ham.srt",),
+                        exclude_paths=(),
                         cancel_check=None) -> list:
     """Bir klasördeki tüm altyazı dosyalarını listeler (.srt, .vtt, .ass, .ssa).
     Sıra deterministik (set() kullanılmaz): aynı giriş klasörü için aynı sıra garantili.
@@ -561,6 +562,10 @@ def get_subtitle_files(directory: str, recursive: bool = True,
 
     excl_dirs = {_path_key(d) for d in (exclude_dir_names or ())}
     excl_sfx = tuple(s.lower() for s in (exclude_suffixes or ()))
+    excl_paths = {
+        os.path.normcase(os.path.abspath(str(path)))
+        for path in (exclude_paths or ()) if str(path or "").strip()
+    }
     allowed_exts = {".srt", ".vtt", ".ass", ".ssa"}
     result = []
 
@@ -586,6 +591,8 @@ def get_subtitle_files(directory: str, recursive: bool = True,
                 dirnames[:] = [
                     name for name in dirnames
                     if _path_key(name) not in excl_dirs
+                    and os.path.normcase(os.path.abspath(
+                        str(Path(root) / name))) not in excl_paths
                 ]
             for pos, name in enumerate(filenames):
                 if pos % 64 == 0 and _cancelled():

@@ -342,7 +342,7 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(stats["details"][-1]["reason"], "locked_term_violation")
 
-    def test_linebreak_only_rejection_is_reflowed_and_revalidated(self):
+    def test_reflow_does_not_bypass_semantic_rewrite_guard(self):
         blocks = [(
             "1", "00:00:01 --> 00:00:02",
             "Eski birinci satır.\nEski ikinci satır.",
@@ -364,9 +364,10 @@ class SemanticReconciliationPassTest(unittest.TestCase):
                 src_map, blocks, api_key="k", model="m", changed_ids={"1"}
             )
 
-        self.assertEqual(result[0][2].count("\n"), 1)
-        self.assertEqual(stats["fixed"], 1)
-        self.assertEqual(stats["reflow_recovered"], 1)
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["reflow_recovered"], 0)
+        self.assertEqual(stats["details"][-1]["reason"], "semantic_rewrite_unverified")
 
     def test_unresolved_triggering_issue_rejects_cluster(self):
         blocks = [

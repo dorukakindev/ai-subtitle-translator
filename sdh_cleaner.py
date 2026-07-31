@@ -529,7 +529,6 @@ def normalize_turkish_artifacts(text: str) -> str:
         (r"\benjamlary\b", "cihazlar"),
         (r"\bmortuary\s+school['’]a\b", "cenaze hizmetleri okuluna"),
         (r"\bmortuary\s+school\b", "cenaze hizmetleri okulu"),
-        (r"\bmortuary\b", "cenaze hazırlığı"),
         (r"\bwound-filler['’]ı\b", "yara dolgusunu"),
         (r"\bwound-filler\b", "yara dolgusu"),
         (r"\bwound\s+filler\b", "yara dolgusu"),
@@ -563,8 +562,6 @@ def normalize_turkish_artifacts(text: str) -> str:
         (r"\bcoroner['’]s\s+gurney\b", "adli tabip sedyesi"),
         (r"\bHUNTER\s+VE\s+SEÇEREK\b", "ARAŞTIRIP SEÇEREK"),
         (r"\bhunter\s+ve\s+seçerek\b", "araştırıp seçerek"),
-        (r"\bgerçek\s+boy\s+ölüm\s+maskesi\b", "yaşam maskesi"),
-        (r"\byada\b", "ya da"),
         (r"\btuaf\b", "tuhaf"),
         (r"\byasıyoruz\b", "yaşıyoruz"),
         (r"\bclockwork\s+oreriler\b", "saat mekanizmalı gök modelleri"),
@@ -584,7 +581,6 @@ def normalize_turkish_artifacts(text: str) -> str:
         (r"\bmummy'nin\b", "mumyanın"),
         (r"\bmummy'den\b", "mumyadan"),
         (r"\bmummy'ler\b", "mumyalar"),
-        (r"\bmummy\b", "mumya"),
         (r"\bphallus'un\b", "fallusun"),
         (r"\bphallus'u\b", "fallusu"),
         (r"\bphallus\b", "fallus"),
@@ -626,6 +622,7 @@ def normalize_turkish_artifacts(text: str) -> str:
     )
     for pattern, replacement in replacements:
         out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+    out = re.sub(r"\byada\b", "ya da", out)
     return out
 
 

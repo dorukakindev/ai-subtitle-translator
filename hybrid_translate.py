@@ -10217,10 +10217,18 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
             payload["prev_scene"] = prev_scene_ctx
         # Lookahead: first N lines of next chunk
         if ci + 1 < len(chunks):
-            next_items = [{"i": c.index, "t": _clean_source_text(c.text)}
-                          for c in chunks[ci + 1][:lookahead_lines]]
-            if next_items:
-                payload["next_ctx"] = next_items
+            include_lookahead = True
+            try:
+                next_start_sec = _ts_to_sec(chunks[ci + 1][0].start)
+                current_end_sec = _ts_to_sec(chunk[-1].end)
+                include_lookahead = (next_start_sec - current_end_sec) < scene_gap_sec
+            except Exception:
+                pass
+            if include_lookahead:
+                next_items = [{"i": c.index, "t": _clean_source_text(c.text)}
+                              for c in chunks[ci + 1][:lookahead_lines]]
+                if next_items:
+                    payload["next_ctx"] = next_items
         # Lowercased chunk text — bu chunk için bir kez hesapla (glossary + idiom eşleşmesi paylaşır)
         chunk_text_lower = None
         if glossary or idiom_map:
@@ -10546,12 +10554,16 @@ def submit_and_wait(
 
 # ── Sonuçları kaydet ──────────────────────────────────────────────────────────
 
-def _normalize_output_text(text: str) -> str:
+def _normalize_output_text(text: str, target_language: str = "Turkish") -> str:
     """Final SRT write-time cleanup shared by hybrid/batch output paths."""
-    text = normalize_latin_homoglyphs(str(text))
+    is_turkish = str(target_language or "").strip().lower() in (
+        _GLOSSARY_GUARD_TURKISH_TARGETS)
+    text = normalize_latin_homoglyphs(str(text)) if is_turkish else str(text)
     text = unicodedata.normalize("NFC", text.strip()).replace("\t", " ")
-    text, _ = _apply_local_fixes(text, allow_context_sensitive=False)
     text = re.sub(r"\n{2,}", "\n", text)
+    if not is_turkish:
+        return text
+    text, _ = _apply_local_fixes(text, allow_context_sensitive=False)
     try:
         import sdh_cleaner
     except Exception:
@@ -10571,6 +10583,7 @@ def save_results(
     token_callback=None,
     src_cues: list = None,
     base_url: str = "",
+    target_language: str = "Turkish",
 ) -> tuple:
     """Returns (yazılan_satır_sayısı, eksik-çeviri işaretleme_sayısı).
 
@@ -10702,7 +10715,10 @@ def save_results(
     # Batch API output cannot be retried inline; never write non-Turkish target leaks silently.
     leak_marked = 0
     for key, (idx, ts, text) in list(srt_blocks.items()):
-        if text and not str(text).startswith("[HATA") and has_non_turkish_target_leak(text):
+        if (str(target_language or "").strip().lower()
+                in _GLOSSARY_GUARD_TURKISH_TARGETS
+                and text and not str(text).startswith("[HATA")
+                and has_non_turkish_target_leak(text)):
             srt_blocks[key] = (idx, ts, "[HATA_NON_TURKISH_TARGET]")
             leak_marked += 1
 
@@ -10739,7 +10755,8 @@ def save_results(
     rows = []
     for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
         idx, ts, text = srt_blocks[key]
-        rows.append(f"{idx}\n{ts}\n{_normalize_output_text(text)}\n\n")
+        rows.append(
+            f"{idx}\n{ts}\n{_normalize_output_text(text, target_language)}\n\n")
     atomic_write_text(_out, "".join(rows))
 
     count = len(srt_blocks)

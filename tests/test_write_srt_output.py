@@ -199,7 +199,7 @@ class WriteSrtOutputTest(unittest.TestCase):
             "tıbbi şeyler, temelde kanatır.\n"
             "adli tabip ofisini için adli tabip sedyesi, masa istiyor.\n"
             "ARAŞTIRIP SEÇEREK...\n"
-            "bir yaşam maskesi yapmak için.\n"
+            "bir gerçek boy ölüm maskesi yapmak için.\n"
             "onu\n"
             "Israel",
         )

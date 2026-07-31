@@ -215,6 +215,7 @@ class MemoryIsolationTest(unittest.TestCase):
             "A source line.", threshold=0.95, tgt_lang="tr",
             model="model-a", profanity="Sert", schema_name="Anime",
             source_language="Spanish",
+            allow_contextless_final=False,
         )
 
     def test_both_hybrid_flows_forward_tm_dimensions(self):

@@ -212,7 +212,7 @@ class ValidatePolishNewGuardsTest(unittest.TestCase):
             "ama 19. yüzyılda"
         )
         self.assertFalse(ok)
-        self.assertEqual(reason, "content_word_loss")
+        self.assertEqual(reason, "numbers")
 
     def test_existing_guard_sadece_still_rejected(self):
         ok, reason = _VALIDATE("Sadece", "Sadece, yalnizca bir tane var ve o da burada")

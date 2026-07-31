@@ -25,8 +25,11 @@ class TranslationMemoryContextSafetyTest(unittest.TestCase):
         self.tm.store("Come in.", "İçeri gel.", **self.settings)
 
         self.assertEqual(self.tm.lookup("Come in.", **self.settings), "İçeri gel.")
-        self.assertEqual(self.tm.lookup_batch(["Come in."], **self.settings), {})
-        self.assertIsNone(self.tm.fuzzy_lookup("Come in!", threshold=0.95, **self.settings))
+        self.assertEqual(self.tm.lookup_batch(
+            ["Come in."], allow_contextless_final=False, **self.settings), {})
+        self.assertIsNone(self.tm.fuzzy_lookup(
+            "Come in!", threshold=0.95,
+            allow_contextless_final=False, **self.settings))
 
     def test_final_substitution_requires_matching_context_fingerprint(self):
         context = "register=siz|glossary=doctor-doktor|series=show-s01e02"

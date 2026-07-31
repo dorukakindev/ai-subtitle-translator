@@ -3238,8 +3238,18 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
             if scene_broke and prev_scene_ctx:
                 payload["prev_scene"] = prev_scene_ctx
             if ci + 1 < len(chunks):
-                nxt = [{"i": idx, "t": _clean_src(text)}
-                       for (idx, ts, text) in chunks[ci + 1][:lookahead_lines]]
+                next_chunk = chunks[ci + 1]
+                crosses_scene = False
+                try:
+                    crosses_scene = (
+                        _ts_to_sec_gui(next_chunk[0][1])
+                        - _ts_end_sec_gui(chunk[-1][1])
+                    ) >= scene_gap_sec
+                except Exception:
+                    pass
+                nxt = ([] if crosses_scene else
+                       [{"i": idx, "t": _clean_src(text)}
+                        for (idx, ts, text) in next_chunk[:lookahead_lines]])
                 if nxt:
                     payload["next_ctx"] = nxt
             # Active glossary: only terms that appear in this chunk
@@ -5704,6 +5714,40 @@ def _active_run_state_path() -> Path:
     return state_path(__file__, "active_run.json")
 
 
+def _file_content_sha256(path) -> str:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _file_state_signature(path) -> dict:
+    value = Path(path)
+    try:
+        stat = value.stat()
+        return {
+            "exists": True,
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "sha256": _file_content_sha256(value),
+        }
+    except FileNotFoundError:
+        return {"exists": False}
+    except Exception:
+        return {"exists": value.exists()}
+
+
+def _batch_write_guard_reason(source_path, output_path, expected_source_hash="",
+                              output_baseline=None) -> str:
+    if (expected_source_hash
+            and _file_content_sha256(source_path) != expected_source_hash):
+        return "source_changed"
+    if (isinstance(output_baseline, dict)
+            and _file_state_signature(output_path) != output_baseline):
+        return "output_changed"
+    return ""
+
+
 def _load_interrupted_run_record() -> dict | None:
     try:
         data = json.loads(_active_run_state_path().read_text(encoding="utf-8"))
@@ -6602,6 +6646,42 @@ class App(ctk.CTk):
         self.output_var.set(str(settings.get("output_dir") or ""))
         self.mode_var.set("sync")
         self.hybrid_var.set(bool(settings.get("hybrid_mode")))
+        restore_vars = {
+            "src_lang": "src_var",
+            "tgt_lang": "tgt_var",
+            "profanity": "profanity_var",
+            "same_folder": "same_folder_var",
+            "auto_glossary": "auto_glossary_var",
+            "analysis_depth": "analysis_depth_var",
+            "style": "style_var",
+            "content_type": "content_type_var",
+            "global_glossary_path": "glossary_var",
+            "term_normalize": "term_normalize_var",
+            "critic": "critic_var",
+            "polish": "polish_var",
+            "native": "native_var",
+            "qc": "qc_var",
+            "condense": "condense_var",
+            "backtrans": "backtrans_var",
+            "semantic_reconcile": "semantic_reconcile_var",
+            "review": "review_pass_var",
+            "twowave": "twowave_var",
+            "clean_sdh": "clean_sdh_var",
+            "linebreak": "linebreak_var",
+            "ai_segment": "ai_segment_var",
+            "merge_cues": "merge_cues_var",
+            "chain_ctx": "chain_ctx_var",
+            "precontext": "precontext_var",
+            "series_memory": "series_memory_var",
+            "backup_raw": "backup_raw_var",
+        }
+        for key, attr in restore_vars.items():
+            if key not in settings:
+                continue
+            var = getattr(self, attr, None)
+            if var is not None:
+                var.set(settings[key])
+        self._resume_snapshot_override = settings
         self._toggle_hybrid()
         for filepath, language in dict(
                 settings.get("file_source_languages") or {}).items():
@@ -9021,7 +9101,8 @@ class App(ctk.CTk):
             "precontext", "series_memory", "main_model_name",
             "main_api_base_url", "shutdown_when_done",
             "prevent_sleep", "auto_retry_files", "auto_resume_crash",
-            "workflow_profile",
+            "workflow_profile", "backup_raw", "ext_project_path",
+            "notify_desktop", "global_glossary_path",
         )
         result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
         result["helper_models"] = dict(snapshot.get("helper_models") or {})
@@ -9032,6 +9113,7 @@ class App(ctk.CTk):
             path: str((schema or {}).get("name") or "Otomatik")
             for path, schema in dict(snapshot.get("file_schemas") or {}).items()
         }
+        result["file_glossaries"] = dict(snapshot.get("file_glossaries") or {})
         return json.loads(_sanitize_settings_backup_text(
             json.dumps(result, ensure_ascii=False, default=str)))
 
@@ -10065,6 +10147,36 @@ class App(ctk.CTk):
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
+            resume_settings = getattr(self, "_resume_snapshot_override", None)
+            if isinstance(resume_settings, dict):
+                scalar_keys = (
+                    "input_dir", "output_dir", "src_lang", "tgt_lang", "mode",
+                    "hybrid_mode", "analysis_depth", "style", "content_type",
+                    "profanity", "same_folder", "auto_glossary", "term_normalize",
+                    "critic", "polish", "native", "qc", "condense", "backtrans",
+                    "semantic_reconcile", "review", "twowave", "clean_sdh",
+                    "linebreak", "ai_segment", "merge_cues", "chain_ctx",
+                    "precontext", "series_memory", "main_model_name",
+                    "main_api_base_url", "backup_raw", "ext_project_path",
+                    "notify_desktop",
+                )
+                for key in scalar_keys:
+                    if key in resume_settings:
+                        self._active_snapshot[key] = resume_settings[key]
+                for key in ("helper_models", "helper_urls", "file_source_languages",
+                            "file_glossaries"):
+                    if key in resume_settings:
+                        self._active_snapshot[key] = dict(resume_settings.get(key) or {})
+                if "global_glossary_path" in resume_settings:
+                    self._active_snapshot["global_glossary_path"] = str(
+                        resume_settings.get("global_glossary_path") or "")
+                saved_schemas = dict(resume_settings.get("file_schema_names") or {})
+                if saved_schemas:
+                    self._active_snapshot["file_schemas"] = {
+                        path: self._schema_by_name(name)
+                        for path, name in saved_schemas.items()
+                    }
+                self._resume_snapshot_override = None
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
             if (getattr(self, "_active_snapshot", {}) or {}).get("prevent_sleep"):
@@ -11083,10 +11195,21 @@ class App(ctk.CTk):
     def _queue_input_folder_scan(self, path: str):
         target_key = _lang_iso639_1(self.tgt_var.get())
         source_key = _lang_iso639_1(self.src_var.get())
+        output_path = (self.output_var.get() or "").strip()
+        excluded_outputs = []
+        if output_path and not self.same_folder_var.get():
+            try:
+                input_abs = os.path.normcase(os.path.abspath(path))
+                output_abs = os.path.normcase(os.path.abspath(output_path))
+                if os.path.commonpath([input_abs, output_abs]) == input_abs:
+                    excluded_outputs.append(output_abs)
+            except Exception:
+                pass
 
         def _work(cancel_check):
             files = get_subtitle_files(
-                path, recursive=True, cancel_check=cancel_check)
+                path, recursive=True, exclude_paths=excluded_outputs,
+                cancel_check=cancel_check)
             if cancel_check():
                 return None
             try:
@@ -13102,7 +13225,18 @@ class App(ctk.CTk):
                     == os.path.normcase(os.path.abspath(root))):
                 files = list(getattr(self, "_file_list_files", ()) or ())
             else:
-                files = get_subtitle_files(root, recursive=True)
+                excluded_outputs = []
+                output_path = (self.output_var.get() or "").strip()
+                if output_path and not self.same_folder_var.get():
+                    try:
+                        root_abs = os.path.normcase(os.path.abspath(root))
+                        output_abs = os.path.normcase(os.path.abspath(output_path))
+                        if os.path.commonpath([root_abs, output_abs]) == root_abs:
+                            excluded_outputs.append(output_abs)
+                    except Exception:
+                        pass
+                files = get_subtitle_files(
+                    root, recursive=True, exclude_paths=excluded_outputs)
         else:
             files = []
         dedupe = getattr(self, "_dedupe_paths", None)
@@ -15920,9 +16054,9 @@ class App(ctk.CTk):
         önceki çeviri değişirse eski checkpoint yeniden kullanılmaz.
         """
         try:
-            pl = json.loads(req["body"]["messages"][1]["content"])
+            messages = req["body"]["messages"]
             payload = json.dumps(
-                pl, ensure_ascii=False, sort_keys=True,
+                messages, ensure_ascii=False, sort_keys=True,
                 separators=(",", ":"), default=str,
             )
             scoped_fp = fingerprint
@@ -16113,7 +16247,8 @@ class App(ctk.CTk):
                 _group_cache = self._tm.lookup_batch(
                     _group_srcs, tgt_lang=tgt, model=self._main_model_name(),
                     profanity=self.profanity_var.get(), schema_name=sname,
-                    source_language=group_src)
+                    source_language=group_src,
+                    allow_contextless_final=False)
                 for src_t, tgt_t in _group_cache.items():
                     _tm_cache[(src_t, sname, group_src)] = tgt_t
 
@@ -16135,7 +16270,8 @@ class App(ctk.CTk):
                             model=self._main_model_name(),
                             profanity=self.profanity_var.get(),
                             schema_name=sch_name,
-                            source_language=source_language)
+                            source_language=source_language,
+                            allow_contextless_final=False)
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
                         return None  # eksik eşleşme -> API'ye gönder
@@ -16920,6 +17056,7 @@ class App(ctk.CTk):
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
                 "tm_hits": self._tm.hit_count_session(),
+                "run_status": "error" if _has_missing else "done",
             })
             if _has_missing:
                 failed_files.append(filepath)
@@ -17079,6 +17216,10 @@ class App(ctk.CTk):
                 selected_roots=self._output_selection_roots()))
             for fp in valid_files
         }
+        source_hashes = {fp: _file_content_sha256(fp) for fp in valid_files}
+        output_baselines = {
+            fp: _file_state_signature(output_paths[fp]) for fp in valid_files
+        }
         batch_ids = []
         batch_runs = []
         for ci, chunk in enumerate(chunks):
@@ -17119,6 +17260,8 @@ class App(ctk.CTk):
                     "output_paths": output_paths,
                     "source_languages": _source_languages,
                     "schema_names": _effective_schema_names,
+                    "source_hashes": source_hashes,
+                    "output_baselines": output_baselines,
                     "requests": chunk,
                     "fmap": {cid: [list(x) for x in info] for cid, info in slice_fmap.items()},
                 }
@@ -17208,7 +17351,9 @@ class App(ctk.CTk):
                     accumulated_raw_map, file_map, output_dir,
                     openai_key=api_key, src=src, output_paths=output_paths,
                     source_languages=_source_languages,
-                    schema_names=_effective_schema_names)
+                    schema_names=_effective_schema_names,
+                    source_hashes=source_hashes,
+                    output_baselines=output_baselines)
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -17230,6 +17375,8 @@ class App(ctk.CTk):
         accumulated_output_paths = {}
         accumulated_source_languages = {}
         accumulated_schema_names = {}
+        accumulated_source_hashes = {}
+        accumulated_output_baselines = {}
         regular_groups = {}
         regular_recovery_safe = True
         last_output_dir = output_dir
@@ -17307,6 +17454,8 @@ class App(ctk.CTk):
                         accumulated_output_paths.update(fmap_data.get("output_paths") or {})
                         accumulated_source_languages.update(fmap_data.get("source_languages") or {})
                         accumulated_schema_names.update(fmap_data.get("schema_names") or {})
+                        accumulated_source_hashes.update(fmap_data.get("source_hashes") or {})
+                        accumulated_output_baselines.update(fmap_data.get("output_baselines") or {})
                         run_id = str(fmap_data.get("run_id") or bid)
                         part_index = int(fmap_data.get("part_index", 0))
                         part_count = max(1, int(fmap_data.get("part_count", 1)))
@@ -17347,7 +17496,9 @@ class App(ctk.CTk):
                     openai_key=api_key, src=src,
                     output_paths=accumulated_output_paths,
                     source_languages=accumulated_source_languages,
-                    schema_names=accumulated_schema_names)
+                    schema_names=accumulated_schema_names,
+                    source_hashes=accumulated_source_hashes,
+                    output_baselines=accumulated_output_baselines)
         elif not self._stop_flag and (accumulated_raw_map or regular_groups):
             self._log("Regular batch parçalarının tümü hazır değil; eksik final yazılmadı.", "warn")
         # Hybrid resume yolunda işlenen dosyalar için kalite raporu yaz
@@ -17405,7 +17556,8 @@ class App(ctk.CTk):
                             ht.save_results(openai_key, b.output_file_id, file_map,
                                             str(_stage_path), self._log,
                                             token_callback=self._update_batch_tokens,
-                                            base_url=str(getattr(client, "base_url", "")))
+                                            base_url=str(getattr(client, "base_url", "")),
+                                            target_language=target_language)
                             _saved_ok = True
                         except Exception as e:
                             self._log(f"Sonuçlar kaydedilemedi: {e}", "err")
@@ -17899,7 +18051,8 @@ class App(ctk.CTk):
         return raw_map
 
     def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,
-                       output_paths=None, source_languages=None, schema_names=None):
+                       output_paths=None, source_languages=None, schema_names=None,
+                       source_hashes=None, output_baselines=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
@@ -17920,6 +18073,26 @@ class App(ctk.CTk):
                         _resolve_output_path(input_dir, output_dir, fp,
                                              same_folder=self.same_folder_var.get(),
                                              selected_roots=self._output_selection_roots()))
+            expected_source_hash = (source_hashes or {}).get(fp) or (
+                source_hashes or {}).get(str(fp))
+            baseline = (output_baselines or {}).get(fp) or (
+                output_baselines or {}).get(str(fp))
+            guard_reason = _batch_write_guard_reason(
+                fp, out_path, expected_source_hash, baseline)
+            if guard_reason == "source_changed":
+                self._log(
+                    f"{Path(fp).name}: kaynak dosya batch gönderiminden sonra değişti; "
+                    "eski sonuç yazılmadı.", "err")
+                self._record_file_status(fp, "Kaynak değişti", "error")
+                _failed_files.append(fp)
+                continue
+            if guard_reason == "output_changed":
+                self._log(
+                    f"{Path(fp).name}: hedef dosya batch gönderiminden sonra değişti; "
+                    "daha yeni çıktı korunarak eski sonuç yazılmadı.", "err")
+                self._record_file_status(fp, "Hedef değişti", "error")
+                _failed_files.append(fp)
+                continue
             sorted_blocks = [blocks_dict[k] for k in sorted(blocks_dict, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k)))]
             _raw_backup_blocks = list(sorted_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
             _cons_fixes, _rev_fixes = 0, 0
@@ -18192,6 +18365,7 @@ class App(ctk.CTk):
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
                 "tm_hits": self._tm.hit_count_session(),
+                "run_status": "error" if _has_missing else "done",
             })
             if _has_missing:
                 _failed_files.append(fp)
@@ -18386,7 +18560,7 @@ class App(ctk.CTk):
                 return None
             ht.save_results(openai_key, oid, fmap, combined_stage, self._log,
                             token_callback=self._update_batch_tokens, src_cues=None,
-                            base_url=b_url)
+                            base_url=b_url, target_language=target_language)
             return combined_stage, [bid]
 
         cids_a = {r.get("custom_id") for r in wave_a}
@@ -18420,7 +18594,7 @@ class App(ctk.CTk):
         # ── Birleşik yazım + recovery temizliği ───────────────────────────────
         ht.save_results(openai_key, [oid_a, oid_b], {**fmap_a, **fmap_b}, combined_stage,
                         self._log, token_callback=self._update_batch_tokens, src_cues=None,
-                        base_url=b_url)
+                        base_url=b_url, target_language=target_language)
         return combined_stage, [bid_a, bid_b]
 
     # ── Hybrid mod (Batch + gpt-5.4-mini analiz) ──────────────────────────────
@@ -18449,6 +18623,7 @@ class App(ctk.CTk):
         self._set_stat(self.stat_files_var, str(n_files))
 
         # ── Batch session: resume tracking ────────────────────────────────────
+        _snapshot = getattr(self, "_active_snapshot", None) or {}
         session_fp = ht.batch_session_fingerprint(input_dir, output_dir, srt_files, {
             "target": tgt,
             "source_languages": source_languages,
@@ -18460,6 +18635,19 @@ class App(ctk.CTk):
             "chunk_size": self._chunk_size,
             "context_lines": self._context_lines,
             "lookahead_lines": self._lookahead_lines,
+            "analysis_depth": _snapshot.get("analysis_depth") or "Standart",
+            "helper_models": _snapshot.get("helper_models") or {},
+            "helper_urls": _snapshot.get("helper_urls") or {},
+            "file_schemas": _snapshot.get("file_schemas") or {},
+            "file_glossaries": _snapshot.get("file_glossaries") or {},
+            "quality_passes": {
+                key: _snapshot.get(key)
+                for key in (
+                    "critic", "polish", "native", "qc", "condense",
+                    "backtrans", "semantic_reconcile", "review", "twowave",
+                    "clean_sdh", "linebreak", "term_normalize",
+                )
+            },
         })
         session = ht.create_batch_session(
             input_dir, output_dir, srt_files, fingerprint=session_fp)
@@ -18492,7 +18680,7 @@ class App(ctk.CTk):
             file_status = session["files"].get(str(filepath), {}).get("status", "pending")
 
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
-            if file_status == "completed":
+            if file_status in {"completed", "removed"}:
                 self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlandı, atlanıyor", "ok")
                 self._set_progress(int((fi + 1) / n_files * 40))
                 continue
@@ -18749,6 +18937,25 @@ class App(ctk.CTk):
                  analysis_tuple, analysis_ok, file_src, file_schema_name) in enumerate(submitted):
             if self._stop_flag:
                 break
+            if self._is_queued_file_removed(filepath):
+                if batch_id and batch_id != "__twowave__":
+                    try:
+                        from openai import OpenAI
+                        _cancel_client = OpenAI(
+                            api_key=openai_key, base_url=b_url if b_url else None)
+                        best_effort_cancel_remote_batch(
+                            _cancel_client, batch_id, self._log)
+                    except Exception:
+                        pass
+                    self._unregister_batch(batch_id)
+                    self._clear_batch_recovery([batch_id])
+                self._twowave_pending.pop(str(filepath), None)
+                ht.update_batch_session(session, filepath, "removed")
+                self._record_file_status(filepath, "Sıradan kaldırıldı", "skip")
+                self._log(
+                    f"[{fname}] Sıradan kaldırıldı; batch sonucu yazılmayacak.",
+                    "warn")
+                continue
             self._log(f"\n── [{si+1}/{n_sub}] {fname} — Batch bekleniyor ──", "info")
             self._set_status(f"Bekleniyor: {fname}")
 
@@ -18807,7 +19014,8 @@ class App(ctk.CTk):
                         f".{_out_obj.name}.{batch_id}.stage.srt")
                     _save_ret = ht.save_results(openai_key, out_id, fmap, str(_stage_path), self._log,
                                                 token_callback=self._update_batch_tokens,
-                                                src_cues=None, base_url=b_url)
+                                                src_cues=None, base_url=b_url,
+                                                target_language=tgt)
                 _parse_path = str(_stage_path) if _stage_path else out_path
                 _final_blocks = list(parse_srt(_parse_path))
                 if cues and not _final_blocks:

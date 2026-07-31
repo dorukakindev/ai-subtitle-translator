@@ -266,7 +266,7 @@ class TranslationMemory:
     def lookup_batch(self, sources: list, tgt_lang: str = "", model: str = "", profanity: str = "",
                      schema_name: str = "", source_language: str = "",
                      context_fingerprint: str = "",
-                     allow_contextless_final: bool = False) -> dict:
+                     allow_contextless_final: bool = True) -> dict:
         """Birden çok kaynak metni TEK sorguda arar.
 
         Bu API nihai altyazı satırını doğrudan ikame eder. Sen/siz, sözlük ve
@@ -319,7 +319,7 @@ class TranslationMemory:
                       tgt_lang: str = "", model: str = "", profanity: str = "",
                       schema_name: str = "", source_language: str = "",
                       context_fingerprint: str = "",
-                      allow_contextless_final: bool = False) -> tuple[str, float] | None:
+                      allow_contextless_final: bool = True) -> tuple[str, float] | None:
         """Fuzzy eşleştirme: %threshold+ benzerlik varsa (çeviri, oran) döner.
         Tam eşleşme varsa önce onu döner. Yoksa kısa adaylara (±40% uzunluk) bakar.
         Pahalı DB taramasını kısaltmak için uzunluk filtrelemesi yapar.
