@@ -8584,10 +8584,11 @@ class App(ctk.CTk):
                          "<KeyRelease-Home>", "<KeyRelease-End>"):
             self.log_box.bind(sequence, self._on_log_manual_scroll)
         scrollbar = getattr(self.log_box, "_scrollbar", None)
-        if scrollbar is not None:
-            scrollbar.bind("<ButtonPress-1>", self._on_log_scrollbar_press)
-            scrollbar.bind("<B1-Motion>", self._on_log_manual_scroll)
-            scrollbar.bind("<ButtonRelease-1>", self._on_log_manual_scroll)
+        scrollbar_bind = getattr(scrollbar, "bind", None)
+        if callable(scrollbar_bind):
+            scrollbar_bind("<ButtonPress-1>", self._on_log_scrollbar_press)
+            scrollbar_bind("<B1-Motion>", self._on_log_manual_scroll)
+            scrollbar_bind("<ButtonRelease-1>", self._on_log_manual_scroll)
 
     def _after_dpi_scaling(self):
         if getattr(self, "_is_shutting_down", False):
@@ -11195,9 +11196,13 @@ class App(ctk.CTk):
     def _queue_input_folder_scan(self, path: str):
         target_key = _lang_iso639_1(self.tgt_var.get())
         source_key = _lang_iso639_1(self.src_var.get())
-        output_path = (self.output_var.get() or "").strip()
+        output_var = getattr(self, "output_var", None)
+        output_path = (output_var.get() if output_var is not None else "") or ""
+        output_path = output_path.strip()
         excluded_outputs = []
-        if output_path and not self.same_folder_var.get():
+        same_folder_var = getattr(self, "same_folder_var", None)
+        same_folder = bool(same_folder_var and same_folder_var.get())
+        if output_path and not same_folder:
             try:
                 input_abs = os.path.normcase(os.path.abspath(path))
                 output_abs = os.path.normcase(os.path.abspath(output_path))
@@ -13226,8 +13231,12 @@ class App(ctk.CTk):
                 files = list(getattr(self, "_file_list_files", ()) or ())
             else:
                 excluded_outputs = []
-                output_path = (self.output_var.get() or "").strip()
-                if output_path and not self.same_folder_var.get():
+                output_var = getattr(self, "output_var", None)
+                output_path = (output_var.get() if output_var is not None else "") or ""
+                output_path = output_path.strip()
+                same_folder_var = getattr(self, "same_folder_var", None)
+                same_folder = bool(same_folder_var and same_folder_var.get())
+                if output_path and not same_folder:
                     try:
                         root_abs = os.path.normcase(os.path.abspath(root))
                         output_abs = os.path.normcase(os.path.abspath(output_path))
