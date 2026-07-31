@@ -21,6 +21,10 @@ _VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
 _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 _SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _SOURCE_EMPTY_OVERRIDE = re.compile(r'\{\}')
+_GENERATED_SUBTITLE_NAME_RE = re.compile(
+    r'(?:\.tr|\.partial|\.wave[12]of2|\.postprocess(?:\.\d+)?\.bak)\.srt$',
+    re.IGNORECASE,
+)
 _LEGACY_DETECT_ENCODINGS = {
     "big5", "big5hkscs", "cp932", "cp949", "euc_jp", "euc_kr",
     "cp1251", "gb18030", "gbk", "koi8_r", "shift_jis",
@@ -545,7 +549,9 @@ def get_subtitle_files(directory: str, recursive: bool = True,
     (varsayılan 'ÇIKTI' — çıktı klasörü kuralı; bkz. _resolve_output_path). Taranan
     klasörün KENDİSİ bu adı taşısa bile dışlanmaz (Kural 2'de Downloads/ÇIKTI seçilebilir).
     exclude_suffixes: bu son-eklerle biten dosyalar dışlanır (varsayılan '.ham.srt' ham
-    yedekleri — asla girdi olmamalı, yoksa yeniden çalıştırmada kendi çıktısını çevirir)."""
+    yedekleri — asla girdi olmamalı, yoksa yeniden çalıştırmada kendi çıktısını çevirir).
+    Programın ürettiği aynı-klasör sonuçları, kısmi/manuel-yedek sonuçları ve gizli stage
+    dosyaları da kaynak değildir; bunlar ad deseninden ayrıca dışlanır."""
     base = Path(directory)
     if not base.is_dir():
         return []
@@ -566,6 +572,12 @@ def get_subtitle_files(directory: str, recursive: bool = True,
         except Exception:
             return True
 
+    def _is_generated_subtitle_name(name: str) -> bool:
+        low = str(name or "").lower()
+        if _GENERATED_SUBTITLE_NAME_RE.search(low):
+            return True
+        return low.startswith(".") and low.endswith(".stage.srt")
+
     if recursive:
         for root, dirnames, filenames in os.walk(base):
             if _cancelled():
@@ -583,6 +595,8 @@ def get_subtitle_files(directory: str, recursive: bool = True,
                     continue
                 if excl_sfx and low.endswith(excl_sfx):
                     continue
+                if _is_generated_subtitle_name(name):
+                    continue
                 result.append(str(Path(root) / name))
     else:
         try:
@@ -595,6 +609,8 @@ def get_subtitle_files(directory: str, recursive: bool = True,
             if not fp.is_file() or fp.suffix.lower() not in allowed_exts:
                 continue
             if excl_sfx and fp.name.lower().endswith(excl_sfx):
+                continue
+            if _is_generated_subtitle_name(fp.name):
                 continue
             result.append(str(fp))
     return sorted(result)  # alfabetik sıra — tekrarlanabilir

@@ -338,6 +338,39 @@ class GetSubtitleFilesTest(unittest.TestCase):
             self.assertIn("film.srt", names)
             self.assertNotIn("film.ham.srt", names)
 
+    def test_generated_same_folder_outputs_excluded(self):
+        """Aynı klasöre yazılan sonuç/yardımcı dosyalar sonraki taramada kaynak olmaz."""
+        from subtitle_formats import get_subtitle_files
+        with tempfile.TemporaryDirectory() as d:
+            kept = ("film.srt", "film.trailer.srt", "film.stage.srt")
+            generated = (
+                "film.tr.srt",
+                "film.partial.srt",
+                "film.postprocess.bak.srt",
+                "film.postprocess.2.bak.srt",
+                "film.wave1of2.srt",
+                "film.wave2of2.srt",
+                ".film.srt.batch_abc.stage.srt",
+                ".film.srt.twowave.stage.srt",
+            )
+            for name in kept + generated:
+                Path(d, name).write_text("", encoding="utf-8")
+
+            names = [Path(path).name for path in get_subtitle_files(d, recursive=True)]
+
+            self.assertEqual(names, sorted(kept))
+
+    def test_generated_outputs_excluded_in_nonrecursive_scan(self):
+        from subtitle_formats import get_subtitle_files
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "source.vtt").write_text("", encoding="utf-8")
+            Path(d, "source.tr.srt").write_text("", encoding="utf-8")
+            Path(d, "source.partial.srt").write_text("", encoding="utf-8")
+
+            names = [Path(path).name for path in get_subtitle_files(d, recursive=False)]
+
+            self.assertEqual(names, ["source.vtt"])
+
     def test_scanned_dir_itself_named_cikti_still_collected(self):
         """Kural 2: taranan klasörün KENDİSİ ÇIKTI adlıysa içindekiler yine toplanır
         (Downloads/ÇIKTI'yı girdi seçme durumu yanlışlıkla boşalmasın)."""
