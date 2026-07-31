@@ -11,6 +11,7 @@ import subprocess
 import threading
 import traceback
 import unicodedata
+import uuid
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -55,6 +56,50 @@ API_REQUEST_TIMEOUT_SECONDS = 300
 FILE_LIST_PAGE_SIZE = 60
 UI_DISPATCH_BUDGET_SECONDS = 0.008
 CLOSE_WORKER_DRAIN_SECONDS = 6.0
+
+API_PROFILE_PROVIDERS = {
+    "openai_official": "OpenAI Resmi",
+    "openai_compatible": "OpenAI Uyumlu / Reseller",
+    "anthropic": "Anthropic / Claude",
+}
+API_PROFILE_ROLE_LABELS = {
+    "main": "Ana ceviri",
+    "analysis": "Yardimci analiz",
+    "critic": "Critic + Native + Nihai Anlam",
+    "polish": "Polish + Kisaltma",
+    "qc": "QC + son duzeltmeler",
+}
+
+
+def _sanitize_api_key_profiles(value) -> dict:
+    profiles = {}
+    if not isinstance(value, dict):
+        return profiles
+    for profile_id, raw in value.items():
+        if not re.fullmatch(r"[0-9a-f]{32}", str(profile_id)) or not isinstance(raw, dict):
+            continue
+        provider = str(raw.get("provider") or "").strip()
+        name = str(raw.get("name") or "").strip()[:80]
+        model = str(raw.get("model") or "").strip()[:160]
+        base_url = str(raw.get("base_url") or "").strip()[:500]
+        if provider not in API_PROFILE_PROVIDERS or not name or not model:
+            continue
+        profiles[str(profile_id)] = {
+            "name": name,
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+        }
+    return profiles
+
+
+def _sanitize_api_key_assignments(value, profiles: dict) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        role: profile_id for role, profile_id in value.items()
+        if role in API_PROFILE_ROLE_LABELS and profile_id in profiles
+    }
 
 
 def _desktop_directory() -> Path:
@@ -6701,6 +6746,9 @@ class App(ctk.CTk):
         self.model_2_5m_combo = None
         self.model_250k_combo = None
         self._helper_keys_cache = {}
+        self._api_key_profiles = {}
+        self._api_key_assignments = {}
+        self._api_keys_dialog = None
         self.api_url_var = ctk.StringVar()
 
         # ── Advanced Settings defaults ────────────────────────────────────────
@@ -8479,6 +8527,13 @@ class App(ctk.CTk):
             text_color=RED, state="disabled",
             command=self._stop)
         self.stop_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,12)); r += 1
+
+        self.api_keys_btn = ctk.CTkButton(
+            sb, text="🔑  API Anahtarları", height=38,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            fg_color=CARD, hover_color=BORDER,
+            command=self._show_api_keys_panel)
+        self.api_keys_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,12)); r += 1
 
     # ── Sağ panel ─────────────────────────────────────────────────────────────
     def _build_main(self):
@@ -11908,6 +11963,9 @@ class App(ctk.CTk):
             keys = self._active_snapshot.get("helper_keys") or {}
             if role in keys:
                 return keys[role]
+        assigned = getattr(self, "_api_key_assignments", {}).get(role)
+        if assigned in getattr(self, "_api_key_profiles", {}):
+            return (credential_store.load_key(f"api_profile_{assigned}") or "").strip()
         custom_active = (
             role in getattr(self, "helper_model_vars", {})
             and self._is_custom_helper_label(self.helper_model_vars[role].get()))
@@ -11958,6 +12016,9 @@ class App(ctk.CTk):
     def _main_api_key(self) -> str:
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             return self._active_snapshot.get("main_api_key", "")
+        assigned = getattr(self, "_api_key_assignments", {}).get("main")
+        if assigned in getattr(self, "_api_key_profiles", {}):
+            return (credential_store.load_key(f"api_profile_{assigned}") or "").strip()
         if self._main_custom_active():
             return self.main_custom_key_entry.get().strip()
         return self.api_key_entry.get().strip()
@@ -12025,6 +12086,8 @@ class App(ctk.CTk):
         return self._helper_model_config(role).label
 
     def _save_settings(self, save_credentials: bool = True):
+        api_profiles = _sanitize_api_key_profiles(
+            getattr(self, "_api_key_profiles", {}))
         data = {
             "quality_profile_version": QUALITY_PROFILE_VERSION,
             "model": self.model_var.get(), "src_lang": self.src_var.get(),
@@ -12075,6 +12138,10 @@ class App(ctk.CTk):
             "main_custom": self.main_custom_var.get(),
             "main_custom_model": self.main_custom_model_var.get(),
             "main_custom_url": self.main_custom_url_var.get(),
+            "api_key_profiles": api_profiles,
+            "api_key_assignments": _sanitize_api_key_assignments(
+                getattr(self, "_api_key_assignments", {}),
+                api_profiles),
             # Advanced settings
             "chunk_size": self._chunk_size,
             "context_lines": self._context_lines,
@@ -12343,6 +12410,10 @@ class App(ctk.CTk):
         try:
             with open(p, encoding="utf-8") as f:
                 d = json.load(f)
+            self._api_key_profiles = _sanitize_api_key_profiles(
+                d.get("api_key_profiles"))
+            self._api_key_assignments = _sanitize_api_key_assignments(
+                d.get("api_key_assignments"), self._api_key_profiles)
             if _apply_quality_profile_defaults(d):
                 atomic_write_json(Path(p), d)
             # Eski format yedeği: depoda yoksa JSON'daki anahtarı kullan
@@ -12518,6 +12589,398 @@ class App(ctk.CTk):
             except Exception:
                 self._log(f"Ayarlar yüklenemedi ve yedek alınamadı: {e}", "err")
             return
+
+    def _api_profile_name(self, profile_id: str) -> str:
+        profile = getattr(self, "_api_key_profiles", {}).get(profile_id) or {}
+        return profile.get("name") or "Atanmadı"
+
+    @staticmethod
+    def _replace_entry_value(entry, value: str):
+        entry.delete(0, "end")
+        entry.insert(0, value)
+
+    def _apply_api_profile(self, profile_id: str, role: str, *, notify=True):
+        profile = getattr(self, "_api_key_profiles", {}).get(profile_id)
+        if not profile or role not in API_PROFILE_ROLE_LABELS:
+            return False
+        key = (credential_store.load_key(f"api_profile_{profile_id}") or "").strip()
+        if not key:
+            if notify:
+                messagebox.showerror(
+                    "API Anahtarı", "Bu profilin güvenli depoda kayıtlı anahtarı yok.",
+                    parent=getattr(self, "_api_keys_dialog", None) or self)
+            return False
+        provider = profile["provider"]
+        model = profile["model"]
+        base_url = profile.get("base_url", "").strip()
+        if provider == "openai_official":
+            base_url = "https://api.openai.com/v1"
+
+        if role == "main":
+            if provider == "anthropic":
+                if notify:
+                    messagebox.showwarning(
+                        "Ana çeviri",
+                        "Ana çeviri hattı OpenAI uyumlu API kullanıyor. Bu Claude profilini yardımcı görevlerden birine atayın.",
+                        parent=getattr(self, "_api_keys_dialog", None) or self)
+                return False
+            if provider == "openai_official":
+                self.main_custom_var.set(False)
+                self._replace_entry_value(self.api_key_entry, key)
+                self.api_url_var.set(base_url)
+                self.model_var.set(model)
+                if model in MODELS:
+                    if model in MODELS_2_5M:
+                        self.limit_class_var.set("2.5M")
+                        self.model_2_5m_var.set(model)
+                    elif model in MODELS_250K:
+                        self.limit_class_var.set("250K")
+                        self.model_250k_var.set(model)
+            else:
+                self.main_custom_var.set(True)
+                self.main_custom_model_var.set(model)
+                self.main_custom_url_var.set(base_url)
+                self._replace_entry_value(self.main_custom_key_entry, key)
+            self._sync_main_custom_visibility()
+        else:
+            self.helper_model_vars[role].set("Özel (Custom)")
+            self.helper_custom_provider_vars[role].set(
+                "anthropic" if provider == "anthropic" else "openai")
+            self.helper_custom_model_vars[role].set(model)
+            self.helper_custom_url_vars[role].set(base_url)
+            self.helper_custom_key_vars[role].set(key)
+            self.helper_role_key_vars[role].set("")
+            self._on_helper_model_change_role(role)
+        self._api_key_assignments[role] = profile_id
+        self._save_settings()
+        if notify:
+            self._log(
+                f"API profili atandı: {profile['name']} → {API_PROFILE_ROLE_LABELS[role]}",
+                "ok")
+        return True
+
+    def _assign_api_profile_group(self, profile_id: str, roles):
+        roles = tuple(roles)
+        if len(roles) == 1:
+            if self._apply_api_profile(profile_id, roles[0], notify=True):
+                self._refresh_api_keys_panel()
+            return
+        applied = [
+            role for role in roles
+            if self._apply_api_profile(profile_id, role, notify=False)
+        ]
+        if applied:
+            profile = self._api_key_profiles[profile_id]
+            self._log(
+                f"API profili atandı: {profile['name']} → "
+                + ", ".join(API_PROFILE_ROLE_LABELS[r] for r in applied), "ok")
+            self._refresh_api_keys_panel()
+
+    def _delete_api_profile(self, profile_id: str):
+        profile = self._api_key_profiles.get(profile_id)
+        if not profile:
+            return
+        parent = getattr(self, "_api_keys_dialog", None) or self
+        if not messagebox.askyesno(
+                "API profilini sil",
+                f"'{profile['name']}' profili ve güvenli depodaki anahtarı silinsin mi?",
+                parent=parent):
+            return
+        assigned_roles = [
+            role for role, pid in self._api_key_assignments.items()
+            if pid == profile_id
+        ]
+        credential_store.delete_key(f"api_profile_{profile_id}")
+        for role in assigned_roles:
+            if role == "main":
+                if profile["provider"] == "openai_official":
+                    self._replace_entry_value(self.api_key_entry, "")
+                    credential_store.delete_key("openai")
+                else:
+                    self._replace_entry_value(self.main_custom_key_entry, "")
+                    credential_store.delete_key("main_custom")
+            else:
+                self.helper_role_key_vars[role].set("")
+                self.helper_custom_key_vars[role].set("")
+                credential_store.delete_key(f"helper_role_{role}_key")
+                credential_store.delete_key(f"helper_{role}_key")
+        self._api_key_profiles.pop(profile_id, None)
+        self._api_key_assignments = {
+            role: pid for role, pid in self._api_key_assignments.items()
+            if pid != profile_id
+        }
+        self._save_settings(save_credentials=False)
+        self._refresh_api_keys_panel()
+
+    def _show_api_profile_menu(self, profile_id: str, event):
+        import tkinter as tk
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(
+            label="Ana çeviri için kullan",
+            command=lambda: self._assign_api_profile_group(profile_id, ("main",)))
+        menu.add_separator()
+        menu.add_command(
+            label="Yardımcı analiz için kullan",
+            command=lambda: self._assign_api_profile_group(profile_id, ("analysis",)))
+        menu.add_command(
+            label="Critic + Native + Nihai Anlam için kullan",
+            command=lambda: self._assign_api_profile_group(profile_id, ("critic",)))
+        menu.add_command(
+            label="Polish + Kısaltma için kullan",
+            command=lambda: self._assign_api_profile_group(profile_id, ("polish",)))
+        menu.add_command(
+            label="QC + son düzeltmeler için kullan",
+            command=lambda: self._assign_api_profile_group(profile_id, ("qc",)))
+        menu.add_separator()
+        menu.add_command(
+            label="Tüm yardımcı ve kalite görevlerinde kullan",
+            command=lambda: self._assign_api_profile_group(
+                profile_id, ("analysis", "critic", "polish", "qc")))
+        menu.add_separator()
+        menu.add_command(label="Profili düzenle",
+                         command=lambda: self._edit_api_profile(profile_id))
+        menu.add_command(label="Profili sil",
+                         command=lambda: self._delete_api_profile(profile_id))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _show_api_profile_button_menu(self, profile_id: str, widget):
+        class _Event:
+            pass
+        event = _Event()
+        event.x_root = widget.winfo_rootx() + widget.winfo_width() - 16
+        event.y_root = widget.winfo_rooty() + 20
+        self._show_api_profile_menu(profile_id, event)
+
+    def _edit_api_profile(self, profile_id=None):
+        current = self._api_key_profiles.get(profile_id, {}) if profile_id else {}
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("API Profili" if profile_id else "Yeni API Profili")
+        dlg.geometry("520x520")
+        dlg.minsize(480, 500)
+        dlg.configure(fg_color=BG)
+        dlg.transient(getattr(self, "_api_keys_dialog", None) or self)
+        dlg.grab_set()
+        dlg.grid_columnconfigure(0, weight=1)
+        provider_by_label = {v: k for k, v in API_PROFILE_PROVIDERS.items()}
+        name_var = ctk.StringVar(value=current.get("name", ""))
+        provider_var = ctk.StringVar(value=API_PROFILE_PROVIDERS.get(
+            current.get("provider"), "OpenAI Uyumlu / Reseller"))
+        model_var = ctk.StringVar(value=current.get("model", "gpt-5.4"))
+        url_var = ctk.StringVar(value=current.get("base_url", "https://api.openai.com/v1"))
+
+        ctk.CTkLabel(
+            dlg, text="API PROFİLİ", text_color=ACCENT,
+            font=ctk.CTkFont("Segoe UI", 13, "bold")).grid(
+                row=0, column=0, sticky="w", padx=24, pady=(22, 10))
+        form = ctk.CTkFrame(dlg, fg_color=PANEL, corner_radius=12)
+        form.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 14))
+        form.grid_columnconfigure(0, weight=1)
+
+        def add_field(label, variable, row, placeholder=""):
+            ctk.CTkLabel(form, text=label, text_color=FG2,
+                         font=ctk.CTkFont("Segoe UI", 11)).grid(
+                             row=row, column=0, sticky="w", padx=18, pady=(10, 3))
+            entry = ctk.CTkEntry(
+                form, textvariable=variable, height=36, fg_color=CARD,
+                border_color=BORDER, text_color=FG, placeholder_text=placeholder)
+            entry.grid(row=row + 1, column=0, sticky="ew", padx=18)
+            return entry
+
+        add_field("Profil adı", name_var, 0, "Örn. GPT Official / Reseller / Claude")
+        ctk.CTkLabel(form, text="Sağlayıcı türü", text_color=FG2,
+                     font=ctk.CTkFont("Segoe UI", 11)).grid(
+                         row=2, column=0, sticky="w", padx=18, pady=(10, 3))
+        ctk.CTkComboBox(
+            form, variable=provider_var, values=list(provider_by_label),
+            state="readonly", height=36, fg_color=CARD, border_color=BORDER,
+            button_color=BORDER, button_hover_color=ACCENT,
+            dropdown_fg_color=CARD, text_color=FG).grid(
+                row=3, column=0, sticky="ew", padx=18)
+        add_field("Model adı", model_var, 4)
+        add_field("API taban adresi", url_var, 6, "https://.../v1")
+        ctk.CTkLabel(form, text="API anahtarı", text_color=FG2,
+                     font=ctk.CTkFont("Segoe UI", 11)).grid(
+                         row=8, column=0, sticky="w", padx=18, pady=(10, 3))
+        key_entry = ctk.CTkEntry(
+            form, show="•", height=36, fg_color=CARD,
+            border_color=BORDER, text_color=FG,
+            placeholder_text=("Boş bırak: kayıtlı anahtarı koru" if profile_id
+                              else "Anahtarı güvenli depoya kaydet"))
+        key_entry.grid(row=9, column=0, sticky="ew", padx=18, pady=(0, 14))
+        ctk.CTkLabel(
+            dlg,
+            text="Anahtar ekranda veya ayar dosyasında gösterilmez. Sağ tıkla kullanım görevini seçebilirsiniz.",
+            text_color=FG2, justify="left", wraplength=460,
+            font=ctk.CTkFont("Segoe UI", 10)).grid(
+                row=2, column=0, sticky="w", padx=26, pady=(0, 12))
+
+        def save_profile():
+            name = name_var.get().strip()
+            provider = provider_by_label.get(provider_var.get())
+            model = model_var.get().strip()
+            base_url = url_var.get().strip()
+            key = key_entry.get().strip()
+            if not name or not provider or not model:
+                messagebox.showwarning(
+                    "Eksik bilgi", "Profil adı, sağlayıcı ve model zorunludur.", parent=dlg)
+                return
+            if provider == "openai_official":
+                base_url = "https://api.openai.com/v1"
+            elif not base_url:
+                messagebox.showwarning(
+                    "Eksik bilgi", "Bu sağlayıcı için API adresi zorunludur.", parent=dlg)
+                return
+            elif not re.match(r"^https?://", base_url, re.IGNORECASE):
+                messagebox.showwarning(
+                    "Geçersiz adres", "API adresi http:// veya https:// ile başlamalıdır.",
+                    parent=dlg)
+                return
+            if not profile_id and not key:
+                messagebox.showwarning(
+                    "Eksik bilgi", "Yeni profil için API anahtarı girin.", parent=dlg)
+                return
+            pid = profile_id or uuid.uuid4().hex
+            if (provider == "anthropic"
+                    and self._api_key_assignments.get("main") == pid):
+                messagebox.showwarning(
+                    "Ana çeviri ataması",
+                    "Ana çeviriye atanmış profil Anthropic türüne çevrilemez. Önce ana çeviriye OpenAI uyumlu başka bir profil atayın.",
+                    parent=dlg)
+                return
+            if key:
+                if not credential_store.save_key(f"api_profile_{pid}", key):
+                    self._log(
+                        "keyring kullanılamıyor, API profili obfuscated fallback dosyada saklandı",
+                        "warn")
+            self._api_key_profiles[pid] = {
+                "name": name[:80], "provider": provider,
+                "model": model[:160], "base_url": base_url[:500],
+            }
+            assigned_roles = [
+                role for role, assigned_pid in self._api_key_assignments.items()
+                if assigned_pid == pid
+            ]
+            if assigned_roles:
+                for role in assigned_roles:
+                    self._apply_api_profile(pid, role, notify=False)
+            else:
+                self._save_settings(save_credentials=False)
+            dlg.destroy()
+            self._refresh_api_keys_panel()
+
+        buttons = ctk.CTkFrame(dlg, fg_color="transparent")
+        buttons.grid(row=3, column=0, sticky="e", padx=24, pady=(0, 18))
+        ctk.CTkButton(buttons, text="İptal", width=90, fg_color=CARD,
+                      hover_color=BORDER, command=dlg.destroy).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(buttons, text="Kaydet", width=110, fg_color=ACCENT,
+                      hover_color=ACCENT_HOVER, command=save_profile).pack(side="left")
+
+    def _refresh_api_keys_panel(self):
+        dlg = getattr(self, "_api_keys_dialog", None)
+        if not dlg or not dlg.winfo_exists():
+            return
+        routes = self._api_routes_frame
+        for widget in routes.winfo_children():
+            widget.destroy()
+        for row, (role, label) in enumerate(API_PROFILE_ROLE_LABELS.items()):
+            ctk.CTkLabel(routes, text=label, text_color=FG2,
+                         font=ctk.CTkFont("Segoe UI", 10)).grid(
+                             row=row, column=0, sticky="w", padx=(0, 10), pady=2)
+            ctk.CTkLabel(
+                routes,
+                text=self._api_profile_name(self._api_key_assignments.get(role, "")),
+                text_color=ACCENT if role in self._api_key_assignments else FG2,
+                font=ctk.CTkFont("Segoe UI", 10, "bold")).grid(
+                    row=row, column=1, sticky="e", pady=2)
+
+        profiles_frame = self._api_profiles_frame
+        for widget in profiles_frame.winfo_children():
+            widget.destroy()
+        if not self._api_key_profiles:
+            ctk.CTkLabel(
+                profiles_frame,
+                text="Henüz profil yok. 'Yeni Profil' ile ilk anahtarınızı ekleyin.",
+                text_color=FG2, font=ctk.CTkFont("Segoe UI", 11)).pack(pady=28)
+            return
+        for profile_id, profile in self._api_key_profiles.items():
+            row = ctk.CTkFrame(profiles_frame, fg_color=CARD, corner_radius=10)
+            row.pack(fill="x", padx=2, pady=4)
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(row, text=profile["name"], text_color=FG,
+                         font=ctk.CTkFont("Segoe UI", 12, "bold")).grid(
+                             row=0, column=0, sticky="w", padx=14, pady=(10, 1))
+            detail = f"{API_PROFILE_PROVIDERS[profile['provider']]}  ·  {profile['model']}"
+            ctk.CTkLabel(row, text=detail, text_color=FG2,
+                         font=ctk.CTkFont("Segoe UI", 10)).grid(
+                             row=1, column=0, sticky="w", padx=14, pady=(0, 10))
+            more = ctk.CTkButton(
+                row, text="⋮", width=38, height=32, fg_color="transparent",
+                hover_color=BORDER,
+                command=lambda pid=profile_id, w=row: self._show_api_profile_button_menu(pid, w))
+            more.grid(row=0, column=1, rowspan=2, padx=10)
+            for widget in (row, *row.winfo_children()):
+                try:
+                    widget.bind(
+                        "<Button-3>",
+                        lambda event, pid=profile_id: self._show_api_profile_menu(pid, event),
+                        add="+")
+                except Exception:
+                    pass
+
+    def _show_api_keys_panel(self):
+        existing = getattr(self, "_api_keys_dialog", None)
+        if existing and existing.winfo_exists():
+            existing.lift()
+            existing.focus_force()
+            return
+        dlg = ctk.CTkToplevel(self)
+        self._api_keys_dialog = dlg
+        dlg.title("API Anahtarları")
+        dlg.geometry("780x650")
+        dlg.minsize(680, 560)
+        dlg.configure(fg_color=BG)
+        dlg.grid_columnconfigure(0, weight=1)
+        dlg.grid_rowconfigure(2, weight=1)
+
+        def close_dialog():
+            self._api_keys_dialog = None
+            dlg.destroy()
+        dlg.protocol("WM_DELETE_WINDOW", close_dialog)
+        header = ctk.CTkFrame(dlg, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(22, 12))
+        header.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            header, text="API ANAHTARLARI", text_color=ACCENT,
+            font=ctk.CTkFont("Segoe UI", 15, "bold")).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            header, text="+ Yeni Profil", width=120, height=34,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=self._edit_api_profile).grid(row=0, column=1)
+        ctk.CTkLabel(
+            header,
+            text="Bir profile sağ tıklayın; ana çeviri veya kalite görevini tek hareketle atayın.",
+            text_color=FG2, font=ctk.CTkFont("Segoe UI", 10)).grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        route_card = ctk.CTkFrame(dlg, fg_color=PANEL, corner_radius=12)
+        route_card.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 12))
+        route_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            route_card, text="AKTİF YÖNLENDİRME", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=0, column=0, sticky="w", padx=16, pady=(12, 5))
+        self._api_routes_frame = ctk.CTkFrame(route_card, fg_color="transparent")
+        self._api_routes_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
+        self._api_routes_frame.grid_columnconfigure(0, weight=1)
+        self._api_profiles_frame = ctk.CTkScrollableFrame(
+            dlg, fg_color=PANEL, corner_radius=12,
+            scrollbar_button_color=BORDER, scrollbar_button_hover_color=ACCENT)
+        self._api_profiles_frame.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 24))
+        self._refresh_api_keys_panel()
+        dlg.lift()
+        dlg.focus_force()
 
     # ── Advanced Settings Dialog ──────────────────────────────────────────────
     def _show_advanced_settings(self):
