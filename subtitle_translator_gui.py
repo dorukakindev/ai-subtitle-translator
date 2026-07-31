@@ -3715,7 +3715,7 @@ def _chunk_src_map_from_request(req: dict) -> dict:
 def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=15,
-                              source_cues=None):
+                              source_cues=None, cancel_check=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -3729,6 +3729,25 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     Döner: (güncel_blocks, onarılan_sayı).
     """
     if not raw_src_map:
+        return blocks, 0
+
+    def _cancelled():
+        try:
+            return bool(cancel_check and cancel_check())
+        except Exception:
+            return False
+
+    def _wait_or_cancel(delay):
+        deadline = time.monotonic() + max(0.0, float(delay))
+        while True:
+            if _cancelled():
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return True
+            time.sleep(min(0.1, remaining))
+
+    if _cancelled():
         return blocks, 0
 
     # [HATA] ve çevrilmemiş satırları topla; kaynağı SFX/müzik-only olanları
@@ -3792,11 +3811,19 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         # Küçük gruplar halinde çevir
         permanent_failure = False
         for batch_start in range(0, len(hata_indices), max_per_call):
+            if _cancelled():
+                if log_fn:
+                    log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
+                break
             batch = hata_indices[batch_start:batch_start + max_per_call]
             tr_items = [{"i": idx, "t": _clean_src(src)} for (_, idx, _, src) in batch]
             payload = json.dumps({"tr": tr_items}, ensure_ascii=False)
 
             for attempt in range(2):
+                if _cancelled():
+                    if log_fn:
+                        log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
+                    break
                 try:
                     resp = _safe_chat_create(
                         client,
@@ -3809,13 +3836,15 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     )
                     if not resp.choices:
                         if attempt == 0:
-                            time.sleep(2)
+                            if not _wait_or_cancel(2):
+                                break
                             continue
                         break
                     raw_text = (resp.choices[0].message.content or "").strip()
                     if not raw_text:
                         if attempt == 0:
-                            time.sleep(2)
+                            if not _wait_or_cancel(2):
+                                break
                             continue
                         break
                     if token_cb and resp.usage:
@@ -3845,6 +3874,15 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 except Exception as e:
                     if log_fn:
                         log_fn(f"  ?? Onarim batch basarisiz: {e}", "warn")
+                    if _is_provider_unavailable_error(e):
+                        permanent_failure = True
+                        if log_fn:
+                            log_fn(
+                                "  ↪ Sağlayıcıda model kanalı yok; kalan onarım "
+                                "istekleri gönderilmeyecek",
+                                "warn",
+                            )
+                        break
                     if _is_permanent_provider_error(e):
                         permanent_failure = True
                         if log_fn:
@@ -3855,10 +3893,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             )
                         break
                     if attempt == 0:
-                        time.sleep(2)
+                        if not _wait_or_cancel(2):
+                            break
                         continue
                     break
-            if permanent_failure:
+            if permanent_failure or _cancelled():
                 break
 
         if log_fn:
@@ -4629,6 +4668,18 @@ def _is_transient_retry_error(exc) -> bool:
         or "connection" in lowered
         or "server error" in lowered
         or "internal error" in lowered
+    )
+
+
+def _is_provider_unavailable_error(exc) -> bool:
+    text = str(exc or "").lower()
+    return (
+        "model_not_found" in text
+        and any(marker in text for marker in (
+            "no available channel",
+            "failed to get available channel",
+            "auto groups is not enabled",
+        ))
     )
 
 
@@ -10858,6 +10909,14 @@ class App(ctk.CTk):
                         self._log(f"  ↺ {cid}: tamam", "ok")
                         break
                     except Exception as e:
+                        if _is_provider_unavailable_error(e):
+                            permanent_failure = True
+                            self._log(
+                                "  Sağlayıcıda model kanalı yok; kalan chunk ve "
+                                "kurtarma istekleri gönderilmeyecek",
+                                "warn",
+                            )
+                            break
                         if _is_permanent_provider_error(e):
                             permanent_failure = True
                             self._log(
@@ -13135,7 +13194,8 @@ class App(ctk.CTk):
                             model=self._main_model_name(),
                             schema=schema, profanity=profanity,
                             log_fn=self._log, token_cb=self._update_tokens,
-                            source_cues=cues)
+                            source_cues=cues,
+                            cancel_check=lambda: self._stop_flag)
                     except Exception:
                         pass
                     
@@ -17062,7 +17122,8 @@ class App(ctk.CTk):
                     model=model,
                     schema=schema_dict, profanity=self.profanity_var.get(),
                     log_fn=self._log, token_cb=self._update_tokens,
-                    source_cues=cues)
+                    source_cues=cues,
+                    cancel_check=lambda: self._stop_flag)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _quality_api_allowed = not _blocks_have_translation_failures(
@@ -17926,7 +17987,8 @@ class App(ctk.CTk):
                                         profanity=self._snap_get("profanity", "Orta"),
                                         log_fn=self._log,
                                         token_cb=self._update_tokens,
-                                        source_cues=_orig_cues)
+                                        source_cues=_orig_cues,
+                                        cancel_check=lambda: self._stop_flag)
                                 except Exception as repair_exc:
                                     self._log(
                                         f"Resume: eksik satır onarımı atlandı: {repair_exc}",
@@ -18432,7 +18494,8 @@ class App(ctk.CTk):
                         model=self._main_model_name(),
                         schema=schema_dict, profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
-                        source_cues=_src_cues)
+                        source_cues=_src_cues,
+                        cancel_check=lambda: self._stop_flag)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _quality_api_allowed = not _blocks_have_translation_failures(
@@ -19343,7 +19406,8 @@ class App(ctk.CTk):
                         schema=self._schema_by_name(file_schema_name),
                         profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
-                        source_cues=cues)
+                        source_cues=cues,
+                        cancel_check=lambda: self._stop_flag)
                 except Exception as e:
                     self._log(f"[{fname}] Eksik satır onarımı atlandı: {e}", "warn")
                 if self._stop_flag:
