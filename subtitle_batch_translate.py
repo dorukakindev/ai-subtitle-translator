@@ -417,7 +417,9 @@ def process_results(output_file_id, file_map, srt_files, *,
         source_blocks = source_cache[filepath]
         source_text = source_blocks[block_i][2] if block_i < len(source_blocks) else ""
         if cid not in translations or translations[cid] is None or cid in duplicate_ids:
-            translated_text = "[ÇEVIRI HATASI]"
+            # Batch'in eksik/tekrarlı yanıtı finalde hata etiketi olarak kalmasın.
+            # Recovery kaydı korunur; kullanıcı da cue'yu kaynak metinden görebilir.
+            translated_text = source_text or "[ÇEVIRI HATASI]"
         elif translations[cid]:
             translated_text = translations[cid]
         else:
@@ -427,7 +429,7 @@ def process_results(output_file_id, file_map, srt_files, *,
                     continue
             except Exception:
                 pass
-            translated_text = "[ÇEVIRI HATASI]"
+            translated_text = source_text or "[ÇEVIRI HATASI]"
         file_blocks.setdefault(filepath, {})[block_i] = (idx, timestamp, translated_text)
 
     # Dosyaları sıralı blok indeksine göre yaz

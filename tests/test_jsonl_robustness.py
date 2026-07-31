@@ -119,7 +119,7 @@ class TestJsonlRobustness(unittest.TestCase):
         blocks = mock_write_srt.call_args.args[1]
         self.assertEqual(len(blocks), 1)
         self.assertEqual(blocks[0][0], "2")
-        self.assertEqual(blocks[0][2], "[ÇEVIRI HATASI]")
+        self.assertEqual(blocks[0][2], "Hello")
 
     @patch("subtitle_batch_translate._get_client")
     @patch("subtitle_batch_translate.write_srt")
@@ -147,7 +147,7 @@ class TestJsonlRobustness(unittest.TestCase):
                 "out", fmap, [str(source)], input_folder=tmpdir, output_folder=tmpdir)
 
         blocks = mock_write_srt.call_args.args[1]
-        self.assertEqual([block[2] for block in blocks], ["[ÇEVIRI HATASI]", "[ÇEVIRI HATASI]"])
+        self.assertEqual([block[2] for block in blocks], ["One", "Two"])
         self.assertEqual(result["failed_ids"], {"first", "cut"})
 
     def test_standalone_recovery_preserves_submitted_source_signature(self):
