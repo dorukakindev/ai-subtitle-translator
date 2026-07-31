@@ -2691,6 +2691,12 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "severity": "error", "code": "overwrite_source",
                 "path": str(path), "message": "Hedef yol kaynak dosyanın üzerine yazıyor.",
             })
+        elif output.exists() and output.is_file():
+            issues.append({
+                "severity": "warning", "code": "existing_output",
+                "path": str(path), "output": str(output),
+                "message": "Bu dosyanın çevrilmiş çıktısı zaten bulundu.",
+            })
     for sources in output_sources.values():
         if len(sources) < 2:
             continue
@@ -2701,6 +2707,23 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "message": "Başka bir seçili dosyayla aynı hedefe yazacak.",
             })
     return issues
+
+
+def resolve_existing_output_choices(files, choices):
+    """Mevcut çıktı penceresindeki seçimleri kaynak listesine uygular."""
+    actions = {
+        os.path.normcase(os.path.abspath(str(path))): action
+        for path, action in (choices or {}).items()
+    }
+    kept = []
+    removed = []
+    for filepath in files or ():
+        key = os.path.normcase(os.path.abspath(str(filepath)))
+        if actions.get(key) == "remove":
+            removed.append(str(filepath))
+        else:
+            kept.append(str(filepath))
+    return kept, removed
 
 
 def _resolve_report_dir(input_dir: str, output_dir: str) -> Path:
@@ -12851,6 +12874,10 @@ class App(ctk.CTk):
                 return
 
         srt_files = self._get_srt_files()
+        if not srt_files:
+            messagebox.showwarning("Uyarı", "Çevrilecek altyazı dosyası kalmadı.", parent=self)
+            self._set_running(False)
+            return
         if srt_files and self._start_file_integrity_preflight(srt_files):
             return
         if srt_files and _lang_iso639_1(self.tgt_var.get()) == "tr":
@@ -15324,6 +15351,156 @@ class App(ctk.CTk):
             self.src_var.get(),
         )
 
+    def _show_existing_outputs_dialog(self, issues: list):
+        """Daha önce çevrilmiş hedefler için dosya bazında karar alır."""
+        if not issues:
+            return {}
+        result = {"choices": None}
+        dlg = ctk.CTkToplevel(self)
+        dlg.withdraw()
+        dlg.title("Mevcut Çeviriler Bulundu")
+        dlg.configure(fg_color=BG)
+        dlg.grid_columnconfigure(0, weight=1)
+        dlg.grid_rowconfigure(2, weight=1)
+
+        hdr = ctk.CTkFrame(dlg, fg_color=YELLOW, corner_radius=10, height=56)
+        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 8))
+        hdr.grid_propagate(False)
+        ctk.CTkLabel(
+            hdr,
+            text=f"{len(issues)} dosyanın çevrilmiş çıktısı zaten var",
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            text_color=BG,
+        ).pack(side="left", padx=14, pady=15)
+
+        ctk.CTkLabel(
+            dlg,
+            text=("Her dosya için listeden çıkarmayı veya yeniden çevirmeyi seç. "
+                  "Varsayılan seçim mevcut çıktıyı koruyup dosyayı kuyruktan çıkarır."),
+            font=ctk.CTkFont("Segoe UI", 11),
+            text_color=FG2,
+            anchor="w",
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
+
+        scroll = ctk.CTkScrollableFrame(
+            dlg, fg_color="transparent", scrollbar_button_color=BORDER, height=350)
+        scroll.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        scroll.grid_columnconfigure(0, weight=1)
+        row_vars = {}
+        for index, item in enumerate(issues):
+            filepath = str(item["path"])
+            output = str(item.get("output") or "")
+            row = ctk.CTkFrame(scroll, fg_color=CARD, corner_radius=7)
+            row.grid(row=index, column=0, sticky="ew", padx=4, pady=3)
+            row.grid_columnconfigure(0, weight=1)
+            name = Path(filepath).name
+            ctk.CTkLabel(
+                row,
+                text=name if len(name) <= 72 else "..." + name[-69:],
+                font=ctk.CTkFont("Segoe UI", 11, "bold"),
+                text_color=FG,
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew", padx=(10, 8), pady=(6, 0))
+            output_text = output if len(output) <= 100 else "..." + output[-97:]
+            ctk.CTkLabel(
+                row,
+                text=f"Mevcut: {output_text}",
+                font=ctk.CTkFont("Segoe UI", 9),
+                text_color=FG2,
+                anchor="w",
+            ).grid(row=1, column=0, sticky="ew", padx=(10, 8), pady=(0, 6))
+            var = ctk.StringVar(value="Listeden çıkar")
+            row_vars[filepath] = var
+            ctk.CTkOptionMenu(
+                row,
+                variable=var,
+                values=["Listeden çıkar", "Yeniden çevir"],
+                width=155,
+                height=30,
+                font=ctk.CTkFont("Segoe UI", 10),
+                fg_color=BORDER,
+                button_color=BORDER,
+                button_hover_color=ACCENT,
+                dropdown_fg_color=CARD,
+                text_color=FG,
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(4, 10), pady=7)
+
+        btn_fr = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_fr.grid(row=3, column=0, sticky="ew", padx=12, pady=(4, 12))
+        btn_fr.grid_columnconfigure((0, 1, 2), weight=1)
+
+        def _collect():
+            result["choices"] = {
+                filepath: ("remove" if var.get() == "Listeden çıkar" else "retranslate")
+                for filepath, var in row_vars.items()
+            }
+            dlg.destroy()
+
+        def _retranslate_all():
+            result["choices"] = {filepath: "retranslate" for filepath in row_vars}
+            dlg.destroy()
+
+        def _cancel():
+            result["choices"] = None
+            dlg.destroy()
+
+        ctk.CTkButton(
+            btn_fr,
+            text="Seçimleri Uygula",
+            height=36,
+            fg_color=GREEN,
+            hover_color=GREEN_HOVER,
+            text_color="white",
+            command=_collect,
+        ).grid(row=0, column=0, padx=4, sticky="ew")
+        ctk.CTkButton(
+            btn_fr,
+            text="Tümünü Yeniden Çevir",
+            height=36,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            text_color="white",
+            command=_retranslate_all,
+        ).grid(row=0, column=1, padx=4, sticky="ew")
+        ctk.CTkButton(
+            btn_fr,
+            text="İptal",
+            height=36,
+            fg_color=CARD,
+            hover_color=BORDER,
+            command=_cancel,
+        ).grid(row=0, column=2, padx=4, sticky="ew")
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        self._present_preflight_dialog(dlg, 860, 560)
+        self.wait_window(dlg)
+        return result["choices"]
+
+    def _apply_existing_output_removals(self, kept: list, removed: list):
+        """Ön kontrolde çıkarılan dosyaları kuyruk ve dosya ayarlarından siler."""
+        self._selected_files = list(kept)
+        for filepath in removed:
+            self._file_schema_vars.pop(filepath, None)
+            getattr(self, "_file_language_vars", {}).pop(filepath, None)
+        if kept:
+            original_input = self.input_var.get()
+            self._refresh_selected_files_ui(
+                f"Mevcut çıktısı bulunan {len(removed)} dosya kuyruktan çıkarıldı.")
+            self.input_var.set(original_input)
+            return
+        self._input_folder_explicitly_selected = False
+        self._selected_folder_roots = []
+        self._file_list_files = []
+        self._populate_file_list([])
+        self._file_list_outer.grid_remove()
+        self.clear_files_btn.grid_remove()
+        self.clear_info_btn.grid_remove()
+        self.file_info_var.set("")
+        self._log(
+            "Seçilen dosyaların tamamı daha önce çevrildiği için kuyruktan çıkarıldı.",
+            "info",
+        )
+
     def _start_file_integrity_preflight(self, files: list) -> bool:
         signature = self._file_preflight_signature(files)
         if (self._file_integrity_preflight_done
@@ -15354,11 +15531,13 @@ class App(ctk.CTk):
                     return
                 errors = [item for item in issues if item["severity"] == "error"]
                 warnings = [item for item in issues if item["severity"] == "warning"]
-                lines = [
-                    f"• {Path(item['path']).name}: {item['message']}"
-                    for item in issues
-                ]
+                existing = [item for item in warnings if item["code"] == "existing_output"]
+                warnings = [item for item in warnings if item["code"] != "existing_output"]
                 if errors:
+                    lines = [
+                        f"• {Path(item['path']).name}: {item['message']}"
+                        for item in errors
+                    ]
                     self._log(
                         f"Dosya ön kontrolü {len(errors)} engelleyici sorun buldu.",
                         "err",
@@ -15372,7 +15551,41 @@ class App(ctk.CTk):
                     self._set_running(False)
                     self._set_status("Dosya ön kontrolü sorunlarının düzeltilmesi gerekiyor.")
                     return
+                active_files = list(files)
+                if existing:
+                    choices = self._show_existing_outputs_dialog(existing)
+                    if choices is None:
+                        self._file_integrity_preflight_done = False
+                        self._set_running(False)
+                        self._set_status("Mevcut çeviri kontrolü iptal edildi.")
+                        return
+                    active_files, removed = resolve_existing_output_choices(files, choices)
+                    if removed:
+                        self._apply_existing_output_removals(active_files, removed)
+                    retranslate_count = len(existing) - len(removed)
+                    if retranslate_count:
+                        self._log(
+                            f"Mevcut çıktısı bulunan {retranslate_count} dosya yeniden çevrilecek.",
+                            "warn",
+                        )
+                    if not active_files:
+                        self._file_integrity_preflight_done = False
+                        self._set_running(False)
+                        self._set_status("Bütün dosyalar daha önce çevrilmiş; çalışma başlatılmadı.")
+                        return
+                    active_keys = {
+                        os.path.normcase(os.path.abspath(str(filepath)))
+                        for filepath in active_files
+                    }
+                    warnings = [
+                        item for item in warnings
+                        if os.path.normcase(os.path.abspath(str(item["path"]))) in active_keys
+                    ]
                 if warnings:
+                    lines = [
+                        f"• {Path(item['path']).name}: {item['message']}"
+                        for item in warnings
+                    ]
                     should_continue = messagebox.askyesno(
                         "Dosya Ön Kontrolü",
                         "\n".join(lines[:24]) + "\n\nYine de devam edilsin mi?",
@@ -15383,7 +15596,7 @@ class App(ctk.CTk):
                         self._set_running(False)
                         self._set_status("Dosya ön kontrolü kullanıcı tarafından durduruldu.")
                         return
-                self._file_integrity_preflight_signature = signature
+                self._file_integrity_preflight_signature = self._file_preflight_signature(active_files)
                 self._file_integrity_preflight_done = True
                 self._log(
                     "Dosya ön kontrolü tamamlandı; kaynak dil kontrolüne geçiliyor.",

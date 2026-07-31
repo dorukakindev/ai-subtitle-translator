@@ -102,6 +102,78 @@ class SubtitlePreflightTest(unittest.TestCase):
             )
             self.assertIn("wrong_language", {issue["code"] for issue in issues})
 
+    def test_existing_resolved_output_is_reported_with_target_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            source = root / "film.eng.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nHello.\n",
+                encoding="utf-8",
+            )
+            target = gui._resolve_output_path(
+                str(root), str(output_dir), str(source))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nMerhaba.\n",
+                encoding="utf-8",
+            )
+
+            issues = gui.scan_subtitle_preflight(
+                [str(source)], str(root), str(output_dir))
+
+            existing = [item for item in issues if item["code"] == "existing_output"]
+            self.assertEqual(len(existing), 1)
+            self.assertEqual(existing[0]["path"], str(source))
+            self.assertEqual(existing[0]["output"], str(target))
+            self.assertEqual(existing[0]["severity"], "warning")
+
+    def test_existing_output_choices_remove_only_selected_sources(self):
+        files = [
+            str(Path("season-a") / "episode-1.srt"),
+            str(Path("season-a") / "episode-2.srt"),
+            str(Path("season-b") / "episode-1.srt"),
+        ]
+        choices = {
+            files[0]: "remove",
+            files[2]: "retranslate",
+        }
+
+        kept, removed = gui.resolve_existing_output_choices(files, choices)
+
+        self.assertEqual(removed, [files[0]])
+        self.assertEqual(kept, [files[1], files[2]])
+
+    def test_multi_folder_scan_matches_only_the_existing_episode_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "translated"
+            season_a = root / "Series A"
+            season_b = root / "Series B"
+            season_a.mkdir()
+            season_b.mkdir()
+            first = season_a / "Episode 01.srt"
+            second = season_b / "Episode 01.srt"
+            subtitle = "1\n00:00:01,000 --> 00:00:03,000\nHello.\n"
+            first.write_text(subtitle, encoding="utf-8")
+            second.write_text(subtitle, encoding="utf-8")
+            target = gui._resolve_output_path(
+                "", str(output_dir), str(first),
+                selected_roots=(str(season_a), str(season_b)),
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(subtitle.replace("Hello", "Merhaba"), encoding="utf-8")
+
+            issues = gui.scan_subtitle_preflight(
+                [str(first), str(second)], "", str(output_dir),
+                selected_roots=(str(season_a), str(season_b)),
+            )
+
+            existing_paths = {
+                item["path"] for item in issues if item["code"] == "existing_output"
+            }
+            self.assertEqual(existing_paths, {str(first)})
+
 
 class AutomaticRetryTest(unittest.TestCase):
     def test_only_failed_files_are_queued_for_retry(self):
