@@ -50,13 +50,20 @@ def clean_translation_source_text(text: str) -> str:
 # ── Toleranslı encoding çözümleme ─────────────────────────────────────────────
 
 def normalize_srt_timestamp_separators(text: str) -> str:
-    """SRT zaman satırlarındaki hatalı saat ayraçlarını düzeltir."""
-    return re.sub(
-        r'(?m)^([ \t]*\d+)[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[ \t]*'
-        r'-->[ \t]*\d+)[;:](\d{2})[;:](\d{2})([,.]\d{1,3}[^\n]*)$',
-        r'\1:\2:\3\4:\5:\6\7',
-        str(text or ""),
+    """SRT zaman satırlarındaki hatalı ayraçları ve kısa milisaniyeleri düzeltir."""
+    pattern = re.compile(
+        r'(?m)^([ \t]*)(\d+)[;:](\d{2})[;:](\d{2})[,.](\d{1,3})([ \t]*'
+        r'-->[ \t]*)(\d+)[;:](\d{2})[;:](\d{2})[,.](\d{1,3})([^\n]*)$'
     )
+
+    def replace(match):
+        lead, sh, sm, ss, sms, arrow, eh, em, es, ems, tail = match.groups()
+        return (
+            f"{lead}{sh}:{sm}:{ss},{(sms + '000')[:3]}{arrow}"
+            f"{eh}:{em}:{es},{(ems + '000')[:3]}{tail}"
+        )
+
+    return pattern.sub(replace, str(text or ""))
 
 
 def _legacy_script_ratio(text: str, encoding: str) -> float:
@@ -136,7 +143,12 @@ def read_subtitle_text(filepath) -> str:
     raw = Path(filepath).read_bytes()
     text = None
     sample = raw[:4096]
-    if sample and sample.count(b"\x00") / len(sample) >= 0.15:
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            text = raw.decode("utf-16")
+        except UnicodeDecodeError:
+            text = None
+    if text is None and sample and sample.count(b"\x00") / len(sample) >= 0.15:
         even_nuls = sample[0::2].count(0)
         odd_nuls = sample[1::2].count(0)
         enc = "utf-16-be" if even_nuls > odd_nuls else "utf-16-le"
@@ -358,7 +370,7 @@ def parse_vtt(filepath: str) -> list:
     blocks = []
     idx = 1
     lines = content.replace('\r\n', '\n').replace('\r', '\n').splitlines()
-    ts_re = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}\s*-->')
+    ts_re = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?[.,]\d+\s*-->')
     i = 0
     while i < len(lines):
         line = lines[i].strip()
@@ -463,9 +475,9 @@ def parse_ass(filepath: str) -> list:
 
     entries = []
     # Yalnızca salt efekt/çevirmen notu stillerini atla. Sign/Caption/Title/OP/ED
-    # ekrandaki anlamlı metin veya şarkı sözü taşıyabilir.
+    # ve Karaoke ekrandaki anlamlı metin veya şarkı sözü taşıyabilir.
     _SKIP_STYLES = re.compile(
-        r'^(fx|karaoke|credit|note)$',
+        r'^(fx|credit|note)$',
         re.IGNORECASE)
 
     # Dialogue satırlarını yalnızca [Events] bölümünden çek.
