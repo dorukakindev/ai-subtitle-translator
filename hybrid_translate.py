@@ -3535,7 +3535,7 @@ def native_reader_pass(
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 continue
-            content = _extract_json_array(content)
+            content = _extract_json_array(content, salvage_truncated=True)
             if not content:
                 continue
             fixes = json.loads(content)
@@ -3595,7 +3595,11 @@ def native_reader_pass(
                 if not gid:
                     continue
                 expected = set(frag_group_members.get(gid, []))
-                if expected and not expected.issubset(fix_by_id):
+                # A full model response is not enough: every member must also
+                # survive the deterministic guard before this fragment sentence
+                # can be applied. Otherwise one rejected member leaves a partial
+                # cross-cue rewrite behind.
+                if expected and not expected.issubset(pending):
                     incomplete_groups.add(gid)
 
             for fid in list(pending):
@@ -3827,7 +3831,7 @@ def condense_fast_lines(
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 continue
-            content = _extract_json_array(content)
+            content = _extract_json_array(content, salvage_truncated=True)
             if not content:
                 continue
             fixes = json.loads(content)
@@ -6441,7 +6445,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
     return suspicious
 
 
-def _extract_json_array(raw: str) -> str:
+def _extract_json_array(raw: str, *, salvage_truncated: bool = False) -> str:
     """Return the first valid JSON array found in raw text (handles preamble / code fences)."""
     raw = _strip_code_fence(raw)
     if not raw:
@@ -6467,6 +6471,12 @@ def _extract_json_array(raw: str) -> str:
             return candidate if isinstance(parsed, list) else ""
         except Exception:
             pass
+    if salvage_truncated:
+        # Quality passes return independent id/text objects. A complete object
+        # before a cut-off tail can still pass the normal per-id safety guards.
+        salvaged = _salvage_json_objects(raw)
+        if salvaged:
+            return json.dumps(salvaged, ensure_ascii=False)
     return ""  # Return empty string instead of raw, so caller knows parse failed
 
 
@@ -6948,7 +6958,25 @@ def semantic_reconciliation_pass(
                 except TypeError:
                     token_callback(total)
             raw = (resp.choices[0].message.content or "").strip() if resp.choices else ""
-            parsed = json.loads(_extract_json_array(raw) or "[]")
+            payload = _extract_json_array(raw)
+            if payload:
+                parsed = json.loads(payload)
+            else:
+                # A long reconciliation response can end mid-array. Completed
+                # cluster objects remain safe to apply because every cluster is
+                # independently shape-, source- and neighbor-validated below.
+                parsed = _salvage_json_objects(raw)
+                if not parsed:
+                    raise ValueError("response_not_array")
+                stats["details"].append({
+                    "clusters": [c["cluster"] for c in batch],
+                    "status": "partial_response",
+                    "recovered_clusters": len(parsed),
+                })
+                if log_fn:
+                    log_fn(
+                        f"Nihai anlam mutabakatı JSON'u kısmi kurtarıldı; "
+                        f"{len(parsed)} tamamlanmış küme doğrulanacak.", "warn")
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
         except RequestCancelled:
@@ -9052,7 +9080,8 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
         return False, "introduced_typo"
     if _has_foreign_script_backslide(old, new):
         return False, "foreign_script"
-    if not has_non_turkish_target_leak(old) and has_non_turkish_target_leak(new):
+    if (not has_non_turkish_target_leak(old, source_text=src)
+            and has_non_turkish_target_leak(new, source_text=src)):
         return False, "non_turkish_target"
     if src and _source_negation_requires_turkish_negation(src) and not _has_turkish_negation(new):
         return False, "source_negation"
@@ -9939,7 +9968,7 @@ def critic_pass_with_helper(
                 if log_fn:
                     log_fn(f"Critic Helper chunk boş yanıt döndü — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
-            content = _extract_json_array(content)
+            content = _extract_json_array(content, salvage_truncated=True)
             if not content:
                 if log_fn:
                     log_fn(f"Critic Helper chunk JSON çıkarılamadı — {len(chunk)} satır bu turda atlandı", "warn")
@@ -10712,13 +10741,20 @@ def save_results(
         except TypeError:
             token_callback(token_sum)
 
+    source_by_id = {
+        str(c.index): _clean_source_text(c.text)
+        for c in (src_cues or []) if hasattr(c, "index") and hasattr(c, "text")
+    }
+
     # Batch API output cannot be retried inline; never write non-Turkish target leaks silently.
+    # A source-preserved name such as Buñuel is not a leak and must not become [HATA].
     leak_marked = 0
     for key, (idx, ts, text) in list(srt_blocks.items()):
         if (str(target_language or "").strip().lower()
                 in _GLOSSARY_GUARD_TURKISH_TARGETS
                 and text and not str(text).startswith("[HATA")
-                and has_non_turkish_target_leak(text)):
+                and has_non_turkish_target_leak(
+                    text, source_text=source_by_id.get(str(idx), ""))):
             srt_blocks[key] = (idx, ts, "[HATA_NON_TURKISH_TARGET]")
             leak_marked += 1
 

@@ -1,6 +1,10 @@
 """Focused regressions for conservative Turkish semantic candidate guards."""
 
 import unittest
+import json
+import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -26,6 +30,15 @@ class NumericGuardTest(unittest.TestCase):
     def test_allows_equivalent_thousands_format(self):
         ok, reason = ht.validate_polish_candidate(
             "1.000 kişi geldi.", "1000 kişi geldi."
+        )
+        self.assertTrue(ok, reason)
+
+
+class CondenseSourceNameGuardTest(unittest.TestCase):
+    def test_allows_source_preserved_name_with_diacritic(self):
+        ok, reason = ht.validate_condense_candidate(
+            "Buñuel burada.", "Buñuel burada.",
+            source_text="Buñuel is here.",
         )
         self.assertTrue(ok, reason)
 
@@ -153,6 +166,119 @@ class SemanticFallbackGuardTest(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertEqual(reason, "semantic_rewrite_unverified")
+
+
+class SemanticResponseIntegrityTest(unittest.TestCase):
+    def test_salvages_complete_cluster_from_truncated_response(self):
+        blocks = [
+            ("1", "00:00:00,000 --> 00:00:02,000", "Merhaba!"),
+            ("2", "00:00:02,000 --> 00:00:04,000", "Elveda."),
+        ]
+        clusters = [
+            {"cluster": "c1", "items": [{
+                "id": "1", "source": "Hello!", "translation": "Merhaba!",
+                "suspect": True, "reasons": ["POST_PASS_CHANGED"],
+            }], "suspect_ids": ["1"]},
+            {"cluster": "c2", "items": [{
+                "id": "2", "source": "Goodbye.", "translation": "Elveda.",
+                "suspect": True, "reasons": ["POST_PASS_CHANGED"],
+            }], "suspect_ids": ["2"]},
+        ]
+        raw = (
+            '[{"cluster":"c1","fixes":[{"id":"1","text":"Merhaba.",'
+            '"reason":"punctuation"}]},{"cluster":"c2","fixes":[{"id":"2"'
+        )
+        response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=raw))],
+        )
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate.build_semantic_reconciliation_clusters", return_value=clusters), \
+             patch("hybrid_translate._safe_chat_create", return_value=response):
+            result, stats = ht.semantic_reconciliation_pass(
+                {"1": "Hello!", "2": "Goodbye."}, blocks,
+                api_key="k", model="m", changed_ids={"1", "2"},
+            )
+        self.assertEqual(result[0][2], "Merhaba.")
+        self.assertEqual(result[1][2], "Elveda.")
+        self.assertEqual(stats["fixed"], 1)
+        self.assertTrue(any(
+            detail.get("status") == "partial_response"
+            for detail in stats["details"]
+        ))
+
+    def test_json_array_salvages_only_complete_objects_when_requested(self):
+        raw = '[{"id":"1","fixed":"Merhaba."},{"id":"2","fixed":"yarım'
+        self.assertEqual(ht._extract_json_array(raw), "")
+        self.assertEqual(
+            json.loads(ht._extract_json_array(raw, salvage_truncated=True)),
+            [{"id": "1", "fixed": "Merhaba."}],
+        )
+
+
+class NativeFragmentAtomicityTest(unittest.TestCase):
+    def test_rejects_entire_fragment_when_one_returned_fix_fails_guard(self):
+        blocks = [
+            ("1", "00:00:00,000 --> 00:00:02,000", "<i>Onları görünce</i>"),
+            ("2", "00:00:02,000 --> 00:00:04,000", "eski aşkım gelir aklıma."),
+        ]
+        fixes = [
+            {"id": "1", "fixed": "Onları görünce"},
+            {"id": "2", "fixed": "Aklıma eski aşkım geliyor."},
+        ]
+        response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content=json.dumps(fixes, ensure_ascii=False)))],
+        )
+        fake_openai = SimpleNamespace(OpenAI=lambda **_kwargs: object())
+        with patch.dict(sys.modules, {"openai": fake_openai}), \
+             patch("hybrid_translate._safe_chat_create", return_value=response) as chat:
+            result = ht.native_reader_pass(
+                blocks, helper_api_key="k",
+                src_map={"1": "Seeing them", "2": "of an old love."},
+            )
+        self.assertEqual(result, blocks)
+        self.assertEqual(chat.call_count, 1)
+
+    def test_native_pass_applies_complete_fix_before_truncated_tail(self):
+        blocks = [("1", "00:00:00,000 --> 00:00:02,000", "Merhaba!")]
+        raw = '[{"id":"1","fixed":"Merhaba."},{"id":"2","fixed":"yarım'
+        response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=raw))],
+        )
+        fake_openai = SimpleNamespace(OpenAI=lambda **_kwargs: object())
+        with patch.dict(sys.modules, {"openai": fake_openai}), \
+             patch("hybrid_translate._safe_chat_create", return_value=response):
+            result = ht.native_reader_pass(blocks, helper_api_key="k")
+        self.assertEqual(result[0][2], "Merhaba.")
+
+
+class BatchSourcePreservationTest(unittest.TestCase):
+    def test_batch_output_keeps_source_preserved_name(self):
+        response_line = json.dumps({
+            "custom_id": "c1",
+            "response": {"body": {"choices": [{"message": {
+                "content": '[{"i":"1","t":"Buñuel geldi."}]',
+            }}]}},
+        }, ensure_ascii=False)
+        client = SimpleNamespace(
+            files=SimpleNamespace(content=lambda _file_id: SimpleNamespace(text=response_line)),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "out.srt"
+            with patch("openai.OpenAI", return_value=client):
+                written, marked = ht.save_results(
+                    "k", "out", {"c1": [("1", "00:00:00,000", "00:00:02,000")]},
+                    str(output),
+                    src_cues=[SimpleNamespace(index="1", text="Buñuel arrived.")],
+                )
+            final = output.read_text(encoding="utf-8")
+        self.assertEqual(written, 1)
+        self.assertEqual(marked, 0)
+        self.assertIn("Buñuel geldi.", final)
+        self.assertNotIn("HATA_NON_TURKISH_TARGET", final)
 
 
 if __name__ == "__main__":
