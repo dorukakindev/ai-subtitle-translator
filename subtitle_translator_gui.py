@@ -368,6 +368,14 @@ def _refresh_scrollable_frame_after_dpi(frame):
         return False
 
 
+def _log_view_at_bottom(yview, tolerance: float = 0.002) -> bool:
+    try:
+        _top, bottom = yview
+        return float(bottom) >= 1.0 - tolerance
+    except (TypeError, ValueError):
+        return False
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -8490,12 +8498,16 @@ class App(ctk.CTk):
 
         # Scroll kilidi: kullanıcı yukarı kaydırınca auto-scroll durur
         self._log_pinned = True
-        self.log_box.bind("<MouseWheel>",
-                          lambda e: self.after(80, self._check_log_pin))
-        self.log_box.bind("<Button-4>",
-                          lambda e: self.after(80, self._check_log_pin))
-        self.log_box.bind("<Button-5>",
-                          lambda e: self.after(80, self._check_log_pin))
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>",
+                         "<KeyRelease-Prior>", "<KeyRelease-Next>",
+                         "<KeyRelease-Up>", "<KeyRelease-Down>",
+                         "<KeyRelease-Home>", "<KeyRelease-End>"):
+            self.log_box.bind(sequence, self._on_log_manual_scroll)
+        scrollbar = getattr(self.log_box, "_scrollbar", None)
+        if scrollbar is not None:
+            scrollbar.bind("<ButtonPress-1>", self._on_log_scrollbar_press)
+            scrollbar.bind("<B1-Motion>", self._on_log_manual_scroll)
+            scrollbar.bind("<ButtonRelease-1>", self._on_log_manual_scroll)
 
     def _after_dpi_scaling(self):
         if getattr(self, "_is_shutting_down", False):
@@ -9232,6 +9244,15 @@ class App(ctk.CTk):
 
         def _write():
             try:
+                try:
+                    view_before = self.log_box.yview()
+                except Exception:
+                    view_before = None
+                follow_bottom = bool(self._log_pinned)
+                if view_before is not None:
+                    follow_bottom = (
+                        follow_bottom and _log_view_at_bottom(view_before))
+                self._log_pinned = follow_bottom
                 self.log_box.configure(state="normal")
                 tags = (f"quality_issue_{issue_id}",) if issue_id else ()
                 if tags:
@@ -9251,8 +9272,10 @@ class App(ctk.CTk):
                     self.log_box.tag_bind(
                         tag_name, "<Leave>",
                         lambda _event: self.log_box.configure(cursor=""))
-                if self._log_pinned:
+                if follow_bottom:
                     self.log_box.see("end")
+                elif view_before is not None:
+                    self.log_box.yview_moveto(float(view_before[0]))
                 self.log_box.configure(state="disabled")
             except Exception:
                 pass
@@ -9467,11 +9490,20 @@ class App(ctk.CTk):
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=lambda: (dlg.destroy(), self._start())).grid(row=0, column=1, padx=4, sticky="ew")
 
+    def _on_log_scrollbar_press(self, _event=None):
+        self._log_pinned = False
+
+    def _on_log_manual_scroll(self, _event=None):
+        self._log_pinned = False
+        try:
+            self.after_idle(self._check_log_pin)
+        except Exception:
+            pass
+
     def _check_log_pin(self):
         """Kullanıcı scroll yaptıktan sonra alta yakın mı diye kontrol eder."""
         try:
-            _, bottom = self.log_box.yview()
-            self._log_pinned = (bottom >= 0.98)
+            self._log_pinned = _log_view_at_bottom(self.log_box.yview())
         except Exception:
             pass
 
@@ -9502,8 +9534,13 @@ class App(ctk.CTk):
                 except Exception:
                     continue
                 if text:
-                    chunks.append(text.rstrip())
-            return "\n\n".join(chunks)
+                    chunks.append(text)
+            if len(chunks) == 1:
+                return chunks[0]
+            if chunks:
+                return "\n\n".join(
+                    chunk.rstrip("\r\n") for chunk in chunks) + "\n"
+            return ""
 
         try:
             if lock is not None:
