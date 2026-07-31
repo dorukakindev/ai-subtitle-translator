@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +35,49 @@ class ShutdownWhenDoneTest(unittest.TestCase):
         self.assertFalse(gui.App._schedule_shutdown_after_success(stub, record))
         stub.shutdown_when_done_var.set.assert_called_once_with(False)
         stub.after.assert_called_once()
+
+    def test_switch_can_be_enabled_during_active_run(self):
+        switch = MagicMock()
+        switch.get.return_value = True
+        stub = SimpleNamespace(
+            _active_snapshot={"shutdown_when_done": False},
+            _auto_shutdown_scheduled_run_id="",
+            shutdown_when_done_var=switch,
+            _log=MagicMock(),
+            after=MagicMock(),
+        )
+        record = {"run_id": "run-live", "status": "tamamlandı"}
+        self.assertTrue(gui.App._schedule_shutdown_after_success(stub, record))
+        stub.after.assert_called_once()
+
+    def test_switch_can_be_disabled_during_active_run(self):
+        switch = MagicMock()
+        switch.get.return_value = False
+        stub = SimpleNamespace(
+            _active_snapshot={"shutdown_when_done": True},
+            _auto_shutdown_scheduled_run_id="",
+            shutdown_when_done_var=switch,
+            _log=MagicMock(),
+            after=MagicMock(),
+        )
+        record = {"run_id": "run-live", "status": "tamamlandı"}
+        self.assertFalse(gui.App._schedule_shutdown_after_success(stub, record))
+        stub.after.assert_not_called()
+
+    def test_live_toggle_updates_snapshot_and_run_record(self):
+        record = {"settings": {}}
+        stub = SimpleNamespace(
+            shutdown_when_done_var=SimpleNamespace(get=lambda: True),
+            _active_snapshot={"shutdown_when_done": False},
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record,
+            _is_running=True,
+            _log=MagicMock(),
+        )
+        with patch.object(gui, "atomic_write_json"):
+            gui.App._on_shutdown_when_done_changed(stub)
+        self.assertTrue(stub._active_snapshot["shutdown_when_done"])
+        self.assertTrue(record["settings"]["shutdown_when_done"])
 
     def test_log_is_saved_and_copied_before_shutdown(self):
         with tempfile.TemporaryDirectory() as td:

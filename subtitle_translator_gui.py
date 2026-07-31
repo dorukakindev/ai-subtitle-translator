@@ -8017,6 +8017,7 @@ class App(ctk.CTk):
             shutdown_fr, text="", variable=self.shutdown_when_done_var,
             width=44, height=22, fg_color=BORDER,
             progress_color=ORANGE_LIVE,
+            command=self._on_shutdown_when_done_changed,
         ).grid(row=0, column=0)
         ctk.CTkLabel(
             shutdown_fr, text="⏻  Bitince bilgisayarı kapat",
@@ -8889,7 +8890,6 @@ class App(ctk.CTk):
             "analysis_depth_var": "analysis_depth",
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
-            "shutdown_when_done_var": "shutdown_when_done",
             "prevent_sleep_var": "prevent_sleep",
             "auto_retry_files_var": "auto_retry_files",
             "auto_resume_crash_var": "auto_resume_crash",
@@ -9630,8 +9630,14 @@ class App(ctk.CTk):
     def _schedule_shutdown_after_success(self, record: dict | None):
         if not record or record.get("status") != "tamamlandı":
             return False
-        snapshot = getattr(self, "_active_snapshot", {}) or {}
-        if not snapshot.get("shutdown_when_done"):
+        switch = getattr(self, "shutdown_when_done_var", None)
+        if switch is not None:
+            enabled = bool(switch.get())
+        else:
+            enabled = bool(
+                (getattr(self, "_active_snapshot", {}) or {}).get(
+                    "shutdown_when_done"))
+        if not enabled:
             return False
         run_id = str(record.get("run_id") or "")
         if not run_id or run_id == self._auto_shutdown_scheduled_run_id:
@@ -9655,6 +9661,28 @@ class App(ctk.CTk):
         except Exception as exc:
             self._log(f"Otomatik kapanış zamanlanamadı: {exc}", "err")
             return False
+
+    def _on_shutdown_when_done_changed(self):
+        enabled = bool(self.shutdown_when_done_var.get())
+        snapshot = getattr(self, "_active_snapshot", None)
+        if isinstance(snapshot, dict):
+            snapshot["shutdown_when_done"] = enabled
+        lock = getattr(self, "_run_record_lock", None)
+        if lock is not None:
+            with lock:
+                record = getattr(self, "_active_run_record", None)
+                if record is not None:
+                    record.setdefault("settings", {})["shutdown_when_done"] = enabled
+                    try:
+                        atomic_write_json(_active_run_state_path(), record)
+                    except Exception:
+                        pass
+        if getattr(self, "_is_running", False):
+            state = "açıldı" if enabled else "kapatıldı"
+            self._log(
+                f"Bu çalışma için 'Bitince bilgisayarı kapat' {state}.",
+                "warn" if enabled else "info",
+            )
 
     def _schedule_failed_file_retry(self, record: dict | None) -> bool:
         if not record or record.get("status") in {"tamamlandı", "durduruldu"}:
