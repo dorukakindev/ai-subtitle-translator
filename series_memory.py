@@ -203,11 +203,18 @@ class SeriesMemory:
     def _merge_saved_data(disk: dict, memory: dict) -> dict:
         if not isinstance(disk, dict):
             disk = {}
+        memory_target = _target_key(memory.get("target_language", "tr"))
+        memory_source = _source_key(memory.get("source_language", "en"))
+        if ((disk.get("target_language")
+             and _target_key(disk["target_language"]) != memory_target)
+                or (disk.get("source_language")
+                    and _source_key(disk["source_language"]) != memory_source)):
+            disk = {}
         merged = {
             "version": memory.get("version", SeriesMemory.VERSION),
             "show": memory.get("show", disk.get("show", "")),
-            "target_language": memory.get("target_language", "tr"),
-            "source_language": memory.get("source_language", "en"),
+            "target_language": memory_target,
+            "source_language": memory_source,
         }
         for key in ("terms", "characters"):
             values = dict(disk.get(key) or {})

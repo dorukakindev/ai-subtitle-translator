@@ -288,6 +288,19 @@ class PersistenceTest(unittest.TestCase):
             self.assertEqual(loaded.get_terms(), {"Alpha": "Alfa", "Beta": "Beta TR"})
             self.assertEqual(loaded._data["updated_eps"], ["s01e01", "s01e02"])
 
+    def test_concurrent_save_does_not_merge_wrong_language_disk_data(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory = sm.SeriesMemory.load(td, "show", source_language="en")
+            memory.merge_terms({"yes": "evet"})
+            memory._path.parent.mkdir(parents=True, exist_ok=True)
+            memory._path.write_text(json.dumps({
+                "target_language": "tr", "source_language": "es",
+                "terms": {"si": "evet"}, "characters": {},
+                "address_map": [], "updated_eps": [],
+            }), encoding="utf-8")
+            memory.save()
+            self.assertEqual(sm.SeriesMemory.load(td, "show").get_terms(), {"yes": "evet"})
+
 
 class RunOverlayTest(unittest.TestCase):
     class _Var:
