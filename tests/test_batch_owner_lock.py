@@ -58,9 +58,12 @@ class LiveOwnedBatchIdsTest(unittest.TestCase):
         self._env.stop()
         self._state.cleanup()
 
-    def _write_owner(self, pid, ids):
+    def _write_owner(self, pid, ids, process_start=""):
         p = _owner_path(pid)
-        p.write_text(json.dumps({"pid": pid, "ts": 1.0, "batch_ids": ids}), encoding="utf-8")
+        data = {"pid": pid, "ts": 1.0, "batch_ids": ids}
+        if process_start:
+            data["process_start"] = process_start
+        p.write_text(json.dumps(data), encoding="utf-8")
         self._made.append(p)
         return p
 
@@ -86,6 +89,15 @@ class LiveOwnedBatchIdsTest(unittest.TestCase):
         p.write_text("{bozuk json", encoding="utf-8")
         self._made.append(p)
         self.assertEqual(gui._live_owned_batch_ids(), set())   # patlamamalı
+
+    def test_reused_pid_marker_is_not_treated_as_live_owner(self):
+        p = self._write_owner(
+            os.getpid(), ["batch_stale"], process_start="win:old-process")
+        with patch("os.getpid", return_value=os.getpid() + 1), \
+             patch.object(gui, "_pid_alive", return_value=True), \
+             patch.object(gui, "_process_start_marker", return_value="win:new-process"):
+            self.assertEqual(gui._live_owned_batch_ids(), set())
+        self.assertFalse(p.exists())
 
     def test_no_lock_files_returns_empty(self):
         # (Ortamda başka kilit olabilir; en azından patlamamalı ve set dönmeli)

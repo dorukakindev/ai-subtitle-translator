@@ -6268,6 +6268,45 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _process_start_marker(pid: int) -> str:
+    """PID yeniden kullanÄ±mÄ±nÄ± ayÄ±rt etmek iÃ§in sÃ¼reÃ§ baÅŸlangÄ±Ã§ imzasÄ±."""
+    try:
+        pid = int(pid)
+    except Exception:
+        return ""
+    if pid <= 0:
+        return ""
+    import sys as _sys
+    if _sys.platform == "win32":
+        try:
+            import ctypes
+            query_limited = 0x1000
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(query_limited, False, pid)
+            if not handle:
+                return ""
+            try:
+                creation = ctypes.c_ulonglong()
+                exit_time = ctypes.c_ulonglong()
+                kernel = ctypes.c_ulonglong()
+                user = ctypes.c_ulonglong()
+                if not k32.GetProcessTimes(
+                        handle, ctypes.byref(creation), ctypes.byref(exit_time),
+                        ctypes.byref(kernel), ctypes.byref(user)):
+                    return ""
+                return f"win:{creation.value}"
+            finally:
+                k32.CloseHandle(handle)
+        except Exception:
+            return ""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        tail = stat[stat.rfind(")") + 2:].split()
+        return f"proc:{tail[19]}" if len(tail) > 19 else ""
+    except Exception:
+        return ""
+
+
 def _live_owned_batch_ids() -> set:
     """BAŞKA canlı süreçlerin şu an üzerinde çalıştığı batch id'leri.
 
@@ -6284,6 +6323,11 @@ def _live_owned_batch_ids() -> set:
                 pid = int(d.get("pid", 0) or 0)
                 ids = {str(b).strip() for b in (d.get("batch_ids") or []) if str(b).strip()}
                 if pid <= 0 or pid == my_pid:
+                    continue
+                saved_marker = str(d.get("process_start") or "")
+                current_marker = _process_start_marker(pid) if saved_marker else ""
+                if saved_marker and current_marker and saved_marker != current_marker:
+                    p.unlink(missing_ok=True)
                     continue
                 if _pid_alive(pid):
                     owned |= ids
@@ -13128,8 +13172,12 @@ class App(ctk.CTk):
                 if not ids:
                     p.unlink(missing_ok=True)
                     return
-                atomic_write_json(p, {"pid": _os.getpid(), "ts": time.time(),
-                                      "batch_ids": ids})
+                pid = _os.getpid()
+                data = {"pid": pid, "ts": time.time(), "batch_ids": ids}
+                marker = _process_start_marker(pid)
+                if marker:
+                    data["process_start"] = marker
+                atomic_write_json(p, data)
             except Exception:
                 pass   # kilit yazılamazsa eski davranışa düşülür (fail-open)
 
