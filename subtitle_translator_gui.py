@@ -5854,6 +5854,8 @@ def _run_summary_data(record: dict) -> dict:
         "errors": int(record.get("errors", 0) or 0),
         "outputs": list(dict.fromkeys(record.get("outputs") or [])),
         "reports": list(dict.fromkeys(record.get("reports") or [])),
+        "completion_markers": list(dict.fromkeys(
+            record.get("completion_markers") or [])),
         "log_path": record.get("log_path", ""),
     }
 
@@ -5881,6 +5883,7 @@ def build_run_summary_text(record: dict) -> str:
         ("Başarısız dosyalar", data["files"]["error"]),
         ("Üretilen çıktılar", data["outputs"]),
         ("Üretilen raporlar", data["reports"]),
+        ("ÇEVRİLDİ işaretleri", data["completion_markers"]),
     ):
         if values:
             lines.extend(["", f"{title}:"])
@@ -5888,6 +5891,66 @@ def build_run_summary_text(record: dict) -> str:
     if data["log_path"]:
         lines.extend(["", f"Log: {data['log_path']}"])
     return "\n".join(lines) + "\n"
+
+
+_COMPLETION_MARKER_NAME = "ÇEVRİLDİ.txt"
+
+
+def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
+    files = dict(record.get("files") or {})
+    settings = dict(record.get("settings") or {})
+    roots = [Path(value) for value in settings.get("selected_folder_roots") or ()
+             if str(value or "").strip()]
+    groups = {}
+    for filepath, state in files.items():
+        source = Path(filepath)
+        matches = []
+        for root in roots:
+            try:
+                source.resolve(strict=False).relative_to(root.resolve(strict=False))
+                matches.append(root)
+            except (OSError, ValueError):
+                continue
+        if matches:
+            group_root = max(matches, key=lambda value: len(value.parts))
+        elif source.is_file():
+            group_root = source.parent
+        else:
+            continue
+        groups.setdefault(group_root, []).append((str(source), state or {}))
+    completed = []
+    for root, members in groups.items():
+        if members and all(str(state.get("status")) == "done" for _path, state in members):
+            completed.append((root, [path for path, _state in members]))
+    return completed
+
+
+def _completion_marker_text(record: dict, source_files: list[str]) -> str:
+    settings = dict(record.get("settings") or {})
+    lines = [
+        "ÇEVRİLDİ",
+        f"Çalıştırma kimliği: {record.get('run_id') or '-'}",
+        f"Tamamlanma: {record.get('ended_at') or '-'}",
+        f"Çevrilen altyazı sayısı: {len(source_files)}",
+    ]
+    output_dir = str(settings.get("output_dir") or "").strip()
+    if output_dir:
+        lines.append(f"Çıktı klasörü: {output_dir}")
+    lines.extend(["", "Kaynak altyazılar:"])
+    lines.extend(f"- {Path(path).name}" for path in source_files)
+    return "\n".join(lines) + "\n"
+
+
+def _write_completion_markers(record: dict) -> list[str]:
+    written = []
+    for root, source_files in _completion_marker_groups(record):
+        if not root.is_dir():
+            continue
+        marker = root / _COMPLETION_MARKER_NAME
+        atomic_write_text(
+            marker, _completion_marker_text(record, source_files), encoding="utf-8")
+        written.append(str(marker))
+    return written
 
 
 def _post_ui(self, fn, *args, **kwargs):
@@ -9251,6 +9314,8 @@ class App(ctk.CTk):
             for path, schema in dict(snapshot.get("file_schemas") or {}).items()
         }
         result["file_glossaries"] = dict(snapshot.get("file_glossaries") or {})
+        result["selected_folder_roots"] = list(
+            snapshot.get("selected_folder_roots") or ())
         return json.loads(_sanitize_settings_backup_text(
             json.dumps(result, ensure_ascii=False, default=str)))
 
@@ -9296,6 +9361,7 @@ class App(ctk.CTk):
             "errors": 0,
             "outputs": [],
             "reports": [],
+            "completion_markers": [],
             "log_path": str(log_path),
             "last_traceback": "",
         }
@@ -9410,6 +9476,14 @@ class App(ctk.CTk):
             else:
                 record["status"] = "tamamlandı"
             snapshot = copy.deepcopy(record)
+
+        try:
+            snapshot["completion_markers"] = _write_completion_markers(snapshot)
+            for marker in snapshot["completion_markers"]:
+                self._log(f"Çeviri tamamlandı işareti: {marker}", "ok")
+        except Exception as exc:
+            snapshot["completion_marker_error"] = str(exc)
+            self._log(f"ÇEVRİLDİ işareti yazılamadı: {exc}", "warn")
 
         settings = snapshot.get("settings") or {}
         try:
