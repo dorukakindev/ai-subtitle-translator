@@ -78,7 +78,7 @@ class WorkerDrainTest(unittest.TestCase):
         callback(deadline)
         finished.assert_called_once()
 
-    def test_close_drain_never_closes_resources_while_worker_is_alive(self):
+    def test_close_drain_times_out_without_closing_live_worker_resources(self):
         stub = self._stub()
         release = threading.Event()
         thread = gui.App._start_worker(stub, release.wait)
@@ -86,16 +86,32 @@ class WorkerDrainTest(unittest.TestCase):
         finished = MagicMock()
         stub.after = lambda *args: scheduled.append(args)
         stub._finish_close = finished
+        stub._log = MagicMock()
 
         gui.App._drain_workers_for_close(stub, time.monotonic() - 1)
 
-        self.assertEqual(len(scheduled), 1)
-        finished.assert_not_called()
+        self.assertEqual(scheduled, [])
+        finished.assert_called_once_with(close_resources=False)
         release.set()
         thread.join(timeout=1)
-        _, callback, deadline = scheduled.pop()
-        callback(deadline)
-        finished.assert_called_once()
+
+    def test_close_drain_creates_bounded_deadline_when_not_provided(self):
+        stub = self._stub()
+        release = threading.Event()
+        thread = gui.App._start_worker(stub, release.wait)
+        scheduled = []
+        stub.after = lambda delay, callback, deadline: scheduled.append(
+            (delay, callback, deadline)
+        )
+        stub._finish_close = MagicMock()
+
+        before = time.monotonic()
+        gui.App._drain_workers_for_close(stub)
+
+        self.assertEqual(len(scheduled), 1)
+        self.assertGreaterEqual(scheduled[0][2], before + gui.CLOSE_WORKER_DRAIN_SECONDS - 0.1)
+        release.set()
+        thread.join(timeout=1)
 
     def test_finish_close_locks_log_and_closes_tm(self):
         log_file = io.StringIO()
@@ -122,6 +138,30 @@ class WorkerDrainTest(unittest.TestCase):
         tm.close.assert_called_once()
         self.assertTrue(log_file.closed)
         self.assertIsNone(stub._log_file)
+        destroyed.assert_called_once()
+
+    def test_forced_finish_keeps_snapshot_and_resources_for_live_worker(self):
+        log_file = io.StringIO()
+        tm = MagicMock()
+        destroyed = MagicMock()
+        var = SimpleNamespace(get=lambda: "canli")
+        original_get = var.get
+        stub = SimpleNamespace(
+            _tm=tm,
+            _log_lock=threading.Lock(),
+            _log_file=log_file,
+            _active_snapshot={"value": "anlik"},
+            _frozen_run_var_getters=[(var, original_get)],
+            destroy=destroyed,
+        )
+        var.get = lambda: "anlik"
+
+        gui.App._finish_close(stub, close_resources=False)
+
+        self.assertEqual(var.get(), "anlik")
+        self.assertEqual(stub._active_snapshot, {"value": "anlik"})
+        tm.close.assert_not_called()
+        self.assertFalse(log_file.closed)
         destroyed.assert_called_once()
 
 

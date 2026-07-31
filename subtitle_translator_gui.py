@@ -54,6 +54,7 @@ CONTENT_TYPE_DETECT_MODEL = "gpt-5.4"
 API_REQUEST_TIMEOUT_SECONDS = 300
 FILE_LIST_PAGE_SIZE = 60
 UI_DISPATCH_BUDGET_SECONDS = 0.008
+CLOSE_WORKER_DRAIN_SECONDS = 6.0
 
 
 def _desktop_directory() -> Path:
@@ -7095,12 +7096,28 @@ class App(ctk.CTk):
         return thread
 
     def _drain_workers_for_close(self, deadline=None):
+        if deadline is None:
+            deadline = time.monotonic() + CLOSE_WORKER_DRAIN_SECONDS
         with self._worker_lock:
             alive = [
                 thread for thread in self._worker_threads
                 if thread.is_alive() and thread is not threading.current_thread()
             ]
         if alive:
+            if time.monotonic() >= deadline:
+                # Ağ isteği veya harici sağlayıcı kapanış sinyaline cevap vermezse
+                # pencereyi sonsuza dek gizli halde tutma. Kaynakları kapatmıyoruz:
+                # yaşayan worker son log/TM yazımını güvenle tamamlayabilsin.
+                try:
+                    self._log(
+                        f"Kapanış beklemesi {CLOSE_WORKER_DRAIN_SECONDS:.0f} sn sınırına ulaştı; "
+                        "arka plan isteği bitene kadar kaynaklar açık bırakıldı.",
+                        "warn",
+                    )
+                except Exception:
+                    pass
+                self._finish_close(close_resources=False)
+                return
             try:
                 self.after(50, self._drain_workers_for_close, deadline)
                 return
@@ -7108,28 +7125,29 @@ class App(ctk.CTk):
                 pass
         self._finish_close()
 
-    def _finish_close(self):
+    def _finish_close(self, close_resources=True):
         if getattr(self, "_sleep_prevention_active", False):
             _set_windows_sleep_prevention(False)
             self._sleep_prevention_active = False
-        try:
-            App._unfreeze_run_variable_reads(self)
-            self._active_snapshot = None
-            self._save_settings()
-        except Exception:
-            pass
-        try:
-            if hasattr(self, "_tm") and self._tm:
-                self._tm.close()
-        except Exception:
-            pass
-        try:
-            with self._log_lock:
-                if hasattr(self, "_log_file") and self._log_file:
-                    self._log_file.close()
-                    self._log_file = None
-        except Exception:
-            pass
+        if close_resources:
+            try:
+                App._unfreeze_run_variable_reads(self)
+                self._active_snapshot = None
+                self._save_settings()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "_tm") and self._tm:
+                    self._tm.close()
+            except Exception:
+                pass
+            try:
+                with self._log_lock:
+                    if hasattr(self, "_log_file") and self._log_file:
+                        self._log_file.close()
+                        self._log_file = None
+            except Exception:
+                pass
         self.destroy()
 
     # ── Project Memory Dialog ─────────────────────────────────────────────────
