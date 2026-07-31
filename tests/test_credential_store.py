@@ -46,6 +46,12 @@ class FallbackRoundtripTest(unittest.TestCase):
     def test_missing_key_returns_none(self):
         self.assertIsNone(cs.load_key("nonexistent"))
 
+    def test_malformed_fallback_container_fails_closed(self):
+        self._fb.write_text("[]", encoding="utf-8")
+        self.assertIsNone(cs.load_key("openai"))
+        cs.save_key("openai", "sk-safe")
+        self.assertEqual(cs.load_key("openai"), "sk-safe")
+
     def test_migrate_from_settings_strips_json(self):
         settings = Path(self._tmp.name) / ".gui_settings.json"
         settings.write_text(json.dumps({

@@ -30,7 +30,12 @@ def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(text, encoding=encoding)
+        # Yalnızca yeniden adlandırmak yetmez: güç kesilirse boş/yarım tmp'nin
+        # hedefin yerine geçmemesi için içeriği diske zorla yaz.
+        with open(tmp, "w", encoding=encoding) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -41,7 +46,10 @@ def atomic_write_bytes(path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_bytes(data)
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
         tmp.replace(path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -94,7 +102,7 @@ def mutate_batch_ids(path, *, add=(), remove=(), replace=None) -> list[str]:
         seen = set()
         for value in list(source or []) + list(add or []):
             bid = str(value).strip()
-            if not bid or bid in removed or bid in seen:
+            if not is_safe_batch_id(bid) or bid in removed or bid in seen:
                 continue
             seen.add(bid)
             result.append(bid)

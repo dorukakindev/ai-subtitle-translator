@@ -26,6 +26,13 @@ class AppStateTest(unittest.TestCase):
         for value in ("../secret", r"..\secret", "x/y", "x:y", ""):
             self.assertFalse(is_safe_batch_id(value))
 
+    def test_batch_id_mutation_discards_unsafe_values(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "batch_id.txt"
+            result = mutate_batch_ids(path, add=["batch_ok", "../escape", "x/y"])
+            self.assertEqual(result, ["batch_ok"])
+            self.assertEqual(path.read_text(encoding="utf-8"), "batch_ok")
+
 
 if __name__ == "__main__":
     unittest.main()

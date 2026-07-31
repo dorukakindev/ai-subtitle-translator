@@ -134,7 +134,8 @@ def _read_fallback_store() -> dict:
         return {}
     try:
         with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
@@ -167,8 +168,9 @@ def _save_fallback(service: str, key: str) -> None:
 
 
 def _load_fallback(service: str) -> str | None:
-    with _interprocess_lock(_fallback_path()):
-        store = _read_fallback_store()
+    with _fallback_lock:
+        with _interprocess_lock(_fallback_path()):
+            store = _read_fallback_store()
     token = store.get(service)
     if token is None:
         return None

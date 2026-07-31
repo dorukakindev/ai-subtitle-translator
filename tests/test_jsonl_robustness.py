@@ -165,12 +165,38 @@ class TestJsonlRobustness(unittest.TestCase):
             self.assertEqual(record["file_map"], fmap)
             self.assertEqual(record["source_hashes"][str(source)], standalone._source_file_sha256(str(source)))
 
+    @patch("subtitle_batch_translate._get_client")
+    @patch("subtitle_batch_translate.write_srt")
+    def test_standalone_never_overwrites_source_when_output_matches_input(
+            self, mock_write_srt, mock_get_client):
+        import subtitle_batch_translate as standalone
+        mock_get_client.return_value.files.content.return_value.text = (
+            '{"custom_id":"cid","response":{"body":{"choices":[{"message":{"content":"Merhaba"}}]}}}'
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source.srt"
+            source.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+            standalone.process_results(
+                "out", {"cid": (str(source), 0, "1", "00:00:00,000 --> 00:00:01,000")},
+                [str(source)], input_folder=tmpdir, output_folder=tmpdir)
+        self.assertEqual(mock_write_srt.call_args.args[0], source.with_name("source.tr.srt"))
+
+    def test_non_turkish_standalone_output_skips_turkish_artifact_rewrite(self):
+        import subtitle_batch_translate as standalone
+        self.assertEqual(standalone._normalize_output_text("Yada", "German"), "Yada")
+
     def test_try_extract_fenced_newlines(self):
         from repair_batches import _try_extract
         fenced_content = "```json\n[{\"i\": 1, \"t\": \"Merhaba\"}]\n```"
         result = _try_extract(fenced_content)
         self.assertIsNotNone(result)
         self.assertEqual(result, [{"i": 1, "t": "Merhaba"}])
+
+    def test_repair_chunk_rejects_duplicate_or_unknown_cue_ids(self):
+        from repair_batches import parse_chunk
+        info = [["1", "00:00:00,000", "00:00:01,000"]]
+        self.assertEqual(parse_chunk('[{"i":"1","t":"A"},{"i":"1","t":"B"}]', info, "cid"), {})
+        self.assertEqual(parse_chunk('[{"i":"99","t":"A"}]', info, "cid"), {})
 
     def test_standalone_provider_resolution(self):
         from subtitle_batch_translate import resolve_standalone_provider

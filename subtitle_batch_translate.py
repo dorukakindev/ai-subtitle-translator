@@ -129,7 +129,7 @@ def parse_srt(filepath):
     return blocks
 
 
-def _normalize_output_text(text: str) -> str:
+def _normalize_output_text(text: str, target_language: str = TARGET_LANG) -> str:
     text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
     text = re.sub(r"\n{2,}", "\n", text)
     try:
@@ -138,7 +138,8 @@ def _normalize_output_text(text: str) -> str:
         return text
     text = sdh_cleaner.normalize_sdh_descriptors(text)
     text = sdh_cleaner.normalize_speaker_labels(text)
-    text = sdh_cleaner.normalize_turkish_artifacts(text)
+    if str(target_language or "").strip().lower() in {"turkish", "türkçe", "turkce", "tr"}:
+        text = sdh_cleaner.normalize_turkish_artifacts(text)
     return text
 
 
@@ -253,11 +254,12 @@ def clear_standalone_recovery(path: Path | None = None) -> None:
     Path(path or standalone_recovery_path()).unlink(missing_ok=True)
 
 
-def write_srt(filepath, blocks):
+def write_srt(filepath, blocks, target_language: str = TARGET_LANG):
     """(index, timestamp, text) listesinden SRT dosyası yazar (atomik)."""
     lines = []
     for idx, timestamp, text in blocks:
-        text = _normalize_output_text(text)
+        text = (_normalize_output_text(text) if target_language == TARGET_LANG
+                else _normalize_output_text(text, target_language))
         lines.append(f"{idx}\n{timestamp}\n{text}\n\n")
     atomic_write_text(filepath, "".join(lines), encoding="utf-8")
 
@@ -395,6 +397,11 @@ def process_results(output_file_id, file_map, srt_files, *,
     source_cache = {}
     source_mismatches = set()
     if expected_source_hashes is not None:
+        expected_paths = set(expected_source_hashes)
+        mapped_paths = {entry[0] for entry in file_map.values()}
+        for filepath in mapped_paths - expected_paths:
+            source_mismatches.add(filepath)
+            print(f"[!] Kaynak imzası yok; eski batch sonucu yazılmadı: {filepath}")
         for filepath, expected_hash in expected_source_hashes.items():
             if _source_file_sha256(filepath) != expected_hash:
                 source_mismatches.add(filepath)
@@ -434,8 +441,16 @@ def process_results(output_file_id, file_map, srt_files, *,
             skipped_files += 1
             continue
         out_path = Path(output_folder) / rel
+        try:
+            if out_path.resolve() == Path(filepath).resolve():
+                out_path = out_path.with_name(f"{out_path.stem}.tr{out_path.suffix}")
+                print(f"[i] Kaynak dosya korunuyor; çıktı farklı ada yazılacak: {out_path}")
+        except OSError:
+            skipped_files += 1
+            print(f"[!] Güvenli çıktı yolu çözümlenemedi; çıktı yazılmadı: {filepath}")
+            continue
         ordered = [blocks_dict[k] for k in sorted(blocks_dict)]
-        write_srt(out_path, ordered)
+        write_srt(out_path, ordered, TARGET_LANG)
         print(f"[+] Kaydedildi: {out_path}")
         written_files += 1
 
