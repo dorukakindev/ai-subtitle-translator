@@ -273,6 +273,21 @@ class PersistenceTest(unittest.TestCase):
                 "ikinci",
             )
 
+    def test_two_stale_instances_merge_without_losing_first_decisions(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = sm.SeriesMemory.load(td, "show")
+            second = sm.SeriesMemory.load(td, "show")
+            first.merge_terms({"Alpha": "Alfa"})
+            first.mark_episode(1, 1)
+            second.merge_terms({"Beta": "Beta TR", "Alpha": "Yanlış"})
+            second.mark_episode(1, 2)
+            first.save()
+            second.save()
+
+            loaded = sm.SeriesMemory.load(td, "show")
+            self.assertEqual(loaded.get_terms(), {"Alpha": "Alfa", "Beta": "Beta TR"})
+            self.assertEqual(loaded._data["updated_eps"], ["s01e01", "s01e02"])
+
 
 class RunOverlayTest(unittest.TestCase):
     class _Var:

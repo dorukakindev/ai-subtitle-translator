@@ -14,9 +14,10 @@ Saklama: <input_dir>/.series_memory/<show-slug>.json
 
 import json
 import re
+import threading
 from pathlib import Path
 
-from app_state import atomic_write_json
+from app_state import _interprocess_lock, atomic_write_json
 
 # 'Show.Name.S01E05.720p' → show + season + ep
 _SXXEXX = re.compile(
@@ -147,6 +148,7 @@ class SeriesMemory:
     def __init__(self, path: Path, data: dict):
         self._path = path
         self._data = data
+        self._lock = threading.RLock()
 
     # ── Yükleme / kaydetme ────────────────────────────────────────────────────
 
@@ -197,10 +199,56 @@ class SeriesMemory:
             data["address_map"] = []
         return cls(path, data)
 
+    @staticmethod
+    def _merge_saved_data(disk: dict, memory: dict) -> dict:
+        if not isinstance(disk, dict):
+            disk = {}
+        merged = {
+            "version": memory.get("version", SeriesMemory.VERSION),
+            "show": memory.get("show", disk.get("show", "")),
+            "target_language": memory.get("target_language", "tr"),
+            "source_language": memory.get("source_language", "en"),
+        }
+        for key in ("terms", "characters"):
+            values = dict(disk.get(key) or {})
+            known = {str(item).strip().casefold() for item in values}
+            for item, value in dict(memory.get(key) or {}).items():
+                folded = str(item).strip().casefold()
+                if folded not in known:
+                    values[item] = value
+                    known.add(folded)
+            merged[key] = values
+        addresses = list(disk.get("address_map") or [])
+        seen = {
+            (str(item.get("a") or "").strip().casefold(),
+             str(item.get("b") or "").strip().casefold())
+            for item in addresses if isinstance(item, dict)
+        }
+        for item in list(memory.get("address_map") or []):
+            if not isinstance(item, dict):
+                continue
+            key = (str(item.get("a") or "").strip().casefold(),
+                   str(item.get("b") or "").strip().casefold())
+            if key not in seen:
+                addresses.append(item)
+                seen.add(key)
+        merged["address_map"] = addresses
+        merged["updated_eps"] = list(dict.fromkeys(
+            list(disk.get("updated_eps") or [])
+            + list(memory.get("updated_eps") or [])))
+        return merged
+
     def save(self):
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_json(self._path, self._data)
+            with self._lock:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                with _interprocess_lock(self._path):
+                    try:
+                        disk = json.loads(self._path.read_text(encoding="utf-8"))
+                    except Exception:
+                        disk = {}
+                    self._data = self._merge_saved_data(disk, self._data)
+                    atomic_write_json(self._path, self._data)
         except Exception as e:
             import sys
             print(f"[series_memory] kaydetme hatası {self._path}: {e}", file=sys.stderr)
