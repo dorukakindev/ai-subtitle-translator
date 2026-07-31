@@ -37,10 +37,18 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             "discord: ceviri2",
         ))
         self.assertEqual(result[-1], (
-            "412",
+            "413",
             "00:00:10,001 --> 00:00:12,001",
             "discord: ceviri2",
         ))
+        middle = [block for block in result[1:-1]
+                  if block[2] == "discord: ceviri2"]
+        self.assertEqual(len(middle), 1)
+        self.assertEqual(middle[0][0], "412")
+        self.assertEqual(
+            middle[0][1],
+            "00:00:06,001 --> 00:00:07,999",
+        )
         by_id = {str(idx): (ts, text) for idx, ts, text in result}
         self.assertEqual(by_id["1"][1], "Hala buradayım.")
         self.assertEqual(by_id["2"][1], r"{\i1}Sarı Çizgili{\i0}")
@@ -172,6 +180,25 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         ]
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
         self.assertEqual(result[0][1], "00:00:00,000 --> 00:00:00,001")
+
+    def test_middle_signature_uses_nearest_safe_gap_without_moving_dialogue(self):
+        blocks = [
+            ("1", "00:00:10,000 --> 00:00:12,000", "Bir."),
+            ("2", "00:00:12,100 --> 00:00:14,000", "İki."),
+            ("3", "00:00:18,000 --> 00:00:20,000", "Üç."),
+            ("4", "00:00:20,100 --> 00:00:22,000", "Dört."),
+        ]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        signatures = [block for block in result
+                      if block[2] == "discord: ceviri2"]
+        self.assertEqual(len(signatures), 3)
+        self.assertEqual(
+            signatures[1][1],
+            "00:00:15,000 --> 00:00:17,000",
+        )
+        original = {idx: ts for idx, ts, _text in blocks}
+        delivered = {idx: ts for idx, ts, _text in result if idx in original}
+        self.assertEqual(delivered, original)
 
     def test_all_final_write_flows_use_shared_delivery_guard(self):
         source = Path(gui.__file__).read_text(encoding="utf-8")

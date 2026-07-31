@@ -2478,6 +2478,37 @@ def _srt_timestamp_bounds(ts: str) -> tuple[int, int]:
     return _srt_timestamp_ms(parts[0]), _srt_timestamp_ms(parts[1].split()[0])
 
 
+def _delivery_middle_signature_slot(blocks: list):
+    if len(blocks) < 2:
+        return None
+    timed = []
+    for pos, (_idx, ts, _text) in enumerate(blocks):
+        try:
+            start, end = _srt_timestamp_bounds(ts)
+        except ValueError:
+            return None
+        timed.append((pos, start, end))
+    first_start = timed[0][1]
+    last_end = timed[-1][2]
+    midpoint = (first_start + last_end) / 2
+    candidates = []
+    for left, right in zip(timed, timed[1:]):
+        available = right[1] - left[2] - 2
+        if available < 500:
+            continue
+        slot_midpoint = (left[2] + right[1]) / 2
+        candidates.append((abs(slot_midpoint - midpoint), -available, left, right))
+    if not candidates:
+        return None
+    _distance, neg_available, left, right = min(candidates)
+    duration = min(2000, -neg_available)
+    gap_start = left[2] + 1
+    gap_end = right[1] - 1
+    start = max(gap_start, int((gap_start + gap_end - duration) / 2))
+    end = min(gap_end, start + duration)
+    return left[0] + 1, start, end
+
+
 def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                                  log_fn=None) -> list:
     if normalize_language_name(target_language, allow_auto=False) != "Turkish":
@@ -2527,7 +2558,21 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         numeric_ids = [
             int(str(idx)) for idx, _ts, _text in cleaned
             if str(idx).isdigit()]
-        tail_id = max(numeric_ids, default=len(cleaned)) + 1
+        next_signature_id = max(numeric_ids, default=len(cleaned)) + 1
+        middle_slot = _delivery_middle_signature_slot(cleaned)
+        if middle_slot:
+            insert_at, middle_start, middle_end = middle_slot
+            cleaned.insert(
+                insert_at,
+                (
+                    str(next_signature_id),
+                    f"{_srt_ms_timestamp(middle_start)} --> "
+                    f"{_srt_ms_timestamp(middle_end)}",
+                    _DELIVERY_SIGNATURE,
+                ),
+            )
+            next_signature_id += 1
+        tail_id = next_signature_id
         cleaned = [
             (
                 "0",
@@ -2547,12 +2592,12 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         if unresolved:
             log_fn(
                 "Nihai teslim koruması: eksik çeviri işareti kaldığı için "
-                "baş/son imza eklenmedi",
+                "baş/orta/son imza eklenmedi",
                 "warn",
             )
         elif cleaned:
             log_fn(
-                "Nihai teslim koruması: baş/son discord imzası yenilendi; "
+                "Nihai teslim koruması: baş/orta/son discord imzası yenilendi; "
                 f"{credits_removed} eski kredi cue'su, "
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "
