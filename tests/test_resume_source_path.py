@@ -102,6 +102,31 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
             else:
                 bid_path.unlink(missing_ok=True)
 
+    def test_fmap_stores_source_and_output_submission_state(self):
+        fmap_path = ht._batch_fmap_path("batch_srcpath_test")
+        bid_path = ht._batch_id_path()
+        saved_bid = bid_path.read_text(encoding="utf-8") if bid_path.exists() else None
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / "source.srt"
+                output = Path(tmp) / "output.srt"
+                source.write_text("source", encoding="utf-8")
+                output.write_text("existing", encoding="utf-8")
+                with patch("openai.OpenAI", return_value=self._fake_client()):
+                    ht.submit_batch(
+                        "k", [{"a": 1}], None, {"c1": [("f", 1)]},
+                        output_path=str(output), source_path=str(source),
+                    )
+                data = json.loads(fmap_path.read_text(encoding="utf-8"))
+                self.assertEqual(data["source_hash"], ht._cache_sig(str(source)).split(":", 1)[1])
+                self.assertEqual(data["output_baseline"], ht._file_state_signature(str(output)))
+        finally:
+            fmap_path.unlink(missing_ok=True)
+            if saved_bid is not None:
+                bid_path.write_text(saved_bid, encoding="utf-8")
+            else:
+                bid_path.unlink(missing_ok=True)
+
 
 class ResumeSourceResolutionTest(unittest.TestCase):
     """_wait_batch_hybrid'in kaynak çözümleme mantığı (saklanan yol > geriye hesaplama).

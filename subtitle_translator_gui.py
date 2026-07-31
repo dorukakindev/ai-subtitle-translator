@@ -17424,7 +17424,9 @@ class App(ctk.CTk):
                                                   source_path=_saved_src,
                                                   source_language=_saved_source_language,
                                                   target_language=_saved_target_language,
-                                                  schema_name=_saved_schema_name)
+                                                  schema_name=_saved_schema_name,
+                                                  expected_source_hash=fmap_data.get("source_hash", ""),
+                                                  output_baseline=fmap_data.get("output_baseline"))
                         if _terminal:
                             hybrid_completed_bids.append(bid)
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
@@ -17515,7 +17517,8 @@ class App(ctk.CTk):
 
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
                            openai_key, is_last=True, report_rows=None, source_path="",
-                           source_language="", target_language="", schema_name=""):
+                           source_language="", target_language="", schema_name="",
+                           expected_source_hash="", output_baseline=None):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -17860,6 +17863,15 @@ class App(ctk.CTk):
                                 pp = _restore_tags_blocks(pp, _raw_map)
                             except Exception:
                                 pass
+                            _guard_reason = _batch_write_guard_reason(
+                                source_path, output_path,
+                                expected_source_hash, output_baseline)
+                            if _guard_reason:
+                                self._log(
+                                    f"Resume: çıktı yazılmadı ({_guard_reason}); "
+                                    "kaynak veya mevcut çıktı batch gönderiminden sonra değişti.",
+                                    "err")
+                                break
                             _delivery_blocks = _prepare_upload_ready_blocks(
                                 self._maybe_merge_cues(pp), tgt, self._log)
                             write_srt(output_path, _delivery_blocks, tgt)
@@ -18832,7 +18844,9 @@ class App(ctk.CTk):
                         )
                         submitted.append((filepath, fname, existing_out, fmap,
                                           existing_bid, cues, analysis_tuple, _analysis_ok, file_src,
-                                          _existing_schema_name))
+                                          _existing_schema_name,
+                                          sess_entry.get("source_hash", ""),
+                                          sess_entry.get("output_baseline")))
                         if _analysis_ok:
                             self._stage_series_memory_from_analysis(
                                 filepath, context, pronoun_map, tgt)
@@ -18882,12 +18896,15 @@ class App(ctk.CTk):
                 # istekler saklanıp Faz2'de sıralı işlenir (kapansa 'devam ettir'le kalınan
                 # yerden alınamaz — bilinçli takas, bkz. _run_twowave_batches). Yalnız
                 # hybrid-batch modunda anlamlı (sync'in zincir makinesi burada).
+                _expected_source_hash = _file_content_sha256(filepath)
+                _output_baseline = _file_state_signature(out_path)
                 if getattr(self, "twowave_var", None) and self.twowave_var.get():
                     self._twowave_pending[str(filepath)] = requests
                     ht.update_batch_session(session, filepath, "pending")
                     submitted.append((
                         filepath, fname, out_path, fmap, "__twowave__", cues,
-                        analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", "")))
+                        analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", ""),
+                        _expected_source_hash, _output_baseline))
                     self._log(f"[{fname}] İki-dalgalı — Faz 2'de sıralı gönderilecek", "info")
                     self._set_progress(int((fi + 1) / n_files * 40))
                     continue
@@ -18904,10 +18921,13 @@ class App(ctk.CTk):
                     ht.update_batch_session(session, filepath, "submitted",
                                             batch_id=batch_id, out_path=out_path)
                     session["files"][str(filepath)]["schema_name"] = schema_dict.get("name", "")
+                    session["files"][str(filepath)]["source_hash"] = _expected_source_hash
+                    session["files"][str(filepath)]["output_baseline"] = _output_baseline
                     ht._save_batch_session(session)
                     submitted.append((
                         filepath, fname, out_path, fmap, batch_id, cues,
-                        analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", "")))
+                        analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", ""),
+                        _expected_source_hash, _output_baseline))
                     self._set_progress(int((fi + 1) / n_files * 40))
                 else:
                     self._log(f"[{fname}] Batch gönderilemedi, atlanıyor", "err")
@@ -18934,7 +18954,8 @@ class App(ctk.CTk):
         report_rows = []   # kalite raporu satırları (dosya başına)
 
         for si, (filepath, fname, out_path, fmap, batch_id, cues,
-                 analysis_tuple, analysis_ok, file_src, file_schema_name) in enumerate(submitted):
+                 analysis_tuple, analysis_ok, file_src, file_schema_name,
+                 expected_source_hash, output_baseline) in enumerate(submitted):
             if self._stop_flag:
                 break
             if self._is_queued_file_removed(filepath):
@@ -19302,6 +19323,14 @@ class App(ctk.CTk):
                     pass
                 _hata_n_pre, _ = _count_hata_cps(_final_blocks)
                 _has_missing = _hata_n_pre > 0
+                _guard_reason = _batch_write_guard_reason(
+                    filepath, out_path, expected_source_hash, output_baseline)
+                if _guard_reason:
+                    self._log(
+                        f"{fname}: çıktı yazılmadı ({_guard_reason}); kaynak veya mevcut "
+                        "çıktı batch gönderiminden sonra değişti.", "err")
+                    ht.update_batch_session(session, filepath, "failed")
+                    continue
                 _write_path = _partial_output_path(out_path) if _has_missing else out_path
                 _quarantined = (
                     _quarantine_incomplete_final(out_path) if _has_missing else None)

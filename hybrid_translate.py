@@ -608,6 +608,23 @@ def _cache_sig(filepath: str) -> str:
         return ""
 
 
+def _file_state_signature(filepath: str) -> dict:
+    path = Path(filepath)
+    try:
+        stat = path.stat()
+        sig = _cache_sig(str(path))
+        return {
+            "exists": True,
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "sha256": sig.removeprefix("sha256:"),
+        }
+    except FileNotFoundError:
+        return {"exists": False}
+    except Exception:
+        return {"exists": path.exists()}
+
+
 CONTEXT_ANALYSIS_CACHE_VER = 3
 
 
@@ -10380,6 +10397,10 @@ def submit_batch(
     ve çıktı yolundan kaynağı geriye hesaplamak da güvenilir değildir (bkz.
     _resolve_output_path: Kural 2'de araya dosya-adı alt-klasörü girer, ayrıca çıktı
     her zaman .srt iken kaynak .vtt/.ass olabilir)."""
+    source_sig = _cache_sig(source_path) if source_path else ""
+    source_hash = source_sig.removeprefix("sha256:") if source_sig else ""
+    output_baseline = _file_state_signature(output_path) if output_path else None
+
     from openai import OpenAI
     client = OpenAI(api_key=openai_api_key, base_url=base_url or None)
 
@@ -10425,6 +10446,8 @@ def submit_batch(
                 "target_language": target_language or "",
                 "schema_name": schema_name or "",
                 "session_fingerprint": session_fingerprint or "",
+                "source_hash": source_hash,
+                "output_baseline": output_baseline,
                 "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
             }
             atomic_write_json(fmap_path, fmap_data)
