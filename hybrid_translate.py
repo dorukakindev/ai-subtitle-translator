@@ -3420,6 +3420,16 @@ def native_reader_pass(
 
     result = list(tr_blocks)
     idx_to_pos = {str(b[0]): i for i, b in enumerate(result)}
+
+    def _scene_break_between(left, right):
+        try:
+            _left_start, sep, left_end = str(left[1] or "").partition("-->")
+            right_start, _sep, _right_end = str(right[1] or "").partition("-->")
+            if not sep:
+                return False
+            return (_ts_to_sec(right_start.strip()) - _ts_to_sec(left_end.strip())) >= SCENE_GAP_SEC
+        except Exception:
+            return False
     
     # Reconstruct mock cues for fragment tagging if src_map is provided
     frag_tags = {}
@@ -3427,13 +3437,16 @@ def native_reader_pass(
     frag_group_members = {}
     if src_map:
         class MockCue:
-            def __init__(self, index, text):
+            def __init__(self, index, timestamp, text):
                 self.index = index
                 self.text = text
+                start, sep, end = str(timestamp or "").partition("-->")
+                self.start = start.strip() if sep else ""
+                self.end = end.strip() if sep else ""
         mock_cues = []
         for idx, ts, text in result:
             src_t = src_map.get(str(idx), "")
-            mock_cues.append(MockCue(idx, src_t))
+            mock_cues.append(MockCue(idx, ts, src_t))
         try:
             frag_tags = _tag_fragments(mock_cues)
             frag_group_by_idx, groups = _fragment_groups(mock_cues, frag_tags)
@@ -3484,14 +3497,15 @@ def native_reader_pass(
 
         # Build ctx/next_ctx for context continuity
         ctx_lines = []
-        if chunk_i > 0:
+        if chunk_i > 0 and not _scene_break_between(result[chunk_i - 1], result[chunk_i]):
             ctx_start = max(0, (chunk_i // CHUNK_SIZE) * CHUNK_SIZE - CHUNK_SIZE)
             for prev in result[ctx_start:ctx_start + CHUNK_SIZE]:
                 if prev[2] and prev[2] != "[HATA]":
                     ctx_lines.append(prev[2])
         next_lines = []
         nxt_start = chunk_i + CHUNK_SIZE
-        if nxt_start < len(result):
+        if (nxt_start < len(result)
+                and not _scene_break_between(result[nxt_start - 1], result[nxt_start])):
             for nxt in result[nxt_start:min(nxt_start + CHUNK_SIZE, len(result))]:
                 if nxt[2] and nxt[2] != "[HATA]":
                     next_lines.append(nxt[2])
@@ -7275,9 +7289,7 @@ def semantic_reconciliation_pass(
 
 def _salvage_json_objects(raw: str) -> list:
     """Recover complete objects from a truncated JSON array and drop the partial tail."""
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        raw = "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
+    raw = _strip_code_fence(raw)
     start = raw.find('[')
     if start == -1:
         return []
@@ -10730,9 +10742,7 @@ def save_results(
             continue
 
         # Robust JSON extraction: markdown fence + prose preamble + truncated array salvage
-        raw_clean = raw
-        if raw_clean.startswith("```"):
-            raw_clean = "\n".join(raw_clean.split("\n")[1:]).rsplit("```", 1)[0].strip()
+        raw_clean = _strip_code_fence(raw)
 
         from response_integrity import parse_translation_payload
         expected_ids = {str(idx) for idx, _start, _end in info}

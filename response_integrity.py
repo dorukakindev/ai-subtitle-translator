@@ -18,6 +18,14 @@ def _strip_fence(raw: str) -> str:
     value = str(raw or "").strip()
     if not value.startswith("```"):
         return value
+    # Bazı sağlayıcılar tüm JSON'u açılış fence satırında döndürür
+    # (````json [{...}]````). Satırlara bölmek bu tek satırı atıp geçerli
+    # batch sonucunu hatalı yanıta dönüştürürdü.
+    if "\n" not in value and value.endswith("```") and value.count("```") >= 2:
+        inner = value[3:-3].strip()
+        if inner.lower().startswith("json"):
+            inner = inner[4:].strip()
+        return inner
     lines = value.splitlines()
     if lines and lines[0].strip().startswith("```"):
         lines = lines[1:]

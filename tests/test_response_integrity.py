@@ -5,6 +5,12 @@ from response_integrity import parse_translation_payload, translation_items_from
 
 
 class TranslationItemsTest(unittest.TestCase):
+    def test_accepts_single_line_fenced_array(self):
+        items, mode = translation_items_from_raw(
+            '```json [{"i":"1","t":"Merhaba"}]```')
+        self.assertEqual(mode, "array")
+        self.assertEqual(items, [{"i": "1", "t": "Merhaba"}])
+
     def test_balanced_extraction_ignores_brackets_inside_string(self):
         raw = 'preamble [{"i":1,"t":"[kapı] açıldı"},{"i":2,"t":"tamam"}] suffix'
         items, mode = translation_items_from_raw(raw)

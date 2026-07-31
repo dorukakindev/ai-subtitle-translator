@@ -69,3 +69,20 @@ class SaveResultsBozukJsonlTest(unittest.TestCase):
                 Path(out_path).read_text(encoding="utf-8"))
         finally:
             Path(out_path).unlink(missing_ok=True)
+
+    def test_single_line_fenced_batch_translation_is_preserved(self):
+        out_path = self._mkout()
+        mock_client = mock.MagicMock()
+        mock_client.files.content.return_value.text = (
+            '{"custom_id":"ok","response":{"body":{"choices":[{"message":'
+            '{"content":"```json [{\\\"i\\\":\\\"1\\\",\\\"t\\\":\\\"Merhaba\\\"}]```"}}]}}}\n'
+        )
+        try:
+            with mock.patch("openai.OpenAI", return_value=mock_client):
+                count, marked = ht.save_results(
+                    "fake", "fid", {"ok": [(1, "00:00:01,000", "00:00:02,000")]}, out_path)
+            self.assertEqual((count, marked), (1, 0))
+            self.assertIn("Merhaba", Path(out_path).read_text(encoding="utf-8"))
+            self.assertNotIn("[HATA]", Path(out_path).read_text(encoding="utf-8"))
+        finally:
+            Path(out_path).unlink(missing_ok=True)
