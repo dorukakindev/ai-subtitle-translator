@@ -60,7 +60,22 @@ def _fuzzy_semantic_anchors(text: str) -> tuple:
 
 
 def _fuzzy_semantically_compatible(source: str, candidate: str) -> bool:
-    return _fuzzy_semantic_anchors(source) == _fuzzy_semantic_anchors(candidate)
+    source_tokens = tuple(
+        token.replace("â€™", "'").casefold()
+        for token in _SEMANTIC_TOKEN_RE.findall(str(source or ""))
+    )
+    candidate_tokens = tuple(
+        token.replace("â€™", "'").casefold()
+        for token in _SEMANTIC_TOKEN_RE.findall(str(candidate or ""))
+    )
+    return bool(source_tokens) and source_tokens == candidate_tokens
+
+
+def _context_key(context_fingerprint: str = "") -> str:
+    raw = str(context_fingerprint or "").strip()
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
 
 
 def _is_missing_translation(target: str) -> bool:
@@ -150,7 +165,8 @@ class TranslationMemory:
                 tgt_lang TEXT DEFAULT '',
                 profanity TEXT DEFAULT '',
                 schema_name TEXT DEFAULT '',
-                src_lang TEXT DEFAULT ''
+                src_lang TEXT DEFAULT '',
+                context_key TEXT DEFAULT ''
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tgt_lang_len ON tm(tgt_lang, LENGTH(source))")
@@ -159,7 +175,8 @@ class TranslationMemory:
         cursor = conn.execute("PRAGMA table_info(tm)")
         columns = {row[1] for row in cursor.fetchall()}
         for col_name, col_def in {"schema_name": " TEXT DEFAULT ''", "profanity": " TEXT DEFAULT ''",
-                                    "tgt_lang": " TEXT DEFAULT ''", "src_lang": " TEXT DEFAULT ''"}.items():
+                                    "tgt_lang": " TEXT DEFAULT ''", "src_lang": " TEXT DEFAULT ''",
+                                    "context_key": " TEXT DEFAULT ''"}.items():
             if col_name not in columns:
                 try:
                     conn.execute(f"ALTER TABLE tm ADD COLUMN {col_name}{col_def}")
@@ -167,13 +184,14 @@ class TranslationMemory:
                 except Exception:
                     pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tm_langs_len ON tm(tgt_lang, src_lang, LENGTH(source))")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tm_context_len ON tm(tgt_lang, src_lang, context_key, LENGTH(source))")
         conn.commit()
 
     # ── Hash ──────────────────────────────────────────────────────────────────
 
     @staticmethod
     def _settings_fingerprint(model: str = "", profanity: str = "", schema_name: str = "",
-                              source_language: str = "") -> str:
+                              source_language: str = "", context_fingerprint: str = "") -> str:
         """Ayarların özetini döndürür — farklı model/profanity/schema_name/kaynak dil farklı TM girişi demektir."""
         parts = []
         model_short = (model or "").strip().lower().replace(" ", "-")[:40]
@@ -188,6 +206,9 @@ class TranslationMemory:
         src = (source_language or "").strip().lower()[:40]
         if src:
             parts.append(f"l:{src}")
+        context_key = _context_key(context_fingerprint)
+        if context_key:
+            parts.append(f"c:{context_key}")
         return "|".join(parts)
 
     @staticmethod
@@ -204,12 +225,14 @@ class TranslationMemory:
     # ── Arama ─────────────────────────────────────────────────────────────────
 
     def lookup(self, source: str, tgt_lang: str = "", model: str = "", profanity: str = "",
-               schema_name: str = "", source_language: str = "") -> str | None:
+               schema_name: str = "", source_language: str = "",
+               context_fingerprint: str = "") -> str | None:
         """Kaynak metni TM'de ara. Bulursa hedef metni döner, yoksa None.
         model ve profanity aynı ayarlarla kaydedilmiş girişleri bulmak için kullanılır."""
         if not source or not source.strip():
             return None
-        fingerprint = self._settings_fingerprint(model, profanity, schema_name, source_language)
+        fingerprint = self._settings_fingerprint(
+            model, profanity, schema_name, source_language, context_fingerprint)
         h = self._hash(source, tgt_lang, fingerprint)
         try:
             with self._lock:
@@ -222,7 +245,8 @@ class TranslationMemory:
         except Exception:
             return None
         # Fallback: settings-aware olmayan eski girişleri dene (yalnızca schema_name BOŞ ise)
-        if row is None and fingerprint and not schema_name and not source_language:
+        if (row is None and fingerprint and not schema_name and not source_language
+                and not context_fingerprint):
             try:
                 old_h = self._hash(source, tgt_lang, "")
                 with self._lock:
@@ -240,10 +264,20 @@ class TranslationMemory:
             return None
 
     def lookup_batch(self, sources: list, tgt_lang: str = "", model: str = "", profanity: str = "",
-                     schema_name: str = "", source_language: str = "") -> dict:
-        """Birden çok kaynak metni TEK sorguda arar. {source: target} döner
-        (yalnızca bulunanlar). Satır-satır lookup'a göre büyük dosyalarda hızlı."""
-        fingerprint = self._settings_fingerprint(model, profanity, schema_name, source_language)
+                     schema_name: str = "", source_language: str = "",
+                     context_fingerprint: str = "",
+                     allow_contextless_final: bool = False) -> dict:
+        """Birden çok kaynak metni TEK sorguda arar.
+
+        Bu API nihai altyazı satırını doğrudan ikame eder. Sen/siz, sözlük ve
+        proje/dizi kararları bilinmiyorsa eski bir TM kaydını final sonuç yapmak
+        güvenli değildir; çağıran taraf bir bağlam imzası vermelidir.
+        ``allow_contextless_final`` yalnız açıkça seçilmiş eski araçlar içindir.
+        """
+        if not context_fingerprint and not allow_contextless_final:
+            return {}
+        fingerprint = self._settings_fingerprint(
+            model, profanity, schema_name, source_language, context_fingerprint)
         uniq = {}
         for s in sources:
             if s and s.strip():
@@ -265,7 +299,8 @@ class TranslationMemory:
                         result[src] = target
         # Fallback: YALNIZCA schema_name BOŞ ise ve henüz bulunamamış kaynaklar varsa eski şemasız girişleri dene
         missing_sources = [s for s in sources if s and s.strip() and s not in result]
-        if missing_sources and fingerprint and not schema_name and not source_language:
+        if (missing_sources and fingerprint and not schema_name and not source_language
+                and not context_fingerprint):
             uniq2 = {}
             for s in missing_sources:
                 uniq2[self._hash(s, tgt_lang, "")] = s
@@ -281,18 +316,23 @@ class TranslationMemory:
         return result
 
     def fuzzy_lookup(self, source: str, threshold: float = FUZZY_THRESHOLD,
-                     tgt_lang: str = "", model: str = "", profanity: str = "",
-                     schema_name: str = "", source_language: str = "") -> tuple[str, float] | None:
+                      tgt_lang: str = "", model: str = "", profanity: str = "",
+                      schema_name: str = "", source_language: str = "",
+                      context_fingerprint: str = "",
+                      allow_contextless_final: bool = False) -> tuple[str, float] | None:
         """Fuzzy eşleştirme: %threshold+ benzerlik varsa (çeviri, oran) döner.
         Tam eşleşme varsa önce onu döner. Yoksa kısa adaylara (±40% uzunluk) bakar.
         Pahalı DB taramasını kısaltmak için uzunluk filtrelemesi yapar.
         """
         if not source or not source.strip():
             return None
+        if not context_fingerprint and not allow_contextless_final:
+            return None
         # Önce tam eşleşme dene (hızlı yol)
         exact = self.lookup(
             source, tgt_lang=tgt_lang, model=model, profanity=profanity,
-            schema_name=schema_name, source_language=source_language)
+            schema_name=schema_name, source_language=source_language,
+            context_fingerprint=context_fingerprint)
         if exact is not None:
             return (exact, 1.0)
 
@@ -307,8 +347,9 @@ class TranslationMemory:
         lang = tgt_lang.strip().lower()
         sch = schema_name.strip().lower()[:40] if schema_name else ""
         src_lang = source_language.strip().lower()[:40] if source_language else ""
-        clauses = ["LENGTH(source) BETWEEN ? AND ?", "schema_name = ?", "src_lang = ?"]
-        params = [lo, hi, sch, src_lang]
+        ctx_key = _context_key(context_fingerprint)
+        clauses = ["LENGTH(source) BETWEEN ? AND ?", "schema_name = ?", "src_lang = ?", "context_key = ?"]
+        params = [lo, hi, sch, src_lang, ctx_key]
         if lang:
             clauses.append("tgt_lang = ?")
             params.append(lang)
@@ -344,7 +385,8 @@ class TranslationMemory:
     # ── Kaydetme ──────────────────────────────────────────────────────────────
 
     def store(self, source: str, target: str, model: str = "", tgt_lang: str = "",
-              profanity: str = "", schema_name: str = "", source_language: str = "") -> bool:
+              profanity: str = "", schema_name: str = "", source_language: str = "",
+              context_fingerprint: str = "") -> bool:
         """Yeni bir çeviri çiftini TM'ye kaydet. Hata varsa False döner."""
         if not source or not target:
             return False
@@ -356,18 +398,20 @@ class TranslationMemory:
             return False
         if not _is_safe_target(_t):
             return False
-        fingerprint = self._settings_fingerprint(model, profanity, schema_name, source_language)
+        fingerprint = self._settings_fingerprint(
+            model, profanity, schema_name, source_language, context_fingerprint)
         h = self._hash(source, tgt_lang, fingerprint)
         try:
             with self._lock:
                 conn = self._get_conn()
                 conn.execute(
-                    "INSERT OR REPLACE INTO tm(hash,source,target,model,ts,tgt_lang,profanity,schema_name,src_lang) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO tm(hash,source,target,model,ts,tgt_lang,profanity,schema_name,src_lang,context_key) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (h, source.strip(), target.strip(), model, time.time(),
                      tgt_lang.strip().lower(), profanity.strip().lower()[:20] if profanity else "",
                      schema_name.strip().lower()[:40] if schema_name else "",
-                     source_language.strip().lower()[:40] if source_language else ""),
+                      source_language.strip().lower()[:40] if source_language else "",
+                      _context_key(context_fingerprint)),
                 )
                 conn.commit()
             return True
@@ -375,11 +419,13 @@ class TranslationMemory:
             return False
 
     def store_batch(self, pairs: list[tuple[str, str]], model: str = "", tgt_lang: str = "",
-                    profanity: str = "", schema_name: str = "", source_language: str = ""):
+                    profanity: str = "", schema_name: str = "", source_language: str = "",
+                    context_fingerprint: str = ""):
         """Toplu kaydetme. pairs = [(source, target), ...]"""
         if not pairs:
             return True
-        fingerprint = self._settings_fingerprint(model, profanity, schema_name, source_language)
+        fingerprint = self._settings_fingerprint(
+            model, profanity, schema_name, source_language, context_fingerprint)
         rows = []
         for source, target in pairs:
             if not source or not target or _is_missing_translation(target):
@@ -398,6 +444,7 @@ class TranslationMemory:
                 profanity.strip().lower()[:20] if profanity else "",
                 schema_name.strip().lower()[:40] if schema_name else "",
                 source_language.strip().lower()[:40] if source_language else "",
+                _context_key(context_fingerprint),
             ))
         if not rows:
             return True
@@ -405,8 +452,8 @@ class TranslationMemory:
             with self._lock:
                 conn = self._get_conn()
                 conn.executemany(
-                    "INSERT OR REPLACE INTO tm(hash,source,target,model,ts,tgt_lang,profanity,schema_name,src_lang) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO tm(hash,source,target,model,ts,tgt_lang,profanity,schema_name,src_lang,context_key) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
                     rows,
                 )
                 conn.commit()
