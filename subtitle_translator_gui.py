@@ -3800,6 +3800,42 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     return out, repaired
 
 
+def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
+    out = list(blocks or [])
+    if not source_cues:
+        return out, 0
+    existing = {str(block[0]): block for block in out}
+    ordered = []
+    source_ids = set()
+    inserted = 0
+    for cue in source_cues:
+        if hasattr(cue, "text"):
+            idx = cue.index
+            ts = f"{cue.start} --> {cue.end}"
+            src = str(cue.text or "")
+        else:
+            try:
+                idx, ts, src = cue
+            except (TypeError, ValueError):
+                continue
+            src = str(src or "")
+        sid = str(idx)
+        source_ids.add(sid)
+        if sid in existing:
+            ordered.append(existing[sid])
+        elif src.strip() and not _src_is_sdh_only(src):
+            ordered.append((idx, ts, "[HATA]"))
+            inserted += 1
+    ordered.extend(block for block in out if str(block[0]) not in source_ids)
+    if inserted and log_fn:
+        log_fn(
+            f"Nihai yapısal koruma: {inserted} kayıp diyalog cue'su "
+            "[ÇEVİRİ EKSİK] olarak karantinaya alındı",
+            "err",
+        )
+    return ordered, inserted
+
+
 # ── Ön-Bağlam Analizi (hybrid kapalıyken dosya düzeyi bağlam) ────────────────
 PRECONTEXT_SAMPLE_HEAD = 150   # baştan alınan satır sayısı
 PRECONTEXT_SAMPLE_REST = 100   # kalanından eşit aralıkla örneklenen satır sayısı
@@ -16759,6 +16795,8 @@ class App(ctk.CTk):
             _n_filled = 0
             try:
                 _raw_map = _raw_src_map_from_cues(cues)
+                sorted_blocks, _ = _reinsert_missing_dialogue_markers(
+                    sorted_blocks, cues, log_fn=self._log)
                 sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
                 sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
             except Exception:
@@ -18030,6 +18068,8 @@ class App(ctk.CTk):
                 break
             _n_filled = 0
             try:
+                sorted_blocks, _ = _reinsert_missing_dialogue_markers(
+                    sorted_blocks, _src_cues, log_fn=self._log)
                 sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
                 sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
             except Exception:
@@ -18972,6 +19012,8 @@ class App(ctk.CTk):
                 _raw_map = _raw_src_map_from_cues(cues)
                 _n_filled = 0
                 try:
+                    _final_blocks, _ = _reinsert_missing_dialogue_markers(
+                        _final_blocks, cues, log_fn=self._log)
                     _final_blocks, _n_filled = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
                 except Exception:
                     pass
@@ -18979,10 +19021,29 @@ class App(ctk.CTk):
                     _final_blocks = _restore_tags_blocks(_final_blocks, _raw_map)
                 except Exception:
                     pass
+                _hata_n_pre, _ = _count_hata_cps(_final_blocks)
+                _has_missing = _hata_n_pre > 0
+                _write_path = _partial_output_path(out_path) if _has_missing else out_path
+                _quarantined = (
+                    _quarantine_incomplete_final(out_path) if _has_missing else None)
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     self._maybe_merge_cues(_final_blocks), tgt, self._log)
-                write_srt(out_path, _delivery_blocks, tgt)
-                self._save_raw_backup(out_path, _raw_backup_blocks, _raw_map, tgt)
+                write_srt(_write_path, _delivery_blocks, tgt)
+                self._save_raw_backup(_write_path, _raw_backup_blocks, _raw_map, tgt)
+                if _has_missing:
+                    self._log(
+                        f"{fname}: {_hata_n_pre} eksik çeviri kaldı; kısmi çıktı "
+                        f"{Path(_write_path).name} olarak ayrıldı ve tamamlandı sayılmadı.",
+                        "err",
+                    )
+                    if _quarantined:
+                        self._log(
+                            f"Önceki nihai çıktı karantinaya alındı: "
+                            f"{Path(_quarantined).name}",
+                            "warn",
+                        )
+                    ht.update_batch_session(session, filepath, "failed")
+                    continue
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
                 _w = 0

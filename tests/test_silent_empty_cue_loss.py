@@ -283,6 +283,33 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
         self.assertEqual([str(block[0]) for block in out], ["1"])
         self.assertEqual(repaired, 0)
 
+    def test_final_guard_reinserts_dialogue_removed_by_quality_pass(self):
+        source_cues = [
+            ("119", "00:01:00,000 --> 00:01:01,000", "Previous."),
+            ("120", "00:01:01,000 --> 00:01:02,000", 'You are thinking, "Wait.'),
+            ("121", "00:01:02,000 --> 00:01:03,000", "Next."),
+        ]
+        blocks = [
+            ("119", source_cues[0][1], "Önceki."),
+            ("121", source_cues[2][1], "Sonraki."),
+        ]
+        out, inserted = gui._reinsert_missing_dialogue_markers(
+            blocks, source_cues)
+        self.assertEqual([str(block[0]) for block in out], ["119", "120", "121"])
+        self.assertEqual(out[1][1], source_cues[1][1])
+        self.assertEqual(out[1][2], "[HATA]")
+        self.assertEqual(inserted, 1)
+
+    def test_final_guard_does_not_reinsert_removed_sdh(self):
+        source_cues = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "DIALOGUE."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "[LAUGHTER]"),
+        ]
+        out, inserted = gui._reinsert_missing_dialogue_markers(
+            [("1", source_cues[0][1], "Diyalog.")], source_cues)
+        self.assertEqual([str(block[0]) for block in out], ["1"])
+        self.assertEqual(inserted, 0)
+
     def test_no_hata_cues_returns_blocks_unchanged(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Tamamdır.")]
         out, repaired = gui._repair_untranslated_sync(
