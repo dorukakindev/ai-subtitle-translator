@@ -5368,8 +5368,13 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
         ):
             continue
         # Proper names can legitimately preserve Latin diacritics (Buñuel, Juárez, Björk).
-        # Lowercase tokens with these characters are almost always target-language drift.
+        # With source text available, retain only names the source actually contains;
+        # a capitalized foreign common noun such as "Mädchen" is still a leak.
         if token[:1].isupper():
+            if _source_preserves_latin_extended_token(token, source_text):
+                continue
+            if source_text:
+                return token
             continue
         if _source_preserves_latin_extended_token(token, source_text):
             continue
@@ -5902,40 +5907,65 @@ def _question_mark_mismatch(src_text: str, tr_text: str) -> bool:
     return not _SOURCE_INTERROGATIVE_RE.search(src)
 
 
+def _normalize_numeric_token(token: str) -> str:
+    sign = ""
+    if token[:1] in "+-":
+        sign, token = token[0], token[1:]
+    if any(ch in token for ch in ":/"):
+        return sign + token
+    if "," not in token and "." not in token:
+        return sign + token
+    if "," in token and "." in token:
+        decimal = "," if token.rfind(",") > token.rfind(".") else "."
+        grouping = "." if decimal == "," else ","
+        return sign + token.replace(grouping, "").replace(decimal, ".")
+    sep = "," if "," in token else "."
+    parts = token.split(sep)
+    if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
+        return sign + "".join(parts)
+    return sign + token.replace(sep, ".")
+
+
 def _normalized_numeric_tokens(text: str) -> list[str]:
     value = _semantic_text_for_validator(text)
-    def _normalize(token: str) -> str:
-        sign = ""
-        if token[:1] in "+-":
-            sign, token = token[0], token[1:]
-        if any(ch in token for ch in ":/"):
-            return sign + token
-        if "," not in token and "." not in token:
-            return sign + token
-        if "," in token and "." in token:
-            decimal = "," if token.rfind(",") > token.rfind(".") else "."
-            grouping = "." if decimal == "," else ","
-            token = token.replace(grouping, "").replace(decimal, ".")
-            return sign + token
-        sep = "," if "," in token else "."
-        parts = token.split(sep)
-        if len(parts) > 1 and all(len(part) == 3 for part in parts[1:]):
-            return sign + "".join(parts)
-        return sign + token.replace(sep, ".")
-    return [_normalize(m.group(0)) for m in _NUMERIC_TOKEN_RE.finditer(value)]
+    return [_normalize_numeric_token(m.group(0)) for m in _NUMERIC_TOKEN_RE.finditer(value)]
+
+
+def _normalized_polish_numeric_tokens(text: str) -> list[str]:
+    """Normalize guard numbers while retaining a trailing unit such as % or ₺."""
+    normalized = []
+    for token in _POLISH_NUMBER_RE.findall(str(text or "")):
+        unit = token[-1:] if token[-1:] in {"%", "$", "€", "₺"} else ""
+        normalized.append(_normalize_numeric_token(token[:-1] if unit else token) + unit)
+    return normalized
 
 
 def _numeric_token_mismatch(src_text: str, tr_text: str) -> bool:
     src_nums = _normalized_numeric_tokens(src_text)
     if not src_nums:
         return False
-    tr_nums = _normalized_numeric_tokens(tr_text)
-    remaining = list(tr_nums)
-    for token in src_nums:
-        if token not in remaining:
-            return True
-        remaining.remove(token)
-    return False
+    from collections import Counter
+    return Counter(src_nums) != Counter(_normalized_numeric_tokens(tr_text))
+
+
+def _has_unanchored_numeric_change(old_text: str, candidate_text: str,
+                                  source_text: str = "") -> bool:
+    """Reject polish that invents a digit, while allowing normalized formatting.
+
+    A source-backed semantic repair may restore a number missing from the old
+    Turkish line, but it must restore exactly the source's numeric tokens.
+    """
+    from collections import Counter
+    old_nums = _normalized_polish_numeric_tokens(old_text)
+    new_nums = _normalized_polish_numeric_tokens(candidate_text)
+    if Counter(old_nums) == Counter(new_nums):
+        return False
+    if old_nums:
+        return True
+    if not new_nums:
+        return False
+    src_nums = _normalized_numeric_tokens(source_text)
+    return not src_nums or Counter(new_nums) != Counter(src_nums)
 
 
 # ── Yazıyla yazılmış sayı tespiti (bkz. plans/yaziyla-sayi-tespiti-brief.md) ──
@@ -6270,7 +6300,8 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
         if _SOURCE_LANG_LEFTOVER.search(text):
             reasons.append("SOURCE_LANG_LEFTOVER")
 
-        if has_non_turkish_target_leak(text):
+        if has_non_turkish_target_leak(
+                text, source_text=orig_clean_dict.get(str(idx), "")):
             reasons.append("NON_TURKISH_TARGET_LEAK")
 
         if _SFX_LEFTOVER_RE.search(text):
@@ -7121,8 +7152,20 @@ def semantic_reconciliation_pass(
                         if not _locked_source_term_present(locked_source, source):
                             continue
                         old_suffixes = _locked_suffixes(old_text, locked_target)
-                        if old_suffixes and not old_suffixes.issubset(
-                                _locked_suffixes(new_text, locked_target)):
+                        new_suffixes = _locked_suffixes(new_text, locked_target)
+                        expected_suffixes = _locked_expected_case_suffixes(
+                            source, locked_source)
+                        if expected_suffixes:
+                            if (new_suffixes
+                                    and not any(
+                                        suffix in expected_suffixes
+                                        and _locked_suffix_matches_target_harmony(
+                                            locked_target, suffix)
+                                        for suffix in new_suffixes)):
+                                invalid_reason = "locked_term_violation"
+                                break
+                            continue
+                        if old_suffixes and not old_suffixes.issubset(new_suffixes):
                             invalid_reason = "locked_term_violation"
                             break
                     if invalid_reason:
@@ -7827,6 +7870,13 @@ def _has_question_regression(original_text: str, candidate_text: str) -> bool:
     old_before = old_tokens[old_kim_pos - 1]
     new_before = new_tokens[new_kim_pos - 1]
     if old_before != new_before:
+        # A Turkish relative-clause rewrite may legitimately move the predicate
+        # before "kim": "Bunu kim yaptı?" -> "Bunu yapan kim?". Allow only a
+        # newly-derived word that still shares the old predicate's stem; merely
+        # moving an existing modifier before "kim" remains suspicious.
+        if (new_before not in old_tokens
+                and any(_share_stem(new_before, token) for token in old_tokens)):
+            return False
         return True
     return False
 
@@ -8440,6 +8490,48 @@ def _reflow_to_line_count(text: str, target_lines: int) -> str:
     return "\n".join(lines)
 
 
+def _locked_target_has_derivational_suffix(target: str, candidate_text: str) -> bool:
+    """A locked proper name must not silently become a different derived noun.
+
+    Case/possessive suffixes are valid (``Mars'a``), while ``Marslı`` denotes a
+    different entity (a Martian / Marsian) and must be source-backed separately.
+    """
+    target = str(target or "").strip()
+    if not target or not target[:1].isupper() or " " in target:
+        return False
+    return bool(re.search(
+        re.escape(target) + r"(?:['’]?(?:lı|li|lu|lü))",
+        str(candidate_text or ""), re.IGNORECASE,
+    ))
+
+
+def _locked_expected_case_suffixes(source_text: str, source_term: str) -> set[str]:
+    """Return the unambiguous Turkish case class licensed by an English relation."""
+    source = str(source_text or "")
+    term = re.escape(str(source_term or "").strip())
+    if not term:
+        return set()
+    nearby = rf"[^.!?]{{0,40}}{term}\b"
+    if re.search(rf"\bfrom\b{nearby}", source, re.IGNORECASE):
+        return {"dan", "den", "tan", "ten"}
+    if re.search(rf"\b(?:in|at|on)\b{nearby}", source, re.IGNORECASE):
+        return {"da", "de", "ta", "te"}
+    if re.search(rf"\b(?:to|into|toward|towards)\b{nearby}", source, re.IGNORECASE):
+        return {"a", "e", "ya", "ye"}
+    if re.search(rf"\bof\b{nearby}|{term}(?:'s|\s+own)\b", source, re.IGNORECASE):
+        return {"ın", "in", "un", "ün", "nın", "nin", "nun", "nün"}
+    return set()
+
+
+def _locked_suffix_matches_target_harmony(target: str, suffix: str) -> bool:
+    """Keep a source-licensed case suffix compatible with the locked name."""
+    target_vowels = re.findall(r"[aeıioöuü]", str(target or "").casefold())
+    suffix_vowels = re.findall(r"[aeıioöuü]", str(suffix or "").casefold())
+    if not target_vowels or not suffix_vowels:
+        return True
+    return ((target_vowels[-1] in "aıou") == (suffix_vowels[0] in "aıou"))
+
+
 def locked_term_violation(
     source_text: str,
     candidate_text: str,
@@ -8478,10 +8570,160 @@ def locked_term_violation(
         source_term = str(source_term or "").strip()
         target_term = str(target_term or "").strip()
         if (len(source_term) > 1 and target_term
-                and _locked_source_term_present(source_term, source_value)
-                and not _target_present(target_term)):
+                and _locked_source_term_present(source_term, source_value)):
+            if _locked_target_has_derivational_suffix(target_term, candidate_text):
+                return True
+            if not _target_present(target_term):
+                return True
+    return False
+
+
+_QUESTION_GUARD_STOPS = frozenset({
+    "ben", "sen", "o", "biz", "siz", "onlar", "bunu", "buna", "bunun",
+    "şunu", "şuna", "şunun", "kim", "ne", "neden", "niçin", "nasıl",
+    "nerede", "nereye", "nereden", "hangi", "mı", "mi", "mu", "mü",
+})
+
+
+def _question_content_tokens(text: str) -> list[str]:
+    return [
+        token for token in re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{3,}\b", _polish_norm(text))
+        if token not in _QUESTION_GUARD_STOPS
+    ]
+
+
+def _has_question_main_content_drift(source_text: str, original_text: str,
+                                     candidate_text: str) -> bool:
+    """Catch a one-predicate question being rewritten into a different question.
+
+    This intentionally stays narrow: it only rejects when each Turkish version
+    has one meaningful predicate/content token and the roots differ. Reordered
+    forms such as ``Bunu kim yaptı?`` -> ``Bunu yapan kim?`` retain ``yap``.
+    """
+    if not (source_text and "?" in source_text and "?" in original_text and "?" in candidate_text):
+        return False
+    old_tokens = _question_content_tokens(original_text)
+    new_tokens = _question_content_tokens(candidate_text)
+    if len(old_tokens) != 1 or len(new_tokens) != 1:
+        return False
+    return not _share_stem(old_tokens[0], new_tokens[0])
+
+
+def _turkish_person_signature(token: str) -> tuple[str, str] | None:
+    """Return a conservative finite-verb stem/person signature for common forms."""
+    word = _polish_norm(token)
+    patterns = (
+        (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])m$", "past_1sg"),
+        (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])$", "past_3sg"),
+        (r"^(.{3,}?)(?:ıyor|iyor|uyor|üyor)um$", "present_1sg"),
+        (r"^(.{3,}?)(?:ıyor|iyor|uyor|üyor)$", "present_3sg"),
+        (r"^(.{3,}?)(?:acağım|eceğim)$", "future_1sg"),
+        (r"^(.{3,}?)(?:acak|ecek)$", "future_3sg"),
+    )
+    for pattern, signature in patterns:
+        match = re.match(pattern, word)
+        if match:
+            return match.group(1), signature
+    return None
+
+
+def _has_turkish_person_drift(original_text: str, candidate_text: str) -> bool:
+    """Reject same-verb 1st-person -> 3rd-person edits without guessing syntax."""
+    old_signatures = [
+        sig for token in re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", original_text)
+        if (sig := _turkish_person_signature(token))
+    ]
+    new_signatures = [
+        sig for token in re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", candidate_text)
+        if (sig := _turkish_person_signature(token))
+    ]
+    for old_stem, old_kind in old_signatures:
+        for new_stem, new_kind in new_signatures:
+            if old_stem != new_stem:
+                continue
+            if old_kind.split("_", 1)[0] != new_kind.split("_", 1)[0]:
+                continue
+            if old_kind.endswith("1sg") and new_kind.endswith("3sg"):
+                return True
+    return False
+
+
+def _has_source_backed_plural_loss(source_text: str, original_text: str,
+                                   candidate_text: str) -> bool:
+    """Catch direct plural -> singular noun changes when English is explicitly plural."""
+    if not re.search(r"\b(?:children|people|men|women|parents|friends|soldiers|they|these|those)\b",
+                     source_text or "", re.IGNORECASE):
+        return False
+    old_words = set(re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{4,}\b", _polish_norm(original_text)))
+    new_words = set(re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{3,}\b", _polish_norm(candidate_text)))
+    for plural in old_words:
+        if not plural.endswith(("lar", "ler")):
+            continue
+        singular = plural[:-3]
+        if len(singular) >= 3 and singular in new_words and plural not in new_words:
             return True
     return False
+
+
+def _has_source_backed_possessive_drift(source_text: str, original_text: str,
+                                        candidate_text: str) -> bool:
+    """Catch simple my-X -> his/her-X swaps such as Arabam -> Arabası."""
+    if not re.search(r"\bmy\b", source_text or "", re.IGNORECASE):
+        return False
+    old_words = re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{4,}\b", _polish_norm(original_text))
+    new_words = re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{4,}\b", _polish_norm(candidate_text))
+    for old_word in old_words:
+        match = re.match(r"^(.{3,}?)(?:ım|im|um|üm|m)$", old_word)
+        if not match:
+            continue
+        stem = match.group(1)
+        if any(re.fullmatch(re.escape(stem) + r"(?:sı|si|su|sü)", new_word)
+               for new_word in new_words):
+            return True
+    return False
+
+
+def _has_comparison_degree_drift(original_text: str, candidate_text: str) -> bool:
+    """Reject direct comparative -> superlative swaps with the same adjective."""
+    old_words = _polish_norm(original_text).split()
+    new_words = _polish_norm(candidate_text).split()
+    if "daha" not in old_words or "en" not in new_words or "en" in old_words:
+        return False
+    for pos, word in enumerate(old_words[:-1]):
+        if word != "daha":
+            continue
+        adjective = re.sub(r"[^a-zA-ZÇĞİÖŞÜçğıöşü]", "", old_words[pos + 1])
+        if not adjective:
+            continue
+        for new_pos, new_word in enumerate(new_words[:-1]):
+            if new_word != "en":
+                continue
+            candidate_adjective = re.sub(r"[^a-zA-ZÇĞİÖŞÜçğıöşü]", "", new_words[new_pos + 1])
+            if adjective == candidate_adjective or _share_stem(adjective, candidate_adjective):
+                return True
+    return False
+
+
+def _has_because_negation_scope_reversal(source_text: str, original_text: str,
+                                         candidate_text: str) -> bool:
+    """Catch the narrow ``not X because Y`` predicate-polarity swap pattern."""
+    if not re.search(r"\bnot\s+\w+(?:\s+\w+){0,4}\s+because\b",
+                     source_text or "", re.IGNORECASE):
+        return False
+    old = _polish_norm(original_text)
+    new = _polish_norm(candidate_text)
+    neg_word = r"\b\w*(?:ma|me)(?:dı|di|du|dü|tı|ti|tu|tü|yor|yorlar|yordu|yacak|yecek)\w*\b"
+    old_after_için = re.search(r"\biçin\b[^.!?]{0,70}" + neg_word, old)
+    new_because = re.search(r"\bçünkü\b", new)
+    if not old_after_için or not new_because:
+        return False
+    before = new[:new_because.start()]
+    after = new[new_because.end():]
+    positive_before = any(
+        _TR_FINITE_VERB_TAIL_RE.search(word) and not _TURKISH_NEGATION_SUFFIX_RE.search(word)
+        for word in re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", before)
+    )
+    return positive_before and bool(re.search(neg_word, after))
 
 
 def validate_polish_candidate(
@@ -8512,12 +8754,8 @@ def validate_polish_candidate(
         return False, "format_tags"
     if _POLISH_BRACKET_LABEL_RE.findall(old) != _POLISH_BRACKET_LABEL_RE.findall(new):
         return False, "bracket_labels"
-    old_numbers = _POLISH_NUMBER_RE.findall(old)
-    if old_numbers:
-        new_numbers = _POLISH_NUMBER_RE.findall(new)
-        missing = [n for n in old_numbers if n not in new_numbers]
-        if missing:
-            return False, "numbers"
+    if _has_unanchored_numeric_change(old, new, src):
+        return False, "numbers"
     old_has_dash = old.lstrip().startswith(("-", "–", "—"))
     new_has_dash = new.lstrip().startswith(("-", "–", "—"))
     if old_has_dash != new_has_dash:
@@ -8534,7 +8772,8 @@ def validate_polish_candidate(
         return False, "word_merge"
     if _has_foreign_script_backslide(old, new):
         return False, "foreign_script"
-    if not has_non_turkish_target_leak(old) and has_non_turkish_target_leak(new):
+    if (not has_non_turkish_target_leak(old, source_text=src)
+            and has_non_turkish_target_leak(new, source_text=src)):
         return False, "non_turkish_target"
     if src and _has_source_echo(src, old, new):
         return False, "source_echo"
@@ -8546,12 +8785,24 @@ def validate_polish_candidate(
         return False, "to_name_reimport"
     if src and _source_negation_requires_turkish_negation(src) and not _has_turkish_negation(new):
         return False, "source_negation"
+    if src and _has_because_negation_scope_reversal(src, old, new):
+        return False, "negation_scope"
     if src and _has_explicit_answer_polarity_flip(src, new):
         return False, "source_polarity"
     if src and _question_mark_mismatch(src, new):
         return False, "source_question"
+    if src and _has_question_main_content_drift(src, old, new):
+        return False, "question_content_drift"
     if src and _numeric_token_mismatch(src, new):
         return False, "source_numbers"
+    if _has_turkish_person_drift(old, new):
+        return False, "person_drift"
+    if src and _has_source_backed_plural_loss(src, old, new):
+        return False, "plural_drift"
+    if src and _has_source_backed_possessive_drift(src, old, new):
+        return False, "possessive_drift"
+    if _has_comparison_degree_drift(old, new):
+        return False, "comparison_degree"
     if _has_causative_want_backslide(old, new):
         return False, "causative_backslide"
     if src and _has_short_source_overexpansion(src, new):
@@ -8658,21 +8909,10 @@ def validate_semantic_reconciliation_candidate(
     )
     if ok or reason not in _SEMANTIC_REWRITE_REJECTIONS:
         return ok, reason
-
-    if old.count("\n") != new.count("\n"):
-        return False, "linebreak_count"
-    if _POLISH_FORMAT_RE.findall(old) != _POLISH_FORMAT_RE.findall(new):
-        return False, "format_tags"
-    if _POLISH_BRACKET_LABEL_RE.findall(old) != _POLISH_BRACKET_LABEL_RE.findall(new):
-        return False, "bracket_labels"
-    old_has_dash = old.lstrip().startswith(("-", "–", "—"))
-    new_has_dash = new.lstrip().startswith(("-", "–", "—"))
-    if old_has_dash != new_has_dash:
-        return False, "speaker_dash"
-    return validate_polish_candidate(
-        new, new, source_text=source_text, neighbor_texts=neighbor_texts,
-        locked_terms=locked_terms,
-    )
+    # A candidate that failed only because it rewrites content cannot safely be
+    # revalidated against itself. That used to discard the before→after semantic
+    # comparison and allowed a fluent but unrelated source claim through.
+    return False, "semantic_rewrite_unverified"
 
 
 def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
@@ -8798,11 +9038,8 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
         return False, "format_tags"
     if _POLISH_BRACKET_LABEL_RE.findall(old) != _POLISH_BRACKET_LABEL_RE.findall(new):
         return False, "bracket_labels"
-    old_numbers = _POLISH_NUMBER_RE.findall(old)
-    if old_numbers:
-        new_numbers = _POLISH_NUMBER_RE.findall(new)
-        if any(n not in new_numbers for n in old_numbers):
-            return False, "numbers"
+    if _has_unanchored_numeric_change(old, new, src):
+        return False, "numbers"
     if old.lstrip().startswith(("-", "–", "—")) != new.lstrip().startswith(("-", "–", "—")):
         return False, "speaker_dash"
     if _has_english_backslide(old, new):
@@ -10032,7 +10269,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
                         clean_source, threshold=0.95,
                         tgt_lang=tgt_lang, model=model,
                         profanity=profanity, schema_name=schema_name,
-                        source_language=source_language)
+                        source_language=source_language,
+                        allow_contextless_final=False)
                     cached = fuzzy[0] if fuzzy else None
                 if cached:
                     item["tr"] = cached
