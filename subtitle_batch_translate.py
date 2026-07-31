@@ -10,6 +10,7 @@ import glob
 import hashlib
 import re
 import unicodedata
+import tempfile
 from pathlib import Path
 from openai import OpenAI
 from prompt_constants import meaning_readability_rule
@@ -156,7 +157,100 @@ def build_standalone_system_prompt(
     )
 
 
-from app_state import atomic_write_text, state_path
+from app_state import (
+    atomic_write_json, atomic_write_text, best_effort_cancel_remote_batch,
+    is_safe_batch_id, state_dir, state_path,
+)
+
+
+_STANDALONE_RECOVERY_VERSION = 1
+_STANDALONE_RECOVERY_FILE = "standalone_batch_recovery.json"
+
+
+def standalone_recovery_path() -> Path:
+    """Standalone batch'in çalışma dizininden bağımsız, tek güvenli durum yolu."""
+    return state_path(__file__, _STANDALONE_RECOVERY_FILE)
+
+
+def _source_file_sha256(filepath: str) -> str | None:
+    """Eski batch sonucunun değiştirilmiş kaynakla birleştirilmesini engeller."""
+    digest = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def save_standalone_recovery(batch_id: str, file_map: dict, *,
+                             input_folder: str = INPUT_FOLDER,
+                             output_folder: str = OUTPUT_FOLDER) -> Path:
+    """Resume için batch ile gönderilen cue eşlemesini ve kaynak imzalarını saklar."""
+    if not is_safe_batch_id(batch_id):
+        raise ValueError("Güvenli olmayan batch kimliği kaydedilemez.")
+
+    packed_map = {}
+    source_hashes = {}
+    for cid, entry in file_map.items():
+        if not isinstance(cid, str) or not cid or not isinstance(entry, (list, tuple)) or len(entry) != 4:
+            raise ValueError("Geçersiz standalone batch eşleme kaydı.")
+        filepath, block_i, idx, timestamp = entry
+        if not isinstance(filepath, str) or not isinstance(block_i, int):
+            raise ValueError("Geçersiz standalone batch kaynak kaydı.")
+        source_hash = _source_file_sha256(filepath)
+        if not source_hash:
+            raise ValueError(f"Kaynak dosya okunamadı: {filepath}")
+        source_hashes[filepath] = source_hash
+        packed_map[cid] = [filepath, block_i, str(idx), str(timestamp)]
+
+    record = {
+        "version": _STANDALONE_RECOVERY_VERSION,
+        "batch_id": batch_id,
+        "input_folder": str(input_folder),
+        "output_folder": str(output_folder),
+        "file_map": packed_map,
+        "source_hashes": source_hashes,
+    }
+    path = standalone_recovery_path()
+    atomic_write_json(path, record)
+    return path
+
+
+def load_standalone_recovery(path: Path | None = None) -> dict:
+    """Sadece eksiksiz ve güvenli recovery kaydını kabul eder."""
+    path = Path(path or standalone_recovery_path())
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Recovery kaydı okunamadı: {exc}") from exc
+
+    if not isinstance(record, dict) or record.get("version") != _STANDALONE_RECOVERY_VERSION:
+        raise RuntimeError("Recovery kaydı sürümü geçersiz.")
+    batch_id = record.get("batch_id")
+    raw_map = record.get("file_map")
+    source_hashes = record.get("source_hashes")
+    if not is_safe_batch_id(batch_id) or not isinstance(raw_map, dict) or not raw_map or not isinstance(source_hashes, dict):
+        raise RuntimeError("Recovery kaydı eksik veya güvenli değil.")
+
+    file_map = {}
+    for cid, entry in raw_map.items():
+        if (not isinstance(cid, str) or not cid or not isinstance(entry, list) or len(entry) != 4
+                or not isinstance(entry[0], str) or not isinstance(entry[1], int)):
+            raise RuntimeError("Recovery eşleme kaydı geçersiz.")
+        file_map[cid] = (entry[0], entry[1], str(entry[2]), str(entry[3]))
+    if set(source_hashes) != {entry[0] for entry in file_map.values()}:
+        raise RuntimeError("Recovery kaynak imzaları eşleme kaydıyla uyuşmuyor.")
+    if not all(isinstance(value, str) and len(value) == 64 for value in source_hashes.values()):
+        raise RuntimeError("Recovery kaynak imzası geçersiz.")
+
+    record["file_map"] = file_map
+    return record
+
+
+def clear_standalone_recovery(path: Path | None = None) -> None:
+    Path(path or standalone_recovery_path()).unlink(missing_ok=True)
 
 
 def write_srt(filepath, blocks):
@@ -203,16 +297,22 @@ def create_batch_requests(srt_files):
 
 def submit_batch(requests):
     """JSONL dosyasını OpenAI'a yükler ve batch başlatır."""
-    jsonl_path = "batch_input.jsonl"
-    with open(jsonl_path, "w", encoding="utf-8") as f:
+    state_dir(__file__).mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".jsonl", prefix="standalone_batch_",
+            dir=state_dir(__file__), delete=False) as handle:
+        jsonl_path = Path(handle.name)
         for req in requests:
-            f.write(json.dumps(req, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(req, ensure_ascii=False) + "\n")
 
     print(f"[+] {len(requests)} istek JSONL dosyasına yazıldı.")
 
-    client = _get_client()
-    with open(jsonl_path, "rb") as f:
-        uploaded = client.files.create(file=f, purpose="batch")
+    try:
+        client = _get_client()
+        with open(jsonl_path, "rb") as handle:
+            uploaded = client.files.create(file=handle, purpose="batch")
+    finally:
+        jsonl_path.unlink(missing_ok=True)
 
     print(f"[+] Dosya yüklendi: {uploaded.id}")
 
@@ -246,33 +346,62 @@ def wait_for_batch(batch_id, poll_interval=60):
         time.sleep(poll_interval)
 
 
-def process_results(output_file_id, file_map, srt_files):
+def process_results(output_file_id, file_map, srt_files, *,
+                    input_folder: str | None = None, output_folder: str | None = None,
+                    expected_source_hashes: dict | None = None):
     """Sonuçları indir ve SRT dosyalarını oluştur."""
+    input_folder = input_folder or INPUT_FOLDER
+    output_folder = output_folder or OUTPUT_FOLDER
     client = _get_client()
     content = client.files.content(output_file_id).text
 
     # Sonuçları custom_id'ye göre topla
     translations = {}
+    seen_ids = set()
+    duplicate_ids = set()
     for line in content.strip().splitlines():
         result = safe_parse_jsonl_line(line, log_fn=print)
         if not result:
             continue
         cid = result.get("custom_id")
-        if not cid:
+        if not isinstance(cid, str) or not cid:
+            print("[!] Geçersiz custom_id içeren batch sonucu atlandı.")
             continue
+        if cid not in file_map:
+            print(f"[!] Bilinmeyen custom_id sonucu atlandı: {cid}")
+            continue
+        if cid in seen_ids:
+            print(f"[!] Yinelenen custom_id sonucu reddedildi: {cid}")
+            duplicate_ids.add(cid)
+            translations[cid] = None
+            continue
+        seen_ids.add(cid)
         if result.get("error"):
             print(f"[!] Hata ({cid}): {result['error']}")
             translations[cid] = None
         else:
             try:
-                translations[cid] = result["response"]["body"]["choices"][0]["message"]["content"].strip()
+                choice = result["response"]["body"]["choices"][0]
+                if choice.get("finish_reason") in {"length", "content_filter"}:
+                    translations[cid] = None
+                    continue
+                response_text = choice["message"]["content"]
+                translations[cid] = response_text.strip() if isinstance(response_text, str) else None
             except (KeyError, TypeError, IndexError):
                 translations[cid] = None
 
     # Her SRT dosyası için çevrilmiş blokları topla (dict — None slot crash'i önler)
     file_blocks = {}  # filepath -> {block_i: (idx, timestamp, text)}
     source_cache = {}
+    source_mismatches = set()
+    if expected_source_hashes is not None:
+        for filepath, expected_hash in expected_source_hashes.items():
+            if _source_file_sha256(filepath) != expected_hash:
+                source_mismatches.add(filepath)
+                print(f"[!] Kaynak değişti; eski batch sonucu yazılmadı: {filepath}")
     for cid, (filepath, block_i, idx, timestamp) in file_map.items():
+        if filepath in source_mismatches:
+            continue
         if filepath not in source_cache:
             try:
                 source_cache[filepath] = parse_srt(filepath)
@@ -280,7 +409,7 @@ def process_results(output_file_id, file_map, srt_files):
                 source_cache[filepath] = []
         source_blocks = source_cache[filepath]
         source_text = source_blocks[block_i][2] if block_i < len(source_blocks) else ""
-        if cid not in translations or translations[cid] is None:
+        if cid not in translations or translations[cid] is None or cid in duplicate_ids:
             translated_text = "[ÇEVIRI HATASI]"
         elif translations[cid]:
             translated_text = translations[cid]
@@ -295,12 +424,29 @@ def process_results(output_file_id, file_map, srt_files):
         file_blocks.setdefault(filepath, {})[block_i] = (idx, timestamp, translated_text)
 
     # Dosyaları sıralı blok indeksine göre yaz
+    written_files = 0
+    skipped_files = len(source_mismatches)
     for filepath, blocks_dict in file_blocks.items():
-        rel = Path(filepath).relative_to(INPUT_FOLDER)
-        out_path = Path(OUTPUT_FOLDER) / rel
+        try:
+            rel = Path(filepath).resolve().relative_to(Path(input_folder).resolve())
+        except ValueError:
+            print(f"[!] Kaynak dosya girdi klasörü dışında; çıktı yazılmadı: {filepath}")
+            skipped_files += 1
+            continue
+        out_path = Path(output_folder) / rel
         ordered = [blocks_dict[k] for k in sorted(blocks_dict)]
         write_srt(out_path, ordered)
         print(f"[+] Kaydedildi: {out_path}")
+        written_files += 1
+
+    failed_ids = {cid for cid in file_map if cid not in translations or translations.get(cid) is None}
+    failed_ids.update(duplicate_ids)
+    return {
+        "written_files": written_files,
+        "skipped_files": skipped_files,
+        "failed_ids": failed_ids,
+        "source_mismatches": source_mismatches,
+    }
 
 
 def main():
@@ -324,16 +470,30 @@ def main():
     batch_id = submit_batch(requests)
 
     # batch_id kaydet (crash olursa tekrar kullanmak için)
-    with open("batch_id.txt", "w", encoding="utf-8") as f:
-        f.write(batch_id)
-    print("\n[i] Batch ID kaydedildi: batch_id.txt")
+    try:
+        recovery_path = save_standalone_recovery(batch_id, file_map)
+    except Exception as exc:
+        print(f"[!] Batch recovery kaydı yazılamadı: {exc}")
+        try:
+            best_effort_cancel_remote_batch(
+                _get_client(), batch_id, log_fn=lambda message, *_: print(f"[!] {message}"))
+        except Exception as cancel_exc:
+            print(f"[!] Batch iptal denemesi başlatılamadı: {cancel_exc}")
+        return
+    print(f"\n[i] Batch recovery kaydı kaydedildi: {recovery_path}")
     print("[i] Script kapanırsa 'python resume_batch.py' ile devam edebilirsin.\n")
 
     # Tamamlanmasını bekle
     output_file_id = wait_for_batch(batch_id)
 
     if output_file_id:
-        process_results(output_file_id, file_map, srt_files)
+        source_hashes = load_standalone_recovery(recovery_path)["source_hashes"]
+        result = process_results(
+            output_file_id, file_map, srt_files, expected_source_hashes=source_hashes)
+        if result["failed_ids"] or result["source_mismatches"] or result["skipped_files"]:
+            print("\n[!] Bazı sonuçlar yazılmadı veya hatalı; recovery kaydı korunuyor.")
+            return
+        clear_standalone_recovery(recovery_path)
         print("\n[✓] Tüm çeviriler tamamlandı!")
     else:
         print("[!] Batch başarısız oldu. OpenAI dashboard'unu kontrol et.")

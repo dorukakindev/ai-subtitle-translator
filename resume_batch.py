@@ -1,42 +1,48 @@
-"""
-Yarıda kalan batch'i devam ettirmek için.
-batch_id.txt dosyası gerekli.
-"""
+"""Yarım kalan standalone batch'i güvenli recovery kaydıyla sürdürür."""
 
-import glob
 from subtitle_batch_translate import (
-    _load_api_key, _get_client, INPUT_FOLDER, create_batch_requests, wait_for_batch, process_results
+    _load_api_key,
+    clear_standalone_recovery,
+    load_standalone_recovery,
+    process_results,
+    wait_for_batch,
 )
 
+
 def main():
-    API_KEY = _load_api_key()
-    if not API_KEY:
+    if not _load_api_key():
         import sys
         print("[!] Hata: API_KEY bulunamadı.")
         sys.exit(1)
 
-    client = _get_client()
+    try:
+        record = load_standalone_recovery()
+    except RuntimeError as exc:
+        print(f"[!] Güvenli recovery kaydı bulunamadı: {exc}")
+        print("[i] Eski batch_id.txt ile yeniden eşleme yapılmaz; bu, eski sonucu değişmiş kaynağa yazabilir.")
+        return
 
-    with open("batch_id.txt", encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-        if not lines:
-            import sys
-            print("[!] Hata: batch_id.txt boş.")
-            sys.exit(1)
-        batch_id = lines[-1]
-
+    batch_id = record["batch_id"]
     print(f"[+] Batch ID: {batch_id}")
 
-    srt_files = glob.glob(f"{INPUT_FOLDER}/**/*.srt", recursive=True) + \
-                glob.glob(f"{INPUT_FOLDER}/*.srt")
-    srt_files = list(set(srt_files))
-
-    _, file_map = create_batch_requests(srt_files)
-
     output_file_id = wait_for_batch(batch_id)
-    if output_file_id:
-        process_results(output_file_id, file_map, srt_files)
-        print("\n[✓] Tamamlandı!")
+    if not output_file_id:
+        return
+
+    result = process_results(
+        output_file_id,
+        record["file_map"],
+        list(record["source_hashes"]),
+        input_folder=record["input_folder"],
+        output_folder=record["output_folder"],
+        expected_source_hashes=record["source_hashes"],
+    )
+    if result["failed_ids"] or result["source_mismatches"] or result["skipped_files"]:
+        print("[!] Bazı sonuçlar yazılmadı veya hatalı; recovery kaydı korunuyor.")
+        return
+    clear_standalone_recovery()
+    print("\n[✓] Tamamlandı!")
+
 
 if __name__ == '__main__':
     main()

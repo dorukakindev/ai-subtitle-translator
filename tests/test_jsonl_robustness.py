@@ -121,6 +121,50 @@ class TestJsonlRobustness(unittest.TestCase):
         self.assertEqual(blocks[0][0], "2")
         self.assertEqual(blocks[0][2], "[ÇEVIRI HATASI]")
 
+    @patch("subtitle_batch_translate._get_client")
+    @patch("subtitle_batch_translate.write_srt")
+    def test_process_results_rejects_duplicate_and_truncated_records(
+            self, mock_write_srt, mock_get_client):
+        import subtitle_batch_translate as standalone
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        mock_client.files.content.return_value.text = (
+            '{"custom_id":"first","response":{"body":{"choices":[{"message":{"content":"Ilk"}}]}}}\n'
+            '{"custom_id":"first","response":{"body":{"choices":[{"message":{"content":"Ikinci"}}]}}}\n'
+            '{"custom_id":"cut","response":{"body":{"choices":[{"finish_reason":"length","message":{"content":"Yarim"}}]}}}'
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source.srt"
+            source.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nOne\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nTwo\n\n", encoding="utf-8")
+            fmap = {
+                "first": (str(source), 0, "1", "00:00:00,000 --> 00:00:01,000"),
+                "cut": (str(source), 1, "2", "00:00:01,000 --> 00:00:02,000"),
+            }
+            result = standalone.process_results(
+                "out", fmap, [str(source)], input_folder=tmpdir, output_folder=tmpdir)
+
+        blocks = mock_write_srt.call_args.args[1]
+        self.assertEqual([block[2] for block in blocks], ["[ÇEVIRI HATASI]", "[ÇEVIRI HATASI]"])
+        self.assertEqual(result["failed_ids"], {"first", "cut"})
+
+    def test_standalone_recovery_preserves_submitted_source_signature(self):
+        import subtitle_batch_translate as standalone
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source.srt"
+            source.write_text("1\n00:00:00,000 --> 00:00:01,000\nOne\n", encoding="utf-8")
+            recovery = Path(tmpdir) / "recovery.json"
+            fmap = {"cid": (str(source), 0, "1", "00:00:00,000 --> 00:00:01,000")}
+            with patch.object(standalone, "standalone_recovery_path", return_value=recovery):
+                standalone.save_standalone_recovery("batch_123", fmap, input_folder=tmpdir, output_folder=tmpdir)
+                record = standalone.load_standalone_recovery()
+
+            self.assertEqual(record["file_map"], fmap)
+            self.assertEqual(record["source_hashes"][str(source)], standalone._source_file_sha256(str(source)))
+
     def test_try_extract_fenced_newlines(self):
         from repair_batches import _try_extract
         fenced_content = "```json\n[{\"i\": 1, \"t\": \"Merhaba\"}]\n```"
@@ -204,6 +248,35 @@ class TestJsonlRobustness(unittest.TestCase):
             printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list
                                 if call.args)
             self.assertIn("unknown: fmap eşleşmesi yok", printed)
+
+    @patch("repair_batches._get_client")
+    def test_repair_batches_keeps_cues_missing_from_output(self, mock_get_client):
+        import repair_batches
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_file = Path(tmpdir) / "out.srt"
+            fmap_file = Path(tmpdir) / "batch_fmap_b123.json"
+            fmap_file.write_text(json.dumps({
+                "output_path": str(out_file),
+                "fmap": {
+                    "seen": [[1, "00:00:00,000", "00:00:01,000"]],
+                    "missing": [[2, "00:00:01,000", "00:00:02,000"]],
+                },
+            }), encoding="utf-8")
+            mock_batch = MagicMock(status="completed", output_file_id="out_123")
+            mock_client.batches.retrieve.return_value = mock_batch
+            mock_client.files.content.return_value.text = (
+                '{"custom_id":"seen","response":{"body":{"choices":[{"message":{"content":"[{\\"i\\": 1, \\"t\\": \\"Tamam\\"}]"}}]}}}'
+            )
+
+            with patch("repair_batches.FMAP_FILES", [str(fmap_file)]):
+                repair_batches.main()
+
+            written = out_file.read_text(encoding="utf-8")
+            self.assertIn("1\n00:00:00,000 --> 00:00:01,000\nTamam", written)
+            self.assertIn("2\n00:00:01,000 --> 00:00:02,000\n[HATA]", written)
 
     def test_smoke_script_uses_source_driven_sdh_cleanup(self):
         smoke = (Path(__file__).parents[1] / "_smoke_test.py").read_text(encoding="utf-8")

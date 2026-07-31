@@ -58,7 +58,7 @@ def parse_chunk(raw: str, info: list, cid: str) -> dict:
     trans_map = {}
     if items and isinstance(items, list):
         for item in items:
-            if isinstance(item, dict) and "i" in item and "t" in item:
+            if isinstance(item, dict) and "i" in item and isinstance(item.get("t"), str):
                 trans_map[str(item["i"])] = item["t"]
         if trans_map:
             return trans_map
@@ -80,10 +80,14 @@ def main():
         except Exception:
             continue
 
-        output_path = fmap_data.get("output_path") or fmap_data.get("output_dir") or ""
+        output_path = fmap_data.get("output_path") or ""
         raw_fmap    = fmap_data.get("fmap", {})
         if not output_path or not raw_fmap:
             print(f"  ! {fname}: output yolu/fmap eksik — atlanıyor")
+            continue
+
+        if Path(output_path).is_dir():
+            print(f"  ! {fname}: output_path dosya değil; güvenlik için atlanıyor")
             continue
 
         print(f"\n{'='*60}")
@@ -114,6 +118,7 @@ def main():
         srt_blocks = {}
         chunk_ok   = 0
         chunk_fail = 0
+        seen_cids = set()
 
         for line in content.strip().splitlines():
             try:
@@ -125,7 +130,9 @@ def main():
                 continue
 
             cid = res.get("custom_id")
-            if not cid: continue
+            if not isinstance(cid, str) or not cid:
+                print("  [UYARI] Geçersiz custom_id içeren sonuç atlandı")
+                continue
 
             info = raw_fmap.get(cid, [])
 
@@ -133,6 +140,16 @@ def main():
                 print(f"  [UYARI] {cid}: fmap eşleşmesi yok; sonuç hiçbir cue'ya yazılmadı")
                 chunk_fail += 1
                 continue
+
+            if cid in seen_cids:
+                print(f"  [UYARI] {cid}: yinelenen custom_id; ilgili cue'lar [HATA] olarak korundu")
+                for entry in info:
+                    idx, start, end = entry[0], entry[1], entry[2]
+                    srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    total_hata += 1
+                chunk_fail += 1
+                continue
+            seen_cids.add(cid)
 
             if res.get("error"):
                 err_msg = res.get("error", {})
@@ -149,7 +166,10 @@ def main():
             try:
                 choices = res.get("response", {}).get("body", {}).get("choices", [])
                 if choices and isinstance(choices, list):
-                    raw = choices[0].get("message", {}).get("content", "").strip()
+                    first = choices[0]
+                    if first.get("finish_reason") not in {"length", "content_filter"}:
+                        content_value = first.get("message", {}).get("content", "")
+                        raw = content_value.strip() if isinstance(content_value, str) else ""
             except Exception:
                 raw = ""
 
@@ -163,7 +183,14 @@ def main():
                 continue
 
             trans_map = parse_chunk(raw, info, cid)
-            chunk_ok  += 1
+            if not trans_map:
+                for entry in info:
+                    idx, start, end = entry[0], entry[1], entry[2]
+                    srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    total_hata += 1
+                chunk_fail += 1
+                continue
+            chunk_ok += 1
 
             for entry in info:
                 idx, start, end = entry[0], entry[1], entry[2]
@@ -171,6 +198,16 @@ def main():
                 if text == "[HATA]":
                     total_hata += 1
                 srt_blocks[idx] = (str(idx), f"{start} --> {end}", text)
+
+        for cid, info in raw_fmap.items():
+            if cid in seen_cids:
+                continue
+            print(f"  [UYARI] {cid}: batch sonucunda hiç bulunamadı; cue'lar [HATA] olarak korundu")
+            for entry in info:
+                idx, start, end = entry[0], entry[1], entry[2]
+                srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                total_hata += 1
+            chunk_fail += 1
 
         if not srt_blocks:
             print(f"  [ATLA] Hiç blok yok.")
