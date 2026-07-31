@@ -379,6 +379,61 @@ class SdhSourceDrivenTest(unittest.TestCase):
         result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
         self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "-Bu şurupla dolu.")
 
+    def test_dialogue_sentence_ending_with_colon_is_not_a_speaker_label(self):
+        blocks = [("144", "00:00:01,000 --> 00:00:02,000",
+                   "Yargıç şuna karar verdi:")]
+        src_map = _src(**{"144": "[Trent] The judge made the decision"})
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "Yargıç şuna karar verdi:")
+
+    def test_numbered_sheriff_and_tv_speaker_labels_are_stripped(self):
+        blocks = [
+            ("3", "00:00:01,000 --> 00:00:02,000",
+             "[şerif 1] Şerif Departmanı."),
+            ("19", "00:00:02,000 --> 00:00:03,000",
+             "[TV'deki adam] Son dakika."),
+        ]
+        src_map = _src(**{
+            "3": "[sheriff 1] Sheriff's Department.",
+            "19": "[man 2 on TV] Breaking news.",
+        })
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            {idx: text for idx, _ts, text in result},
+            {"3": "Şerif Departmanı.", "19": "Son dakika."},
+        )
+
+    def test_action_descriptors_with_adverbs_are_stripped(self):
+        blocks = [
+            ("146", "00:00:01,000 --> 00:00:02,000",
+             "Biraz kalabalıktı. [üzgün gülüş]"),
+            ("391", "00:00:02,000 --> 00:00:03,000",
+             "[KADINLAR HEYECANLA BAĞIRIYOR]"),
+        ]
+        src_map = _src(**{
+            "146": "It was crowded. [laughs sadly]",
+            "391": "[women yell enthusiastically]",
+        })
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result, [
+            ("146", "00:00:01,000 --> 00:00:02,000", "Biraz kalabalıktı."),
+        ])
+
+    def test_mixed_sfx_and_named_speaker_prefixes_are_both_stripped(self):
+        blocks = [(
+            "526", "00:00:01,000 --> 00:00:02,000",
+            "- [kalabalığın çığlıkları]\n- [Ron] Bir savaşımız vardı.",
+        )]
+        src_map = _src(**{
+            "526": "- [crowd screaming]\n- [Ron] We had a battle.",
+        })
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "- Bir savaşımız vardı.")
+
     def test_no_src_map_falls_back_to_legacy(self):
         # source_driven=True ama src_map YOK → eski beyaz-liste davranışına düşer,
         # çökmez (KRİTİK ön koşul: src_map yoksa source_driven çalışamaz).

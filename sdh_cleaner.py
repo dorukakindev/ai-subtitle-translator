@@ -110,7 +110,8 @@ _SDH_KEYWORDS = {
 _SPEAKER_WORDS = {
     "man", "woman", "male", "female", "boy", "girl", "child", "kid",
     "narrator", "announcer", "speaker", "voice", "voiceover", "interviewer",
-    "host", "reporter", "crowd",
+    "host", "reporter", "crowd", "sheriff", "deputy", "sergeant",
+    "spokesman", "spokesperson", "detective", "agent",
     "adam", "kadin", "erkek", "cocuk", "anlatici", "sunucu", "konusmaci",
     "ses", "dis ses", "roportajci", "muhabir", "kalabalik",
     "doctor", "nurse", "officer", "teacher", "judge",
@@ -235,7 +236,11 @@ _SDH_ACTION_VERBS = {
     "continues", "fades", "applause", "applauding", "chuckle", "chuckles",
     "chuckling", "giggle", "giggles", "giggling", "sniffles", "chatter",
     "barking", "howling", "growling", "meow", "roaring", "chirping", "knocks", "knocking",
-    "jingling", "konusur", "konusuyor", "kapanir", "kapaniyor",
+    "jingling", "clamoring", "chanting", "yell", "yells", "whoop",
+    "whoops", "roars", "splashing", "calls", "swelling", "plays",
+    "turns", "rewinds", "whirs",
+    "laughs", "scoffs", "clears", "sniffles", "sobs", "chiming",
+    "trilling", "konusur", "konusuyor", "kapanir", "kapaniyor",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -264,7 +269,9 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
         return True
     if key in _SDH_KEYWORDS or key in _SPEAKER_WORDS:
         return True
-    if key in {"non english", "unintelligible speech", "indistinct speech"}:
+    if key in {
+            "non english", "unintelligible speech", "indistinct speech",
+            "on tv", "on recording", "together", "clears throat"}:
         return True
 
     words = key.split()
@@ -290,6 +297,12 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
 
     # Sound action verb ending: [glass breaking], [Glass Breaking], [GLASS BREAKING], [woman whispering]
     if len(words_no_digits) >= 2 and words_no_digits[-1] in _SDH_ACTION_VERBS:
+        return True
+    if (not bare_text
+            and any(w in _SDH_ACTION_VERBS for w in words_no_digits)
+            and (words_no_digits[-1].endswith("ly")
+                 or any(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS
+                        for w in words_no_digits))):
         return True
     if (len(words_no_digits) >= 2
             and words_no_digits[-1] in _SDH_SOUND_NOUNS
@@ -317,6 +330,19 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
         return False
     if _is_heading_label(inner):
         return False
+    role_suffix = re.search(
+        r"\s+(?:on\s+tv|over\s+comm|over\s+pa|on\s+recording)\s*$",
+        inner, re.IGNORECASE)
+    base = re.sub(
+        r"\s+(?:on\s+tv|over\s+comm|over\s+pa|on\s+recording)\s*$",
+        "", inner, flags=re.IGNORECASE)
+    base = re.sub(r"\s+\d+\s*$", "", base).strip()
+    base_key = _descriptor_key(base)
+    if base_key in _SPEAKER_WORDS:
+        return True
+    if (role_suffix and len(base.split()) == 1
+            and (base.istitle() or base.isupper())):
+        return True
     words = inner.split()
     if not words or len(words) > 3:
         return False
@@ -717,7 +743,8 @@ _SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
 )
 _TR_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?m)(^|(?<=[.!?…]))(\s*(?:-\s*)?)"
-    r"[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*"
+    r"(?:[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*(?=\S)|"
+    r"[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'\-]{1,30}:\s*$)"
 )
 _SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
     r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
@@ -768,9 +795,13 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         colon_follows = src_line[end:].lstrip().startswith(":")
         is_descriptor = is_sdh_descriptor(inner)
         is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
+        followed_by_dialogue = bool(
+            src_line[end:].lstrip()
+            and not src_line[end:].lstrip().startswith(("[", "(")))
         ambiguous_mixed_label = (
             is_speaker and not colon_follows and len(source_spans) > 1
             and source_has_descriptor and not is_descriptor
+            and not followed_by_dialogue
         )
         if (is_descriptor or is_speaker) and not ambiguous_mixed_label:
             source_groups.append(raw)
