@@ -710,12 +710,14 @@ def _is_translation_failure_marker(text: str) -> bool:
 # subtitle_translator_gui._SDH_ONLY_SRC_RE ile aynı desen (bilinçli tekrar —
 # sdh_cleaner.py, gui modülüne bağımlı olmamalı).
 SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
+_VTT_VOICE_TAG_RE = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
 
 
 def src_is_sfx_only(src_text: str) -> bool:
     """Kaynak cue'su tamamen parantez/köşeli parantez/nota mı (gerçek diyalog
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
     text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
+    text = _VTT_VOICE_TAG_RE.sub('', text)
     text = CHEVRON_SPEAKER_RE.sub("", text).strip()
     text = re.sub(r"(?m)^\s*[-–—]\s*(?=[\[(])", "", text)
     text = re.sub(r"\s*\n\s*", " ", text)
@@ -957,8 +959,14 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
                 continue
             original = _strip_split_speaker_prefix(original, src_text)
             lines = []
-            for line in original.split("\n"):
-                cleaned = strip_labels_by_source(line, src_text)
+            target_lines = original.split("\n")
+            source_lines = str(src_text or "").split("\n")
+            aligned_source = (
+                source_lines if len(source_lines) == len(target_lines)
+                else [src_text] * len(target_lines)
+            )
+            for line, source_line in zip(target_lines, aligned_source):
+                cleaned = strip_labels_by_source(line, source_line)
                 if cleaned:
                     lines.append(cleaned)
             if lines:

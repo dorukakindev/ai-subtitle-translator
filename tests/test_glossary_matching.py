@@ -29,6 +29,8 @@ class TermInTextTest(unittest.TestCase):
     def test_multiword_substring_fallback(self):
         self.assertTrue(ht.term_in_text("new york", "welcome to new york city"))
         self.assertFalse(ht.term_in_text("new york", "old yorkshire"))
+        self.assertFalse(ht.term_in_text("new york", "a new yorker wrote"))
+        self.assertFalse(ht.term_in_text("the who", "the whole room"))
 
     def test_punctuated_key_substring(self):
         self.assertTrue(ht.term_in_text("rock'n'roll", "i love rock'n'roll music"))

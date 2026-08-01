@@ -29,6 +29,15 @@ class CacheIntegrityTest(unittest.TestCase):
             helper_url="https://reseller.example/v1")
         self.assertNotEqual(official, reseller)
 
+    def test_analysis_fingerprint_changes_with_scene_gap(self):
+        one_second = ht.analysis_fingerprint(
+            "English", "Turkish", "standard", "gpt-5.4-mini",
+            scene_gap_sec=1.0)
+        three_seconds = ht.analysis_fingerprint(
+            "English", "Turkish", "standard", "gpt-5.4-mini",
+            scene_gap_sec=3.0)
+        self.assertNotEqual(one_second, three_seconds)
+
     def test_context_cache_misses_when_helper_endpoint_changes(self):
         with tempfile.TemporaryDirectory() as root:
             fp = Path(root, "endpoint.srt")
@@ -50,6 +59,25 @@ class CacheIntegrityTest(unittest.TestCase):
                 str(fp), expected_target="tr",
                 helper_model="gpt-5.4-mini",
                 helper_url="https://reseller.example/v1"))
+
+    def test_context_cache_misses_when_scene_gap_changes(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "scene-gap.srt")
+            fp.write_bytes(b"scene gap cache")
+            ctx = SimpleNamespace(
+                source_language="en", summary="s", setting="st", tone="t",
+                characters=[], recurring_terms={}, scene_notes=[]
+            )
+            ht.save_context_cache(
+                ctx, str(fp), target_language="tr",
+                helper_model="gpt-5.4-mini", scene_gap_sec=1.0)
+
+            self.assertIsNotNone(ht.load_context_cache(
+                str(fp), expected_target="tr",
+                helper_model="gpt-5.4-mini", expected_scene_gap_sec=1.0))
+            self.assertIsNone(ht.load_context_cache(
+                str(fp), expected_target="tr",
+                helper_model="gpt-5.4-mini", expected_scene_gap_sec=3.0))
 
     def test_precontext_cache_misses_when_model_or_endpoint_changes(self):
         with tempfile.TemporaryDirectory() as root:

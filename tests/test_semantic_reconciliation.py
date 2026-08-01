@@ -20,6 +20,36 @@ def _response(payload):
 
 
 class SemanticClusterBuilderTest(unittest.TestCase):
+    def test_fragment_sentence_is_never_split_between_clusters(self):
+        class Cue:
+            def __init__(self, index, text):
+                self.index = index
+                self.text = text
+                self.start = f"00:00:{index:02d},000"
+                self.end = f"00:00:{index:02d},500"
+
+        cues = [
+            Cue(i, f"fragment {i}" + ("." if i == 8 else ","))
+            for i in range(1, 9)
+        ]
+        blocks = [
+            (str(i), f"00:00:{i:02d} --> 00:00:{i:02d}", f"Parça {i}")
+            for i in range(1, 9)
+        ]
+        src_map = {str(cue.index): cue.text for cue in cues}
+
+        clusters = ht.build_semantic_reconciliation_clusters(
+            src_map, blocks, cues=cues, changed_ids={"1", "8"})
+
+        containing = [
+            cluster for cluster in clusters
+            if {"1", "8"} & {item["id"] for item in cluster["items"]}
+        ]
+        self.assertEqual(len(containing), 1)
+        self.assertEqual(
+            [item["id"] for item in containing[0]["items"]],
+            [str(i) for i in range(1, 9)],
+        )
     def test_changed_cue_gets_two_neighbor_context(self):
         translations = ["Bir.", "İki.", "Üç.", "Dört.", "Beş.", "Altı."]
         blocks = [

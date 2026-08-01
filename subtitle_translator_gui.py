@@ -29,7 +29,8 @@ from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json
                        atomic_write_text,
                        best_effort_cancel_remote_batch, is_safe_batch_id, mutate_batch_ids,
                        state_dir, state_path)
-from prompt_constants import PROFANITY_RULES, JSON_INSTRUCTION, meaning_readability_rule
+from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
+                              UNTRUSTED_REFERENCE_RULE, meaning_readability_rule)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
 import video_subtitles as video_tracks
@@ -5784,14 +5785,30 @@ def _locked_term_residue_plan(blocks: list, src_map: dict,
         translated = by_idx_text.get(str(idx), "")
         if not source_text or not translated:
             continue
+        covered_source_spans = []
         for source, target in entries:
             source_re = re.compile(
                 r"(?<!\w)" + re.escape(source) + r"(?!\w)", re.IGNORECASE)
-            if not source_re.search(str(source_text)):
+            source_matches = list(source_re.finditer(str(source_text)))
+            if not source_matches:
+                continue
+            if not source_re.search(translated):
+                continue
+            independent_matches = [
+                match for match in source_matches
+                if not any(
+                    outer_start <= match.start() and match.end() <= outer_end
+                    for outer_start, outer_end in covered_source_spans
+                )
+            ]
+            covered_source_spans.extend(
+                (match.start(), match.end()) for match in source_matches
+            )
+            if not independent_matches:
                 continue
             target_re = re.compile(
                 r"(?<!\w)" + re.escape(target) + r"(?!\w)", re.IGNORECASE)
-            if source_re.search(translated) and not target_re.search(translated):
+            if not target_re.search(translated):
                 fix = (source, target)
                 if fix not in plan.setdefault(str(idx), []):
                     plan[str(idx)].append(fix)
@@ -10042,6 +10059,8 @@ class App(ctk.CTk):
             style=App._run_setting(self, "style", "style_var", "natural"),
             schema=schema_dict,
             glossary=glossary,
+            expected_scene_gap_sec=float(
+                self._snap_get("scene_gap_seconds", self._scene_gap_seconds)),
         )
 
     def _get_file_source_language(self, filepath: str) -> str:
@@ -14909,7 +14928,16 @@ class App(ctk.CTk):
                             cancel_check=lambda: self._stop_flag)
                     except Exception:
                         pass
-                    
+
+                if clean_sdh_on:
+                    try:
+                        blocks = clean_sdh(
+                            blocks, src_map=_src_map_from_cues(cues),
+                            source_driven=True)
+                    except Exception:
+                        pass
+
+                if missing:
                     # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
                     try:
                         _raw_map = _raw_src_map_from_cues(cues)
@@ -18857,18 +18885,22 @@ class App(ctk.CTk):
                     try:
                         result = ht.analyze_with_helper(
                             cues=cues, helper_api_key=self._helper_api_key("analysis"), helper_url=self._helper_api_base_url("analysis"), helper_model=self._helper_api_model("analysis"),
-                            style=self.style_var.get(),
+                            style=App._run_setting(
+                                self, "style", "style_var", "natural"),
                             source_language=_lang_iso639_1(file_src),
                             target_language=_lang_iso639_1(tgt),
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
                              schema=schema_dict,
-                            analysis_depth=self.analysis_depth_var.get(),
+                            analysis_depth=App._run_setting(
+                                self, "analysis_depth", "analysis_depth_var", "Standart"),
                             token_callback=self._token_callback_for_model(
                                 self._helper_api_model("analysis")),
                             cancel_context=self.__dict__.get(
-                                "_helper_request_canceller"))
+                                "_helper_request_canceller"),
+                            scene_gap_sec=float(self._snap_get(
+                                "scene_gap_seconds", self._scene_gap_seconds)))
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
@@ -18899,13 +18931,17 @@ class App(ctk.CTk):
                                               idiom_map=idiom_map,
                                                cultural_refs=cultural_refs,
                                                target_language=tgt,
-                                               analysis_depth=self.analysis_depth_var.get(),
+                                               analysis_depth=App._run_setting(
+                                                   self, "analysis_depth", "analysis_depth_var", "Standart"),
                                                helper_model=self._helper_api_model("analysis"),
                                                helper_url=self._helper_api_base_url("analysis"),
-                                               style=self.style_var.get(),
+                                               style=App._run_setting(
+                                                   self, "style", "style_var", "natural"),
                                                schema=schema_dict,
                                                glossary=glossary,
-                                               source_language=_lang_iso639_1(file_src))
+                                               source_language=_lang_iso639_1(file_src),
+                                               scene_gap_sec=float(self._snap_get(
+                                                   "scene_gap_seconds", self._scene_gap_seconds)))
                     self._log(f"Analiz tamam — {len(context.recurring_terms)} terim, "
                               f"{len(context.characters)} karakter, "
                               f"{len(char_examples)} örnek"
@@ -19201,7 +19237,8 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     glossary=_locked_terms,
                     analysis_result=(context, char_examples, pronoun_map,
-                                     character_styles),
+                                     character_styles, scene_emotions,
+                                     idiom_map, cultural_refs),
                     change_log=_critic_change_log,
                     token_callback=self._token_callback_for_model(
                         self._helper_api_model("critic")),
@@ -19408,6 +19445,15 @@ class App(ctk.CTk):
                 sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
+            if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
+                _before_final_sdh = list(sorted_blocks)
+                sorted_blocks = clean_sdh(
+                    sorted_blocks,
+                    src_map={str(c.index): _clean_src(c.text) for c in cues},
+                    source_driven=True)
+                _record_pass_change(
+                    _pass_trace, "Final-SDH", _before_final_sdh,
+                    sorted_blocks, _pass_history)
             _n_filled = 0
             try:
                 _raw_map = _raw_src_map_from_cues(cues)
@@ -20429,6 +20475,16 @@ class App(ctk.CTk):
                                 break
                             if self._stop_flag:
                                 break
+                            if (App._run_setting(
+                                    self, "clean_sdh", "clean_sdh_var", True)
+                                    and _orig_cues):
+                                _before_final_sdh = list(pp)
+                                pp = clean_sdh(
+                                    pp, src_map=_src_map_from_cues(_orig_cues),
+                                    source_driven=True)
+                                _record_pass_change(
+                                    _pass_trace, "Final-SDH", _before_final_sdh,
+                                    pp, _pass_history)
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
                             try:
                                 _raw_map = _raw_src_map_from_cues(_orig_cues)
@@ -20924,6 +20980,13 @@ class App(ctk.CTk):
                 sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
+            if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
+                _before_final_sdh = list(sorted_blocks)
+                sorted_blocks = clean_sdh(
+                    sorted_blocks, src_map=src_blocks, source_driven=True)
+                _record_pass_change(
+                    _pass_trace, "Final-SDH", _before_final_sdh,
+                    sorted_blocks, _pass_history)
             _n_filled = 0
             try:
                 sorted_blocks, _ = _reinsert_missing_dialogue_markers(
@@ -21337,7 +21400,15 @@ class App(ctk.CTk):
                     continue
                 self._set_stat(self.stat_blocks_var, str(len(cues)))
 
-                schema_dict = self._get_file_schema(filepath)
+                sess_entry = session["files"].get(str(filepath), {})
+                stored_schema_name = (
+                    sess_entry.get("schema_name")
+                    if file_status == "submitted" else ""
+                )
+                schema_dict = (
+                    self._schema_by_name(stored_schema_name)
+                    if stored_schema_name else self._get_file_schema(filepath)
+                )
                 if schema_dict["name"] == "Otomatik":
                     self._log(f"[{fname}] İçerik türü otomatik analiz ediliyor...", "info")
                     try:
@@ -21374,18 +21445,22 @@ class App(ctk.CTk):
                     try:
                         result = ht.analyze_with_helper(
                             cues=cues, helper_api_key=self._helper_api_key("analysis"), helper_url=self._helper_api_base_url("analysis"), helper_model=self._helper_api_model("analysis"),
-                            style=self.style_var.get(),
+                            style=App._run_setting(
+                                self, "style", "style_var", "natural"),
                             source_language=_lang_iso639_1(file_src),
                             target_language=_lang_iso639_1(tgt),
                             glossary=glossary, log_fn=self._log,
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
                              schema=schema_dict,
-                            analysis_depth=self.analysis_depth_var.get(),
+                            analysis_depth=App._run_setting(
+                                self, "analysis_depth", "analysis_depth_var", "Standart"),
                             token_callback=self._token_callback_for_model(
                                 self._helper_api_model("analysis")),
                             cancel_context=self.__dict__.get(
-                                "_helper_request_canceller"))
+                                "_helper_request_canceller"),
+                            scene_gap_sec=float(self._snap_get(
+                                "scene_gap_seconds", self._scene_gap_seconds)))
                     except Exception as e:
                         self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
                         result = None
@@ -21415,13 +21490,17 @@ class App(ctk.CTk):
                                               idiom_map=idiom_map,
                                                cultural_refs=cultural_refs,
                                                target_language=tgt,
-                                               analysis_depth=self.analysis_depth_var.get(),
+                                               analysis_depth=App._run_setting(
+                                                   self, "analysis_depth", "analysis_depth_var", "Standart"),
                                                helper_model=self._helper_api_model("analysis"),
                                                helper_url=self._helper_api_base_url("analysis"),
-                                               style=self.style_var.get(),
+                                               style=App._run_setting(
+                                                   self, "style", "style_var", "natural"),
                                                schema=schema_dict,
                                                glossary=glossary,
-                                               source_language=_lang_iso639_1(file_src))
+                                               source_language=_lang_iso639_1(file_src),
+                                               scene_gap_sec=float(self._snap_get(
+                                                   "scene_gap_seconds", self._scene_gap_seconds)))
                     # Proje hafızasına kaydet
                     if _analysis_ok and _file_pm is not None:
                         try:
@@ -21448,7 +21527,6 @@ class App(ctk.CTk):
 
                 # ── Zaten gönderilmiş (submitted) dosyalar için batch yeniden gönderme ──
                 if file_status == "submitted":
-                    sess_entry = session["files"].get(str(filepath), {})
                     existing_bid = sess_entry.get("batch_id")
                     existing_out = sess_entry.get("out_path", "")
                     if existing_bid:
@@ -21925,11 +22003,30 @@ class App(ctk.CTk):
                 _log_cps_warning(_final_blocks, self._log)
                 # Etiket geri yükleme + birleştirme + yazım HER ZAMAN çalışır (kalite
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
+                _locked_terms = self._get_locked_terms_dict(filepath, tgt)
+                if (getattr(self, "term_normalize_var", None)
+                        and self.term_normalize_var.get()):
+                    try:
+                        _before_termnorm = list(_final_blocks)
+                        _final_blocks, _ = _normalize_mixed_terms(
+                            _final_blocks, _src_map,
+                            self._helper_api_key("polish"),
+                            self._helper_api_base_url("polish"),
+                            self._helper_api_model("polish"), log_fn=self._log,
+                            locked_terms=_locked_terms)
+                        _record_pass_change(
+                            _pass_trace, "Term-Normalize", _before_termnorm,
+                            _final_blocks, _pass_history)
+                    except Exception:
+                        pass
+                if self._stop_flag:
+                    break
                 _before_semantic = list(_final_blocks)
                 self._run_final_semantic_checks(
                     out_path, _src_map, _final_blocks, src_lang=file_src,
                     cues=cues, changed_ids=_pass_history.keys(),
-                    source_path=filepath)
+                    source_path=filepath, locked_terms=_locked_terms,
+                    analysis_result=_full_analysis)
                 if self._stop_flag:
                     break
                 _record_pass_change(
@@ -21937,17 +22034,13 @@ class App(ctk.CTk):
                     _final_blocks, _pass_history)
                 if self._stop_flag:
                     break
-                if getattr(self, "term_normalize_var", None) and self.term_normalize_var.get():
-                    try:
-                        _final_blocks, _ = _normalize_mixed_terms(
-                            _final_blocks, {str(c.index): _clean_src(c.text) for c in cues},
-                            self._helper_api_key("polish"), self._helper_api_base_url("polish"),
-                            self._helper_api_model("polish"), log_fn=self._log,
-                            locked_terms=self._get_locked_terms_dict(filepath, tgt))
-                    except Exception:
-                        pass
-                if self._stop_flag:
-                    break
+                if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
+                    _before_final_sdh = list(_final_blocks)
+                    _final_blocks = clean_sdh(
+                        _final_blocks, src_map=_src_map, source_driven=True)
+                    _record_pass_change(
+                        _pass_trace, "Final-SDH", _before_final_sdh,
+                        _final_blocks, _pass_history)
                 _raw_map = _raw_src_map_from_cues(cues)
                 _n_filled = 0
                 try:

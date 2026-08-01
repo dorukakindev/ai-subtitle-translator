@@ -363,6 +363,33 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertEqual(len(containing), 1)
         self.assertTrue({"100", "101"}.issubset(containing[0]))
 
+    def test_fragment_group_locked_term_is_validated_as_joined_source(self):
+        cues = [Cue(1, "He visited New"), Cue(2, "York.")]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "New York'a gitti, okay."),
+            (2, "00:00:01,000 --> 00:00:02,000", "Oradaydı, okay."),
+        ]
+        fixes = [
+            {"id": "1", "fixed": "Başka kente gitti."},
+            {"id": "2", "fixed": "Oradaydı."},
+        ]
+        hits = [
+            (1, "", "", "GARBLE_TOKEN"),
+            (2, "", "", "GARBLE_TOKEN"),
+        ]
+
+        with patch("hybrid_translate.run_validators", return_value=hits), \
+             patch("hybrid_translate.validate_polish_candidate",
+                   return_value=(True, "")), \
+             patch("hybrid_translate._semantic_reason_map", side_effect=[{}, {}]), \
+             patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                glossary={"New York": "New York"},
+            )
+
+        self.assertEqual(result, blocks)
+
     def test_duplicate_and_noop_fixes_do_not_inflate_change_log(self):
         cues = [Cue(1, "Are you sure?")]
         blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Emin misin, okay?")]

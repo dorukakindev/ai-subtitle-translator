@@ -121,6 +121,84 @@ class BindScenePlanToRequestedTest(unittest.TestCase):
         self.assertEqual(result, [])
         self.assertFalse(complete)
 
+
+class ScenePlanPaginationTest(unittest.TestCase):
+    class Cue:
+        def __init__(self, index, start_sec):
+            self.index = index
+            self.start = self._ts(start_sec)
+            self.end = self._ts(start_sec + 1)
+            self.text = f"Scene {index}."
+
+        @staticmethod
+        def _ts(seconds):
+            minute, second = divmod(seconds, 60)
+            return f"00:{minute:02d}:{second:02d},000"
+
+    def test_all_scenes_are_requested_in_multiple_pages(self):
+        cues = [self.Cue(i, (i - 1) * 5) for i in range(1, 32)]
+        calls = []
+
+        def create(_client, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            page, _ = json.JSONDecoder().raw_decode(
+                prompt.split("Scenes:\n", 1)[1])
+            calls.append(page)
+            scenes = [
+                {"start": item["start"], "end": item["end"],
+                 "summary": f"Plan {item['start']}"}
+                for item in page
+            ]
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"scenes": scenes})))],
+                usage=None,
+            )
+
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = lambda **_kwargs: object()
+        status = {}
+        with patch.dict(sys.modules, {"openai": fake_openai}), \
+             patch.object(ht, "_safe_chat_create", side_effect=create):
+            result = ht._extract_emotional_arc(
+                cues, "Turkish", "key", "url", "model", status=status)
+
+        self.assertEqual([len(page) for page in calls], [30, 1])
+        self.assertEqual(len(result), 31)
+        self.assertEqual(result[-1]["start"], 31)
+        self.assertTrue(status["scene_plan"])
+
+    def test_scene_gap_parameter_controls_grouping(self):
+        cues = [self.Cue(1, 0), self.Cue(2, 3)]
+        requested = []
+
+        def create(_client, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            page, _ = json.JSONDecoder().raw_decode(
+                prompt.split("Scenes:\n", 1)[1])
+            requested.append(page)
+            scenes = [
+                {"start": item["start"], "end": item["end"], "summary": "x"}
+                for item in page
+            ]
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps({"scenes": scenes})))],
+                usage=None,
+            )
+
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = lambda **_kwargs: object()
+        with patch.dict(sys.modules, {"openai": fake_openai}), \
+             patch.object(ht, "_safe_chat_create", side_effect=create):
+            ht._extract_emotional_arc(
+                cues, "Turkish", "key", "url", "model", scene_gap_sec=1.0)
+
+        self.assertEqual(
+            [(item["start"], item["end"]) for item in requested[0]],
+            [(1, 1), (2, 2)],
+        )
+
     def test_drops_conflicting_duplicate_range(self):
         result, complete = ht._bind_scene_plan_to_requested(
             [

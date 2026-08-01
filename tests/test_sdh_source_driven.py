@@ -489,6 +489,29 @@ class SdhSourceDrivenTest(unittest.TestCase):
             blocks, src_map=src_map, source_driven=True)
         self.assertEqual(result, [])
 
+    def test_vtt_voice_wrapped_pure_sfx_is_dropped(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "KAPI KAPANIR")]
+        result = sdh.clean_sdh_blocks(
+            blocks,
+            src_map=_src(**{"1": "<v SFX>[door closes]</v>"}),
+            source_driven=True,
+        )
+        self.assertEqual(result, [])
+        self.assertFalse(sdh.src_is_sfx_only("<v Roger>Hello</v>"))
+
+    def test_equal_multiline_cue_uses_line_aligned_source(self):
+        blocks = [(
+            "1", "00:00:01,000 --> 00:00:03,000",
+            "[KAPI KAPANIR]\n(aslında bu önemli) devam et.",
+        )]
+        result = sdh.clean_sdh_blocks(
+            blocks,
+            src_map=_src(**{"1": "[door closes]\nActually, continue."}),
+            source_driven=True,
+        )
+        self.assertEqual(
+            result[0][2], "(aslında bu önemli) devam et.")
+
 
 if __name__ == "__main__":
     unittest.main()

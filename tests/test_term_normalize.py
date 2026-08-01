@@ -42,6 +42,25 @@ class MixedTermAutofixPlanTest(unittest.TestCase):
             locked_terms={"true Memories": "gerçek Anılar", "Memories": "Anılar"})
         self.assertEqual(plan, {"1": [("Memories", "Anılar")]})
 
+    def test_nested_locked_term_does_not_require_redundant_inner_fix(self):
+        blocks = _b((1, "World Bank metni."))
+        src = _s(**{"1": "World Bank text."})
+        plan = gui._locked_term_residue_plan(
+            blocks, src,
+            locked_terms={"World Bank": "Dünya Bankası", "Bank": "Banka"})
+        self.assertEqual(plan, {"1": [("World Bank", "Dünya Bankası")]})
+
+    def test_separate_inner_term_occurrence_is_still_planned(self):
+        blocks = _b((1, "World Bank ve Bank metni."))
+        src = _s(**{"1": "World Bank and another Bank text."})
+        plan = gui._locked_term_residue_plan(
+            blocks, src,
+            locked_terms={"World Bank": "Dünya Bankası", "Bank": "Banka"})
+        self.assertEqual(
+            plan,
+            {"1": [("World Bank", "Dünya Bankası"), ("Bank", "Banka")]},
+        )
+
     def test_leak_cluster_targeted_even_when_minority(self):
         # Gerçek vaka: kaynakla birebir aynı 'Troy' ÇOĞUNLUKTA (3), doğru 'Truva' AZINLIKTA (2).
         # Plan yine de 'Troy' örneklerini hedeflemeli (çoğunluk değil, kaynak-eşleşme karar verir).

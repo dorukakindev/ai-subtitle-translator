@@ -82,6 +82,8 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
             _merge_schema_glossary=lambda glossary, _schema: glossary,
             _helper_api_model=lambda _role: "gpt-5.4",
             _helper_api_base_url=lambda _role: "https://helper.example/v1",
+            _scene_gap_seconds=3.0,
+            _snap_get=lambda key, default=None: default,
         )
 
         result = gui.App._load_context_cache_for_file(
@@ -98,6 +100,7 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
             style="natural",
             schema={"name": "Belgesel"},
             glossary={"User": "Kullanıcı"},
+            expected_scene_gap_sec=3.0,
         )
 
 
