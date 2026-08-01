@@ -464,6 +464,17 @@ FAILED_ROW   = "#2b2020"
 PAUSE_BG     = "#2f2a1a"
 PAUSE_HOVER  = "#463d24"
 
+
+def _mix_hex_color(left: str, right: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, float(ratio)))
+    try:
+        a = tuple(int(left[i:i + 2], 16) for i in (1, 3, 5))
+        b = tuple(int(right[i:i + 2], 16) for i in (1, 3, 5))
+    except (TypeError, ValueError):
+        return str(right or left)
+    mixed = tuple(round(x + (y - x) * ratio) for x, y in zip(a, b))
+    return "#" + "".join(f"{value:02x}" for value in mixed)
+
 MODELS_250K = [
     "gpt-5.4", "gpt-5.2", "gpt-5.1", "gpt-5-chat-latest", "gpt-5",
     "o3", "o1", "gpt-4o", "gpt-4.1", "gpt-5.1-codex", "gpt-5-codex",
@@ -7681,6 +7692,13 @@ class App(ctk.CTk):
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
+        self._motion_after_id = None
+        self._motion_step = 0
+        self._motion_pause_until = 0.0
+        self._motion_phase_color = FG2
+        self._motion_active_filepath = None
+        self._motion_progress_value = 0.0
+        self._motion_progress_target = 0.0
 
         # ── Log dosyası ───────────────────────────────────────────────────────
         import datetime
@@ -7711,6 +7729,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
         self._setup_drag_drop()
+        self.bind("<Configure>", self._on_window_motion, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         try:
             self._drain_ui_queue_id = self.after(20, self._drain_ui_queue)
@@ -8188,6 +8207,7 @@ class App(ctk.CTk):
             if not messagebox.askyesno(title, message):
                 return
         self._is_shutting_down = True
+        App._cancel_motion_animation(self)
         try:
             if self._pending_batches_after_id is not None:
                 self.after_cancel(self._pending_batches_after_id)
@@ -9364,6 +9384,20 @@ class App(ctk.CTk):
         ctk.CTkLabel(notif_fr, text="🔔  Masaüstü bildirimi",
                      font=ctk.CTkFont("Segoe UI", 11),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+
+        motion_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        motion_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
+        motion_fr.grid_columnconfigure(1, weight=1)
+        self.light_animations_var = ctk.BooleanVar(value=True)
+        ctk.CTkSwitch(
+            motion_fr, text="", variable=self.light_animations_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+            command=self._on_light_animations_changed,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            motion_fr, text="Hafif ilerleme animasyonları",
+            font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
 
         shutdown_fr = ctk.CTkFrame(sb, fg_color="transparent")
         shutdown_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
@@ -11350,6 +11384,119 @@ class App(ctk.CTk):
         "hazır":     FG2,
     }
 
+    def _motion_enabled(self) -> bool:
+        var = self.__dict__.get("light_animations_var")
+        try:
+            return bool(var and var.get())
+        except Exception:
+            return False
+
+    def _on_window_motion(self, event=None):
+        if event is None or getattr(event, "widget", self) is self:
+            self._motion_pause_until = time.monotonic() + 0.35
+
+    def _cancel_motion_animation(self, snap: bool = False):
+        after_id = self.__dict__.get("_motion_after_id")
+        self._motion_after_id = None
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        if snap:
+            target = float(self.__dict__.get("_motion_progress_target", 0.0))
+            self._motion_progress_value = target
+            try:
+                self.progress.set(target)
+            except Exception:
+                pass
+            for row in self.__dict__.get("_job_rows", {}).values():
+                value = float(row.get("target", row.get("value", 0.0)))
+                row["value"] = value
+                try:
+                    row["pb"].set(value)
+                    row["dot"].configure(text_color=row.get("color", FG2))
+                except Exception:
+                    pass
+
+    def _on_light_animations_changed(self):
+        if not App._motion_enabled(self):
+            App._cancel_motion_animation(self, snap=True)
+        elif self.__dict__.get("_is_running", False):
+            App._ensure_motion_animation(self)
+        try:
+            self._save_settings(save_credentials=False)
+        except Exception:
+            pass
+
+    def _ensure_motion_animation(self):
+        if (self.__dict__.get("_motion_after_id") is not None
+                or not App._motion_enabled(self)
+                or not self.__dict__.get("_is_running", False)
+                or self.__dict__.get("_is_shutting_down", False)):
+            return
+        try:
+            self._motion_after_id = self.after(
+                80, lambda: App._motion_tick(self))
+        except Exception:
+            self._motion_after_id = None
+
+    def _motion_tick(self):
+        self._motion_after_id = None
+        if (not App._motion_enabled(self)
+                or not self.__dict__.get("_is_running", False)
+                or self.__dict__.get("_is_shutting_down", False)):
+            return
+        if time.monotonic() < self.__dict__.get("_motion_pause_until", 0.0):
+            App._ensure_motion_animation(self)
+            return
+
+        self._motion_step = (self.__dict__.get("_motion_step", 0) + 1) % 32
+        wave = (math.sin(self._motion_step * math.pi / 16.0) + 1.0) / 2.0
+        phase_color = _mix_hex_color(
+            FG2, self.__dict__.get("_motion_phase_color", ACCENT),
+            0.58 + wave * 0.42)
+        try:
+            self._phase_dot.configure(text_color=phase_color)
+        except Exception:
+            pass
+
+        active_path = self.__dict__.get("_motion_active_filepath")
+        active_row = self.__dict__.get("_job_rows", {}).get(active_path)
+        if active_row and active_row.get("state") == "running":
+            try:
+                active_row["dot"].configure(text_color=_mix_hex_color(
+                    FG2, active_row.get("color", ACCENT),
+                    0.58 + wave * 0.42))
+            except Exception:
+                pass
+
+        current = float(self.__dict__.get("_motion_progress_value", 0.0))
+        target = float(self.__dict__.get("_motion_progress_target", current))
+        if abs(target - current) > 0.0005:
+            current += (target - current) * 0.28
+            if abs(target - current) < 0.001:
+                current = target
+            self._motion_progress_value = current
+            try:
+                self.progress.set(current)
+            except Exception:
+                pass
+
+        if active_row and active_row.get("state") == "running":
+            row_current = float(active_row.get("value", 0.0))
+            row_target = float(active_row.get("target", row_current))
+            if abs(row_target - row_current) > 0.0005:
+                row_current += (row_target - row_current) * 0.32
+                if abs(row_target - row_current) < 0.001:
+                    row_current = row_target
+                active_row["value"] = row_current
+                try:
+                    active_row["pb"].set(row_current)
+                except Exception:
+                    pass
+        App._ensure_motion_animation(self)
+
     def _set_phase(self, phase: str, detail: str = ""):
         """Büyük faz etiketini günceller. phase = 'analiz'|'çeviri'|'critic'|..."""
         key   = phase.lower().split()[0]
@@ -11357,10 +11504,12 @@ class App(ctk.CTk):
 
         def _upd():
             try:
+                self._motion_phase_color = color
                 self._phase_lbl.configure(text=phase, text_color=color)
                 self._phase_dot.configure(text_color=color)
                 if detail:
                     self.progress_lbl.configure(text=detail)
+                App._ensure_motion_animation(self)
             except Exception:
                 pass
 
@@ -11375,10 +11524,15 @@ class App(ctk.CTk):
         _post_ui(self, _upd)
 
     def _set_progress(self, pct):
-        val = pct / 100
+        val = max(0.0, min(1.0, pct / 100))
         def _upd(v=val):
             try:
-                self.progress.set(v)
+                self._motion_progress_target = v
+                if App._motion_enabled(self) and self.__dict__.get("_is_running", False):
+                    App._ensure_motion_animation(self)
+                else:
+                    self._motion_progress_value = v
+                    self.progress.set(v)
             except Exception:
                 pass
         _post_ui(self, _upd)
@@ -11600,6 +11754,16 @@ class App(ctk.CTk):
         self.stop_btn.configure(state="normal" if running else "disabled")
         self.pause_btn.configure(state="normal" if running else "disabled")
         self._is_running = running
+        if running:
+            self._motion_progress_value = 0.0
+            self._motion_progress_target = 0.0
+            try:
+                self.progress.set(0.0)
+            except Exception:
+                pass
+            App._ensure_motion_animation(self)
+        else:
+            App._cancel_motion_animation(self, snap=True)
         if running and not getattr(self, "_run_state_initialized", False):
             self._season_canon_done = False
             self._season_canon_finalizing = False
@@ -11724,7 +11888,9 @@ class App(ctk.CTk):
 
                 self._job_rows[fp] = {"dot": dot, "phase": phase_lbl,
                                       "pb": pb, "frame": row_fr,
-                                      "remove": remove_btn, "state": "waiting"}
+                                      "remove": remove_btn, "state": "waiting",
+                                      "value": 0.0, "target": 0.0,
+                                      "color": FG2}
 
             n = len(files)
             self._jb_title.configure(text=f"DOSYALAR — 0 / {n}")
@@ -11804,13 +11970,41 @@ class App(ctk.CTk):
 
         def _upd():
             try:
+                value = max(0.0, min(1.0, pct / 100))
+                previous_path = self.__dict__.get("_motion_active_filepath")
+                if previous_path != filepath:
+                    previous = self._job_rows.get(previous_path)
+                    if previous and previous.get("state") == "running":
+                        previous["value"] = previous.get("target", previous.get("value", 0.0))
+                        previous["pb"].set(previous["value"])
+                        previous["dot"].configure(
+                            text_color=previous.get("color", ACCENT))
                 row["dot"].configure(text=dot_text, text_color=color)
                 row["phase"].configure(text=phase,  text_color=color)
                 row["pb"].configure(progress_color=color)
-                row["pb"].set(max(0.0, min(1.0, pct / 100)))
+                row["color"] = color
+                row["target"] = value
                 if status == "running":
                     row["state"] = "running"
+                    self._motion_active_filepath = filepath
                     row["remove"].configure(state="disabled")
+                    if App._motion_enabled(self) and self.__dict__.get("_is_running", False):
+                        App._ensure_motion_animation(self)
+                    else:
+                        row["value"] = value
+                        row["pb"].set(value)
+                else:
+                    row["state"] = status
+                    row["value"] = value
+                    row["pb"].set(value)
+                    if status == "done" and App._motion_enabled(self):
+                        row["frame"].configure(border_width=1, border_color=GREEN)
+                        def _clear_flash(r=row):
+                            try:
+                                r["frame"].configure(border_width=0)
+                            except Exception:
+                                pass
+                        self.after(520, _clear_flash)
                 self._refresh_job_board_title()
             except Exception:
                 pass
@@ -13331,6 +13525,9 @@ class App(ctk.CTk):
             "merge_max_chars": self._merge_max_chars,
             "merge_max_gap_ms": self._merge_max_gap_ms,
             "notify": self.notify_var.get(),
+            "light_animations": bool(
+                self.__dict__.get("light_animations_var") is None
+                or self.light_animations_var.get()),
             "prevent_sleep": (
                 self.prevent_sleep_var.get()
                 if getattr(self, "prevent_sleep_var", None) else True),
@@ -13763,6 +13960,8 @@ class App(ctk.CTk):
                 self.review_pass_var.set(bool(d["review_pass"]))
             if "notify" in d:
                 self.notify_var.set(d["notify"])
+            if "light_animations" in d:
+                self.light_animations_var.set(bool(d["light_animations"]))
             if "prevent_sleep" in d:
                 self.prevent_sleep_var.set(bool(d["prevent_sleep"]))
             if "auto_retry_files" in d:
