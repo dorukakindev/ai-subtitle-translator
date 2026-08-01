@@ -7138,6 +7138,7 @@ def _batch_status_label(status: str) -> tuple:
 
 # ── Sync checkpoint store module-level helpers ────────────────────────────────
 SYNC_CKPT_STORE_VER = 2
+SYNC_STAGE_STORE_VER = 1
 
 
 def load_sync_ckpt_store(path: Path) -> dict:
@@ -7254,6 +7255,62 @@ def clear_sync_ckpt_entries_from_store(path: Path, keys_to_remove: set = None, l
     except Exception as e:
         if log_fn:
             log_fn(f"Checkpoint temizlenemedi: {e}", "warn")
+        return False
+
+
+def load_sync_stage_store(path: Path) -> dict:
+    store = {"version": SYNC_STAGE_STORE_VER, "entries": {}}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        if (isinstance(data, dict)
+                and data.get("version") == SYNC_STAGE_STORE_VER
+                and isinstance(data.get("entries"), dict)):
+            return data
+    except Exception:
+        pass
+    return store
+
+
+def _sync_stage_key(source_path: str) -> str:
+    normalized = os.path.normcase(os.path.abspath(str(source_path)))
+    return hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
+
+
+def save_sync_stage_entry_to_store(path: Path, source_path: str,
+                                   source_hash: str, fingerprint: str,
+                                   raw_map: dict, log_fn=None) -> bool:
+    try:
+        with _interprocess_lock(path):
+            store = load_sync_stage_store(path)
+            store["entries"][_sync_stage_key(source_path)] = {
+                "source_path": os.path.abspath(str(source_path)),
+                "source_hash": str(source_hash),
+                "fingerprint": str(fingerprint),
+                "raw_map": {str(k): str(v) for k, v in raw_map.items()},
+                "updated_at": time.time(),
+            }
+            atomic_write_json(path, store)
+        return True
+    except Exception as exc:
+        if log_fn:
+            log_fn(f"Aşama checkpoint'i yazılamadı: {exc}", "warn")
+        return False
+
+
+def clear_sync_stage_entry_from_store(path: Path, source_path: str,
+                                      log_fn=None) -> bool:
+    try:
+        with _interprocess_lock(path):
+            store = load_sync_stage_store(path)
+            store["entries"].pop(_sync_stage_key(source_path), None)
+            if store["entries"]:
+                atomic_write_json(path, store)
+            else:
+                Path(path).unlink(missing_ok=True)
+        return True
+    except Exception as exc:
+        if log_fn:
+            log_fn(f"Aşama checkpoint'i temizlenemedi: {exc}", "warn")
         return False
 
 
@@ -7482,6 +7539,7 @@ class App(ctk.CTk):
             var = getattr(self, attr, None)
             if var is not None:
                 var.set(settings[key])
+        settings["crash_resume"] = True
         self._resume_snapshot_override = settings
         self._toggle_hybrid()
         for filepath, language in dict(
@@ -11244,6 +11302,7 @@ class App(ctk.CTk):
                     "main_model_name",
                     "main_api_base_url", "backup_raw", "ext_project_path",
                     "notify_desktop",
+                    "crash_resume",
                 )
                 for key in scalar_keys:
                     if key in resume_settings:
@@ -17804,6 +17863,42 @@ class App(ctk.CTk):
     def _sync_ckpt_path(self) -> Path:
         return state_path(__file__, ".sync_checkpoint.json")
 
+    def _sync_stage_ckpt_path(self) -> Path:
+        return state_path(__file__, ".sync_stage_checkpoint.json")
+
+    def _save_sync_stage_ckpt(self, filepath: str, source_hash: str,
+                              raw_map: dict) -> bool:
+        return save_sync_stage_entry_to_store(
+            self._sync_stage_ckpt_path(), filepath, source_hash,
+            self._ckpt_fingerprint(), raw_map, log_fn=self._log)
+
+    def _load_sync_stage_ckpt(self, filepath: str, source_hash: str,
+                              expected_ids: set) -> dict:
+        snapshot = getattr(self, "_active_snapshot", None)
+        if not isinstance(snapshot, dict) or not snapshot.get("crash_resume"):
+            return {}
+        store = load_sync_stage_store(self._sync_stage_ckpt_path())
+        entry = store.get("entries", {}).get(_sync_stage_key(filepath))
+        if not isinstance(entry, dict):
+            return {}
+        if (entry.get("source_hash") != str(source_hash)
+                or entry.get("fingerprint") != self._ckpt_fingerprint()):
+            return {}
+        raw_map = entry.get("raw_map")
+        if not isinstance(raw_map, dict):
+            return {}
+        restored = {str(k): str(v) for k, v in raw_map.items() if str(v).strip()}
+        if set(restored) != {str(item) for item in expected_ids}:
+            return {}
+        self._log(
+            f"Çökme kurtarma: ana çeviri aşama checkpoint'inden alındı — "
+            f"{len(restored)} chunk yeniden çevrilmeyecek", "ok")
+        return restored
+
+    def _clear_sync_stage_ckpt(self, filepath: str) -> bool:
+        return clear_sync_stage_entry_from_store(
+            self._sync_stage_ckpt_path(), filepath, log_fn=self._log)
+
     def _ckpt_fingerprint(self) -> str:
         """Checkpoint imzasına giren ayar parmak izi. Model/hedef dil/üslup/küfür/tür
         değişince eski koşunun chunk'ları 'tamamlanmış' sayılmaz — aksi hâlde ayar
@@ -18379,6 +18474,7 @@ class App(ctk.CTk):
                             self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
                             self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
                             completed_files.append(filepath)
+                            self._clear_sync_stage_ckpt(filepath)
                             file_pct = int((fi + 1) / n_files * 100)
                             self._set_progress(file_pct)
                             continue
@@ -18531,7 +18627,9 @@ class App(ctk.CTk):
             total     = len(batch_reqs)
             completed = [0]
             failed    = [0]
-            raw_map   = {}
+            raw_map = self._load_sync_stage_ckpt(
+                filepath, _expected_source_hash,
+                {req["custom_id"] for req in batch_reqs})
             _ckpt_scope = str(Path(filepath).resolve())
             prefilled_keys = set()
             if not self.chain_ctx_var.get():
@@ -18675,6 +18773,13 @@ class App(ctk.CTk):
                         req, self._ckpt_fingerprint(), _ckpt_scope)
                     self._save_sync_ckpt_entry(cid, raw, src_h)
                     used_ckpt_keys.add(f"{cid}:{src_h}")
+            if batch_reqs and all(
+                    raw_map.get(req.get("custom_id", ""))
+                    and not _chunk_response_retry_reason(
+                        raw_map.get(req.get("custom_id", "")), req)
+                    for req in batch_reqs):
+                self._save_sync_stage_ckpt(
+                    filepath, _expected_source_hash, raw_map)
             srt_blocks = {}
             for cid, info in fmap.items():
                 raw = raw_map.get(cid)
@@ -19005,6 +19110,7 @@ class App(ctk.CTk):
                     )
             else:
                 completed_files.append(filepath)
+                self._clear_sync_stage_ckpt(filepath)
                 self._log(f"Kaydedildi: {out_path}", "ok")
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0

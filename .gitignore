@@ -9,6 +9,8 @@ batch_id.txt
 _batch_sessions/
 .sync_checkpoint.json
 .sync_checkpoint.json.lock
+.sync_stage_checkpoint.json
+.sync_stage_checkpoint.json.lock
 .credentials.lock
 
 # Gizli anahtarlar (proje kökünde düz metin halinde bulundu — asla commit'lenmesin)

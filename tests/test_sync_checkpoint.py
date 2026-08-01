@@ -7,6 +7,7 @@ Sync mod çökme kurtarma (per-chunk checkpoint):
 - App() veya Tkinter penceresi OLUŞTURULMAZ; SimpleNamespace ile test edilir.
 """
 import json
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ class SyncCheckpointTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.ckpt_path = Path(self.tmpdir.name) / ".sync_checkpoint.json"
+        self.stage_path = Path(self.tmpdir.name) / ".sync_stage_checkpoint.json"
         self.fingerprint = "gpt-5.4-mini|tr|off|standard|Otomatik"
 
         self.app = SimpleNamespace(
@@ -35,9 +37,14 @@ class SyncCheckpointTest(unittest.TestCase):
             _save_sync_ckpt_entry=lambda cid, text, h: gui.App._save_sync_ckpt_entry(self.app, cid, text, h),
             _clear_sync_ckpt=lambda keys=None: gui.App._clear_sync_ckpt(self.app, keys),
             _log=MagicMock(),
+            _active_snapshot={"crash_resume": True},
+            _sync_stage_ckpt_path=lambda: self.stage_path,
         )
         self.app._resume_from_sync_ckpt = gui.App._resume_from_sync_ckpt.__get__(self.app)
         self.app._prefill_sync_ckpt = gui.App._prefill_sync_ckpt.__get__(self.app)
+        self.app._save_sync_stage_ckpt = gui.App._save_sync_stage_ckpt.__get__(self.app)
+        self.app._load_sync_stage_ckpt = gui.App._load_sync_stage_ckpt.__get__(self.app)
+        self.app._clear_sync_stage_ckpt = gui.App._clear_sync_stage_ckpt.__get__(self.app)
 
     def tearDown(self):
         self.tmpdir.cleanup()
@@ -193,6 +200,56 @@ class SyncCheckpointTest(unittest.TestCase):
         result = gui.App._ckpt_fingerprint(app)
         self.assertIn("https://provider.example/v1", result)
         forbidden.assert_not_called()
+
+    def test_stage_checkpoint_restores_complete_main_translation_on_crash_resume(self):
+        raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]',
+               "chunk_25": '[{"i":"2","t":"Dünya"}]'}
+        self.assertTrue(self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw))
+
+        restored = self.app._load_sync_stage_ckpt(
+            "film.srt", "source-hash", set(raw))
+
+        self.assertEqual(restored, raw)
+        self.assertTrue(any(
+            "yeniden çevrilmeyecek" in str(call.args[0])
+            for call in self.app._log.call_args_list))
+
+    def test_stage_checkpoint_is_not_used_for_manual_rerun(self):
+        raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
+        self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
+        self.app._active_snapshot["crash_resume"] = False
+
+        self.assertEqual(
+            self.app._load_sync_stage_ckpt("film.srt", "source-hash", set(raw)), {})
+
+    def test_stage_checkpoint_rejects_changed_source_or_incomplete_chunk_set(self):
+        raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
+        self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
+
+        self.assertEqual(
+            self.app._load_sync_stage_ckpt("film.srt", "changed", set(raw)), {})
+        self.assertEqual(
+            self.app._load_sync_stage_ckpt(
+                "film.srt", "source-hash", {"chunk_0", "chunk_25"}), {})
+
+    def test_stage_checkpoint_clears_after_successful_delivery(self):
+        raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
+        self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
+
+        self.assertTrue(self.app._clear_sync_stage_ckpt("film.srt"))
+        self.assertEqual(gui.load_sync_stage_store(self.stage_path)["entries"], {})
+
+    def test_hybrid_flow_wires_stage_checkpoint_around_quality_passes(self):
+        source = inspect.getsource(gui.App._run_sync_hybrid)
+
+        load_at = source.index("_load_sync_stage_ckpt")
+        save_at = source.index("_save_sync_stage_ckpt")
+        clear_at = source.rindex("_clear_sync_stage_ckpt")
+        quality_at = source.index("critic_pass_with_helper")
+
+        self.assertLess(load_at, save_at)
+        self.assertLess(save_at, quality_at)
+        self.assertLess(quality_at, clear_at)
 
 
 if __name__ == "__main__":
