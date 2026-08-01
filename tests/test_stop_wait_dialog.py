@@ -123,15 +123,18 @@ class StopWaitDialogTest(unittest.TestCase):
             ("self._polish_pass(", "_record_pass_change(_pass_trace, \"Polish\""),
             ("ht.native_reader_pass(", "_record_pass_change(_pass_trace, \"Native\""),
             ("self._maybe_condense(", "_record_pass_change(_pass_trace, \"Condense\""),
-            ("self._run_final_semantic_checks(", "_normalize_mixed_terms("),
-            ("_normalize_mixed_terms(", "_fill_hata_with_source("),
+            ("self._run_final_semantic_checks(", "_record_pass_change("),
+            ("_normalize_mixed_terms(",
+             ("self._run_final_semantic_checks(", "_fill_hata_with_source(")),
         ]
         for flow in flows:
             src = inspect.getsource(flow)
             for call, next_step in checkpoints:
                 with self.subTest(flow=flow.__name__, call=call):
                     start = src.find(call)
-                    end = src.find(next_step, start + len(call))
+                    candidates = next_step if isinstance(next_step, tuple) else (next_step,)
+                    ends = [src.find(candidate, start + len(call)) for candidate in candidates]
+                    end = min(pos for pos in ends if pos >= 0)
                     self.assertGreaterEqual(start, 0)
                     self.assertGreater(end, start)
                     self.assertIn("if self._stop_flag:", src[start:end])

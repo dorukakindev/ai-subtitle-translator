@@ -40,8 +40,45 @@ class ConcurrentTestTranslationGuardTest(unittest.TestCase):
             "Test çevirisi çalışan çeviri sırasında başlatılamaz.", "warn"
         )
 
+    def test_completed_preflight_does_not_clear_retranslate_choice(self):
+        app = gui.App.__new__(gui.App)
+        app._force_retranslate_paths = {gui.App._norm_path(app, "movie.srt")}
+        app._file_integrity_preflight_done = True
+        app._file_integrity_preflight_signature = ("same",)
+        app._file_preflight_signature = lambda _files: ("same",)
+
+        started = gui.App._start_file_integrity_preflight(app, ["movie.srt"])
+
+        self.assertFalse(started)
+        self.assertEqual(
+            app._force_retranslate_paths,
+            {gui.App._norm_path(app, "movie.srt")},
+        )
+
 
 class PermanentQuotaFailureTest(unittest.TestCase):
+    def test_repair_uses_rich_prompt_and_neighbor_context(self):
+        blocks = [("2", "00:00:02,000 --> 00:00:03,000", "[HATA]")]
+        raw = {"1": "Before.", "2": "Missing line.", "3": "After."}
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"2","t":"Eksik satır."}]'))],
+            usage=None,
+        )
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish", system_prompt="RICH FILE CONTEXT")
+
+        messages = create.call_args.kwargs["messages"]
+        payload = __import__("json").loads(messages[1]["content"])
+        self.assertEqual(messages[0]["content"], "RICH FILE CONTEXT")
+        self.assertEqual(payload["ctx"], ["Before."])
+        self.assertEqual(payload["next_ctx"], ["After."])
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], "Eksik satır.")
+
     def test_repair_rejects_duplicate_and_malformed_response_ids(self):
         blocks = [
             (1, "00:00:01,000 --> 00:00:02,000", "[HATA]"),
@@ -300,6 +337,17 @@ class PermanentQuotaFailureTest(unittest.TestCase):
         ]
 
         self.assertFalse(gui._existing_output_is_complete(output, source))
+
+    def test_user_retranslate_choice_overrides_hybrid_complete_skip(self):
+        source_path = r"C:\input\film.srt"
+        source = [SimpleNamespace(index=1, text="Hello.")]
+        output = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
+
+        self.assertTrue(gui._should_skip_existing_output(
+            source_path, output, source, force_retranslate_paths=()))
+        self.assertFalse(gui._should_skip_existing_output(
+            source_path, output, source,
+            force_retranslate_paths={r"c:\INPUT\FILM.srt"}))
 
 
 if __name__ == "__main__":

@@ -127,6 +127,46 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertIn("c1:h1", d)
         self.assertEqual(d["c1:h1"]["t"], "ok")
 
+    def test_fingerprint_separates_provider_and_chain_mode(self):
+        def var(value):
+            return SimpleNamespace(get=lambda: value)
+
+        app = SimpleNamespace(
+            _main_model_name=lambda: "gpt-5.4",
+            _main_api_base_url=lambda: "https://provider-a.example/v1/",
+            tgt_var=var("Turkish"), profanity_var=var("Orta"),
+            style_var=var("natural"), content_type_var=var("Film"),
+            chain_ctx_var=var(True), _active_snapshot=None,
+            _file_language_vars={},
+        )
+        first = gui.App._ckpt_fingerprint(app)
+        app._main_api_base_url = lambda: "https://provider-b.example/v1"
+        second = gui.App._ckpt_fingerprint(app)
+        app.chain_ctx_var = var(False)
+        third = gui.App._ckpt_fingerprint(app)
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(second, third)
+
+    def test_fingerprint_uses_worker_snapshot_without_tk_reads(self):
+        forbidden = MagicMock(side_effect=AssertionError("Tk read"))
+        app = SimpleNamespace(
+            _main_model_name=lambda: "gpt-5.4",
+            _main_api_base_url=lambda: "https://provider.example/v1",
+            tgt_var=SimpleNamespace(get=forbidden),
+            profanity_var=SimpleNamespace(get=forbidden),
+            style_var=SimpleNamespace(get=forbidden),
+            content_type_var=SimpleNamespace(get=forbidden),
+            chain_ctx_var=SimpleNamespace(get=forbidden),
+            _active_snapshot={
+                "tgt_lang": "Turkish", "profanity": "Orta",
+                "style": "natural", "content_type": "Film",
+                "chain_ctx": True, "file_source_languages": {},
+            },
+        )
+        result = gui.App._ckpt_fingerprint(app)
+        self.assertIn("https://provider.example/v1", result)
+        forbidden.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

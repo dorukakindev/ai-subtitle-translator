@@ -152,6 +152,24 @@ class ChainPairsFromResultTest(unittest.TestCase):
     def test_invalid_json_returns_empty(self):
         self.assertEqual(gui._chain_pairs_from_result("garbage", {"1": "Bir."}), [])
 
+    def test_chain_rejects_non_string_translation(self):
+        req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
+            "tr": [{"i": 1, "t": "Hello."}]
+        })}]}}
+        self.assertEqual(
+            gui._chunk_response_retry_reason('[{"i":1,"t":123}]', req),
+            "invalid_text_type",
+        )
+
+    def test_chain_rejects_missing_dialogue_id(self):
+        req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
+            "tr": [{"i": 1, "t": "Hello."}, {"i": 2, "t": "World."}]
+        })}]}}
+        self.assertEqual(
+            gui._chunk_response_retry_reason('[{"i":1,"t":"Merhaba."}]', req),
+            "id_integrity",
+        )
+
 
 class BuildPrecontextHintTest(unittest.TestCase):
     def test_full_data_renders_all_sections(self):

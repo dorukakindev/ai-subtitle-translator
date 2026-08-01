@@ -110,6 +110,31 @@ class PipelinePassParityTest(unittest.TestCase):
         )]
         self.assertEqual(tail.count("_raw_src_map_from_cues(cues)"), 1)
 
+    def test_normal_flows_run_term_normalization_before_final_semantic(self):
+        for flow in (gui.App._run_sync_hybrid, gui.App._write_results):
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                self.assertLess(
+                    src.rfind("_normalize_mixed_terms("),
+                    src.rfind("_run_final_semantic_checks("),
+                )
+
+    def test_sync_hybrid_locks_analysis_terms_for_all_quality_passes(self):
+        src = inspect.getsource(gui.App._run_sync_hybrid)
+        self.assertIn("_analysis_locked_terms = ht.sanitize_glossary_for_turkish", src)
+        self.assertIn("**self._get_locked_terms_dict(filepath, tgt)", src)
+        self.assertGreaterEqual(src.count("locked_terms=_locked_terms"), 6)
+        self.assertIn("glossary=_locked_terms", src)
+        self.assertIn("locked_terms=_locked_terms)", src)
+
+    def test_sync_hybrid_commits_analysis_memory_only_after_final_write(self):
+        src = inspect.getsource(gui.App._run_sync_hybrid)
+        write_pos = src.find("write_srt(")
+        pm_pos = src.find("_file_pm.merge_glossary_from_analysis(")
+        series_pos = src.find("self._update_series_memory_from_analysis(")
+        self.assertTrue(write_pos < pm_pos < series_pos)
+        self.assertNotIn("self._stage_series_memory_from_analysis(", src)
+
 
 if __name__ == "__main__":
     unittest.main()
