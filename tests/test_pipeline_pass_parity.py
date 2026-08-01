@@ -1,3 +1,5 @@
+import ast
+import textwrap
 import unittest
 from unittest.mock import MagicMock, patch
 import inspect
@@ -5,6 +7,28 @@ import subtitle_translator_gui as gui
 
 
 class PipelinePassParityTest(unittest.TestCase):
+
+    def test_quality_passes_receive_run_scene_gap(self):
+        names = {
+            "critic_pass_with_helper",
+            "native_reader_pass",
+            "semantic_reconciliation_pass",
+        }
+        found = 0
+        tree = ast.parse(textwrap.dedent(inspect.getsource(gui.App)))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "attr", "")
+            if name not in names:
+                continue
+            found += 1
+            self.assertIn(
+                "scene_gap_sec",
+                {keyword.arg for keyword in node.keywords},
+                f"line {node.lineno}: {name}",
+            )
+        self.assertEqual(found, 11)
 
     def test_post_process_flow_is_explicitly_source_less(self):
         """Existing translated SRT must not be reused as its own source."""
@@ -100,8 +124,31 @@ class PipelinePassParityTest(unittest.TestCase):
 
     def test_plain_sync_without_chain_can_run_opt_in_review(self):
         src = inspect.getsource(gui.App._write_results)
-        self.assertIn("or not self.chain_ctx_var.get()", src)
+        self.assertIn('or not App._run_setting(', src)
+        self.assertIn('"chain_ctx", "chain_ctx_var", True', src)
         self.assertIn("ek API maliyeti", src)
+
+    def test_final_sdh_cleanup_is_terminal_in_all_quality_flows(self):
+        flows = [
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        ]
+        for flow in flows:
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                semantic_pos = src.rfind("_run_final_semantic_checks(")
+                final_sdh_pos = src.rfind('"Final-SDH"')
+                fill_pos = src.rfind("_fill_hata_with_source(")
+                self.assertTrue(semantic_pos < final_sdh_pos < fill_pos)
+
+    def test_jsonl_import_repeats_source_driven_sdh_after_polish(self):
+        src = inspect.getsource(gui.App._import_jsonl)
+        polish_pos = src.find("self._polish_pass(")
+        terminal_sdh_pos = src.rfind("source_driven=True")
+        fill_pos = src.rfind("_fill_hata_with_source(")
+        self.assertTrue(polish_pos < terminal_sdh_pos < fill_pos)
 
     def test_hybrid_final_tail_reuses_single_raw_map(self):
         src = inspect.getsource(gui.App._run_hybrid)
@@ -111,13 +158,21 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertEqual(tail.count("_raw_src_map_from_cues(cues)"), 1)
 
     def test_normal_flows_run_term_normalization_before_final_semantic(self):
-        for flow in (gui.App._run_sync_hybrid, gui.App._write_results):
+        for flow in (gui.App._run_sync_hybrid, gui.App._write_results,
+                     gui.App._run_hybrid):
             with self.subTest(flow=flow.__name__):
                 src = inspect.getsource(flow)
                 self.assertLess(
                     src.rfind("_normalize_mixed_terms("),
                     src.rfind("_run_final_semantic_checks("),
                 )
+
+    def test_hybrid_batch_final_semantic_receives_full_analysis_and_locks(self):
+        src = inspect.getsource(gui.App._run_hybrid)
+        call_start = src.rfind("_run_final_semantic_checks(")
+        call = src[call_start:call_start + 600]
+        self.assertIn("locked_terms=_locked_terms", call)
+        self.assertIn("analysis_result=_full_analysis", call)
 
     def test_sync_hybrid_locks_analysis_terms_for_all_quality_passes(self):
         src = inspect.getsource(gui.App._run_sync_hybrid)
@@ -126,6 +181,15 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertGreaterEqual(src.count("locked_terms=_locked_terms"), 6)
         self.assertIn("glossary=_locked_terms", src)
         self.assertIn("locked_terms=_locked_terms)", src)
+
+    def test_sync_hybrid_critic_receives_all_analysis_fields(self):
+        src = inspect.getsource(gui.App._run_sync_hybrid)
+        call_start = src.find("ht.critic_pass_with_helper(")
+        call = src[call_start:call_start + 1400]
+        for name in (
+                "context", "char_examples", "pronoun_map", "character_styles",
+                "scene_emotions", "idiom_map", "cultural_refs"):
+            self.assertIn(name, call)
 
     def test_sync_hybrid_commits_analysis_memory_only_after_final_write(self):
         src = inspect.getsource(gui.App._run_sync_hybrid)

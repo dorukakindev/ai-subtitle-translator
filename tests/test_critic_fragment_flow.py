@@ -7,12 +7,56 @@ import hybrid_translate as ht
 
 
 class Cue:
-    def __init__(self, index, text):
+    def __init__(self, index, text, start="", end=""):
         self.index = index
         self.text = text
+        self.start = start
+        self.end = end
 
 
 class CriticFragmentFlowTest(unittest.TestCase):
+    def test_custom_scene_gap_prevents_cross_scene_flow_warning(self):
+        cues = [
+            Cue(1, "I thought that", "00:00:01,000", "00:00:02,000"),
+            Cue(2, "the other scene ended.", "00:00:04,000", "00:00:05,000"),
+        ]
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "Sanmıştım"),
+            (2, "00:00:04,000 --> 00:00:05,000", "Diğer sahne bitti."),
+        ]
+
+        hits = ht.run_validators(
+            blocks, cues, scene_gap_sec=1.0)
+
+        reasons = "|".join(str(hit[3]) for hit in hits)
+        self.assertNotIn("EARLY_VERB_CLOSURE", reasons)
+        self.assertNotIn("DANGLING_TURKISH_FRAGMENT", reasons)
+
+    def test_critic_does_not_expand_flow_fix_across_custom_scene_gap(self):
+        cues = [
+            Cue(1, "I thought that", "00:00:01,000", "00:00:02,000"),
+            Cue(2, "the other scene ended.", "00:00:04,000", "00:00:05,000"),
+        ]
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "Sanmıştım"),
+            (2, "00:00:04,000 --> 00:00:05,000", "Diğer sahne bitti."),
+        ]
+        prompts = []
+        validator_hit = [(1, blocks[0][1], blocks[0][2], "EARLY_VERB_CLOSURE")]
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hit):
+            ht.critic_pass_with_helper(
+                cues=cues,
+                tr_blocks=blocks,
+                helper_api_key="test",
+                scene_gap_sec=1.0,
+            )
+
+        self.assertEqual(len(prompts), 1)
+        self.assertIn('"id": "1"', prompts[0])
+        self.assertNotIn('"id": "2"', prompts[0])
+
     def _fake_openai_module(self, fixes, prompts):
         class FakeCompletions:
             def create(self, **kwargs):

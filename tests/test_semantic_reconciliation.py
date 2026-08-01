@@ -20,6 +20,34 @@ def _response(payload):
 
 
 class SemanticClusterBuilderTest(unittest.TestCase):
+    def test_custom_scene_gap_keeps_neighbor_context_in_same_scene(self):
+        class Cue:
+            def __init__(self, index, start, end, text):
+                self.index = index
+                self.start = start
+                self.end = end
+                self.text = text
+
+        cues = [
+            Cue(1, "00:00:01,000", "00:00:02,000", "I thought that"),
+            Cue(2, "00:00:04,000", "00:00:05,000", "the other scene ended."),
+        ]
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Sanmıştım"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Diğer sahne bitti."),
+        ]
+
+        clusters = ht.build_semantic_reconciliation_clusters(
+            {"1": cues[0].text, "2": cues[1].text},
+            blocks,
+            cues=cues,
+            changed_ids={"1"},
+            scene_gap_sec=1.0,
+        )
+
+        self.assertEqual(
+            [item["id"] for item in clusters[0]["items"]], ["1"])
+
     def test_fragment_sentence_is_never_split_between_clusters(self):
         class Cue:
             def __init__(self, index, text):

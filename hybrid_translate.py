@@ -656,7 +656,8 @@ def analysis_fingerprint(source_language: str = "", target_language: str = "",
         "style": str(style or "").strip().casefold(),
         "schema": schema or {},
         "glossary": glossary or {},
-        "scene_gap_sec": float(scene_gap_sec),
+        "scene_gap_sec": float(
+            SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True,
                      separators=(",", ":"), default=str)
@@ -1594,7 +1595,8 @@ def _extract_emotional_arc(
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
 
-        gap_limit = float(scene_gap_sec)
+        gap_limit = float(
+            SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
         scenes = []
         current_scene = [cues[0]]
         for prev, curr in zip(cues, cues[1:]):
@@ -3440,6 +3442,7 @@ def native_reader_pass(
     src_map: dict = None,
     locked_terms: dict | None = None,
     cancel_context=None,
+    scene_gap_sec: float = SCENE_GAP_SEC,
 ) -> list:
     """Native reader reflex pass — Helper reads translated subtitles as a native viewer
     and naturally rewrites lines that 'sound translated'.
@@ -3460,6 +3463,8 @@ def native_reader_pass(
 
     CHUNK_SIZE = 150
     MAX_FIX_RATIO = 0.20
+    gap_limit = float(
+        SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
 
     try:
         from openai import OpenAI
@@ -3491,7 +3496,7 @@ def native_reader_pass(
             right_start, _sep, _right_end = str(right[1] or "").partition("-->")
             if not sep:
                 return False
-            return (_ts_to_sec(right_start.strip()) - _ts_to_sec(left_end.strip())) >= SCENE_GAP_SEC
+            return (_ts_to_sec(right_start.strip()) - _ts_to_sec(left_end.strip())) >= gap_limit
         except Exception:
             return False
     
@@ -3512,8 +3517,10 @@ def native_reader_pass(
             src_t = src_map.get(str(idx), "")
             mock_cues.append(MockCue(idx, ts, src_t))
         try:
-            frag_tags = _tag_fragments(mock_cues)
-            frag_group_by_idx, groups = _fragment_groups(mock_cues, frag_tags)
+            frag_tags = _tag_fragments(
+                mock_cues, scene_gap_sec=gap_limit)
+            frag_group_by_idx, groups = _fragment_groups(
+                mock_cues, frag_tags, scene_gap_sec=gap_limit)
             frag_group_members = {
                 group["id"]: [str(item) for item in group["items"]]
                 for group in groups
@@ -6433,7 +6440,8 @@ def _turkish_profanity_intensity(text: str) -> int:
 
 
 def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
-                   series_terms: dict = None) -> list:
+                   series_terms: dict = None,
+                   scene_gap_sec: float = SCENE_GAP_SEC) -> list:
     """Deterministic pre-check before Helper Critic Pass.
     Returns list of (idx, ts, text, reason_str) for lines needing review."""
     orig_dict: dict = {}
@@ -6451,8 +6459,12 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             if speaker:
                 speaker_by_id[str(c.index)] = _ascii_fold(speaker).lower()
         try:
-            frag_tags = _tag_fragments(cues)
-            _group_by_idx, fragment_groups = _fragment_groups(cues, frag_tags)
+            gap_limit = float(
+                SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
+            frag_tags = _tag_fragments(
+                cues, scene_gap_sec=gap_limit)
+            _group_by_idx, fragment_groups = _fragment_groups(
+                cues, frag_tags, scene_gap_sec=gap_limit)
             for group in fragment_groups:
                 ids = [str(item) for item in group.get("items", []) if item is not None]
                 for sid in ids:
@@ -6753,10 +6765,13 @@ def _semantic_validator_cues(src_map: dict, tr_blocks: list, cues: list = None) 
     return result
 
 
-def _semantic_reason_map(tr_blocks: list, cues: list, locked_terms: dict | None = None) -> dict:
+def _semantic_reason_map(tr_blocks: list, cues: list,
+                         locked_terms: dict | None = None,
+                         scene_gap_sec: float = SCENE_GAP_SEC) -> dict:
     result = {}
     for idx, _ts, _text, reason_str in run_validators(
-            tr_blocks, cues=cues, glossary=locked_terms):
+            tr_blocks, cues=cues, glossary=locked_terms,
+            scene_gap_sec=scene_gap_sec):
         result[str(idx)] = {
             reason for reason in str(reason_str or "").split("|") if reason
         }
@@ -6835,6 +6850,7 @@ def _adaptive_semantic_suspects(
     existing_ids,
     target_coverage: float,
     window: int,
+    scene_gap_sec: float = SCENE_GAP_SEC,
 ) -> dict[str, set[str]]:
     target = min(1.0, max(0.0, float(target_coverage or 0.0)))
     if not tr_blocks or target <= 0.0:
@@ -6842,6 +6858,8 @@ def _adaptive_semantic_suspects(
     positions = {str(block[0]): pos for pos, block in enumerate(tr_blocks)}
     desired = math.ceil(len(tr_blocks) * target)
     radius = max(0, int(window))
+    gap_limit = float(
+        SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
     covered = set()
 
     def cover(pos):
@@ -6867,7 +6885,8 @@ def _adaptive_semantic_suspects(
 
     if cues:
         try:
-            frag_tags = _tag_fragments(cues)
+            frag_tags = _tag_fragments(
+                cues, scene_gap_sec=gap_limit)
         except Exception:
             frag_tags = {}
         for pos, block in enumerate(tr_blocks):
@@ -6919,12 +6938,16 @@ def build_semantic_reconciliation_clusters(
     window: int = 2,
     max_cluster_items: int = 12,
     target_coverage: float = 0.0,
+    scene_gap_sec: float = SCENE_GAP_SEC,
 ) -> list:
     """Build bounded, non-overlapping source/target clusters around suspicious cues."""
     if not src_map or not tr_blocks:
         return []
     validator_cues = _semantic_validator_cues(src_map, tr_blocks, cues)
-    reason_map = _semantic_reason_map(tr_blocks, validator_cues, locked_terms)
+    gap_limit = float(
+        SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
+    reason_map = _semantic_reason_map(
+        tr_blocks, validator_cues, locked_terms, scene_gap_sec=gap_limit)
     suspects = {}
     for sid, reasons in reason_map.items():
         semantic = {reason for reason in reasons if _is_semantic_reconciliation_reason(reason)}
@@ -6945,7 +6968,8 @@ def build_semantic_reconciliation_clusters(
     for sid in _source_wordplay_risk_ids(src_map, tr_blocks):
         suspects.setdefault(sid, set()).add("SOURCE_WORDPLAY_RISK")
     adaptive = _adaptive_semantic_suspects(
-        src_map, tr_blocks, cues, suspects, target_coverage, window)
+        src_map, tr_blocks, validator_cues, suspects, target_coverage, window,
+        scene_gap_sec=gap_limit)
     for sid, reasons in adaptive.items():
         suspects.setdefault(sid, set()).update(reasons)
     if not suspects:
@@ -6956,13 +6980,33 @@ def build_semantic_reconciliation_clusters(
     if not suspect_positions:
         return []
 
+    scene_by_pos = []
+    scene_no = 0
+    for pos, cue in enumerate(validator_cues):
+        if pos and gap_limit > 0:
+            try:
+                gap = _ts_to_sec(cue.start) - _ts_to_sec(
+                    validator_cues[pos - 1].end)
+                if gap >= gap_limit:
+                    scene_no += 1
+            except Exception:
+                pass
+        scene_by_pos.append(scene_no)
+    scene_bounds = {}
+    for pos, number in enumerate(scene_by_pos):
+        if number not in scene_bounds:
+            scene_bounds[number] = [pos, pos]
+        else:
+            scene_bounds[number][1] = pos
+
     window = max(0, int(window))
     max_cluster_items = max(window * 2 + 1, int(max_cluster_items))
     frag_positions = {}
     try:
-        frag_tags = _tag_fragments(validator_cues)
+        frag_tags = _tag_fragments(
+            validator_cues, scene_gap_sec=gap_limit)
         _group_by_idx, fragment_groups = _fragment_groups(
-            validator_cues, frag_tags)
+            validator_cues, frag_tags, scene_gap_sec=gap_limit)
         for group in fragment_groups:
             members = {
                 positions[str(member)]
@@ -6991,7 +7035,10 @@ def build_semantic_reconciliation_clusters(
         proposed = current | set(unit)
         span = (max(proposed) + window) - (min(proposed) - window) + 1
         unit_limit = max(max_cluster_items, len(unit) + window * 2)
-        if current and (min(unit) - max(current) > window * 2 + 1
+        crosses_scene = bool(
+            current and scene_by_pos[min(unit)] != scene_by_pos[min(current)])
+        if current and (crosses_scene
+                        or min(unit) - max(current) > window * 2 + 1
                         or span > unit_limit):
             core_groups.append(sorted(current))
             current = set(unit)
@@ -7002,8 +7049,9 @@ def build_semantic_reconciliation_clusters(
 
     intervals = []
     for core in core_groups:
-        start = max(0, min(core) - window)
-        end = min(len(tr_blocks) - 1, max(core) + window)
+        scene_start, scene_end = scene_bounds[scene_by_pos[min(core)]]
+        start = max(scene_start, min(core) - window)
+        end = min(scene_end, max(core) + window)
         if intervals and start <= intervals[-1][1]:
             prev_start, prev_end, prev_core_start, prev_core_end = intervals[-1]
             cut = max(
@@ -7085,6 +7133,7 @@ def semantic_reconciliation_pass(
     log_fn=None,
     token_callback=None,
     cancel_context=None,
+    scene_gap_sec: float = SCENE_GAP_SEC,
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
     locked_terms = {
@@ -7097,6 +7146,7 @@ def semantic_reconciliation_pass(
         extra_suspect_reasons=extra_suspect_reasons,
         locked_terms=locked_terms,
         target_coverage=target_coverage,
+        scene_gap_sec=scene_gap_sec,
     )
     if scene_plan:
         for cluster in clusters:
@@ -7142,7 +7192,8 @@ def semantic_reconciliation_pass(
     from openai import OpenAI
     client = OpenAI(api_key=api_key, base_url=base_url)
     validator_cues = _semantic_validator_cues(src_map, result, cues)
-    before_reason_map = _semantic_reason_map(result, validator_cues, locked_terms)
+    before_reason_map = _semantic_reason_map(
+        result, validator_cues, locked_terms, scene_gap_sec=scene_gap_sec)
     all_cluster_ids = {cluster["cluster"] for cluster in clusters}
     processed_covered_ids = set()
     system_prompt = (
@@ -7461,7 +7512,8 @@ def semantic_reconciliation_pass(
                         break
             if not invalid_reason:
                 after_reason_map = _semantic_reason_map(
-                    candidate, validator_cues, locked_terms)
+                    candidate, validator_cues, locked_terms,
+                    scene_gap_sec=scene_gap_sec)
                 for sid in set(before_reason_map) | set(after_reason_map):
                     new_reasons = after_reason_map.get(sid, set()) - before_reason_map.get(sid, set())
                     if any(_is_semantic_reconciliation_reason(reason) for reason in new_reasons):
@@ -7489,7 +7541,8 @@ def semantic_reconciliation_pass(
 
             result = candidate
             before_reason_map = _semantic_reason_map(
-                result, validator_cues, locked_terms)
+                result, validator_cues, locked_terms,
+                scene_gap_sec=scene_gap_sec)
             stats["fixed"] += len(proposals)
             stats["reflow_recovered"] += reflow_recovered
             stats["details"].append({
@@ -9899,6 +9952,7 @@ def critic_pass_with_helper(
     change_log: list | None = None,
     token_callback=None,
     cancel_context=None,
+    scene_gap_sec: float = SCENE_GAP_SEC,
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
@@ -9925,11 +9979,14 @@ def critic_pass_with_helper(
     orig_dict  = {str(c.index): c.text for c in cues} if cues else {}
     result_ids = [str(b[0]) for b in result]
     tr_text_by_id = {str(b[0]): b[2] for b in result}
+    gap_limit = float(
+        SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
     frag_tags = {}
     frag_group_by_id = {}
     if cues:
         try:
-            frag_tags = _tag_fragments(cues)
+            frag_tags = _tag_fragments(
+                cues, scene_gap_sec=gap_limit)
         except Exception:
             frag_tags = {}
         current_group = []
@@ -9976,7 +10033,8 @@ def critic_pass_with_helper(
     # Deterministic validators first (fast, no API call)
     validator_hits: set = set()
     v_reasons: dict = {}
-    for v_idx, _, _, reason in run_validators(result, cues, glossary):
+    for v_idx, _, _, reason in run_validators(
+            result, cues, glossary, scene_gap_sec=gap_limit):
         key = str(v_idx)
         validator_hits.add(key)
         v_reasons[key] = reason
@@ -10359,13 +10417,15 @@ def critic_pass_with_helper(
                         "recovered": recovered,
                     })
 
-            before_reason_map = _semantic_reason_map(result, cues, glossary)
+            before_reason_map = _semantic_reason_map(
+                result, cues, glossary, scene_gap_sec=gap_limit)
             trial_result = list(result)
             for item in prepared:
                 if item["ok"]:
                     trial_result[item["pos"]] = (
                         item["old_idx"], item["old_ts"], item["final_text"])
-            after_reason_map = _semantic_reason_map(trial_result, cues, glossary)
+            after_reason_map = _semantic_reason_map(
+                trial_result, cues, glossary, scene_gap_sec=gap_limit)
             new_issue_positions = {
                 idx_to_pos[sid]
                 for sid, reasons in after_reason_map.items()

@@ -79,7 +79,7 @@ class NativeSceneFragmentGuardTest(unittest.TestCase):
     def test_scene_gap_does_not_create_cross_scene_fragment_group(self):
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", "Bunu yapacağım"),
-            ("2", "00:00:08,000 --> 00:00:09,000", "başka bir sahnede."),
+            ("2", "00:00:04,000 --> 00:00:05,000", "başka bir sahnede."),
         ]
         source = {"1": "I will do this", "2": "in another scene."}
         response = SimpleNamespace(
@@ -87,7 +87,8 @@ class NativeSceneFragmentGuardTest(unittest.TestCase):
         client = MagicMock()
         with patch("openai.OpenAI", return_value=client), patch.object(
                 ht, "_safe_chat_create", return_value=response) as create:
-            ht.native_reader_pass(blocks, "key", src_map=source)
+            ht.native_reader_pass(
+                blocks, "key", src_map=source, scene_gap_sec=1.0)
 
         prompt = create.call_args.kwargs["messages"][0]["content"]
         payload = json.loads(prompt.split("Altyazılar:\n", 1)[1].split("\n\nJSON array", 1)[0])

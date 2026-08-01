@@ -10125,6 +10125,16 @@ class App(ctk.CTk):
             return self._active_snapshot[key]
         return default
 
+    def _run_scene_gap(self) -> float:
+        try:
+            snapshot = self.__dict__.get("_active_snapshot")
+            value = (snapshot.get("scene_gap_seconds", 3.0)
+                     if isinstance(snapshot, dict)
+                     else self.__dict__.get("_scene_gap_seconds", 3.0))
+            return float(value)
+        except (TypeError, ValueError):
+            return 3.0
+
     def _run_setting(self, key: str, var_name: str, default=None):
         snapshot = getattr(self, "_active_snapshot", None)
         if (threading.current_thread() is not threading.main_thread()
@@ -10702,7 +10712,8 @@ class App(ctk.CTk):
         schema = self._get_file_schema(fp)
         profanity = self.profanity_var.get()
         glossary_path = self._get_file_glossary(fp)
-        chain_context = self.chain_ctx_var.get()
+        chain_context = App._run_setting(
+            self, "chain_ctx", "chain_ctx_var", True)
         build_options = {
             "chunk_size": self._chunk_size,
             "project_memory": self._project_memory_for(fp, src),
@@ -15516,6 +15527,7 @@ class App(ctk.CTk):
                     if analysis_result and len(analysis_result) > 4
                     else None
                 ),
+                scene_gap_sec=self._run_scene_gap(),
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
@@ -16436,6 +16448,8 @@ class App(ctk.CTk):
                             glossary=None,
                             analysis_result=analysis_result,
                             change_log=_critic_change_log,
+                            scene_gap_sec=float(self._snap_get(
+                                "scene_gap_seconds", self._scene_gap_seconds)),
                             token_callback=self._token_callback_for_model(
                                 helper_models.get("critic", "gpt-5.4-mini")),
                             cancel_context=self.__dict__.get(
@@ -16472,6 +16486,8 @@ class App(ctk.CTk):
                             helper_url=helper_urls.get("critic", ""),
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             log_fn=self._log, analysis_result=analysis_result,
+                            scene_gap_sec=float(self._snap_get(
+                                "scene_gap_seconds", self._scene_gap_seconds)),
                             token_callback=self._token_callback_for_model(
                                 helper_models.get("critic", "gpt-5.4-mini")),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
@@ -18498,7 +18514,8 @@ class App(ctk.CTk):
                                         block_cache=self._block_cache,
                                         context_lines=self._context_lines,
                                         lookahead_lines=self._lookahead_lines,
-                                        scene_gap_sec=self._scene_gap_seconds,
+                                        scene_gap_sec=float(self._snap_get(
+                                            "scene_gap_seconds", self._scene_gap_seconds)),
                                         temperature=self._temperature)
             for r in reqs:
                 r["schema_name"] = sname
@@ -18574,7 +18591,7 @@ class App(ctk.CTk):
 
         # Çökme kurtarma: önceki yarıda kalan koşudan tamamlanmış chunk'ları geri al
         api_request_ids = {req["custom_id"] for req in api_requests}
-        if self.chain_ctx_var.get():
+        if App._run_setting(self, "chain_ctx", "chain_ctx_var", True):
             resumed_keys = set()
         else:
             api_requests, resumed_keys = self._resume_from_sync_ckpt(api_requests, raw_map)
@@ -18611,7 +18628,7 @@ class App(ctk.CTk):
                 self._set_eta(f"ETA ~{eta_s//60}:{eta_s%60:02d}")
             self._set_status(f"Anında: {completed[0]}/{api_total} API  +{tm_hits_count} TM ({pct}%)")
 
-        if self.chain_ctx_var.get():
+        if App._run_setting(self, "chain_ctx", "chain_ctx_var", True):
             # ── Zincirleme bağlam: dosya içi chunk'lar sıralı, dosyalar paralel ──
             # Önceki chunk'ın ÇEVİRİLERİ sonraki isteğe prev_tr olarak verilir;
             # terim, ton ve sen/siz tutarlılığı için model kendi geçmişini görür.
@@ -18990,9 +19007,11 @@ class App(ctk.CTk):
                                                         source_language=file_src,
                                                         context_lines=self._context_lines,
                                                         lookahead_lines=self._lookahead_lines,
-                                                         scene_gap_sec=self._scene_gap_seconds,
+                                                         scene_gap_sec=float(self._snap_get(
+                                                             "scene_gap_seconds", self._scene_gap_seconds)),
                                                          temperature=self._temperature,
-                                                         use_tm_context=not self.chain_ctx_var.get())
+                                                         use_tm_context=not App._run_setting(
+                                                             self, "chain_ctx", "chain_ctx_var", True))
             total     = len(batch_reqs)
             completed = [0]
             failed    = [0]
@@ -19001,7 +19020,7 @@ class App(ctk.CTk):
                 {req["custom_id"] for req in batch_reqs})
             _ckpt_scope = str(Path(filepath).resolve())
             prefilled_keys = set()
-            if not self.chain_ctx_var.get():
+            if not App._run_setting(self, "chain_ctx", "chain_ctx_var", True):
                 _, prefilled_keys = self._prefill_sync_ckpt(
                     batch_reqs, raw_map, scope=_ckpt_scope)
                 completed[0] = len(raw_map)
@@ -19040,7 +19059,7 @@ class App(ctk.CTk):
                 self._set_status(f"{_fname}  —  {completed[0]}/{_total} chunk")
                 self._update_file_progress(_fp, f"Çeviri {completed[0]}/{_total}", tr_pct)
 
-            if self.chain_ctx_var.get():
+            if App._run_setting(self, "chain_ctx", "chain_ctx_var", True):
                 # ── Zincirleme bağlam: chunk'lar sıralı, önceki çeviriler prev_tr ──
                 self._log("Zincirleme bağlam aktif — chunk'lar sıralı işlenir "
                           "(önceki çeviriler bağlama eklenir)", "info")
@@ -19240,6 +19259,8 @@ class App(ctk.CTk):
                                      character_styles, scene_emotions,
                                      idiom_map, cultural_refs),
                     change_log=_critic_change_log,
+                    scene_gap_sec=float(self._snap_get(
+                        "scene_gap_seconds", self._scene_gap_seconds)),
                     token_callback=self._token_callback_for_model(
                         self._helper_api_model("critic")),
                     cancel_context=self.__dict__.get(
@@ -19287,6 +19308,8 @@ class App(ctk.CTk):
                         self._helper_api_model("critic")),
                     src_map=_src_map_from_cues(cues),
                     locked_terms=_locked_terms,
+                    scene_gap_sec=float(self._snap_get(
+                        "scene_gap_seconds", self._scene_gap_seconds)),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
                 )
                 if self._stop_flag:
@@ -19676,7 +19699,8 @@ class App(ctk.CTk):
                                         block_cache=self._block_cache,
                                         context_lines=self._context_lines,
                                         lookahead_lines=self._lookahead_lines,
-                                        scene_gap_sec=self._scene_gap_seconds,
+                                        scene_gap_sec=float(self._snap_get(
+                                            "scene_gap_seconds", self._scene_gap_seconds)),
                                         temperature=self._temperature)
             all_requests.extend(reqs)
             all_file_map.update(fmap)
@@ -20329,6 +20353,8 @@ class App(ctk.CTk):
                                     glossary=_locked_terms,
                                     analysis_result=_analysis_result,
                                     change_log=_critic_change_log,
+                                    scene_gap_sec=float(self._snap_get(
+                                        "scene_gap_seconds", self._scene_gap_seconds)),
                                     token_callback=self._token_callback_for_model(
                                         self._helper_api_model("critic")),
                                     cancel_context=self.__dict__.get(
@@ -20357,6 +20383,8 @@ class App(ctk.CTk):
                                         self._helper_api_model("critic")),
                                     src_map=_src_map_from_cues(_orig_cues),
                                     locked_terms=_locked_terms,
+                                    scene_gap_sec=float(self._snap_get(
+                                        "scene_gap_seconds", self._scene_gap_seconds)),
                                     cancel_context=self.__dict__.get("_helper_request_canceller"))
                                 if self._stop_flag:
                                     break
@@ -20816,7 +20844,8 @@ class App(ctk.CTk):
             # Bağlam incelemesi — Batch'te zincirleme bağlam yoktur, bu geçiş telafi eder
             _review_needed = (
                 self.mode_var.get() == "batch"
-                or not self.chain_ctx_var.get()
+                or not App._run_setting(
+                    self, "chain_ctx", "chain_ctx_var", True)
             )
             if (self.review_pass_var.get() and _review_needed
                     and _quality_api_allowed
@@ -20848,6 +20877,8 @@ class App(ctk.CTk):
                         glossary=_locked_terms_for(fp),
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log,
+                        scene_gap_sec=float(self._snap_get(
+                            "scene_gap_seconds", self._scene_gap_seconds)),
                         token_callback=self._token_callback_for_model(
                             self._helper_api_model("critic")),
                         cancel_context=self.__dict__.get(
@@ -20888,6 +20919,8 @@ class App(ctk.CTk):
                             self._helper_api_model("critic")),
                         src_map=src_blocks,
                         locked_terms=_locked_terms_for(fp),
+                        scene_gap_sec=float(self._snap_get(
+                            "scene_gap_seconds", self._scene_gap_seconds)),
                         cancel_context=self.__dict__.get("_helper_request_canceller"))
                     if self._stop_flag:
                         break
@@ -21060,7 +21093,8 @@ class App(ctk.CTk):
                 "pass_coverage": _pc,
                 "helper_analysis": True,
                 "analysis_status": _analysis_status,
-                "chain_ctx": bool(self.chain_ctx_var.get()),
+                "chain_ctx": bool(App._run_setting(
+                    self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": total,
                 "tm_hits": self._tm.hit_count_session(),
                 "run_status": "error" if _has_missing else "done",
@@ -21592,7 +21626,8 @@ class App(ctk.CTk):
                                                           source_language=file_src,
                                                           context_lines=self._context_lines,
                                                           lookahead_lines=self._lookahead_lines,
-                                                          scene_gap_sec=self._scene_gap_seconds,
+                                                          scene_gap_sec=float(self._snap_get(
+                                                              "scene_gap_seconds", self._scene_gap_seconds)),
                                                           temperature=self._temperature)
                 self._log(f"{len(requests)} istek oluşturuldu", "info")
 
@@ -21870,6 +21905,8 @@ class App(ctk.CTk):
                                 glossary=self._get_locked_terms_dict(filepath, tgt),
                                 analysis_result=_full_analysis,
                                 change_log=_critic_change_log,
+                                scene_gap_sec=float(self._snap_get(
+                                    "scene_gap_seconds", self._scene_gap_seconds)),
                                 token_callback=self._token_callback_for_model(
                                     self._helper_api_model("critic")),
                                 cancel_context=self.__dict__.get(
@@ -21903,6 +21940,8 @@ class App(ctk.CTk):
                                     self._helper_api_model("critic")),
                                 src_map=_src_map_from_cues(cues),
                                 locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                                scene_gap_sec=float(self._snap_get(
+                                    "scene_gap_seconds", self._scene_gap_seconds)),
                                 cancel_context=self.__dict__.get("_helper_request_canceller"))
                             if self._stop_flag:
                                 break
