@@ -228,6 +228,8 @@ class SdhSourceDrivenTest(unittest.TestCase):
         self.assertFalse(sdh.src_is_sfx_only("[Speaking of which]"))
         self.assertTrue(sdh.is_sdh_descriptor("woman speaking"))
         self.assertTrue(sdh.is_sdh_descriptor("speaking softly"))
+        self.assertTrue(sdh.is_sdh_descriptor("woman screams"))
+        self.assertTrue(sdh.is_sdh_descriptor("teeth chattering"))
 
         blocks = [("1", "00:00:01,000 --> 00:00:02,000",
                    "[Hazır konusu açılmışken]")]

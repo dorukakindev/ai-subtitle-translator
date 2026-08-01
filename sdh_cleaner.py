@@ -249,6 +249,7 @@ _SDH_ACTION_VERBS = {
     "babbling", "whimpering", "rattle", "neighs", "bangs", "clangs",
     "scrapes", "stomp", "bubbling", "snoring", "whinnies", "whinny",
     "blaring", "slaps", "gasps", "grunts",
+    "screams", "growls", "groans", "sighs", "chattering",
 }
 
 _SDH_SOUND_MODIFIERS = {
