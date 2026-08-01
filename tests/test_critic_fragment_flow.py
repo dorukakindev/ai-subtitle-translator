@@ -82,6 +82,31 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertIn("MANDATORY FLOW FIX", prompts[0])
         self.assertIn("Return [] only if", prompts[0])
 
+    def test_critic_receives_matching_scene_plan_and_full_analysis_context(self):
+        cues = [Cue(7, "Give it back, okay?")]
+        blocks = [(7, "00:00:00,000 --> 00:00:01,000", "Onu geri ver, okay?")]
+        context = SimpleNamespace(
+            tone="tense", setting="room", summary="A dispute over a key.",
+            characters=[SimpleNamespace(name="Ayla", speaking_style="direct")])
+        analysis = (
+            context, {}, {"Ayla-Bora": "sen"},
+            {"Ayla": {"register": "street", "dialect": "standard"}},
+            [{"start": 5, "end": 9, "summary": "Ayla demands the key back.",
+              "speakers": ["Ayla"], "speaker_goals": {"Ayla": "recover the key"},
+              "referents": {"it": "the key"}, "tone": "angry"}],
+            {}, [],
+        )
+        prompts = []
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}):
+            ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                analysis_result=analysis)
+
+        self.assertIn("A dispute over a key.", prompts[0])
+        self.assertIn("Ayla=street/standard", prompts[0])
+        self.assertIn('"referents": {"it": "the key"}', prompts[0])
+
     def test_critic_expands_suspicious_line_to_full_sentence_context(self):
         cues = [
             Cue(1, "Although the rain had stopped,"),

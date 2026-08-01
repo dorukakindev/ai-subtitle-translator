@@ -3499,9 +3499,39 @@ def _inject_prev_tr(user_content: str, prev_pairs: list, max_pairs: int = CONTEX
         payload = json.loads(user_content)
     except Exception:
         return user_content
-    if "ctx" not in payload:
+    ctx = payload.get("ctx")
+    if not isinstance(ctx, list):
         return user_content
-    payload["prev_tr"] = prev_pairs[-max_pairs:]
+    try:
+        limit = max(0, int(max_pairs))
+    except (TypeError, ValueError):
+        return user_content
+    if not limit:
+        return user_content
+    ctx_ids = [
+        str(item.get("i")) for item in ctx
+        if isinstance(item, dict) and item.get("i") is not None
+    ]
+    legacy_context = bool(ctx) and not any(isinstance(item, dict) for item in ctx)
+    if not ctx_ids and not legacy_context:
+        return user_content
+    allowed = set(ctx_ids)
+    valid_pairs = {}
+    for pair in prev_pairs:
+        if not isinstance(pair, dict) or pair.get("i") is None:
+            continue
+        sid = str(pair.get("i"))
+        tr = pair.get("tr")
+        if ((legacy_context or sid in allowed) and isinstance(tr, str)
+                and tr.strip() and not tr.startswith("[HATA")):
+            valid_pairs[sid] = {"i": pair.get("i"), "tr": tr}
+    if legacy_context:
+        ordered = list(valid_pairs.values())
+    else:
+        ordered = [valid_pairs[sid] for sid in ctx_ids if sid in valid_pairs]
+    if not ordered:
+        return user_content
+    payload["prev_tr"] = ordered[-limit:]
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -5886,8 +5916,12 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
         return False, "linebreak_count"
     old_rest, new_rest = old, new
     for wrong, correct in fixes:
-        pat_wrong = re.compile(r"\b" + re.escape(wrong) + r"(?:['’]\w+)?", re.IGNORECASE)
-        pat_correct = re.compile(r"\b" + re.escape(correct) + r"(?:['’]\w+)?", re.IGNORECASE)
+        pat_wrong = re.compile(
+            r"(?<!\w)" + re.escape(wrong) + r"(?:['’]\w+)?(?!\w)",
+            re.IGNORECASE)
+        pat_correct = re.compile(
+            r"(?<!\w)" + re.escape(correct) + r"(?:['’]\w+)?(?!\w)",
+            re.IGNORECASE)
         if pat_wrong.search(new):
             return False, "term_not_replaced"
         old_matches = list(pat_wrong.finditer(old))
@@ -15426,6 +15460,11 @@ class App(ctk.CTk):
                 canon_hint=canon_hint,
                 analysis_context_hint=ht.build_polish_context_hint(
                     analysis_result, run_tgt_lang),
+                scene_plan=(
+                    analysis_result[4]
+                    if analysis_result and len(analysis_result) > 4
+                    else None
+                ),
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),

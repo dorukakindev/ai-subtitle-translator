@@ -24,6 +24,9 @@ class SdhKeywordCoverageTest(unittest.TestCase):
         self.assertTrue(is_sdh_descriptor("door slam"))
         self.assertTrue(is_sdh_descriptor("heartbeat"))
 
+    def test_all_caps_multiword_descriptor_is_not_mistaken_for_heading(self):
+        self.assertTrue(is_sdh_descriptor("OMINOUS MUSIC"))
+
 
 
     def test_speaker_words_expanded(self):

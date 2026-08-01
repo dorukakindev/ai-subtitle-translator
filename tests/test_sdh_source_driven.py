@@ -354,6 +354,14 @@ class SdhSourceDrivenTest(unittest.TestCase):
             blocks, src_map=src_map, source_driven=True)
         self.assertEqual(result[0][2], "[PARIS]")
 
+    def test_mixed_unknown_translated_sdh_uses_source_group_positions(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "[boğuk bir titreşim duyulur] [PARİS]")]
+        src_map = _src(**{"1": "[OMINOUS MUSIC] [PARIS]"})
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "[PARİS]")
+
     def test_mixed_sdh_and_heading_brackets_preserve_heading(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000",
                    "[MUSIC] [CHAPTER ONE]")]

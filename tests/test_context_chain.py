@@ -60,9 +60,30 @@ class InjectPrevTrTest(unittest.TestCase):
 
     def test_trims_to_max_pairs(self):
         pairs = [{"i": n, "tr": f"t{n}"} for n in range(20)]
-        out = json.loads(gui._inject_prev_tr(self._payload(), pairs, max_pairs=5))
+        payload = {"tr": [{"i": 20, "t": "Now."}],
+                   "ctx": [{"i": n, "t": f"s{n}"} for n in range(20)]}
+        out = json.loads(gui._inject_prev_tr(
+            json.dumps(payload), pairs, max_pairs=5))
         self.assertEqual(len(out["prev_tr"]), 5)
         self.assertEqual(out["prev_tr"][-1]["i"], 19)  # en son satırlar korunur
+
+    def test_filters_stale_pairs_not_present_in_source_context(self):
+        pairs = [
+            {"i": 8, "tr": "Eski sahne."},
+            {"i": 9, "tr": "Önceki satır."},
+            {"i": 10, "tr": "Yanlış gelecek satır."},
+        ]
+        out = json.loads(gui._inject_prev_tr(self._payload(), pairs))
+        self.assertEqual(out["prev_tr"], [{"i": 9, "tr": "Önceki satır."}])
+
+    def test_rejects_invalid_chain_pairs(self):
+        pairs = [
+            {"i": 9, "tr": 123},
+            {"i": 9, "tr": "[HATA]"},
+            "bad",
+        ]
+        content = self._payload()
+        self.assertEqual(gui._inject_prev_tr(content, pairs), content)
 
     def test_invalid_json_returns_unchanged(self):
         self.assertEqual(gui._inject_prev_tr("not json", [{"i": 1}]), "not json")

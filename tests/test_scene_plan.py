@@ -12,6 +12,7 @@ Kapsam:
 - _scene_plan_cache_is_stale: eski-şekilli (yalnız 'arc') önbellek girdilerini tespit
   edip zorla yeniden-analiz tetikler.
 """
+import json
 import sys
 import tempfile
 import types
@@ -300,7 +301,29 @@ class LoadContextCacheStaleSceneShapeTest(unittest.TestCase):
                     "subtitle_localizer": fake_pkg, "subtitle_localizer.models": fake_models,
                 }):
                     cached = ht.load_context_cache(str(fp), expected_target="tr")
-                    self.assertEqual(cached[4], scenes)
+                    self.assertEqual(cached[4][0]["start"], 1)
+                    self.assertEqual(cached[4][0]["end"], 5)
+                    self.assertEqual(cached[4][0]["summary"], "Mike explains.")
+                    self.assertEqual(cached[4][0]["tone"], "calm")
+
+    def test_malformed_scene_plan_invalidates_cache(self):
+        fake_pkg, fake_models = _fake_subtitle_localizer_models()
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = Path(tmp) / "sample.srt"
+            fp.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello.\n", encoding="utf-8")
+            with patch.object(ht, "_ensure_path", lambda: None):
+                ht.save_context_cache(
+                    self._context(), str(fp), target_language="tr",
+                    scene_emotions=[{"start": 1, "end": 5, "summary": "Valid"}],
+                )
+                cache_path = ht._cache_path(str(fp))
+                data = json.loads(cache_path.read_text(encoding="utf-8"))
+                data["scene_emotions"].append({"start": "bad", "end": 9})
+                cache_path.write_text(json.dumps(data), encoding="utf-8")
+                with patch.dict(sys.modules, {
+                    "subtitle_localizer": fake_pkg, "subtitle_localizer.models": fake_models,
+                }):
+                    self.assertIsNone(ht.load_context_cache(str(fp), expected_target="tr"))
 
 
 if __name__ == "__main__":

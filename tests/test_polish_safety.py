@@ -285,13 +285,14 @@ class PolishContextHintTest(unittest.TestCase):
             setting="mansion",
             summary="Reality show conflict.",
             characters=[SimpleNamespace(name="Alex", speaking_style="fast slang")],
+            recurring_terms={"the House": "Ev"},
         )
         hint = ht.build_polish_context_hint(
             (
                 ctx,
-                {},
+                {"Alex": ["Hadi, uzatma."]},
                 {"Alex-Bora": "sen"},
-                {},
+                {"Alex": {"register": "street", "dialect": "urban_slang"}},
                 [],
                 {"spill the beans": "ağzındaki baklayı çıkarmak"},
                 [{"src": "Netflix", "action": "keep"}],
@@ -301,6 +302,9 @@ class PolishContextHintTest(unittest.TestCase):
 
         self.assertIn("street comedy", hint)
         self.assertIn("Alex-Bora=sen", hint)
+        self.assertIn("Alex=street/urban_slang", hint)
+        self.assertIn("Hadi, uzatma.", hint)
+        self.assertIn("the House->Ev", hint)
         self.assertIn("spill the beans", hint)
         self.assertIn("Netflix=keep", hint)
 
@@ -473,6 +477,23 @@ class NativeReaderPassSafetyTest(unittest.TestCase):
             {"id": "1", "accept": True},
             {"id": "1", "accept": False},
         ]
+
+        with patch.dict(
+            "sys.modules",
+            {"openai": self._fake_openai_sequence([fixes, decisions])},
+        ):
+            result = ht.native_reader_pass(
+                blocks,
+                helper_api_key="test",
+                src_map={"1": "What are you doing here?"},
+            )
+
+        self.assertEqual(result, blocks)
+
+    def test_native_reader_second_review_rejects_numeric_true(self):
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Ne yapıyorsun sen burada?")]
+        fixes = [{"id": "1", "fixed": "Sen burada ne yapıyorsun?"}]
+        decisions = [{"id": "1", "accept": 1}]
 
         with patch.dict(
             "sys.modules",

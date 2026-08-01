@@ -771,6 +771,16 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
             character_examples, pronoun_map, character_styles, idiom_map, cultural_refs
         )
     )
+    if _scene_plan_cache_is_stale(scene_emotions):
+        scene_emotions = []
+    elif isinstance(scene_emotions, list):
+        scene_emotions = [
+            scene for scene in (
+                _sanitize_scene_plan_entry(raw) for raw in scene_emotions
+            ) if scene is not None
+        ]
+    else:
+        scene_emotions = []
     data = {
         "source_language":    context.source_language,
         "summary":            context.summary,
@@ -876,6 +886,17 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
         _scene_emotions = d.get("scene_emotions", [])
         if _scene_plan_cache_is_stale(_scene_emotions):
             _scene_emotions = []
+        elif not isinstance(_scene_emotions, list):
+            return None
+        else:
+            sanitized_scenes = [
+                scene for scene in (
+                    _sanitize_scene_plan_entry(raw) for raw in _scene_emotions
+                ) if scene is not None
+            ]
+            if len(sanitized_scenes) != len(_scene_emotions):
+                return None
+            _scene_emotions = sanitized_scenes
         _examples, _pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
             d.get("character_examples", {}),
             d.get("pronoun_map", {}),
@@ -3374,7 +3395,10 @@ def _verify_native_candidates(
             continue
         fid = str(item.get("id", ""))
         if fid in allowed:
-            by_id.setdefault(fid, []).append(item.get("accept"))
+            decision = item.get("accept")
+            if type(decision) is not bool:
+                continue
+            by_id.setdefault(fid, []).append(decision)
     return {
         fid for fid, values in by_id.items()
         if values == [True]
@@ -3421,37 +3445,13 @@ def native_reader_pass(
             log_fn(f"Native Pass bağlantı hatası: {e}", "err")
         return tr_blocks
 
-    # Build context info for the prompt
-    context_info = ""
-    if analysis_result:
-        try:
-            ctx = analysis_result[0]  # ContextMemory
-            parts_ctx = []
-            if ctx.tone:
-                parts_ctx.append(f"Tone: {ctx.tone}")
-            if ctx.setting:
-                parts_ctx.append(f"Setting: {ctx.setting}")
-            character_styles = analysis_result[3] if len(analysis_result) > 3 else None
-            if character_styles:
-                style_lines = []
-                for name, info in list(character_styles.items())[:5]:
-                    reg = info.get("register", "") if isinstance(info, dict) else ""
-                    if reg:
-                        style_lines.append(f"{name}: {reg}")
-                if style_lines:
-                    parts_ctx.append("Characters: " + ", ".join(style_lines))
-            if parts_ctx:
-                context_info = "\nContent context: " + " | ".join(parts_ctx)
-            pronoun_map = analysis_result[2] if len(analysis_result) > 2 else None
-            if isinstance(pronoun_map, dict) and pronoun_map:
-                context_info += "\nsen/siz (koru): " + "; ".join(
-                    f"{k}={v}" for k, v in list(pronoun_map.items())[:6])
-            idiom_map = analysis_result[5] if len(analysis_result) > 5 else None
-            if isinstance(idiom_map, dict) and idiom_map:
-                context_info += ("\nŞu deyimleri doğal Türkçe karşılığıyla oku (literal DEĞİL): "
-                                 + "; ".join(f"{k}→{v}" for k, v in list(idiom_map.items())[:8]))
-        except Exception:
-            pass
+    context_info = build_polish_context_hint(analysis_result, tgt_lang)
+    scene_plan = (
+        analysis_result[4]
+        if analysis_result and len(analysis_result) > 4
+        and isinstance(analysis_result[4], list)
+        else []
+    )
     if locked_terms:
         context_info += "\nKilitli terimler (kaynak -> zorunlu karşılık): " + "; ".join(
             f"{source} -> {target}"
@@ -3528,6 +3528,9 @@ def native_reader_pass(
                 src_t = src_map.get(str(idx))
                 if src_t:
                     it["en"] = src_t
+                local_scene = _scene_context_for_chunk(scene_plan, idx, idx)
+                if local_scene:
+                    it["scene"] = local_scene
                 tag = frag_tags.get(idx, "none")
                 if tag != "none":
                     it["frag"] = tag
@@ -7009,6 +7012,7 @@ def semantic_reconciliation_pass(
     target_coverage: float = 0.0,
     canon_hint: str = "",
     analysis_context_hint: str = "",
+    scene_plan: list | None = None,
     log_fn=None,
     token_callback=None,
     cancel_context=None,
@@ -7025,6 +7029,13 @@ def semantic_reconciliation_pass(
         locked_terms=locked_terms,
         target_coverage=target_coverage,
     )
+    if scene_plan:
+        for cluster in clusters:
+            for item in cluster.get("items", []):
+                local_scene = _scene_context_for_chunk(
+                    scene_plan, item.get("id"), item.get("id"))
+                if local_scene:
+                    item["scene"] = local_scene
     batches = _semantic_cluster_batches(clusters)
     covered_ids = {
         str(item.get("id", ""))
@@ -7554,10 +7565,49 @@ def build_polish_context_hint(analysis_result=None, tgt_lang: str = "Turkish") -
         if char_bits:
             parts.append("Character voices: " + "; ".join(char_bits))
 
+        character_examples = analysis_result[1] if len(analysis_result) > 1 else None
+        if isinstance(character_examples, dict) and character_examples:
+            examples = []
+            for name, lines in list(character_examples.items())[:6]:
+                if not isinstance(lines, (list, tuple)):
+                    continue
+                sample = next((str(line).strip() for line in lines
+                               if isinstance(line, str) and line.strip()), "")
+                if name and sample:
+                    examples.append(f'{name}: "{sample[:160]}"')
+            if examples:
+                parts.append("Established Turkish voice samples: " + "; ".join(examples))
+
+        recurring_terms = getattr(ctx, "recurring_terms", {}) or {}
+        if isinstance(recurring_terms, dict) and recurring_terms:
+            terms = [
+                f"{source}->{target}"
+                for source, target in list(recurring_terms.items())[:12]
+                if str(source).strip() and str(target).strip()
+            ]
+            if terms:
+                parts.append(
+                    "File-analysis term decisions (use only where the source term occurs): "
+                    + "; ".join(terms))
+
         pronoun_map = analysis_result[2] if len(analysis_result) > 2 else None
         if isinstance(pronoun_map, dict) and pronoun_map:
             pairs = [f"{k}={v}" for k, v in list(pronoun_map.items())[:10]]
             parts.append("sen/siz decisions: " + "; ".join(pairs))
+
+        character_styles = analysis_result[3] if len(analysis_result) > 3 else None
+        if isinstance(character_styles, dict) and character_styles:
+            styles = []
+            for name, info in list(character_styles.items())[:10]:
+                if not isinstance(info, dict):
+                    continue
+                register = str(info.get("register") or "").strip()
+                dialect = str(info.get("dialect") or "").strip()
+                voice = "/".join(part for part in (register, dialect) if part)
+                if name and voice:
+                    styles.append(f"{name}={voice}")
+            if styles:
+                parts.append("Character register decisions: " + "; ".join(styles))
 
         idiom_map = analysis_result[5] if len(analysis_result) > 5 else None
         if isinstance(idiom_map, dict) and idiom_map:
@@ -7580,7 +7630,7 @@ def build_polish_context_hint(analysis_result=None, tgt_lang: str = "Turkish") -
     if not parts:
         return ""
     return (
-        f"\n\nPROJECT CONTEXT FOR POLISH ({tgt_lang}):\n"
+        f"\n\nPROJECT ANALYSIS CONTEXT ({tgt_lang}):\n"
         + "\n".join(f"- {p}" for p in parts)
         + "\n"
     )
@@ -9945,37 +9995,13 @@ def critic_pass_with_helper(
             log_fn(f"Critic Pass Helper bağlantı hatası: {e}", "err")
         return result
 
-    # Build context-aware prompt
-    context_info = ""
-    if analysis_result:
-        try:
-            context, char_examples, pronoun_map = analysis_result[:3]
-            character_styles = analysis_result[3] if len(analysis_result) > 3 else None
-            context_parts = []
-
-            if context.tone:
-                context_parts.append(f"Tone: {context.tone}")
-
-            if context.setting:
-                context_parts.append(f"Setting: {context.setting}")
-
-            if pronoun_map:
-                context_parts.append(f"Register patterns (sen/siz): {pronoun_map}")
-
-            if character_styles:
-                style_lines = []
-                for name, info in list(character_styles.items())[:8]:
-                    reg = info.get("register", "") if isinstance(info, dict) else ""
-                    if reg:
-                        style_lines.append(f"  {name}: {reg}")
-                if style_lines:
-                    context_parts.append("Character voices:\n" + "\n".join(style_lines))
-
-            if context_parts:
-                context_info = "\n\nContent Context:\n" + "\n".join(context_parts)
-        except Exception as e:
-            if log_fn:
-                log_fn(f"Critic context injection hatası (ignored): {e}", "warn")
+    context_info = build_polish_context_hint(analysis_result, tgt_lang)
+    scene_plan = (
+        analysis_result[4]
+        if analysis_result and len(analysis_result) > 4
+        and isinstance(analysis_result[4], list)
+        else []
+    )
 
     # Turkish-specific error patterns
     turkish_fixes = (
@@ -10034,6 +10060,9 @@ def critic_pass_with_helper(
         pairs = []
         for idx, ts, text in chunk:
             pair = {"id": str(idx), "orig": orig_dict.get(str(idx), ""), "tr": text}
+            local_scene = _scene_context_for_chunk(scene_plan, idx, idx)
+            if local_scene:
+                pair["scene"] = local_scene
             duration = _block_duration(str(ts))
             if duration > 0:
                 pair["d"] = round(duration, 2)

@@ -280,6 +280,7 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
         return False
     raw_words = str(content or "").strip().split()
     title_case = (2 <= len(raw_words) <= 6
+                  and any(any(ch.islower() for ch in word) for word in raw_words)
                   and all(not word[:1].isalpha() or word[:1].isupper()
                           for word in raw_words))
     if title_case:
@@ -826,6 +827,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         for start, end in source_spans
     )
     source_groups = []
+    source_remove_flags = []
     source_has_unverified_group = False
     for start, end in source_spans:
         raw = src_line[start:end]
@@ -843,11 +845,28 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         )
         if (is_descriptor or is_speaker) and not ambiguous_mixed_label:
             source_groups.append(raw)
+            source_remove_flags.append(True)
         else:
             source_has_unverified_group = True
+            source_remove_flags.append(False)
     if not source_groups:
         return tr_line
+    target_spans = _bracket_group_spans(tr_line)
+    source_delimiters = [src_line[start] for start, _end in source_spans]
+    target_delimiters = [tr_line[start] for start, _end in target_spans]
+    positional_flags = (
+        source_remove_flags
+        if (len(target_spans) == len(source_remove_flags)
+            and target_delimiters == source_delimiters)
+        else None
+    )
+    target_group_pos = 0
     def _strip_verified(raw):
+        nonlocal target_group_pos
+        if positional_flags is not None:
+            remove = positional_flags[target_group_pos]
+            target_group_pos += 1
+            return "" if remove else raw
         inner = raw[1:-1].strip()
         if _is_protected_bracket_content(raw):
             return raw

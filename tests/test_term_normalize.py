@@ -108,6 +108,13 @@ class MixedTermAutofixPlanTest(unittest.TestCase):
 
 
 class ValidateTermNormalizeCandidateTest(unittest.TestCase):
+    def test_short_term_does_not_match_prefix_of_longer_name(self):
+        ok, reason = gui._validate_term_normalize_candidate(
+            "Art ve Arthur burada.",
+            "Sanat ve Arthur burada.",
+            [("Art", "Sanat")])
+        self.assertTrue(ok, reason)
+
     def test_valid_simple_swap(self):
         ok, reason = gui._validate_term_normalize_candidate(
             "Schliemann tartışmalı bir kişilikti,",

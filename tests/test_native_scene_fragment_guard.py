@@ -7,6 +7,30 @@ import hybrid_translate as ht
 
 
 class NativeSceneFragmentGuardTest(unittest.TestCase):
+    def test_scene_plan_is_attached_to_matching_cue(self):
+        blocks = [("7", "00:00:01,000 --> 00:00:02,000", "Onu geri ver.")]
+        source = {"7": "Give it back."}
+        context = SimpleNamespace(
+            tone="tense", setting="room", summary="An argument.", characters=[])
+        analysis = (
+            context, {}, {}, {},
+            [{"start": 5, "end": 9, "summary": "Ayla demands the key back.",
+              "speakers": ["Ayla"], "speaker_goals": {"Ayla": "recover the key"},
+              "referents": {"it": "the key"}, "tone": "angry"}],
+            {}, [],
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))], usage=None)
+        client = MagicMock()
+        with patch("openai.OpenAI", return_value=client), patch.object(
+                ht, "_safe_chat_create", return_value=response) as create:
+            ht.native_reader_pass(
+                blocks, "key", src_map=source, analysis_result=analysis)
+
+        prompt = create.call_args.kwargs["messages"][0]["content"]
+        payload = json.loads(prompt.split("Altyazılar:\n", 1)[1].split("\n\nJSON array", 1)[0])
+        self.assertEqual(payload["tr"][0]["scene"][0]["referents"]["it"], "the key")
+
     def test_scene_gap_does_not_create_cross_scene_fragment_group(self):
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", "Bunu yapacağım"),

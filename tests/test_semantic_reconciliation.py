@@ -193,6 +193,24 @@ class SemanticClusterBuilderTest(unittest.TestCase):
         self.assertEqual(suspects, {"4", "8", "11", "15"})
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_matching_scene_plan_is_injected_into_cluster_payload(self):
+        blocks = [("7", "00:00:01 --> 00:00:02", "Onu geri ver.")]
+        src_map = {"7": "Give it back."}
+        scene_plan = [{
+            "start": 5, "end": 9, "summary": "Ayla demands the key back.",
+            "speakers": ["Ayla"], "speaker_goals": {"Ayla": "recover the key"},
+            "referents": {"it": "the key"}, "tone": "angry",
+        }]
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create", return_value=_response([])) as create:
+            ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"7"},
+                scene_plan=scene_plan)
+
+        payload = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        item = payload["clusters"][0]["items"][0]
+        self.assertEqual(item["scene"][0]["referents"]["it"], "the key")
+
     def test_file_analysis_context_is_injected_into_reconciler_prompt(self):
         blocks = [("1", "00:00:01 --> 00:00:02", "Sana söyledim.")]
         src_map = {"1": "I told you."}
