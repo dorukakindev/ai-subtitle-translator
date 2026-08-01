@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -699,6 +700,41 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
             report_text = report.read_text(encoding="utf-8")
             self.assertIn("Planlanan kapsam: 1/1", report_text)
             self.assertIn("İşlenen kapsam: 0/1", report_text)
+
+    def test_targeted_pass_uses_custom_coverage_and_report_path(self):
+        app = gui.App.__new__(gui.App)
+        app._pm = None
+        app.semantic_reconcile_var = SimpleNamespace(get=lambda: True)
+        app.src_var = SimpleNamespace(get=lambda: "English")
+        app.tgt_var = SimpleNamespace(get=lambda: "Turkish")
+        app._log = MagicMock()
+        app._helper_api_key = MagicMock(return_value="k")
+        app._helper_api_base_url = MagicMock(return_value=None)
+        app._helper_api_model = MagicMock(return_value="m")
+        app._token_callback_for_model = MagicMock(return_value=MagicMock())
+        app._get_file_glossary = MagicMock(return_value="")
+        app._active_run_record = {"reports": []}
+        app._run_record_lock = threading.Lock()
+        blocks = [("1", "00:00:01 --> 00:00:02", "Eski.")]
+        stats = {
+            "clusters": 1, "suspects": 1, "covered_cues": 1,
+            "coverage_pct": 100.0, "api_requests": 1, "proposed": 0,
+            "fixed": 0, "rejected": 0, "reflow_recovered": 0,
+            "details": [],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("hybrid_translate.semantic_reconciliation_pass",
+                   return_value=(list(blocks), stats)) as semantic:
+            report = Path(tmp) / "Raporlar" / "season.txt"
+            app._maybe_semantic_reconciliation(
+                Path(tmp) / "episode.srt", {"1": "Source."}, blocks,
+                target_coverage=0.0, report_path=report,
+            )
+
+            self.assertEqual(semantic.call_args.kwargs["target_coverage"], 0.0)
+            self.assertTrue(report.exists())
+            self.assertIn(str(report), app._active_run_record["reports"])
 
     def test_locked_terms_merge_file_project_and_series_memory(self):
         app = gui.App.__new__(gui.App)

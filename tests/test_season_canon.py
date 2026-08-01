@@ -1,8 +1,9 @@
 import unittest
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import subtitle_translator_gui as gui
 
@@ -68,6 +69,25 @@ class SeasonCanonSelectionTest(unittest.TestCase):
             ("3", "00:00:03,000 --> 00:00:04,000", "Sizin kararınız."),
         ]
         self.assertEqual(gui._season_address_suspect_ids(blocks), {"1", "3"})
+
+    def test_artifact_names_do_not_collide_across_sources_or_runs(self):
+        first = gui._season_canon_artifact_stem(
+            "show", 1, 2, "C:/one/show.S01E02.srt", "run-1")
+        second = gui._season_canon_artifact_stem(
+            "show", 1, 2, "D:/two/show.S01E02.srt", "run-1")
+        later = gui._season_canon_artifact_stem(
+            "show", 1, 2, "C:/one/show.S01E02.srt", "run-2")
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, later)
+
+    def test_series_memory_address_map_is_returned_as_copy(self):
+        memory = gui.series_memory.SeriesMemory.__new__(gui.series_memory.SeriesMemory)
+        memory._data = {
+            "address_map": [{"a": "Sam", "b": "Chief", "register": "siz"}]
+        }
+        result = memory.get_address_map()
+        result[0]["register"] = "sen"
+        self.assertEqual(memory._data["address_map"][0]["register"], "siz")
 
 
 class MediaModeTest(unittest.TestCase):
@@ -163,6 +183,92 @@ class SeasonCanonRunRoutingTest(unittest.TestCase):
         title, message = ask.call_args.args
         self.assertEqual(title, "Sezon kanon denetimi sürüyor")
         self.assertIn("dosyalar nihai hazır sayılmaz", message)
+
+
+    def test_season_audit_is_targeted_and_writes_run_scoped_reports(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "show.S01E01.srt"
+            output = root / "out.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nThe Negotiator arrived.\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nArabulucu geldi.\n",
+                encoding="utf-8")
+            semantic_calls = []
+            memory = SimpleNamespace(
+                build_hint=lambda: "SERIES CANON",
+                get_address_map=lambda: [],
+            )
+            app = SimpleNamespace(
+                _active_snapshot={
+                    "input_dir": str(root), "output_dir": str(root / "out"),
+                    "tgt_lang": "Turkish", "src_lang": "English",
+                    "term_normalize": False,
+                },
+                _active_run_record={"run_id": "run:42", "reports": []},
+                _run_record_lock=threading.Lock(),
+                _season_canon_groups=lambda: {
+                    (str(root), "show", 1, "en"): [(1, str(source), output)]
+                },
+                _effective_file_source_language=lambda *_args: "English",
+                _get_locked_terms_dict=lambda *_args: {
+                    "Negotiator": "Müzakereci"
+                },
+                _series_mem_for=lambda *_args: (memory, 1, 1),
+                _maybe_semantic_reconciliation=lambda *args, **kwargs:
+                    semantic_calls.append((args, kwargs)) or 0,
+                _log=lambda *_args: None,
+            )
+
+            gui.App._run_season_canon_audit(app)
+
+            self.assertEqual(len(semantic_calls), 1)
+            kwargs = semantic_calls[0][1]
+            self.assertEqual(kwargs["target_coverage"], 0.0)
+            self.assertIn("sezon-anlam-mutabakati", str(kwargs["report_path"]))
+            self.assertIn("Raporlar", str(kwargs["report_path"]))
+            report = root / "out" / "Raporlar" / "sezon_kanon_denetimi_run-42.txt"
+            self.assertTrue(report.exists())
+
+    def test_address_lines_are_ignored_without_address_canon(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "show.S01E01.srt"
+            output = root / "out.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nI told you.\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nSana söyledim.\n",
+                encoding="utf-8")
+            semantic = MagicMock()
+            memory = SimpleNamespace(
+                build_hint=lambda: "CHARACTERS ONLY",
+                get_address_map=lambda: [],
+            )
+            app = SimpleNamespace(
+                _active_snapshot={
+                    "input_dir": str(root), "output_dir": str(root / "out"),
+                    "tgt_lang": "Turkish", "src_lang": "English",
+                    "term_normalize": False,
+                },
+                _active_run_record={"run_id": "run-1", "reports": []},
+                _run_record_lock=threading.Lock(),
+                _season_canon_groups=lambda: {
+                    (str(root), "show", 1, "en"): [(1, str(source), output)]
+                },
+                _effective_file_source_language=lambda *_args: "English",
+                _get_locked_terms_dict=lambda *_args: {},
+                _series_mem_for=lambda *_args: (memory, 1, 1),
+                _maybe_semantic_reconciliation=semantic,
+                _log=lambda *_args: None,
+            )
+
+            gui.App._run_season_canon_audit(app)
+
+            semantic.assert_not_called()
 
 
 if __name__ == "__main__":

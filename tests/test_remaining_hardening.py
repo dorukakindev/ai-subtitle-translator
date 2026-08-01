@@ -171,6 +171,33 @@ class MemoryIsolationTest(unittest.TestCase):
             self.assertEqual(result, ("memory", 1, 2))
             self.assertEqual(Path(load.call_args.args[0]), root)
 
+    def test_series_memory_worker_uses_snapshot_without_reading_tk(self):
+        with tempfile.TemporaryDirectory() as d:
+            fp = str(Path(d) / "Show.S01E02.srt")
+            tk_get = mock.MagicMock(side_effect=AssertionError("Tk read"))
+            stub = SimpleNamespace(
+                series_memory_var=SimpleNamespace(get=tk_get),
+                input_var=SimpleNamespace(get=lambda: r"C:\stale"),
+                tgt_var=SimpleNamespace(get=tk_get),
+                _selected_files=[fp],
+                _active_snapshot={
+                    "series_memory": True,
+                    "selected_files": [fp],
+                    "src_lang": "English",
+                    "tgt_lang": "Turkish",
+                },
+                _effective_file_source_language=lambda *_args: "English",
+            )
+            with mock.patch.object(series_memory.SeriesMemory, "load",
+                                   return_value="memory"), \
+                 mock.patch.object(gui.threading, "current_thread",
+                                   return_value=object()), \
+                 mock.patch.object(gui.threading, "main_thread",
+                                   return_value=object()):
+                result = gui.App._series_mem_for(stub, fp)
+            self.assertEqual(result, ("memory", 1, 2))
+            tk_get.assert_not_called()
+
     def test_fuzzy_tm_isolates_model_profanity_and_schema(self):
         with tempfile.TemporaryDirectory() as d:
             tm = TranslationMemory(str(Path(d) / "tm.db"))

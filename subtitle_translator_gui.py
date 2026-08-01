@@ -2528,16 +2528,59 @@ def _delivery_middle_signature_slot(blocks: list):
     return left[0] + 1, start, end
 
 
+def _delivery_source_map(blocks: list, source_cues) -> dict:
+    source_blocks = []
+    for cue in source_cues or []:
+        try:
+            if hasattr(cue, "text"):
+                timestamp = f"{cue.start} --> {cue.end}"
+                source_blocks.append((str(cue.index), timestamp, cue.text))
+            else:
+                source_blocks.append((str(cue[0]), str(cue[1]), cue[2]))
+        except Exception:
+            continue
+    timed_source = []
+    for _idx, timestamp, text in source_blocks:
+        try:
+            start, end = _srt_timestamp_bounds(timestamp)
+        except ValueError:
+            continue
+        timed_source.append((start, end, str(text or "")))
+    result = {}
+    for idx, timestamp, _text in blocks or []:
+        try:
+            start, end = _srt_timestamp_bounds(timestamp)
+        except ValueError:
+            continue
+        matched = [
+            text for src_start, src_end, text in timed_source
+            if src_start >= start and src_end <= end
+        ]
+        if not matched:
+            matched = [
+                text for src_start, src_end, text in timed_source
+                if src_start == start or src_end == end
+            ]
+        if matched:
+            result[str(idx)] = "\n".join(matched)
+    return result
+
+
 def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
-                                 log_fn=None) -> list:
+                                 log_fn=None, source_cues=None) -> list:
     if normalize_language_name(target_language, allow_auto=False) != "Turkish":
         return list(blocks or [])
+
+    blocks = list(blocks or [])
+    if source_cues:
+        src_map = _delivery_source_map(blocks, source_cues)
+        blocks = clean_sdh(blocks, src_map=src_map, source_driven=True)
 
     work = []
     hats_removed = 0
     position_tags_removed = 0
     sdh_removed = 0
-    for idx, ts, text in blocks or []:
+    for idx, ts, text in blocks:
         value = str(text or "")
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
             continue
@@ -5579,6 +5622,15 @@ def _season_address_suspect_ids(blocks: list) -> set:
         str(idx) for idx, _ts, text in blocks or []
         if _SEASON_ADDRESS_RE.search(str(text or ""))
     }
+
+
+def _season_canon_artifact_stem(slug: str, season: int, episode: int,
+                                source_path: str, run_id: str = "") -> str:
+    source_key = os.path.normcase(os.path.abspath(str(source_path)))
+    digest = hashlib.sha1(
+        source_key.encode("utf-8", errors="surrogatepass")).hexdigest()[:8]
+    safe_run = re.sub(r"[^A-Za-z0-9._-]+", "-", str(run_id or "run")).strip("-")
+    return f"{slug}.S{season:02d}E{episode:02d}.{safe_run or 'run'}.{digest}"
 
 
 def _align_delivery_blocks_to_source(source_blocks: list,
@@ -10695,6 +10747,8 @@ class App(ctk.CTk):
 
     def _run_season_canon_audit(self):
         snapshot = getattr(self, "_active_snapshot", {}) or {}
+        record = getattr(self, "_active_run_record", None) or {}
+        run_id = str(record.get("run_id") or "run")
         groups = self._season_canon_groups()
         if not groups:
             return
@@ -10723,17 +10777,27 @@ class App(ctk.CTk):
                     locked_terms = self._get_locked_terms_dict(source_path, tgt)
                     suspects = _season_canon_suspect_ids(
                         output_blocks, src_map, locked_terms)
-                    suspects.update(_season_address_suspect_ids(output_blocks))
+                    sm_obj, _season, _episode = self._series_mem_for(source_path)
+                    canon_hint = sm_obj.build_hint() if sm_obj else ""
+                    if sm_obj and sm_obj.get_address_map():
+                        suspects.update(_season_address_suspect_ids(output_blocks))
                     total_suspects += len(suspects)
                     before = {str(idx): text for idx, _ts, text in output_blocks}
                     if suspects:
+                        report_dir = _resolve_report_dir(
+                            snapshot.get("input_dir", ""),
+                            snapshot.get("output_dir", ""))
+                        artifact_stem = _season_canon_artifact_stem(
+                            slug, season, episode, source_path, run_id)
                         self._maybe_semantic_reconciliation(
                             output_path, src_map, output_blocks,
                             src_lang=self._effective_file_source_language(
                                 source_path, snapshot.get("src_lang") or "English"),
                             changed_ids=suspects, source_path=source_path,
-                            canon_hint=self._series_hint_for(source_path),
-                            force=True)
+                            canon_hint=canon_hint, force=True,
+                            target_coverage=0.0,
+                            report_path=report_dir / (
+                                f"{artifact_stem}.sezon-anlam-mutabakati.txt"))
                     if snapshot.get("term_normalize", True):
                         output_blocks, _ = _normalize_mixed_terms(
                             output_blocks, src_map,
@@ -10751,8 +10815,9 @@ class App(ctk.CTk):
                             snapshot.get("input_dir", ""),
                             snapshot.get("output_dir", ""))
                         report_dir.mkdir(parents=True, exist_ok=True)
-                        backup = report_dir / (
-                            f"{slug}.S{season:02d}E{episode:02d}.season-canon.bak.srt")
+                        artifact_stem = _season_canon_artifact_stem(
+                            slug, season, episode, source_path, run_id)
+                        backup = report_dir / f"{artifact_stem}.season-canon.bak.srt"
                         if not backup.exists():
                             atomic_write_bytes(backup, output_path.read_bytes())
                         delivery = _prepare_upload_ready_blocks(
@@ -10779,7 +10844,9 @@ class App(ctk.CTk):
         report_dir = _resolve_report_dir(
             snapshot.get("input_dir", ""), snapshot.get("output_dir", ""))
         report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / "sezon_kanon_denetimi.txt"
+        safe_run = re.sub(
+            r"[^A-Za-z0-9._-]+", "-", run_id).strip("-") or "run"
+        report_path = report_dir / f"sezon_kanon_denetimi_{safe_run}.txt"
         atomic_write_text(report_path, "\n".join(report_lines), encoding="utf-8")
         with self._run_record_lock:
             record = getattr(self, "_active_run_record", None)
@@ -14418,13 +14485,20 @@ class App(ctk.CTk):
 
     def _series_mem_for(self, fp: str, *, persistent: bool = False):
         """Dosya için (SeriesMemory, sezon, bölüm) döner; dizi değilse/kapalıysa (None,None,None)."""
-        if not (getattr(self, "series_memory_var", None) and self.series_memory_var.get()):
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        if (snapshot
+                and threading.current_thread() is not threading.main_thread()):
+            enabled = bool(snapshot.get("series_memory", True))
+        else:
+            enabled = bool(
+                getattr(self, "series_memory_var", None)
+                and self.series_memory_var.get())
+        if not enabled:
             return None, None, None
         key = series_memory.parse_series_key(fp)
         if key is None:
             return None, None, None
         slug, season, ep = key
-        snapshot = getattr(self, "_active_snapshot", None) or {}
         selected = snapshot.get("selected_files") if snapshot else getattr(self, "_selected_files", ())
         input_dir = (str(series_memory.series_memory_root(fp)) if selected
                      else snapshot.get("input_dir") if snapshot
@@ -14711,7 +14785,8 @@ class App(ctk.CTk):
     def _maybe_semantic_reconciliation(self, out_path, src_clean_map, blocks,
                                        src_lang=None, cues=None, changed_ids=None,
                                        source_path=None, canon_hint="",
-                                       force=False) -> int:
+                                       force=False, target_coverage=0.65,
+                                       report_path=None) -> int:
         if ((not force and not self._semantic_reconcile_enabled())
                 or not src_clean_map or not blocks):
             return 0
@@ -14751,7 +14826,7 @@ class App(ctk.CTk):
                 changed_ids=changed_ids,
                 extra_suspect_reasons=extra_suspect_reasons,
                 locked_terms=locked_terms,
-                target_coverage=0.65,
+                target_coverage=target_coverage,
                 canon_hint=canon_hint,
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
@@ -14764,7 +14839,9 @@ class App(ctk.CTk):
             blocks[:] = result
             if stats.get("clusters"):
                 try:
-                    rpath = str(Path(out_path).with_suffix(".anlamsal_mutabakat.txt"))
+                    rpath = str(
+                        report_path
+                        or Path(out_path).with_suffix(".anlamsal_mutabakat.txt"))
                     lines = [
                         "# Nihai Anlam Mutabakatı",
                         f"# Küme: {stats['clusters']} | Şüpheli cue: {stats['suspects']} | "
@@ -14795,6 +14872,9 @@ class App(ctk.CTk):
                     Path(rpath).parent.mkdir(parents=True, exist_ok=True)
                     with open(rpath, "w", encoding="utf-8") as fh:
                         fh.write("\n".join(lines))
+                    if report_path and getattr(self, "_active_run_record", None):
+                        with self._run_record_lock:
+                            self._active_run_record.setdefault("reports", []).append(rpath)
                     self._log(f"Anlamsal mutabakat raporu: {Path(rpath).name}", "info")
                 except Exception as exc:
                     self._log(f"Anlamsal mutabakat raporu yazılamadı: {exc}", "warn")

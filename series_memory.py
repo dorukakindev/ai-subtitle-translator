@@ -378,6 +378,10 @@ class SeriesMemory:
     def get_terms(self) -> dict:
         return dict(self._data.get("terms") or {})
 
+    def get_address_map(self) -> list:
+        return [dict(item) for item in (self._data.get("address_map") or [])
+                if isinstance(item, dict)]
+
     def counts(self) -> dict:
         return {"terms": len(self._data.get("terms", {})),
                 "characters": len(self._data.get("characters", {})),
