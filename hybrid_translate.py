@@ -10573,6 +10573,8 @@ def submit_batch(
     target_language: str = "",
     schema_name: str = "",
     session_fingerprint: str = "",
+    run_context: dict = None,
+    locked_terms: dict = None,
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
 
@@ -10631,6 +10633,8 @@ def submit_batch(
                 "target_language": target_language or "",
                 "schema_name": schema_name or "",
                 "session_fingerprint": session_fingerprint or "",
+                "run_context": dict(run_context or {}),
+                "locked_terms": dict(locked_terms or {}),
                 "source_hash": source_hash,
                 "output_baseline": output_baseline,
                 "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},

@@ -5007,6 +5007,38 @@ def _saved_regular_requests(fmap_data: dict, saved_fmap: dict):
     return requests, ""
 
 
+_BATCH_RUN_CONTEXT_KEYS = (
+    "context_version",
+    "input_dir", "output_dir", "src_lang", "tgt_lang", "profanity",
+    "same_folder", "mode", "auto_glossary", "term_normalize", "critic",
+    "polish", "native", "qc", "condense", "backtrans",
+    "semantic_reconcile", "review", "twowave", "clean_sdh", "linebreak",
+    "chain_ctx", "style", "analysis_depth", "content_type",
+    "main_model_name", "main_api_base_url", "helper_models", "helper_urls",
+    "api_key_fingerprint",
+)
+
+
+def _batch_run_context(snapshot: dict, api_key: str = "") -> dict:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return {}
+    context = copy.deepcopy({
+        key: snapshot[key] for key in _BATCH_RUN_CONTEXT_KEYS
+        if key in snapshot
+    })
+    context["context_version"] = 1
+    if api_key:
+        context["api_key_fingerprint"] = hashlib.sha256(
+            str(api_key).encode("utf-8")).hexdigest()
+    return context
+
+
+def _merge_batch_resume_snapshot(current: dict, saved: dict) -> dict:
+    merged = copy.deepcopy(current if isinstance(current, dict) else {})
+    merged.update(_batch_run_context(saved))
+    return merged
+
+
 def _resolve_hybrid_resume_output_path(fmap_data: dict) -> str:
     output_path = str(fmap_data.get("output_path") or "").strip()
     if output_path:
@@ -18832,6 +18864,11 @@ class App(ctk.CTk):
         output_baselines = {
             fp: _file_state_signature(output_paths[fp]) for fp in valid_files
         }
+        run_context = _batch_run_context(
+            getattr(self, "_active_snapshot", None) or {}, api_key=api_key)
+        locked_terms_by_file = {
+            fp: self._get_locked_terms_dict(fp, tgt) for fp in valid_files
+        }
         batch_ids = []
         batch_runs = []
         for ci, chunk in enumerate(chunks):
@@ -18874,6 +18911,8 @@ class App(ctk.CTk):
                     "schema_names": _effective_schema_names,
                     "source_hashes": source_hashes,
                     "output_baselines": output_baselines,
+                    "run_context": run_context,
+                    "locked_terms_by_file": locked_terms_by_file,
                     "requests": chunk,
                     "fmap": {cid: [list(x) for x in info] for cid, info in slice_fmap.items()},
                 }
@@ -18965,7 +19004,8 @@ class App(ctk.CTk):
                     source_languages=_source_languages,
                     schema_names=_effective_schema_names,
                     source_hashes=source_hashes,
-                    output_baselines=output_baselines)
+                    output_baselines=output_baselines,
+                    locked_terms_by_file=locked_terms_by_file)
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -18975,32 +19015,22 @@ class App(ctk.CTk):
         self._set_running(False)   # #2: upload sonrası ilk poll'dan önce Stop'ta UI kilitlenmesin
 
     def _resume_batches(self, api_key, batch_ids):
-        b_url = self._main_api_base_url()
-        client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
         output_dir = self.output_var.get()
         src, tgt   = self.src_var.get(), self.tgt_var.get()
-        model      = self._main_model_name()
+        current_key_fingerprint = hashlib.sha256(
+            str(api_key).encode("utf-8")).hexdigest()
 
-        accumulated_raw_map = {}
-        accumulated_file_map = {}
-        accumulated_requests = []
-        accumulated_output_paths = {}
-        accumulated_source_languages = {}
-        accumulated_schema_names = {}
-        accumulated_source_hashes = {}
-        accumulated_output_baselines = {}
         regular_groups = {}
-        regular_recovery_safe = True
         last_output_dir = output_dir
-        _resume_report_rows = []   # hybrid resume kalite raporu
+        _resume_report_rows_by_dir = {}
         hybrid_completed_bids = []
-        regular_terminal_bids = []
+        resume_base_snapshot = copy.deepcopy(
+            getattr(self, "_active_snapshot", None) or {})
 
         for i, bid in enumerate(batch_ids):
             if self._stop_flag:
                 break
             bid = bid.strip()
-            self._register_batch(bid, api_key, b_url)   # durdururken iptal edilebilsin
             fmap_path = state_path(__file__, f"batch_fmap_{bid}.json")
 
             if fmap_path.exists():
@@ -19020,6 +19050,30 @@ class App(ctk.CTk):
                         _saved_target_language = fmap_data.get("target_language", "") or tgt
                         _saved_schema_name = fmap_data.get("schema_name", "")
                         _saved_out_dir = fmap_data.get("output_dir", "")
+                        _saved_context = fmap_data.get("run_context")
+                        if (not isinstance(_saved_context, dict)
+                                or _saved_context.get("context_version") != 1
+                                or "locked_terms" not in fmap_data):
+                            self._log(
+                                f"[HATA] {bid}: hybrid batch çalışma bağlamı eksik; "
+                                "güncel UI ayarlarıyla yanlış final üretilmeyecek. "
+                                "Kurtarma verisi korundu.", "err")
+                            self._unregister_batch(bid)
+                            continue
+                        if (_saved_context.get("api_key_fingerprint")
+                                != current_key_fingerprint):
+                            self._log(
+                                f"[HATA] {bid}: bu batch farklı bir API anahtarıyla "
+                                "gönderilmiş. Orijinal anahtarı seçmeden sağlayıcıya "
+                                "istek gönderilmeyecek.", "err")
+                            self._unregister_batch(bid)
+                            continue
+                        _saved_base_url = str(
+                            _saved_context.get("main_api_base_url") or "")
+                        batch_client = OpenAI(
+                            api_key=api_key,
+                            base_url=_saved_base_url or None)
+                        self._register_batch(bid, api_key, _saved_base_url)
                         if _saved_out_dir:
                             last_output_dir = _saved_out_dir
                         if not out_path:
@@ -19029,16 +19083,30 @@ class App(ctk.CTk):
                                 "err")
                             self._unregister_batch(bid)
                             continue
-                        _terminal = self._wait_batch_hybrid(client, bid, saved_fmap, out_path,
-                                                openai_key=api_key,
-                                                 is_last=(i == len(batch_ids)-1),
-                                                  report_rows=_resume_report_rows,
-                                                  source_path=_saved_src,
-                                                  source_language=_saved_source_language,
-                                                  target_language=_saved_target_language,
-                                                  schema_name=_saved_schema_name,
-                                                  expected_source_hash=fmap_data.get("source_hash", ""),
-                                                  output_baseline=fmap_data.get("output_baseline"))
+                        try:
+                            _report_dir = _saved_out_dir or str(Path(out_path).parent)
+                            _report_rows = _resume_report_rows_by_dir.setdefault(
+                                _report_dir, [])
+                            App._unfreeze_run_variable_reads(self)
+                            self._active_snapshot = _merge_batch_resume_snapshot(
+                                resume_base_snapshot, _saved_context)
+                            App._freeze_run_variable_reads(self)
+                            _terminal = self._wait_batch_hybrid(
+                                batch_client, bid, saved_fmap, out_path,
+                                openai_key=api_key,
+                                is_last=(i == len(batch_ids)-1),
+                                report_rows=_report_rows,
+                                source_path=_saved_src,
+                                source_language=_saved_source_language,
+                                target_language=_saved_target_language,
+                                schema_name=_saved_schema_name,
+                                expected_source_hash=fmap_data.get("source_hash", ""),
+                                output_baseline=fmap_data.get("output_baseline"),
+                                locked_terms=fmap_data.get("locked_terms"))
+                        finally:
+                            App._unfreeze_run_variable_reads(self)
+                            self._active_snapshot = copy.deepcopy(resume_base_snapshot)
+                            App._freeze_run_variable_reads(self)
                         if _terminal:
                             hybrid_completed_bids.append(bid)
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
@@ -19051,78 +19119,149 @@ class App(ctk.CTk):
                                 f"[HATA] {bid}: eski fmap güvenli retry isteklerini içermiyor; "
                                 "mevcut UI ayarlarıyla yeniden oluşturulmayacak. Kurtarma verisi korundu.",
                                 "err")
-                            regular_recovery_safe = False
                             self._unregister_batch(bid)
                             continue
                         if request_error == "id_mismatch":
                             self._log(
                                 f"[HATA] {bid}: fmap ile kaydedilmiş request kimlikleri uyuşmuyor; "
                                 "yanlış final yazılmayacak. Kurtarma verisi korundu.", "err")
-                            regular_recovery_safe = False
                             self._unregister_batch(bid)
                             continue
                         saved_out = fmap_data.get("output_dir", output_dir)
                         last_output_dir = saved_out
-                        accumulated_file_map.update(saved_fmap)
-                        accumulated_requests.extend(saved_requests)
-                        accumulated_output_paths.update(fmap_data.get("output_paths") or {})
-                        accumulated_source_languages.update(fmap_data.get("source_languages") or {})
-                        accumulated_schema_names.update(fmap_data.get("schema_names") or {})
-                        accumulated_source_hashes.update(fmap_data.get("source_hashes") or {})
-                        accumulated_output_baselines.update(fmap_data.get("output_baselines") or {})
                         run_id = str(fmap_data.get("run_id") or bid)
                         part_index = int(fmap_data.get("part_index", 0))
                         part_count = max(1, int(fmap_data.get("part_count", 1)))
                         group = regular_groups.setdefault(
-                            run_id, {"expected": part_count, "seen": set(), "terminal": True})
+                            run_id, {
+                                "expected": part_count, "seen": set(), "terminal": True,
+                                "safe": True, "raw_map": {}, "file_map": {},
+                                "requests": [], "output_dir": saved_out,
+                                "output_paths": {}, "source_languages": {},
+                                "schema_names": {}, "source_hashes": {},
+                                "output_baselines": {}, "run_context": None,
+                                "locked_terms_by_file": {}, "terminal_bids": [],
+                                "client": None,
+                            })
                         group["expected"] = max(group["expected"], part_count)
                         group["seen"].add(part_index)
-                        batch_raw_map, _terminal = self._wait_batch(client, bid, saved_fmap, saved_out,
+                        group["file_map"].update(saved_fmap)
+                        group["requests"].extend(saved_requests)
+                        group["output_paths"].update(fmap_data.get("output_paths") or {})
+                        group["source_languages"].update(fmap_data.get("source_languages") or {})
+                        group["schema_names"].update(fmap_data.get("schema_names") or {})
+                        group["source_hashes"].update(fmap_data.get("source_hashes") or {})
+                        group["output_baselines"].update(fmap_data.get("output_baselines") or {})
+                        group["locked_terms_by_file"].update(
+                            fmap_data.get("locked_terms_by_file") or {})
+                        saved_context = fmap_data.get("run_context")
+                        if (not isinstance(saved_context, dict)
+                                or saved_context.get("context_version") != 1
+                                or "locked_terms_by_file" not in fmap_data):
+                            group["safe"] = False
+                            self._log(
+                                f"[HATA] {bid}: batch çalışma bağlamı eksik; güncel UI "
+                                "ayarlarıyla yanlış final üretilmeyecek. Kurtarma verisi korundu.",
+                                "err")
+                            self._unregister_batch(bid)
+                            continue
+                        elif (saved_context.get("api_key_fingerprint")
+                              != current_key_fingerprint):
+                            group["safe"] = False
+                            self._log(
+                                f"[HATA] {bid}: bu batch farklı bir API anahtarıyla "
+                                "gönderilmiş. Orijinal anahtarı seçmeden sağlayıcıya "
+                                "istek gönderilmeyecek.", "err")
+                            self._unregister_batch(bid)
+                            continue
+                        elif group["run_context"] is None:
+                            group["run_context"] = saved_context
+                        elif group["run_context"] != saved_context:
+                            group["safe"] = False
+                            self._log(
+                                f"[HATA] {bid}: aynı batch çalışmasının kayıtlı ayarları "
+                                "birbiriyle uyuşmuyor; final yazılmayacak.", "err")
+                            self._unregister_batch(bid)
+                            continue
+                        _saved_base_url = str(
+                            saved_context.get("main_api_base_url") or "")
+                        batch_client = OpenAI(
+                            api_key=api_key,
+                            base_url=_saved_base_url or None)
+                        self._register_batch(bid, api_key, _saved_base_url)
+                        if group.get("client") is None:
+                            group["client"] = batch_client
+                        batch_raw_map, _terminal = self._wait_batch(batch_client, bid, saved_fmap, saved_out,
                                                          requests_list=None,
                                                          is_last=(i == len(batch_ids)-1))
                         if _terminal:
-                            regular_terminal_bids.append(bid)
+                            group["terminal_bids"].append(bid)
                         else:
                             group["terminal"] = False
                         if batch_raw_map:
-                            accumulated_raw_map.update(batch_raw_map)
+                            group["raw_map"].update(batch_raw_map)
                     continue
                 except Exception as e:
                     self._log(f"Kaydedilmiş file_map yüklenemedi ({bid}): {e}", "warn")
 
             self._log(f"[HATA] {bid}: batch_fmap_{bid}.json yok; yanlış/boş final "
                       "yazmamak için resume durduruldu.", "err")
-            regular_recovery_safe = False
             self._unregister_batch(bid)
 
-        regular_ready = _regular_batch_groups_ready(
-            regular_groups, recovery_safe=regular_recovery_safe)
-        regular_written = False
-        if not self._stop_flag and accumulated_raw_map and regular_ready:
-            retry_list = [r for r in accumulated_requests if r["custom_id"] in accumulated_file_map]
-            self._retry_hata(client, accumulated_raw_map, retry_list, max_rounds=self._max_retry)
-            missing_ids = set(accumulated_file_map) - set(accumulated_raw_map)
-            if missing_ids:
-                self._log(f"{len(missing_ids)} kurtarılmış batch sonucu eksik; final yazılmadı.", "warn")
-            else:
-                regular_written = self._write_results(
-                    accumulated_raw_map, accumulated_file_map, last_output_dir,
-                    openai_key=api_key, src=src,
-                    output_paths=accumulated_output_paths,
-                    source_languages=accumulated_source_languages,
-                    schema_names=accumulated_schema_names,
-                    source_hashes=accumulated_source_hashes,
-                    output_baselines=accumulated_output_baselines)
-        elif not self._stop_flag and (accumulated_raw_map or regular_groups):
-            self._log("Regular batch parçalarının tümü hazır değil; eksik final yazılmadı.", "warn")
+        regular_written_bids = []
+        original_snapshot = copy.deepcopy(resume_base_snapshot)
+        for run_id, group in regular_groups.items():
+            ready = _regular_batch_groups_ready(
+                {run_id: group}, recovery_safe=bool(group.get("safe")))
+            if self._stop_flag:
+                break
+            if not ready or not group["raw_map"]:
+                self._log(
+                    f"Regular batch çalışması {run_id}: tüm parçalar güvenli ve hazır değil; "
+                    "final yazılmadı.", "warn")
+                continue
+            try:
+                App._unfreeze_run_variable_reads(self)
+                self._active_snapshot = _merge_batch_resume_snapshot(
+                    original_snapshot, group["run_context"])
+                App._freeze_run_variable_reads(self)
+                retry_list = [
+                    req for req in group["requests"]
+                    if req["custom_id"] in group["file_map"]
+                ]
+                self._retry_hata(
+                    group["client"], group["raw_map"], retry_list,
+                    max_rounds=self._max_retry)
+                missing_ids = set(group["file_map"]) - set(group["raw_map"])
+                if missing_ids:
+                    self._log(
+                        f"{len(missing_ids)} kurtarılmış batch sonucu eksik; "
+                        "final yazılmadı.", "warn")
+                    continue
+                written = self._write_results(
+                    group["raw_map"], group["file_map"], group["output_dir"],
+                    openai_key=api_key,
+                    src=group["run_context"].get("src_lang", src),
+                    output_paths=group["output_paths"],
+                    source_languages=group["source_languages"],
+                    schema_names=group["schema_names"],
+                    source_hashes=group["source_hashes"],
+                    output_baselines=group["output_baselines"],
+                    locked_terms_by_file=group["locked_terms_by_file"])
+                if written:
+                    regular_written_bids.extend(group["terminal_bids"])
+            finally:
+                App._unfreeze_run_variable_reads(self)
+                self._active_snapshot = copy.deepcopy(original_snapshot)
+                App._freeze_run_variable_reads(self)
         # Hybrid resume yolunda işlenen dosyalar için kalite raporu yaz
-        if _resume_report_rows:
-            self._save_quality_report(_resume_report_rows, last_output_dir)
+        for report_dir, report_rows in _resume_report_rows_by_dir.items():
+            if report_rows:
+                self._save_quality_report(report_rows, report_dir)
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
         # polling hatasıyla yarıda kalan ÖDENMİŞ batch'ler Resume için KORUNUR.
         clear_ids = list(hybrid_completed_bids)
-        if regular_written:
-            clear_ids.extend(regular_terminal_bids)
+        clear_ids.extend(regular_written_bids)
         if not self._stop_flag and clear_ids:
             self._clear_batch_recovery(clear_ids)
         self._set_running(False)   # erken-stop / hiç-poll-yok durumunda UI kilitlenmesin
@@ -19130,12 +19269,18 @@ class App(ctk.CTk):
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
                            openai_key, is_last=True, report_rows=None, source_path="",
                            source_language="", target_language="", schema_name="",
-                           expected_source_hash="", output_baseline=None):
+                           expected_source_hash="", output_baseline=None,
+                           locked_terms=None):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
         çıktı yolundan geriye hesaplama yapılmaz (bkz. aşağıdaki _orig_cues bloğu)."""
         import hybrid_translate as ht
+        _locked_terms = (
+            dict(locked_terms) if locked_terms is not None
+            else self._get_locked_terms_dict(
+                source_path, target_language or self._snap_get("tgt_lang", "Turkish"))
+        )
         output_path = str(Path(output_path).with_suffix(".srt"))  # çıktı her zaman SRT (eski fmap'ler dahil)
         self._log(f"Hybrid batch bekleniyor: {batch_id}", "info")
         self._set_status("Hybrid batch işleniyor...")
@@ -19281,8 +19426,7 @@ class App(ctk.CTk):
                                 self._set_status("Consistency sweep...")
                                 pp, _cons_fixes = ht.consistency_sweep(
                                     _orig_cues, pp, log_fn=self._log,
-                                    locked_terms=self._get_locked_terms_dict(
-                                        str(_src_path), tgt))
+                                    locked_terms=_locked_terms)
                             else:
                                 _cons_fixes = 0
                             _pre_pass = {str(b[0]): b[2] for b in pp}
@@ -19327,7 +19471,7 @@ class App(ctk.CTk):
                                     helper_url=self._helper_api_base_url("critic"),
                                     helper_model=self._helper_api_model("critic"),
                                     tgt_lang=tgt, log_fn=self._log,
-                                    glossary=self._get_locked_terms_dict(str(_src_path), tgt),
+                                    glossary=_locked_terms,
                                     analysis_result=_analysis_result,
                                     change_log=_critic_change_log,
                                     token_callback=self._token_callback_for_model(
@@ -19344,7 +19488,7 @@ class App(ctk.CTk):
                                 pp = self._polish_pass(pp, tgt, self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
                                                        src_map=_src_map_from_cues(_orig_cues),
                                                        analysis_result=_analysis_result,
-                                                       locked_terms=self._get_locked_terms_dict(str(_src_path), tgt))
+                                                       locked_terms=_locked_terms)
                                 if self._stop_flag:
                                     break
                                 _record_pass_change(_pass_trace, "Polish", _before_pass, pp, _pass_history)
@@ -19357,7 +19501,7 @@ class App(ctk.CTk):
                                     token_callback=self._token_callback_for_model(
                                         self._helper_api_model("critic")),
                                     src_map=_src_map_from_cues(_orig_cues),
-                                    locked_terms=self._get_locked_terms_dict(str(_src_path), tgt),
+                                    locked_terms=_locked_terms,
                                     cancel_context=self.__dict__.get("_helper_request_canceller"))
                                 if self._stop_flag:
                                     break
@@ -19366,8 +19510,7 @@ class App(ctk.CTk):
                                 _before_pass = list(pp)
                                 pp, _final_cons_fixes = ht.final_consistency_sweep(
                                     _orig_cues, pp, log_fn=self._log,
-                                    locked_terms=self._get_locked_terms_dict(
-                                        str(_src_path), tgt))
+                                    locked_terms=_locked_terms)
                                 if _final_cons_fixes:
                                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp, _pass_history)
                             _before_pass = list(pp)
@@ -19378,8 +19521,7 @@ class App(ctk.CTk):
                                 self._helper_api_model("analysis"),
                                 tgt,
                                 src_map=_src_map_from_cues(_orig_cues),
-                                locked_terms=self._get_locked_terms_dict(
-                                    str(_src_path), tgt))
+                                locked_terms=_locked_terms)
                             if self._stop_flag:
                                 break
                             _record_pass_change(_pass_trace, "Condense", _before_pass, pp, _pass_history)
@@ -19409,8 +19551,7 @@ class App(ctk.CTk):
                                             model=self._helper_api_model("qc"),
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
                                             log_fn=self._log,
-                                            locked_terms=self._get_locked_terms_dict(
-                                                str(_src_path), tgt),
+                                            locked_terms=_locked_terms,
                                             cancel_context=self.__dict__.get("_helper_request_canceller"))
                                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_auto
@@ -19433,8 +19574,7 @@ class App(ctk.CTk):
                                             model=self._helper_api_model("qc"),
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
                                             log_fn=self._log,
-                                            locked_terms=self._get_locked_terms_dict(
-                                                str(_src_path), tgt),
+                                            locked_terms=_locked_terms,
                                             cancel_context=self.__dict__.get("_helper_request_canceller"))
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
@@ -19463,8 +19603,7 @@ class App(ctk.CTk):
                                         pp, {str(c.index): _clean_src(c.text) for c in _orig_cues},
                                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                                         self._helper_api_model("polish"), log_fn=self._log,
-                                        locked_terms=self._get_locked_terms_dict(
-                                            str(_src_path), tgt))
+                                        locked_terms=_locked_terms)
                                 except Exception:
                                     pass
                             if self._stop_flag:
@@ -19679,7 +19818,8 @@ class App(ctk.CTk):
 
     def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,
                        output_paths=None, source_languages=None, schema_names=None,
-                       source_hashes=None, output_baselines=None):
+                       source_hashes=None, output_baselines=None,
+                       locked_terms_by_file=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
@@ -19691,6 +19831,14 @@ class App(ctk.CTk):
         _written_files = []
         _skipped_files = []
         _failed_files = []
+        def _locked_terms_for(path):
+            frozen = (locked_terms_by_file or {}).get(path)
+            if frozen is None:
+                frozen = (locked_terms_by_file or {}).get(str(path))
+            if frozen is not None:
+                return dict(frozen)
+            return self._get_locked_terms_dict(path, _tgt_lang)
+
         for fi, (fp, blocks_dict) in enumerate(file_blocks.items()):
             if self._is_queued_file_removed(fp):
                 _skipped_files.append(fp)
@@ -19775,7 +19923,7 @@ class App(ctk.CTk):
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
                     _src_cues, sorted_blocks, log_fn=self._log,
-                    locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                    locked_terms=_locked_terms_for(fp))
             except Exception:
                 pass
             # Bağlam incelemesi — Batch'te zincirleme bağlam yoktur, bu geçiş telafi eder
@@ -19810,7 +19958,7 @@ class App(ctk.CTk):
                         helper_url=self._helper_api_base_url("critic"),
                         helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
-                        glossary=self._get_locked_terms_dict(fp, _tgt_lang),
+                        glossary=_locked_terms_for(fp),
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log,
                         token_callback=self._token_callback_for_model(
@@ -19832,7 +19980,7 @@ class App(ctk.CTk):
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), src_map=src_blocks,
                         analysis_result=_analysis_result,
-                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                        locked_terms=_locked_terms_for(fp))
                     if self._stop_flag:
                         break
                     _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
@@ -19852,7 +20000,7 @@ class App(ctk.CTk):
                         token_callback=self._token_callback_for_model(
                             self._helper_api_model("critic")),
                         src_map=src_blocks,
-                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang),
+                        locked_terms=_locked_terms_for(fp),
                         cancel_context=self.__dict__.get("_helper_request_canceller"))
                     if self._stop_flag:
                         break
@@ -19866,7 +20014,7 @@ class App(ctk.CTk):
                     _before_pass = list(sorted_blocks)
                     sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                         _src_cues, sorted_blocks, log_fn=self._log,
-                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                        locked_terms=_locked_terms_for(fp))
                     if _final_cons_fixes:
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
@@ -19881,7 +20029,7 @@ class App(ctk.CTk):
                     self._helper_api_base_url("analysis"),
                     self._helper_api_model("analysis"), _tgt_lang,
                     src_map=src_blocks,
-                    locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                    locked_terms=_locked_terms_for(fp))
                 if self._stop_flag:
                     break
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
@@ -19933,7 +20081,7 @@ class App(ctk.CTk):
                         sorted_blocks, src_blocks,
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), log_fn=self._log,
-                        locked_terms=self._get_locked_terms_dict(fp, _tgt_lang))
+                        locked_terms=_locked_terms_for(fp))
                 except Exception:
                     pass
             if self._stop_flag:
@@ -20162,6 +20310,10 @@ class App(ctk.CTk):
         import hybrid_translate as ht
         from openai import OpenAI as _OAI
         b_url = self._main_api_base_url()
+        locked_getter = getattr(self, "_get_locked_terms_dict", None)
+        frozen_locked_terms = (
+            locked_getter(source_path, target_language)
+            if callable(locked_getter) else {})
         combined_stage = str(stage_path or Path(out_path).with_name(
             f".{Path(out_path).name}.twowave.stage.srt"))
 
@@ -20171,7 +20323,11 @@ class App(ctk.CTk):
             bid = ht.submit_batch(openai_key, reqs, self._log, this_fmap, this_out,
                                   source_path=source_path, output_dir=output_dir,
                                   base_url=b_url, source_language=source_language,
-                                  target_language=target_language)
+                                  target_language=target_language,
+                                  run_context=_batch_run_context(
+                                      getattr(self, "_active_snapshot", None) or {},
+                                      api_key=openai_key),
+                                  locked_terms=frozen_locked_terms)
             if not bid:
                 return None, None
             self._register_batch(bid, openai_key, b_url)
@@ -20533,7 +20689,11 @@ class App(ctk.CTk):
                     source_path=str(filepath), output_dir=output_dir, base_url=b_url,
                     source_language=file_src, target_language=tgt,
                     schema_name=schema_dict.get("name", ""),
-                    session_fingerprint=session_fp)
+                    session_fingerprint=session_fp,
+                    run_context=_batch_run_context(
+                        getattr(self, "_active_snapshot", None) or {},
+                        api_key=openai_key),
+                    locked_terms=self._get_locked_terms_dict(filepath, tgt))
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",

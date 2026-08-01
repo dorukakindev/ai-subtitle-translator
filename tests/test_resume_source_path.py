@@ -66,13 +66,22 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
                                 source_path=r"C:\in\Film.vtt",
                                 output_dir=r"C:\out\ÇIKTI",
                                 source_language="Spanish",
-                                target_language="Turkish")
+                                target_language="Turkish",
+                                run_context={
+                                    "context_version": 1,
+                                    "tgt_lang": "Turkish",
+                                    "main_model_name": "gpt-5.4",
+                                },
+                                locked_terms={"Name": "Ad"})
             data = json.loads(fmap_path.read_text(encoding="utf-8"))
             self.assertEqual(data["source_path"], r"C:\in\Film.vtt")
             self.assertEqual(data["output_dir"], r"C:\out\ÇIKTI")
             self.assertEqual(data["output_path"], r"C:\out\ÇIKTI\Film\Film.srt")
             self.assertEqual(data["source_language"], "Spanish")
             self.assertEqual(data["target_language"], "Turkish")
+            self.assertEqual(data["run_context"]["tgt_lang"], "Turkish")
+            self.assertEqual(data["locked_terms"], {"Name": "Ad"})
+            self.assertNotIn("main_api_key", data["run_context"])
             self.assertEqual(data["type"], "hybrid")
         finally:
             fmap_path.unlink(missing_ok=True)
