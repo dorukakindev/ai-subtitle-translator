@@ -646,7 +646,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 4
+QUALITY_PROFILE_VERSION = 5
 QUALITY_PROFILE_DEFAULTS = {
     "model": "gpt-5.4",
     "mode": "sync",
@@ -666,19 +666,17 @@ QUALITY_PROFILE_DEFAULTS = {
     "backup_raw": True,
     "term_normalize": True,
     "media_mode": "Dizi",
-    "content_type": "Dizi",
+    "content_type": "Otomatik",
     "series_memory": True,
     "season_canon": True,
     "linebreak": False,
 }
 MEDIA_MODE_DEFAULTS = {
     "Dizi": {
-        "content_type": "Dizi",
         "series_memory": True,
         "season_canon": True,
     },
     "Film": {
-        "content_type": "Film",
         "series_memory": False,
         "season_canon": False,
     },
@@ -7970,6 +7968,11 @@ class App(ctk.CTk):
         schema_names = [v["name"] for v in CONTENT_SCHEMAS.values()]
         combo(self.content_type_var, schema_names)
 
+        lbl("Yapı türü")
+        self.media_mode_var = ctk.StringVar(value="Dizi")
+        media_mode_combo = combo(self.media_mode_var, list(MEDIA_MODE_DEFAULTS))
+        media_mode_combo.configure(command=self._apply_media_mode)
+
         lbl("Argo / Küfür")
         self.profanity_var = ctk.StringVar(value="Orta")
         combo(self.profanity_var, ["Hafif", "Orta", "Sert"])
@@ -8574,21 +8577,6 @@ class App(ctk.CTk):
         ctk.CTkButton(gf, text="…", width=36, height=36,
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._pick_glossary).grid(row=0, column=1, padx=(6,0))
-
-        hf_lbl("İçerik modu")
-        self.media_mode_var = ctk.StringVar(value="Dizi")
-        ctk.CTkOptionMenu(
-            hfr,
-            variable=self.media_mode_var,
-            values=list(MEDIA_MODE_DEFAULTS),
-            command=self._apply_media_mode,
-            height=34,
-            fg_color=CARD,
-            button_color=BORDER,
-            button_hover_color=ACCENT,
-            dropdown_fg_color=CARD,
-            text_color=FG,
-        ).pack(fill="x", padx=4, pady=(0, 4))
 
         hf_lbl("Çalışma profili")
         self.workflow_profile_var = ctk.StringVar(value="Özel")
@@ -11665,7 +11653,6 @@ class App(ctk.CTk):
         defaults = MEDIA_MODE_DEFAULTS.get(media_mode)
         if not defaults:
             return
-        self.content_type_var.set(defaults["content_type"])
         self.series_memory_var.set(defaults["series_memory"])
         self.season_canon_var.set(defaults["season_canon"])
         self._sync_media_mode_controls()

@@ -64,7 +64,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         self.assertEqual(settings["quality_profile_version"], QUALITY_PROFILE_VERSION)
         self.assertEqual(settings["mode"], "sync")
         self.assertEqual(settings["media_mode"], "Dizi")
-        self.assertEqual(settings["content_type"], "Dizi")
+        self.assertEqual(settings["content_type"], "Otomatik")
         self.assertTrue(settings["series_memory"])
         self.assertTrue(settings["season_canon"])
         self.assertFalse(settings["linebreak"])
@@ -101,7 +101,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "backup_raw": True,
                 "term_normalize": True,
                 "media_mode": "Dizi",
-                "content_type": "Dizi",
+                "content_type": "Otomatik",
                 "series_memory": True,
                 "season_canon": True,
                 "linebreak": False,
