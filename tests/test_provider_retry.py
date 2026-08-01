@@ -181,7 +181,9 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
             "wait_for_retry",
             side_effect=lambda delay, attempt, total: waits.append(
                 (delay, attempt, total)) or delay,
-        ):
+        ), mock.patch.object(
+            provider_retry._REGISTRY, "notify_retry_success"
+        ) as retry_success:
             result = ht._safe_chat_create(
                 client, model="gpt-5.4", messages=[])
 
@@ -193,6 +195,7 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
             (40.0, 4, 5),
             (120.0, 5, 5),
         ])
+        retry_success.assert_called_once_with(5, 5)
 
     def test_transient_error_hint_does_not_force_120_second_first_wait(self):
         class TemporaryError(RuntimeError):
@@ -454,12 +457,16 @@ class ProviderWaitUiCallbackTest(unittest.TestCase):
         gui.App._provider_wait_callback(app, "retry_start_2_5", 20, 1)
         gui.App._provider_wait_callback(app, "retry_tick_2_5", 19, 1)
         gui.App._provider_wait_callback(app, "retry_end_2_5", 0, 0)
+        gui.App._provider_wait_callback(app, "retry_success_2_5", 0, 0)
 
-        self.assertEqual(len(logs), 1)
+        self.assertEqual(len(logs), 3)
         self.assertIn("20 sn", logs[0][0])
         self.assertIn("2/5", logs[0][0])
-        self.assertIn("19 sn", statuses[-2])
-        self.assertIn("yeniden deneniyor", statuses[-1])
+        self.assertIn("gönderiliyor", logs[1][0])
+        self.assertIn("başarılı", logs[2][0])
+        self.assertIn("19 sn", statuses[-3])
+        self.assertIn("yanıt bekleniyor", statuses[-2])
+        self.assertIn("işlem devam ediyor", statuses[-1])
 
 
 if __name__ == "__main__":

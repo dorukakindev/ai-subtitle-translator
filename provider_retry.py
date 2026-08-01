@@ -360,6 +360,9 @@ class ProviderCooldownRegistry:
             self._notify(prefix.format("end"), 0.0)
         return wait
 
+    def notify_retry_success(self, attempt: int, total: int) -> None:
+        self._notify(f"retry_success_{int(attempt)}_{int(total)}", 0.0)
+
     def record_rate_limit(self, client, exc) -> float | None:
         if _status_code(exc) != 429 and "rate limit" not in str(exc or "").lower():
             return None
@@ -546,7 +549,10 @@ def _chat_create_once(client, kwargs: dict):
     for attempt in range(total + 1):
         before_provider_request(client)
         try:
-            return client.chat.completions.create(**kwargs)
+            result = client.chat.completions.create(**kwargs)
+            if attempt:
+                _REGISTRY.notify_retry_success(attempt, total)
+            return result
         except Exception as exc:
             record_provider_failure(client, exc)
             if attempt >= total or not _is_transient_provider_error(exc):

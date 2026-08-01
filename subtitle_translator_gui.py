@@ -10901,7 +10901,8 @@ class App(ctk.CTk):
         _post_ui(self, _write)
 
     def _provider_wait_callback(self, event: str, remaining: int, waiting: int):
-        retry_match = re.fullmatch(r"retry_(start|tick|end)_(\d+)_(\d+)", event)
+        retry_match = re.fullmatch(
+            r"retry_(start|tick|end|success)_(\d+)_(\d+)", event)
         if retry_match:
             phase, attempt, total = retry_match.groups()
             if phase == "start":
@@ -10913,9 +10914,21 @@ class App(ctk.CTk):
                     f"API yeniden deneme beklemesi: {remaining} sn "
                     f"({attempt}/{total})")
             elif phase == "end" and waiting == 0:
+                if self._stop_flag:
+                    self._set_status("Durduruluyor...")
+                else:
+                    self._log(
+                        f"API yeniden deneme isteği gönderiliyor ({attempt}/{total})...",
+                        "info")
+                    self._set_status(
+                        f"API yeniden deneme isteği gönderildi; yanıt bekleniyor "
+                        f"({attempt}/{total})")
+            elif phase == "success":
+                self._log(
+                    f"API yeniden deneme başarılı; yanıt alındı "
+                    f"({attempt}/{total}), işlem devam ediyor.", "ok")
                 self._set_status(
-                    "Durduruluyor..." if self._stop_flag
-                    else "API yeniden deneniyor...")
+                    f"API yanıtı alındı; işlem devam ediyor ({attempt}/{total})")
             return
         if event == "start" and waiting == 1:
             self._log(
