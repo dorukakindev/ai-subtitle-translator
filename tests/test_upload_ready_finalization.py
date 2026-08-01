@@ -98,6 +98,20 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("opensubtitles.org", joined)
         self.assertIn("Gerçek diyalog.", joined)
 
+    def test_source_script_credit_translated_by_model_is_removed(self):
+        blocks = [
+            (
+                "1",
+                "00:00:02,000 --> 00:00:12,000",
+                "Savaş perisi Yukikaze 5 metni: yu",
+            ),
+            ("2", "00:00:13,000 --> 00:00:14,000", "Gerçek diyalog."),
+        ]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        joined = "\n".join(text for _idx, _ts, text in result)
+        self.assertNotIn("metni: yu", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
     def test_production_credit_and_dialogue_url_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Müzik:"),

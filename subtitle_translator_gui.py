@@ -2402,6 +2402,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
+    r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
     r"\bçevir(?:i|en)\s*:\s*\S|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
     r"film\s+ve\s+video\s+altyazılama|"
