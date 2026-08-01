@@ -78,6 +78,18 @@ class SourceLanguageLeftoverTest(unittest.TestCase):
             "Mädchen'e",
         )
 
+    def test_source_proper_name_diacritic_variant_does_not_trigger_retry(self):
+        cases = [
+            ("Günaydın, Niño.", "Good morning, Nińo."),
+            ("Niño'ya söyledim.", "I told Nińo."),
+        ]
+        for translated, source in cases:
+            with self.subTest(translated=translated):
+                self.assertIsNone(ht.non_turkish_leak_token(
+                    translated, source_text=source))
+                self.assertFalse(ht.has_non_turkish_target_leak(
+                    translated, source_text=source))
+
     def test_homoglyph_normalization_allows_cyrillic_a_in_turkish_word(self):
         self.assertEqual(ht.normalize_latin_homoglyphs("BАNA"), "BANA")
         self.assertFalse(ht.has_non_turkish_target_leak("O da BАNA kavanozda şeyler getirdi."))

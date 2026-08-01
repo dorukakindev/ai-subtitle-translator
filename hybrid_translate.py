@@ -5461,9 +5461,19 @@ _PRESERVED_TERM_TR_SUFFIXES = frozenset({
 
 
 def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool:
-    value = str(token or "").strip(".,;:!?()[]{}\"'“”‘’<>-–—").casefold()
+    raw_value = str(token or "").strip(".,;:!?()[]{}\"'“”‘’<>-–—")
+    value = raw_value.casefold()
     if not value or not source_text:
         return False
+
+    proper_name = raw_value[:1].isupper()
+
+    def _latin_base(text: str) -> str:
+        return "".join(
+            ch for ch in unicodedata.normalize("NFKD", str(text or ""))
+            if not unicodedata.combining(ch)
+        ).casefold()
+
     for source_token in _GLOSSARY_WORD_RE.findall(str(source_text)):
         source_value = source_token.casefold()
         if value == source_value:
@@ -5472,6 +5482,15 @@ def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool
             suffix = value[len(source_value):].lstrip("'\u2019")
             if suffix in _PRESERVED_TERM_TR_SUFFIXES:
                 return True
+        if proper_name:
+            folded_value = _latin_base(value)
+            folded_source = _latin_base(source_value)
+            if folded_value == folded_source:
+                return True
+            if folded_value.startswith(folded_source):
+                suffix = folded_value[len(folded_source):].lstrip("'\u2019")
+                if suffix in _PRESERVED_TERM_TR_SUFFIXES:
+                    return True
     return False
 
 
