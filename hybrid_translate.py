@@ -3443,6 +3443,7 @@ def native_reader_pass(
     locked_terms: dict | None = None,
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
+    progress_callback=None,
 ) -> list:
     """Native reader reflex pass — Helper reads translated subtitles as a native viewer
     and naturally rewrites lines that 'sound translated'.
@@ -3556,6 +3557,11 @@ def native_reader_pass(
 
         if log_fn:
             log_fn(f"Native Pass {chunk_num}/{total_chunks} ({len(chunk)} satır)...", "info")
+        if progress_callback:
+            try:
+                progress_callback(chunk_num - 1, total_chunks, "requesting")
+            except Exception:
+                pass
 
         items = []
         for idx, ts, text in chunk:
@@ -3809,7 +3815,12 @@ def native_reader_pass(
         except Exception as chunk_err:
             if log_fn:
                 log_fn(f"Native Pass chunk {chunk_num} hatası: {chunk_err}", "warn")
-            continue
+        finally:
+            if progress_callback:
+                try:
+                    progress_callback(chunk_num, total_chunks, "completed")
+                except Exception:
+                    pass
 
     if cancelled:
         if log_fn:
@@ -7134,6 +7145,7 @@ def semantic_reconciliation_pass(
     token_callback=None,
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
+    progress_callback=None,
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
     locked_terms = {
@@ -7251,6 +7263,11 @@ def semantic_reconciliation_pass(
             break
         batch_cluster_by_id = {cluster["cluster"]: cluster for cluster in batch}
         payload = {"clusters": batch}
+        if progress_callback:
+            try:
+                progress_callback(batch_pos, len(batches), "requesting")
+            except Exception:
+                pass
         try:
             resp = _safe_chat_create(
                 client,
@@ -7317,6 +7334,11 @@ def semantic_reconciliation_pass(
             stats["rejected"] += len(batch)
             if log_fn:
                 log_fn(f"Nihai anlam mutabakatı yanıtı atlandı: {exc}", "warn")
+            if progress_callback:
+                try:
+                    progress_callback(batch_pos + 1, len(batches), "completed")
+                except Exception:
+                    pass
             continue
 
         processed_covered_ids.update({
@@ -7559,6 +7581,12 @@ def semantic_reconciliation_pass(
                     for sid in sorted(proposals)
                 },
             })
+
+        if progress_callback:
+            try:
+                progress_callback(batch_pos + 1, len(batches), "completed")
+            except Exception:
+                pass
 
     if log_fn:
         log_fn(

@@ -11572,6 +11572,8 @@ class App(ctk.CTk):
         "analiz":    INFO_BLUE,
         "çeviri":    ACCENT,
         "critic":    INFO_BLUE,
+        "native":    INFO_BLUE,
+        "nihai":     TEAL,
         "polish":    POLISH,
         "qc":        TEAL,
         "sweep":     TEAL,
@@ -11587,6 +11589,38 @@ class App(ctk.CTk):
             return bool(var and var.get())
         except Exception:
             return False
+
+    def _pass_progress_callback(self, filepath, label: str,
+                                start_pct: float, end_pct: float):
+        display_name = Path(filepath).name if filepath else "Geçerli dosya"
+
+        def _progress(done: int, total: int, state: str = "completed"):
+            total = max(1, int(total or 1))
+            done = max(0, min(total, int(done or 0)))
+            waiting = state == "requesting"
+            visible = min(total, done + 1) if waiting else done
+            activity = "yanıt bekleniyor" if waiting else "yanıt alındı"
+            phase_setter = self.__dict__.get("_set_phase")
+            if callable(phase_setter):
+                phase_setter(
+                    label,
+                    f"{display_name}  —  Paket {visible}/{total} · {activity}",
+                )
+            else:
+                App._set_phase(
+                    self, label,
+                    f"{display_name}  —  Paket {visible}/{total} · {activity}",
+                )
+            if filepath:
+                span = max(0.0, float(end_pct) - float(start_pct))
+                pct = float(start_pct) + span * (done / total)
+                row_updater = self.__dict__.get("_update_file_progress")
+                if callable(row_updater):
+                    row_updater(filepath, label, pct)
+                else:
+                    App._update_file_progress(self, filepath, label, pct)
+
+        return _progress
 
     def _on_window_motion(self, event=None):
         if event is None or getattr(event, "widget", self) is self:
@@ -15912,6 +15946,14 @@ class App(ctk.CTk):
                 {"cancel_context": cancel_context}
                 if cancel_context is not None else {}
             )
+            semantic_progress = App._pass_progress_callback(
+                self, source_path, "Nihai Mutabakat", 96.0, 99.0)
+            if "_phase_lbl" in self.__dict__:
+                App._set_phase(
+                    self,
+                    "Nihai Mutabakat",
+                    f"{Path(source_path).name if source_path else 'Geçerli dosya'}  —  hazırlanıyor",
+                )
             result, stats = ht.semantic_reconciliation_pass(
                 src_map=src_clean_map,
                 tr_blocks=blocks,
@@ -15937,6 +15979,7 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
+                progress_callback=semantic_progress,
                 **cancel_kwargs,
             )
             if self.__dict__.get("_stop_flag", False) or (
@@ -16897,6 +16940,8 @@ class App(ctk.CTk):
                             token_callback=self._token_callback_for_model(
                                 helper_models.get("critic", "gpt-5.4-mini")),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
+                            progress_callback=App._pass_progress_callback(
+                                self, fp, "Native Okuyucu", 65.0, 82.0),
                             cancel_context=self.__dict__.get("_helper_request_canceller"))
                     except Exception as e:
                         self._log(f"Native Pass hatası: {e}", "warn")
@@ -19733,6 +19778,8 @@ class App(ctk.CTk):
                         self._helper_api_model("critic")),
                     src_map=_src_map_from_cues(cues),
                     locked_terms=_locked_terms,
+                    progress_callback=App._pass_progress_callback(
+                        self, filepath, "Native Okuyucu", 94.0, 96.0),
                     scene_gap_sec=float(self._snap_get(
                         "scene_gap_seconds", self._scene_gap_seconds)),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
@@ -20833,6 +20880,9 @@ class App(ctk.CTk):
                                         self._helper_api_model("critic")),
                                     src_map=_src_map_from_cues(_orig_cues),
                                     locked_terms=_locked_terms,
+                                    progress_callback=App._pass_progress_callback(
+                                        self, str(_src_path) if _src_path else None,
+                                        "Native Okuyucu", 94.0, 96.0),
                                     scene_gap_sec=float(self._snap_get(
                                         "scene_gap_seconds", self._scene_gap_seconds)),
                                     cancel_context=self.__dict__.get("_helper_request_canceller"))
@@ -21376,6 +21426,8 @@ class App(ctk.CTk):
                             self._helper_api_model("critic")),
                         src_map=src_blocks,
                         locked_terms=_locked_terms_for(fp),
+                        progress_callback=App._pass_progress_callback(
+                            self, fp, "Native Okuyucu", 94.0, 96.0),
                         scene_gap_sec=float(self._snap_get(
                             "scene_gap_seconds", self._scene_gap_seconds)),
                         cancel_context=self.__dict__.get("_helper_request_canceller"))
@@ -22449,6 +22501,8 @@ class App(ctk.CTk):
                                     self._helper_api_model("critic")),
                                 src_map=_src_map_from_cues(cues),
                                 locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                                progress_callback=App._pass_progress_callback(
+                                    self, filepath, "Native Okuyucu", 94.0, 96.0),
                                 scene_gap_sec=float(self._snap_get(
                                     "scene_gap_seconds", self._scene_gap_seconds)),
                                 cancel_context=self.__dict__.get("_helper_request_canceller"))
