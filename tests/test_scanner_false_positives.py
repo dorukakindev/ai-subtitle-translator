@@ -35,6 +35,20 @@ class ScannerFalsePositiveTest(unittest.TestCase):
             0,
         )
 
+    def test_place_names_with_lowercase_particles_not_flagged(self):
+        for value in (
+            "Valle de Guadalupe",
+            "Sitio del Güije!",
+            "Hato de Juan Díaz",
+            "San Juan del Cayo",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    _scan({"1": value},
+                          [("1", "00:00:01,000 --> 00:00:03,000", value)]),
+                    0,
+                )
+
     def test_title_list_with_commas_not_flagged(self):
         value = "Coronation Street, Double\nYour Money, Come Dancing,"
         self.assertEqual(

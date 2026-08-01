@@ -314,6 +314,12 @@ class UIDispatcherTest(unittest.TestCase):
             chain_ctx_var=SimpleNamespace(get=lambda: True),
             precontext_var=SimpleNamespace(get=lambda: False),
             series_memory_var=SimpleNamespace(get=lambda: False),
+            season_canon_var=SimpleNamespace(get=lambda: False),
+            media_mode_var=SimpleNamespace(get=lambda: "Dizi"),
+            prevent_sleep_var=SimpleNamespace(get=lambda: True),
+            auto_retry_files_var=SimpleNamespace(get=lambda: True),
+            auto_resume_crash_var=SimpleNamespace(get=lambda: True),
+            workflow_profile_var=SimpleNamespace(get=lambda: "Özel"),
             content_type_var=SimpleNamespace(get=lambda: "Otomatik"),
             glossary_var=SimpleNamespace(get=lambda: SimpleNamespace(strip=lambda: "")),
             _get_srt_files=lambda: [],
@@ -325,6 +331,13 @@ class UIDispatcherTest(unittest.TestCase):
             _helper_api_base_url=lambda role: "https://api.openai.com/v1",
             _helper_api_model=lambda role: "gpt-4o-mini",
             _file_schema_vars={},
+            _chunk_size=25,
+            _context_lines=20,
+            _lookahead_lines=10,
+            _max_workers=4,
+            _temperature=0.2,
+            _max_retry=3,
+            _scene_gap_seconds=3.0,
         )
 
         stub._take_run_snapshot = gui.App._take_run_snapshot.__get__(stub, gui.App)

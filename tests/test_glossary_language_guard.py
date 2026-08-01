@@ -463,7 +463,10 @@ class SeriesMemoryGlossaryGuardTest(unittest.TestCase):
     def test_series_memory_not_poisoned(self):
         with tempfile.TemporaryDirectory() as td:
             fp = str(Path(td) / "Show.S01E01.srt")
-            Path(fp).write_text("1\n00:00:01,000 --> 00:00:02,000\nHello.\n", encoding="utf-8")
+            Path(fp).write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nArmed Forces at Karbala.\n",
+                encoding="utf-8",
+            )
             self.app.series_memory_var.set(True)
             self.app.input_var.set(td)
             self.app._run_series_memory = {}

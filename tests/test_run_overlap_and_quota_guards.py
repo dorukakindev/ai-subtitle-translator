@@ -131,6 +131,63 @@ class PermanentQuotaFailureTest(unittest.TestCase):
         self.assertEqual(result[1][2], "İkinci.")
         self.assertEqual(result[2][2], "[HATA]")
 
+    def test_repair_retries_ids_missing_from_an_otherwise_valid_response(self):
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "[HATA]"),
+            (2, "00:00:02,000 --> 00:00:03,000", "[HATA]"),
+        ]
+        raw = {"1": "First source.", "2": "Second source."}
+        responses = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='[{"i":"1","t":"Birinci kaynak."}]'))],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='[{"i":"2","t":"İkinci kaynak."}]'))],
+                usage=None,
+            ),
+        ]
+
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   side_effect=responses) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish")
+
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(repaired, 2)
+        self.assertEqual([text for _idx, _ts, text in result], [
+            "Birinci kaynak.", "İkinci kaynak.",
+        ])
+
+    def test_repair_rejects_foreign_leak_then_accepts_clean_retry(self):
+        blocks = [(1, "00:00:01,000 --> 00:00:02,000", "[HATA]")]
+        raw = {"1": "I told the girl."}
+        responses = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='[{"i":"1","t":"Mädchen’e söyledim."}]'))],
+                usage=None,
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='[{"i":"1","t":"Kıza söyledim."}]'))],
+                usage=None,
+            ),
+        ]
+
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   side_effect=responses) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish")
+
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], "Kıza söyledim.")
+
     def test_repair_stops_during_retry_wait_when_user_cancels(self):
         blocks = [
             (str(idx), "00:00:01,000 --> 00:00:02,000", "[HATA]")

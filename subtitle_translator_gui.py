@@ -3810,7 +3810,14 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
     tokens = re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text, re.UNICODE)
     if not 1 <= len(tokens) <= 8:
         return False
-    if not all(token[0].isupper() for token in tokens):
+    name_particles = {
+        "al", "au", "da", "de", "del", "della", "der", "di", "do", "dos",
+        "du", "la", "las", "le", "los", "van", "von", "y",
+    }
+    if (not tokens[0][0].isupper()
+            or not tokens[-1][0].isupper()
+            or not all(token[0].isupper() or token.casefold() in name_particles
+                       for token in tokens[1:])):
         return False
     dialogue_starters = {
         "i", "you", "he", "she", "it", "we", "they",
@@ -4157,6 +4164,10 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     for rid in duplicate_ids:
                         result_map.pop(rid, None)
                     for (block_pos, idx, ts, _src) in batch:
+                        current_text = str(out[block_pos][2] or "")
+                        if (not current_text.startswith("[HATA")
+                                and not _is_untranslated(_src, current_text)):
+                            continue
                         translated = result_map.get(str(idx))
                         if translated and translated.strip():
                             cleaned_lines = [
@@ -4166,10 +4177,22 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             translated = "\n".join(line for line in cleaned_lines if line)
                             if (translated.strip()
                                     and not _is_untranslated(_src, translated)
+                                    and (_lang_iso639_1(tgt_lang) != "tr"
+                                         or not ht.has_non_turkish_target_leak(
+                                             translated, source_text=_src))
                                     and not ht.locked_term_violation(
                                         _src, translated, locked_terms)):
                                 out[block_pos] = (idx, ts, translated)
                                 repaired += 1
+                    unresolved = any(
+                        str(out[block_pos][2] or "").startswith("[HATA")
+                        or _is_untranslated(_src, str(out[block_pos][2] or ""))
+                        for block_pos, _idx, _ts, _src in batch
+                    )
+                    if unresolved and attempt == 0:
+                        if not _wait_or_cancel(2):
+                            break
+                        continue
                     break  # success
                 except Exception as e:
                     if log_fn:
