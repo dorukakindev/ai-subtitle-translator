@@ -81,6 +81,15 @@ class ChainWavesTest(unittest.TestCase):
         out_b = gui._chain_waves(wave_a, wave_b, {}, _fmap("c0", [1]), max_pairs=10)
         self.assertEqual(out_b[0]["body"]["messages"][1]["content"], before)
 
+    def test_failed_tail_chunk_does_not_inject_older_translation(self):
+        wave_a = [_req("c0", [(1, "a")]), _req("c1", [(2, "b")])]
+        wave_b = [_req("c2", [(3, "c")])]
+        raw_a = {"c0": json.dumps([{"i": 1, "t": "Bir"}], ensure_ascii=False)}
+        fmap = {**_fmap("c0", [1]), **_fmap("c1", [2])}
+        out_b = gui._chain_waves(wave_a, wave_b, raw_a, fmap, max_pairs=10)
+        payload = json.loads(out_b[0]["body"]["messages"][1]["content"])
+        self.assertNotIn("prev_tr", payload)
+
     def test_b_without_ctx_not_injected(self):
         # B'nin ilk chunk'ı ctx'siz → _inject_prev_tr no-op → prev_tr eklenmez.
         wave_a = [_req("c0", [(1, "a")])]
@@ -113,6 +122,15 @@ class RawMapFromContentTest(unittest.TestCase):
         ])
         rm = gui._raw_map_from_batch_content(content)
         self.assertEqual(rm, {"c0": "A", "c3": "D"})
+
+    def test_duplicate_custom_id_is_not_used_as_next_wave_context(self):
+        content = "\n".join([
+            self._line("c0", "Birinci çeviri"),
+            self._line("c0", "Çelişkili ikinci çeviri"),
+            self._line("c1", "Sağlam"),
+        ])
+        self.assertEqual(
+            gui._raw_map_from_batch_content(content), {"c1": "Sağlam"})
 
 
 class SaveResultsMultiIdTest(unittest.TestCase):

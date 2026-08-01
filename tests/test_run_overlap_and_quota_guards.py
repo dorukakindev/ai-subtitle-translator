@@ -42,6 +42,35 @@ class ConcurrentTestTranslationGuardTest(unittest.TestCase):
 
 
 class PermanentQuotaFailureTest(unittest.TestCase):
+    def test_repair_rejects_duplicate_and_malformed_response_ids(self):
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "[HATA]"),
+            (2, "00:00:02,000 --> 00:00:03,000", "[HATA]"),
+            (3, "00:00:03,000 --> 00:00:04,000", "[HATA]"),
+        ]
+        raw = {"1": "First source.", "2": "Second source.", "3": "Third source."}
+        payload = [
+            {"i": "1", "t": "Birinci."},
+            {"i": 1, "t": "Çelişkili birinci."},
+            {"i": "2", "t": "İkinci."},
+            {"i": "3", "t": 123},
+            {"i": "999", "t": "Küme dışı."},
+        ]
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content=__import__("json").dumps(payload, ensure_ascii=False)))],
+            usage=None,
+        )
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response):
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish")
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], "[HATA]")
+        self.assertEqual(result[1][2], "İkinci.")
+        self.assertEqual(result[2][2], "[HATA]")
+
     def test_repair_stops_during_retry_wait_when_user_cancels(self):
         blocks = [
             (str(idx), "00:00:01,000 --> 00:00:02,000", "[HATA]")

@@ -4,6 +4,8 @@ riski taşır; onarım kabul edilmeden önce id kümesi doğrulanmalı.
 """
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import subtitle_translator_gui as gui
 from tests._gui_app import make_app
@@ -124,6 +126,26 @@ class JsonRepairPassIntegrationTest(unittest.TestCase):
         client = self._fake_client(fixed)
         self.app._json_repair_pass(client, raw_map, [req])
         self.assertEqual(raw_map["c1"], fixed)
+
+
+class JsonRepairSourceContextTest(unittest.TestCase):
+    def test_missing_source_items_are_sent_to_repair_model(self):
+        req = _req("c1", [1, 2])
+        raw_map = {"c1": '[{"i":1,"t":"bir"}' }
+        app = SimpleNamespace(
+            _main_model_name=lambda: "gpt-5.4-mini",
+            _update_tokens=lambda *args, **kwargs: None,
+            _log=lambda *args, **kwargs: None,
+        )
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":2,"t":"iki"}]'))], usage=None)
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response) as create:
+            gui.App._json_repair_pass(app, object(), raw_map, [req])
+        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        self.assertEqual(
+            sent["missing_source_items"], [{"i": 2, "t": "src2"}])
 
 
 if __name__ == "__main__":

@@ -524,6 +524,39 @@ class SemanticReconciliationPassTest(unittest.TestCase):
             stats["details"][0]["changes"]["2"]["source"], "How are you?"
         )
 
+    def test_rejects_new_issue_on_neighbor_just_outside_cluster(self):
+        blocks = [
+            ("0", "00:00:00 --> 00:00:01", "Merhaba."),
+            ("1", "00:00:01 --> 00:00:02", "Selam."),
+            ("2", "00:00:02 --> 00:00:03", "Dünya."),
+        ]
+        src_map = {"0": "Hello.", "1": "Greetings.", "2": "World."}
+        cluster = {
+            "cluster": "c1",
+            "items": [
+                {"id": "1", "source": "Greetings.", "translation": "Selam.",
+                 "suspect": True, "reasons": ["POST_PASS_CHANGED"]},
+                {"id": "2", "source": "World.", "translation": "Dünya.",
+                 "suspect": False, "reasons": []},
+            ],
+            "suspect_ids": ["1"],
+        }
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{"id": "1", "text": "Merhaba.", "reason": "meaning"}],
+        }]
+        with patch("hybrid_translate.build_semantic_reconciliation_clusters",
+                   return_value=[cluster]), \
+             patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create",
+                   return_value=_response(payload)):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m")
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["rejected"], 1)
+        self.assertEqual(stats["details"][0]["reason"], "new_validator_issue")
+
     def test_one_unsafe_fix_rejects_the_whole_cluster(self):
         blocks = [
             ("1", "00:00:01 --> 00:00:02", "Merhaba."),

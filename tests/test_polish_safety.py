@@ -140,6 +140,20 @@ class PolishCandidateSafetyTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_negation")
 
+    def test_rejects_non_english_source_negation_loss(self):
+        for source in (
+            "Non voglio andare.",
+            "Je ne veux pas partir.",
+            "Ich will nicht gehen.",
+            "No quiero ir.",
+        ):
+            with self.subTest(source=source):
+                ok, reason = ht.validate_polish_candidate(
+                    "Gitmek istemiyorum.", "Gitmek istiyorum.",
+                    source_text=source)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "source_negation")
+
     def test_allows_cannot_wait_idiom_without_visible_negation(self):
         ok, reason = ht.validate_polish_candidate(
             "Gormek icin sabirsizlaniyorum.",
@@ -165,6 +179,19 @@ class PolishCandidateSafetyTest(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertEqual(reason, "source_numbers")
+
+    def test_rejects_non_english_spelled_number_corruption(self):
+        for source in (
+            "mille duecento.",
+            "mille deux cents.",
+            "tausend zwei hundert.",
+            "mil doscientos.",
+        ):
+            with self.subTest(source=source):
+                ok, reason = ht.validate_polish_candidate(
+                    "Bin iki yüz.", "On iki yüz.", source_text=source)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "source_numbers")
 
     def test_rejects_causative_want_backslide(self):
         ok, reason = ht.validate_polish_candidate(

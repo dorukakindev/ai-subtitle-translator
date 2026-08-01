@@ -3165,6 +3165,14 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
         except Exception:
             return False
 
+    def _speaker_break_before(k: int) -> bool:
+        if k <= 0:
+            return False
+        text = _clean_src(blocks[k][2])
+        return bool(re.match(
+            r"^\s*(?:[-–—]\s+|[^\W\d_][^:\n]{0,39}:\s+)",
+            text, re.UNICODE))
+
     i = 0
     while i < n:
         if _closes(i) or i == n - 1:
@@ -3175,7 +3183,7 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
             j = i + 1
             closed = False
             while j < n:
-                if _scene_break_before(j):
+                if _scene_break_before(j) or _speaker_break_before(j):
                     break
                 group.append(j)
                 if _closes(j) or j == n - 1:
@@ -3581,11 +3589,11 @@ def _chain_waves(wave_a: list, wave_b: list, wave_a_raw_map: dict,
         cid = req.get("custom_id")
         raw = wave_a_raw_map.get(cid)
         if not raw:
+            prev_pairs = []
             continue
         tmap = parse_response(raw, fmap.get(cid, []))
         pairs = _chain_pairs_from_result(req["body"]["messages"][1]["content"], tmap)
-        if pairs:
-            prev_pairs = pairs
+        prev_pairs = pairs or []
     if not prev_pairs:
         return wave_b
     first = wave_b[0]
@@ -3599,6 +3607,7 @@ def _raw_map_from_batch_content(content: str) -> dict:
     token SAYMAZ). İki-dalgalı B3, A dalgasının ham çevirisini zincirleme için buradan
     alır; nihai birleşik save_results tokenları A+B için bir kez sayar (çift sayım yok)."""
     raw_map = {}
+    duplicate_ids = set()
     for line in (content or "").strip().splitlines():
         line = line.strip()
         if not line:
@@ -3614,9 +3623,14 @@ def _raw_map_from_batch_content(content: str) -> dict:
                 continue
             txt = ((choices[0].get("message") or {}).get("content") or "").strip()
             if txt:
-                raw_map[cid] = txt
+                if cid in raw_map:
+                    duplicate_ids.add(cid)
+                else:
+                    raw_map[cid] = txt
         except Exception:
             continue
+    for cid in duplicate_ids:
+        raw_map.pop(cid, None)
     return raw_map
 
 
@@ -4015,11 +4029,26 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         if attempt == 0:
                             continue
                         break
-                    result_map = {it["i"]: it["t"] for it in items
-                                 if isinstance(it, dict) and "i" in it and "t" in it
-                                 and not str(it["t"]).startswith("[HATA")}
+                    allowed_ids = {str(idx) for _pos, idx, _ts, _src in batch}
+                    result_map = {}
+                    duplicate_ids = set()
+                    for item in items:
+                        if not isinstance(item, dict) or "i" not in item:
+                            continue
+                        rid = str(item["i"])
+                        translated = item.get("t")
+                        if (rid not in allowed_ids or not isinstance(translated, str)
+                                or not translated.strip()
+                                or translated.startswith("[HATA")):
+                            continue
+                        if rid in result_map:
+                            duplicate_ids.add(rid)
+                        else:
+                            result_map[rid] = translated
+                    for rid in duplicate_ids:
+                        result_map.pop(rid, None)
                     for (block_pos, idx, ts, _src) in batch:
-                        translated = result_map.get(idx)
+                        translated = result_map.get(str(idx))
                         if translated and translated.strip():
                             cleaned_lines = [
                                 sdh_cleaner.strip_labels_by_source(line, _src)
@@ -11401,6 +11430,16 @@ class App(ctk.CTk):
                     "tam yeniden çeviriye bırakıldı", "warn")
                 continue
             # Build repair prompt
+            try:
+                original_messages = req.get("body", {}).get("messages") or []
+                original_payload = json.loads(original_messages[1]["content"])
+            except Exception:
+                original_payload = {}
+            missing_items = [
+                {"i": item.get("i"), "t": item.get("t", "")}
+                for item in original_payload.get("tr", [])
+                if isinstance(item, dict) and str(item.get("i")) in missing_ids
+            ]
             repair_payload = {
                 "task": "Recover only the missing items from this malformed JSON response. "
                         "Return ONLY a JSON array for the requested IDs. "
@@ -11412,6 +11451,7 @@ class App(ctk.CTk):
                     "Do not wrap in ```json``` or any other delimiter",
                 ],
                 "missing_ids": sorted(missing_ids),
+                "missing_source_items": missing_items,
                 "broken_response": raw,
             }
             try:
@@ -11774,9 +11814,26 @@ class App(ctk.CTk):
         for s in range(0, len(missing), max_sub):
             if self._stop_flag:
                 break
-            sub = missing[s:s + max_sub]
+            sub = [dict(item) for item in missing[s:s + max_sub]]
             sub_payload = {"tr": sub}
-            for key in ("ctx", "next_ctx", "prev_scene", "scene", "sentence_groups",
+            sub_ids = {str(item.get("i")) for item in sub}
+            complete_groups = []
+            partial_group_ids = set()
+            for group in payload.get("sentence_groups") or []:
+                if not isinstance(group, dict):
+                    continue
+                group_ids = {str(value) for value in group.get("items") or []}
+                if group_ids and group_ids.issubset(sub_ids):
+                    complete_groups.append(group)
+                elif group_ids & sub_ids:
+                    partial_group_ids.update(group_ids & sub_ids)
+            for item in sub:
+                if str(item.get("i")) in partial_group_ids:
+                    item.pop("frag", None)
+                    item.pop("frag_group", None)
+            if complete_groups:
+                sub_payload["sentence_groups"] = complete_groups
+            for key in ("ctx", "next_ctx", "prev_scene", "scene",
                         "idioms", "prev_tr", "glossary"):
                 if payload.get(key):
                     sub_payload[key] = payload[key]
@@ -17915,8 +17972,7 @@ class App(ctk.CTk):
                         # TM önbellekten doldu — API çağrısı yok, sadece zinciri besle
                         tmap  = parse_response(raw_map.get(cid, ""), file_map[cid])
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
-                        if pairs:
-                            prev_pairs = pairs
+                        prev_pairs = pairs or []
                         continue
                     user_msg["content"] = _inject_prev_tr(
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
@@ -17931,9 +17987,9 @@ class App(ctk.CTk):
                         self._save_sync_ckpt_entry(cid_r, text, src_h)
                         tmap  = parse_response(text, file_map[cid])
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
-                        if pairs:
-                            prev_pairs = pairs
+                        prev_pairs = pairs or []
                     except Exception as e:
+                        prev_pairs = []
                         with lock:
                             failed[0] += 1
                         self._log_exc(f"Chunk hatası [{cid}]", e)
@@ -18247,8 +18303,7 @@ class App(ctk.CTk):
                     if cid_hint in raw_map:
                         tmap  = parse_response(raw_map[cid_hint], fmap.get(cid_hint, []))
                         pairs = _chain_pairs_from_result(req["body"]["messages"][1]["content"], tmap)
-                        if pairs:
-                            prev_pairs = pairs
+                        prev_pairs = pairs or []
                         completed[0] += 1
                         _hyb_tick()
                         continue
@@ -18266,9 +18321,9 @@ class App(ctk.CTk):
                         self._save_sync_ckpt_entry(cid, text, src_h)
                         tmap  = parse_response(text, fmap.get(cid, []))
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
-                        if pairs:
-                            prev_pairs = pairs
+                        prev_pairs = pairs or []
                     except Exception as e:
+                        prev_pairs = []
                         with lock:
                             failed[0] += 1
                         self._log_exc(f"Chunk hatası [{cid_hint}] [{fname}]", e)

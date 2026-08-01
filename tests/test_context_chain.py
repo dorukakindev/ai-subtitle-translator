@@ -387,6 +387,18 @@ class FragmentSyntaxHintPayloadTest(unittest.TestCase):
         payload = json.loads(reqs[0]["body"]["messages"][1]["content"])
         self.assertTrue(all(item["d"] >= 0.5 for item in payload["tr"]))
 
+    def test_dialogue_dash_starts_a_new_fragment_boundary(self):
+        cues = [
+            self.Cue(1, "00:00:01,000", "00:00:02,000", "- Take the road"),
+            self.Cue(2, "00:00:02,100", "00:00:03,000", "- No!"),
+        ]
+        self.assertEqual(ht._tag_fragments(cues), {1: "none", 2: "none"})
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "- Take the road"),
+            (2, "00:00:02,100 --> 00:00:03,000", "- No!"),
+        ]
+        self.assertEqual(gui._tag_fragments_gui(blocks), {1: "none", 2: "none"})
+
     def test_gui_build_requests_respects_context_and_lookahead_params(self):
         srt = "".join(
             f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},900\nLine {i}.\n\n"

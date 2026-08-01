@@ -38,7 +38,8 @@ class TerraGuardTests(unittest.TestCase):
 
     def test_missing_block_retry_keeps_semantic_context(self):
         payload = {
-            "tr": [{"i": "1", "t": "one"}, {"i": "2", "t": "two"}],
+            "tr": [{"i": "1", "t": "one", "frag": "start", "frag_group": "fg_1_2"},
+                   {"i": "2", "t": "two", "frag": "end", "frag_group": "fg_1_2"}],
             "ctx": [{"i": "0", "t": "before"}],
             "next_ctx": [{"i": "3", "t": "after"}],
             "prev_scene": [{"i": "x", "t": "bridge"}],
@@ -67,8 +68,11 @@ class TerraGuardTests(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", return_value=response) as create:
             result = gui.App._resend_missing_blocks(app, object(), req, '[{"i":"1","t":"bir"}]')
         resent = json.loads(create.call_args.kwargs["messages"][1]["content"])
-        for key in ("ctx", "next_ctx", "prev_scene", "scene", "sentence_groups", "idioms", "prev_tr", "glossary"):
+        for key in ("ctx", "next_ctx", "prev_scene", "scene", "idioms", "prev_tr", "glossary"):
             self.assertEqual(resent[key], payload[key])
+        self.assertNotIn("sentence_groups", resent)
+        self.assertNotIn("frag", resent["tr"][0])
+        self.assertNotIn("frag_group", resent["tr"][0])
         self.assertEqual(json.loads(result)[1]["t"], "iki")
 
 

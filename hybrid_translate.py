@@ -299,6 +299,14 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
         except Exception:
             return False
 
+    def _speaker_break_before(k: int) -> bool:
+        if k <= 0:
+            return False
+        text = _clean_source_text(cues[k].text)
+        return bool(re.match(
+            r"^\s*(?:[-–—]\s+|[^\W\d_][^:\n]{0,39}:\s+)",
+            text, re.UNICODE))
+
     i = 0
     while i < n:
         if _closes(i) or i == n - 1:
@@ -310,7 +318,7 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
             j = i + 1
             closed = False
             while j < n:
-                if _scene_break_before(j):
+                if _scene_break_before(j) or _speaker_break_before(j):
                     break
                 group.append(j)
                 if _closes(j) or j == n - 1:
@@ -5149,7 +5157,14 @@ def looks_like_on_screen_text(text: str) -> bool:
 _SOURCE_NEGATION_RE = re.compile(
     r"\b(?:not|never|nothing|nobody|none|neither|nor|without|cannot|can't|won't|"
     r"don't|doesn't|didn't|isn't|aren't|wasn't|weren't|haven't|hasn't|hadn't|"
-    r"shouldn't|wouldn't|couldn't|mustn't)\b|\bno\b|\b\w+n['’]t\b",
+    r"shouldn't|wouldn't|couldn't|mustn't|"
+    r"non|mai|niente|nessuno|senza|"
+    r"pas|jamais|rien|personne|aucun(?:e)?|sans|"
+    r"nicht|nie|nichts|niemand|kein(?:e|en|em|er|es)?|ohne|"
+    r"nunca|nada|nadie|ning(?:ún|un|una)|sin|"
+    r"não|nao|ninguém|ninguem|sem|"
+    r"niet|nooit|niets|niemand|geen|zonder)\b|"
+    r"\bno\b|\b\w+n['’]t\b|\bne\b.{0,60}\bpas\b|\bn['’]\w+.{0,60}\bpas\b",
     re.IGNORECASE,
 )
 _TURKISH_NEGATION_WORD_RE = re.compile(
@@ -6136,6 +6151,93 @@ def _en_spelled_numbers(text: str) -> list:
     return results
 
 
+_SOURCE_NUMBER_LEXICONS = (
+    ({"zero": 0, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4,
+      "cinque": 5, "sei": 6, "sette": 7, "otto": 8, "nove": 9, "dieci": 10,
+      "undici": 11, "dodici": 12, "tredici": 13, "quattordici": 14,
+      "quindici": 15, "sedici": 16, "diciassette": 17, "diciotto": 18,
+      "diciannove": 19, "venti": 20, "trenta": 30, "quaranta": 40,
+      "cinquanta": 50, "sessanta": 60, "settanta": 70, "ottanta": 80,
+      "novanta": 90, "cento": 100, "duecento": 200, "trecento": 300,
+      "quattrocento": 400, "cinquecento": 500, "seicento": 600,
+      "settecento": 700, "ottocento": 800, "novecento": 900,
+      "mille": 1000, "mila": 1000,
+      "milione": 10 ** 6, "milioni": 10 ** 6}, {"e"}),
+    ({"zéro": 0, "zero": 0, "un": 1, "une": 1, "deux": 2, "trois": 3,
+      "quatre": 4, "cinq": 5, "six": 6, "sept": 7, "huit": 8, "neuf": 9,
+      "dix": 10, "onze": 11, "douze": 12, "treize": 13, "quatorze": 14,
+      "quinze": 15, "seize": 16, "vingt": 20, "trente": 30, "quarante": 40,
+      "cinquante": 50, "soixante": 60, "cent": 100, "cents": 100,
+      "mille": 1000, "million": 10 ** 6, "millions": 10 ** 6}, {"et"}),
+    ({"null": 0, "ein": 1, "eins": 1, "eine": 1, "zwei": 2, "drei": 3,
+      "vier": 4, "fünf": 5, "funf": 5, "sechs": 6, "sieben": 7, "acht": 8,
+      "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwolf": 12,
+      "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "funfzehn": 15,
+      "sechzehn": 16, "siebzehn": 17, "achtzehn": 18, "neunzehn": 19,
+      "zwanzig": 20, "dreißig": 30, "dreissig": 30, "vierzig": 40,
+      "fünfzig": 50, "funfzig": 50, "sechzig": 60, "siebzig": 70,
+      "achtzig": 80, "neunzig": 90, "hundert": 100, "tausend": 1000,
+      "million": 10 ** 6, "millionen": 10 ** 6}, {"und"}),
+    ({"cero": 0, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
+      "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+      "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quince": 15,
+      "dieciséis": 16, "dieciseis": 16, "veinte": 20, "treinta": 30,
+      "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70,
+      "ochenta": 80, "noventa": 90, "cien": 100, "ciento": 100,
+      "doscientos": 200, "doscientas": 200, "trescientos": 300,
+      "trescientas": 300, "cuatrocientos": 400, "cuatrocientas": 400,
+      "quinientos": 500, "quinientas": 500, "seiscientos": 600,
+      "seiscientas": 600, "setecientos": 700, "setecientas": 700,
+      "ochocientos": 800, "ochocientas": 800, "novecientos": 900,
+      "novecientas": 900,
+      "mil": 1000, "millón": 10 ** 6, "millon": 10 ** 6,
+      "millones": 10 ** 6}, {"y"}),
+)
+
+
+def _source_number_group_value(group: list, lexicon: dict) -> int:
+    result = current = 0
+    for word in group:
+        value = lexicon[word]
+        if value == 100:
+            current = (current or 1) * 100
+        elif value >= 1000:
+            result += (current or 1) * value
+            current = 0
+        else:
+            current += value
+    return result + current
+
+
+def _source_spelled_numbers(text: str) -> list:
+    values = list(_en_spelled_numbers(text))
+    tokens = [word.casefold() for word in re.findall(
+        r"[^\W\d_]+", str(text or ""), re.UNICODE)]
+    for lexicon, connectors in _SOURCE_NUMBER_LEXICONS:
+        pos = 0
+        while pos < len(tokens):
+            if tokens[pos] not in lexicon:
+                pos += 1
+                continue
+            group = [tokens[pos]]
+            end = pos + 1
+            while end < len(tokens):
+                if tokens[end] in lexicon:
+                    group.append(tokens[end])
+                    end += 1
+                elif (tokens[end] in connectors and end + 1 < len(tokens)
+                      and tokens[end + 1] in lexicon):
+                    end += 1
+                else:
+                    break
+            value = _source_number_group_value(group, lexicon)
+            if (any(lexicon[word] >= 100 for word in group)
+                    or len(group) >= 2 or value > 12):
+                values.append(value)
+            pos = end
+    return values
+
+
 _TR_NUMBER_WORDS = {
     "sıfır": 0, "bir": 1, "iki": 2, "üç": 3, "dört": 4, "beş": 5,
     "altı": 6, "yedi": 7, "sekiz": 8, "dokuz": 9,
@@ -6228,7 +6330,7 @@ def _spelled_number_mismatch(src_text: str, tr_text: str) -> bool:
     KAYNAK-GÜTMELİ: kaynakta yazıyla sayı YOKSA hiç çalışmaz — Türkçede 'yüz'
     (100/face) ve 'bir' (1/a) tuzağını (bkz. _has_head_to_face_regression) bu
     şekilde susturur; çeviri tarafı asla taranmaz çünkü kaynakta zaten sayı yok."""
-    src_vals = _en_spelled_numbers(src_text)
+    src_vals = _source_spelled_numbers(src_text)
     if not src_vals:
         return False
     tr_vals = _tr_spelled_numbers(tr_text) + _digit_tokens_as_ints(tr_text)
@@ -7271,7 +7373,7 @@ def semantic_reconciliation_pass(
             if not invalid_reason:
                 after_reason_map = _semantic_reason_map(
                     candidate, validator_cues, locked_terms)
-                for sid in allowed_ids:
+                for sid in set(before_reason_map) | set(after_reason_map):
                     new_reasons = after_reason_map.get(sid, set()) - before_reason_map.get(sid, set())
                     if any(_is_semantic_reconciliation_reason(reason) for reason in new_reasons):
                         invalid_reason = "new_validator_issue"
@@ -8674,6 +8776,16 @@ def locked_term_violation(
     return False
 
 
+def _source_backed_spelled_number_drift(src_text: str, old_text: str,
+                                        new_text: str) -> bool:
+    src_vals = _source_spelled_numbers(src_text)
+    if not src_vals:
+        return False
+    old_vals = _tr_spelled_numbers(old_text) + _digit_tokens_as_ints(old_text)
+    new_vals = _tr_spelled_numbers(new_text) + _digit_tokens_as_ints(new_text)
+    return any(value in old_vals and value not in new_vals for value in src_vals)
+
+
 _QUESTION_GUARD_STOPS = frozenset({
     "ben", "sen", "o", "biz", "siz", "onlar", "bunu", "buna", "bunun",
     "şunu", "şuna", "şunun", "kim", "ne", "neden", "niçin", "nasıl",
@@ -8889,6 +9001,8 @@ def validate_polish_candidate(
         return False, "source_question"
     if src and _has_question_main_content_drift(src, old, new):
         return False, "question_content_drift"
+    if src and _source_backed_spelled_number_drift(src, old, new):
+        return False, "source_numbers"
     if src and _numeric_token_mismatch(src, new):
         return False, "source_numbers"
     if _has_turkish_person_drift(old, new):
