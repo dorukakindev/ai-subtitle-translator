@@ -154,6 +154,19 @@ class MojibakePromptTest(unittest.TestCase):
         self.assertIn("'EXIT'→'ÇIKIŞ'", prompt)
         self.assertIn("'On my way'→'Yoldayım'", prompt)
 
+    def test_hybrid_documentary_schema_disables_casual_fillers(self):
+        ctx = SimpleNamespace(
+            tone="eğitsel anlatım", summary="", setting="", characters=[],
+            scene_notes=[], key_concepts="",
+        )
+        prompt = ht.build_system_prompt(
+            ctx, "English", "Turkish", {"name": "Belgesel", "rules": []})
+        self.assertNotIn("NATURAL TURKISH SPEECH MARKERS", prompt)
+
+        academic = ht.build_system_prompt(
+            ctx, "English", "Turkish", {"name": "Akademik Ders", "rules": []})
+        self.assertNotIn("NATURAL TURKISH SPEECH MARKERS", academic)
+
 
 class AtomicBatchWriteTest(unittest.TestCase):
     def setUp(self):

@@ -421,6 +421,27 @@ class PrecontextGlossaryGuardTest(unittest.TestCase):
         # (örn. data_by_fp / series_memory tarafından ayrıca kullanılan) bozulmamalı.
         self.assertEqual(data["terms"], {"President": "madaxweynaha"})
 
+    def test_precontext_drops_hallucinated_terms_not_in_source(self):
+        import subtitle_translator_gui as gui
+        data = {"terms": {"Hive": "Kovan", "Precinct": "Karakol"}}
+        cleaned = gui._sanitize_precontext_data(
+            data, "tr", source_text="They returned to the Precinct.")
+        self.assertEqual(cleaned["terms"], {"Precinct": "Karakol"})
+
+    def test_precontext_address_map_accepts_only_sen_or_siz(self):
+        import subtitle_translator_gui as gui
+        data = {"address_map": [
+            {"a": "Ali", "b": "Ayşe", "register": "formal"},
+            {"a": "Ali", "b": "Veli", "register": " SİZ "},
+            {"a": "Ayşe", "b": "Ali", "register": "sen"},
+        ]}
+        cleaned = gui._sanitize_precontext_data(data, "tr")
+        self.assertEqual(
+            cleaned["address_map"],
+            [{"a": "Ali", "b": "Veli", "register": "siz"},
+             {"a": "Ayşe", "b": "Ali", "register": "sen"}],
+        )
+
 
 class SeriesMemoryGlossaryGuardTest(unittest.TestCase):
     """Adım 3.3 — en tehlikeli boşluk: precontext'ten series_memory'ye sanitize

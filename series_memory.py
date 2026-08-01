@@ -140,7 +140,7 @@ def sort_files_by_episode(files: list) -> list:
 
 
 class SeriesMemory:
-    VERSION   = 1
+    VERSION   = 2
     MAX_TERMS = 80
     MAX_CHARS = 24
     MAX_ADDR  = 24
@@ -148,6 +148,9 @@ class SeriesMemory:
     def __init__(self, path: Path, data: dict):
         self._path = path
         self._data = data
+        self._data.setdefault("term_origins", {})
+        self._data.setdefault("character_origins", {})
+        self._data.setdefault("address_origins", {})
         self._lock = threading.RLock()
 
     # ── Yükleme / kaydetme ────────────────────────────────────────────────────
@@ -181,7 +184,11 @@ class SeriesMemory:
             data = None
         if not isinstance(data, dict):
             data = {}
-        data.setdefault("version", cls.VERSION)
+        try:
+            previous_version = int(data.get("version", 1))
+        except Exception:
+            previous_version = 1
+        data["version"] = cls.VERSION
         data.setdefault("show", show_slug)
         data.setdefault("target_language", target_key)
         data.setdefault("source_language", source_key)
@@ -189,6 +196,9 @@ class SeriesMemory:
         data.setdefault("terms", {})
         data.setdefault("characters", {})
         data.setdefault("address_map", [])
+        data.setdefault("term_origins", {})
+        data.setdefault("character_origins", {})
+        data.setdefault("address_origins", {})
         if not isinstance(data.get("updated_eps"), list):
             data["updated_eps"] = []
         if not isinstance(data.get("terms"), dict):
@@ -197,6 +207,13 @@ class SeriesMemory:
             data["characters"] = {}
         if not isinstance(data.get("address_map"), list):
             data["address_map"] = []
+        for key in ("term_origins", "character_origins", "address_origins"):
+            if not isinstance(data.get(key), dict):
+                data[key] = {}
+        if previous_version < cls.VERSION:
+            data.setdefault("legacy_unscoped", bool(data.get("updated_eps")))
+        else:
+            data.setdefault("legacy_unscoped", False)
         return cls(path, data)
 
     @staticmethod
@@ -215,6 +232,8 @@ class SeriesMemory:
             "show": memory.get("show", disk.get("show", "")),
             "target_language": memory_target,
             "source_language": memory_source,
+            "legacy_unscoped": bool(
+                disk.get("legacy_unscoped") or memory.get("legacy_unscoped")),
         }
         for key in ("terms", "characters"):
             values = dict(disk.get(key) or {})
@@ -240,6 +259,11 @@ class SeriesMemory:
                 addresses.append(item)
                 seen.add(key)
         merged["address_map"] = addresses
+        for key in ("term_origins", "character_origins", "address_origins"):
+            origins = dict(disk.get(key) or {})
+            for item, origin in dict(memory.get(key) or {}).items():
+                origins.setdefault(str(item), str(origin))
+            merged[key] = origins
         merged["updated_eps"] = list(dict.fromkeys(
             list(disk.get("updated_eps") or [])
             + list(memory.get("updated_eps") or [])))
@@ -262,7 +286,14 @@ class SeriesMemory:
 
     # ── Birleştirme (ilk karar kanon) ─────────────────────────────────────────
 
-    def merge_terms(self, terms: dict):
+    @staticmethod
+    def _episode_tag(season=None, ep=None) -> str:
+        try:
+            return f"s{int(season):02d}e{int(ep):03d}"
+        except Exception:
+            return ""
+
+    def merge_terms(self, terms: dict, season=None, ep=None):
         if not isinstance(terms, dict):
             return
         t = self._data["terms"]
@@ -279,8 +310,11 @@ class SeriesMemory:
                 continue
             t[s] = v
             known.add(s.casefold())
+            tag = self._episode_tag(season, ep)
+            if tag:
+                self._data["term_origins"].setdefault(s.casefold(), tag)
 
-    def merge_characters(self, chars):
+    def merge_characters(self, chars, season=None, ep=None):
         """chars: {name: style} | [{name, style|speaking_style}] | [CharacterVoice]."""
         c = self._data["characters"]
         items = []
@@ -301,11 +335,15 @@ class SeriesMemory:
             if canonical is None:
                 c[clean_name] = {"style": str(style or "").strip()}
                 known[clean_name.casefold()] = clean_name
+                tag = self._episode_tag(season, ep)
+                if tag:
+                    self._data["character_origins"].setdefault(
+                        clean_name.casefold(), tag)
             elif (isinstance(c.get(canonical), dict)
                   and not c[canonical].get("style") and str(style or "").strip()):
                 c[canonical]["style"] = str(style).strip()
 
-    def merge_address_map(self, pairs):
+    def merge_address_map(self, pairs, season=None, ep=None):
         """pairs: [{a, b, register}] (pairwise) | {name: register} (per-character)."""
         amap = self._data["address_map"]
         seen = {
@@ -328,6 +366,10 @@ class SeriesMemory:
             if key not in seen:
                 seen.add(key)
                 amap.append(e)
+                tag = self._episode_tag(season, ep)
+                if tag:
+                    self._data["address_origins"].setdefault(
+                        "\0".join(key), tag)
 
     def mark_episode(self, season, ep):
         try:
@@ -347,10 +389,48 @@ class SeriesMemory:
         core_count = limit // 2
         return items[:core_count] + items[-(limit - core_count):]
 
-    def build_hint(self) -> str:
+    def build_hint(self, before_episode=None) -> str:
         terms = self._data.get("terms") or {}
         chars = self._data.get("characters") or {}
         addr  = self._data.get("address_map") or []
+        cutoff = self._episode_tag(*(before_episode or ())) if before_episode else ""
+        legacy_blocked = False
+        if cutoff and self._data.get("legacy_unscoped"):
+            cutoff_match = re.fullmatch(r"s(\d+)e(\d+)", cutoff)
+            if cutoff_match:
+                cutoff_key = tuple(map(int, cutoff_match.groups()))
+                for tag in self._data.get("updated_eps") or []:
+                    match = re.fullmatch(r"s(\d+)e(\d+)", str(tag), re.IGNORECASE)
+                    if match and tuple(map(int, match.groups())) >= cutoff_key:
+                        legacy_blocked = True
+                        break
+
+        def allowed(origin):
+            if not cutoff:
+                return True
+            if not origin:
+                return not legacy_blocked
+            return str(origin) < cutoff
+
+        term_origins = self._data.get("term_origins") or {}
+        char_origins = self._data.get("character_origins") or {}
+        addr_origins = self._data.get("address_origins") or {}
+        terms = {
+            source: target for source, target in terms.items()
+            if allowed(term_origins.get(str(source).strip().casefold()))
+        }
+        chars = {
+            name: meta for name, meta in chars.items()
+            if allowed(char_origins.get(str(name).strip().casefold()))
+        }
+        addr = [
+            item for item in addr if isinstance(item, dict) and allowed(
+                addr_origins.get("\0".join((
+                    str(item.get("a") or "").strip().casefold(),
+                    str(item.get("b") or "").strip().casefold(),
+                )))
+            )
+        ]
         if not (terms or chars or addr):
             return ""
         lines = ["\n## SERIES MEMORY (decisions from earlier episodes — follow strictly)"]

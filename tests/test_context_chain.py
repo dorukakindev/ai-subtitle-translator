@@ -378,6 +378,15 @@ class FragmentSyntaxHintPayloadTest(unittest.TestCase):
         self.assertNotIn("syntax_hint", items[2])
         self.assertNotIn("syntax_hint", items[3])
 
+    def test_hybrid_duration_is_clamped_for_invalid_timestamps(self):
+        cues = [
+            self.Cue(1, "00:00:02,000", "00:00:02,000", "Still here."),
+            self.Cue(2, "00:00:04,000", "00:00:03,000", "Backwards."),
+        ]
+        reqs, _ = ht.build_batch_requests(cues, "system", "gpt-5.4-mini")
+        payload = json.loads(reqs[0]["body"]["messages"][1]["content"])
+        self.assertTrue(all(item["d"] >= 0.5 for item in payload["tr"]))
+
     def test_gui_build_requests_respects_context_and_lookahead_params(self):
         srt = "".join(
             f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},900\nLine {i}.\n\n"

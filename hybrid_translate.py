@@ -3016,9 +3016,15 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
 
 # ── Sistem prompt üretici ─────────────────────────────────────────────────────
 
-def _infer_register(tone: str) -> str:
+def _infer_register(tone: str, schema: dict | None = None) -> str:
     tone_l = tone.lower()
-    if any(w in tone_l for w in ("documentary", "narrator", "exposition", "neutral")):
+    schema_name = str((schema or {}).get("name") or "").casefold()
+    non_colloquial = (
+        "belgesel", "documentary", "haber", "news", "anlatı", "narration",
+        "akademik", "academic", "ders", "lecture",
+    )
+    if (any(w in tone_l for w in ("documentary", "narrator", "exposition", "neutral"))
+            or any(w in schema_name for w in non_colloquial)):
         return "documentary"
     if any(w in tone_l for w in ("comedy", "humor", "humorous", "sitcom", "funny", "jokes")):
         return "comedy"
@@ -3046,7 +3052,7 @@ def build_system_prompt(
     idiom_map: dict = None,         # {english_idiom: turkish_equivalent}
     cultural_refs: list = None,     # [{src, type, action, target}]
 ) -> str:
-    register = _infer_register(context.tone or "")
+    register = _infer_register(context.tone or "", schema=schema)
 
     parts = [
         f"You are a professional subtitle translator from {src_lang} to {tgt_lang}.",
@@ -10301,7 +10307,7 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
         tr_items = []
         for c in chunk:
             try:
-                dur = round(_ts_to_sec(c.end) - _ts_to_sec(c.start), 2)
+                dur = max(round(_ts_to_sec(c.end) - _ts_to_sec(c.start), 2), 0.5)
             except Exception:
                 dur = 2.0
             item = {"i": c.index, "t": _clean_source_text(c.text), "d": dur}

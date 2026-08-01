@@ -2943,7 +2943,8 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
     # (hybrid yolu bunu context.tone register'ından çıkarır — sync'te şema adıyla paritede tut)
     schema_name = (schema or {}).get("name", "").lower()
     is_doc = any(k in schema_name for k in
-                 ("belgesel", "documentary", "haber", "news", "anlatı", "sunum", "narration"))
+                 ("belgesel", "documentary", "haber", "news", "anlatı", "sunum", "narration",
+                  "akademik", "academic", "ders", "lecture"))
     colloquial_block = "" if is_doc else (
         "\nNatural Turkish speech markers — use only where they genuinely fit:\n"
         '- Emphasis/filler: "yani", "işte", "zaten", "ya"\n'
@@ -4139,7 +4140,8 @@ def _precontext_analysis_fingerprint(model: str, base_url: str = "") -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def build_precontext_hint(data: dict, target_language: str = "tr") -> str:
+def build_precontext_hint(data: dict, target_language: str = "tr",
+                          source_text: str | None = None) -> str:
     """Ön-analiz JSON'ını system prompt'a eklenecek metin bloğuna çevirir.
 
     terms burada da (yeniden) sanitize edilir çünkü `data` eski/bayat bir
@@ -4148,7 +4150,8 @@ def build_precontext_hint(data: dict, target_language: str = "tr") -> str:
     plans/sozluk-hedef-dil-guard-brief.md)."""
     if not isinstance(data, dict):
         return ""
-    data = _sanitize_precontext_data(dict(data), target_language)
+    data = _sanitize_precontext_data(
+        dict(data), target_language, source_text=source_text)
     lines = ["\n## FILE PRE-ANALYSIS (translator notes — follow strictly)"]
     if data.get("summary"):
         lines.append(f"Story: {data['summary']}")
@@ -4246,7 +4249,8 @@ def _salvage_precontext_json(s: str) -> dict:
     return {}
 
 
-def _sanitize_precontext_data(data: dict, tgt: str, log_fn=None) -> dict:
+def _sanitize_precontext_data(data: dict, tgt: str, log_fn=None,
+                              source_text: str | None = None) -> dict:
     """terms alanını Türkçe hedef-dil guard'ından geçirir. Precontext yolu (Yardımcı
     Analiz KAPALIYKEN) daha önce HİÇ sanitize edilmiyordu — hybrid yolunun aksine
     (bkz. Adım 3, KRİTİK BOŞLUK, plans/sozluk-hedef-dil-guard-brief.md)."""
@@ -4255,7 +4259,26 @@ def _sanitize_precontext_data(data: dict, tgt: str, log_fn=None) -> dict:
     terms = data.get("terms")
     if isinstance(terms, dict) and terms:
         import hybrid_translate as ht
-        data["terms"] = ht.sanitize_glossary_for_turkish(terms, target_language=tgt, log_fn=log_fn)
+        safe_terms = ht.sanitize_glossary_for_turkish(
+            terms, target_language=tgt, log_fn=log_fn)
+        if source_text is not None:
+            safe_terms = {
+                source: target for source, target in safe_terms.items()
+                if ht._locked_source_term_present(source, source_text)
+            }
+        data["terms"] = safe_terms
+    address_map = data.get("address_map")
+    if isinstance(address_map, list):
+        def _register_value(item):
+            return unicodedata.normalize(
+                "NFKC", str(item.get("register") or "").strip()
+            ).casefold().replace("\u0307", "")
+        data["address_map"] = [
+            dict(item, register=_register_value(item))
+            for item in address_map
+            if (isinstance(item, dict) and item.get("a") and item.get("b")
+                and _register_value(item) in {"sen", "siz"})
+        ]
     return data
 
 
@@ -4330,7 +4353,8 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
             complete = False
             if log_fn:
                 log_fn("Ön-bağlam yanıtı eksik; bu çalıştırmada kullanılacak ama önbelleğe alınmayacak", "warn")
-        parsed = _sanitize_precontext_data(parsed, tgt, log_fn)
+        parsed = _sanitize_precontext_data(
+            parsed, tgt, log_fn, source_text="\n".join(texts))
         parsed["_analysis_complete"] = complete
         return parsed
     except Exception as ex:
@@ -5660,6 +5684,49 @@ def _align_delivery_blocks_to_source(source_blocks: list,
     return aligned, unmapped
 
 
+_TERM_SUFFIX_CLASSES = {
+    "genitive": {"ın", "in", "un", "ün", "nın", "nin", "nun", "nün"},
+    "dative": {"a", "e", "ya", "ye"},
+    "accusative": {"ı", "i", "u", "ü", "yı", "yi", "yu", "yü"},
+    "locative": {"da", "de", "ta", "te"},
+    "ablative": {"dan", "den", "tan", "ten"},
+    "instrumental": {"la", "le", "yla", "yle"},
+}
+
+
+def _term_suffix_class(value: str) -> str:
+    suffix = str(value or "").lstrip("'’").casefold()
+    return next((name for name, forms in _TERM_SUFFIX_CLASSES.items()
+                 if suffix in forms), "")
+
+
+def _term_suffix_matches_target(target: str, suffix: str, suffix_class: str) -> bool:
+    suffix = str(suffix or "").lstrip("'’").casefold()
+    letters = re.findall(r"[^\W\d_]", str(target or ""), re.UNICODE)
+    vowels = [char.casefold() for char in letters if char.casefold() in "aeıioöuü"]
+    if not letters or not vowels:
+        return True
+    ends_vowel = letters[-1].casefold() in "aeıioöuü"
+    if suffix_class in {"genitive", "dative", "accusative", "instrumental"}:
+        buffer = {"genitive": "n", "dative": "y", "accusative": "y",
+                  "instrumental": "y"}[suffix_class]
+        if ends_vowel != suffix.startswith(buffer):
+            return False
+        if ends_vowel:
+            suffix = suffix[1:]
+    suffix_vowels = [char for char in suffix if char in "aeıioöuü"]
+    if not suffix_vowels:
+        return True
+    last = vowels[-1]
+    if suffix_class in {"dative", "locative", "ablative", "instrumental"}:
+        return suffix_vowels[0] == ("a" if last in "aıou" else "e")
+    if suffix_class in {"genitive", "accusative"}:
+        expected = ({"a": "ı", "ı": "ı", "e": "i", "i": "i",
+                     "o": "u", "u": "u", "ö": "ü", "ü": "ü"})[last]
+        return suffix_vowels[0] == expected
+    return True
+
+
 def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple:
     """Terim-normalizasyon adayı için hafif güvenlik kapısı.
 
@@ -5680,8 +5747,22 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
         pat_correct = re.compile(r"\b" + re.escape(correct) + r"(?:['’]\w+)?", re.IGNORECASE)
         if pat_wrong.search(new):
             return False, "term_not_replaced"
-        if not pat_correct.search(new):
+        old_matches = list(pat_wrong.finditer(old))
+        new_matches = list(pat_correct.finditer(new))
+        if not new_matches:
             return False, "term_missing_after_fix"
+        if len(old_matches) != len(new_matches):
+            return False, "term_occurrence_count"
+        for old_match, new_match in zip(old_matches, new_matches):
+            old_suffix = old_match.group(0)[len(wrong):]
+            new_suffix = new_match.group(0)[len(correct):]
+            old_class = _term_suffix_class(old_suffix)
+            new_class = _term_suffix_class(new_suffix)
+            if old_class and old_class != new_class:
+                return False, "suffix_case_drift"
+            if new_class and not _term_suffix_matches_target(
+                    correct, new_suffix, new_class):
+                return False, "suffix_harmony"
         old_rest = pat_wrong.sub("\0", old_rest)
         new_rest = pat_correct.sub("\0", new_rest)
     old_norm = re.sub(r"\s+", " ", old_rest).strip()
@@ -14553,8 +14634,8 @@ class App(ctk.CTk):
             return None, None, None
 
     def _series_hint_for(self, fp: str) -> str:
-        sm_obj, _, _ = self._series_mem_for(fp)
-        return sm_obj.build_hint() if sm_obj else ""
+        sm_obj, season, ep = self._series_mem_for(fp)
+        return sm_obj.build_hint(before_episode=(season, ep)) if sm_obj else ""
 
     def _estimate_async(self, files, label_fn):
         """estimate_tokens'i arka planda çalıştırır — klasör/dosya seçince UI donmaz.
@@ -17383,7 +17464,17 @@ class App(ctk.CTk):
 
         # 3) Hint metinlerini üret (sıra önemsiz)
         for fp, data in data_by_fp.items():
-            hint = build_precontext_hint(data, target_language=tgt)
+            try:
+                source_blocks = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
+                source_text = "\n".join(
+                    _clean_src(text) for _idx, _ts, text in source_blocks)
+            except Exception:
+                source_text = None
+            data = _sanitize_precontext_data(
+                dict(data), tgt, self._log, source_text=source_text)
+            data_by_fp[fp] = data
+            hint = build_precontext_hint(
+                data, target_language=tgt, source_text=source_text)
             if hint:
                 hints[fp] = hint
                 n_char = len(data.get("characters") or [])
@@ -17403,15 +17494,25 @@ class App(ctk.CTk):
         safe_terms = ht.sanitize_glossary_for_turkish(
             data.get("terms") or {}, target_language=target_language, log_fn=self._log
         )
-        sm_obj.merge_terms(safe_terms)
-        sm_obj.merge_characters(data.get("characters") or [])
-        sm_obj.merge_address_map(data.get("address_map") or [])
+        sm_obj.merge_terms(safe_terms, season=season, ep=ep)
+        sm_obj.merge_characters(
+            data.get("characters") or [], season=season, ep=ep)
+        sm_obj.merge_address_map(
+            data.get("address_map") or [], season=season, ep=ep)
         sm_obj.mark_episode(season, ep)
 
     def _stage_series_memory_from_precontext(self, fp: str, data: dict,
                                              target_language: str = "tr"):
         if not isinstance(data, dict) or data.get("_analysis_complete") is False:
             return
+        try:
+            source_blocks = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
+            source_text = "\n".join(
+                _clean_src(text) for _idx, _ts, text in source_blocks)
+        except Exception:
+            source_text = None
+        data = _sanitize_precontext_data(
+            dict(data), target_language, self._log, source_text=source_text)
         sm_obj, season, ep = self._series_mem_for(fp)
         try:
             self._merge_precontext_into_series_memory(
@@ -17441,10 +17542,12 @@ class App(ctk.CTk):
         sm_obj.merge_terms(ht.sanitize_glossary_for_turkish(
             dict(getattr(context, "recurring_terms", {}) or {}),
             target_language=target_language,
-        ))
-        sm_obj.merge_characters(list(getattr(context, "characters", []) or []))
+        ), season=season, ep=ep)
+        sm_obj.merge_characters(
+            list(getattr(context, "characters", []) or []),
+            season=season, ep=ep)
         if pronoun_map:
-            sm_obj.merge_address_map(pronoun_map)
+            sm_obj.merge_address_map(pronoun_map, season=season, ep=ep)
         sm_obj.mark_episode(season, ep)
 
     def _stage_series_memory_from_analysis(self, fp: str, context, pronoun_map,

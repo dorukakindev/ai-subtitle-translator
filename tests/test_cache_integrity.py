@@ -587,7 +587,8 @@ class CacheIntegrityTest(unittest.TestCase):
                                   hybrid_var=SimpleNamespace(get=lambda: False),
                                   _stop_flag=False,
                                   _log=lambda *args: None,
-                                  _cached_blocks_for=lambda _p: [],
+                                  _cached_blocks_for=lambda _p: [
+                                      ("1", "00:00:00,000 --> 00:00:01,000", "new")],
                                   _update_tokens=lambda _n: None,
                                   _update_series_memory_from_precontext=lambda *args, **kwargs: None)
 

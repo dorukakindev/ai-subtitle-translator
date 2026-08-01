@@ -315,6 +315,22 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(n, 0)
 
+    def test_rejects_wrong_case_suffix_and_accepts_harmonized_suffix(self):
+        bad = gui._validate_term_normalize_candidate(
+            "Troy'un kitabı", "Truva'na kitabı", [("Troy", "Truva")])
+        good = gui._validate_term_normalize_candidate(
+            "Troy'un kitabı", "Truva'nın kitabı", [("Troy", "Truva")])
+        wrong_harmony = gui._validate_term_normalize_candidate(
+            "Troy'un kitabı", "Truva'nin kitabı", [("Troy", "Truva")])
+        self.assertEqual(bad, (False, "suffix_case_drift"))
+        self.assertEqual(good, (True, ""))
+        self.assertEqual(wrong_harmony, (False, "suffix_harmony"))
+
+        repeated = gui._validate_term_normalize_candidate(
+            "Troy'un kitabı Troy'a gitti.",
+            "Truva'nın kitabı Truva'na gitti.", [("Troy", "Truva")])
+        self.assertEqual(repeated, (False, "suffix_case_drift"))
+
 
 if __name__ == "__main__":
     unittest.main()

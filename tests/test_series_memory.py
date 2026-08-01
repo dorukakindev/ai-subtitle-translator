@@ -170,6 +170,31 @@ class BuildHintTest(unittest.TestCase):
         self.assertIn("'t0'", h)
         self.assertIn("'t99'", h)
 
+    def test_future_episode_decisions_are_not_injected_into_earlier_episode(self):
+        m = sm.SeriesMemory(Path("x.json"), {
+            "terms": {}, "characters": {}, "address_map": []})
+        m.merge_terms({"Late Reveal": "Geç Açığa Çıkan"}, season=1, ep=10)
+        m.merge_characters(
+            [{"name": "Future Character", "style": "cold"}], season=1, ep=10)
+        m.merge_address_map(
+            [{"a": "Sam", "b": "Chief", "register": "sen"}], season=1, ep=10)
+
+        early = m.build_hint(before_episode=(1, 1))
+        later = m.build_hint(before_episode=(1, 11))
+        self.assertEqual(early, "")
+        self.assertIn("Late Reveal", later)
+        self.assertIn("Future Character", later)
+        self.assertIn("Sam → Chief", later)
+
+    def test_legacy_unscoped_memory_fails_closed_for_earlier_episode(self):
+        m = sm.SeriesMemory(Path("x.json"), {
+            "terms": {"Spoiler": "Sürpriz"}, "characters": {},
+            "address_map": [], "updated_eps": ["s01e10"],
+            "legacy_unscoped": True,
+        })
+        self.assertEqual(m.build_hint(before_episode=(1, 1)), "")
+        self.assertIn("Spoiler", m.build_hint(before_episode=(1, 11)))
+
 
 class SortTest(unittest.TestCase):
     def test_episode_order_and_non_series_last(self):
