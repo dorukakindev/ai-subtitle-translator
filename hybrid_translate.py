@@ -5418,8 +5418,10 @@ def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool
         source_value = source_token.casefold()
         if value == source_value:
             return True
-        if value.startswith(source_value) and value[len(source_value):] in _PRESERVED_TERM_TR_SUFFIXES:
-            return True
+        if value.startswith(source_value):
+            suffix = value[len(source_value):].lstrip("'\u2019")
+            if suffix in _PRESERVED_TERM_TR_SUFFIXES:
+                return True
     return False
 
 

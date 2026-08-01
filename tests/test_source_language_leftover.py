@@ -61,6 +61,23 @@ class SourceLanguageLeftoverTest(unittest.TestCase):
         self.assertTrue(ht.has_non_turkish_target_leak(
             "rapéyi burun deliklerine üflemek", source_text="blow the medicine into the nostrils"))
 
+    def test_source_proper_name_with_apostrophe_turkish_suffix_is_allowed(self):
+        cases = [
+            ("Manuel González'e verir", "The priest Manuel González receives it."),
+            ("Evaristo Guzmán'ın söyledikleri", "what Councilman Evaristo Guzmán said."),
+        ]
+        for translated, source in cases:
+            with self.subTest(translated=translated):
+                self.assertIsNone(ht.non_turkish_leak_token(
+                    translated, source_text=source))
+                self.assertFalse(ht.has_non_turkish_target_leak(
+                    translated, source_text=source))
+
+        self.assertEqual(
+            ht.non_turkish_leak_token("Mädchen'e söyledim", source_text="I told the girl."),
+            "Mädchen'e",
+        )
+
     def test_homoglyph_normalization_allows_cyrillic_a_in_turkish_word(self):
         self.assertEqual(ht.normalize_latin_homoglyphs("BАNA"), "BANA")
         self.assertFalse(ht.has_non_turkish_target_leak("O da BАNA kavanozda şeyler getirdi."))
