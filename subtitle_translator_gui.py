@@ -6680,6 +6680,7 @@ def _record_pass_change(trace: dict, label: str, before_blocks, after_blocks,
     """Record how many lines a quality pass changed and return that count."""
     changes = list(_iter_text_changes(before_blocks, after_blocks))
     n = len(changes)
+    trace.setdefault(label, 0)
     if n:
         trace[label] = trace.get(label, 0) + n
         if history is not None:
@@ -6696,6 +6697,51 @@ def _format_pass_trace(trace: dict) -> str:
     if not trace:
         return ""
     return ", ".join(f"{name}: {count}" for name, count in trace.items() if count)
+
+
+def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
+    snapshot = snapshot or {}
+    trace = row.get("pass_trace") or {}
+    status = str(row.get("run_status") or "done")
+    lines = []
+
+    helper_on = bool(row.get("helper_analysis", snapshot.get("hybrid_mode")))
+    if helper_on:
+        analysis_status = str(row.get("analysis_status") or "etkin")
+        lines.append(f"Yardımcı Analiz: {analysis_status}")
+    else:
+        lines.append("Yardımcı Analiz: kapalı")
+
+    chain_on = bool(row.get("chain_ctx", snapshot.get("chain_ctx")))
+    chunk_count = int(row.get("translation_chunks", 0) or 0)
+    chain_detail = f", {chunk_count} chunk" if chunk_count else ""
+    lines.append(
+        f"Zincirleme Bağlam: {'çalıştı' if chain_on else 'kapalı'}{chain_detail}")
+
+    features = (
+        ("Tutarlılık taraması", True, ("Consistency", "Final-Consistency")),
+        ("Critic Pass", bool(snapshot.get("critic")), ("Critic",)),
+        ("Polish Pass", bool(snapshot.get("polish")), ("Polish",)),
+        ("Native Okuyucu", bool(snapshot.get("native")), ("Native",)),
+        ("QC", bool(snapshot.get("qc")), ("QC auto", "QC")),
+        ("Nihai Anlam Mutabakatı", bool(snapshot.get("semantic_reconcile")),
+         ("Final-Semantic",)),
+        ("Terim Normalizasyonu", bool(snapshot.get("term_normalize")),
+         ("Term-Normalize",)),
+        ("SDH temizleme", bool(snapshot.get("clean_sdh")), ("SDH",)),
+        ("Satır düzenleme", bool(snapshot.get("linebreak")), ("Line-break",)),
+    )
+    for title, enabled, labels in features:
+        ran = [label for label in labels if label in trace]
+        if ran:
+            changed = sum(int(trace.get(label, 0) or 0) for label in ran)
+            lines.append(f"{title}: çalıştı, {changed} cue değiştirdi")
+        elif enabled:
+            reason = "dosya tamamlanamadığı için atlandı" if status == "error" else "açık, çalışma kaydı yok"
+            lines.append(f"{title}: {reason}")
+        else:
+            lines.append(f"{title}: kapalı")
+    return lines
 
 
 def _multi_pass_history(history: dict, max_items: int = 5) -> tuple[int, str]:
@@ -6827,6 +6873,10 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         passes = r.get("pass_coverage", "")
         if passes:
             lines.append(f"   {'Uygulanan geçişler'.ljust(width)} : {passes}")
+        feature_audit = r.get("feature_audit") or []
+        if feature_audit:
+            lines.append("   İşlem dökümü:")
+            lines.extend(f"      - {item}" for item in feature_audit)
         trace_txt = _format_pass_trace(r.get("pass_trace") or {})
         if trace_txt:
             lines.append(f"   {'Kalite geçişi kırılımı'.ljust(width)} : {trace_txt}")
@@ -16783,6 +16833,12 @@ class App(ctk.CTk):
         if not rows:
             return None
         try:
+            snapshot = dict(getattr(self, "_active_snapshot", {}) or {})
+            report_rows = []
+            for source_row in rows:
+                row = dict(source_row)
+                row["feature_audit"] = _quality_feature_audit(row, snapshot)
+                report_rows.append(row)
             with self._token_lock:
                 tok = self._token_total
                 actual_cost = self._cost_total
@@ -16790,7 +16846,7 @@ class App(ctk.CTk):
             with self._run_record_lock:
                 active_record = self._active_run_record or {}
                 run_id = str(active_record.get("run_id") or "")
-            txt = build_quality_report_text(rows, self._main_model_name(),
+            txt = build_quality_report_text(report_rows, self._main_model_name(),
                                             self.tgt_var.get(),
                                             self.mode_var.get(), tok,
                                             actual_cost=actual_cost,
@@ -16807,7 +16863,7 @@ class App(ctk.CTk):
                 run_path = rep_dir / f"ceviri_raporu_{run_id}.txt"
                 atomic_write_text(run_path, txt, encoding="utf-8")
                 report_paths.append(run_path)
-            self._record_quality_report(rows, report_paths)
+            self._record_quality_report(report_rows, report_paths)
             self._log(f"Kalite raporu: {p}", "ok")
             return p
         except Exception:
@@ -19194,6 +19250,11 @@ class App(ctk.CTk):
             # Rapor satırı
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+            _analysis_status = (
+                f"{'tamam' if _analysis_ok else 'kısmi'} — "
+                f"{len(_analysis_locked_terms)} terim, "
+                f"{len(getattr(context, 'characters', ()) or ())} karakter, "
+                f"{len(char_examples or {})} örnek, {len(idiom_map or {})} deyim")
             report_rows.append({
                 "name": fname, "source_path": filepath,
                 "output_path": str(_write_path),
@@ -20120,9 +20181,11 @@ class App(ctk.CTk):
                                             pp, _src_map,
                                             self._helper_api_key("polish"),
                                             self._helper_api_base_url("polish"),
-                                            self._helper_api_model("polish"),
-                                            log_fn=self._log,
-                                            locked_terms=_locked_terms)
+                                             self._helper_api_model("polish"),
+                                             log_fn=self._log,
+                                             locked_terms=_locked_terms)
+                                        if self._stop_flag:
+                                            break
                                         _record_pass_change(
                                             _pass_trace, "Term-Normalize",
                                             _before_termnorm, pp, _pass_history)
@@ -20711,6 +20774,10 @@ class App(ctk.CTk):
                 "pass_trace": _pass_trace,
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
+                "helper_analysis": True,
+                "analysis_status": _analysis_status,
+                "chain_ctx": bool(self.chain_ctx_var.get()),
+                "translation_chunks": total,
                 "tm_hits": self._tm.hit_count_session(),
                 "run_status": "error" if _has_missing else "done",
             })

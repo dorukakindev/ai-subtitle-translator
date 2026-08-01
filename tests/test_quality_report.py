@@ -50,6 +50,14 @@ class PassTraceTest(unittest.TestCase):
         self.assertEqual(history["1"][0]["before"], "A")
         self.assertEqual(history["1"][0]["after"], "B")
 
+    def test_record_pass_change_keeps_zero_change_execution(self):
+        trace = {}
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "A")]
+
+        self.assertEqual(
+            gui._record_pass_change(trace, "Native", blocks, list(blocks)), 0)
+        self.assertEqual(trace, {"Native": 0})
+
     def test_multi_pass_history_summary(self):
         history = {
             "5": [{"pass": "Critic"}, {"pass": "Native"}],
@@ -173,6 +181,40 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("Critic: 2", txt)
         self.assertIn("Polish: 1", txt)
         self.assertIn("Pass breakdown total: Critic: 5, Polish: 1", txt)
+
+    def test_feature_audit_distinguishes_ran_zero_changed_and_skipped(self):
+        row = {
+            "name": "a.srt",
+            "total": 10,
+            "run_status": "done",
+            "helper_analysis": True,
+            "analysis_status": "kısmi",
+            "chain_ctx": True,
+            "translation_chunks": 4,
+            "pass_trace": {"Consistency": 0, "Native": 0, "Critic": 2},
+        }
+        snapshot = {
+            "critic": True,
+            "native": True,
+            "semantic_reconcile": True,
+            "clean_sdh": False,
+        }
+
+        audit = gui._quality_feature_audit(row, snapshot)
+
+        self.assertIn("Yardımcı Analiz: kısmi", audit)
+        self.assertIn("Zincirleme Bağlam: çalıştı, 4 chunk", audit)
+        self.assertIn("Critic Pass: çalıştı, 2 cue değiştirdi", audit)
+        self.assertIn("Native Okuyucu: çalıştı, 0 cue değiştirdi", audit)
+        self.assertIn(
+            "Nihai Anlam Mutabakatı: açık, çalışma kaydı yok", audit)
+        self.assertIn("SDH temizleme: kapalı", audit)
+
+        row["feature_audit"] = audit
+        txt = gui.build_quality_report_text(
+            [row], "gpt-5.4", "Turkish", "sync", 0)
+        self.assertIn("İşlem dökümü:", txt)
+        self.assertIn("Native Okuyucu: çalıştı, 0 cue değiştirdi", txt)
 
     def test_pass_history_multi_pass_lines_are_reported(self):
         rows = [{
