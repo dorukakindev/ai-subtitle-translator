@@ -240,7 +240,15 @@ _SDH_ACTION_VERBS = {
     "whoops", "roars", "splashing", "calls", "swelling", "plays",
     "turns", "rewinds", "whirs",
     "laughs", "scoffs", "clears", "sniffles", "sobs", "chiming",
-    "trilling", "konusur", "konusuyor", "kapanir", "kapaniyor",
+    "trilling", "speaking", "konusur", "konusuyor", "kapanir", "kapaniyor",
+    "thudding", "clattering", "pattering", "smacking", "sloshing",
+    "squawking", "croaking", "rustling", "neighing", "vocalizing",
+    "clanking", "crackling", "rasping", "retching", "squelching",
+    "whining", "clinking", "clicks", "thuds", "squeaks", "clinks",
+    "burbling", "sploshing", "slices", "fluttering", "snorts", "cooing",
+    "babbling", "whimpering", "rattle", "neighs", "bangs", "clangs",
+    "scrapes", "stomp", "bubbling", "snoring", "whinnies", "whinny",
+    "blaring", "slaps", "gasps", "grunts",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -267,6 +275,23 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     key = _descriptor_key(content)
     if not key:
         return True
+    if _is_heading_label(content):
+        return False
+    raw_words = str(content or "").strip().split()
+    title_case = (2 <= len(raw_words) <= 6
+                  and all(not word[:1].isalpha() or word[:1].isupper()
+                          for word in raw_words))
+    if title_case:
+        first_key = _descriptor_key(raw_words[0])
+        last_key = _descriptor_key(raw_words[-1])
+        if (first_key not in _SPEAKER_WORDS
+                and last_key not in _KNOWN_LANGUAGES
+                and last_key not in _SPEAKER_WORDS
+                and last_key not in _SDH_ACTION_VERBS
+                and (last_key not in _SDH_KEYWORDS
+                     or (last_key == "music"
+                         and first_key not in _SDH_SOUND_MODIFIERS))):
+            return False
     if key in _SDH_KEYWORDS or key in _SPEAKER_WORDS:
         return True
     if key in {
@@ -290,6 +315,16 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
         return (words_no_digits[0] in _SDH_KEYWORDS
                 or words_no_digits[0] in _SPEAKER_WORDS
                 or words_no_digits[0] in _SDH_ACTION_VERBS)
+
+    pronouns = {"i", "you", "he", "she", "we", "they", "it"}
+    instruments = {"trumpet", "piano", "violin", "drums", "guitar", "flute"}
+    if (not bare_text and len(words_no_digits) <= 10
+            and not any(word in pronouns for word in words_no_digits)
+            and (words_no_digits[-1].endswith("ing")
+                 or "music" in words_no_digits
+                 or words_no_digits[-1] in instruments
+                 or words_no_digits[-1] in _SDH_ACTION_VERBS)):
+        return True
 
     # All non-digit words are SDH/speaker keywords: [soft music], [door closes], [narrator 2]
     if all(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS for w in words_no_digits):
@@ -421,6 +456,8 @@ def is_sdh_only(text: str) -> bool:
     stripped = re.sub(r"[\s,.;:!?_\-–—]+", "", stripped)
     if not stripped:
         return True
+    if _bracket_group_spans(stripped):
+        return False
     return is_sdh_descriptor(text, bare_text=True)
 
 

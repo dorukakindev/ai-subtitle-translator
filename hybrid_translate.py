@@ -2952,8 +2952,24 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
         return memories[0]
 
     merged_terms = {}
+    merged_term_keys = {}
+    conflicting_terms = set()
     for m in memories:
-        merged_terms.update(m.recurring_terms)
+        for source, target in (getattr(m, "recurring_terms", {}) or {}).items():
+            source_text = str(source or "").strip()
+            target_text = str(target or "").strip()
+            if not source_text or not target_text:
+                continue
+            key = source_text.casefold()
+            previous_source = merged_term_keys.get(key)
+            if previous_source is None:
+                merged_term_keys[key] = source_text
+                merged_terms[source_text] = target_text
+                continue
+            previous_target = str(merged_terms.get(previous_source, ""))
+            if previous_target.casefold() != target_text.casefold():
+                conflicting_terms.add(previous_source)
+                merged_terms.pop(previous_source, None)
 
     seen = set()
     merged_chars = []
@@ -2975,7 +2991,7 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     summaries = [m.summary for m in memories if m.summary]
     base = memories[0]
 
-    return ContextMemory(
+    merged = ContextMemory(
         source_language=base.source_language,
         summary=" | ".join(summaries),
         setting=next((m.setting for m in memories if m.setting), ""),
@@ -2986,6 +3002,16 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
         ),
         scene_notes=merged_notes,
     )
+    if conflicting_terms:
+        merged._analysis_degraded = True
+        if log_fn:
+            log_fn(
+                "Yardımcı analiz terim çatışması: "
+                + ", ".join(sorted(conflicting_terms, key=str.casefold))
+                + " — belirsiz kararlar prompt/cache'e alınmadı",
+                "warn",
+            )
+    return merged
 
 
 # ── Sistem prompt üretici ─────────────────────────────────────────────────────
@@ -10105,6 +10131,21 @@ def critic_pass_with_helper(
                         "recovered": recovered,
                     })
 
+            before_reason_map = _semantic_reason_map(result, cues, glossary)
+            trial_result = list(result)
+            for item in prepared:
+                if item["ok"]:
+                    trial_result[item["pos"]] = (
+                        item["old_idx"], item["old_ts"], item["final_text"])
+            after_reason_map = _semantic_reason_map(trial_result, cues, glossary)
+            new_issue_positions = {
+                idx_to_pos[sid]
+                for sid, reasons in after_reason_map.items()
+                if sid in idx_to_pos and any(
+                    _is_semantic_reconciliation_reason(reason)
+                    for reason in reasons - before_reason_map.get(sid, set()))
+            }
+
             accepted_ids = {item["fid"] for item in prepared if item["ok"]}
             partial_flow_group_ids = set()
             for item in prepared:
@@ -10137,6 +10178,11 @@ def critic_pass_with_helper(
                             old_text, final_text)
                         else "fragment_group_partial"
                     )
+                if (ok and new_issue_positions and any(
+                        abs(item["pos"] - issue_pos) <= 1
+                        for issue_pos in new_issue_positions)):
+                    ok = False
+                    reason = "new_validator_issue"
                 if not ok:
                     critic_rejected += 1
                     critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1

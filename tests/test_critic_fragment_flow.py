@@ -364,6 +364,35 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(no_op_changes, [])
 
+    def test_combined_neighbor_regression_rejects_all_nearby_fixes(self):
+        cues = [Cue(1, "He arrived."), Cue(2, "Then he left.")]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Buraya geldi, okay."),
+            (2, "00:00:01,000 --> 00:00:02,000", "Sonra gitti, okay."),
+        ]
+        fixes = [
+            {"id": "1", "fixed": "Buraya geldi."},
+            {"id": "2", "fixed": "Buraya geldi."},
+        ]
+        hits = [
+            (1, "", "", "GARBLE_TOKEN"),
+            (2, "", "", "GARBLE_TOKEN"),
+        ]
+        changes = []
+        with patch("hybrid_translate.run_validators", return_value=hits), \
+             patch("hybrid_translate.validate_polish_candidate",
+                   return_value=(True, "")), \
+             patch("hybrid_translate._semantic_reason_map",
+                   side_effect=[{}, {"2": {"NEIGHBOR_ECHO"}}]), \
+             patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                change_log=changes,
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(changes, [])
+
     def test_local_fix_is_reported_and_fragment_context_is_fresh(self):
         cues = [
             Cue(1, "This metaphor,"),

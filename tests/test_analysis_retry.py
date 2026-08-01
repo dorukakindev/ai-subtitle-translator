@@ -6,6 +6,42 @@ from unittest.mock import patch
 
 
 class AnalyzeWithHelperRetryTest(unittest.TestCase):
+    def test_conflicting_chunk_terms_are_dropped_and_not_cacheable(self):
+        import hybrid_translate as ht
+
+        fake_models = types.ModuleType("subtitle_localizer.models")
+
+        class ContextMemory:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_models.ContextMemory = ContextMemory
+        fake_pkg = types.ModuleType("subtitle_localizer")
+        fake_pkg.models = fake_models
+        memories = [
+            SimpleNamespace(
+                source_language="en", summary="one", setting="", tone="",
+                characters=[], recurring_terms={"The Order": "Tarikat"},
+                scene_notes=[]),
+            SimpleNamespace(
+                source_language="en", summary="two", setting="", tone="",
+                characters=[], recurring_terms={"the order": "Düzen"},
+                scene_notes=[]),
+        ]
+        logs = []
+
+        with patch.dict(sys.modules, {
+            "subtitle_localizer": fake_pkg,
+            "subtitle_localizer.models": fake_models,
+        }), patch.object(ht, "_ensure_path", lambda: None):
+            merged = ht._merge_memories(
+                memories, target_language="tr",
+                log_fn=lambda message, level="info": logs.append((level, message)))
+
+        self.assertEqual(merged.recurring_terms, {})
+        self.assertTrue(getattr(merged, "_analysis_degraded", False))
+        self.assertTrue(any("The Order" in message for _level, message in logs))
+
     def test_failed_auxiliary_component_is_retried_once(self):
         import hybrid_translate as ht
 

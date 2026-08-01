@@ -154,6 +154,31 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("9", by_id)
         self.assertEqual(by_id["10"], "Gerçek diyalog.")
 
+    def test_final_source_timing_guard_removes_reintroduced_sdh(self):
+        source_cues = [
+            ("44", "00:00:02,000 --> 00:00:03,000", "(fireballs thudding)"),
+            (
+                "45",
+                "00:00:03,000 --> 00:00:04,000",
+                "(shields clattering)\nHold.",
+            ),
+        ]
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "[ATEŞ TOPLARININ GÜMBÜRTÜSÜ]"),
+            (
+                "2",
+                "00:00:03,000 --> 00:00:04,000",
+                "(kalkanlar takırdar)\nDayanın.",
+            ),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source_cues)
+        texts = {str(idx): text for idx, _ts, text in result}
+
+        self.assertNotIn("1", texts)
+        self.assertEqual(texts["2"], "Dayanın.")
+
     def test_parenthetical_dialogue_and_bracketed_ui_text_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "(No.)"),

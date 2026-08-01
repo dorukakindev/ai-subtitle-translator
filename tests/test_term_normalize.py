@@ -267,6 +267,39 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         result_map = {idx: text for idx, _ts, text in result}
         self.assertEqual(result_map["1"], "Troy kuşatması başladı.")  # değişmedi
 
+    def test_ignores_outside_id_non_string_and_conflicting_duplicate(self):
+        blocks = _b(
+            (1, "Troy kuşatması başladı."),
+            (2, "Sonra Troy yıkıldı."),
+            (3, "Truva'nın kalıntıları bulundu."),
+            (4, "Ama Troy hâlâ tartışmalı."),
+            (5, "Truva'ya dair yeni kanıtlar var."),
+        )
+        src = _s(**{
+            "1": "The Troy siege began.", "2": "Then Troy fell.",
+            "3": "The ruins of Troy were found.",
+            "4": "But Troy is still disputed.",
+            "5": "New evidence about Troy exists.",
+        })
+        fixes = [
+            {"id": "1", "tr": "Truva kuşatması başladı."},
+            {"id": "2", "tr": 123},
+            {"id": "3", "tr": "Bu cue planda değil."},
+            {"id": "4", "tr": "Ama Truva hâlâ tartışmalı."},
+            {"id": "4", "tr": "Ama Troya hâlâ tartışmalı."},
+        ]
+        import sys
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
+            result, n = gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model")
+
+        result_map = {idx: text for idx, _ts, text in result}
+        self.assertEqual(n, 1)
+        self.assertEqual(result_map["1"], "Truva kuşatması başladı.")
+        self.assertEqual(result_map["2"], "Sonra Troy yıkıldı.")
+        self.assertEqual(result_map["3"], "Truva'nın kalıntıları bulundu.")
+        self.assertEqual(result_map["4"], "Ama Troy hâlâ tartışmalı.")
+
     def test_missing_helper_key_returns_unchanged(self):
         blocks = _b(
             (1, "Troy kuşatması başladı."),

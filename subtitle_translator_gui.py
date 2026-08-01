@@ -5740,6 +5740,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     CHUNK = 60
     for cs in range(0, len(items), CHUNK):
         chunk = items[cs:cs + CHUNK]
+        chunk_ids = {str(item["id"]) for item in chunk}
         try:
             resp = _safe_chat_create(
                 client, model=helper_model,
@@ -5757,13 +5758,24 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             data = json.loads(raw)
         except Exception:
             continue
+        if not isinstance(data, list):
+            continue
+        chunk_results = {}
+        conflicting_ids = set()
         for item in data:
             if not isinstance(item, dict):
                 continue
             rid = str(item.get("id", ""))
             new_text = item.get("tr")
-            if rid in by_idx_text and new_text is not None:
-                result_map[rid] = new_text
+            if rid not in chunk_ids or not isinstance(new_text, str):
+                continue
+            if rid in chunk_results and chunk_results[rid] != new_text:
+                conflicting_ids.add(rid)
+                continue
+            chunk_results.setdefault(rid, new_text)
+        for rid in conflicting_ids:
+            chunk_results.pop(rid, None)
+        result_map.update(chunk_results)
 
     fixes_by_idx = {it["id"]: [(f["wrong"], f["correct"]) for f in it["fixes"]] for it in items}
     fixed_count = 0
@@ -10821,7 +10833,8 @@ class App(ctk.CTk):
                         if not backup.exists():
                             atomic_write_bytes(backup, output_path.read_bytes())
                         delivery = _prepare_upload_ready_blocks(
-                            output_blocks, tgt, self._log)
+                            output_blocks, tgt, self._log,
+                            source_cues=source_blocks)
                         write_srt(output_path, delivery, tgt)
                     total_fixed += len(changes)
                     report_lines.append(
@@ -14282,7 +14295,8 @@ class App(ctk.CTk):
                         pass
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    self._maybe_merge_cues(blocks), tgt, self._log)
+                    self._maybe_merge_cues(blocks), tgt, self._log,
+                    source_cues=cues)
                 write_srt(out_path, _delivery_blocks, tgt)
                 self._log(f"Kaydedildi: {out_path}  ({len(blocks)} satır, {missing} eksik)", "ok")
                 _post_ui(self, messagebox.showinfo, "Tamamlandı",
@@ -15860,7 +15874,7 @@ class App(ctk.CTk):
                     blocks = _restore_tags_blocks(blocks, _raw_map)
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    blocks, tgt, self._log)
+                    blocks, tgt, self._log, source_cues=orig_cues)
                 write_srt(fp, _delivery_blocks, tgt)
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
                 self._update_file_progress(fp,
@@ -18447,7 +18461,8 @@ class App(ctk.CTk):
             except Exception:
                 pass
             _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks), tgt, self._log)
+                self._maybe_merge_cues(sorted_blocks), tgt, self._log,
+                source_cues=cues)
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _has_missing = _hata_n > 0
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
@@ -19313,7 +19328,8 @@ class App(ctk.CTk):
                                     "err")
                                 break
                             _delivery_blocks = _prepare_upload_ready_blocks(
-                                self._maybe_merge_cues(pp), tgt, self._log)
+                                self._maybe_merge_cues(pp), tgt, self._log,
+                                source_cues=_orig_cues)
                             write_srt(output_path, _delivery_blocks, tgt)
                             self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map, tgt)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
@@ -19781,7 +19797,8 @@ class App(ctk.CTk):
             else:
                 _quarantined = None
             _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log)
+                self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log,
+                source_cues=_src_cues)
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
             if _has_missing:
                 self._log(
@@ -20780,7 +20797,8 @@ class App(ctk.CTk):
                 _quarantined = (
                     _quarantine_incomplete_final(out_path) if _has_missing else None)
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    self._maybe_merge_cues(_final_blocks), tgt, self._log)
+                    self._maybe_merge_cues(_final_blocks), tgt, self._log,
+                    source_cues=cues)
                 write_srt(_write_path, _delivery_blocks, tgt)
                 self._save_raw_backup(_write_path, _raw_backup_blocks, _raw_map, tgt)
                 if _has_missing:

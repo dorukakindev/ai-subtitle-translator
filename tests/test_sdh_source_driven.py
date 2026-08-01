@@ -223,6 +223,18 @@ class SdhSourceDrivenTest(unittest.TestCase):
                 )
                 self.assertEqual(result[0][2], translation)
 
+    def test_speaking_phrase_is_not_confused_with_speech_descriptor(self):
+        self.assertFalse(sdh.is_sdh_descriptor("Speaking of which"))
+        self.assertFalse(sdh.src_is_sfx_only("[Speaking of which]"))
+        self.assertTrue(sdh.is_sdh_descriptor("woman speaking"))
+        self.assertTrue(sdh.is_sdh_descriptor("speaking softly"))
+
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "[Hazır konusu açılmışken]")]
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map={"1": "[Speaking of which]"}, source_driven=True)
+        self.assertEqual(result, blocks)
+
     def test_multiline_sfx_is_still_dropped(self):
         source = "(Bells\njingling)"
         self.assertTrue(sdh.src_is_sfx_only(source))
