@@ -2428,6 +2428,14 @@ _DELIVERY_TURKISH_SDH_RE = re.compile(
     r"alarm\w*|motor\w*|rüzgar\w*)\b",
     re.IGNORECASE,
 )
+_DELIVERY_LANGUAGE_LABEL_RE = re.compile(
+    r"(?:latin|latince|french|fransizca|english|ingilizce|spanish|ispanyolca|"
+    r"german|almanca|italian|italyanca|arabic|arapca|russian|rusca|"
+    r"portuguese|portekizce|japanese|japonca|chinese|cince|korean|korece|"
+    r"(?:african|afrika) (?:language|dili)(?: or glossolalia)?|"
+    r"(?:language|dil)|glossolalia|unintelligible|anlasilmiyor)",
+    re.IGNORECASE,
+)
 
 
 def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
@@ -2467,6 +2475,8 @@ def _is_delivery_sdh_only(text: str) -> bool:
     return all(
         sdh_cleaner.is_sdh_descriptor(match.group(2), bare_text=False)
         or bool(_DELIVERY_TURKISH_SDH_RE.search(match.group(2)))
+        or bool(_DELIVERY_LANGUAGE_LABEL_RE.fullmatch(
+            sdh_cleaner._ascii_fold(match.group(2)).strip()))
         for match in tokens
     )
 

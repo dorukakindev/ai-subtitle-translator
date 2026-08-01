@@ -148,6 +148,25 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("9", by_id)
         self.assertEqual(by_id["10"], "Gerçek diyalog.")
 
+    def test_pure_language_labels_are_removed(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "(Latince)"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "(Fransızca)"),
+            ("3", "00:00:04,000 --> 00:00:05,000", "(Afrika dili)"),
+            ("4", "00:00:05,000 --> 00:00:06,000", "(unintelligible)"),
+            ("5", "00:00:06,000 --> 00:00:07,000", "(African language or glossolalia)"),
+            ("6", "00:00:07,000 --> 00:00:08,000", "Gerçek diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        by_id = {str(idx): text for idx, _ts, text in result}
+        self.assertNotIn("1", by_id)
+        self.assertNotIn("2", by_id)
+        self.assertNotIn("3", by_id)
+        self.assertNotIn("4", by_id)
+        self.assertNotIn("5", by_id)
+        self.assertEqual(by_id["6"], "Gerçek diyalog.")
+
     def test_final_source_timing_guard_removes_reintroduced_sdh(self):
         source_cues = [
             ("44", "00:00:02,000 --> 00:00:03,000", "(fireballs thudding)"),
