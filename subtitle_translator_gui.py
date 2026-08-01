@@ -2718,10 +2718,15 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
 
 def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                             same_folder=False, selected_roots=(),
-                            expected_source_language=AUTO_LANGUAGE):
+                            expected_source_language=AUTO_LANGUAGE,
+                            ignore_existing_outputs=()):
     issues = []
     seen_sources = {}
     output_sources = {}
+    ignored_existing = {
+        os.path.normcase(os.path.abspath(str(path)))
+        for path in (ignore_existing_outputs or ())
+    }
     for raw_path in files or ():
         path = Path(raw_path)
         source_key = os.path.normcase(os.path.abspath(str(path)))
@@ -2800,7 +2805,8 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "severity": "error", "code": "overwrite_source",
                 "path": str(path), "message": "Hedef yol kaynak dosyanın üzerine yazıyor.",
             })
-        elif output.exists() and output.is_file():
+        elif (source_key not in ignored_existing
+              and output.exists() and output.is_file()):
             issues.append({
                 "severity": "warning", "code": "existing_output",
                 "path": str(path), "output": str(output),
@@ -6059,6 +6065,14 @@ def _batch_write_guard_reason(source_path, output_path, expected_source_hash="",
     return ""
 
 
+def _interrupted_run_pending_files(record: dict) -> list[str]:
+    return [
+        str(path) for path, state in dict((record or {}).get("files") or {}).items()
+        if (state or {}).get("status") not in {"done", "skip"}
+        and Path(path).is_file()
+    ]
+
+
 def _load_interrupted_run_record() -> dict | None:
     try:
         data = json.loads(_active_run_state_path().read_text(encoding="utf-8"))
@@ -6066,7 +6080,10 @@ def _load_interrupted_run_record() -> dict | None:
             return None
         pid = int(data.get("pid") or 0)
         if pid and _pid_alive(pid):
-            return None
+            saved_marker = str(data.get("process_start") or "")
+            current_marker = _process_start_marker(pid) if saved_marker else ""
+            if not (saved_marker and current_marker and saved_marker != current_marker):
+                return None
         return data
     except Exception:
         return None
@@ -6977,6 +6994,7 @@ class App(ctk.CTk):
         self._run_log_paths = []
         self._crash_resume_dialog = None
         self._crash_resume_after_id = None
+        self._crash_resume_source_paths = set()
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -7036,6 +7054,8 @@ class App(ctk.CTk):
         self._crash_resume_after_id = None
         dlg = self._crash_resume_dialog
         self._crash_resume_dialog = None
+        if forget:
+            self._crash_resume_source_paths = set()
         try:
             if dlg is not None and dlg.winfo_exists():
                 dlg.destroy()
@@ -7051,11 +7071,7 @@ class App(ctk.CTk):
     def _restore_interrupted_run(self, record: dict):
         self._cancel_crash_resume(forget=False)
         settings = dict(record.get("settings") or {})
-        files = [
-            path for path, state in dict(record.get("files") or {}).items()
-            if (state or {}).get("status") not in {"done", "skip"}
-            and Path(path).is_file()
-        ]
+        files = _interrupted_run_pending_files(record)
         if not files:
             try:
                 _active_run_state_path().unlink(missing_ok=True)
@@ -7063,6 +7079,9 @@ class App(ctk.CTk):
                 pass
             return
         self._selected_files = files
+        self._crash_resume_source_paths = {
+            os.path.normcase(os.path.abspath(str(path))) for path in files
+        }
         self._input_folder_explicitly_selected = False
         self.input_var.set(str(settings.get("input_dir") or ""))
         self.output_var.set(str(settings.get("output_dir") or ""))
@@ -7137,11 +7156,7 @@ class App(ctk.CTk):
         settings = dict(record.get("settings") or {})
         if settings.get("mode") != "sync":
             return
-        pending = [
-            path for path, state in dict(record.get("files") or {}).items()
-            if (state or {}).get("status") not in {"done", "skip"}
-            and Path(path).is_file()
-        ]
+        pending = _interrupted_run_pending_files(record)
         if not pending:
             try:
                 _active_run_state_path().unlink(missing_ok=True)
@@ -9636,6 +9651,7 @@ class App(ctk.CTk):
         record = {
             "run_id": run_id,
             "pid": os.getpid(),
+            "process_start": _process_start_marker(os.getpid()),
             "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
             "ended_at": "",
             "status": "çalışıyor",
@@ -9768,6 +9784,8 @@ class App(ctk.CTk):
             else:
                 record["status"] = "tamamlandı"
             snapshot = copy.deepcopy(record)
+        resume_files = _interrupted_run_pending_files(snapshot)
+        snapshot["resume_pending"] = list(resume_files)
 
         try:
             snapshot["completion_markers"] = _write_completion_markers(snapshot)
@@ -9799,10 +9817,16 @@ class App(ctk.CTk):
         with self._run_record_lock:
             self._last_run_record = snapshot
             self._active_run_record = None
-        try:
-            _active_run_state_path().unlink(missing_ok=True)
-        except Exception:
-            pass
+        if resume_files:
+            try:
+                atomic_write_json(_active_run_state_path(), snapshot)
+            except Exception as exc:
+                self._log(f"Yarım çalışma kaydı korunamadı: {exc}", "warn")
+        else:
+            try:
+                _active_run_state_path().unlink(missing_ok=True)
+            except Exception:
+                pass
         return snapshot
 
     def _log(self, msg, tag="", issue_id=None):
@@ -16560,12 +16584,15 @@ class App(ctk.CTk):
         same_folder = bool(self.same_folder_var.get())
         selected_roots = tuple(self._selected_folder_roots or ())
         expected_source_language = self.src_var.get()
+        ignore_existing_outputs = tuple(
+            getattr(self, "_crash_resume_source_paths", ()) or ())
 
         def _worker():
             issues = scan_subtitle_preflight(
                 files, input_dir, output_dir,
                 same_folder=same_folder, selected_roots=selected_roots,
-                expected_source_language=expected_source_language)
+                expected_source_language=expected_source_language,
+                ignore_existing_outputs=ignore_existing_outputs)
 
             def _finish():
                 if getattr(self, "_is_shutting_down", False):
@@ -16639,6 +16666,7 @@ class App(ctk.CTk):
                         return
                 self._file_integrity_preflight_signature = self._file_preflight_signature(active_files)
                 self._file_integrity_preflight_done = True
+                self._crash_resume_source_paths = set()
                 self._log(
                     "Dosya ön kontrolü tamamlandı; kaynak dil kontrolüne geçiliyor.",
                     "ok",

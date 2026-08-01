@@ -147,6 +147,7 @@ class RunTraceabilityTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
+            (root / "active_run.json").write_text("{}", encoding="utf-8")
             with patch.object(gui, "_resolve_report_dir", return_value=root), \
                     patch.object(
                         gui, "state_path",
@@ -158,11 +159,83 @@ class RunTraceabilityTest(unittest.TestCase):
             self.assertTrue(txt_path.exists())
             self.assertTrue(json_path.exists())
             self.assertTrue(last_path.exists())
+            self.assertFalse((root / "active_run.json").exists())
             self.assertEqual(
                 json.loads(last_path.read_text(encoding="utf-8"))["run_id"],
                 result["run_id"])
         self.assertIsNone(stub._active_run_record)
         self.assertEqual(stub._last_run_record["status"], "tamamlandı")
+
+    def test_stopped_run_keeps_pending_files_for_next_startup(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            done = root / "done.srt"
+            pending = root / "pending.srt"
+            done.write_text("done", encoding="utf-8")
+            pending.write_text("pending", encoding="utf-8")
+            record = {
+                "run_id": "run-stopped",
+                "pid": 123,
+                "process_start": "win:old",
+                "started_at": "2026-08-01T01:00:00",
+                "ended_at": "",
+                "status": "çalışıyor",
+                "settings": {
+                    "input_dir": str(root),
+                    "output_dir": str(root / "out"),
+                    "mode": "sync",
+                },
+                "files": {
+                    str(done): {"status": "done", "phase": "Tamamlandı"},
+                    str(pending): {"status": "running", "phase": "Çeviri"},
+                },
+                "fixes_applied": 0,
+                "suggestions_rejected": 0,
+                "warnings": 0,
+                "errors": 0,
+                "outputs": [],
+                "reports": [],
+                "completion_markers": [],
+                "log_path": "run.log",
+                "last_traceback": "",
+            }
+            stub = SimpleNamespace(
+                _run_record_lock=threading.RLock(),
+                _active_run_record=record,
+                _last_run_record=None,
+                _stop_flag=True,
+                _log=MagicMock(),
+            )
+            with patch.object(gui, "_resolve_report_dir", return_value=root), \
+                    patch.object(gui, "_write_completion_markers", return_value=[]), \
+                    patch.object(
+                        gui, "state_path",
+                        side_effect=lambda _file, *parts: root.joinpath(*parts)):
+                result = gui.App._finalize_run_record(stub)
+
+            active = json.loads(
+                (root / "active_run.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "durduruldu")
+            self.assertEqual(result["resume_pending"], [str(pending)])
+            self.assertEqual(active["resume_pending"], [str(pending)])
+            self.assertEqual(active["files"][str(done)]["status"], "done")
+
+    def test_interrupted_record_ignores_reused_pid_but_not_same_process(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "active_run.json"
+            path.write_text(json.dumps({
+                "pid": 123,
+                "process_start": "win:old",
+                "files": {},
+            }), encoding="utf-8")
+            with patch.object(gui, "_active_run_state_path", return_value=path), \
+                    patch.object(gui, "_pid_alive", return_value=True), \
+                    patch.object(gui, "_process_start_marker", return_value="win:new"):
+                self.assertIsNotNone(gui._load_interrupted_run_record())
+            with patch.object(gui, "_active_run_state_path", return_value=path), \
+                    patch.object(gui, "_pid_alive", return_value=True), \
+                    patch.object(gui, "_process_start_marker", return_value="win:old"):
+                self.assertIsNone(gui._load_interrupted_run_record())
 
     def test_quality_report_embeds_run_id(self):
         text = gui.build_quality_report_text(

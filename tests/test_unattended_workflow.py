@@ -128,6 +128,13 @@ class SubtitlePreflightTest(unittest.TestCase):
             self.assertEqual(existing[0]["output"], str(target))
             self.assertEqual(existing[0]["severity"], "warning")
 
+            resumed_issues = gui.scan_subtitle_preflight(
+                [str(source)], str(root), str(output_dir),
+                ignore_existing_outputs=[str(source)],
+            )
+            self.assertNotIn(
+                "existing_output", {item["code"] for item in resumed_issues})
+
     def test_existing_output_choices_remove_only_selected_sources(self):
         files = [
             str(Path("season-a") / "episode-1.srt"),
