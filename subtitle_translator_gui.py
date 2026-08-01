@@ -10250,6 +10250,22 @@ class App(ctk.CTk):
         _post_ui(self, _write)
 
     def _provider_wait_callback(self, event: str, remaining: int, waiting: int):
+        retry_match = re.fullmatch(r"retry_(start|tick|end)_(\d+)_(\d+)", event)
+        if retry_match:
+            phase, attempt, total = retry_match.groups()
+            if phase == "start":
+                self._log(
+                    f"Geçici API hatası: {remaining} sn sonra yeniden denenecek "
+                    f"({attempt}/{total})", "warn")
+            if phase in {"start", "tick"}:
+                self._set_status(
+                    f"API yeniden deneme beklemesi: {remaining} sn "
+                    f"({attempt}/{total})")
+            elif phase == "end" and waiting == 0:
+                self._set_status(
+                    "Durduruluyor..." if self._stop_flag
+                    else "API yeniden deneniyor...")
+            return
         if event == "start" and waiting == 1:
             self._log(
                 f"Reseller kota beklemesi: {remaining} sn "

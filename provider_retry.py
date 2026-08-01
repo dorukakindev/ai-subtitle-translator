@@ -14,6 +14,8 @@ _RETRY_DELAY_RE = re.compile(
     r'(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec(?:onds?)?)?'
 )
 
+TRANSIENT_RETRY_DELAYS = (30.0, 60.0, 120.0)
+
 
 def _status_code(exc) -> int | None:
     status = getattr(exc, "status_code", None)
@@ -185,6 +187,35 @@ class ProviderCooldownRegistry:
                 self._notify("end", 0.0)
         return wait
 
+    def wait_for_retry(self, delay: float, attempt: int, total: int) -> float:
+        wait = max(0.0, float(delay))
+        if wait <= 0.0:
+            return 0.0
+        with self._lock:
+            self._waiting += 1
+        prefix = f"retry_{{}}_{int(attempt)}_{int(total)}"
+        self._notify(prefix.format("start"), wait)
+        deadline = self._clock() + wait
+        last_second = None
+        try:
+            while True:
+                if self._cancel_check and self._cancel_check():
+                    raise ProviderWaitCancelled(
+                        "API yeniden deneme beklemesi kullanıcı tarafından durduruldu")
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    break
+                second = int(remaining + 0.999)
+                if second != last_second:
+                    last_second = second
+                    self._notify(prefix.format("tick"), remaining)
+                self._sleep(min(0.25, remaining))
+        finally:
+            with self._lock:
+                self._waiting = max(0, self._waiting - 1)
+            self._notify(prefix.format("end"), 0.0)
+        return wait
+
     def record_rate_limit(self, client, exc) -> float | None:
         if _status_code(exc) != 429 and "rate limit" not in str(exc or "").lower():
             return None
@@ -223,6 +254,42 @@ def record_provider_failure(client, exc) -> float | None:
 
 def configure_provider_wait_hooks(cancel_check=None, wait_callback=None):
     _REGISTRY.set_hooks(cancel_check=cancel_check, wait_callback=wait_callback)
+
+
+def _is_transient_provider_error(exc) -> bool:
+    text = str(exc or "").lower()
+    status = _status_code(exc)
+    if status in {400, 401, 403, 404, 409, 422}:
+        return False
+    if any(marker in text for marker in (
+        "invalid api key",
+        "insufficient_quota",
+        "pre_consume_token_quota_failed",
+        "token quota is not enough",
+    )):
+        return False
+    if "model_not_found" in text and any(marker in text for marker in (
+        "no available channel",
+        "failed to get available channel",
+        "auto groups is not enabled",
+    )):
+        return False
+    return (
+        status in {408, 429, 500, 502, 503, 504, 529}
+        or "rate limit" in text
+        or "temporarily unavailable" in text
+        or "timeout" in text
+        or "connection" in text
+        or "server error" in text
+        or "internal error" in text
+    )
+
+
+def _wait_for_transient_retry(exc, attempt: int, total: int) -> float:
+    scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
+    provider_delay = retry_after_seconds(exc, default=scheduled)
+    return _REGISTRY.wait_for_retry(
+        max(scheduled, provider_delay), attempt, total)
 
 
 def _is_custom_gpt5(client, model: str) -> bool:
@@ -333,12 +400,16 @@ def _structured_unsupported(exc) -> bool:
 
 
 def _chat_create_once(client, kwargs: dict):
-    before_provider_request(client)
-    try:
-        return client.chat.completions.create(**kwargs)
-    except Exception as exc:
-        record_provider_failure(client, exc)
-        raise
+    total = len(TRANSIENT_RETRY_DELAYS)
+    for attempt in range(total + 1):
+        before_provider_request(client)
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            record_provider_failure(client, exc)
+            if attempt >= total or not _is_transient_provider_error(exc):
+                raise
+            _wait_for_transient_retry(exc, attempt + 1, total)
 
 
 def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None):

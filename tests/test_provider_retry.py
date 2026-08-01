@@ -116,6 +116,20 @@ class ProviderCooldownRegistryTest(unittest.TestCase):
         self.assertEqual(events[0][0], "start")
         self.assertEqual(events[-1], ("end", 0, 0))
 
+    def test_transient_retry_wait_uses_schedule_and_can_be_cancelled(self):
+        now = [100.0]
+        events = []
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: now[0],
+            sleeper=lambda delay: now.__setitem__(0, now[0] + delay),
+            wait_callback=lambda *args: events.append(args),
+        )
+
+        self.assertEqual(registry.wait_for_retry(30, 1, 3), 30.0)
+        self.assertEqual(now[0], 130.0)
+        self.assertEqual(events[0][0], "retry_start_1_3")
+        self.assertEqual(events[-1], ("retry_end_1_3", 0, 0))
+
 
 class SafeChatCooldownIntegrationTest(unittest.TestCase):
     def _assert_wrapper_records_429(self, fn):
@@ -127,17 +141,69 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
         with (
             mock.patch("provider_retry.before_provider_request") as before,
             mock.patch("provider_retry.record_provider_failure") as record,
+            mock.patch("provider_retry._wait_for_transient_retry") as wait,
         ):
             with self.assertRaises(RuntimeError):
                 fn(client, model="gpt-5.4", messages=[])
-        before.assert_called_once_with(client)
-        record.assert_called_once_with(client, error)
+        self.assertEqual(before.call_count, 4)
+        self.assertEqual(record.call_count, 4)
+        self.assertEqual(wait.call_args_list, [
+            mock.call(error, 1, 3),
+            mock.call(error, 2, 3),
+            mock.call(error, 3, 3),
+        ])
 
     def test_hybrid_wrapper_records_reseller_429(self):
         self._assert_wrapper_records_429(ht._safe_chat_create)
 
     def test_gui_wrapper_records_reseller_429(self):
         self._assert_wrapper_records_429(gui._safe_chat_create)
+
+    def test_temporary_503_retries_after_30_60_120_seconds(self):
+        client = mock.MagicMock()
+        client.base_url = "https://api.shuaiapi.com/v1"
+        client.api_key = "sk-reseller"
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        error = TemporaryError("The service is temporarily unavailable")
+        response = mock.MagicMock()
+        client.chat.completions.create.side_effect = [error, error, error, response]
+        waits = []
+        with mock.patch.object(
+            provider_retry._REGISTRY,
+            "wait_for_retry",
+            side_effect=lambda delay, attempt, total: waits.append(
+                (delay, attempt, total)) or delay,
+        ):
+            result = ht._safe_chat_create(
+                client, model="gpt-5.4", messages=[])
+
+        self.assertIs(result, response)
+        self.assertEqual(waits, [
+            (30.0, 1, 3),
+            (60.0, 2, 3),
+            (120.0, 3, 3),
+        ])
+
+    def test_permanent_model_channel_503_is_not_retried(self):
+        client = mock.MagicMock()
+        client.base_url = "https://api.shuaiapi.com/v1"
+        client.api_key = "sk-reseller"
+
+        class ChannelError(RuntimeError):
+            status_code = 503
+
+        error = ChannelError(
+            "model_not_found: No available channel for model gpt-5.4")
+        client.chat.completions.create.side_effect = error
+        with mock.patch("provider_retry._wait_for_transient_retry") as wait:
+            with self.assertRaises(ChannelError):
+                ht._safe_chat_create(client, model="gpt-5.4", messages=[])
+
+        client.chat.completions.create.assert_called_once()
+        wait.assert_not_called()
 
 
 class ResellerStructuredOutputTest(unittest.TestCase):
@@ -241,6 +307,24 @@ class ProviderWaitUiCallbackTest(unittest.TestCase):
         self.assertIn("12 sn", logs[0][0])
         self.assertIn("11 sn", statuses[-2])
         self.assertIn("devam ediliyor", statuses[-1])
+
+    def test_transient_retry_callback_reports_attempt_and_delay(self):
+        logs = []
+        statuses = []
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _log=lambda *args: logs.append(args),
+            _set_status=statuses.append,
+        )
+        gui.App._provider_wait_callback(app, "retry_start_2_3", 60, 1)
+        gui.App._provider_wait_callback(app, "retry_tick_2_3", 59, 1)
+        gui.App._provider_wait_callback(app, "retry_end_2_3", 0, 0)
+
+        self.assertEqual(len(logs), 1)
+        self.assertIn("60 sn", logs[0][0])
+        self.assertIn("2/3", logs[0][0])
+        self.assertIn("59 sn", statuses[-2])
+        self.assertIn("yeniden deneniyor", statuses[-1])
 
 
 if __name__ == "__main__":
