@@ -93,6 +93,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "semantic_reconcile": True,
                 "clean_sdh": True,
                 "backup_raw": True,
+                "term_normalize": True,
                 "linebreak": False,
             },
         )

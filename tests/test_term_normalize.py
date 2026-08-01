@@ -20,6 +20,28 @@ def _s(**kw):
 
 
 class MixedTermAutofixPlanTest(unittest.TestCase):
+    def test_single_locked_english_residue_is_planned(self):
+        blocks = _b((48, "Soldano'nun Memories'leri olamazdı."))
+        src = _s(**{"48": "Soldano couldn't have the Memories."})
+        plan = gui._mixed_term_autofix_plan(
+            blocks, src, locked_terms={"Memories": "Anılar"})
+        self.assertEqual(plan, {"48": [("Memories", "Anılar")]})
+
+    def test_locked_source_equal_target_is_not_planned(self):
+        blocks = _b((1, "Roger Smith geldi."))
+        src = _s(**{"1": "Roger Smith arrived."})
+        plan = gui._mixed_term_autofix_plan(
+            blocks, src, locked_terms={"Roger Smith": "Roger Smith"})
+        self.assertEqual(plan, {})
+
+    def test_long_unmatched_lock_does_not_hide_inner_residue(self):
+        blocks = _b((1, "gerçek Memories geri döndü."))
+        src = _s(**{"1": "the true Memories returned."})
+        plan = gui._mixed_term_autofix_plan(
+            blocks, src,
+            locked_terms={"true Memories": "gerçek Anılar", "Memories": "Anılar"})
+        self.assertEqual(plan, {"1": [("Memories", "Anılar")]})
+
     def test_leak_cluster_targeted_even_when_minority(self):
         # Gerçek vaka: kaynakla birebir aynı 'Troy' ÇOĞUNLUKTA (3), doğru 'Truva' AZINLIKTA (2).
         # Plan yine de 'Troy' örneklerini hedeflemeli (çoğunluk değil, kaynak-eşleşme karar verir).

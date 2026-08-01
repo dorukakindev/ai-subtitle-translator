@@ -646,7 +646,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 2
+QUALITY_PROFILE_VERSION = 3
 QUALITY_PROFILE_DEFAULTS = {
     "model": "gpt-5.4",
     "mode": "sync",
@@ -664,6 +664,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "semantic_reconcile": True,
     "clean_sdh": True,
     "backup_raw": True,
+    "term_normalize": True,
     "linebreak": False,
 }
 WORKFLOW_PROFILES = {
@@ -5432,7 +5433,7 @@ def _mixed_term_autofix_plan(blocks: list, src_map: dict,
 
     Döner: {idx_str: [(yanlış_literal, doğru_literal), ...]}"""
     clusters_by_term = _mixed_term_clusters(blocks, src_map)
-    plan: dict = {}
+    plan = _locked_term_residue_plan(blocks, src_map, locked_terms)
     for term, clusters in clusters_by_term.items():
         real_clusters = [c for c in clusters if len(c) >= 2]
         if len(real_clusters) != 2:
@@ -5452,7 +5453,61 @@ def _mixed_term_autofix_plan(blocks: list, src_map: dict,
         )
         correct_literal = locked_target or real_clusters[other_i][0][1]
         for idx, _tok in real_clusters[leak_i]:
-            plan.setdefault(idx, []).append((wrong_literal, correct_literal))
+            fix = (wrong_literal, correct_literal)
+            if fix not in plan.setdefault(idx, []):
+                plan[idx].append(fix)
+    return plan
+
+
+def _locked_term_residue_plan(blocks: list, src_map: dict,
+                              locked_terms: dict | None = None) -> dict:
+    """Tek örnekli olsa bile kilitli terimin hedefte İngilizce kalmasını yakalar.
+
+    Yalnız kaynak ve hedefte aynı kaynak terim açıkça bulunduğunda plan üretir;
+    kaynak==hedef özel adlara ve iki Türkçe karşılık arasındaki tercihlere dokunmaz.
+    Uzun kilitli ifadeler önce denenir, ancak hedefte aynen kalmamışlarsa daha kısa
+    iç terimin (örn. ``true Memories`` içindeki ``Memories``) denetlenmesini engellemez.
+    """
+    if not locked_terms:
+        return {}
+    by_idx_text = {str(idx): str(text or "") for idx, _ts, text in blocks}
+    entries = []
+    seen = {}
+    for source, target in locked_terms.items():
+        src = str(source or "").strip()
+        tgt = str(target or "").strip()
+        if not src or not tgt or src.casefold() == tgt.casefold():
+            continue
+        key = src.casefold()
+        previous = seen.get(key)
+        if previous is not None and previous.casefold() != tgt.casefold():
+            seen[key] = ""
+            continue
+        seen[key] = tgt
+    for source_cf, target in seen.items():
+        if target:
+            source = next(
+                str(item).strip() for item in locked_terms
+                if str(item).strip().casefold() == source_cf)
+            entries.append((source, target))
+    entries.sort(key=lambda item: len(item[0]), reverse=True)
+
+    plan = {}
+    for idx, source_text in (src_map or {}).items():
+        translated = by_idx_text.get(str(idx), "")
+        if not source_text or not translated:
+            continue
+        for source, target in entries:
+            source_re = re.compile(
+                r"(?<!\w)" + re.escape(source) + r"(?!\w)", re.IGNORECASE)
+            if not source_re.search(str(source_text)):
+                continue
+            target_re = re.compile(
+                r"(?<!\w)" + re.escape(target) + r"(?!\w)", re.IGNORECASE)
+            if source_re.search(translated) and not target_re.search(translated):
+                fix = (source, target)
+                if fix not in plan.setdefault(str(idx), []):
+                    plan[str(idx)].append(fix)
     return plan
 
 
