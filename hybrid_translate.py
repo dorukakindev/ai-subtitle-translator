@@ -7008,6 +7008,7 @@ def semantic_reconciliation_pass(
     locked_terms: dict | None = None,
     target_coverage: float = 0.0,
     canon_hint: str = "",
+    analysis_context_hint: str = "",
     log_fn=None,
     token_callback=None,
     cancel_context=None,
@@ -7094,6 +7095,12 @@ def semantic_reconciliation_pass(
             "\nSEASON CANON (follow only when supported by the source and dialogue context; "
             "keep character names, voices, and Turkish sen/siz address decisions consistent):\n"
             + str(canon_hint).strip()
+        )
+    if analysis_context_hint:
+        system_prompt += (
+            "\nFILE ANALYSIS CONTEXT (preserve established character voice, "
+            "referents, and sen/siz decisions; do not invent facts):\n"
+            + str(analysis_context_hint).strip()
         )
 
     def _locked_suffixes(text: str, target: str) -> set:
@@ -10376,7 +10383,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
                          context_lines: int = None,
                          lookahead_lines: int = None,
                          scene_gap_sec: float = None,
-                         temperature: float = None) -> tuple[list, dict]:
+                         temperature: float = None,
+                         use_tm_context: bool = True) -> tuple[list, dict]:
     if context_lines is None:
         context_lines = CONTEXT_LINES
     if lookahead_lines is None:
@@ -10497,7 +10505,7 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
         prev_ctx = []
         for c in chunk[-context_lines:]:
             item = {"i": c.index, "t": _clean_source_text(c.text)}
-            if tm is not None:
+            if tm is not None and use_tm_context:
                 clean_source = _clean_source_text(c.text)
                 cached = tm.lookup(
                     clean_source, tgt_lang=tgt_lang, model=model,

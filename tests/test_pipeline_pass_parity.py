@@ -135,6 +135,22 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertTrue(write_pos < pm_pos < series_pos)
         self.assertNotIn("self._stage_series_memory_from_analysis(", src)
 
+    def test_chain_retries_invalid_chunk_before_building_next_context(self):
+        for flow in (gui.App._run_sync, gui.App._run_sync_hybrid):
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                invalid_pos = src.find("if _chunk_response_retry_reason(text, req):")
+                retry_pos = src.find("self._retry_hata(", invalid_pos)
+                pair_pos = src.find("_chain_pairs_from_result(", retry_pos)
+                self.assertTrue(0 <= invalid_pos < retry_pos < pair_pos)
+
+    def test_plain_sync_freezes_precontext_terms_for_quality_passes(self):
+        src = inspect.getsource(gui.App._run_sync)
+        self.assertIn('_precontext_locked_terms = {}', src)
+        self.assertIn('pre_data.get("terms")', src)
+        self.assertIn('locked_terms_by_file=', src)
+        self.assertIn('_precontext_locked_terms', src)
+
 
 if __name__ == "__main__":
     unittest.main()

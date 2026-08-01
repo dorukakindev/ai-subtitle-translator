@@ -8,10 +8,11 @@ Ham çeviri yedeği (.ham.srt) + Geri Çeviri Anlam Kontrolü (rapor-only).
 import os
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 import subtitle_translator_gui as gui
 import hybrid_translate as ht
-from tests._gui_app import make_app
 
 _TS = "00:00:01,000 --> 00:00:02,000"
 
@@ -19,32 +20,33 @@ _TS = "00:00:01,000 --> 00:00:02,000"
 class RawBackupTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = make_app(gui)  # açılıştaki yarım-batch penceresi kapalı (bkz. _gui_app)
-        cls.app.update_idletasks()
+        cls.app = SimpleNamespace(
+            backup_raw_var=SimpleNamespace(get=lambda: True, set=lambda _v: None),
+            _log=lambda *_args, **_kwargs: None,
+        )
 
     @classmethod
     def tearDownClass(cls):
-        try:
-            cls.app.destroy()
-        except Exception:
-            pass
+        pass
 
     def test_writes_ham_srt_when_on(self):
         d = tempfile.mkdtemp()
         out = os.path.join(d, "movie.srt")
-        self.app.backup_raw_var.set(True)
-        self.app._save_raw_backup(out, [("1", _TS, "Merhaba")], {"1": "Hello"})
-        self.assertTrue(os.path.exists(os.path.join(d, "movie.ham.srt")))
+        self.app.backup_raw_var = SimpleNamespace(get=lambda: True)
+        gui.App._save_raw_backup(
+            self.app, out, [("1", _TS, "Merhaba")], {"1": "Hello"})
+        self.assertEqual(len(list(Path(d, "Raporlar", "Ham").glob("movie.*.ham.srt"))), 1)
 
     def test_skips_when_off(self):
         d = tempfile.mkdtemp()
         out = os.path.join(d, "movie.srt")
-        self.app.backup_raw_var.set(False)
+        self.app.backup_raw_var = SimpleNamespace(get=lambda: False)
         try:
-            self.app._save_raw_backup(out, [("1", _TS, "x")], {"1": "y"})
-            self.assertFalse(os.path.exists(os.path.join(d, "movie.ham.srt")))
+            gui.App._save_raw_backup(
+                self.app, out, [("1", _TS, "x")], {"1": "y"})
+            self.assertFalse(list(Path(d, "Raporlar", "Ham").glob("movie.*.ham.srt")))
         finally:
-            self.app.backup_raw_var.set(True)   # varsayılanı geri al
+            self.app.backup_raw_var = SimpleNamespace(get=lambda: True)
 
     def test_backup_unaffected_by_later_pass_mutation(self):
         # Ham snapshot (list kopyası) sonradan pass'ler listeyi değiştirse de korunur
@@ -53,9 +55,10 @@ class RawBackupTest(unittest.TestCase):
         raw = [("1", _TS, "ham metin")]
         snapshot = list(raw)            # akışlardaki _raw_backup_blocks ile aynı desen
         raw[0] = ("1", _TS, "DEĞİŞTİ")  # bir pass yeniden atadı
-        self.app.backup_raw_var.set(True)
-        self.app._save_raw_backup(out, snapshot, {"1": "raw text"})
-        with open(os.path.join(d, "m.ham.srt"), encoding="utf-8") as fh:
+        self.app.backup_raw_var = SimpleNamespace(get=lambda: True)
+        gui.App._save_raw_backup(self.app, out, snapshot, {"1": "raw text"})
+        backup = next(Path(d, "Raporlar", "Ham").glob("m.*.ham.srt"))
+        with open(backup, encoding="utf-8") as fh:
             self.assertIn("ham metin", fh.read())
 
 

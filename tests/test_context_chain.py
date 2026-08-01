@@ -462,6 +462,33 @@ class FragmentSyntaxHintPayloadTest(unittest.TestCase):
         self.assertEqual([it["i"] for it in second["ctx"]], [2])
         self.assertEqual([it["i"] for it in second["next_ctx"]], [5])
 
+    def test_hybrid_chain_context_does_not_inject_contextless_tm_text(self):
+        class TM:
+            def __init__(self):
+                self.lookups = 0
+
+            def lookup(self, *_args, **_kwargs):
+                self.lookups += 1
+                return "Eski bağlamsız çeviri"
+
+            def fuzzy_lookup(self, *_args, **_kwargs):
+                return None
+
+            def record_hit(self):
+                pass
+
+        cues = [
+            self.Cue(i, f"00:00:{i:02d},000", f"00:00:{i:02d},900", f"Line {i}.")
+            for i in range(1, 5)
+        ]
+        tm = TM()
+        reqs, _ = ht.build_batch_requests(
+            cues, "system", "gpt-5.4-mini", chunk_size=2,
+            context_lines=1, tm=tm, use_tm_context=False)
+        second = json.loads(reqs[1]["body"]["messages"][1]["content"])
+        self.assertNotIn("tr", second["ctx"][0])
+        self.assertEqual(tm.lookups, 0)
+
 
 def _mk_ts(start_s: float, end_s: float) -> str:
     def f(sec):

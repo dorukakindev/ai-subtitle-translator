@@ -2610,6 +2610,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         or "[ÇEVİRİ EKSİK]" in str(text or "")
         for _idx, _ts, text in cleaned)
     if cleaned and not unresolved:
+        if any(str(idx) == "0" for idx, _ts, _text in cleaned):
+            cleaned = [
+                (str(int(str(idx)) + 1) if str(idx).isdigit() else idx, ts, text)
+                for idx, ts, text in cleaned
+            ]
         first_start, _ = _srt_timestamp_bounds(cleaned[0][1])
         _, last_end = _srt_timestamp_bounds(cleaned[-1][1])
         if first_start > 0:
@@ -3925,7 +3930,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=15,
                               source_cues=None, cancel_check=None,
-                              system_prompt=None):
+                              system_prompt=None, locked_terms=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -4013,11 +4018,24 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     repaired = 0
 
     if hata_indices and client:
+        import hybrid_translate as ht
         if log_fn:
             log_fn(f"🔧  {len(hata_indices)} çevrilmemiş satır sync ile onarılıyor...", "info")
 
         sys_prompt = system_prompt or _build_sync_system_prompt(
             src_lang, tgt_lang, schema, profanity)
+        locked_terms = {
+            str(source).strip(): str(target).strip()
+            for source, target in (locked_terms or {}).items()
+            if str(source).strip() and str(target).strip()
+        }
+        if locked_terms:
+            rows = "; ".join(
+                f"{source} -> {target}"
+                for source, target in list(locked_terms.items())[:120])
+            sys_prompt += (
+                f"\nLOCKED TERMS (use the required {tgt_lang} rendering exactly "
+                f"when its source occurs):\n{rows}")
         source_order = [
             (str(idx), _clean_src(text))
             for idx, text in raw_src_map.items()
@@ -4037,6 +4055,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
             batch = hata_indices[batch_start:batch_start + max_per_call]
             tr_items = [{"i": idx, "t": _clean_src(src)} for (_, idx, _, src) in batch]
             payload_data = {"tr": tr_items}
+            if locked_terms:
+                payload_data["glossary"] = locked_terms
             positions = [
                 source_positions[str(idx)] for _pos, idx, _ts, _src in batch
                 if str(idx) in source_positions
@@ -4114,7 +4134,10 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                                 for line in str(translated).splitlines()
                             ]
                             translated = "\n".join(line for line in cleaned_lines if line)
-                            if translated.strip() and not _is_untranslated(_src, translated):
+                            if (translated.strip()
+                                    and not _is_untranslated(_src, translated)
+                                    and not ht.locked_term_violation(
+                                        _src, translated, locked_terms)):
                                 out[block_pos] = (idx, ts, translated)
                                 repaired += 1
                     break  # success
@@ -6537,21 +6560,48 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
         if str(text or "").strip()
         and not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
     }
+    translated_spans = []
+    for _idx, ts, text in out_blocks:
+        if (not str(text or "").strip()
+                or _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())):
+            continue
+        try:
+            translated_spans.append(_srt_timestamp_bounds(ts))
+        except Exception:
+            pass
     required_ids = set()
+    required_spans = []
     for cue in source_cues or []:
         if hasattr(cue, "index") and not callable(getattr(cue, "index")):
             idx = cue.index
             text = cue.text
+            if hasattr(cue, "start") and hasattr(cue, "end"):
+                ts = f"{cue.start} --> {cue.end}"
+            else:
+                ts = None
         else:
             try:
-                idx, _ts, text = cue
+                idx, ts, text = cue
             except (TypeError, ValueError):
                 continue
         value = str(text or "")
         if (_has_wordlike_text(_align_visible(value))
                 and not _src_is_sdh_only(value)):
             required_ids.add(str(idx))
-    return bool(required_ids) and required_ids <= translated_ids
+            if ts:
+                try:
+                    required_spans.append((str(idx), _srt_timestamp_bounds(ts)))
+                except Exception:
+                    pass
+    if not required_ids:
+        return False
+    for idx, (start, end) in required_spans:
+        if idx in translated_ids:
+            continue
+        if not any(out_start <= start and out_end >= end
+                   for out_start, out_end in translated_spans):
+            return False
+    return required_ids <= translated_ids or len(required_spans) == len(required_ids)
 
 
 def _should_skip_existing_output(filepath, out_blocks, source_cues,
@@ -6563,6 +6613,33 @@ def _should_skip_existing_output(filepath, out_blocks, source_cues,
     }
     return key not in forced and _existing_output_is_complete(
         out_blocks, source_cues)
+
+
+def _output_source_fingerprint_path(report_dir, output_path) -> Path:
+    resolved = os.path.normcase(os.path.abspath(str(output_path)))
+    token = hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:16]
+    return Path(report_dir) / f"{Path(output_path).stem}.{token}.source.sha256"
+
+
+def _output_matches_source_fingerprint(report_dir, output_path, source_path) -> bool:
+    sidecar = _output_source_fingerprint_path(report_dir, output_path)
+    try:
+        expected = sidecar.read_text(encoding="utf-8").strip()
+    except Exception:
+        return False
+    return bool(expected) and expected == _file_content_sha256(source_path)
+
+
+def _write_output_source_fingerprint(report_dir, output_path, source_hash) -> bool:
+    if not source_hash:
+        return False
+    try:
+        path = _output_source_fingerprint_path(report_dir, output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, str(source_hash).strip(), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 def _cps_stats(blocks) -> tuple:
@@ -7356,6 +7433,10 @@ class App(ctk.CTk):
                 pass
             return
         self._selected_files = files
+        self._selected_folder_roots = self._dedupe_paths([
+            str(path) for path in settings.get("selected_folder_roots") or ()
+            if Path(str(path)).is_dir()
+        ])
         self._crash_resume_source_paths = {
             os.path.normcase(os.path.abspath(str(path))) for path in files
         }
@@ -14846,7 +14927,14 @@ class App(ctk.CTk):
                     blk = _restore_tags_blocks(blk, raw_map)
                 except Exception:
                     pass
-            bpath = str(Path(out_path).with_suffix(".ham.srt"))
+            out_obj = Path(out_path)
+            report_dir = out_obj.parent / "Raporlar" / "Ham"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256(
+                os.path.normcase(os.path.abspath(str(out_obj))).encode("utf-8")
+            ).hexdigest()[:10]
+            stem = out_obj.stem[:-8] if out_obj.stem.endswith(".partial") else out_obj.stem
+            bpath = str(report_dir / f"{stem}.{digest}.ham.srt")
             write_srt(bpath, blk, target_language)
             self._log(f"Ham çeviri yedeği: {Path(bpath).name}", "info")
         except Exception as e:
@@ -14991,7 +15079,8 @@ class App(ctk.CTk):
                                        src_lang=None, cues=None, changed_ids=None,
                                        source_path=None, canon_hint="",
                                        force=False, target_coverage=0.65,
-                                       report_path=None, locked_terms=None) -> int:
+                                       report_path=None, locked_terms=None,
+                                       analysis_result=None) -> int:
         if ((not force and not self._semantic_reconcile_enabled())
                 or not src_clean_map or not blocks):
             return 0
@@ -15035,6 +15124,8 @@ class App(ctk.CTk):
                 locked_terms=locked_terms,
                 target_coverage=target_coverage,
                 canon_hint=canon_hint,
+                analysis_context_hint=ht.build_polish_context_hint(
+                    analysis_result, run_tgt_lang),
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
@@ -15092,7 +15183,8 @@ class App(ctk.CTk):
 
     def _run_final_semantic_checks(self, out_path, src_clean_map, blocks,
                                    src_lang=None, cues=None, changed_ids=None,
-                                   source_path=None, locked_terms=None) -> int:
+                                   source_path=None, locked_terms=None,
+                                   analysis_result=None) -> int:
         before_backtranslation = {
             str(idx): text for idx, _ts, text in (blocks or [])
         }
@@ -15107,7 +15199,7 @@ class App(ctk.CTk):
         fixed += self._maybe_semantic_reconciliation(
             out_path, src_clean_map, blocks, src_lang=src_lang,
             cues=cues, changed_ids=changed_ids, source_path=source_path,
-            locked_terms=locked_terms)
+            locked_terms=locked_terms, analysis_result=analysis_result)
         return fixed
 
     def _get_locked_terms_dict(self, fp: str | None, tgt: str) -> dict:
@@ -16873,8 +16965,7 @@ class App(ctk.CTk):
         same_folder = bool(self.same_folder_var.get())
         selected_roots = tuple(self._selected_folder_roots or ())
         expected_source_language = self.src_var.get()
-        ignore_existing_outputs = tuple(
-            getattr(self, "_crash_resume_source_paths", ()) or ())
+        ignore_existing_outputs = ()
 
         def _worker():
             issues = scan_subtitle_preflight(
@@ -17844,15 +17935,24 @@ class App(ctk.CTk):
         # Parse her dosyayı bir kez yap — boş-filtre için cache'le
         self._block_cache: dict = {}
         valid_files = []
+        source_hashes = {}
         for fp in srt_files:
             if self._is_queued_file_removed(fp):
                 continue
+            before_hash = _file_content_sha256(fp)
             blocks = list(parse_subtitle(fp))
+            after_hash = _file_content_sha256(fp)
+            if not before_hash or before_hash != after_hash:
+                self._log(
+                    f"{Path(fp).name}: kaynak dosya okunurken değişti; yanlış "
+                    "çıktı yazmamak için atlandı.", "err")
+                continue
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
             else:
                 self._block_cache[fp] = blocks
                 valid_files.append(fp)
+                source_hashes[fp] = after_hash
         if not valid_files:
             self._log("Geçerli altyazı dosyası yok!", "err")
             self._set_running(False)
@@ -17866,7 +17966,6 @@ class App(ctk.CTk):
                 selected_roots=self._output_selection_roots()))
             for fp in valid_files
         }
-        source_hashes = {fp: _file_content_sha256(fp) for fp in valid_files}
         output_baselines = {
             fp: _file_state_signature(output_paths[fp]) for fp in valid_files
         }
@@ -17894,6 +17993,17 @@ class App(ctk.CTk):
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
         _file_hints = self._get_precontext_hints(
             client, valid_files, src, tgt, model, source_languages=_source_languages)
+        _precontext_locked_terms = {}
+        for fp in valid_files:
+            pre_data = (getattr(self, "_run_precontext_data", None) or {}).get(fp) or {}
+            detected_terms = pre_data.get("terms") if isinstance(pre_data, dict) else {}
+            if not isinstance(detected_terms, dict):
+                detected_terms = {}
+            _precontext_locked_terms[fp] = {
+                **ht.sanitize_glossary_for_turkish(
+                    detected_terms, target_language=tgt),
+                **self._get_locked_terms_dict(fp, tgt),
+            }
         # Dizi hafızası: önceki bölümlerin terim/karakter/sen-siz kararlarını ekle
         _sm_used = 0
         for fp in valid_files:
@@ -17991,7 +18101,11 @@ class App(ctk.CTk):
             self._update_tm_stat()
 
         # Çökme kurtarma: önceki yarıda kalan koşudan tamamlanmış chunk'ları geri al
-        api_requests, resumed_keys = self._resume_from_sync_ckpt(api_requests, raw_map)
+        api_request_ids = {req["custom_id"] for req in api_requests}
+        if self.chain_ctx_var.get():
+            resumed_keys = set()
+        else:
+            api_requests, resumed_keys = self._resume_from_sync_ckpt(api_requests, raw_map)
         used_ckpt_keys = set(resumed_keys)
 
         total = len(requests)
@@ -18029,7 +18143,7 @@ class App(ctk.CTk):
             # ── Zincirleme bağlam: dosya içi chunk'lar sıralı, dosyalar paralel ──
             # Önceki chunk'ın ÇEVİRİLERİ sonraki isteğe prev_tr olarak verilir;
             # terim, ton ve sen/siz tutarlılığı için model kendi geçmişini görür.
-            api_ids = {r["custom_id"] for r in api_requests}
+            api_ids = api_request_ids
             file_groups, file_order = {}, []
             for req in requests:
                 fp = file_map[req["custom_id"]][0][2]
@@ -18055,14 +18169,37 @@ class App(ctk.CTk):
                         # TM önbellekten doldu — API çağrısı yok, sadece zinciri besle
                         raw = raw_map.get(cid, "")
                         if _chunk_response_retry_reason(raw, req):
-                            prev_pairs = []
-                        else:
+                            self._retry_hata(
+                                client, raw_map, [req],
+                                max_rounds=self._max_retry)
+                            raw = raw_map.get(cid, raw)
+                        if not _chunk_response_retry_reason(raw, req):
                             tmap = parse_response(raw, file_map[cid])
                             prev_pairs = _chain_pairs_from_result(
                                 user_msg["content"], tmap) or []
+                        else:
+                            prev_pairs = []
                         continue
                     user_msg["content"] = _inject_prev_tr(
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
+                    resumed_n, resumed_now = self._prefill_sync_ckpt([req], raw_map)
+                    if resumed_n:
+                        used_ckpt_keys.update(resumed_now)
+                        completed[0] += 1
+                        raw = raw_map.get(cid, "")
+                        if _chunk_response_retry_reason(raw, req):
+                            self._retry_hata(
+                                client, raw_map, [req],
+                                max_rounds=self._max_retry)
+                            raw = raw_map.get(cid, raw)
+                        if not _chunk_response_retry_reason(raw, req):
+                            tmap = parse_response(raw, file_map[cid])
+                            prev_pairs = _chain_pairs_from_result(
+                                user_msg["content"], tmap) or []
+                        else:
+                            prev_pairs = []
+                        _progress_tick()
+                        continue
                     try:
                         cid_r, text, tok, cached_tok = send_one(req)
                         src_h = self._chunk_src_hash(req, self._ckpt_fingerprint())
@@ -18071,6 +18208,11 @@ class App(ctk.CTk):
                             completed[0] += 1
                             used_ckpt_keys.add(f"{cid_r}:{src_h}")
                         self._update_tokens(tok, cached=cached_tok)
+                        if _chunk_response_retry_reason(text, req):
+                            self._retry_hata(
+                                client, raw_map, [req],
+                                max_rounds=self._max_retry)
+                            text = raw_map.get(cid_r, text)
                         self._save_sync_ckpt_entry(cid_r, text, src_h)
                         if _chunk_response_retry_reason(text, req):
                             prev_pairs = []
@@ -18122,6 +18264,13 @@ class App(ctk.CTk):
         if not self._stop_flag:
             unresolved = self._retry_hata(
                 client, raw_map, requests, max_rounds=self._max_retry)
+            for req in requests:
+                cid = req.get("custom_id", "")
+                raw = raw_map.get(cid, "")
+                if raw and not _chunk_response_retry_reason(raw, req):
+                    src_h = self._chunk_src_hash(req, self._ckpt_fingerprint())
+                    self._save_sync_ckpt_entry(cid, raw, src_h)
+                    used_ckpt_keys.add(f"{cid}:{src_h}")
             failed[0] = len(unresolved)
             self._set_stat(self.stat_fail_var, str(failed[0]))
             _all_written = self._write_results(raw_map, file_map, output_dir,
@@ -18130,8 +18279,10 @@ class App(ctk.CTk):
                                                schema_names=_effective_schema_names,
                                                output_paths=output_paths,
                                                source_hashes=source_hashes,
-                                               output_baselines=output_baselines)
-            is_full_success = bool(_all_written and not unresolved)
+                                               output_baselines=output_baselines,
+                                               locked_terms_by_file=
+                                               _precontext_locked_terms)
+            is_full_success = bool(_all_written)
             if should_clear_sync_ckpt(self._stop_flag, is_full_success):
                 self._clear_sync_ckpt(used_ckpt_keys)
 
@@ -18146,6 +18297,7 @@ class App(ctk.CTk):
         ext_path    = self.ext_project_path_var.get().strip()
         ht.set_project_path(ext_path)
         input_dir = self.input_var.get()
+        report_dir = _resolve_report_dir(input_dir, output_dir)
         profanity = self.profanity_var.get()
         self._show_progress_board(srt_files)
 
@@ -18179,7 +18331,18 @@ class App(ctk.CTk):
             self._update_file_progress(filepath, "Hazırlanıyor", 2)
 
             try:
+                _before_source_hash = _file_content_sha256(filepath)
                 cues = ht.load_subtitle(filepath)
+                _after_source_hash = _file_content_sha256(filepath)
+                if (not _before_source_hash
+                        or _before_source_hash != _after_source_hash):
+                    self._log(
+                        f"{fname}: kaynak dosya okunurken değişti; yanlış çıktı "
+                        "yazmamak için atlandı.", "err")
+                    self._update_file_progress(
+                        filepath, "Kaynak değişti", 100, "error")
+                    failed_files.append(filepath)
+                    continue
                 if not cues:
                     self._log(f"{fname}: geçerli SRT bloğu yok, atlandı", "warn")
                     self._update_file_progress(filepath, "Atlandı", 0, "skip")
@@ -18192,9 +18355,11 @@ class App(ctk.CTk):
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
-                        if _should_skip_existing_output(
+                        if (_should_skip_existing_output(
                                 filepath, out_blocks, cues,
-                                getattr(self, "_force_retranslate_paths", set())):
+                                getattr(self, "_force_retranslate_paths", set()))
+                                and _output_matches_source_fingerprint(
+                                    report_dir, out_path, filepath)):
                             self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
                             self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
                             completed_files.append(filepath)
@@ -18203,7 +18368,7 @@ class App(ctk.CTk):
                             continue
                     except Exception:
                         pass  # parse edilemediyse yeniden çevir
-                _expected_source_hash = _file_content_sha256(filepath)
+                _expected_source_hash = _after_source_hash
                 _output_baseline = _file_state_signature(out_path)
                 # ─────────────────────────────────────────────────────────────
                 self._set_stat(self.stat_blocks_var, str(len(cues)))
@@ -18344,14 +18509,18 @@ class App(ctk.CTk):
                                                         source_language=file_src,
                                                         context_lines=self._context_lines,
                                                         lookahead_lines=self._lookahead_lines,
-                                                        scene_gap_sec=self._scene_gap_seconds,
-                                                        temperature=self._temperature)
+                                                         scene_gap_sec=self._scene_gap_seconds,
+                                                         temperature=self._temperature,
+                                                         use_tm_context=not self.chain_ctx_var.get())
             total     = len(batch_reqs)
             completed = [0]
             failed    = [0]
             raw_map   = {}
             _ckpt_scope = str(Path(filepath).resolve())
-            _, prefilled_keys = self._prefill_sync_ckpt(batch_reqs, raw_map, scope=_ckpt_scope)
+            prefilled_keys = set()
+            if not self.chain_ctx_var.get():
+                _, prefilled_keys = self._prefill_sync_ckpt(
+                    batch_reqs, raw_map, scope=_ckpt_scope)
             used_ckpt_keys.update(prefilled_keys)
             start_ts  = time.time()
             lock      = threading.Lock()
@@ -18390,17 +18559,41 @@ class App(ctk.CTk):
                     if cid_hint in raw_map:
                         raw = raw_map[cid_hint]
                         if _chunk_response_retry_reason(raw, req):
-                            prev_pairs = []
-                        else:
+                            self._retry_hata(
+                                client, raw_map, [req],
+                                max_rounds=self._max_retry)
+                            raw = raw_map.get(cid_hint, raw)
+                        if not _chunk_response_retry_reason(raw, req):
                             tmap = parse_response(raw, fmap.get(cid_hint, []))
                             prev_pairs = _chain_pairs_from_result(
                                 req["body"]["messages"][1]["content"], tmap) or []
+                        else:
+                            prev_pairs = []
                         completed[0] += 1
                         _hyb_tick()
                         continue
                     user_msg = req["body"]["messages"][1]
                     user_msg["content"] = _inject_prev_tr(
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
+                    resumed_n, resumed_now = self._prefill_sync_ckpt(
+                        [req], raw_map, scope=_ckpt_scope)
+                    if resumed_n:
+                        used_ckpt_keys.update(resumed_now)
+                        completed[0] += 1
+                        raw = raw_map.get(cid_hint, "")
+                        if _chunk_response_retry_reason(raw, req):
+                            self._retry_hata(
+                                client, raw_map, [req],
+                                max_rounds=self._max_retry)
+                            raw = raw_map.get(cid_hint, raw)
+                        if not _chunk_response_retry_reason(raw, req):
+                            tmap = parse_response(raw, fmap.get(cid_hint, []))
+                            prev_pairs = _chain_pairs_from_result(
+                                user_msg["content"], tmap) or []
+                        else:
+                            prev_pairs = []
+                        _hyb_tick()
+                        continue
                     try:
                         cid, text, tok, cached_tok = send_one(req)
                         src_h = self._chunk_src_hash(req, self._ckpt_fingerprint(), _ckpt_scope)
@@ -18409,6 +18602,11 @@ class App(ctk.CTk):
                             completed[0] += 1
                             used_ckpt_keys.add(f"{cid}:{src_h}")
                         self._update_tokens(tok, cached=cached_tok)
+                        if _chunk_response_retry_reason(text, req):
+                            self._retry_hata(
+                                client, raw_map, [req],
+                                max_rounds=self._max_retry)
+                            text = raw_map.get(cid, text)
                         self._save_sync_ckpt_entry(cid, text, src_h)
                         if _chunk_response_retry_reason(text, req):
                             prev_pairs = []
@@ -18453,6 +18651,14 @@ class App(ctk.CTk):
 
             # ── Retry + Birleştir ─────────────────────────────────────────────
             self._retry_hata(client, raw_map, batch_reqs, max_rounds=self._max_retry)
+            for req in batch_reqs:
+                cid = req.get("custom_id", "")
+                raw = raw_map.get(cid, "")
+                if raw and not _chunk_response_retry_reason(raw, req):
+                    src_h = self._chunk_src_hash(
+                        req, self._ckpt_fingerprint(), _ckpt_scope)
+                    self._save_sync_ckpt_entry(cid, raw, src_h)
+                    used_ckpt_keys.add(f"{cid}:{src_h}")
             srt_blocks = {}
             for cid, info in fmap.items():
                 raw = raw_map.get(cid)
@@ -18480,7 +18686,8 @@ class App(ctk.CTk):
                     log_fn=self._log, token_cb=self._update_tokens,
                     source_cues=cues,
                     cancel_check=lambda: self._stop_flag,
-                    system_prompt=system_prompt)
+                    system_prompt=system_prompt,
+                    locked_terms=_locked_terms)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _quality_api_allowed = not _blocks_have_translation_failures(
@@ -18492,20 +18699,24 @@ class App(ctk.CTk):
                     "warn",
                 )
 
-            # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
-            self._update_file_progress(filepath, "Tutarlılık taraması", 87)
-            sorted_blocks, _cons_fixes = ht.consistency_sweep(
-                cues, sorted_blocks, log_fn=self._log,
-                locked_terms=_locked_terms)
-            # Rapor için taban çizgisi: kalite geçişleri öncesi metinler
-            _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
-            _qc_fixes = 0
-            _qc_auto_fixes = 0
             _pass_trace = {}
             _pass_history = {}
             _record_pass_change(
                 _pass_trace, "Repair", _before_repair,
                 sorted_blocks, _pass_history)
+            # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
+            self._update_file_progress(filepath, "Tutarlılık taraması", 87)
+            _before_consistency = list(sorted_blocks)
+            sorted_blocks, _cons_fixes = ht.consistency_sweep(
+                cues, sorted_blocks, log_fn=self._log,
+                locked_terms=_locked_terms)
+            _record_pass_change(
+                _pass_trace, "Consistency", _before_consistency,
+                sorted_blocks, _pass_history)
+            # Rapor için taban çizgisi: kalite geçişleri öncesi metinler
+            _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
+            _qc_fixes = 0
+            _qc_auto_fixes = 0
 
             # ── Critic Pass (otomatik düzeltme) ──────────────────────────────
             if self.critic_var.get() and sorted_blocks and _quality_api_allowed:
@@ -18718,7 +18929,10 @@ class App(ctk.CTk):
                     out_path, {str(c.index): _clean_src(c.text) for c in cues},
                     sorted_blocks, src_lang=file_src, cues=cues,
                     changed_ids=_pass_history.keys(), source_path=filepath,
-                    locked_terms=_locked_terms)
+                    locked_terms=_locked_terms,
+                    analysis_result=(context, char_examples, pronoun_map,
+                                     character_styles, scene_emotions,
+                                     idiom_map, cultural_refs))
             if self._stop_flag:
                 break
             _record_pass_change(
@@ -18735,6 +18949,18 @@ class App(ctk.CTk):
                 sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
             except Exception:
                 pass
+            _final_guard_reason = _batch_write_guard_reason(
+                filepath, out_path, _expected_source_hash, _output_baseline)
+            if _final_guard_reason:
+                label = ("kaynak" if _final_guard_reason == "source_changed"
+                         else "hedef")
+                self._log(
+                    f"{fname}: son kalite geçişleri sırasında {label} dosya "
+                    "değişti; eski sonuç yazılmadı.", "err")
+                failed_files.append(filepath)
+                self._update_file_progress(
+                    filepath, f"{label.title()} değişti", 100, "error")
+                continue
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_merge_cues(sorted_blocks), tgt, self._log,
                 source_cues=cues)
@@ -18744,6 +18970,9 @@ class App(ctk.CTk):
             _quarantined = (
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
             write_srt(_write_path, _delivery_blocks, tgt)
+            if not _has_missing:
+                _write_output_source_fingerprint(
+                    report_dir, out_path, _expected_source_hash)
             self._save_raw_backup(
                 _write_path, _raw_backup_blocks, _raw_map, tgt)
             if _has_missing:
@@ -18775,7 +19004,7 @@ class App(ctk.CTk):
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": fname, "source_path": filepath,
-                "output_path": str(out_path),
+                "output_path": str(_write_path),
                 "total": len(sorted_blocks),
                 "hata": _hata_n + _n_filled, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
@@ -19473,6 +19702,9 @@ class App(ctk.CTk):
                             except Exception:
                                 _resume_schema = self._schema_by_name("Otomatik")
 
+                            _pass_trace = {}
+                            _pass_history = {}
+                            _before_repair = list(pp)
                             if _orig_cues and not self._stop_flag:
                                 try:
                                     _raw_map_pre = _raw_src_map_from_cues(_orig_cues)
@@ -19493,7 +19725,8 @@ class App(ctk.CTk):
                                         log_fn=self._log,
                                         token_cb=self._update_tokens,
                                         source_cues=_orig_cues,
-                                        cancel_check=lambda: self._stop_flag)
+                                        cancel_check=lambda: self._stop_flag,
+                                        locked_terms=_locked_terms)
                                 except Exception as repair_exc:
                                     self._log(
                                         f"Resume: eksik satır onarımı atlandı: {repair_exc}",
@@ -19517,8 +19750,12 @@ class App(ctk.CTk):
                                 break
 
                             _raw_backup_blocks = list(pp)
+                            _record_pass_change(
+                                _pass_trace, "Repair", _before_repair,
+                                pp, _pass_history)
                             self._save_raw_backup(
                                 output_path, _raw_backup_blocks, {}, tgt)
+                            _before_consistency = list(pp)
                             if pp:
                                 self._set_status("Consistency sweep...")
                                 pp, _cons_fixes = ht.consistency_sweep(
@@ -19526,9 +19763,10 @@ class App(ctk.CTk):
                                     locked_terms=_locked_terms)
                             else:
                                 _cons_fixes = 0
+                            _record_pass_change(
+                                _pass_trace, "Consistency", _before_consistency,
+                                pp, _pass_history)
                             _pre_pass = {str(b[0]): b[2] for b in pp}
-                            _pass_trace = {}
-                            _pass_history = {}
                             _qc_fixes = 0
                             _qc_auto_fixes = 0
                             # Bağlam incelemesi — resume/hybrid-batch de chained-context'ten yoksun.
@@ -19682,12 +19920,30 @@ class App(ctk.CTk):
                             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
+                                if (getattr(self, "term_normalize_var", None)
+                                        and self.term_normalize_var.get()):
+                                    try:
+                                        _before_termnorm = list(pp)
+                                        pp, _ = _normalize_mixed_terms(
+                                            pp, _src_map,
+                                            self._helper_api_key("polish"),
+                                            self._helper_api_base_url("polish"),
+                                            self._helper_api_model("polish"),
+                                            log_fn=self._log,
+                                            locked_terms=_locked_terms)
+                                        _record_pass_change(
+                                            _pass_trace, "Term-Normalize",
+                                            _before_termnorm, pp, _pass_history)
+                                    except Exception:
+                                        pass
                                 _before_semantic = list(pp)
                                 self._run_final_semantic_checks(
                                     output_path, _src_map, pp,
                                     src_lang=source_language or self._snap_get("src_lang", "English"),
                                     cues=_orig_cues, changed_ids=_pass_history.keys(),
-                                    source_path=str(_src_path))
+                                    source_path=str(_src_path),
+                                    locked_terms=_locked_terms,
+                                    analysis_result=_analysis_result)
                                 if self._stop_flag:
                                     break
                                 _record_pass_change(
@@ -19695,16 +19951,6 @@ class App(ctk.CTk):
                                     _before_semantic, pp, _pass_history)
                             if self._stop_flag:
                                 break
-                            if (getattr(self, "term_normalize_var", None) and self.term_normalize_var.get()
-                                    and _orig_cues):
-                                try:
-                                    pp, _ = _normalize_mixed_terms(
-                                        pp, {str(c.index): _clean_src(c.text) for c in _orig_cues},
-                                        self._helper_api_key("polish"), self._helper_api_base_url("polish"),
-                                        self._helper_api_model("polish"), log_fn=self._log,
-                                        locked_terms=_locked_terms)
-                                except Exception:
-                                    pass
                             if self._stop_flag:
                                 break
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
@@ -19921,6 +20167,7 @@ class App(ctk.CTk):
                        locked_terms_by_file=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
+        report_dir = _resolve_report_dir(input_dir, output_dir)
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
         total_warnings = 0
         model_name = self._main_model_name()
@@ -19995,6 +20242,7 @@ class App(ctk.CTk):
             except Exception:
                 _analysis_result = None
             _n_repaired = 0
+            _before_repair = list(sorted_blocks)
             try:
                 if openai_key:
                     _repair_client = OpenAI(
@@ -20007,9 +20255,13 @@ class App(ctk.CTk):
                         schema=schema_dict, profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=_src_cues,
-                        cancel_check=lambda: self._stop_flag)
+                        cancel_check=lambda: self._stop_flag,
+                        locked_terms=_locked_terms_for(fp))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
+            _record_pass_change(
+                _pass_trace, "Repair", _before_repair,
+                sorted_blocks, _pass_history)
             _quality_api_allowed = not _blocks_have_translation_failures(
                 sorted_blocks)
             if not _quality_api_allowed:
@@ -20019,12 +20271,16 @@ class App(ctk.CTk):
                     "warn",
                 )
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
+            _before_consistency = list(sorted_blocks)
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
                     _src_cues, sorted_blocks, log_fn=self._log,
                     locked_terms=_locked_terms_for(fp))
             except Exception:
                 pass
+            _record_pass_change(
+                _pass_trace, "Consistency", _before_consistency,
+                sorted_blocks, _pass_history)
             # Bağlam incelemesi — Batch'te zincirleme bağlam yoktur, bu geçiş telafi eder
             _review_needed = (
                 self.mode_var.get() == "batch"
@@ -20183,7 +20439,8 @@ class App(ctk.CTk):
                 self._run_final_semantic_checks(
                     out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
                     cues=_src_cues, changed_ids=_pass_history.keys(),
-                    source_path=fp, locked_terms=_locked_terms_for(fp))
+                    source_path=fp, locked_terms=_locked_terms_for(fp),
+                    analysis_result=_analysis_result)
             if self._stop_flag:
                 break
             _record_pass_change(
@@ -20199,6 +20456,17 @@ class App(ctk.CTk):
                 sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
             except Exception:
                 pass
+            final_guard_reason = _batch_write_guard_reason(
+                fp, out_path, expected_source_hash, baseline)
+            if final_guard_reason:
+                label = ("kaynak" if final_guard_reason == "source_changed"
+                         else "hedef")
+                self._log(
+                    f"{Path(fp).name}: son kalite geçişleri sırasında {label} "
+                    "dosya değişti; eski sonuç yazılmadı.", "err")
+                self._record_file_status(fp, f"{label.title()} değişti", "error")
+                _failed_files.append(fp)
+                continue
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _has_missing = _hata_n > 0
             _write_path = out_path
@@ -20211,6 +20479,10 @@ class App(ctk.CTk):
                 self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log,
                 source_cues=_src_cues)
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
+            if not _has_missing:
+                _write_output_source_fingerprint(
+                    report_dir, out_path,
+                    expected_source_hash or _file_content_sha256(fp))
             if _has_missing:
                 self._log(
                     f"{Path(fp).name}: {_hata_n} eksik çeviri kaldı; "
@@ -20237,7 +20509,7 @@ class App(ctk.CTk):
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
-                "output_path": str(out_path),
+                "output_path": str(_write_path),
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,

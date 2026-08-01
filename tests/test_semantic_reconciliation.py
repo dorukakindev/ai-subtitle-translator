@@ -193,6 +193,20 @@ class SemanticClusterBuilderTest(unittest.TestCase):
         self.assertEqual(suspects, {"4", "8", "11", "15"})
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_file_analysis_context_is_injected_into_reconciler_prompt(self):
+        blocks = [("1", "00:00:01 --> 00:00:02", "Sana söyledim.")]
+        src_map = {"1": "I told you."}
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create",
+                   return_value=_response([])) as create:
+            ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"},
+                analysis_context_hint="Ayşe, Mehmet'e siz diye hitap eder.",
+            )
+        prompt = create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("FILE ANALYSIS CONTEXT", prompt)
+        self.assertIn("Ayşe, Mehmet'e siz diye hitap eder.", prompt)
+
     def test_season_canon_hint_is_injected_into_reconciler_prompt(self):
         blocks = [("1", "00:00:01 --> 00:00:02", "Sana söyledim.")]
         src_map = {"1": "I told you."}

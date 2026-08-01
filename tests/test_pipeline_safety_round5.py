@@ -35,6 +35,20 @@ class BatchWriteGuardTests(unittest.TestCase):
                 gui._batch_write_guard_reason(src, out, expected, baseline),
                 "output_changed")
 
+    def test_output_source_fingerprint_rejects_stale_same_id_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "Raporlar"
+            src = root / "source.srt"
+            out = root / "target.srt"
+            src.write_text("first", encoding="utf-8")
+            out.write_text("translated", encoding="utf-8")
+            gui._write_output_source_fingerprint(
+                report, out, gui._file_content_sha256(src))
+            self.assertTrue(gui._output_matches_source_fingerprint(report, out, src))
+            src.write_text("changed", encoding="utf-8")
+            self.assertFalse(gui._output_matches_source_fingerprint(report, out, src))
+
 
 class RunRecordFailureTests(unittest.TestCase):
     def test_partial_report_remains_error(self):

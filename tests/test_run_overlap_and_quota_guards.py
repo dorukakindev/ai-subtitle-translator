@@ -57,6 +57,29 @@ class ConcurrentTestTranslationGuardTest(unittest.TestCase):
 
 
 class PermanentQuotaFailureTest(unittest.TestCase):
+    def test_repair_injects_and_enforces_locked_terms(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
+        raw = {"1": "Biotechnology Supply Laboratory is closed."}
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"1","t":"Biyoteknoloji Sağlama Laboratuvarı kapalı."}]'))],
+            usage=None,
+        )
+        locked = {
+            "Biotechnology Supply Laboratory":
+            "Biyoteknoloji Tedarik Laboratuvarı",
+        }
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish", locked_terms=locked)
+        payload = __import__("json").loads(
+            create.call_args.kwargs["messages"][1]["content"])
+        self.assertEqual(payload["glossary"], locked)
+        self.assertEqual(repaired, 0)
+        self.assertEqual(result[0][2], "[HATA]")
+
     def test_repair_uses_rich_prompt_and_neighbor_context(self):
         blocks = [("2", "00:00:02,000 --> 00:00:03,000", "[HATA]")]
         raw = {"1": "Before.", "2": "Missing line.", "3": "After."}

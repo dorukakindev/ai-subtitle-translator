@@ -214,6 +214,17 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
         self.assertEqual(result[0][1], "00:00:00,000 --> 00:00:00,001")
 
+    def test_existing_zero_id_is_shifted_to_keep_signature_ids_unique(self):
+        blocks = [
+            ("0", "00:00:00,000 --> 00:00:01,000", "Başlangıç."),
+            ("1", "00:00:01,100 --> 00:00:02,000", "Devam."),
+        ]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        ids = [idx for idx, _ts, _text in result]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertEqual(ids[:3], ["0", "1", "2"])
+        self.assertTrue(gui._existing_output_is_complete(result, blocks))
+
     def test_only_head_and_tail_signatures_are_added_without_moving_dialogue(self):
         blocks = [
             ("1", "00:00:10,000 --> 00:00:12,000", "Bir."),

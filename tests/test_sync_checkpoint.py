@@ -95,6 +95,33 @@ class SyncCheckpointTest(unittest.TestCase):
         r["body"]["messages"][1]["content"] = json.dumps(pl)
         self.assertNotEqual(self._hash(r), h1)
 
+    def test_chain_resume_requires_same_previous_translation(self):
+        second = _req("c2", ["What did she say?"])
+        payload = json.loads(second["body"]["messages"][1]["content"])
+        payload["ctx"] = [{"i": 1, "t": "Hello."}]
+        second["body"]["messages"][1]["content"] = json.dumps(payload)
+        content = second["body"]["messages"][1]["content"]
+        second["body"]["messages"][1]["content"] = gui._inject_prev_tr(
+            content, [{"i": 1, "tr": "Merhaba."}])
+        saved_hash = self._hash(second)
+        self.app._save_sync_ckpt_entry("c2", "Ne söyledi?", saved_hash)
+
+        raw = {}
+        count, _ = self.app._prefill_sync_ckpt([second], raw)
+        self.assertEqual(count, 1)
+
+        changed = _req("c2", ["What did she say?"])
+        payload = json.loads(changed["body"]["messages"][1]["content"])
+        payload["ctx"] = [{"i": 1, "t": "Hello."}]
+        changed["body"]["messages"][1]["content"] = json.dumps(payload)
+        changed_content = changed["body"]["messages"][1]["content"]
+        changed["body"]["messages"][1]["content"] = gui._inject_prev_tr(
+            changed_content, [{"i": 1, "tr": "Selam."}])
+        raw = {}
+        count, _ = self.app._prefill_sync_ckpt([changed], raw)
+        self.assertEqual(count, 0)
+        self.assertNotIn("c2", raw)
+
     def test_prefill_fills_rawmap_without_filtering(self):
         r = _req("c1", ["hi"])
         h = self._hash(r)
