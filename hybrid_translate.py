@@ -6873,6 +6873,7 @@ def semantic_reconciliation_pass(
     extra_suspect_reasons: dict | None = None,
     locked_terms: dict | None = None,
     target_coverage: float = 0.0,
+    canon_hint: str = "",
     log_fn=None,
     token_callback=None,
     cancel_context=None,
@@ -6953,6 +6954,12 @@ def semantic_reconciliation_pass(
         system_prompt += (
             f"\nLOCKED TERMS (source -> required {tgt_lang} rendering; preserve exactly "
             f"whenever the source term occurs):\n{rows}"
+        )
+    if canon_hint:
+        system_prompt += (
+            "\nSEASON CANON (follow only when supported by the source and dialogue context; "
+            "keep character names, voices, and Turkish sen/siz address decisions consistent):\n"
+            + str(canon_hint).strip()
         )
 
     def _locked_suffixes(text: str, target: str) -> set:

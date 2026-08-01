@@ -646,7 +646,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 3
+QUALITY_PROFILE_VERSION = 4
 QUALITY_PROFILE_DEFAULTS = {
     "model": "gpt-5.4",
     "mode": "sync",
@@ -665,7 +665,23 @@ QUALITY_PROFILE_DEFAULTS = {
     "clean_sdh": True,
     "backup_raw": True,
     "term_normalize": True,
+    "media_mode": "Dizi",
+    "content_type": "Dizi",
+    "series_memory": True,
+    "season_canon": True,
     "linebreak": False,
+}
+MEDIA_MODE_DEFAULTS = {
+    "Dizi": {
+        "content_type": "Dizi",
+        "series_memory": True,
+        "season_canon": True,
+    },
+    "Film": {
+        "content_type": "Film",
+        "series_memory": False,
+        "season_canon": False,
+    },
 }
 WORKFLOW_PROFILES = {
     "Maksimum kalite": {
@@ -681,6 +697,7 @@ WORKFLOW_PROFILES = {
         "chain_ctx_var": True,
         "precontext_var": False,
         "series_memory_var": True,
+        "season_canon_var": True,
         "clean_sdh_var": True,
         "linebreak_var": False,
         "qc_var": False,
@@ -698,6 +715,7 @@ WORKFLOW_PROFILES = {
         "chain_ctx_var": True,
         "precontext_var": False,
         "series_memory_var": True,
+        "season_canon_var": True,
         "clean_sdh_var": True,
         "linebreak_var": False,
         "qc_var": False,
@@ -715,6 +733,7 @@ WORKFLOW_PROFILES = {
         "chain_ctx_var": True,
         "precontext_var": True,
         "series_memory_var": False,
+        "season_canon_var": False,
         "clean_sdh_var": True,
         "linebreak_var": False,
         "qc_var": False,
@@ -5511,6 +5530,79 @@ def _locked_term_residue_plan(blocks: list, src_map: dict,
     return plan
 
 
+def _season_canon_suspect_ids(blocks: list, src_map: dict,
+                              locked_terms: dict | None = None) -> set:
+    """Kaynakta kanon terimi varken hedef karşılığı görünmeyen cue'ları seçer.
+
+    Türkçe çekim ekleri ve kesme işaretli özel ad ekleri kanonik kullanım sayılır;
+    gerçek karar modelin kaynak ve komşu bağlamlı mutabakat geçişine bırakılır.
+    """
+    if not locked_terms:
+        return set()
+    by_idx = {str(idx): str(text or "") for idx, _ts, text in blocks or []}
+    suspects = set()
+    for idx, source_text in (src_map or {}).items():
+        translated = by_idx.get(str(idx), "")
+        if not source_text or not translated:
+            continue
+        for source, target in locked_terms.items():
+            source = str(source or "").strip()
+            target = str(target or "").strip()
+            if not source or not target or source.casefold() == target.casefold():
+                continue
+            source_re = re.compile(
+                r"(?<!\w)" + re.escape(source) + r"(?!\w)", re.IGNORECASE)
+            if not source_re.search(str(source_text)):
+                continue
+            target_re = re.compile(
+                r"(?<!\w)" + re.escape(target)
+                + r"(?:(?:['’]\w+)|(?:\w{1,8}))?(?!\w)", re.IGNORECASE)
+            if not target_re.search(translated):
+                suspects.add(str(idx))
+                break
+    return suspects
+
+
+_SEASON_ADDRESS_RE = re.compile(
+    r"(?<!\w)(?:sen|sana|seni|sende|senden|senin|siz|size|sizi|sizden|sizin)(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _season_address_suspect_ids(blocks: list) -> set:
+    return {
+        str(idx) for idx, _ts, text in blocks or []
+        if _SEASON_ADDRESS_RE.search(str(text or ""))
+    }
+
+
+def _align_delivery_blocks_to_source(source_blocks: list,
+                                     output_blocks: list) -> tuple[list, list]:
+    """Teslim imzaları yüzünden numarası yenilenen SRT'yi kaynak cue'larına bağlar."""
+    source_by_time = {}
+    for idx, ts, _text in source_blocks or []:
+        try:
+            source_by_time.setdefault(_srt_timestamp_bounds(ts), []).append(str(idx))
+        except ValueError:
+            continue
+    aligned = []
+    unmapped = []
+    for idx, ts, text in output_blocks or []:
+        if _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip()):
+            continue
+        try:
+            key = _srt_timestamp_bounds(ts)
+        except ValueError:
+            unmapped.append(str(idx))
+            continue
+        candidates = source_by_time.get(key) or []
+        if not candidates:
+            unmapped.append(str(idx))
+            continue
+        aligned.append((candidates.pop(0), ts, text))
+    return aligned, unmapped
+
+
 def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple:
     """Terim-normalizasyon adayı için hafif güvenlik kapısı.
 
@@ -6911,6 +7003,7 @@ class App(ctk.CTk):
         self._project_memories = {}
 
         self._build_ui()
+        self._apply_media_mode("Dizi", notify=False)
         self._load_settings()
         if self._restored_geometry:
             try:
@@ -7003,6 +7096,8 @@ class App(ctk.CTk):
             "chain_ctx": "chain_ctx_var",
             "precontext": "precontext_var",
             "series_memory": "series_memory_var",
+            "season_canon": "season_canon_var",
+            "media_mode": "media_mode_var",
             "backup_raw": "backup_raw_var",
         }
         for key, attr in restore_vars.items():
@@ -8033,6 +8128,26 @@ class App(ctk.CTk):
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
+        self.season_canon_var = ctk.BooleanVar(value=True)
+        canon_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        canon_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        canon_fr.grid_columnconfigure(1, weight=1)
+        self.season_canon_switch = ctk.CTkSwitch(
+            canon_fr, text="", variable=self.season_canon_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT)
+        self.season_canon_switch.grid(row=0, column=0)
+        ctk.CTkLabel(canon_fr, text="Sezon Sonu Kanon Denetimi",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(
+            sb,
+            text="Seçilen sezonun bütün başarılı bölümleri bitince\n"
+                 "dizi hafızasındaki ad, terim ve hitap kanonunu\n"
+                 "kaynakla yeniden karşılaştırır; güvenli düzeltmeleri uygular.",
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            justify="left", wraplength=260).grid(
+                row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
+
         # Bağlam İncelemesi (Batch sonrası ikinci geçiş)
         self.review_pass_var = ctk.BooleanVar(value=True)
         rev_fr = ctk.CTkFrame(sb, fg_color="transparent")
@@ -8459,6 +8574,21 @@ class App(ctk.CTk):
         ctk.CTkButton(gf, text="…", width=36, height=36,
                       fg_color=BORDER, hover_color=ACCENT,
                       command=self._pick_glossary).grid(row=0, column=1, padx=(6,0))
+
+        hf_lbl("İçerik modu")
+        self.media_mode_var = ctk.StringVar(value="Dizi")
+        ctk.CTkOptionMenu(
+            hfr,
+            variable=self.media_mode_var,
+            values=list(MEDIA_MODE_DEFAULTS),
+            command=self._apply_media_mode,
+            height=34,
+            fg_color=CARD,
+            button_color=BORDER,
+            button_hover_color=ACCENT,
+            dropdown_fg_color=CARD,
+            text_color=FG,
+        ).pack(fill="x", padx=4, pady=(0, 4))
 
         hf_lbl("Çalışma profili")
         self.workflow_profile_var = ctk.StringVar(value="Özel")
@@ -9379,6 +9509,9 @@ class App(ctk.CTk):
             "chain_ctx": bool(getattr(self, "chain_ctx_var", None) and self.chain_ctx_var.get()),
             "precontext": bool(getattr(self, "precontext_var", None) and self.precontext_var.get()),
             "series_memory": bool(getattr(self, "series_memory_var", None) and self.series_memory_var.get()),
+            "season_canon": bool(getattr(self, "season_canon_var", None) and self.season_canon_var.get()),
+            "media_mode": (self.media_mode_var.get()
+                           if getattr(self, "media_mode_var", None) else "Dizi"),
             "main_api_key": self._main_api_key(),
             "main_api_base_url": self._main_api_base_url(),
             "main_model_name": self._main_model_name(),
@@ -9420,6 +9553,7 @@ class App(ctk.CTk):
             "ai_segment_var": "ai_segment", "merge_cues_var": "merge_cues",
             "chain_ctx_var": "chain_ctx", "precontext_var": "precontext",
             "series_memory_var": "series_memory", "style_var": "style",
+            "season_canon_var": "season_canon", "media_mode_var": "media_mode",
             "content_type_var": "content_type", "backup_raw_var": "backup_raw",
             "glossary_var": "global_glossary_path",
         }
@@ -9453,7 +9587,8 @@ class App(ctk.CTk):
             "critic", "polish", "native", "qc", "condense", "backtrans",
             "semantic_reconcile", "review", "twowave", "clean_sdh",
             "linebreak", "ai_segment", "merge_cues", "chain_ctx",
-            "precontext", "series_memory", "main_model_name",
+            "precontext", "series_memory", "season_canon", "media_mode",
+            "main_model_name",
             "main_api_base_url", "shutdown_when_done",
             "prevent_sleep", "auto_retry_files", "auto_resume_crash",
             "workflow_profile", "backup_raw", "ext_project_path",
@@ -9605,6 +9740,8 @@ class App(ctk.CTk):
                     item["status"] = "error"
                 elif item.get("status") != "error":
                     item["status"] = "done"
+                if row.get("output_path"):
+                    item["output_path"] = str(row["output_path"])
             try:
                 atomic_write_json(_active_run_state_path(), record)
             except Exception:
@@ -10490,11 +10627,172 @@ class App(ctk.CTk):
                 pass
         _post_ui(self, _upd)
 
+    def _season_canon_groups(self):
+        snapshot = getattr(self, "_active_snapshot", {}) or {}
+        record = getattr(self, "_active_run_record", None) or {}
+        groups = {}
+        for source_path, item in (record.get("files") or {}).items():
+            if item.get("status") != "done" or not item.get("output_path"):
+                continue
+            key = series_memory.parse_series_key(source_path)
+            output_path = Path(item["output_path"])
+            if key is None or not output_path.exists():
+                continue
+            slug, season, episode = key
+            source_language = self._effective_file_source_language(
+                source_path, snapshot.get("src_lang") or "English")
+            memory_root = str(series_memory.series_memory_root(source_path))
+            group_key = (
+                os.path.normcase(os.path.abspath(memory_root)), slug, season,
+                _lang_iso639_1(source_language),
+            )
+            groups.setdefault(group_key, []).append(
+                (episode, str(source_path), output_path))
+        return {
+            key: sorted(items)
+            for key, items in groups.items() if len(items) >= 2
+        }
+
+    def _should_start_season_canon(self) -> bool:
+        snapshot = getattr(self, "_active_snapshot", {}) or {}
+        record = getattr(self, "_active_run_record", None) or {}
+        if (getattr(self, "_season_canon_finalizing", False)
+                or getattr(self, "_season_canon_done", False)
+                or getattr(self, "_stop_flag", False)
+                or snapshot.get("media_mode", "Dizi") != "Dizi"
+                or not snapshot.get("series_memory", True)
+                or not snapshot.get("season_canon", True)):
+            return False
+        states = [item.get("status", "pending")
+                  for item in (record.get("files") or {}).values()]
+        if not states or any(state in {"pending", "running"} for state in states):
+            return False
+        return bool(self._season_canon_groups())
+
+    def _run_season_canon_audit(self):
+        snapshot = getattr(self, "_active_snapshot", {}) or {}
+        groups = self._season_canon_groups()
+        if not groups:
+            return
+        tgt = snapshot.get("tgt_lang") or "Turkish"
+        report_lines = ["# Sezon Sonu Kanon Denetimi", ""]
+        total_suspects = total_fixed = 0
+        self._log(
+            f"Sezon Sonu Kanon Denetimi: {len(groups)} sezon, "
+            f"{sum(len(items) for items in groups.values())} bölüm inceleniyor...",
+            "info",
+        )
+        for (_memory_root, slug, season, source_key), items in groups.items():
+            report_lines.append(f"## {slug} S{season:02d}")
+            for episode, source_path, output_path in items:
+                try:
+                    source_blocks = list(parse_subtitle(source_path))
+                    output_blocks, unmapped = _align_delivery_blocks_to_source(
+                        source_blocks, parse_srt(output_path))
+                    if unmapped:
+                        raise ValueError(
+                            f"{len(unmapped)} çıktı cue'su kaynak zamanına bağlanamadı")
+                    src_map = {
+                        str(idx): _clean_src(text)
+                        for idx, _ts, text in source_blocks
+                    }
+                    locked_terms = self._get_locked_terms_dict(source_path, tgt)
+                    suspects = _season_canon_suspect_ids(
+                        output_blocks, src_map, locked_terms)
+                    suspects.update(_season_address_suspect_ids(output_blocks))
+                    total_suspects += len(suspects)
+                    before = {str(idx): text for idx, _ts, text in output_blocks}
+                    if suspects:
+                        self._maybe_semantic_reconciliation(
+                            output_path, src_map, output_blocks,
+                            src_lang=self._effective_file_source_language(
+                                source_path, snapshot.get("src_lang") or "English"),
+                            changed_ids=suspects, source_path=source_path,
+                            canon_hint=self._series_hint_for(source_path),
+                            force=True)
+                    if snapshot.get("term_normalize", True):
+                        output_blocks, _ = _normalize_mixed_terms(
+                            output_blocks, src_map,
+                            self._helper_api_key("polish"),
+                            self._helper_api_base_url("polish"),
+                            self._helper_api_model("polish"),
+                            log_fn=self._log, locked_terms=locked_terms)
+                    changes = [
+                        (str(idx), before.get(str(idx), ""), text)
+                        for idx, _ts, text in output_blocks
+                        if before.get(str(idx), text) != text
+                    ]
+                    if changes:
+                        report_dir = _resolve_report_dir(
+                            snapshot.get("input_dir", ""),
+                            snapshot.get("output_dir", ""))
+                        report_dir.mkdir(parents=True, exist_ok=True)
+                        backup = report_dir / (
+                            f"{slug}.S{season:02d}E{episode:02d}.season-canon.bak.srt")
+                        if not backup.exists():
+                            atomic_write_bytes(backup, output_path.read_bytes())
+                        delivery = _prepare_upload_ready_blocks(
+                            output_blocks, tgt, self._log)
+                        write_srt(output_path, delivery, tgt)
+                    total_fixed += len(changes)
+                    report_lines.append(
+                        f"- E{episode:02d}: şüpheli {len(suspects)}, "
+                        f"düzeltme {len(changes)}")
+                    for idx, old, new in changes:
+                        report_lines.extend([
+                            f"  [{idx}] önce: {old}",
+                            f"       sonra: {new}",
+                        ])
+                except RequestCancelled:
+                    raise
+                except Exception as exc:
+                    report_lines.append(f"- E{episode:02d}: hata — {exc}")
+                    self._log(
+                        f"Sezon kanon denetimi [{Path(source_path).name}]: {exc}",
+                        "warn",
+                    )
+            report_lines.append("")
+        report_dir = _resolve_report_dir(
+            snapshot.get("input_dir", ""), snapshot.get("output_dir", ""))
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / "sezon_kanon_denetimi.txt"
+        atomic_write_text(report_path, "\n".join(report_lines), encoding="utf-8")
+        with self._run_record_lock:
+            record = getattr(self, "_active_run_record", None)
+            if record is not None:
+                record["fixes_applied"] = int(record.get("fixes_applied", 0)) + total_fixed
+                record.setdefault("reports", []).append(str(report_path))
+        self._log(
+            f"Sezon Sonu Kanon Denetimi tamamlandı: {total_suspects} şüpheli cue, "
+            f"{total_fixed} düzeltme — {report_path}",
+            "ok",
+        )
+
+    def _start_season_canon_finalizer(self):
+        self._season_canon_finalizing = True
+
+        def _work():
+            try:
+                self._run_season_canon_audit()
+            except RequestCancelled:
+                pass
+            except Exception as exc:
+                self._log(f"Sezon Sonu Kanon Denetimi hatası: {exc}", "warn")
+            finally:
+                self._season_canon_done = True
+                self._season_canon_finalizing = False
+                _post_ui(self, self._set_running, False)
+
+        threading.Thread(target=_work, daemon=True).start()
+
     def _set_running(self, running):
         # Worker thread'lerden çağrılabilir; Tk widget .configure()/after_cancel YALNIZCA
         # ana thread'de güvenli (Tcl thread-safe değil). Ana thread'de değilsek marshal et.
         if threading.current_thread() is not threading.main_thread():
             _post_ui(self, self._set_running, running)
+            return
+        if not running and App._should_start_season_canon(self):
+            App._start_season_canon_finalizer(self)
             return
         s = "disabled" if (running or getattr(self, "_folder_scan_busy", False)) else "normal"
         self.start_btn.configure(state=s)
@@ -10508,6 +10806,8 @@ class App(ctk.CTk):
         self.pause_btn.configure(state="normal" if running else "disabled")
         self._is_running = running
         if running and not getattr(self, "_run_state_initialized", False):
+            self._season_canon_done = False
+            self._season_canon_finalizing = False
             self._run_state_initialized = True
             self._helper_request_canceller = RunRequestCanceller()
             self._run_series_memory = {}
@@ -10522,7 +10822,8 @@ class App(ctk.CTk):
                     "critic", "polish", "native", "qc", "condense", "backtrans",
                     "semantic_reconcile", "review", "twowave", "clean_sdh",
                     "linebreak", "ai_segment", "merge_cues", "chain_ctx",
-                    "precontext", "series_memory", "main_model_name",
+                    "precontext", "series_memory", "season_canon", "media_mode",
+                    "main_model_name",
                     "main_api_base_url", "backup_raw", "ext_project_path",
                     "notify_desktop",
                 )
@@ -11356,8 +11657,34 @@ class App(ctk.CTk):
             var = getattr(self, attr, None)
             if var is not None:
                 var.set(value)
+        self._apply_media_mode(self.media_mode_var.get(), notify=False)
         self._toggle_hybrid()
         self._log(f"Çalışma profili uygulandı: {profile_name}", "info")
+
+    def _apply_media_mode(self, media_mode: str, *, notify=True):
+        defaults = MEDIA_MODE_DEFAULTS.get(media_mode)
+        if not defaults:
+            return
+        self.content_type_var.set(defaults["content_type"])
+        self.series_memory_var.set(defaults["series_memory"])
+        self.season_canon_var.set(defaults["season_canon"])
+        self._sync_media_mode_controls()
+        if notify:
+            self._log(
+                f"İçerik modu: {media_mode} — "
+                + ("dizi hafızası ve sezon kanonu açık"
+                   if media_mode == "Dizi" else "dizi özellikleri kapalı"),
+                "info",
+            )
+
+    def _sync_media_mode_controls(self):
+        is_series = (
+            getattr(self, "media_mode_var", None) is not None
+            and self.media_mode_var.get() == "Dizi"
+        )
+        switch = getattr(self, "season_canon_switch", None)
+        if switch is not None:
+            switch.configure(state="normal" if is_series else "disabled")
 
     def _on_mode_change(self):
         if self.mode_var.get() == "sync" and not self.hybrid_var.get():
@@ -12212,6 +12539,12 @@ class App(ctk.CTk):
             "chain_ctx": self.chain_ctx_var.get(),
             "precontext": self.precontext_var.get(),
             "series_memory": self.series_memory_var.get(),
+            "season_canon": bool(
+                getattr(self, "season_canon_var", None)
+                and self.season_canon_var.get()),
+            "media_mode": (
+                self.media_mode_var.get()
+                if getattr(self, "media_mode_var", None) else "Dizi"),
             "review_pass": self.review_pass_var.get(),
             "term_normalize": self.term_normalize_var.get(),
             "twowave": self.twowave_var.get(),
@@ -12644,6 +12977,10 @@ class App(ctk.CTk):
                 self.precontext_var.set(bool(d["precontext"]))
             if "series_memory" in d:
                 self.series_memory_var.set(bool(d["series_memory"]))
+            if "season_canon" in d:
+                self.season_canon_var.set(bool(d["season_canon"]))
+            if d.get("media_mode") in MEDIA_MODE_DEFAULTS:
+                self.media_mode_var.set(d["media_mode"])
             if "backup_raw" in d:                          # varsayılan AÇIK → kayıtlı false sabit kalsın
                 self.backup_raw_var.set(bool(d["backup_raw"]))
             if "review_pass" in d:
@@ -12678,6 +13015,7 @@ class App(ctk.CTk):
             
             # Uygulama açılışında arayüz durumlarını senkronize et
             self._toggle_hybrid()
+            self._sync_media_mode_controls()
             self._log_startup_settings()
         except Exception as e:
             try:
@@ -14345,8 +14683,10 @@ class App(ctk.CTk):
 
     def _maybe_semantic_reconciliation(self, out_path, src_clean_map, blocks,
                                        src_lang=None, cues=None, changed_ids=None,
-                                       source_path=None) -> int:
-        if not self._semantic_reconcile_enabled() or not src_clean_map or not blocks:
+                                       source_path=None, canon_hint="",
+                                       force=False) -> int:
+        if ((not force and not self._semantic_reconcile_enabled())
+                or not src_clean_map or not blocks):
             return 0
         try:
             import hybrid_translate as ht
@@ -14385,6 +14725,7 @@ class App(ctk.CTk):
                 extra_suspect_reasons=extra_suspect_reasons,
                 locked_terms=locked_terms,
                 target_coverage=0.65,
+                canon_hint=canon_hint,
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
@@ -18033,6 +18374,7 @@ class App(ctk.CTk):
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": fname, "source_path": filepath,
+                "output_path": str(out_path),
                 "total": len(sorted_blocks),
                 "hata": _hata_n + _n_filled, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
@@ -18887,6 +19229,7 @@ class App(ctk.CTk):
                                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                                 report_rows.append({"name": Path(output_path).name,
                                                     "source_path": str(_src_path),
+                                                    "output_path": str(output_path),
                                                     "total": len(pp), "hata": _hn, "cps": _cn,
                                                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                                                     "cons": _cons_fixes,
@@ -19355,6 +19698,7 @@ class App(ctk.CTk):
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
+                "output_path": str(out_path),
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
@@ -20079,6 +20423,7 @@ class App(ctk.CTk):
                     _cps_avg, _cps_max = _cps_stats(_final_blocks)
                     report_rows.append({
                         "name": fname, "source_path": filepath,
+                        "output_path": str(_partial_path),
                         "total": len(_final_blocks),
                         "hata": max(_hata_n, _unresolved_missing), "cps": _cps_n,
                         "cps_avg": _cps_avg, "cps_max": _cps_max,
@@ -20369,6 +20714,7 @@ class App(ctk.CTk):
                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
                     "name": fname, "source_path": filepath,
+                    "output_path": str(out_path),
                     "total": len(_final_blocks),
                     "hata": _hata_n + _n_filled, "cps": _cps_n,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,

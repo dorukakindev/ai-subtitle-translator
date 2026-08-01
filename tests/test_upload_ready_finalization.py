@@ -204,7 +204,7 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         source = Path(gui.__file__).read_text(encoding="utf-8")
         self.assertEqual(
             source.count("_prepare_upload_ready_blocks("),
-            7,
+            8,
         )
 
 

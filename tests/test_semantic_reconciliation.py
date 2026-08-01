@@ -192,6 +192,20 @@ class SemanticClusterBuilderTest(unittest.TestCase):
         self.assertEqual(suspects, {"4", "8", "11", "15"})
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_season_canon_hint_is_injected_into_reconciler_prompt(self):
+        blocks = [("1", "00:00:01 --> 00:00:02", "Sana söyledim.")]
+        src_map = {"1": "I told you."}
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create",
+                   return_value=_response([])) as create:
+            ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", changed_ids={"1"},
+                canon_hint="Alice → Bob: 'siz'",
+            )
+        prompt = create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("SEASON CANON", prompt)
+        self.assertIn("Alice → Bob: 'siz'", prompt)
+
     def test_missing_predicate_regression_is_rejected(self):
         ok, reason = ht.validate_semantic_reconciliation_candidate(
             "Kral Behemoth korunuyor...",

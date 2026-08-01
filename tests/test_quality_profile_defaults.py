@@ -40,6 +40,8 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "self.critic_var = ctk.BooleanVar(value=True)",
             "self.native_var = ctk.BooleanVar(value=True)",
             "self.semantic_reconcile_var = ctk.BooleanVar(value=True)",
+            "self.season_canon_var = ctk.BooleanVar(value=True)",
+            'self.media_mode_var = ctk.StringVar(value="Dizi")',
             "self.backup_raw_var = ctk.BooleanVar(value=True)",
             "self.linebreak_var = ctk.BooleanVar(value=False)",
             "self.hybrid_var = ctk.BooleanVar(value=True)",
@@ -61,6 +63,10 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         self.assertTrue(_apply_quality_profile_defaults(settings))
         self.assertEqual(settings["quality_profile_version"], QUALITY_PROFILE_VERSION)
         self.assertEqual(settings["mode"], "sync")
+        self.assertEqual(settings["media_mode"], "Dizi")
+        self.assertEqual(settings["content_type"], "Dizi")
+        self.assertTrue(settings["series_memory"])
+        self.assertTrue(settings["season_canon"])
         self.assertFalse(settings["linebreak"])
         self.assertEqual(settings["unrelated"], "kept")
 
@@ -94,6 +100,10 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "clean_sdh": True,
                 "backup_raw": True,
                 "term_normalize": True,
+                "media_mode": "Dizi",
+                "content_type": "Dizi",
+                "series_memory": True,
+                "season_canon": True,
                 "linebreak": False,
             },
         )
