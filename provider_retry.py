@@ -6,6 +6,10 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from app_state import atomic_write_json
 
 
 _RETRY_DELAY_RE = re.compile(
@@ -15,6 +19,146 @@ _RETRY_DELAY_RE = re.compile(
 )
 
 TRANSIENT_RETRY_DELAYS = (10.0, 20.0, 30.0, 40.0, 120.0)
+RESPONSE_CHECKPOINT_VER = 1
+
+_RESPONSE_CHECKPOINT_LOCK = threading.Lock()
+_RESPONSE_CHECKPOINT = None
+
+
+def _response_checkpoint_namespace_dir(root: Path, namespace: str) -> Path:
+    digest = hashlib.sha256(str(namespace).encode("utf-8", "replace")).hexdigest()
+    return Path(root) / digest
+
+
+def configure_response_checkpoint(path=None, namespace: str = "",
+                                  allow_reads: bool = False,
+                                  hit_callback=None) -> None:
+    global _RESPONSE_CHECKPOINT
+    with _RESPONSE_CHECKPOINT_LOCK:
+        if path is None or not str(namespace).strip():
+            _RESPONSE_CHECKPOINT = None
+            return
+        _RESPONSE_CHECKPOINT = {
+            "path": Path(path),
+            "namespace": str(namespace),
+            "allow_reads": bool(allow_reads),
+            "hit_callback": hit_callback,
+            "hits": 0,
+            "consumed": set(),
+        }
+
+
+def clear_response_checkpoint_namespace(path, namespace: str) -> bool:
+    root = Path(path)
+    namespace_dir = _response_checkpoint_namespace_dir(root, namespace)
+    try:
+        for item in namespace_dir.iterdir():
+            if item.is_file():
+                item.unlink(missing_ok=True)
+        namespace_dir.rmdir()
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+        return True
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+
+
+def _response_checkpoint_key(client, model: str, kwargs: dict,
+                             requested_format=None) -> str:
+    payload = {
+        "base_url": str(getattr(client, "base_url", "") or "").rstrip("/").lower(),
+        "model": str(model or ""),
+        "kwargs": kwargs,
+        "requested_format": requested_format,
+    }
+    raw = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+
+def _cached_chat_response(entry: dict):
+    message = SimpleNamespace(content=entry.get("content"))
+    choice = SimpleNamespace(
+        message=message,
+        finish_reason=entry.get("finish_reason"),
+    )
+    return SimpleNamespace(choices=[choice], usage=None)
+
+
+def _response_checkpoint_lookup(client, model: str, kwargs: dict,
+                                requested_format=None):
+    with _RESPONSE_CHECKPOINT_LOCK:
+        config = dict(_RESPONSE_CHECKPOINT or {})
+    if not config or not config.get("allow_reads"):
+        return None
+    key = _response_checkpoint_key(client, model, kwargs, requested_format)
+    root = config["path"]
+    namespace = config["namespace"]
+    if key in config.get("consumed", set()):
+        return None
+    entry_path = _response_checkpoint_namespace_dir(root, namespace) / f"{key}.json"
+    try:
+        entry = json.loads(entry_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if (not isinstance(entry, dict)
+            or entry.get("version") != RESPONSE_CHECKPOINT_VER
+            or "content" not in entry):
+        return None
+    callback = None
+    hits = 0
+    with _RESPONSE_CHECKPOINT_LOCK:
+        current = _RESPONSE_CHECKPOINT
+        if (current and current.get("path") == root
+                and current.get("namespace") == namespace):
+            if key in current.setdefault("consumed", set()):
+                return None
+            current["consumed"].add(key)
+            current["hits"] = int(current.get("hits", 0)) + 1
+            hits = current["hits"]
+            callback = current.get("hit_callback")
+    if callback:
+        try:
+            callback(hits)
+        except Exception:
+            pass
+    return _cached_chat_response(entry)
+
+
+def _response_checkpoint_save(client, model: str, kwargs: dict, response,
+                              requested_format=None) -> None:
+    with _RESPONSE_CHECKPOINT_LOCK:
+        config = dict(_RESPONSE_CHECKPOINT or {})
+    if not config:
+        return
+    try:
+        choice = response.choices[0]
+        content = choice.message.content
+    except Exception:
+        return
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason not in (None, "stop"):
+        return
+    key = _response_checkpoint_key(client, model, kwargs, requested_format)
+    root = config["path"]
+    namespace = config["namespace"]
+    entry = {
+        "version": RESPONSE_CHECKPOINT_VER,
+        "content": content,
+        "finish_reason": finish_reason,
+        "updated_at": time.time(),
+    }
+    try:
+        entry_path = _response_checkpoint_namespace_dir(
+            root, namespace) / f"{key}.json"
+        atomic_write_json(entry_path, entry)
+    except Exception:
+        pass
 
 
 def _status_code(exc) -> int | None:
@@ -410,7 +554,8 @@ def _chat_create_once(client, kwargs: dict):
             _wait_for_transient_retry(exc, attempt + 1, total)
 
 
-def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None):
+def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
+                                      requested_format=None):
     plain = copy.deepcopy(kwargs)
     if not _is_custom_gpt5(client, model):
         return _chat_create_once(client, plain)
@@ -447,3 +592,15 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
         with _STRUCTURED_LOCK:
             _STRUCTURED_STATES[key] = True
         return result
+
+
+def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None):
+    cached = _response_checkpoint_lookup(
+        client, model, kwargs, requested_format=requested_format)
+    if cached is not None:
+        return cached
+    result = _chat_create_with_compat_uncached(
+        client, model, kwargs, requested_format=requested_format)
+    _response_checkpoint_save(
+        client, model, kwargs, result, requested_format=requested_format)
+    return result

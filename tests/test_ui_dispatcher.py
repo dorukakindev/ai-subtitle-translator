@@ -409,7 +409,7 @@ class UIDispatcherTest(unittest.TestCase):
         start_src = inspect.getsource(gui.App._start)
         resume_src = inspect.getsource(gui.App._resume)
         self.assertLess(
-            start_src.index("self._active_snapshot = self._take_run_snapshot()"),
+            start_src.index("self._active_snapshot = _refresh_start_snapshot("),
             start_src.index("App._start_worker(self,"),
         )
         self.assertLess(

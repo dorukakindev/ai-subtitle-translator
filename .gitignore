@@ -33,6 +33,7 @@ translation_memory.db.bak-shm
 translation_memory.db.bak-wal
 .context_cache/
 .precontext.json
+.quality_response_checkpoint/
 eski_batch_kurtarma_yedek/
 
 # Kullanıcı içeriği / çalışma klasörleri (kaynak kod değil)

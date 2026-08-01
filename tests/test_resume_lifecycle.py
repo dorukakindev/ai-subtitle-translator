@@ -84,6 +84,39 @@ class ResumeLifecycleTest(unittest.TestCase):
         app._resume_batches.assert_not_called()
 
 
+class CrashResumeSnapshotRefreshTest(unittest.TestCase):
+    def test_preflight_refresh_keeps_resume_identity_and_saved_settings(self):
+        current = {
+            "crash_resume": True,
+            "resume_origin_run_id": "original-run",
+            "critic": True,
+            "main_model_name": "saved-model",
+            "main_api_key": "old-key",
+            "file_source_languages": {"episode.srt": "English"},
+        }
+        fresh = {
+            "critic": False,
+            "main_model_name": "current-ui-model",
+            "main_api_key": "current-key",
+            "helper_keys": {"critic": "helper-key"},
+            "file_source_languages": {"episode.srt": "Spanish"},
+        }
+
+        merged = gui._refresh_start_snapshot(current, fresh)
+
+        self.assertTrue(merged["crash_resume"])
+        self.assertEqual(merged["resume_origin_run_id"], "original-run")
+        self.assertTrue(merged["critic"])
+        self.assertEqual(merged["main_model_name"], "saved-model")
+        self.assertEqual(merged["main_api_key"], "current-key")
+        self.assertEqual(merged["helper_keys"]["critic"], "helper-key")
+        self.assertEqual(merged["file_source_languages"]["episode.srt"], "Spanish")
+
+    def test_normal_start_uses_fresh_snapshot(self):
+        fresh = {"critic": False}
+        self.assertIs(gui._refresh_start_snapshot({"critic": True}, fresh), fresh)
+
+
 class BatchOwnerCancellationTest(unittest.TestCase):
     def test_clearing_active_batches_updates_owner_before_remote_cancel(self):
         events = []

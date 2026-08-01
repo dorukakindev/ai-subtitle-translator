@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -225,6 +227,118 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         client.chat.completions.create.assert_called_once()
         wait.assert_not_called()
+
+
+class ResponseCheckpointTest(unittest.TestCase):
+    def tearDown(self):
+        provider_retry.configure_response_checkpoint()
+
+    @staticmethod
+    def _response(content):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content),
+                finish_reason="stop")],
+            usage=None,
+        )
+
+    @staticmethod
+    def _mock_client(response):
+        client = mock.MagicMock()
+        client.base_url = "https://reseller.example/v1"
+        client.api_key = "sk-hidden"
+        client.chat.completions.create.return_value = response
+        return client
+
+    def test_completed_response_is_replayed_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            kwargs = {"messages": [{"role": "user", "content": "critic packet 1"}]}
+            first = self._mock_client(self._response('[{"id":"1","fixed":"İyi."}]'))
+            provider_retry.configure_response_checkpoint(root, "run-origin")
+            original = provider_retry.chat_create_with_compat(
+                first, "gpt-4.1", kwargs)
+            self.assertEqual(first.chat.completions.create.call_count, 1)
+
+            hits = []
+            resumed = self._mock_client(RuntimeError("API çağrılmamalı"))
+            resumed.chat.completions.create.side_effect = AssertionError(
+                "tamamlanan paket yeniden gönderilmemeli")
+            provider_retry.configure_response_checkpoint(
+                root, "run-origin", allow_reads=True,
+                hit_callback=hits.append)
+            restored = provider_retry.chat_create_with_compat(
+                resumed, "gpt-4.1", kwargs)
+
+            self.assertEqual(
+                restored.choices[0].message.content,
+                original.choices[0].message.content)
+            resumed.chat.completions.create.assert_not_called()
+            self.assertEqual(hits, [1])
+            checkpoint_text = "".join(
+                path.read_text(encoding="utf-8")
+                for path in root.rglob("*.json"))
+            self.assertNotIn("sk-hidden", checkpoint_text)
+            self.assertNotIn("critic packet 1", checkpoint_text)
+
+    def test_cached_response_is_consumed_once_before_live_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            kwargs = {"messages": [{"role": "user", "content": "same request"}]}
+            first = self._mock_client(self._response("malformed cached response"))
+            provider_retry.configure_response_checkpoint(root, "run-origin")
+            provider_retry.chat_create_with_compat(first, "gpt-4.1", kwargs)
+
+            resumed = self._mock_client(self._response("fresh retry response"))
+            provider_retry.configure_response_checkpoint(
+                root, "run-origin", allow_reads=True)
+            cached = provider_retry.chat_create_with_compat(
+                resumed, "gpt-4.1", kwargs)
+            fresh = provider_retry.chat_create_with_compat(
+                resumed, "gpt-4.1", kwargs)
+
+            self.assertEqual(
+                cached.choices[0].message.content, "malformed cached response")
+            self.assertEqual(
+                fresh.choices[0].message.content, "fresh retry response")
+            resumed.chat.completions.create.assert_called_once()
+
+    def test_changed_request_does_not_reuse_stale_response(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            first = self._mock_client(self._response("old"))
+            provider_retry.configure_response_checkpoint(root, "run-origin")
+            provider_retry.chat_create_with_compat(
+                first, "gpt-4.1",
+                {"messages": [{"role": "user", "content": "old input"}]})
+
+            resumed = self._mock_client(self._response("new"))
+            provider_retry.configure_response_checkpoint(
+                root, "run-origin", allow_reads=True)
+            result = provider_retry.chat_create_with_compat(
+                resumed, "gpt-4.1",
+                {"messages": [{"role": "user", "content": "changed input"}]})
+
+            self.assertEqual(result.choices[0].message.content, "new")
+            resumed.chat.completions.create.assert_called_once()
+
+    def test_completed_run_clears_only_its_namespace(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            client = self._mock_client(self._response("ok"))
+            provider_retry.configure_response_checkpoint(root, "run-a")
+            provider_retry.chat_create_with_compat(
+                client, "gpt-4.1", {"messages": []})
+            provider_retry.configure_response_checkpoint(root, "run-b")
+            provider_retry.chat_create_with_compat(
+                client, "gpt-4.1", {"messages": []})
+
+            self.assertTrue(provider_retry.clear_response_checkpoint_namespace(
+                root, "run-a"))
+            run_a = provider_retry._response_checkpoint_namespace_dir(root, "run-a")
+            run_b = provider_retry._response_checkpoint_namespace_dir(root, "run-b")
+            self.assertFalse(run_a.exists())
+            self.assertTrue(run_b.exists())
 
 
 class ResellerStructuredOutputTest(unittest.TestCase):

@@ -5196,6 +5196,19 @@ def _merge_batch_resume_snapshot(current: dict, saved: dict) -> dict:
     return merged
 
 
+def _refresh_start_snapshot(current: dict, fresh: dict) -> dict:
+    if not isinstance(current, dict) or not current.get("crash_resume"):
+        return fresh
+    merged = copy.deepcopy(current)
+    for key in (
+        "main_api_key", "helper_keys", "file_schemas",
+        "file_glossaries", "file_source_languages",
+    ):
+        if key in fresh:
+            merged[key] = copy.deepcopy(fresh[key])
+    return merged
+
+
 def _resolve_hybrid_resume_output_path(fmap_data: dict) -> str:
     output_path = str(fmap_data.get("output_path") or "").strip()
     if output_path:
@@ -10595,8 +10608,26 @@ class App(ctk.CTk):
             atomic_write_json(_active_run_state_path(), record)
         except Exception as exc:
             self._log(f"Çökme kurtarma kaydı yazılamadı: {exc}", "warn")
+        try:
+            from provider_retry import configure_response_checkpoint
+            configure_response_checkpoint(
+                state_path(__file__, ".quality_response_checkpoint"),
+                origin_run_id,
+                allow_reads=bool(resume or snapshot.get("crash_resume")),
+                hit_callback=self._quality_checkpoint_hit,
+            )
+        except Exception as exc:
+            self._log(f"Kalite checkpoint'i başlatılamadı: {exc}", "warn")
         self._log(f"Çalıştırma kimliği: {run_id}", "info")
         return run_id
+
+    def _quality_checkpoint_hit(self, count: int):
+        if int(count) == 1:
+            self._log(
+                "Çökme kurtarma: tamamlanmış API istekleri "
+                "checkpoint'ten alınıyor.", "ok")
+        self._set_status(
+            f"Çökme kurtarma: {int(count)} API isteği yeniden gönderilmedi")
 
     def _record_file_status(self, filepath: str, phase: str, status: str):
         timing_log = None
@@ -10792,6 +10823,19 @@ class App(ctk.CTk):
                 _active_run_state_path().unlink(missing_ok=True)
             except Exception:
                 pass
+        try:
+            from provider_retry import (clear_response_checkpoint_namespace,
+                                        configure_response_checkpoint)
+            configure_response_checkpoint()
+            origin_run_id = str(
+                ((snapshot.get("settings") or {}).get("resume_origin_run_id"))
+                or snapshot.get("run_id") or "")
+            if not resume_files and origin_run_id:
+                clear_response_checkpoint_namespace(
+                    state_path(__file__, ".quality_response_checkpoint"),
+                    origin_run_id)
+        except Exception:
+            pass
         return snapshot
 
     def _log(self, msg, tag="", issue_id=None):
@@ -15157,7 +15201,9 @@ class App(ctk.CTk):
         self._language_preflight_done = False
         self._content_type_preflight_done = False
         self._file_integrity_preflight_done = False
-        self._active_snapshot = self._take_run_snapshot()
+        self._active_snapshot = _refresh_start_snapshot(
+            getattr(self, "_active_snapshot", None),
+            self._take_run_snapshot())
         begin_run = getattr(self, "_begin_run_record", None)
         if callable(begin_run):
             begin_run(srt_files)
