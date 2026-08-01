@@ -38,6 +38,11 @@ class RunTraceabilityTest(unittest.TestCase):
                 self.assertEqual(Path(stub._active_run_record["log_path"]), expected)
                 self.assertTrue(expected.exists())
                 self.assertEqual(run_id, "run-test")
+                self.assertEqual(
+                    stub._active_snapshot["resume_origin_run_id"], "run-test")
+                self.assertEqual(
+                    stub._active_run_record["settings"]["resume_origin_run_id"],
+                    "run-test")
             finally:
                 stub._log_file.close()
 
@@ -91,6 +96,24 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertNotIn("main_api_key", result)
         self.assertNotIn("helper_keys", result)
         self.assertEqual(result["main_model_name"], "gpt-5.4")
+
+    def test_diagnostic_settings_preserve_recovery_build_parameters(self):
+        snapshot = {
+            "chunk_size": 25,
+            "context_lines": 20,
+            "lookahead_lines": 10,
+            "max_workers": 2,
+            "temperature": 0.2,
+            "max_retry": 3,
+            "scene_gap_seconds": 3.0,
+            "crash_resume": True,
+            "resume_origin_run_id": "run-original",
+        }
+
+        result = gui.App._diagnostic_run_settings(SimpleNamespace(), snapshot)
+
+        for key, value in snapshot.items():
+            self.assertEqual(result[key], value)
 
     def test_quality_warning_carries_source_and_translation_for_click(self):
         issues = []

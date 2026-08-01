@@ -7138,7 +7138,7 @@ def _batch_status_label(status: str) -> tuple:
 
 # ── Sync checkpoint store module-level helpers ────────────────────────────────
 SYNC_CKPT_STORE_VER = 2
-SYNC_STAGE_STORE_VER = 1
+SYNC_STAGE_STORE_VER = 2
 
 
 def load_sync_ckpt_store(path: Path) -> dict:
@@ -7278,7 +7278,8 @@ def _sync_stage_key(source_path: str) -> str:
 
 def save_sync_stage_entry_to_store(path: Path, source_path: str,
                                    source_hash: str, fingerprint: str,
-                                   raw_map: dict, log_fn=None) -> bool:
+                                   run_id: str, raw_map: dict,
+                                   log_fn=None) -> bool:
     try:
         with _interprocess_lock(path):
             store = load_sync_stage_store(path)
@@ -7286,6 +7287,7 @@ def save_sync_stage_entry_to_store(path: Path, source_path: str,
                 "source_path": os.path.abspath(str(source_path)),
                 "source_hash": str(source_hash),
                 "fingerprint": str(fingerprint),
+                "run_id": str(run_id),
                 "raw_map": {str(k): str(v) for k, v in raw_map.items()},
                 "updated_at": time.time(),
             }
@@ -7317,6 +7319,15 @@ def clear_sync_stage_entry_from_store(path: Path, source_path: str,
 def should_clear_sync_ckpt(is_stop_flag: bool, is_full_success: bool) -> bool:
     """Yalnızca durdurulmamış VE tam başarılı koşuda checkpoint temizleme kararı verir."""
     return not is_stop_flag and is_full_success
+
+
+def _sync_stage_is_complete(raw_map: dict, requests: list) -> bool:
+    return bool(requests) and all(
+        raw_map.get(req.get("custom_id", ""))
+        and not _chunk_response_retry_reason(
+            raw_map.get(req.get("custom_id", "")), req)
+        for req in requests
+    )
 
 
 # ── Ana uygulama ──────────────────────────────────────────────────────────────
@@ -7539,7 +7550,25 @@ class App(ctk.CTk):
             var = getattr(self, attr, None)
             if var is not None:
                 var.set(settings[key])
+        advanced_settings = {
+            "chunk_size": ("_chunk_size", int),
+            "context_lines": ("_context_lines", int),
+            "lookahead_lines": ("_lookahead_lines", int),
+            "max_workers": ("_max_workers", int),
+            "temperature": ("_temperature", float),
+            "max_retry": ("_max_retry", int),
+            "scene_gap_seconds": ("_scene_gap_seconds", float),
+        }
+        for key, (attr, cast) in advanced_settings.items():
+            if key not in settings:
+                continue
+            try:
+                setattr(self, attr, cast(settings[key]))
+            except (TypeError, ValueError):
+                pass
         settings["crash_resume"] = True
+        settings["resume_origin_run_id"] = str(
+            settings.get("resume_origin_run_id") or record.get("run_id") or "")
         self._resume_snapshot_override = settings
         self._toggle_hybrid()
         for filepath, language in dict(
@@ -9953,6 +9982,13 @@ class App(ctk.CTk):
             "helper_models": helper_models,
             "file_schemas": file_schemas,
             "file_glossaries": file_glossaries,
+            "chunk_size": self._chunk_size,
+            "context_lines": self._context_lines,
+            "lookahead_lines": self._lookahead_lines,
+            "max_workers": self._max_workers,
+            "temperature": self._temperature,
+            "max_retry": self._max_retry,
+            "scene_gap_seconds": self._scene_gap_seconds,
             "selected_files": tuple(getattr(self, "_selected_files", ()) or ()),
             "selected_folder_roots": tuple(
                 getattr(self, "_selected_folder_roots", ()) or ()),
@@ -10024,6 +10060,9 @@ class App(ctk.CTk):
             "prevent_sleep", "auto_retry_files", "auto_resume_crash",
             "workflow_profile", "backup_raw", "ext_project_path",
             "notify_desktop", "global_glossary_path",
+            "chunk_size", "context_lines", "lookahead_lines", "max_workers",
+            "temperature", "max_retry", "scene_gap_seconds",
+            "crash_resume", "resume_origin_run_id",
         )
         result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
         result["helper_models"] = dict(snapshot.get("helper_models") or {})
@@ -10044,6 +10083,12 @@ class App(ctk.CTk):
         import datetime as _dt
         run_id = _new_run_id()
         snapshot = dict(getattr(self, "_active_snapshot", {}) or {})
+        origin_run_id = str(snapshot.get("resume_origin_run_id") or run_id)
+        snapshot["resume_origin_run_id"] = origin_run_id
+        if isinstance(getattr(self, "_active_snapshot", None), dict):
+            self._active_snapshot["resume_origin_run_id"] = origin_run_id
+        diagnostic_settings = self._diagnostic_run_settings(snapshot)
+        diagnostic_settings["resume_origin_run_id"] = origin_run_id
         log_path = (
             state_path(__file__, "logs")
             / f"run_{run_id}.pid{os.getpid()}.log"
@@ -10072,7 +10117,7 @@ class App(ctk.CTk):
             "ended_at": "",
             "status": "çalışıyor",
             "resume": bool(resume),
-            "settings": self._diagnostic_run_settings(snapshot),
+            "settings": diagnostic_settings,
             "files": {
                 str(path): {"status": "pending", "phase": "Bekliyor"}
                 for path in files
@@ -11302,7 +11347,10 @@ class App(ctk.CTk):
                     "main_model_name",
                     "main_api_base_url", "backup_raw", "ext_project_path",
                     "notify_desktop",
-                    "crash_resume",
+                    "crash_resume", "resume_origin_run_id",
+                    "chunk_size", "context_lines", "lookahead_lines",
+                    "max_workers", "temperature", "max_retry",
+                    "scene_gap_seconds",
                 )
                 for key in scalar_keys:
                     if key in resume_settings:
@@ -17868,21 +17916,29 @@ class App(ctk.CTk):
 
     def _save_sync_stage_ckpt(self, filepath: str, source_hash: str,
                               raw_map: dict) -> bool:
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        run_id = str(snapshot.get("resume_origin_run_id") or "")
+        if not run_id:
+            return False
         return save_sync_stage_entry_to_store(
             self._sync_stage_ckpt_path(), filepath, source_hash,
-            self._ckpt_fingerprint(), raw_map, log_fn=self._log)
+            self._ckpt_fingerprint(), run_id, raw_map, log_fn=self._log)
 
     def _load_sync_stage_ckpt(self, filepath: str, source_hash: str,
                               expected_ids: set) -> dict:
         snapshot = getattr(self, "_active_snapshot", None)
         if not isinstance(snapshot, dict) or not snapshot.get("crash_resume"):
             return {}
+        run_id = str(snapshot.get("resume_origin_run_id") or "")
+        if not run_id:
+            return {}
         store = load_sync_stage_store(self._sync_stage_ckpt_path())
         entry = store.get("entries", {}).get(_sync_stage_key(filepath))
         if not isinstance(entry, dict):
             return {}
         if (entry.get("source_hash") != str(source_hash)
-                or entry.get("fingerprint") != self._ckpt_fingerprint()):
+                or entry.get("fingerprint") != self._ckpt_fingerprint()
+                or entry.get("run_id") != run_id):
             return {}
         raw_map = entry.get("raw_map")
         if not isinstance(raw_map, dict):
@@ -18635,14 +18691,28 @@ class App(ctk.CTk):
             if not self.chain_ctx_var.get():
                 _, prefilled_keys = self._prefill_sync_ckpt(
                     batch_reqs, raw_map, scope=_ckpt_scope)
+                completed[0] = len(raw_map)
             used_ckpt_keys.update(prefilled_keys)
             start_ts  = time.time()
             lock      = threading.Lock()
             base_pct  = int((fi + 0.4) / n_files * 100)
 
-            self._log(f"{total} istek gönderiliyor (sync+hybrid)...", "info")
-            self._set_phase("Çeviri", f"{fname}  ({fi+1}/{n_files})  —  0/{total} chunk")
-            self._update_file_progress(filepath, f"Çeviri 0/{total}", 40)
+            _pending_api = max(total - len(raw_map), 0)
+            if raw_map and _pending_api == 0:
+                self._log(
+                    f"Ana çeviri kurtarma kaydından hazır ({total}/{total} chunk) — "
+                    "çeviri API'sine yeniden istek gönderilmeyecek", "ok")
+            elif raw_map:
+                self._log(
+                    f"{len(raw_map)} chunk kurtarıldı; kalan {_pending_api} istek "
+                    "gönderiliyor (sync+hybrid)...", "info")
+            else:
+                self._log(f"{total} istek gönderiliyor (sync+hybrid)...", "info")
+            self._set_phase(
+                "Çeviri",
+                f"{fname}  ({fi+1}/{n_files})  —  {completed[0]}/{total} chunk")
+            self._update_file_progress(
+                filepath, f"Çeviri {completed[0]}/{total}", 40)
 
             def _hyb_tick(_fp=filepath, _fname=fname, _total=total, _base=base_pct):
                 file_pct = int(completed[0] / _total * 0.5 / n_files * 100)
@@ -18760,6 +18830,10 @@ class App(ctk.CTk):
                             self._log_exc(f"Chunk hatası [{cid_hint}] [{fname}]", e)
                         _hyb_tick()
 
+            _stage_saved = False
+            if _sync_stage_is_complete(raw_map, batch_reqs):
+                _stage_saved = self._save_sync_stage_ckpt(
+                    filepath, _expected_source_hash, raw_map)
             if self._stop_flag:
                 break
 
@@ -18773,11 +18847,7 @@ class App(ctk.CTk):
                         req, self._ckpt_fingerprint(), _ckpt_scope)
                     self._save_sync_ckpt_entry(cid, raw, src_h)
                     used_ckpt_keys.add(f"{cid}:{src_h}")
-            if batch_reqs and all(
-                    raw_map.get(req.get("custom_id", ""))
-                    and not _chunk_response_retry_reason(
-                        raw_map.get(req.get("custom_id", "")), req)
-                    for req in batch_reqs):
+            if not _stage_saved and _sync_stage_is_complete(raw_map, batch_reqs):
                 self._save_sync_stage_ckpt(
                     filepath, _expected_source_hash, raw_map)
             srt_blocks = {}

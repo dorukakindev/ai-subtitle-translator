@@ -37,7 +37,10 @@ class SyncCheckpointTest(unittest.TestCase):
             _save_sync_ckpt_entry=lambda cid, text, h: gui.App._save_sync_ckpt_entry(self.app, cid, text, h),
             _clear_sync_ckpt=lambda keys=None: gui.App._clear_sync_ckpt(self.app, keys),
             _log=MagicMock(),
-            _active_snapshot={"crash_resume": True},
+            _active_snapshot={
+                "crash_resume": True,
+                "resume_origin_run_id": "run-original",
+            },
             _sync_stage_ckpt_path=lambda: self.stage_path,
         )
         self.app._resume_from_sync_ckpt = gui.App._resume_from_sync_ckpt.__get__(self.app)
@@ -222,6 +225,28 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertEqual(
             self.app._load_sync_stage_ckpt("film.srt", "source-hash", set(raw)), {})
 
+    def test_stage_checkpoint_is_bound_to_original_run(self):
+        raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
+        self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
+        self.app._active_snapshot["resume_origin_run_id"] = "run-new"
+
+        self.assertEqual(
+            self.app._load_sync_stage_ckpt(
+                "film.srt", "source-hash", set(raw)), {})
+
+    def test_stage_completeness_rejects_missing_or_invalid_response(self):
+        requests = [_req("chunk_0", ["Hello"]), _req("chunk_25", ["World"])]
+        valid = {
+            "chunk_0": '[{"i":"1","t":"Merhaba"}]',
+            "chunk_25": '[{"i":"1","t":"Dünya"}]',
+        }
+        self.assertTrue(gui._sync_stage_is_complete(valid, requests))
+        self.assertFalse(gui._sync_stage_is_complete(
+            {"chunk_0": valid["chunk_0"]}, requests))
+        invalid = dict(valid)
+        invalid["chunk_25"] = "not json"
+        self.assertFalse(gui._sync_stage_is_complete(invalid, requests))
+
     def test_stage_checkpoint_rejects_changed_source_or_incomplete_chunk_set(self):
         raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
         self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
@@ -246,8 +271,11 @@ class SyncCheckpointTest(unittest.TestCase):
         save_at = source.index("_save_sync_stage_ckpt")
         clear_at = source.rindex("_clear_sync_stage_ckpt")
         quality_at = source.index("critic_pass_with_helper")
+        stop_after_main_at = source.index(
+            "if self._stop_flag:", save_at)
 
         self.assertLess(load_at, save_at)
+        self.assertLess(save_at, stop_after_main_at)
         self.assertLess(save_at, quality_at)
         self.assertLess(quality_at, clear_at)
 
