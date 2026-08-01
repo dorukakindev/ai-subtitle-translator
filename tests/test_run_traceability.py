@@ -80,6 +80,114 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("a.tr.srt", text)
         self.assertIn("b.srt", text)
 
+    def test_file_timing_tracks_each_stage_and_renders_in_reports(self):
+        item = {
+            "status": "pending",
+            "phase": "Bekliyor",
+            "queued_at": gui._timing_iso(90),
+            "queued_epoch": 90.0,
+            "stage_timings": [],
+        }
+        gui._advance_file_timing(
+            item, "Yardımcı Analiz 1/2", "running", now=100)
+        gui._advance_file_timing(
+            item, "Ana Çeviri 1/20", "running", now=130)
+        finished = gui._advance_file_timing(
+            item, "Tamamlandı", "done", now=190)
+
+        self.assertTrue(finished)
+        self.assertEqual(item["duration_seconds"], 90.0)
+        self.assertEqual(
+            [(stage["name"], stage["duration_seconds"])
+             for stage in item["stage_timings"]],
+            [("Yardımcı Analiz", 30.0), ("Ana Çeviri", 60.0)],
+        )
+
+        record = {
+            "run_id": "timed-run",
+            "started_at": gui._timing_iso(90),
+            "ended_at": gui._timing_iso(190),
+            "duration_seconds": 100.0,
+            "status": "tamamlandı",
+            "files": {"episode.srt": {**item, "status": "done"}},
+            "fixes_applied": 0,
+            "suggestions_rejected": 0,
+            "warnings": 0,
+            "errors": 0,
+            "outputs": [],
+            "reports": [],
+        }
+        summary = gui.build_run_summary_text(record)
+        self.assertIn("DOSYA BAZLI SÜRELER", summary)
+        self.assertIn("Toplam süre   : 1 dk 30 sn", summary)
+        self.assertIn("Yardımcı Analiz=30.0 sn", summary)
+        self.assertIn("Ana Çeviri=1 dk 00 sn", summary)
+
+        detail = gui._file_process_report_text({
+            "name": "episode.srt",
+            "timing": item,
+            "feature_audit": [],
+        })
+        self.assertIn("SÜRE ZAMAN ÇİZELGESİ", detail)
+        self.assertIn("Yardımcı Analiz", detail)
+        self.assertIn("Ana Çeviri", detail)
+
+    def test_file_status_logs_stage_and_terminal_durations(self):
+        record = {
+            "files": {
+                "episode.srt": {
+                    "status": "pending",
+                    "phase": "Bekliyor",
+                    "queued_at": gui._timing_iso(90),
+                    "queued_epoch": 90.0,
+                    "stage_timings": [],
+                }
+            }
+        }
+        stub = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record,
+            _log=MagicMock(),
+        )
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(
+                    gui, "_active_run_state_path",
+                    return_value=Path(td) / "active.json"), \
+                patch.object(gui.time, "time", side_effect=[100, 130, 190]):
+            gui.App._record_file_status(
+                stub, "episode.srt", "Yardımcı Analiz 1/2", "running")
+            gui.App._record_file_status(
+                stub, "episode.srt", "Ana Çeviri 1/20", "running")
+            gui.App._record_file_status(
+                stub, "episode.srt", "Tamamlandı", "done")
+
+        messages = [call.args[0] for call in stub._log.call_args_list]
+        self.assertTrue(any("Aşama tamamlandı" in msg for msg in messages))
+        self.assertTrue(any("toplam 1 dk 30 sn" in msg for msg in messages))
+
+    def test_all_translation_flows_feed_file_timing(self):
+        expected = {
+            gui.App._run_sync: ("Yardımcı Analiz", "Ana Çeviri"),
+            gui.App._run_sync_hybrid: (
+                "Critic Pass", "Polish Pass", "Native Okuyucu",
+                "Nihai Anlam Mutabakatı", "Auto-Glossary"),
+            gui.App._run_batch: ("Yardımcı Analiz", "Batch Ana Çeviri"),
+            gui.App._write_results: (
+                "Critic Pass", "Polish Pass", "Native Okuyucu",
+                "Nihai Anlam Mutabakatı", "Auto-Glossary"),
+            gui.App._run_hybrid: (
+                "Yardımcı Analiz", "Batch Ana Çeviri", "Critic Pass",
+                "Polish Pass", "Native Okuyucu", "Nihai Anlam Mutabakatı",
+                "Auto-Glossary"),
+        }
+        for method, labels in expected.items():
+            source = inspect.getsource(method)
+            for label in labels:
+                self.assertIn(label, source, f"{method.__name__}: {label}")
+
+        report_source = inspect.getsource(gui.App._save_quality_report)
+        self.assertIn("_file_timing_snapshot", report_source)
+
     def test_diagnostic_settings_never_include_api_keys(self):
         snapshot = {
             "input_dir": "C:/in",

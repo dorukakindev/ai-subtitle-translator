@@ -6472,6 +6472,115 @@ def _load_interrupted_run_record() -> dict | None:
         return None
 
 
+def _timing_iso(epoch: float) -> str:
+    import datetime as _dt
+    return _dt.datetime.fromtimestamp(float(epoch)).isoformat(timespec="seconds")
+
+
+def _format_elapsed(seconds) -> str:
+    try:
+        value = max(0.0, float(seconds or 0.0))
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 60:
+        return f"{value:.1f} sn"
+    total = int(round(value))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours} sa {minutes:02d} dk {secs:02d} sn"
+    return f"{minutes} dk {secs:02d} sn"
+
+
+def _timing_phase_label(phase: str) -> str:
+    value = re.sub(r"\s+", " ", str(phase or "").strip())
+    value = re.sub(r"\s+\d+\s*/\s*\d+(?:\s*\([^)]*\))?$", "", value)
+    folded = value.casefold()
+    if "analiz" in folded:
+        return "Yardımcı Analiz"
+    if folded.startswith(("çeviri", "anında", "batch")):
+        return "Ana Çeviri"
+    aliases = (
+        ("final tutarlılık", "Final Tutarlılık"),
+        ("tutarlılık", "Tutarlılık Taraması"),
+        ("bağlam incele", "Bağlam İncelemesi"),
+        ("critic", "Critic Pass"),
+        ("polish", "Polish Pass"),
+        ("native", "Native Okuyucu"),
+        ("condense", "Okuma Hızı Kısaltma"),
+        ("okuma hızı", "Okuma Hızı Kısaltma"),
+        ("nihai sdh", "Nihai SDH Temizleme"),
+        ("sdh", "SDH Temizleme"),
+        ("satır", "Satır Düzenleme"),
+        ("qc", "QC"),
+        ("terim", "Terim Normalizasyonu"),
+        ("nihai anlam", "Nihai Anlam Mutabakatı"),
+        ("final-semantic", "Nihai Anlam Mutabakatı"),
+        ("kaydet", "Dosya Yazımı"),
+        ("teslim", "Nihai Teslim Denetimi"),
+        ("tm", "Çeviri Hafızası"),
+        ("auto-glossary", "Otomatik Sözlük"),
+    )
+    for token, label in aliases:
+        if token in folded:
+            return label
+    return value or "İşleniyor"
+
+
+def _advance_file_timing(item: dict, phase: str, status: str,
+                         now: float = None) -> bool:
+    now = time.time() if now is None else float(now)
+    terminal = status in {"done", "error", "skip"}
+    if not item.get("queued_at"):
+        item["queued_at"] = _timing_iso(now)
+        item["queued_epoch"] = now
+    if status == "running" or terminal:
+        if not item.get("started_at") and status != "skip":
+            item["started_at"] = _timing_iso(now)
+            item["started_epoch"] = now
+
+    stages = item.setdefault("stage_timings", [])
+    next_label = _timing_phase_label(phase)
+    current = item.get("active_stage")
+    if current and (terminal or current != next_label):
+        stage_start = float(item.get("active_stage_epoch") or now)
+        stages.append({
+            "name": current,
+            "started_at": item.get("active_stage_started_at") or _timing_iso(stage_start),
+            "ended_at": _timing_iso(now),
+            "duration_seconds": round(max(0.0, now - stage_start), 3),
+        })
+        item.pop("active_stage", None)
+        item.pop("active_stage_epoch", None)
+        item.pop("active_stage_started_at", None)
+    if not terminal and status != "pending" and not item.get("active_stage"):
+        item["active_stage"] = next_label
+        item["active_stage_epoch"] = now
+        item["active_stage_started_at"] = _timing_iso(now)
+
+    newly_finished = terminal and not item.get("ended_at")
+    if terminal:
+        item["ended_at"] = item.get("ended_at") or _timing_iso(now)
+        item["ended_epoch"] = item.get("ended_epoch") or now
+        started = item.get("started_epoch")
+        ended = float(item.get("ended_epoch") or now)
+        item["duration_seconds"] = round(
+            max(0.0, ended - float(started)), 3) if started is not None else 0.0
+    return newly_finished
+
+
+def _timing_stage_totals(item: dict) -> list[tuple[str, float]]:
+    totals = {}
+    order = []
+    for stage in item.get("stage_timings") or []:
+        name = str(stage.get("name") or "İşleniyor")
+        if name not in totals:
+            totals[name] = 0.0
+            order.append(name)
+        totals[name] += float(stage.get("duration_seconds") or 0.0)
+    return [(name, totals[name]) for name in order]
+
+
 def _run_summary_data(record: dict) -> dict:
     statuses = {"done": [], "error": [], "skip": [], "pending": []}
     for path, state in dict(record.get("files") or {}).items():
@@ -6481,6 +6590,7 @@ def _run_summary_data(record: dict) -> dict:
         "run_id": record.get("run_id", ""),
         "started_at": record.get("started_at", ""),
         "ended_at": record.get("ended_at", ""),
+        "duration_seconds": float(record.get("duration_seconds", 0) or 0),
         "status": record.get("status", ""),
         "counts": {key: len(value) for key, value in statuses.items()},
         "files": statuses,
@@ -6504,6 +6614,7 @@ def build_run_summary_text(record: dict) -> str:
         f"Çalışma kimliği : {data['run_id']}",
         f"Başlangıç        : {data['started_at']}",
         f"Bitiş            : {data['ended_at'] or 'devam ediyor'}",
+        f"Toplam süre      : {_format_elapsed(data['duration_seconds'])}",
         f"Durum            : {data['status'] or 'çalışıyor'}",
         "",
         f"Toplam dosya     : {sum(counts.values())}",
@@ -6524,6 +6635,22 @@ def build_run_summary_text(record: dict) -> str:
         if values:
             lines.extend(["", f"{title}:"])
             lines.extend(f"  - {value}" for value in values)
+    file_items = dict(record.get("files") or {})
+    if file_items:
+        lines.extend(["", "DOSYA BAZLI SÜRELER:"])
+        for path, item in file_items.items():
+            status = str(item.get("status") or "pending")
+            lines.append(f"  - {Path(path).name} [{status}]")
+            lines.append(f"    Kuyruğa giriş : {item.get('queued_at') or '-'}")
+            lines.append(f"    Başlangıç     : {item.get('started_at') or '-'}")
+            lines.append(f"    Bitiş         : {item.get('ended_at') or '-'}")
+            lines.append(
+                f"    Toplam süre   : {_format_elapsed(item.get('duration_seconds'))}")
+            totals = _timing_stage_totals(item)
+            if totals:
+                lines.append("    Aşamalar      : " + ", ".join(
+                    f"{name}={_format_elapsed(seconds)}"
+                    for name, seconds in totals))
     if data["log_path"]:
         lines.extend(["", f"Log: {data['log_path']}"])
     return "\n".join(lines) + "\n"
@@ -6919,6 +7046,20 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         "İŞLEM GEÇİŞLERİ",
     ]
     lines.extend(f"- {item}" for item in row.get("feature_audit") or ["Kayıt yok"])
+    timing = row.get("timing") or {}
+    lines.extend([
+        "",
+        "SÜRE ZAMAN ÇİZELGESİ",
+        f"- Kuyruğa giriş: {timing.get('queued_at') or '-'}",
+        f"- Başlangıç: {timing.get('started_at') or '-'}",
+        f"- Bitiş: {timing.get('ended_at') or '-'}",
+        f"- Toplam süre: {_format_elapsed(timing.get('duration_seconds'))}",
+    ])
+    for stage in timing.get("stage_timings") or []:
+        lines.append(
+            f"- {stage.get('name', 'İşleniyor')}: "
+            f"{stage.get('started_at', '-')} → {stage.get('ended_at', '-')} "
+            f"({_format_elapsed(stage.get('duration_seconds'))})")
     lines.extend(["", "YAPISAL TESLİM DENETİMİ"])
     for key, label in (
         ("status", "Durum"),
@@ -10389,6 +10530,8 @@ class App(ctk.CTk):
     def _begin_run_record(self, files: list, resume: bool = False):
         import datetime as _dt
         run_id = _new_run_id()
+        queued_epoch = time.time()
+        queued_at = _timing_iso(queued_epoch)
         snapshot = dict(getattr(self, "_active_snapshot", {}) or {})
         origin_run_id = str(snapshot.get("resume_origin_run_id") or run_id)
         snapshot["resume_origin_run_id"] = origin_run_id
@@ -10421,12 +10564,17 @@ class App(ctk.CTk):
             "pid": os.getpid(),
             "process_start": _process_start_marker(os.getpid()),
             "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "started_epoch": queued_epoch,
             "ended_at": "",
             "status": "çalışıyor",
             "resume": bool(resume),
             "settings": diagnostic_settings,
             "files": {
-                str(path): {"status": "pending", "phase": "Bekliyor"}
+                str(path): {
+                    "status": "pending", "phase": "Bekliyor",
+                    "queued_at": queued_at, "queued_epoch": queued_epoch,
+                    "stage_timings": [],
+                }
                 for path in files
             },
             "fixes_applied": 0,
@@ -10451,21 +10599,59 @@ class App(ctk.CTk):
         return run_id
 
     def _record_file_status(self, filepath: str, phase: str, status: str):
+        timing_log = None
+        stage_log = None
         with self._run_record_lock:
             record = self._active_run_record
             if not record:
                 return
             item = record["files"].setdefault(
                 str(filepath), {"status": "pending", "phase": ""})
+            stage_count = len(item.get("stage_timings") or [])
+            newly_finished = _advance_file_timing(item, phase, status)
+            if len(item.get("stage_timings") or []) > stage_count:
+                stage = item["stage_timings"][-1]
+                stage_log = (
+                    f"⏱ Aşama tamamlandı: {Path(filepath).name} | "
+                    f"{stage.get('name')} | "
+                    f"{_format_elapsed(stage.get('duration_seconds'))} | "
+                    f"{stage.get('started_at')} → {stage.get('ended_at')}")
             item["phase"] = str(phase)
             if status in {"done", "error", "skip"}:
                 item["status"] = status
             elif status == "running" and item.get("status") == "pending":
                 item["status"] = "running"
+            if newly_finished and not item.get("timing_logged"):
+                item["timing_logged"] = True
+                totals = _timing_stage_totals(item)
+                stages = ", ".join(
+                    f"{name} {_format_elapsed(seconds)}"
+                    for name, seconds in totals) or "aşama kaydı yok"
+                timing_log = (
+                    f"⏱ {Path(filepath).name}: başlangıç "
+                    f"{item.get('started_at') or '-'}, bitiş "
+                    f"{item.get('ended_at') or '-'}, toplam "
+                    f"{_format_elapsed(item.get('duration_seconds'))} | {stages}")
             try:
                 atomic_write_json(_active_run_state_path(), record)
             except Exception:
                 pass
+        logger = getattr(self, "_log", None)
+        if callable(logger):
+            if stage_log:
+                logger(stage_log, "info")
+            if timing_log:
+                logger(timing_log, "err" if status == "error" else "ok")
+
+    def _file_timing_snapshot(self, filepath: str) -> dict:
+        with self._run_record_lock:
+            record = (
+                getattr(self, "_active_run_record", None)
+                or getattr(self, "_last_run_record", None)
+                or {})
+            item = dict((record.get("files") or {}).get(str(filepath)) or {})
+        item.pop("active_stage_epoch", None)
+        return copy.deepcopy(item)
 
     def _record_log_metadata(self, msg: str, tag: str):
         with self._run_record_lock:
@@ -10537,7 +10723,18 @@ class App(ctk.CTk):
             record = self._active_run_record
             if not record:
                 return None
-            record["ended_at"] = _dt.datetime.now().isoformat(timespec="seconds")
+            ended_epoch = time.time()
+            record["ended_at"] = _dt.datetime.fromtimestamp(
+                ended_epoch).isoformat(timespec="seconds")
+            record["ended_epoch"] = ended_epoch
+            record["duration_seconds"] = round(max(
+                0.0, ended_epoch - float(record.get("started_epoch") or ended_epoch)), 3)
+            for item in record["files"].values():
+                if item.get("status") == "running" and not item.get("ended_at"):
+                    _advance_file_timing(
+                        item, "Durduruldu" if self._stop_flag else "Kesildi",
+                        "error", now=ended_epoch)
+                    item["status"] = "running"
             states = [item.get("status", "pending") for item in record["files"].values()]
             if self._stop_flag:
                 record["status"] = "durduruldu"
@@ -17279,6 +17476,15 @@ class App(ctk.CTk):
             report_rows = []
             for source_row in rows:
                 row = dict(source_row)
+                source_path = str(row.get("source_path") or "")
+                if source_path:
+                    terminal_status = (
+                        "error" if row.get("run_status") == "error" else "done")
+                    terminal_phase = (
+                        "Hata" if terminal_status == "error" else "Tamamlandı")
+                    self._record_file_status(
+                        source_path, terminal_phase, terminal_status)
+                    row["timing"] = self._file_timing_snapshot(source_path)
                 row["feature_audit"] = _quality_feature_audit(row, snapshot)
                 row["delivery_audit"] = _subtitle_delivery_audit(
                     row.get("source_path", ""), row.get("output_path", ""))
@@ -18655,6 +18861,9 @@ class App(ctk.CTk):
             self._set_running(False)
             return
 
+        for fp in valid_files:
+            self._record_file_status(fp, "Yardımcı Analiz", "running")
+
         input_dir = self.input_var.get()
         output_paths = {
             fp: str(_resolve_output_path(
@@ -18690,6 +18899,8 @@ class App(ctk.CTk):
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
         _file_hints = self._get_precontext_hints(
             client, valid_files, src, tgt, model, source_languages=_source_languages)
+        for fp in valid_files:
+            self._record_file_status(fp, "İstek Hazırlığı", "running")
         _precontext_locked_terms = {}
         for fp in valid_files:
             pre_data = (getattr(self, "_run_precontext_data", None) or {}).get(fp) or {}
@@ -18797,6 +19008,9 @@ class App(ctk.CTk):
             self._log(f"TM önbellekten {tm_hits_count} chunk atlandı "
                       f"({len(api_requests)} istek API'ye gönderilecek)", "ok")
             self._update_tm_stat()
+
+        for fp in valid_files:
+            self._record_file_status(fp, "Ana Çeviri", "running")
 
         # Çökme kurtarma: önceki yarıda kalan koşudan tamamlanmış chunk'ları geri al
         api_request_ids = {req["custom_id"] for req in api_requests}
@@ -19409,6 +19623,8 @@ class App(ctk.CTk):
             _raw_map_pre = _raw_src_map_from_cues(cues)
             _n_repaired = 0
             _before_repair = list(sorted_blocks)
+            self._record_file_status(
+                filepath, "Eksik Çeviri Onarımı", "running")
             try:
                 sorted_blocks, _n_repaired = _repair_untranslated_sync(
                     sorted_blocks, _raw_map_pre, client,
@@ -19528,6 +19744,8 @@ class App(ctk.CTk):
             if (sorted_blocks and _quality_api_allowed
                     and (self.critic_var.get() or self.polish_var.get()
                          or self.native_var.get())):
+                self._record_file_status(
+                    filepath, "Final Tutarlılık", "running")
                 _before_pass = list(sorted_blocks)
                 sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                     cues, sorted_blocks, log_fn=self._log,
@@ -19546,6 +19764,8 @@ class App(ctk.CTk):
             _before_pass = list(sorted_blocks)
             _src_map_for_condense = {str(c.index): _clean_src(c.text) for c in cues} if cues else {}
             if _quality_api_allowed:
+                self._record_file_status(
+                    filepath, "Okuma Hızı Kısaltma", "running")
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks,
                     self._helper_api_key("analysis"),
@@ -19558,17 +19778,20 @@ class App(ctk.CTk):
             _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
 
             if self.clean_sdh_var.get():
+                self._record_file_status(filepath, "SDH Temizleme", "running")
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = clean_sdh(sorted_blocks, src_map=_src_map_for_condense, source_driven=True)
                 _record_pass_change(_pass_trace, "SDH", _before_pass, sorted_blocks, _pass_history)
 
             if self.linebreak_var.get() and sorted_blocks:
+                self._record_file_status(filepath, "Satır Düzenleme", "running")
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = apply_line_breaks(sorted_blocks)
                 _record_pass_change(_pass_trace, "Line-break", _before_pass, sorted_blocks, _pass_history)
 
             # ── QC Kontrolü (kullanıcı onayı ile) ────────────────────────────
             if self.qc_var.get() and sorted_blocks and _quality_api_allowed:
+                self._record_file_status(filepath, "QC", "running")
                 self._set_status(f"{self._helper_display_name('qc')} QC: {fname}")
                 issues = ht.quality_check_with_helper(
                     cues=cues,
@@ -19647,6 +19870,8 @@ class App(ctk.CTk):
                     and getattr(self, "term_normalize_var", None)
                     and self.term_normalize_var.get()):
                 try:
+                    self._record_file_status(
+                        filepath, "Terim Normalizasyonu", "running")
                     _before_termnorm = list(sorted_blocks)
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, {str(c.index): _clean_src(c.text) for c in cues},
@@ -19662,6 +19887,8 @@ class App(ctk.CTk):
                 break
             _before_semantic = list(sorted_blocks)
             if _quality_api_allowed:
+                self._record_file_status(
+                    filepath, "Nihai Anlam Mutabakatı", "running")
                 self._run_final_semantic_checks(
                     out_path, {str(c.index): _clean_src(c.text) for c in cues},
                     sorted_blocks, src_lang=file_src, cues=cues,
@@ -19678,6 +19905,8 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
+                self._record_file_status(
+                    filepath, "Nihai SDH Temizleme", "running")
                 _before_final_sdh = list(sorted_blocks)
                 sorted_blocks = clean_sdh(
                     sorted_blocks,
@@ -19715,6 +19944,7 @@ class App(ctk.CTk):
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
             _quarantined = (
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
+            self._record_file_status(filepath, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, tgt)
             if not _has_missing:
                 _write_output_source_fingerprint(
@@ -19740,6 +19970,8 @@ class App(ctk.CTk):
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
             try:
+                self._record_file_status(
+                    filepath, "Nihai Teslim Denetimi", "running")
                 _w = scan_translation_quality(
                     filepath, sorted_blocks, log_fn=self._log,
                     src_clean_map={str(c.index): _clean_src(c.text) for c in cues},
@@ -19776,6 +20008,7 @@ class App(ctk.CTk):
                     break
                 continue
             # TM kaydı (ortak yardımcı)
+            self._record_file_status(filepath, "Çeviri Hafızası", "running")
             self._store_tm_pairs(sorted_blocks,
                                  {str(c.index): _clean_src(c.text) for c in cues},
                                  self._main_model_name(), tgt,
@@ -19795,6 +20028,7 @@ class App(ctk.CTk):
                         pass
                 self._update_series_memory_from_analysis(filepath, context, pronoun_map)
             if self.auto_glossary_var.get():
+                self._record_file_status(filepath, "Auto-Glossary", "running")
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
             ht.clear_context_cache(filepath)
             self._update_file_progress(filepath,
@@ -19859,6 +20093,9 @@ class App(ctk.CTk):
             self._set_running(False)
             return
 
+        for fp in valid_files:
+            self._record_file_status(fp, "Yardımcı Analiz", "running")
+
         _profanity = self.profanity_var.get()
         _file_glossaries = {
             fp: ht.load_glossary(self._get_file_glossary(fp)) for fp in valid_files
@@ -19882,6 +20119,8 @@ class App(ctk.CTk):
         # Ön-bağlam analizi (özet, karakterler, sen/siz haritası, sabit terimler)
         _file_hints = self._get_precontext_hints(
             client, valid_files, src, tgt, model, source_languages=_source_languages)
+        for fp in valid_files:
+            self._record_file_status(fp, "İstek Hazırlığı", "running")
         # Dizi hafızası: önceki bölümlerin terim/karakter/sen-siz kararlarını ekle
         _sm_used = 0
         for fp in valid_files:
@@ -19950,6 +20189,8 @@ class App(ctk.CTk):
         }
         batch_ids = []
         batch_runs = []
+        for fp in valid_files:
+            self._record_file_status(fp, "Batch Ana Çeviri", "running")
         for ci, chunk in enumerate(chunks):
             if self._stop_flag:
                 break
@@ -20958,6 +21199,7 @@ class App(ctk.CTk):
             if self._is_queued_file_removed(fp):
                 _skipped_files.append(fp)
                 continue
+            self._record_file_status(fp, "Sonuçları Hazırlama", "running")
             saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
             out_path = (Path(saved_out) if saved_out else
                         _resolve_output_path(input_dir, output_dir, fp,
@@ -21012,6 +21254,7 @@ class App(ctk.CTk):
                 _analysis_result = None
             _n_repaired = 0
             _before_repair = list(sorted_blocks)
+            self._record_file_status(fp, "Eksik Çeviri Onarımı", "running")
             try:
                 if openai_key:
                     _repair_client = OpenAI(
@@ -21040,6 +21283,7 @@ class App(ctk.CTk):
                     "warn",
                 )
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
+            self._record_file_status(fp, "Tutarlılık Taraması", "running")
             _before_consistency = list(sorted_blocks)
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
@@ -21065,6 +21309,7 @@ class App(ctk.CTk):
                         "Bağlam İncelemesi çalışacak (ek API maliyeti).",
                         "info")
                 self._set_status(f"Bağlam incelemesi: {Path(fp).name}")
+                self._record_file_status(fp, "Bağlam İncelemesi", "running")
                 self._log(f"Bağlam incelemesi başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
                 sorted_blocks, _rev_fixes = self._review_pass(fp, sorted_blocks, model_name, _tgt_lang)
@@ -21074,6 +21319,7 @@ class App(ctk.CTk):
             if (self.critic_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
                 try:
+                    self._record_file_status(fp, "Critic Pass", "running")
                     self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                     _before_pass = list(sorted_blocks)
                     _critic_change_log = []
@@ -21101,6 +21347,7 @@ class App(ctk.CTk):
             if (self.polish_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
                 try:
+                    self._record_file_status(fp, "Polish Pass", "running")
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = self._polish_pass(
                         sorted_blocks, _tgt_lang,
@@ -21116,6 +21363,7 @@ class App(ctk.CTk):
             if (self.native_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
                 try:
+                    self._record_file_status(fp, "Native Okuyucu", "running")
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = ht.native_reader_pass(
                         tr_blocks=sorted_blocks,
@@ -21140,6 +21388,7 @@ class App(ctk.CTk):
                     and (self.critic_var.get() or self.polish_var.get()
                          or self.native_var.get())):
                 try:
+                    self._record_file_status(fp, "Final Tutarlılık", "running")
                     _before_pass = list(sorted_blocks)
                     sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                         _src_cues, sorted_blocks, log_fn=self._log,
@@ -21152,6 +21401,7 @@ class App(ctk.CTk):
                 1 for block in sorted_blocks
                 if _pre_pass.get(str(block[0])) not in (None, block[2]))
             if sorted_blocks and _quality_api_allowed and not self._stop_flag:
+                self._record_file_status(fp, "Okuma Hızı Kısaltma", "running")
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks, self._helper_api_key("analysis"),
@@ -21163,6 +21413,7 @@ class App(ctk.CTk):
                     break
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
             if self.clean_sdh_var.get():
+                self._record_file_status(fp, "SDH Temizleme", "running")
                 _before_pass = list(sorted_blocks)
                 # src_map=src_blocks: sync/batch akışları (bu fonksiyon) eskiden clean_sdh'ye
                 # kaynak GEÇMİYORDU (bkz. plans/sdh-kaynak-gutlu-temizlik-brief.md Adım 3) —
@@ -21171,12 +21422,14 @@ class App(ctk.CTk):
                 sorted_blocks = clean_sdh(sorted_blocks, src_map=src_blocks, source_driven=True)
                 _record_pass_change(_pass_trace, "SDH", _before_pass, sorted_blocks, _pass_history)
             if self.linebreak_var.get() and sorted_blocks:
+                self._record_file_status(fp, "Satır Düzenleme", "running")
                 _before_pass = list(sorted_blocks)
                 sorted_blocks = apply_line_breaks(sorted_blocks)
                 _record_pass_change(_pass_trace, "Line-break", _before_pass, sorted_blocks, _pass_history)
             if (self.qc_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
                 try:
+                    self._record_file_status(fp, "QC", "running")
                     _before_pass = list(sorted_blocks)
                     sorted_blocks = self._run_quality_check_inline(
                         str(out_path), _src_cues, sorted_blocks,
@@ -21195,6 +21448,7 @@ class App(ctk.CTk):
                     and getattr(self, "term_normalize_var", None)
                     and self.term_normalize_var.get()):
                 try:
+                    self._record_file_status(fp, "Terim Normalizasyonu", "running")
                     _before_termnorm = list(sorted_blocks)
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, src_blocks,
@@ -21210,6 +21464,8 @@ class App(ctk.CTk):
                 break
             _before_semantic = list(sorted_blocks)
             if _quality_api_allowed:
+                self._record_file_status(
+                    fp, "Nihai Anlam Mutabakatı", "running")
                 self._run_final_semantic_checks(
                     out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
                     cues=_src_cues, changed_ids=_pass_history.keys(),
@@ -21223,6 +21479,7 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
+                self._record_file_status(fp, "Nihai SDH Temizleme", "running")
                 _before_final_sdh = list(sorted_blocks)
                 sorted_blocks = clean_sdh(
                     sorted_blocks, src_map=src_blocks, source_driven=True)
@@ -21259,6 +21516,7 @@ class App(ctk.CTk):
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log,
                 source_cues=_src_cues)
+            self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
             if not _has_missing:
                 _write_output_source_fingerprint(
@@ -21281,6 +21539,7 @@ class App(ctk.CTk):
                 self._save_raw_backup(
                     out_path, _raw_backup_blocks, _raw_map, _tgt_lang)
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
+            self._record_file_status(fp, "Nihai Teslim Denetimi", "running")
             w = (_hata_n if _has_missing else
                  scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
                                            src_clean_map=src_blocks,
@@ -21310,10 +21569,13 @@ class App(ctk.CTk):
             })
             if _has_missing:
                 _failed_files.append(fp)
+                self._record_file_status(
+                    fp, f"Eksik çeviri: {_hata_n}", "error")
                 if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
                     break
                 continue
             # TM kaydı (ortak yardımcı)
+            self._record_file_status(fp, "Çeviri Hafızası", "running")
             self._store_tm_pairs(
                 sorted_blocks, src_blocks, model_name, _tgt_lang,
                 schema_name=schema_dict.get("name", ""),
@@ -21324,10 +21586,12 @@ class App(ctk.CTk):
             # load_subtitle ile yükle (_src_cues tuple olabilir; build_glossary c.text ister)
             if self.auto_glossary_var.get():
                 try:
+                    self._record_file_status(fp, "Auto-Glossary", "running")
                     self._run_auto_glossary(ht.load_subtitle(fp), sorted_blocks, fp)
                 except Exception as _ag_e:
                     self._log(f"Auto-Glossary atlandı: {_ag_e}", "warn")
             _written_files.append(fp)
+            self._record_file_status(fp, "Tamamlandı", "done")
             if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
                 break
         # ── Kalite Raporu (ceviri_raporu.txt) ────────────────────────────────
@@ -21630,16 +21894,21 @@ class App(ctk.CTk):
 
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
             if file_status in {"completed", "removed"}:
+                self._record_file_status(
+                    filepath, "Tamamlanmış (atlandı)", "done")
                 self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlandı, atlanıyor", "ok")
                 self._set_progress(int((fi + 1) / n_files * 40))
                 continue
 
+            self._record_file_status(filepath, "Yardımcı Analiz", "running")
             self._log(f"\n── [{fi+1}/{n_files}] {fname} — Analiz ──", "info")
 
             try:
                 cues = ht.load_subtitle(filepath)
                 if not cues:
                     self._log(f"{fname}: geçerli SRT bloğu yok, atlandı", "warn")
+                    self._record_file_status(
+                        filepath, "Geçerli cue yok", "skip")
                     continue
                 self._set_stat(self.stat_blocks_var, str(len(cues)))
 
@@ -21823,6 +22092,8 @@ class App(ctk.CTk):
                         filepath, context, pronoun_map, tgt)
                 if _file_pm is not None:
                     system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+                self._record_file_status(
+                    filepath, "İstek Hazırlığı", "running")
                 requests, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                           chunk_size=self._chunk_size,
                                                           glossary=glossary,
@@ -21863,6 +22134,8 @@ class App(ctk.CTk):
                     continue
 
                 self._set_status(f"Batch gönderiliyor: {fname}")
+                self._record_file_status(
+                    filepath, "Batch Ana Çeviri", "running")
                 batch_id = ht.submit_batch(
                     openai_key, requests, self._log, fmap, out_path,
                     source_path=str(filepath), output_dir=output_dir, base_url=b_url,
@@ -21889,10 +22162,13 @@ class App(ctk.CTk):
                 else:
                     self._log(f"[{fname}] Batch gönderilemedi, atlanıyor", "err")
                     ht.update_batch_session(session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, "Batch gönderilemedi", "error")
 
             except Exception as e:
                 self._log(f"[{fname}] Faz-1 hatası: {e} — atlanıyor", "err")
                 ht.update_batch_session(session, filepath, "failed")
+                self._record_file_status(filepath, "Faz-1 hatası", "error")
                 continue
 
         if not submitted:
@@ -21936,6 +22212,8 @@ class App(ctk.CTk):
                 continue
             self._log(f"\n── [{si+1}/{n_sub}] {fname} — Batch bekleniyor ──", "info")
             self._set_status(f"Bekleniyor: {fname}")
+            self._record_file_status(
+                filepath, "Batch Ana Çeviri", "running")
 
             def _pfn(completed, total, failed, status, _si=si):
                 base_pct = 40 + int(_si / n_sub * 60)
@@ -21963,6 +22241,8 @@ class App(ctk.CTk):
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
                             ht.update_batch_session(session, filepath, "failed")
+                            self._record_file_status(
+                                filepath, "İki-dalgalı batch hatası", "error")
                         continue
                     _stage_path, _tw_batch_ids = _tw_result
                 else:
@@ -21982,6 +22262,8 @@ class App(ctk.CTk):
                         else:
                             self._log(f"[{fname}] Batch çıktısı alınamadı ({wait_result['status']}).", "err")
                             ht.update_batch_session(session, filepath, "failed")
+                            self._record_file_status(
+                                filepath, "Batch sonucu alınamadı", "error")
                         continue
 
                     # save_results [HATA] satırlarını görünür eksik-çeviri işaretiyle bırakır;
@@ -21995,14 +22277,20 @@ class App(ctk.CTk):
                                                 src_cues=None, base_url=b_url,
                                                 target_language=tgt)
                 _parse_path = str(_stage_path) if _stage_path else out_path
+                self._record_file_status(
+                    filepath, "Sonuçları Hazırlama", "running")
                 _final_blocks = list(parse_srt(_parse_path))
                 if cues and not _final_blocks:
                     self._log(f"{fname}: kaynak dolu ama batch çıktısı boş; tamamlandı sayılmayacak.", "err")
                     ht.update_batch_session(session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, "Batch çıktısı boş", "error")
                     continue
                 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 try:
+                    self._record_file_status(
+                        filepath, "Eksik Çeviri Onarımı", "running")
                     _raw_map_pre = _raw_src_map_from_cues(cues)
                     _repair_client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
@@ -22060,11 +22348,15 @@ class App(ctk.CTk):
                         "tm_hits": self._tm.hit_count_session(),
                     })
                     ht.update_batch_session(session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, f"Eksik çeviri: {_unresolved_missing}", "error")
                     continue
                 _raw_backup_blocks = list(_final_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
                 # Tutarlılık taraması (düz sync/batch + sync-hybrid ile paritede)
                 _cons_fixes = 0
                 try:
+                    self._record_file_status(
+                        filepath, "Tutarlılık Taraması", "running")
                     _final_blocks, _cons_fixes = ht.consistency_sweep(
                         cues, _final_blocks, log_fn=self._log,
                         locked_terms=self._get_locked_terms_dict(
@@ -22081,6 +22373,8 @@ class App(ctk.CTk):
                 # aynı şekilde chained-context'ten yoksun olduğundan burada da çalışmalı.
                 if self.review_pass_var.get() and _final_blocks and not self._stop_flag:
                     try:
+                        self._record_file_status(
+                            filepath, "Bağlam İncelemesi", "running")
                         self._set_status(f"Bağlam incelemesi: {fname}")
                         self._log(f"Bağlam incelemesi başlıyor ({len(_final_blocks)} satır)...", "info")
                         _before_rev = list(_final_blocks)
@@ -22103,6 +22397,8 @@ class App(ctk.CTk):
                         pp_blocks = list(_final_blocks)   # tutarlılık-taranmış bloklardan başla
                         
                         if self.critic_var.get() and pp_blocks:
+                            self._record_file_status(
+                                filepath, "Critic Pass", "running")
                             self._set_status(f"Critic Pass: {fname}")
                             self._log(f"Critic Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
@@ -22125,6 +22421,8 @@ class App(ctk.CTk):
                             _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
                             self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
+                            self._record_file_status(
+                                filepath, "Polish Pass", "running")
                             self._set_status(f"Doğallaştırma: {fname}")
                             self._log(f"Polish Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
@@ -22137,6 +22435,8 @@ class App(ctk.CTk):
                             _record_pass_change(_pass_trace, "Polish", _before_pass, pp_blocks, _pass_history)
                             self._log("Polish Pass tamamlandı", "ok")
                         if self.native_var.get() and pp_blocks:
+                            self._record_file_status(
+                                filepath, "Native Okuyucu", "running")
                             self._set_status(f"Native Okuyucu: {fname}")
                             self._log(f"Native Okuyucu Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
@@ -22156,6 +22456,8 @@ class App(ctk.CTk):
                                 break
                             _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
+                            self._record_file_status(
+                                filepath, "Final Tutarlılık", "running")
                             _before_pass = list(pp_blocks)
                             pp_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                                 cues, pp_blocks, log_fn=self._log,
@@ -22164,6 +22466,8 @@ class App(ctk.CTk):
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)
+                        self._record_file_status(
+                            filepath, "Okuma Hızı Kısaltma", "running")
                         pp_blocks = self._maybe_condense(
                             pp_blocks,
                             self._helper_api_key("analysis"),
@@ -22175,14 +22479,19 @@ class App(ctk.CTk):
                             break
                         _record_pass_change(_pass_trace, "Condense", _before_pass, pp_blocks, _pass_history)
                         if self.clean_sdh_var.get():
+                            self._record_file_status(
+                                filepath, "SDH Temizleme", "running")
                             _before_pass = list(pp_blocks)
                             pp_blocks = clean_sdh(pp_blocks, src_map=_src_map_from_cues(cues), source_driven=True)
                             _record_pass_change(_pass_trace, "SDH", _before_pass, pp_blocks, _pass_history)
                         if self.linebreak_var.get() and pp_blocks:
+                            self._record_file_status(
+                                filepath, "Satır Düzenleme", "running")
                             _before_pass = list(pp_blocks)
                             pp_blocks = apply_line_breaks(pp_blocks)
                             _record_pass_change(_pass_trace, "Line-break", _before_pass, pp_blocks, _pass_history)
                         if self.qc_var.get() and pp_blocks:
+                            self._record_file_status(filepath, "QC", "running")
                             self._set_status(f"{self._helper_display_name('qc')} QC: {fname}")
                             issues = ht.quality_check_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
@@ -22255,6 +22564,8 @@ class App(ctk.CTk):
                 if (getattr(self, "term_normalize_var", None)
                         and self.term_normalize_var.get()):
                     try:
+                        self._record_file_status(
+                            filepath, "Terim Normalizasyonu", "running")
                         _before_termnorm = list(_final_blocks)
                         _final_blocks, _ = _normalize_mixed_terms(
                             _final_blocks, _src_map,
@@ -22270,6 +22581,8 @@ class App(ctk.CTk):
                 if self._stop_flag:
                     break
                 _before_semantic = list(_final_blocks)
+                self._record_file_status(
+                    filepath, "Nihai Anlam Mutabakatı", "running")
                 self._run_final_semantic_checks(
                     out_path, _src_map, _final_blocks, src_lang=file_src,
                     cues=cues, changed_ids=_pass_history.keys(),
@@ -22283,6 +22596,8 @@ class App(ctk.CTk):
                 if self._stop_flag:
                     break
                 if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
+                    self._record_file_status(
+                        filepath, "Nihai SDH Temizleme", "running")
                     _before_final_sdh = list(_final_blocks)
                     _final_blocks = clean_sdh(
                         _final_blocks, src_map=_src_map, source_driven=True)
@@ -22310,6 +22625,8 @@ class App(ctk.CTk):
                         f"{fname}: çıktı yazılmadı ({_guard_reason}); kaynak veya mevcut "
                         "çıktı batch gönderiminden sonra değişti.", "err")
                     ht.update_batch_session(session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, "Kaynak/hedef değişti", "error")
                     continue
                 _write_path = _partial_output_path(out_path) if _has_missing else out_path
                 _quarantined = (
@@ -22317,6 +22634,7 @@ class App(ctk.CTk):
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     self._maybe_merge_cues(_final_blocks), tgt, self._log,
                     source_cues=cues)
+                self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)
                 self._save_raw_backup(_write_path, _raw_backup_blocks, _raw_map, tgt)
                 if _has_missing:
@@ -22337,11 +22655,15 @@ class App(ctk.CTk):
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
                 _w = 0
                 try:
+                    self._record_file_status(
+                        filepath, "Nihai Teslim Denetimi", "running")
                     _w = scan_translation_quality(filepath, _final_blocks,
                                                   log_fn=self._log, src_clean_map=_src_map,
                                                   issue_fn=self._record_quality_issue)
                 except Exception:
                     pass
+                self._record_file_status(
+                    filepath, "Çeviri Hafızası", "running")
                 self._store_tm_pairs(
                     _final_blocks, _src_map, self._main_model_name(), tgt,
                     schema_name=file_schema_name, source_language=file_src)
@@ -22353,6 +22675,8 @@ class App(ctk.CTk):
                     self._update_series_memory_from_analysis(
                         filepath, _context, _pronoun_map)
                 if self.auto_glossary_var.get():
+                    self._record_file_status(
+                        filepath, "Auto-Glossary", "running")
                     self._run_auto_glossary(cues, _final_blocks, filepath)
 
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu)
@@ -22375,12 +22699,14 @@ class App(ctk.CTk):
 
                 ht.clear_context_cache(filepath)
                 ht.update_batch_session(session, filepath, "completed")
+                self._record_file_status(filepath, "Tamamlandı", "done")
                 if _tw_batch_ids:
                     self._clear_batch_recovery(_tw_batch_ids)
 
             except Exception as e:
                 self._log(f"[{fname}] Faz-2 hatası: {e} — atlanıyor", "err")
                 ht.update_batch_session(session, filepath, "failed")
+                self._record_file_status(filepath, "Faz-2 hatası", "error")
                 continue
             finally:
                 try:
