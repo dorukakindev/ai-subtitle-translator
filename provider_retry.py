@@ -14,7 +14,7 @@ _RETRY_DELAY_RE = re.compile(
     r'(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec(?:onds?)?)?'
 )
 
-TRANSIENT_RETRY_DELAYS = (30.0, 60.0, 120.0)
+TRANSIENT_RETRY_DELAYS = (10.0, 20.0, 30.0, 40.0, 120.0)
 
 
 def _status_code(exc) -> int | None:
@@ -287,9 +287,7 @@ def _is_transient_provider_error(exc) -> bool:
 
 def _wait_for_transient_retry(exc, attempt: int, total: int) -> float:
     scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
-    provider_delay = retry_after_seconds(exc, default=scheduled)
-    return _REGISTRY.wait_for_retry(
-        max(scheduled, provider_delay), attempt, total)
+    return _REGISTRY.wait_for_retry(scheduled, attempt, total)
 
 
 def _is_custom_gpt5(client, model: str) -> bool:

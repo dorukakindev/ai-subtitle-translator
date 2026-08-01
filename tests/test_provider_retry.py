@@ -145,12 +145,14 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 fn(client, model="gpt-5.4", messages=[])
-        self.assertEqual(before.call_count, 4)
-        self.assertEqual(record.call_count, 4)
+        self.assertEqual(before.call_count, 6)
+        self.assertEqual(record.call_count, 6)
         self.assertEqual(wait.call_args_list, [
-            mock.call(error, 1, 3),
-            mock.call(error, 2, 3),
-            mock.call(error, 3, 3),
+            mock.call(error, 1, 5),
+            mock.call(error, 2, 5),
+            mock.call(error, 3, 5),
+            mock.call(error, 4, 5),
+            mock.call(error, 5, 5),
         ])
 
     def test_hybrid_wrapper_records_reseller_429(self):
@@ -159,7 +161,7 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
     def test_gui_wrapper_records_reseller_429(self):
         self._assert_wrapper_records_429(gui._safe_chat_create)
 
-    def test_temporary_503_retries_after_30_60_120_seconds(self):
+    def test_temporary_503_uses_short_first_retry_schedule(self):
         client = mock.MagicMock()
         client.base_url = "https://api.shuaiapi.com/v1"
         client.api_key = "sk-reseller"
@@ -169,7 +171,8 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         error = TemporaryError("The service is temporarily unavailable")
         response = mock.MagicMock()
-        client.chat.completions.create.side_effect = [error, error, error, response]
+        client.chat.completions.create.side_effect = [
+            error, error, error, error, error, response]
         waits = []
         with mock.patch.object(
             provider_retry._REGISTRY,
@@ -182,10 +185,28 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(waits, [
-            (30.0, 1, 3),
-            (60.0, 2, 3),
-            (120.0, 3, 3),
+            (10.0, 1, 5),
+            (20.0, 2, 5),
+            (30.0, 3, 5),
+            (40.0, 4, 5),
+            (120.0, 5, 5),
         ])
+
+    def test_transient_error_hint_does_not_force_120_second_first_wait(self):
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        error = TemporaryError("temporarily unavailable; try again in 120 seconds")
+        waits = []
+        with mock.patch.object(
+            provider_retry._REGISTRY,
+            "wait_for_retry",
+            side_effect=lambda delay, attempt, total: waits.append(
+                (delay, attempt, total)) or delay,
+        ):
+            provider_retry._wait_for_transient_retry(error, 1, 5)
+
+        self.assertEqual(waits, [(10.0, 1, 5)])
 
     def test_permanent_model_channel_503_is_not_retried(self):
         client = mock.MagicMock()
@@ -316,14 +337,14 @@ class ProviderWaitUiCallbackTest(unittest.TestCase):
             _log=lambda *args: logs.append(args),
             _set_status=statuses.append,
         )
-        gui.App._provider_wait_callback(app, "retry_start_2_3", 60, 1)
-        gui.App._provider_wait_callback(app, "retry_tick_2_3", 59, 1)
-        gui.App._provider_wait_callback(app, "retry_end_2_3", 0, 0)
+        gui.App._provider_wait_callback(app, "retry_start_2_5", 20, 1)
+        gui.App._provider_wait_callback(app, "retry_tick_2_5", 19, 1)
+        gui.App._provider_wait_callback(app, "retry_end_2_5", 0, 0)
 
         self.assertEqual(len(logs), 1)
-        self.assertIn("60 sn", logs[0][0])
-        self.assertIn("2/3", logs[0][0])
-        self.assertIn("59 sn", statuses[-2])
+        self.assertIn("20 sn", logs[0][0])
+        self.assertIn("2/5", logs[0][0])
+        self.assertIn("19 sn", statuses[-2])
         self.assertIn("yeniden deneniyor", statuses[-1])
 
 
