@@ -216,6 +216,58 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("İşlem dökümü:", txt)
         self.assertIn("Native Okuyucu: çalıştı, 0 cue değiştirdi", txt)
 
+    def test_delivery_audit_compares_real_source_and_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\n[MUSIC]\n\n"
+                "3\n00:00:03,000 --> 00:00:04,000\nGoodbye\n",
+                encoding="utf-8")
+            output.write_text(
+                "0\n00:00:00,000 --> 00:00:00,999\ndiscord: ceviri2\n\n"
+                "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n\n"
+                "3\n00:00:03,100 --> 00:00:04,000\n{\\pos(10,20)}kâğıt\n\n"
+                "4\n00:00:04,000 --> 00:00:05,000\nTranslation by X\n\n"
+                "5\n00:00:05,001 --> 00:00:07,000\ndiscord: ceviri2\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(str(source), str(output))
+
+        self.assertEqual(audit["status"], "review")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["2"])
+        self.assertEqual(audit["timestamp_mismatch_ids"], ["3"])
+        self.assertEqual(audit["extra_dialogue_ids"], ["4"])
+        self.assertEqual(audit["residual_credit_cues"], 1)
+        self.assertEqual(audit["residual_position_tags"], 1)
+        self.assertEqual(audit["hatted_letters"], 1)
+        self.assertEqual(audit["delivery_signatures"], 2)
+
+    def test_file_process_report_contains_full_pass_history(self):
+        row = {
+            "name": "episode.srt",
+            "source_path": "source.srt",
+            "output_path": "output.srt",
+            "feature_audit": ["Native Okuyucu: çalıştı, 1 cue değiştirdi"],
+            "delivery_audit": {
+                "status": "ok", "source_cues": 1, "output_cues": 3,
+                "missing_dialogue_ids": [], "timestamp_mismatch_ids": [],
+            },
+            "pass_history": {
+                "7": [{"pass": "Native", "before": "Eski", "after": "Yeni"}],
+            },
+        }
+
+        text = gui._file_process_report_text(row, "run-1")
+
+        self.assertIn("ALTYAZI İŞLEM VE TESLİM DÖKÜMÜ", text)
+        self.assertIn("Native Okuyucu: çalıştı, 1 cue değiştirdi", text)
+        self.assertIn("#7", text)
+        self.assertIn("Önce: Eski", text)
+        self.assertIn("Sonra: Yeni", text)
+
     def test_pass_history_multi_pass_lines_are_reported(self):
         rows = [{
             "name": "a.srt",

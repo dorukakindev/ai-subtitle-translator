@@ -6744,6 +6744,124 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     return lines
 
 
+def _subtitle_delivery_audit(source_path: str, output_path: str) -> dict:
+    audit = {
+        "source_path": str(source_path or ""),
+        "output_path": str(output_path or ""),
+        "status": "unavailable",
+    }
+    try:
+        source = list(parse_subtitle(str(source_path)))
+        output = list(parse_subtitle(str(output_path)))
+    except Exception as exc:
+        audit["error"] = str(exc)
+        return audit
+    source_map = {str(idx): (str(ts), str(text or "")) for idx, ts, text in source}
+    output_dialogue = [
+        (str(idx), str(ts), str(text or "")) for idx, ts, text in output
+        if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
+    ]
+    output_map = {idx: (ts, text) for idx, ts, text in output_dialogue}
+    missing = sorted(idx for idx in source_map if idx not in output_map)
+    expected_removed = [
+        idx for idx in missing
+        if _is_delivery_credit(source_map[idx][1])
+        or _is_delivery_sdh_only(source_map[idx][1])
+    ]
+    missing_dialogue = [idx for idx in missing if idx not in expected_removed]
+    extras = sorted(idx for idx in output_map if idx not in source_map)
+    timestamp_mismatches = sorted(
+        idx for idx in source_map.keys() & output_map.keys()
+        if source_map[idx][0] != output_map[idx][0]
+    )
+    output_texts = [text for _idx, _ts, text in output_dialogue]
+    unresolved_markers = sum(
+        text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
+        for text in output_texts)
+    residual_credit_cues = sum(_is_delivery_credit(text) for text in output_texts)
+    residual_sdh_cues = sum(_is_delivery_sdh_only(text) for text in output_texts)
+    residual_position_tags = sum(
+        len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
+    hatted_letters = sum(
+        sum(text.count(char) for char in "âîûÂÎÛ") for text in output_texts)
+    needs_review = any((
+        missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
+        residual_credit_cues, residual_sdh_cues, residual_position_tags,
+        hatted_letters,
+    ))
+    audit.update({
+        "status": "review" if needs_review else "ok",
+        "source_cues": len(source),
+        "output_cues": len(output),
+        "dialogue_output_cues": len(output_dialogue),
+        "missing_dialogue_ids": missing_dialogue,
+        "expected_removed_ids": expected_removed,
+        "extra_dialogue_ids": extras,
+        "timestamp_mismatch_ids": timestamp_mismatches,
+        "unresolved_markers": unresolved_markers,
+        "residual_credit_cues": residual_credit_cues,
+        "residual_sdh_cues": residual_sdh_cues,
+        "residual_position_tags": residual_position_tags,
+        "hatted_letters": hatted_letters,
+        "delivery_signatures": sum(
+            bool(_DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip()))
+            for _idx, _ts, text in output),
+        "source_sha256": _file_content_sha256(source_path),
+        "output_sha256": _file_content_sha256(output_path),
+    })
+    return audit
+
+
+def _file_process_report_text(row: dict, run_id: str = "") -> str:
+    audit = row.get("delivery_audit") or {}
+    lines = [
+        "ALTYAZI İŞLEM VE TESLİM DÖKÜMÜ",
+        f"Çalışma kimliği: {run_id or '-'}",
+        f"Dosya: {row.get('name', '-')}",
+        f"Kaynak: {row.get('source_path', '-')}",
+        f"Çıktı: {row.get('output_path', '-')}",
+        "=" * 72,
+        "İŞLEM GEÇİŞLERİ",
+    ]
+    lines.extend(f"- {item}" for item in row.get("feature_audit") or ["Kayıt yok"])
+    lines.extend(["", "YAPISAL TESLİM DENETİMİ"])
+    for key, label in (
+        ("status", "Durum"),
+        ("source_cues", "Kaynak cue"),
+        ("output_cues", "Çıktı cue"),
+        ("dialogue_output_cues", "İmza dışı çıktı cue"),
+        ("missing_dialogue_ids", "Eksik diyalog kimlikleri"),
+        ("expected_removed_ids", "Beklenen temizlenmiş kimlikler"),
+        ("extra_dialogue_ids", "Fazladan diyalog kimlikleri"),
+        ("timestamp_mismatch_ids", "Zaman damgası uyuşmazlıkları"),
+        ("unresolved_markers", "Eksik çeviri işaretleri"),
+        ("residual_credit_cues", "Kalan eski kredi cue'ları"),
+        ("residual_sdh_cues", "Kalan SDH cue'ları"),
+        ("residual_position_tags", "Kalan konum kodları"),
+        ("hatted_letters", "Şapkalı harfler"),
+        ("delivery_signatures", "discord: ceviri2 imzaları"),
+        ("source_sha256", "Kaynak SHA-256"),
+        ("output_sha256", "Çıktı SHA-256"),
+    ):
+        if key in audit:
+            value = audit[key]
+            if isinstance(value, list):
+                value = ", ".join(value) if value else "yok"
+            lines.append(f"- {label}: {value}")
+    lines.extend(["", "CUE BAZLI PASS DEĞİŞİKLİKLERİ"])
+    history = row.get("pass_history") or {}
+    if not history:
+        lines.append("- Değişiklik yok.")
+    else:
+        for cue_id, steps in history.items():
+            lines.append(f"\n#{cue_id}")
+            for step in steps:
+                lines.append(f"  [{step.get('pass', '?')}]")
+                lines.append(f"  Önce: {step.get('before', '')}")
+                lines.append(f"  Sonra: {step.get('after', '')}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _multi_pass_history(history: dict, max_items: int = 5) -> tuple[int, str]:
     multi = [(sid, steps) for sid, steps in (history or {}).items() if len(steps) > 1]
     if not multi:
@@ -6877,6 +6995,15 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         if feature_audit:
             lines.append("   İşlem dökümü:")
             lines.extend(f"      - {item}" for item in feature_audit)
+        delivery_audit = r.get("delivery_audit") or {}
+        if delivery_audit.get("status"):
+            lines.append(
+                f"   Yapısal teslim denetimi : {delivery_audit.get('status')} | "
+                f"eksik diyalog={len(delivery_audit.get('missing_dialogue_ids') or [])}, "
+                f"zaman uyuşmazlığı={len(delivery_audit.get('timestamp_mismatch_ids') or [])}, "
+                f"kalan kredi={delivery_audit.get('residual_credit_cues', 0)}, "
+                f"kalan SDH={delivery_audit.get('residual_sdh_cues', 0)}, "
+                f"eksik işareti={delivery_audit.get('unresolved_markers', 0)}")
         trace_txt = _format_pass_trace(r.get("pass_trace") or {})
         if trace_txt:
             lines.append(f"   {'Kalite geçişi kırılımı'.ljust(width)} : {trace_txt}")
@@ -16838,6 +16965,8 @@ class App(ctk.CTk):
             for source_row in rows:
                 row = dict(source_row)
                 row["feature_audit"] = _quality_feature_audit(row, snapshot)
+                row["delivery_audit"] = _subtitle_delivery_audit(
+                    row.get("source_path", ""), row.get("output_path", ""))
                 report_rows.append(row)
             with self._token_lock:
                 tok = self._token_total
@@ -16859,10 +16988,40 @@ class App(ctk.CTk):
             p = rep_dir / "ceviri_raporu.txt"
             atomic_write_text(p, txt, encoding="utf-8")
             report_paths = [p]
+            json_payload = {
+                "run_id": run_id,
+                "model": self._main_model_name(),
+                "target_language": self.tgt_var.get(),
+                "mode": self.mode_var.get(),
+                "total_tokens": tok,
+                "actual_cost": actual_cost,
+                "unknown_cost_tokens": unknown_cost_tokens,
+                "files": report_rows,
+            }
+            json_path = rep_dir / "ceviri_raporu.json"
+            atomic_write_json(json_path, json_payload)
+            report_paths.append(json_path)
             if run_id:
                 run_path = rep_dir / f"ceviri_raporu_{run_id}.txt"
                 atomic_write_text(run_path, txt, encoding="utf-8")
                 report_paths.append(run_path)
+                run_json_path = rep_dir / f"ceviri_raporu_{run_id}.json"
+                atomic_write_json(run_json_path, json_payload)
+                report_paths.append(run_json_path)
+            detail_dir = rep_dir / "İşlem Dökümleri"
+            detail_dir.mkdir(parents=True, exist_ok=True)
+            for row in report_rows:
+                safe_name = re.sub(
+                    r"[^\w.-]+", "_", Path(str(row.get("name") or "altyazi")).stem,
+                    flags=re.UNICODE).strip("._") or "altyazi"
+                digest = hashlib.sha256(
+                    str(row.get("source_path") or row.get("name") or "").encode(
+                        "utf-8", "replace")).hexdigest()[:8]
+                detail_path = detail_dir / f"{safe_name}.{digest}.islem_dokumu.txt"
+                atomic_write_text(
+                    detail_path, _file_process_report_text(row, run_id),
+                    encoding="utf-8")
+                report_paths.append(detail_path)
             self._record_quality_report(report_rows, report_paths)
             self._log(f"Kalite raporu: {p}", "ok")
             return p
