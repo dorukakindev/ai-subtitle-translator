@@ -134,6 +134,36 @@ class SeasonCanonRunRoutingTest(unittest.TestCase):
         )
         self.assertFalse(gui.App._should_start_season_canon(app))
 
+    def test_finalizer_is_visible_and_uses_tracked_worker(self):
+        calls = []
+        app = SimpleNamespace(
+            _season_canon_finalizing=False,
+            _set_phase=lambda *args: calls.append(("phase", args)),
+            _set_status=lambda *args: calls.append(("status", args)),
+            _start_worker=lambda target: calls.append(("worker", target)),
+        )
+        gui.App._start_season_canon_finalizer(app)
+        self.assertTrue(app._season_canon_finalizing)
+        self.assertIn(
+            ("phase", ("Sezon Kanonu", "Sezon genelinde terim ve hitap denetleniyor")),
+            calls,
+        )
+        self.assertTrue(any(kind == "status" and "kapatmayın" in args[0]
+                            for kind, args in calls))
+        self.assertTrue(any(kind == "worker" for kind, _value in calls))
+
+    def test_close_warns_specifically_during_season_finalizer(self):
+        app = SimpleNamespace(
+            _is_shutting_down=False,
+            _is_running=True,
+            _season_canon_finalizing=True,
+        )
+        with patch.object(gui.messagebox, "askyesno", return_value=False) as ask:
+            gui.App._on_close(app)
+        title, message = ask.call_args.args
+        self.assertEqual(title, "Sezon kanon denetimi sürüyor")
+        self.assertIn("dosyalar nihai hazır sayılmaz", message)
+
 
 if __name__ == "__main__":
     unittest.main()

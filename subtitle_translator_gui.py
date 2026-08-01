@@ -7449,10 +7449,21 @@ class App(ctk.CTk):
             return
         running = getattr(self, "_is_running", False)
         if running:
-            if not messagebox.askyesno(
-                    "Çeviri devam ediyor",
+            if getattr(self, "_season_canon_finalizing", False):
+                title = "Sezon kanon denetimi sürüyor"
+                message = (
+                    "Çeviriler kaydedildi ancak Sezon Sonu Kanon Denetimi "
+                    "henüz bitmedi. Şimdi kapatırsanız denetim yarıda kalır "
+                    "ve dosyalar nihai hazır sayılmaz.\n\n"
+                    "Yine de kapatmak ister misiniz?"
+                )
+            else:
+                title = "Çeviri devam ediyor"
+                message = (
                     "Çeviri devam ediyor. Kapatırsanız batch'ler "
-                    "OpenAI'de koşmaya devam eder.\n\nKapatmak ister misiniz?"):
+                    "OpenAI'de koşmaya devam eder.\n\nKapatmak ister misiniz?"
+                )
+            if not messagebox.askyesno(title, message):
                 return
         self._is_shutting_down = True
         try:
@@ -10758,6 +10769,10 @@ class App(ctk.CTk):
 
     def _start_season_canon_finalizer(self):
         self._season_canon_finalizing = True
+        self._set_phase(
+            "Sezon Kanonu", "Sezon genelinde terim ve hitap denetleniyor")
+        self._set_status(
+            "Sezon Sonu Kanon Denetimi çalışıyor — uygulamayı kapatmayın")
 
         def _work():
             try:
@@ -10771,7 +10786,7 @@ class App(ctk.CTk):
                 self._season_canon_finalizing = False
                 _post_ui(self, self._set_running, False)
 
-        threading.Thread(target=_work, daemon=True).start()
+        self._start_worker(_work)
 
     def _set_running(self, running):
         # Worker thread'lerden çağrılabilir; Tk widget .configure()/after_cancel YALNIZCA
