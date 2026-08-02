@@ -35,6 +35,22 @@ class SeasonCanonSelectionTest(unittest.TestCase):
         self.assertEqual([row[0] for row in aligned], ["10", "20"])
         self.assertEqual(unmapped, [])
 
+    def test_merged_delivery_span_uses_combined_source_context(self):
+        source = [
+            ("10", "00:00:01,000 --> 00:00:02,000", "I do"),
+            ("11", "00:00:02,100 --> 00:00:03,000", "not know."),
+        ]
+        output = [
+            ("1", "00:00:01,000 --> 00:00:03,000", "Bilmiyorum."),
+        ]
+
+        aligned, unmapped = gui._align_delivery_blocks_to_source(source, output)
+        source_map = gui._source_map_for_aligned_delivery(source, aligned)
+
+        self.assertEqual(unmapped, [])
+        self.assertEqual(aligned[0][0], "10|11")
+        self.assertEqual(source_map["10|11"], "I do not know.")
+
     def test_missing_canonical_rendering_is_selected(self):
         blocks = [("4", "00:00:01,000 --> 00:00:02,000", "Arabulucu geldi.")]
         source = {"4": "The Negotiator arrived."}

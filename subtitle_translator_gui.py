@@ -6036,12 +6036,14 @@ def _season_canon_artifact_stem(slug: str, season: int, episode: int,
 def _align_delivery_blocks_to_source(source_blocks: list,
                                      output_blocks: list) -> tuple[list, list]:
     """Teslim imzaları yüzünden numarası yenilenen SRT'yi kaynak cue'larına bağlar."""
-    source_by_time = {}
-    for idx, ts, _text in source_blocks or []:
+    source_rows = []
+    for idx, ts, text in source_blocks or []:
         try:
-            source_by_time.setdefault(_srt_timestamp_bounds(ts), []).append(str(idx))
+            source_rows.append((
+                str(idx), str(ts), str(text or ""), _srt_timestamp_bounds(ts)))
         except ValueError:
             continue
+    used = set()
     aligned = []
     unmapped = []
     for idx, ts, text in output_blocks or []:
@@ -6052,12 +6054,51 @@ def _align_delivery_blocks_to_source(source_blocks: list,
         except ValueError:
             unmapped.append(str(idx))
             continue
-        candidates = source_by_time.get(key) or []
-        if not candidates:
+        positions = _source_positions_for_delivery_span(source_rows, key, used)
+        if not positions:
             unmapped.append(str(idx))
             continue
-        aligned.append((candidates.pop(0), ts, text))
+        used.update(positions)
+        source_ids = [source_rows[pos][0] for pos in positions]
+        aligned.append(("|".join(source_ids), ts, text))
     return aligned, unmapped
+
+
+def _source_positions_for_delivery_span(source_rows: list, output_bounds: tuple,
+                                        used_positions=None) -> list:
+    """Map one output interval to one or more consecutive source intervals."""
+    used = set(used_positions or ())
+    out_start, out_end = output_bounds
+    for pos, row in enumerate(source_rows or []):
+        if pos in used or not row[3] or row[3][0] != out_start:
+            continue
+        positions = []
+        for cursor in range(pos, len(source_rows)):
+            if cursor in used:
+                break
+            if not source_rows[cursor][3]:
+                break
+            start, end = source_rows[cursor][3]
+            if start < out_start or end > out_end:
+                break
+            positions.append(cursor)
+            if end == out_end:
+                return positions
+            if end > out_end:
+                break
+    return []
+
+
+def _source_map_for_aligned_delivery(source_blocks: list,
+                                     aligned_blocks: list) -> dict:
+    source_text = {
+        str(idx): _clean_src(text) for idx, _ts, text in source_blocks or []}
+    result = {}
+    for idx, _ts, _text in aligned_blocks or []:
+        ids = [part for part in str(idx).split("|") if part]
+        result[str(idx)] = " ".join(
+            source_text[part] for part in ids if source_text.get(part)).strip()
+    return result
 
 
 _TERM_SUFFIX_CLASSES = {
@@ -7397,30 +7438,50 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         (str(idx), str(ts), str(text or "")) for idx, ts, text in output
         if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
     ]
-    unmatched_output = list(output_dialogue)
+    source_with_bounds = []
+    for source_idx, source_ts, source_text in source_rows:
+        try:
+            bounds = _srt_timestamp_bounds(source_ts)
+        except ValueError:
+            bounds = None
+        source_with_bounds.append((source_idx, source_ts, source_text, bounds))
+    used_source = set()
     missing_dialogue = []
     expected_removed = []
     timestamp_mismatches = []
-    for source_idx, source_ts, source_text in source_rows:
-        match_pos = next(
-            (pos for pos, (_idx, output_ts, _text) in enumerate(unmatched_output)
-             if output_ts == source_ts),
-            None,
-        )
-        if match_pos is not None:
-            unmatched_output.pop(match_pos)
-        elif (id_match_pos := next(
-                (pos for pos, (output_idx, _ts, _text)
-                 in enumerate(unmatched_output)
-                 if output_idx == source_idx), None)) is not None:
-            unmatched_output.pop(id_match_pos)
-            timestamp_mismatches.append(source_idx)
-        elif (_is_delivery_credit(source_text)
-              or _is_delivery_sdh_only(source_text)):
+    extras = []
+    for output_idx, output_ts, _output_text in output_dialogue:
+        try:
+            output_bounds = _srt_timestamp_bounds(output_ts)
+        except ValueError:
+            output_bounds = None
+        positions = (
+            _source_positions_for_delivery_span(
+                source_with_bounds, output_bounds, used_source)
+            if output_bounds else [])
+        if positions:
+            used_source.update(positions)
+            continue
+        id_pos = next((
+            pos for pos, (source_idx, _ts, _text, _bounds)
+            in enumerate(source_with_bounds)
+            if pos not in used_source and source_idx == output_idx
+        ), None)
+        if id_pos is not None:
+            used_source.add(id_pos)
+            timestamp_mismatches.append(source_with_bounds[id_pos][0])
+        else:
+            extras.append(output_idx)
+    for pos, (source_idx, _source_ts, source_text, _bounds) in enumerate(
+            source_with_bounds):
+        if pos in used_source:
+            continue
+        if (_is_delivery_credit(source_text)
+                or _is_delivery_sdh_only(source_text)):
             expected_removed.append(source_idx)
         else:
             missing_dialogue.append(source_idx)
-    extras = sorted(idx for idx, _ts, _text in unmatched_output)
+    extras.sort()
     output_texts = [text for _idx, _ts, text in output_dialogue]
     unresolved_markers = sum(
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
@@ -12643,10 +12704,8 @@ class App(ctk.CTk):
                     if unmapped:
                         raise ValueError(
                             f"{len(unmapped)} çıktı cue'su kaynak zamanına bağlanamadı")
-                    src_map = {
-                        str(idx): _clean_src(text)
-                        for idx, _ts, text in source_blocks
-                    }
+                    src_map = _source_map_for_aligned_delivery(
+                        source_blocks, output_blocks)
                     locked_terms = self._get_locked_terms_dict(source_path, tgt)
                     suspects = _season_canon_suspect_ids(
                         output_blocks, src_map, locked_terms)
