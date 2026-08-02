@@ -467,7 +467,11 @@ class UIDispatcherTest(unittest.TestCase):
         self.assertIs(stub._active_snapshot, snapshot)
         gui.App._set_running(stub, True)
         self.assertIs(stub._active_snapshot, snapshot)
-        gui.App._set_running(stub, False)
+        with mock.patch(
+            "provider_retry.configure_provider_wait_hooks"
+        ) as clear_hooks:
+            gui.App._set_running(stub, False)
+        clear_hooks.assert_called_once_with()
         self.assertIsNone(stub._active_snapshot)
 
     def test_run_freezes_tk_variable_getters_to_snapshot_values(self):

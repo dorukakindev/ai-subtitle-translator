@@ -2106,6 +2106,7 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
         try:
             resp = ht._safe_chat_create(
                 client, model=model,
+                _checkpoint_label="ai_segmentation",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=n_cues * 60 + 400,
                 temperature=0.2,
@@ -4141,6 +4142,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 try:
                     resp = _safe_chat_create(
                         client,
+                        _checkpoint_label="translation_repair",
                         model=model,
                         messages=[
                             {"role": "system", "content": sys_prompt},
@@ -4507,6 +4509,7 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
         from hybrid_translate import _safe_chat_create
         resp = _safe_chat_create(
             client, model=model,
+            _checkpoint_label="precontext_analysis",
             messages=[
                 {"role": "system",
                  "content": "You are a senior subtitle translation analyst. Output only valid JSON."},
@@ -4682,6 +4685,7 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             from hybrid_translate import _safe_chat_create
             resp = _safe_chat_create(
                 client,
+                _checkpoint_label="content_type_detection",
                 model=model,
                 messages=[
                     {"role": "system", "content": system_msg},
@@ -4771,6 +4775,7 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
     try:
         resp = _safe_chat_create(
             client,
+            _checkpoint_label="source_language_detection",
             model=model,
             messages=[
                 {"role": "system", "content": "You are a precise language identification engine."},
@@ -4889,6 +4894,7 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
     try:
         resp = _safe_chat_create(
             client,
+            _checkpoint_label="source_language_detection",
             model=model,
             messages=[
                 {"role": "system", "content": "You identify subtitle languages precisely."},
@@ -6079,6 +6085,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
         try:
             resp = _safe_chat_create(
                 client, model=helper_model,
+                _checkpoint_label="term_normalization",
                 messages=[{"role": "system", "content": sys_prompt},
                          {"role": "user", "content": json.dumps({"items": chunk}, ensure_ascii=False)}],
                 max_tokens=max(800, len(chunk) * 100),
@@ -10644,6 +10651,19 @@ class App(ctk.CTk):
             "backtranslation": "Geri çeviri",
             "backtranslation_compare": "Geri çeviri karşılaştırması",
             "backtranslation_fix": "Geri çeviri düzeltmesi",
+            "qc_autofix": "QC otomatik düzeltme",
+            "glossary_builder": "Sözlük oluşturucu",
+            "ai_segmentation": "AI segmentasyon",
+            "translation_repair": "Eksik çeviri onarımı",
+            "precontext_analysis": "Dosya ön bağlam analizi",
+            "content_type_detection": "İçerik türü analizi",
+            "source_language_detection": "Kaynak dil analizi",
+            "term_normalization": "Terim normalizasyonu",
+            "translation_preview": "Çeviri önizlemesi",
+            "translation_json_repair": "JSON yanıt onarımı",
+            "main_translation_retry": "Ana çeviri yeniden denemesi",
+            "translation_subgroup_recovery": "Alt-grup çeviri kurtarması",
+            "main_translation": "Ana çeviri",
         }
         stage = labels.get(str(checkpoint_label or ""), "API paketi")
         if int(count) == 1:
@@ -11144,7 +11164,11 @@ class App(ctk.CTk):
                             max_pairs=build_options["context_lines"])
                     payload = json.loads(user_msg["content"])
                     try:
-                        resp = _safe_chat_create(client, **req["body"])
+                        resp = _safe_chat_create(
+                            client,
+                            _checkpoint_label="translation_preview",
+                            **req["body"],
+                        )
                         if resp.usage:
                             tot, cached = _get_usage_details(resp.usage)
                             self._update_tokens(tot, cached=cached)
@@ -12203,6 +12227,11 @@ class App(ctk.CTk):
             if getattr(self, "_sleep_prevention_active", False):
                 _set_windows_sleep_prevention(False)
                 self._sleep_prevention_active = False
+            try:
+                from provider_retry import configure_provider_wait_hooks
+                configure_provider_wait_hooks()
+            except Exception:
+                pass
             self._run_state_initialized = False
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
@@ -12606,6 +12635,7 @@ class App(ctk.CTk):
             try:
                 resp = _safe_chat_create(
                     client,
+                    _checkpoint_label="translation_json_repair",
                     model=req.get("body", {}).get("model") or self._main_model_name(),
                     messages=[
                         {"role": "system", "content": "You are a JSON repair assistant. Return only valid JSON."},
@@ -12757,7 +12787,11 @@ class App(ctk.CTk):
                     continue
                 for attempt in range(3):  # up to 3 attempts per round for transient errors
                     try:
-                        resp = _safe_chat_create(client, **_retry_body_for(req, retry_reasons.get(cid, "")))
+                        resp = _safe_chat_create(
+                            client,
+                            _checkpoint_label="main_translation_retry",
+                            **_retry_body_for(req, retry_reasons.get(cid, "")),
+                        )
                         text = _validated_chat_content(resp)
                         tok, cached = 0, 0
                         if resp.usage:
@@ -12945,7 +12979,11 @@ class App(ctk.CTk):
             if not _no_temp:
                 body["temperature"] = 0.2
             try:
-                resp = _safe_chat_create(client, **body)
+                resp = _safe_chat_create(
+                    client,
+                    _checkpoint_label="translation_subgroup_recovery",
+                    **body,
+                )
                 if resp.usage:
                     tot, cached = _get_usage_details(resp.usage)
                     self._update_tokens(tot, cached=cached)
@@ -19225,7 +19263,11 @@ class App(ctk.CTk):
 
         def send_one(req):
             body = {k: v for k, v in req["body"].items()}
-            resp = _safe_chat_create(client, **body)
+            resp = _safe_chat_create(
+                client,
+                _checkpoint_label="main_translation",
+                **body,
+            )
             text = _validated_chat_content(resp)
             tok, cached = 0, 0
             if resp.usage:
@@ -19416,7 +19458,11 @@ class App(ctk.CTk):
 
         def send_one(req):
             body = req["body"]
-            resp = _safe_chat_create(client, **body)
+            resp = _safe_chat_create(
+                client,
+                _checkpoint_label="main_translation",
+                **body,
+            )
             text = _validated_chat_content(resp)
             tok, cached = 0, 0
             if resp.usage:

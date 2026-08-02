@@ -1,3 +1,4 @@
+import ast
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +55,19 @@ class RetryAfterParsingTest(unittest.TestCase):
 
 
 class ProviderCooldownRegistryTest(unittest.TestCase):
+    def test_clearing_hooks_prevents_late_ui_callback(self):
+        events = []
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: 100.0,
+            sleeper=lambda _delay: None,
+            wait_callback=lambda *args: events.append(args),
+        )
+
+        registry.set_hooks()
+        registry._notify("request_tick", 3, 1)
+
+        self.assertEqual(events, [])
+
     def test_same_reseller_key_shares_cooldown_and_staggers_waiters(self):
         now = [100.0]
         sleeps = []
@@ -479,6 +493,31 @@ class ResponseCheckpointTest(unittest.TestCase):
             run_b = provider_retry._response_checkpoint_namespace_dir(root, "run-b")
             self.assertFalse(run_a.exists())
             self.assertTrue(run_b.exists())
+
+
+class ResponseCheckpointCoverageTest(unittest.TestCase):
+    def test_all_safe_chat_call_sites_name_their_checkpoint_stage(self):
+        missing = []
+        for module in (ht, gui):
+            path = Path(module.__file__)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = (
+                    func.attr if isinstance(func, ast.Attribute)
+                    else func.id if isinstance(func, ast.Name)
+                    else ""
+                )
+                if name != "_safe_chat_create":
+                    continue
+                if not any(
+                    keyword.arg == "_checkpoint_label"
+                    for keyword in node.keywords
+                ):
+                    missing.append(f"{path.name}:{node.lineno}")
+        self.assertEqual(missing, [])
 
 
 class ResellerStructuredOutputTest(unittest.TestCase):

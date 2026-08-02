@@ -9795,6 +9795,7 @@ def qc_auto_fix(
             resp = _safe_chat_create(
                 client,
                 cancel_context=cancel_context,
+                _checkpoint_label="qc_autofix",
                 model=model,
                 messages=[
                     {"role": "system", "content": system},
@@ -9914,6 +9915,7 @@ def build_glossary_suggestions(
     try:
         resp = _safe_chat_create(
             client,
+            _checkpoint_label="glossary_builder",
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1500,
