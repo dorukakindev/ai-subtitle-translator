@@ -9602,9 +9602,20 @@ class App(ctk.CTk):
             border_width=1, border_color=INFO_BLUE,
             command=self._show_cost_estimate).grid(row=0, column=2, sticky="ew")
 
-        # Bildirimler switch
-        notif_fr = ctk.CTkFrame(sb, fg_color="transparent")
-        notif_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        options_card = ctk.CTkFrame(
+            sb, fg_color=PANEL, corner_radius=10,
+            border_width=1, border_color=BORDER_SOFT)
+        options_card.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 8)); r += 1
+        options_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            options_card, text="ÇALIŞMA DAVRANIŞI", anchor="w",
+            font=ctk.CTkFont("Consolas", 9, "bold"), text_color=FG2,
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 5))
+
+        notif_fr = ctk.CTkFrame(
+            options_card, fg_color=CARD, corner_radius=7,
+            border_width=1, border_color=BORDER_SOFT)
+        notif_fr.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 2))
         notif_fr.grid_columnconfigure(1, weight=1)
         self.notify_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(notif_fr, text="", variable=self.notify_var,
@@ -9614,8 +9625,10 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 11),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
 
-        motion_fr = ctk.CTkFrame(sb, fg_color="transparent")
-        motion_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
+        motion_fr = ctk.CTkFrame(
+            options_card, fg_color=CARD, corner_radius=7,
+            border_width=1, border_color=BORDER_SOFT)
+        motion_fr.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 2))
         motion_fr.grid_columnconfigure(1, weight=1)
         self.light_animations_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(
@@ -9628,8 +9641,10 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
-        shutdown_fr = ctk.CTkFrame(sb, fg_color="transparent")
-        shutdown_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
+        shutdown_fr = ctk.CTkFrame(
+            options_card, fg_color=CARD, corner_radius=7,
+            border_width=1, border_color=BORDER_SOFT)
+        shutdown_fr.grid(row=3, column=0, sticky="ew", padx=6, pady=(0, 2))
         shutdown_fr.grid_columnconfigure(1, weight=1)
         self.shutdown_when_done_var = ctk.BooleanVar(value=False)
         ctk.CTkSwitch(
@@ -9644,8 +9659,10 @@ class App(ctk.CTk):
             text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
-        safety_fr = ctk.CTkFrame(sb, fg_color="transparent")
-        safety_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 6)); r += 1
+        safety_fr = ctk.CTkFrame(
+            options_card, fg_color=CARD, corner_radius=7,
+            border_width=1, border_color=BORDER_SOFT)
+        safety_fr.grid(row=4, column=0, sticky="ew", padx=6, pady=(0, 2))
         safety_fr.grid_columnconfigure(1, weight=1)
         self.prevent_sleep_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(
@@ -9657,8 +9674,10 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
-        retry_fr = ctk.CTkFrame(sb, fg_color="transparent")
-        retry_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 6)); r += 1
+        retry_fr = ctk.CTkFrame(
+            options_card, fg_color=CARD, corner_radius=7,
+            border_width=1, border_color=BORDER_SOFT)
+        retry_fr.grid(row=5, column=0, sticky="ew", padx=6, pady=(0, 2))
         retry_fr.grid_columnconfigure(1, weight=1)
         self.auto_retry_files_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(
@@ -9670,8 +9689,10 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
-        resume_fr = ctk.CTkFrame(sb, fg_color="transparent")
-        resume_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 6)); r += 1
+        resume_fr = ctk.CTkFrame(
+            options_card, fg_color=CARD, corner_radius=7,
+            border_width=1, border_color=BORDER_SOFT)
+        resume_fr.grid(row=6, column=0, sticky="ew", padx=6, pady=(0, 7))
         resume_fr.grid_columnconfigure(1, weight=1)
         self.auto_resume_crash_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(
@@ -9686,28 +9707,32 @@ class App(ctk.CTk):
         self.resume_btn = ctk.CTkButton(
             sb, text="↺  Batch'i Devam Ettir", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
             command=self._resume)
         self.resume_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.jsonl_btn = ctk.CTkButton(
             sb, text="📂  JSONL → SRT", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
             command=self._import_jsonl)
         self.jsonl_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.postprocess_btn = ctk.CTkButton(
             sb, text="✦  SRT Post-İşle", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
             command=self._post_process_existing)
         self.postprocess_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.report_btn = ctk.CTkButton(
             sb, text="📊  Kalite Raporu", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
             command=self._open_quality_report)
         self.report_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
@@ -9715,14 +9740,16 @@ class App(ctk.CTk):
         self.adv_settings_btn = ctk.CTkButton(
             sb, text="⚙️  Gelişmiş Ayarlar", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
             command=self._show_advanced_settings)
         self.adv_settings_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.pm_btn = ctk.CTkButton(
             sb, text="🧠  Proje Hafızası", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
             command=self._show_project_memory)
         self.pm_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
@@ -12413,10 +12440,12 @@ class App(ctk.CTk):
                                         text_color=FG)
                 name_lbl.grid(row=0, column=1, sticky="ew", padx=(4, 8))
 
-                phase_lbl = ctk.CTkLabel(row_fr, text="Bekliyor", width=148,
-                                         anchor="w",
-                                         font=ctk.CTkFont("Segoe UI", 10),
-                                         text_color=FG2)
+                phase_lbl = ctk.CTkLabel(
+                    row_fr, text="Bekliyor", width=148, height=24,
+                    anchor="center", corner_radius=6,
+                    fg_color=_mix_hex_color(CARD, FG2, 0.08),
+                    font=ctk.CTkFont("Segoe UI", 10, "bold"),
+                    text_color=FG2)
                 phase_lbl.grid(row=0, column=2, padx=4)
 
                 pb = ctk.CTkProgressBar(row_fr, height=5, width=108,
@@ -12527,7 +12556,9 @@ class App(ctk.CTk):
                         previous["frame"].configure(
                             border_width=1, border_color=BORDER_SOFT)
                 row["dot"].configure(text=dot_text, text_color=color)
-                row["phase"].configure(text=phase,  text_color=color)
+                row["phase"].configure(
+                    text=phase, text_color=color,
+                    fg_color=_mix_hex_color(CARD, color, 0.13))
                 row["pb"].configure(progress_color=color)
                 row["color"] = color
                 row["target"] = value
