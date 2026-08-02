@@ -26,6 +26,65 @@ class PassProgressFeedbackTest(unittest.TestCase):
         self.assertGreaterEqual(
             source.count('_native_status.get("status") == "completed"'), 4)
 
+    def test_all_critic_gui_calls_collect_real_completion_status(self):
+        source = inspect.getsource(gui.App)
+        self.assertEqual(
+            source.count("ht.critic_pass_with_helper("),
+            source.count("status_out=_critic_status"),
+        )
+        self.assertGreaterEqual(
+            source.count('_critic_status.get("status") == "completed"'), 4)
+
+    def test_all_polish_gui_calls_collect_real_completion_status(self):
+        source = inspect.getsource(gui.App)
+        self.assertEqual(
+            source.count("self._polish_pass("),
+            source.count("status_out=_polish_status"),
+        )
+        self.assertGreaterEqual(
+            source.count('_polish_status.get("status") == "completed"'), 5)
+
+    def test_polish_reports_failed_when_both_attempts_fail(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
+        status = {}
+        logs = []
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _log=lambda message, tag="": logs.append((message, tag)),
+            _log_exc=lambda message, exc: logs.append((f"{message}: {exc}", "err")),
+            _update_tokens=lambda *args, **kwargs: None,
+        )
+        with patch("openai.OpenAI", return_value=MagicMock()), \
+             patch.object(gui, "_safe_chat_create", side_effect=RuntimeError("503")), \
+             patch.object(gui.time, "sleep", return_value=None):
+            result = gui.App._polish_pass(
+                app, blocks, "Turkish", "key", "https://example.test/v1",
+                "model", status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["failed_chunks"], 1)
+        self.assertTrue(any("tamamlanamadı" in message for message, _ in logs))
+
+    def test_critic_does_not_report_no_fix_when_every_request_failed(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
+        cues = [SimpleNamespace(index=1, text="Hello.")]
+        status = {}
+        logs = []
+        with patch("openai.OpenAI", return_value=MagicMock()), \
+             patch.object(ht, "run_validators", return_value=[
+                 (1, "ts", "text", "TEST")]), \
+             patch.object(ht, "_safe_chat_create", side_effect=RuntimeError("503")):
+            result = ht.critic_pass_with_helper(
+                cues, blocks, "key", status_out=status,
+                log_fn=lambda message, tag="": logs.append((message, tag)))
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["failed_chunks"], 1)
+        self.assertTrue(any("tamamlanamadı" in message for message, _ in logs))
+        self.assertFalse(any("ek düzeltme gerekmedi" in message for message, _ in logs))
+
     def test_native_does_not_report_natural_when_every_request_failed(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
         status = {}

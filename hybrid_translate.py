@@ -10215,6 +10215,7 @@ def critic_pass_with_helper(
     token_callback=None,
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
+    status_out: dict | None = None,
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
@@ -10231,7 +10232,15 @@ def critic_pass_with_helper(
             satırın NEDEN değiştiğini kimse göremiyordu).
     """
 
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     if not tr_blocks:
+        if status_out is not None:
+            status_out["status"] = "skipped"
         return tr_blocks
 
     cues = _semantic_validator_cues({}, tr_blocks, cues)
@@ -10362,6 +10371,8 @@ def critic_pass_with_helper(
     ]
 
     if not suspicious:
+        if status_out is not None:
+            status_out.update({"status": "completed", "changed": local_fixed})
         if log_fn:
             log_fn("Critic Pass (Helper): şüpheli satır yok, atlanıyor ✓", "ok")
         return result
@@ -10384,6 +10395,8 @@ def critic_pass_with_helper(
     except Exception as e:
         if log_fn:
             log_fn(f"Critic Pass Helper bağlantı hatası: {e}", "err")
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(e)})
         return result
 
     context_info = build_polish_context_hint(analysis_result, tgt_lang)
@@ -10434,6 +10447,10 @@ def critic_pass_with_helper(
     critic_rejected = 0
     critic_rejected_reasons: dict[str, int] = {}
     reason_stats: dict[str, dict[str, int]] = {}
+    successful_chunks = 0
+    critic_chunks = _critic_suspicious_chunks(
+        suspicious, frag_group_by_id, MINIMAX_CHUNK)
+    total_chunks = len(critic_chunks)
     cancelled = False
 
     def _reason_tokens(reason_str: str) -> list[str]:
@@ -10442,8 +10459,7 @@ def critic_pass_with_helper(
         toks = [tok.split("(", 1)[0].strip() for tok in reason_str.split("|")]
         return [t for t in toks if t] or ["PATTERN_ONLY"]
 
-    for chunk in _critic_suspicious_chunks(
-            suspicious, frag_group_by_id, MINIMAX_CHUNK):
+    for chunk in critic_chunks:
         if cancel_context is not None and cancel_context.is_cancelled():
             cancelled = True
             break
@@ -10589,6 +10605,7 @@ def critic_pass_with_helper(
                 if log_fn:
                     log_fn(f"Critic Helper chunk beklenmeyen format — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
+            successful_chunks += 1
             fix_by_id = {}
             conflicting_ids = set()
             for fix in fixes:
@@ -10789,11 +10806,33 @@ def critic_pass_with_helper(
                 log_fn(f"Critic Helper chunk hatası ({len(chunk)} satır atlandı): {e}", "warn")
 
     if cancelled:
+        if status_out is not None:
+            status_out.update({
+                "status": "cancelled",
+                "successful_chunks": successful_chunks,
+                "failed_chunks": max(0, total_chunks - successful_chunks),
+                "total_chunks": total_chunks, "changed": 0,
+            })
         if change_log is not None:
             del change_log[change_log_start:]
         if log_fn:
             log_fn("Critic Pass durduruldu; kısmi değişiklikler uygulanmadı", "warn")
         return list(tr_blocks)
+
+    failed_chunks = max(0, total_chunks - successful_chunks)
+    pass_status = (
+        "completed" if successful_chunks == total_chunks
+        else "partial" if successful_chunks
+        else "failed"
+    )
+    if status_out is not None:
+        status_out.update({
+            "status": pass_status,
+            "successful_chunks": successful_chunks,
+            "failed_chunks": failed_chunks,
+            "total_chunks": total_chunks,
+            "changed": local_fixed + mm_fixed,
+        })
 
     if log_fn:
         if critic_rejected:
@@ -10804,10 +10843,15 @@ def critic_pass_with_helper(
                 f"Critic Pass (Helper): {critic_rejected} öneri güvenlik filtresinden döndü ({reason_bits})",
                 "warn",
             )
+        if failed_chunks:
+            log_fn(
+                f"Critic Pass (Helper) tamamlanamadı: {successful_chunks}/{total_chunks} paket başarılı, "
+                f"{failed_chunks} paket başarısız",
+                "warn" if successful_chunks else "err")
         if mm_fixed:
             reflow_bit = f" ({reflow_recovered} tanesi satır-sayısı yeniden sarılarak kurtarıldı)" if reflow_recovered else ""
             log_fn(f"Critic Pass (Helper): {mm_fixed} satır düzeltildi ✓{reflow_bit}", "ok")
-        else:
+        elif pass_status == "completed":
             log_fn("Critic Pass (Helper): ek düzeltme gerekmedi ✓", "ok")
         if reason_stats:
             stats_str = ", ".join(

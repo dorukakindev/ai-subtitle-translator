@@ -16083,11 +16083,14 @@ class App(ctk.CTk):
                     _mm_key = self._helper_api_key("polish")
                     _mm_url = self._helper_api_base_url("polish")
                     _mm_mdl = self._helper_api_model("polish")
+                    _polish_status = {}
                     blocks = self._polish_pass(
                         blocks, tgt, _mm_key, _mm_url, _mm_mdl,
                         src_map=_src_map_from_cues(cues),
-                        locked_terms=self._get_locked_terms_dict(orig_path, tgt))
-                    self._log("Polish Pass tamamlandı", "ok")
+                        locked_terms=self._get_locked_terms_dict(orig_path, tgt),
+                        status_out=_polish_status)
+                    if _polish_status.get("status") == "completed":
+                        self._log("Polish Pass tamamlandı", "ok")
                     blocks, _ = ht.final_consistency_sweep(
                         cues, blocks, log_fn=self._log,
                         locked_terms=self._get_locked_terms_dict(orig_path, tgt))
@@ -17179,16 +17182,31 @@ class App(ctk.CTk):
                      helper_key: str, helper_url: str, helper_model: str,
                      src_map: dict = None, analysis_result=None,
                      locked_terms: dict | None = None,
-                     cancel_context=None) -> list:
+                     cancel_context=None, status_out: dict | None = None) -> list:
         """Second-pass naturalisation using the helper model gpt-5.4-mini (cost-efficient).
 
         src_map: {idx_str: kaynak metin} — verilirse her satıra 'en' alanı eklenir;
         editör anlamı kaynaktan doğrular, anlam kayması engellenir."""
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            })
+        if not sorted_blocks:
+            if status_out is not None:
+                status_out["status"] = "skipped"
+            return sorted_blocks
         POLISH_CHUNK = 150  # Balanced: large enough to be fast, small enough to avoid API limits
         POLISH_CTX   = 6    # önceki chunk'ın son N cilalı satırı — üslup sürekliliği
         from openai import OpenAI as _OAI
         import hybrid_translate as ht
-        client = _OAI(api_key=helper_key, base_url=helper_url)
+        try:
+            client = _OAI(api_key=helper_key, base_url=helper_url)
+        except Exception as exc:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(exc)})
+            raise
         cancel_context = cancel_context or self.__dict__.get("_helper_request_canceller")
         src_map = src_map or {}
         
@@ -17269,6 +17287,8 @@ class App(ctk.CTk):
         result_map = {}
         rejected = 0
         rejected_reasons = {}
+        attempted_chunks = 0
+        successful_chunks = 0
         for cs in range(0, len(sorted_blocks), POLISH_CHUNK):
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
@@ -17311,6 +17331,7 @@ class App(ctk.CTk):
                     chunk_group_expected.setdefault(gid, []).append(sid)
             if not items:
                 continue
+            attempted_chunks += 1
             payload = {"polish": items}
             chunk_ids = {idx for idx, _ts, _text in chunk}
             chunk_groups = [
@@ -17402,8 +17423,16 @@ class App(ctk.CTk):
                     rejected += chunk_rejected
                     for _reason_key, _count in chunk_reasons.items():
                         rejected_reasons[_reason_key] = rejected_reasons.get(_reason_key, 0) + _count
+                    successful_chunks += 1
                     break
                 except RequestCancelled:
+                    if status_out is not None:
+                        status_out.update({
+                            "status": "cancelled",
+                            "successful_chunks": successful_chunks,
+                            "failed_chunks": max(0, attempted_chunks - successful_chunks),
+                            "total_chunks": attempted_chunks, "changed": 0,
+                        })
                     return list(sorted_blocks)
                 except Exception as e:
                     if attempt == 0:
@@ -17414,6 +17443,13 @@ class App(ctk.CTk):
 
         if self.__dict__.get("_stop_flag", False) or (
                 cancel_context is not None and cancel_context.is_cancelled()):
+            if status_out is not None:
+                status_out.update({
+                    "status": "cancelled",
+                    "successful_chunks": successful_chunks,
+                    "failed_chunks": max(0, attempted_chunks - successful_chunks),
+                    "total_chunks": attempted_chunks, "changed": 0,
+                })
             return list(sorted_blocks)
         final = []
         changed = 0
@@ -17427,6 +17463,12 @@ class App(ctk.CTk):
             final.append((idx, ts, new_text))
         total = len(sorted_blocks)
         ratio = changed / total if total > 0 else 0
+        failed_chunks = max(0, attempted_chunks - successful_chunks)
+        pass_status = (
+            "completed" if successful_chunks == attempted_chunks
+            else "partial" if successful_chunks
+            else "failed"
+        )
         if ratio > 0.25:
             revert_count = 0
             safe_final = []
@@ -17443,10 +17485,22 @@ class App(ctk.CTk):
             self._log(f"Polish Pass: {changed} satır değişti / {total} toplam ({revert_count} riskli düzeltme geri alındı)", "warn")
         elif ratio > 0.15:
             self._log(f"Polish Pass: %{ratio*100:.0f} satır değişti — yüksek oran, gözden geçirilmeli", "warn")
+        if status_out is not None:
+            status_out.update({
+                "status": pass_status,
+                "successful_chunks": successful_chunks,
+                "failed_chunks": failed_chunks,
+                "total_chunks": attempted_chunks, "changed": changed,
+            })
         if rejected:
             reason_txt = ", ".join(f"{k}:{v}" for k, v in sorted(rejected_reasons.items()))
             self._log(f"Polish Pass: {rejected} öneri güvenlik filtresinden döndü ({reason_txt})", "warn")
-        if ratio <= 0.25:
+        if failed_chunks:
+            self._log(
+                f"Polish Pass tamamlanamadı: {successful_chunks}/{attempted_chunks} paket başarılı, "
+                f"{failed_chunks} paket başarısız",
+                "warn" if successful_chunks else "err")
+        if ratio <= 0.25 and pass_status == "completed":
             self._log(f"Polish Pass: {changed} satır değişti / {total} toplam", "info")
         return final
 
@@ -17628,6 +17682,7 @@ class App(ctk.CTk):
                         self._set_phase("Critic Pass", f"{fname}  ({i+1}/{n})")
                         self._log(f"Critic Pass — {len(blocks)} satır...", "info")
                         _critic_change_log = []
+                        _critic_status = {}
                         blocks = ht.critic_pass_with_helper(
                             cues=orig_cues, tr_blocks=blocks,
                             helper_api_key=helper_keys.get("critic", ""),
@@ -17642,7 +17697,8 @@ class App(ctk.CTk):
                             token_callback=self._token_callback_for_model(
                                 helper_models.get("critic", "gpt-5.4-mini")),
                             cancel_context=self.__dict__.get(
-                                "_helper_request_canceller"))
+                                "_helper_request_canceller"),
+                            status_out=_critic_status)
                         self._write_critic_change_report(fp, _critic_change_log)
                     except Exception as e:
                         self._log(f"Critic Pass hatası: {e}", "warn")
@@ -17653,13 +17709,15 @@ class App(ctk.CTk):
                         self._update_file_progress(fp, "Polish Pass", 55)
                         self._set_phase("Polish Pass", f"{fname}  ({i+1}/{n})")
                         self._log(f"Polish Pass — {len(blocks)} satır...", "info")
+                        _polish_status = {}
                         blocks = self._polish_pass(
                             blocks, tgt,
                             helper_keys.get("polish", ""),
                             helper_urls.get("polish", ""),
                             helper_models.get("polish", "gpt-5.4-mini"),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
-                            analysis_result=analysis_result)
+                            analysis_result=analysis_result,
+                            status_out=_polish_status)
                     except Exception as e:
                         self._log(f"Polish Pass hatası: {e}", "warn")
 
@@ -20767,6 +20825,7 @@ class App(ctk.CTk):
                 self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
                 _critic_change_log = []
+                _critic_status = {}
                 sorted_blocks = ht.critic_pass_with_helper(
                     cues=cues,
                     tr_blocks=sorted_blocks,
@@ -20784,10 +20843,13 @@ class App(ctk.CTk):
                         self._helper_api_model("critic")),
                     cancel_context=self.__dict__.get(
                         "_helper_request_canceller"),
+                    status_out=_critic_status,
                 )
+                _pass_status["Critic"] = dict(_critic_status)
                 if self._stop_flag:
                     break
-                _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
+                if _critic_status.get("status") == "completed":
+                    _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                 self._write_critic_change_report(out_path, _critic_change_log)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
@@ -20796,6 +20858,7 @@ class App(ctk.CTk):
                 self._update_file_progress(filepath, "Polish Pass", 92)
                 self._log(f"Polish Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
+                _polish_status = {}
                 sorted_blocks = self._polish_pass(
                     sorted_blocks, tgt,
                     self._helper_api_key("polish"),
@@ -20804,11 +20867,14 @@ class App(ctk.CTk):
                     src_map=_src_map_from_cues(cues),
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions, idiom_map, cultural_refs),
-                    locked_terms=_locked_terms)
+                    locked_terms=_locked_terms,
+                    status_out=_polish_status)
+                _pass_status["Polish"] = dict(_polish_status)
                 if self._stop_flag:
                     break
-                _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
-                self._log("Polish Pass tamamlandı", "ok")
+                if _polish_status.get("status") == "completed":
+                    _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
+                    self._log("Polish Pass tamamlandı", "ok")
 
             # ── Native Okuyucu Pass ───────────────────────────────────────────
             if self.native_var.get() and sorted_blocks and _quality_api_allowed:
@@ -21909,6 +21975,7 @@ class App(ctk.CTk):
                                 self._log(f"Critic Pass başlıyor ({len(pp)} satır)...", "info")
                                 _before_pass = list(pp)
                                 _critic_change_log = []
+                                _critic_status = {}
                                 pp = ht.critic_pass_with_helper(
                                     cues=_orig_cues, tr_blocks=pp,
                                     helper_api_key=self._helper_api_key("critic"),
@@ -21923,21 +21990,28 @@ class App(ctk.CTk):
                                     token_callback=self._token_callback_for_model(
                                         self._helper_api_model("critic")),
                                     cancel_context=self.__dict__.get(
-                                        "_helper_request_canceller"))
+                                        "_helper_request_canceller"),
+                                    status_out=_critic_status)
+                                _pass_status["Critic"] = dict(_critic_status)
                                 if self._stop_flag:
                                     break
-                                _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
+                                if _critic_status.get("status") == "completed":
+                                    _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
                                 self._write_critic_change_report(output_path, _critic_change_log)
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
                                 _before_pass = list(pp)
+                                _polish_status = {}
                                 pp = self._polish_pass(pp, tgt, self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
                                                        src_map=_src_map_from_cues(_orig_cues),
                                                        analysis_result=_analysis_result,
-                                                       locked_terms=_locked_terms)
+                                                       locked_terms=_locked_terms,
+                                                       status_out=_polish_status)
+                                _pass_status["Polish"] = dict(_polish_status)
                                 if self._stop_flag:
                                     break
-                                _record_pass_change(_pass_trace, "Polish", _before_pass, pp, _pass_history)
+                                if _polish_status.get("status") == "completed":
+                                    _record_pass_change(_pass_trace, "Polish", _before_pass, pp, _pass_history)
                             if self.native_var.get() and pp:
                                 self._set_status("Native Okuyucu...")
                                 _before_pass = list(pp)
@@ -22449,6 +22523,7 @@ class App(ctk.CTk):
                     self._log(f"Critic Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                     _before_pass = list(sorted_blocks)
                     _critic_change_log = []
+                    _critic_status = {}
                     sorted_blocks = ht.critic_pass_with_helper(
                         cues=_src_cues, tr_blocks=sorted_blocks,
                         helper_api_key=self._helper_api_key("critic"),
@@ -22463,10 +22538,13 @@ class App(ctk.CTk):
                         token_callback=self._token_callback_for_model(
                             self._helper_api_model("critic")),
                         cancel_context=self.__dict__.get(
-                            "_helper_request_canceller"))
+                            "_helper_request_canceller"),
+                        status_out=_critic_status)
+                    _pass_status["Critic"] = dict(_critic_status)
                     if self._stop_flag:
                         break
-                    _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
+                    if _critic_status.get("status") == "completed":
+                        _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
                     self._log(f"Critic Pass hatası: {e}", "warn")
@@ -22475,15 +22553,19 @@ class App(ctk.CTk):
                 try:
                     self._record_file_status(fp, "Polish Pass", "running")
                     _before_pass = list(sorted_blocks)
+                    _polish_status = {}
                     sorted_blocks = self._polish_pass(
                         sorted_blocks, _tgt_lang,
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), src_map=src_blocks,
                         analysis_result=_analysis_result,
-                        locked_terms=_locked_terms_for(fp))
+                        locked_terms=_locked_terms_for(fp),
+                        status_out=_polish_status)
+                    _pass_status["Polish"] = dict(_polish_status)
                     if self._stop_flag:
                         break
-                    _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
+                    if _polish_status.get("status") == "completed":
+                        _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Polish Pass hatası: {e}", "warn")
             if (self.native_var.get() and sorted_blocks
@@ -23537,6 +23619,7 @@ class App(ctk.CTk):
                             self._log(f"Critic Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
                             _critic_change_log = []
+                            _critic_status = {}
                             pp_blocks = ht.critic_pass_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
@@ -23549,10 +23632,13 @@ class App(ctk.CTk):
                                 token_callback=self._token_callback_for_model(
                                     self._helper_api_model("critic")),
                                 cancel_context=self.__dict__.get(
-                                    "_helper_request_canceller"))
+                                    "_helper_request_canceller"),
+                                status_out=_critic_status)
+                            _pass_status["Critic"] = dict(_critic_status)
                             if self._stop_flag:
                                 break
-                            _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
+                            if _critic_status.get("status") == "completed":
+                                _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
                             self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
                             self._record_file_status(
@@ -23560,14 +23646,18 @@ class App(ctk.CTk):
                             self._set_status(f"Doğallaştırma: {fname}")
                             self._log(f"Polish Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
+                            _polish_status = {}
                             pp_blocks = self._polish_pass(pp_blocks, tgt, self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
                                                           src_map=_src_map_from_cues(cues),
                                                           analysis_result=_full_analysis,
-                                                          locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                                                          locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                                                          status_out=_polish_status)
+                            _pass_status["Polish"] = dict(_polish_status)
                             if self._stop_flag:
                                 break
-                            _record_pass_change(_pass_trace, "Polish", _before_pass, pp_blocks, _pass_history)
-                            self._log("Polish Pass tamamlandı", "ok")
+                            if _polish_status.get("status") == "completed":
+                                _record_pass_change(_pass_trace, "Polish", _before_pass, pp_blocks, _pass_history)
+                                self._log("Polish Pass tamamlandı", "ok")
                         if self.native_var.get() and pp_blocks:
                             self._record_file_status(
                                 filepath, "Native Okuyucu", "running")
