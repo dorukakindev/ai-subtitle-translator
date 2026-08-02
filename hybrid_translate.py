@@ -1242,8 +1242,8 @@ def update_batch_session(session: dict, filepath: str, status: str,
 
 def update_recovered_batch_session(batch_id: str, filepath: str, status: str,
                                    out_path: str = None) -> bool:
-    """Persist a resumed batch's terminal state in its original session."""
-    if status not in ("completed", "failed"):
+    """Persist a recovered batch link or terminal state in its original session."""
+    if status not in ("submitted", "completed", "failed"):
         return False
     root = _session_dir()
     if not root.exists():
@@ -1254,7 +1254,10 @@ def update_recovered_batch_session(batch_id: str, filepath: str, status: str,
             with open(path, encoding="utf-8") as f:
                 session = json.load(f)
             entry = (session.get("files") or {}).get(str(filepath), {})
-            if entry.get("batch_id") == batch_id:
+            if (entry.get("batch_id") == batch_id
+                    or (status == "submitted"
+                        and entry.get("status") in {"pending", "failed", "submitted"}
+                        and not entry.get("batch_id"))):
                 matches.append(session)
         except Exception:
             continue
@@ -11498,12 +11501,14 @@ def submit_batch(
             "input_file_id": uploaded.id,
             "base_url": base_url or "",
             "fmap_data": fmap_data,
+            "idempotency_key": intent_token,
         })
     batch = client.batches.create(
         input_file_id=uploaded.id,
         endpoint="/v1/chat/completions",
         completion_window="24h",
         metadata={"recovery_intent": intent_token},
+        extra_headers={"Idempotency-Key": intent_token},
     )
 
     try:

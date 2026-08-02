@@ -59,6 +59,7 @@ class ResumeLifecycleTest(unittest.TestCase):
 
             app._resume_batches.side_effect = resume_batches
             with patch.object(gui, "_batch_id_path", return_value=bid_path), \
+                 patch.object(gui, "_claim_translation_run_owner", return_value=True), \
                  patch.object(gui.threading, "Thread", _InlineThread):
                 gui.App._resume(app)
 

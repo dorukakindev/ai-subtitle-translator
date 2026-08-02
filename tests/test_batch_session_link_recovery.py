@@ -92,6 +92,28 @@ class BatchSessionLinkRecoveryTest(unittest.TestCase):
             self.assertEqual(entry["status"], "completed")
             self.assertEqual(entry["out_path"], str(root / "translated.srt"))
 
+    def test_orphan_reconcile_attaches_submitted_batch_to_failed_session(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.srt"
+            source.write_text("x", encoding="utf-8")
+            session = {
+                "input_dir": str(root),
+                "files": {str(source): {"status": "failed"}},
+            }
+            with patch.object(ht, "_session_dir", return_value=root):
+                ht._save_batch_session(session)
+                updated = ht.update_recovered_batch_session(
+                    "batch-orphan", str(source), "submitted",
+                    out_path=str(root / "translated.srt"),
+                )
+                loaded = ht.load_batch_session(str(root))
+
+            self.assertTrue(updated)
+            entry = loaded["files"][str(source)]
+            self.assertEqual(entry["status"], "submitted")
+            self.assertEqual(entry["batch_id"], "batch-orphan")
+
     def test_resume_dispatch_persists_hybrid_outcome(self):
         source = inspect.getsource(gui.App._resume_batches)
         self.assertIn("result_out=_resume_result", source)

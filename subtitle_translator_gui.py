@@ -22070,12 +22070,14 @@ class App(ctk.CTk):
                     "part_index": ci,
                     "input_file_id": up.id,
                     "recovery_intent": _intent_token,
+                    "idempotency_key": _intent_token,
                 })
                 batch = client.batches.create(
                     input_file_id=up.id,
                     endpoint="/v1/chat/completions",
                     completion_window="24h",
-                    metadata={"recovery_intent": _intent_token})
+                    metadata={"recovery_intent": _intent_token},
+                    extra_headers={"Idempotency-Key": _intent_token})
                 _created_batch_id = batch.id
                 batch_ids.append(batch.id)
                 mutate_batch_ids(_batch_id_path(), add=[batch.id])
@@ -22111,6 +22113,8 @@ class App(ctk.CTk):
                         client, _created_batch_id, self._log)
                     self._unregister_batch(_created_batch_id)
                     if _metadata_cancelled:
+                        if _intent_path is not None:
+                            _intent_path.unlink(missing_ok=True)
                         try:
                             mutate_batch_ids(_batch_id_path(), remove=[_created_batch_id])
                         except Exception:
@@ -22239,11 +22243,15 @@ class App(ctk.CTk):
                             match = remote
                             break
                     if match is None:
-                        self._log(
-                            f"[HATA] {run_id}: sağlayıcıda {part_index + 1}. parçanın "
-                            "uzak batch'i doğrulanamadı. Çift ücret riskine karşı yeniden "
-                            "gönderilmedi; niyet kaydı korundu.", "err")
-                        continue
+                        match = client.batches.create(
+                            input_file_id=input_file_id,
+                            endpoint="/v1/chat/completions",
+                            completion_window="24h",
+                            metadata={"recovery_intent": intent_token},
+                            extra_headers={
+                                "Idempotency-Key": str(
+                                    intent.get("idempotency_key") or intent_token)},
+                        )
                     batch_id = str(match.id)
                     atomic_write_json(
                         state_path(__file__, f"batch_fmap_{batch_id}.json"),
@@ -22298,10 +22306,15 @@ class App(ctk.CTk):
                             match = remote
                             break
                     if match is None:
-                        self._log(
-                            "[HATA] Sağlayıcıda yetim hybrid batch doğrulanamadı; "
-                            "çift ücret riskine karşı yeniden gönderilmedi.", "err")
-                        continue
+                        match = client.batches.create(
+                            input_file_id=input_file_id,
+                            endpoint="/v1/chat/completions",
+                            completion_window="24h",
+                            metadata={"recovery_intent": token},
+                            extra_headers={
+                                "Idempotency-Key": str(
+                                    intent.get("idempotency_key") or token)},
+                        )
                     batch_id = str(match.id)
                     atomic_write_json(ht._batch_fmap_path(batch_id), fmap_data)
                     mutate_batch_ids(_batch_id_path(), add=[batch_id])
@@ -22411,12 +22424,14 @@ class App(ctk.CTk):
                         "part_index": part_index,
                         "input_file_id": uploaded.id,
                         "recovery_intent": intent_token,
+                        "idempotency_key": intent_token,
                     })
                     batch = client.batches.create(
                         input_file_id=uploaded.id,
                         endpoint="/v1/chat/completions",
                         completion_window="24h",
-                        metadata={"recovery_intent": intent_token})
+                        metadata={"recovery_intent": intent_token},
+                        extra_headers={"Idempotency-Key": intent_token})
                     created_id = batch.id
                     mutate_batch_ids(_batch_id_path(), add=[created_id])
                     self._register_batch(
@@ -22442,6 +22457,8 @@ class App(ctk.CTk):
                         if cancelled:
                             mutate_batch_ids(_batch_id_path(), remove=[created_id])
                             self._unregister_batch(created_id)
+                            if intent_path is not None:
+                                intent_path.unlink(missing_ok=True)
                     break
                 finally:
                     jpath.unlink(missing_ok=True)
