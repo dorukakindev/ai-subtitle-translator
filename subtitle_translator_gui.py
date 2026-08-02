@@ -442,13 +442,16 @@ except Exception:
 BG      = "#101012"
 PANEL   = "#17171a"
 CARD    = "#1e1e22"
+CARD_HOVER = "#24242a"
 BORDER  = "#2b2b31"
+BORDER_SOFT = "#242429"
 FG      = "#e6e6e9"
 FG2     = "#96969e"
 FG_DIS  = "#6f6f78"
 
 ACCENT       = "#4a7ebb"
 ACCENT_HOVER = "#3d6aa3"
+ACCENT_SOFT  = "#1d2a3b"
 INFO_BLUE    = "#668bb5"
 TEAL         = "#4f9993"
 POLISH       = "#8296ad"
@@ -8675,21 +8678,41 @@ class App(ctk.CTk):
         self._sb = sb
 
         # Başlık
-        hdr = ctk.CTkFrame(sb, fg_color=ACCENT, corner_radius=10, height=56)
+        hdr = ctk.CTkFrame(
+            sb, fg_color=CARD, corner_radius=10, height=68,
+            border_width=1, border_color=BORDER)
         hdr.grid(row=0, column=0, sticky="ew", pady=(0,16))
-        hdr.grid_columnconfigure(0, weight=1)
+        hdr.grid_columnconfigure(1, weight=1)
         hdr.grid_propagate(False)
-        ctk.CTkLabel(hdr, text="🎬  Subtitle Translator",
-                     font=ctk.CTkFont("Segoe UI", 15, "bold"),
-                     text_color="white").grid(row=0, column=0, pady=14, padx=14, sticky="w")
+        ctk.CTkFrame(
+            hdr, width=4, corner_radius=3, fg_color=ACCENT,
+        ).grid(row=0, column=0, rowspan=2, sticky="ns", padx=(10, 10), pady=10)
+        ctk.CTkLabel(
+            hdr, text="SUBTITLE TRANSLATOR",
+            font=ctk.CTkFont("Segoe UI", 14, "bold"),
+            text_color=FG,
+        ).grid(row=0, column=1, pady=(13, 0), padx=(0, 12), sticky="sw")
+        ctk.CTkLabel(
+            hdr, text="CONTEXT-AWARE  /  ÇEVİRİ KONSOLU",
+            font=ctk.CTkFont("Consolas", 9),
+            text_color=INFO_BLUE,
+        ).grid(row=1, column=1, pady=(0, 13), padx=(0, 12), sticky="nw")
 
         r = 1
 
         def section(txt):
             nonlocal r
-            ctk.CTkLabel(sb, text=txt, font=ctk.CTkFont("Segoe UI", 11, "bold"),
-                         text_color=ACCENT).grid(row=r, column=0, sticky="w",
-                         padx=4, pady=(14,4)); r += 1
+            fr = ctk.CTkFrame(sb, fg_color="transparent")
+            fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(16, 5))
+            fr.grid_columnconfigure(1, weight=1)
+            ctk.CTkFrame(
+                fr, width=18, height=2, corner_radius=1, fg_color=ACCENT,
+            ).grid(row=0, column=0, sticky="w", padx=(0, 7))
+            ctk.CTkLabel(
+                fr, text=txt, font=ctk.CTkFont("Segoe UI", 10, "bold"),
+                text_color=FG2,
+            ).grid(row=0, column=1, sticky="w")
+            r += 1
 
         def lbl(txt, info=None):
             nonlocal r
@@ -9520,22 +9543,26 @@ class App(ctk.CTk):
         btn_row.grid_columnconfigure(1, weight=0)
         btn_row.grid_columnconfigure(2, weight=0)
         self.start_btn = ctk.CTkButton(
-            btn_row, text="▶  Çeviriyi Başlat", height=44,
+            btn_row, text="▶  ÇEVİRİYİ BAŞLAT", height=46,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            border_width=1,
+            border_color=_mix_hex_color(ACCENT, FG, 0.18),
             command=self._start)
         self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0,4))
         self.test_btn = ctk.CTkButton(
             btn_row, text="🧪", height=44, width=44,
             font=ctk.CTkFont("Segoe UI", 16),
-            fg_color=CARD, hover_color=BORDER,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER,
             command=self._test_translate)
         self.test_btn.grid(row=0, column=1, padx=(0,4), sticky="ew")
 
         ctk.CTkButton(
             btn_row, text="💲 Maliyet", height=44, width=60,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
-            fg_color=INFO_BLUE, hover_color=ACCENT_HOVER,
+            fg_color=ACCENT_SOFT, hover_color=ACCENT_HOVER,
+            border_width=1, border_color=INFO_BLUE,
             command=self._show_cost_estimate).grid(row=0, column=2, sticky="ew")
 
         # Bildirimler switch
@@ -9698,32 +9725,42 @@ class App(ctk.CTk):
         main.grid_rowconfigure(4, weight=1)
 
         # ── Stats kartları ────────────────────────────────────────────────────
-        sf = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
+        sf = ctk.CTkFrame(
+            main, fg_color=PANEL, corner_radius=12,
+            border_width=1, border_color=BORDER_SOFT)
         sf.grid(row=0, column=0, sticky="ew", pady=(0,10))
 
         stats = [
-            ("📄 Toplam Dosya", "stat_files",  FG),
-            ("📊 Toplam Satır", "stat_blocks", FG),
-            ("✓ Tamamlanan",   "stat_done",   GREEN),
-            ("✗ Hatalı",       "stat_fail",   RED),
-            ("💾 TM Vuruş",     "stat_tm",     INFO_BLUE),
-            ("💰 Token",        "stat_tokens", YELLOW),
+            ("DOSYA",       "stat_files",  FG),
+            ("SATIR",       "stat_blocks", FG),
+            ("TAMAMLANAN",  "stat_done",   GREEN),
+            ("HATALI",      "stat_fail",   RED),
+            ("TM VURUŞ",    "stat_tm",     INFO_BLUE),
+            ("TOKEN",       "stat_tokens", YELLOW),
         ]
         sf.grid_columnconfigure((0,1,2,3,4,5), weight=1)
         for i, (name, attr, color) in enumerate(stats):
-            c = ctk.CTkFrame(sf, fg_color=CARD, border_color=BORDER, border_width=1,
-                           corner_radius=8)
-            c.grid(row=0, column=i, padx=8, pady=16, sticky="nsew")
+            c = ctk.CTkFrame(
+                sf, fg_color=CARD, border_color=BORDER,
+                border_width=1, corner_radius=8)
+            c.grid(
+                row=0, column=i,
+                padx=(8 if i == 0 else 4, 8 if i == 5 else 4),
+                pady=12, sticky="nsew")
             c.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkFrame(
+                c, height=3, corner_radius=2, fg_color=color,
+            ).pack(fill="x", padx=10, pady=(8, 0))
 
             # Store reference for hover effects
             setattr(self, f"{attr}_frame", c)
 
             # Hover effect bindings
             def on_hover_enter(e, frame=c, attr=attr):
-                frame.configure(border_color=ACCENT, border_width=2)
+                frame.configure(fg_color=CARD_HOVER, border_color=ACCENT)
             def on_hover_leave(e, frame=c):
-                frame.configure(border_color=BORDER, border_width=1)
+                frame.configure(fg_color=CARD, border_color=BORDER)
 
             c.bind("<Enter>", on_hover_enter)
             c.bind("<Leave>", on_hover_leave)
@@ -9732,9 +9769,9 @@ class App(ctk.CTk):
             setattr(self, attr+"_var", var)
 
             lbl = ctk.CTkLabel(c, textvariable=var,
-                             font=ctk.CTkFont("Segoe UI", 26, "bold"),
+                             font=ctk.CTkFont("Segoe UI", 24, "bold"),
                              text_color=color)
-            lbl.pack(pady=(12,4))
+            lbl.pack(pady=(8,2))
 
             # Store label ref for animation
             setattr(self, f"{attr}_lbl", lbl)
@@ -9742,7 +9779,7 @@ class App(ctk.CTk):
             if attr == "stat_tokens":
                 self.stat_tokens_sub_var = ctk.StringVar(value=name)
                 ctk.CTkLabel(c, textvariable=self.stat_tokens_sub_var,
-                             font=ctk.CTkFont("Segoe UI", 10),
+                             font=ctk.CTkFont("Consolas", 9),
                              text_color=FG2).pack(pady=(0,4))
                 # Canvas for sparkline under token card
                 import tkinter as tk
@@ -9753,12 +9790,8 @@ class App(ctk.CTk):
                 self._token_sparkline_points = []
             else:
                 ctk.CTkLabel(c, text=name,
-                             font=ctk.CTkFont("Segoe UI", 10),
+                             font=ctk.CTkFont("Consolas", 9, "bold"),
                              text_color=FG2).pack(pady=(0,12))
-
-            if i < 5:
-                ctk.CTkFrame(sf, width=1, fg_color=BORDER).grid(
-                    row=0, column=i, sticky="nse", pady=12)
 
         # ── Progress ──────────────────────────────────────────────────────────
         pb_fr = ctk.CTkFrame(
@@ -9827,7 +9860,9 @@ class App(ctk.CTk):
         self.progress_file.grid_remove()  # Hidden until processing starts
 
         # ── İş panosu (çalışma sırasında dosya başı ilerleme) ─────────────────
-        self._job_board = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
+        self._job_board = ctk.CTkFrame(
+            main, fg_color=PANEL, corner_radius=12,
+            border_width=1, border_color=BORDER_SOFT)
         self._job_board.grid(row=2, column=0, sticky="ew", pady=(0,10))
         self._job_board.grid_columnconfigure(0, weight=1)
         self._job_board.grid_remove()
@@ -9850,7 +9885,9 @@ class App(ctk.CTk):
         self._job_rows: dict = {}   # filepath → {dot, phase, pb, frame}
 
         # ── Dosya listesi (per-file şema) ─────────────────────────────────────
-        self._file_list_outer = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
+        self._file_list_outer = ctk.CTkFrame(
+            main, fg_color=PANEL, corner_radius=12,
+            border_width=1, border_color=BORDER_SOFT)
         self._file_list_outer.grid(row=2, column=0, sticky="ew", pady=(0,10))
         self._file_list_outer.grid_columnconfigure(0, weight=1)
         self._file_list_outer.grid_remove()  # hidden until files loaded
@@ -9942,7 +9979,9 @@ class App(ctk.CTk):
         self._log_grip = grip
 
         # ── Log ───────────────────────────────────────────────────────────────
-        log_fr = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
+        log_fr = ctk.CTkFrame(
+            main, fg_color=PANEL, corner_radius=12,
+            border_width=1, border_color=BORDER_SOFT)
         self._log_frame = log_fr
         log_fr.grid(row=4, column=0, sticky="nsew")
         log_fr.grid_columnconfigure(0, weight=1)
@@ -9953,9 +9992,9 @@ class App(ctk.CTk):
         log_hdr.grid_columnconfigure(0, weight=1)
         log_hdr.grid_propagate(False)
         log_hdr.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(log_hdr, text="LOG",
-                     font=ctk.CTkFont("Segoe UI", 11, "bold"),
-                     text_color=FG2).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(log_hdr, text="OTURUM LOGU",
+                     font=ctk.CTkFont("Consolas", 10, "bold"),
+                     text_color=INFO_BLUE).grid(row=0, column=0, sticky="w")
         ctk.CTkButton(log_hdr, text="⬇ Alta git", width=82, height=26,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
@@ -9985,6 +10024,7 @@ class App(ctk.CTk):
 
         self.log_box = ctk.CTkTextbox(log_fr, font=ctk.CTkFont("Consolas", 11),
                                       fg_color=CARD, corner_radius=8,
+                                      border_width=1, border_color=BORDER,
                                       text_color=FG, wrap="word",
                                       activate_scrollbars=True)
         self.log_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=(6,12))
@@ -10074,7 +10114,9 @@ class App(ctk.CTk):
         default = normalize_schema_name(self.content_type_var.get())
         default_language = normalize_language_name(self.src_var.get())
         for fp in page_files:
-            row_fr = ctk.CTkFrame(self._file_rows_frame, fg_color=CARD, corner_radius=6)
+            row_fr = ctk.CTkFrame(
+                self._file_rows_frame, fg_color=CARD, corner_radius=6,
+                border_width=1, border_color=BORDER_SOFT)
             row_fr.pack(fill="x", padx=2, pady=(0, 3))
             row_fr.grid_columnconfigure(0, weight=1)
             name = Path(fp).name
@@ -11846,7 +11888,8 @@ class App(ctk.CTk):
                     row["pb"].set(value)
                     row["dot"].configure(text_color=row.get("color", FG2))
                     if row.get("state") != "running":
-                        row["frame"].configure(border_width=0)
+                        row["frame"].configure(
+                            border_width=1, border_color=BORDER_SOFT)
                 except Exception:
                     pass
 
@@ -12317,8 +12360,9 @@ class App(ctk.CTk):
                 if len(fname) > 46:
                     fname = "…" + fname[-43:]
 
-                row_fr = ctk.CTkFrame(self._job_rows_frame,
-                                      fg_color=CARD, corner_radius=6)
+                row_fr = ctk.CTkFrame(
+                    self._job_rows_frame, fg_color=CARD, corner_radius=6,
+                    border_width=1, border_color=BORDER_SOFT)
                 row_fr.pack(fill="x", padx=2, pady=(0, 3))
                 row_fr.grid_columnconfigure(1, weight=1)
 
@@ -12443,7 +12487,8 @@ class App(ctk.CTk):
                         previous["pb"].set(previous["value"])
                         previous["dot"].configure(
                             text_color=previous.get("color", ACCENT))
-                        previous["frame"].configure(border_width=0)
+                        previous["frame"].configure(
+                            border_width=1, border_color=BORDER_SOFT)
                 row["dot"].configure(text=dot_text, text_color=color)
                 row["phase"].configure(text=phase,  text_color=color)
                 row["pb"].configure(progress_color=color)
@@ -12472,7 +12517,8 @@ class App(ctk.CTk):
                                 pass
                         def _clear_flash(r=row):
                             try:
-                                r["frame"].configure(border_width=0)
+                                r["frame"].configure(
+                                    border_width=1, border_color=BORDER_SOFT)
                             except Exception:
                                 pass
                         self.after(150, _bright_flash)
