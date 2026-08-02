@@ -2443,6 +2443,8 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
+    r"\b(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|edit(?:ed|or)?|"
+    r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
     r"\bçevir(?:i|en)\s*:\s*\S|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
@@ -2656,6 +2658,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         position_tags_removed += removed
         hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
         value = value.translate(_DELIVERY_HAT_MAP).strip()
+        if not value:
+            continue
         if _is_delivery_sdh_only(value):
             sdh_removed += 1
             continue
@@ -7217,7 +7221,8 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     return lines
 
 
-def _subtitle_delivery_audit(source_path: str, output_path: str) -> dict:
+def _subtitle_delivery_audit(source_path: str, output_path: str,
+                             target_language="Turkish") -> dict:
     audit = {
         "source_path": str(source_path or ""),
         "output_path": str(output_path or ""),
@@ -7269,10 +7274,19 @@ def _subtitle_delivery_audit(source_path: str, output_path: str) -> dict:
         len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
     hatted_letters = sum(
         sum(text.count(char) for char in "âîûÂÎÛ") for text in output_texts)
+    delivery_signatures = sum(
+        bool(_DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip()))
+        for _idx, _ts, text in output)
+    expected_signatures = 0
+    if (output_dialogue and normalize_language_name(
+            target_language, allow_auto=False) == "Turkish"):
+        expected_signatures = 2 + bool(
+            _delivery_middle_signature_slot(output_dialogue))
+    signature_mismatch = delivery_signatures != expected_signatures
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
-        hatted_letters,
+        hatted_letters, signature_mismatch,
     ))
     audit.update({
         "status": "review" if needs_review else "ok",
@@ -7288,9 +7302,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str) -> dict:
         "residual_sdh_cues": residual_sdh_cues,
         "residual_position_tags": residual_position_tags,
         "hatted_letters": hatted_letters,
-        "delivery_signatures": sum(
-            bool(_DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip()))
-            for _idx, _ts, text in output),
+        "delivery_signatures": delivery_signatures,
+        "expected_delivery_signatures": expected_signatures,
+        "signature_mismatch": signature_mismatch,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
     })
@@ -7339,6 +7353,8 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("residual_position_tags", "Kalan konum kodları"),
         ("hatted_letters", "Şapkalı harfler"),
         ("delivery_signatures", "discord: ceviri2 imzaları"),
+        ("expected_delivery_signatures", "Beklenen discord imzası"),
+        ("signature_mismatch", "discord imza sayısı hatası"),
         ("source_sha256", "Kaynak SHA-256"),
         ("output_sha256", "Çıktı SHA-256"),
     ):
@@ -18195,7 +18211,8 @@ class App(ctk.CTk):
                     row["timing"] = self._file_timing_snapshot(source_path)
                 row["feature_audit"] = _quality_feature_audit(row, snapshot)
                 row["delivery_audit"] = _subtitle_delivery_audit(
-                    row.get("source_path", ""), row.get("output_path", ""))
+                    row.get("source_path", ""), row.get("output_path", ""),
+                    self.tgt_var.get())
                 report_rows.append(row)
             with self._token_lock:
                 tok = self._token_total

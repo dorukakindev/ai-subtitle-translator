@@ -95,6 +95,29 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("opensubtitles.org", joined)
         self.assertIn("Gerçek diyalog.", joined)
 
+    def test_single_line_subtitle_credit_is_removed(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Subtitles: Some_User"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Gerçek diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        joined = "\n".join(text for _idx, _ts, text in result)
+        self.assertNotIn("Some_User", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
+    def test_position_only_cue_is_dropped_instead_of_becoming_missing(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", r"{\pos(357,422)}"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Gerçek diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        texts = [text for _idx, _ts, text in result]
+        self.assertNotIn("", texts)
+        self.assertNotIn("[ÇEVİRİ EKSİK]", texts)
+        self.assertNotIn("1", {str(idx) for idx, _ts, _text in result})
+
     def test_source_script_credit_translated_by_model_is_removed(self):
         blocks = [
             (
@@ -313,6 +336,28 @@ class UploadReadyFinalizationTest(unittest.TestCase):
                          ["0", "1", "2", "3", "4", "5", "6"])
         self.assertEqual(audit["status"], "ok")
         self.assertEqual(audit["delivery_signatures"], 3)
+
+    def test_delivery_audit_rejects_missing_required_signatures(self):
+        source_blocks = [
+            ("1", "00:00:10,000 --> 00:00:12,000", "One."),
+            ("2", "00:00:18,000 --> 00:00:20,000", "Two."),
+        ]
+        untranslated_delivery = [
+            ("1", "00:00:10,000 --> 00:00:12,000", "Bir."),
+            ("2", "00:00:18,000 --> 00:00:20,000", "Iki."),
+        ]
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source_blocks, "English")
+            gui.write_srt(output_path, untranslated_delivery, "English")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "review")
+        self.assertEqual(audit["delivery_signatures"], 0)
+        self.assertEqual(audit["expected_delivery_signatures"], 3)
+        self.assertTrue(audit["signature_mismatch"])
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["extra_dialogue_ids"], [])
 

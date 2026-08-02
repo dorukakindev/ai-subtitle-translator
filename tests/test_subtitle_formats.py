@@ -403,6 +403,25 @@ class GetSubtitleFilesTest(unittest.TestCase):
 
             self.assertEqual(names, sorted(kept))
 
+    def test_delivery_and_recovery_backups_are_never_reingested(self):
+        from subtitle_formats import get_subtitle_files
+        with tempfile.TemporaryDirectory() as d:
+            generated = (
+                "episode.upload-ready-20260731.bak.srt",
+                "episode.season-canon.bak.srt",
+                "episode.pre-repair.bak.srt",
+                "episode.pre-repair.2.bak.srt",
+            )
+            for name in generated:
+                Path(d, name).write_text("", encoding="utf-8")
+            Path(d, "episode.srt").write_text("", encoding="utf-8")
+
+            names = [
+                Path(path).name for path in get_subtitle_files(d, recursive=True)
+            ]
+
+            self.assertEqual(names, ["episode.srt"])
+
     def test_generated_outputs_excluded_in_nonrecursive_scan(self):
         from subtitle_formats import get_subtitle_files
         with tempfile.TemporaryDirectory() as d:

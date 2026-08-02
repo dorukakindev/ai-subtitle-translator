@@ -26,7 +26,7 @@ _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 _SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _SOURCE_EMPTY_OVERRIDE = re.compile(r'\{\}')
 _GENERATED_SUBTITLE_NAME_RE = re.compile(
-    r'(?:\.tr|\.partial|\.wave[12]of2|\.postprocess(?:\.\d+)?\.bak)\.srt$',
+    r'(?:\.tr|\.partial|\.wave[12]of2)\.srt$|\.bak\.srt$',
     re.IGNORECASE,
 )
 _LEGACY_DETECT_ENCODINGS = {
