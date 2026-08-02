@@ -6073,15 +6073,21 @@ def _source_positions_for_delivery_span(source_rows: list, output_bounds: tuple,
         if pos in used or not row[3] or row[3][0] != out_start:
             continue
         positions = []
+        previous_end = None
         for cursor in range(pos, len(source_rows)):
             if cursor in used:
                 break
             if not source_rows[cursor][3]:
                 break
             start, end = source_rows[cursor][3]
+            if previous_end is not None:
+                gap_ms = start - previous_end
+                if not 0 <= gap_ms <= MERGE_MAX_GAP_MS:
+                    break
             if start < out_start or end > out_end:
                 break
             positions.append(cursor)
+            previous_end = end
             if end == out_end:
                 return positions
             if end > out_end:
@@ -7120,22 +7126,8 @@ def _quarantine_incomplete_final(out_path) -> Path | None:
 def _existing_output_is_complete(out_blocks, source_cues) -> bool:
     if not out_blocks or _blocks_have_translation_failures(out_blocks):
         return False
-    translated_ids = {
-        str(idx) for idx, _ts, text in out_blocks
-        if str(text or "").strip()
-        and not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
-    }
-    translated_spans = []
-    for _idx, ts, text in out_blocks:
-        if (not str(text or "").strip()
-                or _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())):
-            continue
-        try:
-            translated_spans.append(_srt_timestamp_bounds(ts))
-        except Exception:
-            pass
-    required_ids = set()
-    required_spans = []
+    source_rows = []
+    required_positions = set()
     for cue in source_cues or []:
         if hasattr(cue, "index") and not callable(getattr(cue, "index")):
             idx = cue.index
@@ -7150,21 +7142,42 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
             except (TypeError, ValueError):
                 continue
         value = str(text or "")
+        bounds = None
+        if ts:
+            try:
+                bounds = _srt_timestamp_bounds(ts)
+            except Exception:
+                pass
+        source_rows.append((str(idx), str(ts or ""), value, bounds))
         if (_has_wordlike_text(_align_visible(value))
                 and not _src_is_sdh_only(value)):
-            required_ids.add(str(idx))
-            if ts:
-                try:
-                    required_spans.append((str(idx), _srt_timestamp_bounds(ts)))
-                except Exception:
-                    pass
-    if not required_ids:
+            required_positions.add(len(source_rows) - 1)
+    if not required_positions:
         return False
-    for _idx, (start, end) in required_spans:
-        if not any(out_start <= start and out_end >= end
-                   for out_start, out_end in translated_spans):
-            return False
-    return required_ids <= translated_ids or len(required_spans) == len(required_ids)
+    used = set()
+    for out_idx, ts, text in out_blocks:
+        if (not str(text or "").strip()
+                or _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())):
+            continue
+        try:
+            bounds = _srt_timestamp_bounds(ts)
+        except Exception:
+            bounds = None
+        positions = (
+            _source_positions_for_delivery_span(source_rows, bounds, used)
+            if bounds else [])
+        if positions:
+            used.update(positions)
+            continue
+        id_pos = next((
+            pos for pos, (source_idx, _source_ts, _source_text, source_bounds)
+            in enumerate(source_rows)
+            if pos not in used and source_idx == str(out_idx)
+            and source_bounds is None
+        ), None)
+        if id_pos is not None:
+            used.add(id_pos)
+    return required_positions <= used
 
 
 def _should_skip_existing_output(filepath, out_blocks, source_cues,

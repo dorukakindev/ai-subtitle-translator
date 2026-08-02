@@ -51,6 +51,20 @@ class SeasonCanonSelectionTest(unittest.TestCase):
         self.assertEqual(aligned[0][0], "10|11")
         self.assertEqual(source_map["10|11"], "I do not know.")
 
+    def test_broad_output_across_scene_gap_is_not_treated_as_merge(self):
+        source = [
+            ("10", "00:00:01,000 --> 00:00:02,000", "First."),
+            ("11", "00:00:10,000 --> 00:00:11,000", "Second."),
+        ]
+        output = [
+            ("1", "00:00:01,000 --> 00:00:11,000", "Only first."),
+        ]
+
+        aligned, unmapped = gui._align_delivery_blocks_to_source(source, output)
+
+        self.assertEqual(aligned, [])
+        self.assertEqual(unmapped, ["1"])
+
     def test_missing_canonical_rendering_is_selected(self):
         blocks = [("4", "00:00:01,000 --> 00:00:02,000", "Arabulucu geldi.")]
         source = {"4": "The Negotiator arrived."}

@@ -447,6 +447,26 @@ class PermanentQuotaFailureTest(unittest.TestCase):
 
         self.assertFalse(gui._existing_output_is_complete(output, source))
 
+    def test_broad_output_across_scene_gap_is_not_complete(self):
+        source = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "First."),
+            ("2", "00:00:10,000 --> 00:00:11,000", "Second."),
+        ]
+        output = [
+            ("1", "00:00:01,000 --> 00:00:11,000", "Only first."),
+        ]
+        self.assertFalse(gui._existing_output_is_complete(output, source))
+
+    def test_legitimate_fragment_merge_is_complete(self):
+        source = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "I do"),
+            ("2", "00:00:02,100 --> 00:00:03,000", "not know."),
+        ]
+        output = [
+            ("1", "00:00:01,000 --> 00:00:03,000", "Bilmiyorum."),
+        ]
+        self.assertTrue(gui._existing_output_is_complete(output, source))
+
     def test_user_retranslate_choice_overrides_hybrid_complete_skip(self):
         source_path = r"C:\input\film.srt"
         source = [SimpleNamespace(index=1, text="Hello.")]
