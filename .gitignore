@@ -5,7 +5,10 @@
 last_run_summary.json
 active_run.json
 batch_fmap_*.json
+batch_run_*.json
 batch_id.txt
+translation_run_owner.json
+translation_run_owner.json.lock
 _batch_sessions/
 .sync_checkpoint.json
 .sync_checkpoint.json.lock
