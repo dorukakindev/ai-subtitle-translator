@@ -264,6 +264,43 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertTrue(self.app._clear_sync_stage_ckpt("film.srt"))
         self.assertEqual(gui.load_sync_stage_store(self.stage_path)["entries"], {})
 
+    def test_partial_retry_reuses_sound_cues_and_marks_only_missing_chunk(self):
+        source = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Hello."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "Where are you?"),
+            ("3", "00:00:03,000 --> 00:00:04,000", "[MUSIC]"),
+        ]
+        partial = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "[ÇEVİRİ EKSİK]"),
+        ]
+        file_map = {
+            "chunk_0": [("1", "00:00:01,000", "00:00:02,000"),
+                        ("3", "00:00:03,000", "00:00:04,000")],
+            "chunk_25": [("2", "00:00:02,000", "00:00:03,000")],
+        }
+        requests = [
+            _req("chunk_0", ["Hello.", "[MUSIC]"]),
+            _req("chunk_25", ["Where are you?"]),
+        ]
+        requests[0]["body"]["messages"][1]["content"] = json.dumps({
+            "tr": [{"i": "1", "t": "Hello."},
+                   {"i": "3", "t": "[MUSIC]"}]})
+        requests[1]["body"]["messages"][1]["content"] = json.dumps({
+            "tr": [{"i": "2", "t": "Where are you?"}]})
+
+        raw_map, recovered, missing = gui._partial_retry_raw_map(
+            partial, file_map, source)
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(missing, 1)
+        self.assertEqual(
+            gui._chunk_response_retry_reason(raw_map["chunk_0"], requests[0]),
+            "")
+        self.assertEqual(
+            gui._chunk_response_retry_reason(raw_map["chunk_25"], requests[1]),
+            "hata_line")
+
     def test_hybrid_flow_wires_stage_checkpoint_around_quality_passes(self):
         source = inspect.getsource(gui.App._run_sync_hybrid)
 

@@ -6835,6 +6835,54 @@ def _partial_output_path(out_path) -> Path:
     return path.with_name(f"{path.stem}.partial{path.suffix}")
 
 
+def _partial_retry_raw_map(partial_blocks, file_map: dict, source_cues) -> tuple:
+    source_map = {}
+    for cue in source_cues or []:
+        try:
+            if hasattr(cue, "text"):
+                idx = str(cue.index)
+                ts = f"{cue.start} --> {cue.end}"
+                text = str(cue.text or "")
+            else:
+                idx, ts, text = str(cue[0]), str(cue[1]), str(cue[2] or "")
+            source_map[idx] = (ts.replace(".", ","), text)
+        except Exception:
+            continue
+    partial_map = {
+        str(idx): (str(ts).replace(".", ","), str(text or ""))
+        for idx, ts, text in (partial_blocks or [])
+        if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
+    }
+    raw_map = {}
+    recovered = missing = 0
+    for cid, chunk_info in (file_map or {}).items():
+        items = []
+        for idx, start, end in chunk_info:
+            cue_id = str(idx)
+            expected_ts = f"{start} --> {end}".replace(".", ",")
+            existing = partial_map.get(cue_id)
+            if existing and existing[0] == expected_ts and existing[1].strip():
+                text = existing[1]
+                if _blocks_have_translation_failures(
+                        [(cue_id, expected_ts, text)]):
+                    text = "[HATA]"
+                    missing += 1
+                else:
+                    recovered += 1
+            else:
+                source_ts, source_text = source_map.get(cue_id, ("", ""))
+                if (source_ts == expected_ts
+                        and (_src_is_sdh_only(source_text)
+                             or _is_delivery_credit(source_text))):
+                    text = "[MÜZİK]"
+                else:
+                    text = "[HATA]"
+                    missing += 1
+            items.append({"i": cue_id, "t": text})
+        raw_map[str(cid)] = json.dumps(items, ensure_ascii=False)
+    return raw_map, recovered, missing
+
+
 def _quarantine_incomplete_final(out_path) -> Path | None:
     path = Path(out_path)
     if not path.exists():
@@ -10650,7 +10698,7 @@ class App(ctk.CTk):
             "notify_desktop", "global_glossary_path",
             "chunk_size", "context_lines", "lookahead_lines", "max_workers",
             "temperature", "max_retry", "scene_gap_seconds",
-            "crash_resume", "resume_origin_run_id",
+            "crash_resume", "resume_origin_run_id", "auto_retry_repair_only",
         )
         result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
         result["helper_models"] = dict(snapshot.get("helper_models") or {})
@@ -11702,6 +11750,14 @@ class App(ctk.CTk):
         self._content_type_preflight_done = True
         self._file_integrity_preflight_done = False
         self._auto_retry_continuation = True
+        retry_settings = copy.deepcopy(
+            dict(record.get("settings") or snapshot))
+        retry_settings["crash_resume"] = True
+        retry_settings["auto_retry_repair_only"] = True
+        retry_settings["resume_origin_run_id"] = str(
+            retry_settings.get("resume_origin_run_id")
+            or record.get("run_id") or "")
+        self._resume_snapshot_override = retry_settings
         attempt_no = max(self._auto_retry_attempts[path] for path in failed)
         self._log(
             f"{len(failed)} başarısız/eksik dosya otomatik yeniden denenecek "
@@ -12351,7 +12407,7 @@ class App(ctk.CTk):
                     "main_model_name",
                     "main_api_base_url", "backup_raw", "ext_project_path",
                     "notify_desktop",
-                    "crash_resume", "resume_origin_run_id",
+                    "crash_resume", "resume_origin_run_id", "auto_retry_repair_only",
                     "chunk_size", "context_lines", "lookahead_lines",
                     "max_workers", "temperature", "max_retry",
                     "scene_gap_seconds",
@@ -19874,6 +19930,30 @@ class App(ctk.CTk):
             raw_map = self._load_sync_stage_ckpt(
                 filepath, _expected_source_hash,
                 {req["custom_id"] for req in batch_reqs})
+            _retry_snapshot = getattr(self, "_active_snapshot", {}) or {}
+            if _retry_snapshot.get("auto_retry_repair_only"):
+                _partial_path = _partial_output_path(out_path)
+                if (_partial_path.is_file()
+                        and _output_matches_source_fingerprint(
+                            report_dir, _partial_path, filepath)):
+                    try:
+                        _partial_raw, _partial_recovered, _partial_missing = (
+                            _partial_retry_raw_map(
+                                parse_subtitle(str(_partial_path)), fmap, cues))
+                    except Exception as exc:
+                        self._log(
+                            f"Kısmi çıktı kurtarması kullanılamadı: {exc}",
+                            "warn")
+                    else:
+                        if _partial_raw and _partial_missing:
+                            raw_map = _partial_raw
+                            self._log(
+                                f"Otomatik onarım: {_partial_recovered} sağlam cue "
+                                f"{_partial_path.name} dosyasından korundu; yalnız "
+                                f"{_partial_missing} eksik cue'nun chunk'ları "
+                                "yeniden çevrilecek.",
+                                "ok",
+                            )
             _ckpt_scope = str(Path(filepath).resolve())
             prefilled_keys = set()
             if not App._run_setting(self, "chain_ctx", "chain_ctx_var", True):
@@ -19885,14 +19965,19 @@ class App(ctk.CTk):
             lock      = threading.Lock()
             base_pct  = int((fi + 0.4) / n_files * 100)
 
-            _pending_api = max(total - len(raw_map), 0)
+            _pending_api = sum(
+                not raw_map.get(req["custom_id"])
+                or bool(_chunk_response_retry_reason(
+                    raw_map.get(req["custom_id"]), req))
+                for req in batch_reqs)
+            _recovered_api = max(total - _pending_api, 0)
             if raw_map and _pending_api == 0:
                 self._log(
                     f"Ana çeviri kurtarma kaydından hazır ({total}/{total} chunk) — "
                     "çeviri API'sine yeniden istek gönderilmeyecek", "ok")
             elif raw_map:
                 self._log(
-                    f"{len(raw_map)} chunk kurtarıldı; kalan {_pending_api} istek "
+                    f"{_recovered_api} chunk kurtarıldı; kalan {_pending_api} istek "
                     "gönderiliyor (sync+hybrid)...", "info")
             else:
                 self._log(f"{total} istek gönderiliyor (sync+hybrid)...", "info")
@@ -20381,9 +20466,8 @@ class App(ctk.CTk):
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
             self._record_file_status(filepath, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, tgt)
-            if not _has_missing:
-                _write_output_source_fingerprint(
-                    report_dir, out_path, _expected_source_hash)
+            _write_output_source_fingerprint(
+                report_dir, _write_path, _expected_source_hash)
             self._save_raw_backup(
                 _write_path, _raw_backup_blocks, _raw_map, tgt)
             if _has_missing:
@@ -21958,10 +22042,9 @@ class App(ctk.CTk):
                 source_cues=_src_cues)
             self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
-            if not _has_missing:
-                _write_output_source_fingerprint(
-                    report_dir, out_path,
-                    expected_source_hash or _file_content_sha256(fp))
+            _write_output_source_fingerprint(
+                report_dir, _write_path,
+                expected_source_hash or _file_content_sha256(fp))
             if _has_missing:
                 self._log(
                     f"{Path(fp).name}: {_hata_n} eksik çeviri kaldı; "

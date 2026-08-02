@@ -199,12 +199,15 @@ class AutomaticRetryTest(unittest.TestCase):
                 _content_type_preflight_done=False,
                 _file_integrity_preflight_done=True,
                 _auto_retry_continuation=False,
+                _resume_snapshot_override=None,
                 _log=lambda *args: None,
                 after=lambda delay, callback: scheduled.append((delay, callback)),
                 _start=lambda: None,
             )
             record = {
+                "run_id": "run-original",
                 "status": "kısmen tamamlandı",
+                "settings": {"auto_retry_files": True},
                 "files": {
                     str(done): {"status": "done"},
                     str(failed): {"status": "error"},
@@ -214,6 +217,12 @@ class AutomaticRetryTest(unittest.TestCase):
             self.assertEqual(stub._selected_files, [str(failed)])
             self.assertEqual(stub._auto_retry_attempts[str(failed)], 1)
             self.assertEqual(len(scheduled), 1)
+            self.assertTrue(stub._resume_snapshot_override["crash_resume"])
+            self.assertTrue(
+                stub._resume_snapshot_override["auto_retry_repair_only"])
+            self.assertEqual(
+                stub._resume_snapshot_override["resume_origin_run_id"],
+                "run-original")
 
     def test_failed_quality_row_cannot_be_promoted_to_done(self):
         source = str(Path("movie.srt"))

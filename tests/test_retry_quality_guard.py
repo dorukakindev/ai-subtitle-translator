@@ -93,6 +93,28 @@ class UpstreamProviderRecoveryTest(unittest.TestCase):
 
 
 class RetryQualityGuardTest(unittest.TestCase):
+    def test_source_backed_accented_names_with_turkish_suffix_do_not_retry(self):
+        request = UpstreamProviderRecoveryTest._req([
+            {"i": 1, "t": "Aloïs was our closest friend."},
+            {"i": 2, "t": "His name was Théodor."},
+        ])
+        raw = json.dumps([
+            {"i": 1, "t": "Aloïs'imizin sözünü dinledik."},
+            {"i": 2, "t": "Adı Théodor'du."},
+        ], ensure_ascii=False)
+
+        self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
+
+    def test_source_backed_accented_name_inside_html_tag_does_not_retry(self):
+        request = UpstreamProviderRecoveryTest._req([
+            {"i": 1, "t": "<i>Moïse.</i>"},
+        ])
+        raw = json.dumps([
+            {"i": 1, "t": "<i>Moïse.</i>"},
+        ], ensure_ascii=False)
+
+        self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
+
     def test_source_backed_name_in_neighbor_cue_does_not_retry_chunk(self):
         request = UpstreamProviderRecoveryTest._req([
             {"i": 1, "t": "Anselmo Suárez-Romero wrote it."},

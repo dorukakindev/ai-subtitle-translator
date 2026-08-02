@@ -5475,6 +5475,10 @@ _PRESERVED_TERM_TR_SUFFIXES = frozenset({
     "de", "da", "te", "ta", "den", "dan", "ten", "tan",
     "in", "ın", "un", "ün", "nin", "nın", "nun", "nün",
     "le", "la", "yle", "yla", "ler", "lar",
+    "im", "ım", "um", "üm", "imiz", "ımız", "umuz", "ümüz",
+    "imin", "ımın", "umun", "ümün", "imizin", "ımızın", "umuzun", "ümüzün",
+    "di", "dı", "du", "dü", "ti", "tı", "tu", "tü",
+    "ydi", "ydı", "ydu", "ydü", "dir", "dır", "dur", "dür",
 })
 
 
@@ -5524,7 +5528,8 @@ def non_turkish_leak_token(text: str, *, glossary_target: bool = False,
     retry/log messages so a false-positive vs. a real leak can be told apart
     without re-reading the whole line.
     """
-    value = normalize_latin_homoglyphs(str(text or ""))
+    value = normalize_latin_homoglyphs(_clean_source_text(str(text or "")))
+    source_text = _clean_source_text(str(source_text or ""))
     m = _FOREIGN_SCRIPT_RE.search(value)
     if m:
         return m.group(0)
