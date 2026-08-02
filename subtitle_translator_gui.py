@@ -23712,6 +23712,49 @@ class App(ctk.CTk):
                 cached = self._load_context_cache_for_file(
                     ht, filepath, tgt, file_src,
                     schema_dict=schema_dict, glossary=glossary)
+                if file_status == "submitted" and sess_entry.get("batch_id"):
+                    existing_bid = sess_entry["batch_id"]
+                    existing_out = sess_entry.get("out_path", "")
+                    fmap_status, fmap = ht.load_fmap_for_batch(
+                        existing_bid, detailed=True)
+                    if fmap_status != "ok":
+                        reason = {
+                            "missing": "fmap dosyası eksik",
+                            "invalid_json": "fmap JSON'u bozuk",
+                            "invalid_schema": "fmap şeması geçersiz",
+                            "valid_empty": "fmap geçerli fakat boş",
+                            "io_error": "fmap okunamadı",
+                        }.get(fmap_status, f"fmap durumu: {fmap_status}")
+                        self._log(
+                            f"{fname} — {reason} ({existing_bid}); batch yeniden "
+                            "gönderilmeyecek, kurtarma verisi korunacak.", "err")
+                        continue
+                    if cached:
+                        analysis_tuple = cached
+                        _analysis_ok = True
+                        self._log(
+                            f"{fname} — mevcut analiz önbelleğiyle batch'e "
+                            "yeniden bağlanılıyor", "info")
+                    else:
+                        analysis_tuple = ht.empty_analysis_result(
+                            _lang_iso639_1(file_src))
+                        _analysis_ok = False
+                        self._log(
+                            f"{fname} — analiz önbelleği yok; ücretli yardımcı "
+                            "analiz tekrarlanmadan batch'e yeniden bağlanılıyor", "warn")
+                    self._register_batch(existing_bid, openai_key, b_url)
+                    submitted.append((
+                        filepath, fname, existing_out, fmap,
+                        existing_bid, cues, analysis_tuple, _analysis_ok, file_src,
+                        stored_schema_name or schema_dict.get("name", ""),
+                        sess_entry.get("source_hash", ""),
+                        sess_entry.get("output_baseline")))
+                    if _analysis_ok:
+                        context, _examples, pronoun_map, *_rest = analysis_tuple
+                        self._stage_series_memory_from_analysis(
+                            filepath, context, pronoun_map, tgt)
+                    self._set_progress(int((fi + 1) / n_files * 40))
+                    continue
                 _analysis_ok = True
                 if cached:
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = cached
@@ -23807,44 +23850,6 @@ class App(ctk.CTk):
 
                 analysis_tuple = (context, char_examples, pronoun_map,
                                   character_styles, scene_emotions, idiom_map, cultural_refs)
-
-                # ── Zaten gönderilmiş (submitted) dosyalar için batch yeniden gönderme ──
-                if file_status == "submitted":
-                    existing_bid = sess_entry.get("batch_id")
-                    existing_out = sess_entry.get("out_path", "")
-                    if existing_bid:
-                        fmap_status, fmap = ht.load_fmap_for_batch(existing_bid, detailed=True)
-                        if fmap_status != "ok":
-                            reason = {
-                                "missing": "fmap dosyası eksik",
-                                "invalid_json": "fmap JSON'u bozuk",
-                                "invalid_schema": "fmap şeması geçersiz",
-                                "valid_empty": "fmap geçerli fakat boş",
-                                "io_error": "fmap okunamadı",
-                            }.get(fmap_status, f"fmap durumu: {fmap_status}")
-                            self._log(
-                                f"{fname} — {reason} ({existing_bid}); batch yeniden "
-                                "gönderilmeyecek, kurtarma verisi korunacak.", "err")
-                            continue
-                        self._log(
-                            f"{fname} — zaten gönderildi ({existing_bid}), yeniden bağlanılıyor",
-                            "info")
-                        self._register_batch(existing_bid, openai_key, b_url)
-                        _existing_schema_name = (
-                            session["files"].get(str(filepath), {}).get("schema_name")
-                            or schema_dict.get("name", "")
-                        )
-                        submitted.append((filepath, fname, existing_out, fmap,
-                                          existing_bid, cues, analysis_tuple, _analysis_ok, file_src,
-                                          _existing_schema_name,
-                                          sess_entry.get("source_hash", ""),
-                                          sess_entry.get("output_baseline")))
-                        if _analysis_ok:
-                            self._stage_series_memory_from_analysis(
-                                filepath, context, pronoun_map, tgt)
-                        self._set_progress(int((fi + 1) / n_files * 40))
-                        continue
-                    # batch_id yoksa yeniden gönder (aşağı düş)
 
                 # Batch isteği oluştur + gönder
                 system_prompt = ht.build_system_prompt(

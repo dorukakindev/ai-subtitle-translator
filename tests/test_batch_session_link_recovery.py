@@ -97,6 +97,16 @@ class BatchSessionLinkRecoveryTest(unittest.TestCase):
         self.assertIn("result_out=_resume_result", source)
         self.assertIn("update_recovered_batch_session", source)
 
+    def test_submitted_batch_reconnects_before_helper_analysis(self):
+        source = inspect.getsource(gui.App._run_hybrid)
+        reconnect = source.index(
+            'file_status == "submitted" and sess_entry.get("batch_id")')
+        analysis = source.index("ht.analyze_with_helper(")
+        self.assertLess(reconnect, analysis)
+        reconnect_block = source[reconnect:analysis]
+        self.assertIn("analiz tekrarlanmadan", reconnect_block)
+        self.assertIn("ht.empty_analysis_result", reconnect_block)
+
     def test_added_file_does_not_discard_submitted_entry(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
