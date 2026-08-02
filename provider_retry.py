@@ -25,6 +25,7 @@ RESPONSE_CHECKPOINT_VER = 1
 
 _RESPONSE_CHECKPOINT_LOCK = threading.Lock()
 _RESPONSE_CHECKPOINT = None
+_RESPONSE_CHECKPOINT_GENERATION = 0
 
 
 def _response_checkpoint_namespace_dir(root: Path, namespace: str) -> Path:
@@ -35,8 +36,9 @@ def _response_checkpoint_namespace_dir(root: Path, namespace: str) -> Path:
 def configure_response_checkpoint(path=None, namespace: str = "",
                                   allow_reads: bool = False,
                                   hit_callback=None) -> None:
-    global _RESPONSE_CHECKPOINT
+    global _RESPONSE_CHECKPOINT, _RESPONSE_CHECKPOINT_GENERATION
     with _RESPONSE_CHECKPOINT_LOCK:
+        _RESPONSE_CHECKPOINT_GENERATION += 1
         if path is None or not str(namespace).strip():
             _RESPONSE_CHECKPOINT = None
             return
@@ -47,7 +49,13 @@ def configure_response_checkpoint(path=None, namespace: str = "",
             "hit_callback": hit_callback,
             "hits": 0,
             "consumed": set(),
+            "generation": _RESPONSE_CHECKPOINT_GENERATION,
         }
+
+
+def _response_checkpoint_snapshot() -> dict:
+    with _RESPONSE_CHECKPOINT_LOCK:
+        return dict(_RESPONSE_CHECKPOINT or {})
 
 
 def clear_response_checkpoint_namespace(path, namespace: str) -> bool:
@@ -93,9 +101,11 @@ def _cached_chat_response(entry: dict):
 
 
 def _response_checkpoint_lookup(client, model: str, kwargs: dict,
-                                requested_format=None, checkpoint_label=""):
-    with _RESPONSE_CHECKPOINT_LOCK:
-        config = dict(_RESPONSE_CHECKPOINT or {})
+                                requested_format=None, checkpoint_label="",
+                                checkpoint_config=None):
+    config = (dict(checkpoint_config)
+              if checkpoint_config is not None
+              else _response_checkpoint_snapshot())
     if not config or not config.get("allow_reads"):
         return None
     key = _response_checkpoint_key(
@@ -115,16 +125,21 @@ def _response_checkpoint_lookup(client, model: str, kwargs: dict,
         return None
     callback = None
     hits = 0
+    valid = False
     with _RESPONSE_CHECKPOINT_LOCK:
         current = _RESPONSE_CHECKPOINT
         if (current and current.get("path") == root
-                and current.get("namespace") == namespace):
+                and current.get("namespace") == namespace
+                and current.get("generation") == config.get("generation")):
             if key in current.setdefault("consumed", set()):
                 return None
             current["consumed"].add(key)
             current["hits"] = int(current.get("hits", 0)) + 1
             hits = current["hits"]
             callback = current.get("hit_callback")
+            valid = True
+    if not valid:
+        return None
     if callback:
         try:
             callback(hits, str(entry.get("checkpoint_label") or checkpoint_label or ""))
@@ -139,9 +154,11 @@ def _response_checkpoint_lookup(client, model: str, kwargs: dict,
 
 
 def _response_checkpoint_save(client, model: str, kwargs: dict, response,
-                              requested_format=None, checkpoint_label="") -> None:
-    with _RESPONSE_CHECKPOINT_LOCK:
-        config = dict(_RESPONSE_CHECKPOINT or {})
+                              requested_format=None, checkpoint_label="",
+                              checkpoint_config=None) -> None:
+    config = (dict(checkpoint_config)
+              if checkpoint_config is not None
+              else _response_checkpoint_snapshot())
     if not config:
         return
     try:
@@ -163,12 +180,19 @@ def _response_checkpoint_save(client, model: str, kwargs: dict, response,
         "updated_at": time.time(),
         "checkpoint_label": str(checkpoint_label or ""),
     }
-    try:
-        entry_path = _response_checkpoint_namespace_dir(
-            root, namespace) / f"{key}.json"
-        atomic_write_json(entry_path, entry)
-    except Exception:
-        pass
+    with _RESPONSE_CHECKPOINT_LOCK:
+        current = _RESPONSE_CHECKPOINT
+        if (not current
+                or current.get("generation") != config.get("generation")
+                or current.get("path") != root
+                or current.get("namespace") != namespace):
+            return
+        try:
+            entry_path = _response_checkpoint_namespace_dir(
+                root, namespace) / f"{key}.json"
+            atomic_write_json(entry_path, entry)
+        except Exception:
+            pass
 
 
 def _status_code(exc) -> int | None:
@@ -459,6 +483,16 @@ class ProviderCooldownRegistry:
         if recovered:
             self._notify("circuit_recovered", 0.0)
 
+    def _clear_circuit_state(self, key: str) -> None:
+        with self._lock:
+            self._failure_counts.pop(key, None)
+            self._circuit_until.pop(key, None)
+            owner = self._probe_owners.pop(key, None)
+            probe_lock = self._probe_locks.get(key)
+            if (owner == threading.get_ident() and probe_lock
+                    and probe_lock.locked()):
+                probe_lock.release()
+
     def record_transient_failure(self, client, exc, model: str = "") -> float | None:
         status = _status_code(exc)
         text = str(exc or "").lower()
@@ -481,8 +515,7 @@ class ProviderCooldownRegistry:
             )
         )
         if status == 429 or permanent:
-            with self._lock:
-                self._failure_counts.pop(key, None)
+            self._clear_circuit_state(key)
             return None
         if not (
             status in {408, 500, 502, 503, 504, 529}
@@ -493,8 +526,7 @@ class ProviderCooldownRegistry:
             or "server error" in text
             or "internal error" in text
         ):
-            with self._lock:
-                self._failure_counts.pop(key, None)
+            self._clear_circuit_state(key)
             return None
         opened = False
         reopened = False
@@ -797,14 +829,17 @@ def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
 
 def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None,
                             checkpoint_label=""):
+    checkpoint_config = _response_checkpoint_snapshot()
     cached = _response_checkpoint_lookup(
         client, model, kwargs, requested_format=requested_format,
-        checkpoint_label=checkpoint_label)
+        checkpoint_label=checkpoint_label,
+        checkpoint_config=checkpoint_config)
     if cached is not None:
         return cached
     result = _chat_create_with_compat_uncached(
         client, model, kwargs, requested_format=requested_format)
     _response_checkpoint_save(
         client, model, kwargs, result, requested_format=requested_format,
-        checkpoint_label=checkpoint_label)
+        checkpoint_label=checkpoint_label,
+        checkpoint_config=checkpoint_config)
     return result

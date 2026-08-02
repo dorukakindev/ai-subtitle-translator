@@ -203,6 +203,61 @@ class ProviderCooldownRegistryTest(unittest.TestCase):
         self.assertIsNone(registry.record_transient_failure(client, permanent))
         self.assertIsNone(registry.record_transient_failure(client, temporary))
 
+    def test_rate_limit_probe_releases_transient_circuit_lock(self):
+        now = [100.0]
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: now[0],
+            sleeper=lambda delay: now.__setitem__(0, now[0] + delay),
+        )
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        class RateLimitError(RuntimeError):
+            status_code = 429
+
+        client = _client()
+        for _ in range(3):
+            registry.record_transient_failure(
+                client, TemporaryError("temporarily unavailable"),
+                model="gpt-5.4")
+        registry.before_request(client, model="gpt-5.4")
+
+        registry.record_transient_failure(
+            client, RateLimitError("rate limit"), model="gpt-5.4")
+
+        self.assertEqual(
+            registry.before_request(client, model="gpt-5.4"), 0.0)
+
+    def test_permanent_probe_releases_transient_circuit_lock(self):
+        now = [100.0]
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: now[0],
+            sleeper=lambda delay: now.__setitem__(0, now[0] + delay),
+        )
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        class PermanentError(RuntimeError):
+            status_code = 503
+
+        client = _client()
+        for _ in range(3):
+            registry.record_transient_failure(
+                client, TemporaryError("temporarily unavailable"),
+                model="gpt-5.4")
+        registry.before_request(client, model="gpt-5.4")
+
+        registry.record_transient_failure(
+            client,
+            PermanentError("model_not_found: No available channel for model gpt-5.4"),
+            model="gpt-5.4",
+        )
+
+        self.assertEqual(
+            registry.before_request(client, model="gpt-5.4"), 0.0)
+
     def test_failed_probe_reopens_circuit_with_visible_event(self):
         now = [100.0]
         events = []
@@ -475,6 +530,33 @@ class ResponseCheckpointTest(unittest.TestCase):
 
             self.assertEqual(result.choices[0].message.content, "new")
             resumed.chat.completions.create.assert_called_once()
+
+    def test_late_response_cannot_write_into_reconfigured_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            response = self._response("late old-run response")
+            client = self._mock_client(response)
+            provider_retry.configure_response_checkpoint(root, "same-origin")
+
+            def finish_after_new_run_started(*_args, **_kwargs):
+                provider_retry.configure_response_checkpoint(
+                    root, "same-origin", allow_reads=True)
+                return response
+
+            with mock.patch.object(
+                provider_retry,
+                "_chat_create_with_compat_uncached",
+                side_effect=finish_after_new_run_started,
+            ):
+                result = provider_retry.chat_create_with_compat(
+                    client,
+                    "gpt-5.4",
+                    {"messages": [{"role": "user", "content": "old run"}]},
+                    checkpoint_label="main_translation",
+                )
+
+            self.assertIs(result, response)
+            self.assertEqual(list(root.rglob("*.json")), [])
 
     def test_completed_run_clears_only_its_namespace(self):
         with tempfile.TemporaryDirectory() as tmpdir:
