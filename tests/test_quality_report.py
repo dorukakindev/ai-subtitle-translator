@@ -248,6 +248,21 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Native Okuyucu: çalıştı") for line in audit))
 
+    def test_consistency_failure_overrides_zero_change_trace(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_trace": {"Consistency": 0},
+            "pass_status": {"Consistency": {
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 1, "total_chunks": 1,
+            }},
+        }, {})
+
+        self.assertIn(
+            "Tutarlılık taraması: başarısız, 0/1 paket başarılı", audit)
+        self.assertFalse(any(
+            line.startswith("Tutarlılık taraması: çalıştı") for line in audit))
+
     def test_review_failure_is_not_reported_as_successful_zero_change(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",

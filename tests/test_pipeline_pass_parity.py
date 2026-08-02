@@ -90,6 +90,15 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertIn('"qc_auto": _qc_stats["qc_auto"]', src)
         self.assertIn('"qc": _qc_stats["qc"]', src)
 
+    def test_batch_consistency_status_is_initialized_and_reported(self):
+        for flow in (gui.App._write_results, gui.App._run_hybrid):
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                consistency_pos = src.find("ht.consistency_sweep(")
+                self.assertGreaterEqual(consistency_pos, 0)
+                self.assertLess(src.find("_pass_status = {}"), consistency_pos)
+                self.assertIn('_pass_status["Consistency"]', src)
+
     def test_final_semantic_checks_have_four_flow_parity(self):
         flows = [
             gui.App._run_sync_hybrid,

@@ -22758,15 +22758,25 @@ class App(ctk.CTk):
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
             self._record_file_status(fp, "Tutarlılık Taraması", "running")
             _before_consistency = list(sorted_blocks)
+            _consistency_status = {
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 1, "changed": 0,
+            }
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
                     _src_cues, sorted_blocks, log_fn=self._log,
                     locked_terms=_locked_terms_for(fp))
-            except Exception:
-                pass
-            _record_pass_change(
+                _consistency_status.update({
+                    "status": "completed", "successful_chunks": 1})
+            except Exception as exc:
+                _consistency_status.update({
+                    "status": "failed", "failed_chunks": 1,
+                    "error": str(exc)})
+                self._log(f"Tutarlılık taraması hatası: {exc}", "warn")
+            _consistency_status["changed"] = _record_pass_change(
                 _pass_trace, "Consistency", _before_consistency,
                 sorted_blocks, _pass_history)
+            _pass_status["Consistency"] = dict(_consistency_status)
             # Bağlam incelemesi — Batch'te zincirleme bağlam yoktur, bu geçiş telafi eder
             _review_needed = (
                 self.mode_var.get() == "batch"
@@ -23869,8 +23879,16 @@ class App(ctk.CTk):
                         filepath, f"Eksik çeviri: {_unresolved_missing}", "error")
                     continue
                 _raw_backup_blocks = list(_final_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
+                _pass_trace = {}
+                _pass_status = {}
+                _pass_history = {}
                 # Tutarlılık taraması (düz sync/batch + sync-hybrid ile paritede)
                 _cons_fixes = 0
+                _before_consistency = list(_final_blocks)
+                _consistency_status = {
+                    "status": "not_started", "successful_chunks": 0,
+                    "failed_chunks": 0, "total_chunks": 1, "changed": 0,
+                }
                 try:
                     self._record_file_status(
                         filepath, "Tutarlılık Taraması", "running")
@@ -23878,13 +23896,19 @@ class App(ctk.CTk):
                         cues, _final_blocks, log_fn=self._log,
                         locked_terms=self._get_locked_terms_dict(
                             filepath, tgt))
-                except Exception:
-                    pass
+                    _consistency_status.update({
+                        "status": "completed", "successful_chunks": 1})
+                except Exception as exc:
+                    _consistency_status.update({
+                        "status": "failed", "failed_chunks": 1,
+                        "error": str(exc)})
+                    self._log(f"Tutarlılık taraması hatası: {exc}", "warn")
+                _consistency_status["changed"] = _record_pass_change(
+                    _pass_trace, "Consistency", _before_consistency,
+                    _final_blocks, _pass_history)
+                _pass_status["Consistency"] = dict(_consistency_status)
                 _pre_pass = {str(b[0]): b[2] for b in _final_blocks}
                 _pass_fix, _qc_fixes, _qc_auto_fixes = 0, 0, 0
-                _pass_trace = {}
-                _pass_status = {}
-                _pass_history = {}
 
                 # Bağlam incelemesi — batch'te zincirleme bağlam yoktur (chunk'lar paralel),
                 # bu geçiş telafi eder. Düz-batch _write_results'te zaten var; hybrid-batch de
