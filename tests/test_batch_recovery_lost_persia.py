@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from unittest import mock
 
 import hybrid_translate as ht
 import subtitle_translator_gui as gui
+from app_state import STATE_DIR_ENV, state_path
 
 
 class BatchRecoveryLostPersiaTests(unittest.TestCase):
@@ -105,6 +107,73 @@ class BatchRecoveryLostPersiaTests(unittest.TestCase):
         self.assertFalse(gui._regular_batch_groups_ready(groups))
         groups["run"]["terminal"] = True
         self.assertTrue(gui._regular_batch_groups_ready(groups))
+
+    def test_manifest_identifies_only_unsent_parts(self):
+        manifest = {
+            "part_count": 3,
+            "parts": [{"part_index": index} for index in range(3)],
+        }
+        self.assertEqual(
+            gui._regular_manifest_missing_indices(manifest, {0, 2}), [1])
+
+    def test_resume_submits_only_manifest_parts_without_batch_ids(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.dict(os.environ, {STATE_DIR_ENV: tmpdir}):
+            source = Path(tmpdir) / "source.srt"
+            source.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n", encoding="utf-8")
+            output = Path(tmpdir) / "out.srt"
+            run_id = "run-safe"
+            context = {
+                "context_version": 1,
+                "api_key_fingerprint": hashlib.sha256(b"key").hexdigest(),
+                "main_api_base_url": "",
+            }
+            common = {
+                "output_dir": tmpdir,
+                "output_paths": {str(source): str(output)},
+                "source_languages": {str(source): "English"},
+                "schema_names": {str(source): "Film"},
+                "source_hashes": {str(source): gui._file_content_sha256(source)},
+                "output_baselines": {str(source): {"exists": False}},
+                "run_context": context,
+                "locked_terms_by_file": {str(source): {}},
+            }
+            parts = [
+                {"part_index": 0, "requests": [{"custom_id": "c0"}],
+                 "fmap": {"c0": [[1, "ts", str(source)]]}},
+                {"part_index": 1, "requests": [{"custom_id": "c1"}],
+                 "fmap": {"c1": [[2, "ts", str(source)]]}},
+            ]
+            manifest = {
+                "type": "regular_run", "run_id": run_id, "part_count": 2,
+                "parts": parts, "submitted": {"0": "batch_existing"}, **common,
+            }
+            manifest_path = gui._regular_batch_manifest_path(run_id)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            existing = {
+                "type": "regular", "run_id": run_id,
+                "run_manifest": str(manifest_path), "part_index": 0,
+                "part_count": 2, "requests": parts[0]["requests"],
+                "fmap": parts[0]["fmap"], **common,
+            }
+            state_path(gui.__file__, "batch_fmap_batch_existing.json").write_text(
+                json.dumps(existing), encoding="utf-8")
+
+            client = mock.MagicMock()
+            client.files.create.return_value = SimpleNamespace(id="file-new")
+            client.batches.create.return_value = SimpleNamespace(id="batch_new")
+            app = object.__new__(gui.App)
+            app._log = mock.MagicMock()
+            app._register_batch = mock.MagicMock()
+            app._unregister_batch = mock.MagicMock()
+            with mock.patch("openai.OpenAI", return_value=client):
+                expanded = app._submit_missing_regular_batch_parts(
+                    "key", ["batch_existing"])
+
+            self.assertEqual(expanded, ["batch_existing", "batch_new"])
+            self.assertTrue(state_path(
+                gui.__file__, "batch_fmap_batch_new.json").exists())
+            client.batches.create.assert_called_once()
 
 
 if __name__ == "__main__":

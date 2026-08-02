@@ -5280,6 +5280,32 @@ _ALIGN_NUMBER_RE = re.compile(r'\d{2,}')
 _ALIGN_PROPER_RE = re.compile(r'[A-ZÇĞİÖŞÜ][a-zçğıöşü]{3,}')
 
 
+def _regular_batch_manifest_path(run_id: str) -> Path:
+    safe_run_id = re.sub(r"[^A-Za-z0-9_-]", "", str(run_id or ""))
+    return state_path(__file__, f"batch_run_{safe_run_id}.json")
+
+
+def _regular_manifest_missing_indices(manifest: dict, seen_indices) -> list[int]:
+    try:
+        part_count = int(manifest.get("part_count", 0))
+    except (AttributeError, TypeError, ValueError):
+        return []
+    parts = manifest.get("parts")
+    if part_count < 1 or not isinstance(parts, list) or len(parts) != part_count:
+        return []
+    available = {
+        int(part.get("part_index")) for part in parts
+        if isinstance(part, dict) and str(part.get("part_index", "")).isdigit()
+    }
+    if available != set(range(part_count)):
+        return []
+    try:
+        seen = {int(index) for index in (seen_indices or ())}
+    except (TypeError, ValueError):
+        return []
+    return sorted(available - seen)
+
+
 def _saved_regular_requests(fmap_data: dict, saved_fmap: dict):
     requests = fmap_data.get("requests") if isinstance(fmap_data, dict) else None
     if not isinstance(requests, list) or not requests:
@@ -21950,6 +21976,32 @@ class App(ctk.CTk):
         locked_terms_by_file = {
             fp: self._get_locked_terms_dict(fp, tgt) for fp in valid_files
         }
+        manifest_path = _regular_batch_manifest_path(run_id)
+        manifest_data = {
+            "type": "regular_run",
+            "run_id": run_id,
+            "part_count": len(chunks),
+            "output_dir": output_dir,
+            "output_paths": output_paths,
+            "source_languages": _source_languages,
+            "schema_names": _effective_schema_names,
+            "source_hashes": source_hashes,
+            "output_baselines": output_baselines,
+            "run_context": run_context,
+            "locked_terms_by_file": locked_terms_by_file,
+            "parts": [
+                {
+                    "part_index": index,
+                    "requests": part,
+                    "fmap": {
+                        cid: [list(row) for row in info]
+                        for cid, info in _slice_file_map(file_map, part).items()
+                    },
+                }
+                for index, part in enumerate(chunks)
+            ],
+        }
+        atomic_write_json(manifest_path, manifest_data)
         batch_ids = []
         batch_runs = []
         for fp in valid_files:
@@ -21987,6 +22039,7 @@ class App(ctk.CTk):
                     "type": "regular",
                     "output_dir": output_dir,
                     "run_id": run_id,
+                    "run_manifest": str(manifest_path),
                     "part_index": ci,
                     "part_count": len(chunks),
                     "output_paths": output_paths,
@@ -22095,10 +22148,144 @@ class App(ctk.CTk):
         # polling hatasıyla yarıda kalan ÖDENMİŞ batch'ler Resume için KORUNUR (kalıcı kayıp önlenir).
         if not self._stop_flag and completed_bids and final_written:
             self._clear_batch_recovery(completed_bids)
+            manifest_path.unlink(missing_ok=True)
         self._set_running(False)   # #2: upload sonrası ilk poll'dan önce Stop'ta UI kilitlenmesin
+
+    def _submit_missing_regular_batch_parts(self, api_key, batch_ids):
+        from openai import OpenAI
+        import tempfile
+
+        expanded = list(dict.fromkeys(batch_ids))
+        runs = {}
+        for batch_id in list(expanded):
+            try:
+                data = json.loads(state_path(
+                    __file__, f"batch_fmap_{batch_id}.json").read_text(encoding="utf-8"))
+                if data.get("type", "regular") != "regular":
+                    continue
+                run_id = str(data.get("run_id") or "")
+                if not run_id:
+                    continue
+                run = runs.setdefault(run_id, {"seen": set()})
+                run["seen"].add(int(data.get("part_index", 0)))
+            except Exception:
+                continue
+
+        key_fingerprint = hashlib.sha256(
+            str(api_key).encode("utf-8")).hexdigest()
+        for run_id, run in runs.items():
+            manifest_path = _regular_batch_manifest_path(run_id)
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            missing = _regular_manifest_missing_indices(manifest, run["seen"])
+            if not missing:
+                continue
+            context = manifest.get("run_context")
+            if (manifest.get("type") != "regular_run"
+                    or not isinstance(context, dict)
+                    or context.get("api_key_fingerprint") != key_fingerprint):
+                self._log(
+                    f"[HATA] {run_id}: eksik batch parçaları güvenli çalışma "
+                    "bağlamıyla doğrulanamadı; yeniden gönderilmedi.", "err")
+                continue
+            if any(
+                _file_content_sha256(filepath) != expected
+                for filepath, expected in (manifest.get("source_hashes") or {}).items()
+            ):
+                self._log(
+                    f"[HATA] {run_id}: kaynak dosya değişmiş; eksik batch parçaları "
+                    "eski içerikle yeniden gönderilmedi.", "err")
+                continue
+            if any(
+                _file_state_signature(
+                    (manifest.get("output_paths") or {}).get(source_path, "")) != baseline
+                for source_path, baseline in (manifest.get("output_baselines") or {}).items()
+            ):
+                self._log(
+                    f"[HATA] {run_id}: mevcut çıktı değişmiş; eksik batch parçaları "
+                    "kullanıcı düzenlemesinin üzerine yazmamak için gönderilmedi.", "err")
+                continue
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url=str(context.get("main_api_base_url") or "") or None)
+            parts = {
+                int(part["part_index"]): part for part in manifest["parts"]}
+            for part_index in missing:
+                part = parts[part_index]
+                requests = part.get("requests") or []
+                saved_fmap = part.get("fmap") or {}
+                if not requests or not saved_fmap:
+                    self._log(
+                        f"[HATA] {run_id}: parça {part_index + 1} kurtarma verisi "
+                        "eksik; gönderilmedi.", "err")
+                    break
+                state_dir(__file__).mkdir(parents=True, exist_ok=True)
+                tmp = tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", suffix=".jsonl",
+                    prefix="batch_resume_input_", dir=state_dir(__file__), delete=False)
+                jpath = Path(tmp.name)
+                created_id = ""
+                metadata_ready = False
+                try:
+                    with tmp as handle:
+                        for request in requests:
+                            handle.write(json.dumps(request, ensure_ascii=False) + "\n")
+                    with open(jpath, "rb") as handle:
+                        uploaded = client.files.create(file=handle, purpose="batch")
+                    batch = client.batches.create(
+                        input_file_id=uploaded.id,
+                        endpoint="/v1/chat/completions",
+                        completion_window="24h")
+                    created_id = batch.id
+                    mutate_batch_ids(_batch_id_path(), add=[created_id])
+                    self._register_batch(
+                        created_id, api_key,
+                        str(context.get("main_api_base_url") or ""))
+                    fmap_data = {
+                        "type": "regular",
+                        "output_dir": manifest.get("output_dir", ""),
+                        "run_id": run_id,
+                        "run_manifest": str(manifest_path),
+                        "part_index": part_index,
+                        "part_count": int(manifest["part_count"]),
+                        "output_paths": manifest.get("output_paths") or {},
+                        "source_languages": manifest.get("source_languages") or {},
+                        "schema_names": manifest.get("schema_names") or {},
+                        "source_hashes": manifest.get("source_hashes") or {},
+                        "output_baselines": manifest.get("output_baselines") or {},
+                        "run_context": context,
+                        "locked_terms_by_file": manifest.get("locked_terms_by_file") or {},
+                        "requests": requests,
+                        "fmap": saved_fmap,
+                    }
+                    atomic_write_json(
+                        state_path(__file__, f"batch_fmap_{created_id}.json"), fmap_data)
+                    metadata_ready = True
+                    expanded.append(created_id)
+                    self._log(
+                        f"Eksik batch parçası yeniden gönderildi: "
+                        f"{part_index + 1}/{manifest['part_count']} ({created_id})", "ok")
+                except Exception as exc:
+                    self._log(
+                        f"Eksik batch parçası gönderilemedi "
+                        f"({part_index + 1}/{manifest.get('part_count')}): {exc}", "err")
+                    if created_id and not metadata_ready:
+                        cancelled = best_effort_cancel_remote_batch(
+                            client, created_id, self._log)
+                        if cancelled:
+                            mutate_batch_ids(_batch_id_path(), remove=[created_id])
+                            self._unregister_batch(created_id)
+                    break
+                finally:
+                    jpath.unlink(missing_ok=True)
+        return list(dict.fromkeys(expanded))
 
     def _resume_batches(self, api_key, batch_ids):
         import hybrid_translate as ht
+        batch_ids = App._submit_missing_regular_batch_parts(self, api_key, batch_ids)
         output_dir = self.output_var.get()
         src, tgt   = self.src_var.get(), self.tgt_var.get()
         current_key_fingerprint = hashlib.sha256(
@@ -22344,6 +22531,7 @@ class App(ctk.CTk):
                     locked_terms_by_file=group["locked_terms_by_file"])
                 if written:
                     regular_written_bids.extend(group["terminal_bids"])
+                    _regular_batch_manifest_path(run_id).unlink(missing_ok=True)
             finally:
                 App._unfreeze_run_variable_reads(self)
                 self._active_snapshot = copy.deepcopy(original_snapshot)
