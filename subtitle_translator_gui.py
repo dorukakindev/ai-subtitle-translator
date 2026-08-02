@@ -8735,28 +8735,7 @@ class App(ctk.CTk):
         sb.grid_columnconfigure(0, weight=1)
         self._sb = sb
 
-        # Başlık
-        hdr = ctk.CTkFrame(
-            sb, fg_color=CARD, corner_radius=10, height=68,
-            border_width=1, border_color=BORDER)
-        hdr.grid(row=0, column=0, sticky="ew", pady=(0,16))
-        hdr.grid_columnconfigure(1, weight=1)
-        hdr.grid_propagate(False)
-        ctk.CTkFrame(
-            hdr, width=4, corner_radius=3, fg_color=ACCENT,
-        ).grid(row=0, column=0, rowspan=2, sticky="ns", padx=(10, 10), pady=10)
-        ctk.CTkLabel(
-            hdr, text="SUBTITLE TRANSLATOR",
-            font=ctk.CTkFont("Segoe UI", 14, "bold"),
-            text_color=FG,
-        ).grid(row=0, column=1, pady=(13, 0), padx=(0, 12), sticky="sw")
-        ctk.CTkLabel(
-            hdr, text="CONTEXT-AWARE  /  ÇEVİRİ KONSOLU",
-            font=ctk.CTkFont("Consolas", 9),
-            text_color=INFO_BLUE,
-        ).grid(row=1, column=1, pady=(0, 13), padx=(0, 12), sticky="nw")
-
-        r = 1
+        r = 0
 
         def section(txt):
             nonlocal r
