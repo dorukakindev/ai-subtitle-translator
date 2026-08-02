@@ -217,8 +217,11 @@ class SeasonCanonRunRoutingTest(unittest.TestCase):
                     "Negotiator": "Müzakereci"
                 },
                 _series_mem_for=lambda *_args: (memory, 1, 1),
-                _maybe_semantic_reconciliation=lambda *args, **kwargs:
-                    semantic_calls.append((args, kwargs)) or 0,
+                _maybe_semantic_reconciliation=lambda *args, **kwargs: (
+                    semantic_calls.append((args, kwargs)),
+                    kwargs["status_out"].update(status="completed"),
+                    0,
+                )[-1],
                 _log=lambda *_args: None,
             )
 

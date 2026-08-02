@@ -3937,15 +3937,26 @@ def condense_fast_lines(
     src_map: dict = None,
     locked_terms: dict | None = None,
     cancel_context=None,
+    status_out: dict | None = None,
 ) -> tuple:
     """Okuma hızı sınırını aşan satırları, anlamı ve tonu koruyarak kısaltır.
     Profesyonel altyazıcının 'ekrana sığdırma' refleksini taklit eder.
     Returns (corrected_tr_blocks, n_condensed)."""
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     if not tr_blocks:
+        if status_out is not None:
+            status_out["status"] = "skipped"
         return tr_blocks, 0
 
     fast = find_fast_lines(tr_blocks, cps_limit)
     if not fast:
+        if status_out is not None:
+            status_out["status"] = "completed"
         if log_fn:
             log_fn("Okuma hızı: tüm satırlar sınır içinde ✓", "ok")
         return tr_blocks, 0
@@ -3957,6 +3968,8 @@ def condense_fast_lines(
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
     except Exception as e:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(e)})
         if log_fn:
             log_fn(f"Kısaltma pass bağlantı hatası: {e}", "err")
         return tr_blocks, 0
@@ -3966,9 +3979,15 @@ def condense_fast_lines(
     CHUNK_SIZE = 40
     total = 0
     reject_counts = {}
+    total_chunks = (len(fast) + CHUNK_SIZE - 1) // CHUNK_SIZE
+    successful_chunks = 0
+    cancelled = False
+    if status_out is not None:
+        status_out["total_chunks"] = total_chunks
 
     for chunk_i in range(0, len(fast), CHUNK_SIZE):
         if cancel_context is not None and cancel_context.is_cancelled():
+            cancelled = True
             break
         chunk = fast[chunk_i:chunk_i + CHUNK_SIZE]
         items = [{"id": fid, "text": txt, "max_chars": budget}
@@ -4009,13 +4028,14 @@ def condense_fast_lines(
                     token_callback(tot)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
-                continue
+                raise ValueError("empty_response")
             content = _extract_json_array(content, salvage_truncated=True)
             if not content:
-                continue
+                raise ValueError("response_not_array")
             fixes = json.loads(content)
             if not isinstance(fixes, list):
-                continue
+                raise ValueError("response_not_array")
+            successful_chunks += 1
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
@@ -4040,16 +4060,37 @@ def condense_fast_lines(
                         result[pos] = (old_idx, old_ts, short)
                         total += 1
         except RequestCancelled:
+            cancelled = True
             break
         except Exception as e:
             if log_fn:
                 log_fn(f"Kısaltma chunk hatası: {e}", "warn")
             continue
 
+    failed_chunks = max(0, total_chunks - successful_chunks)
+    pass_status = (
+        "cancelled" if cancelled
+        else "completed" if successful_chunks == total_chunks
+        else "partial" if successful_chunks
+        else "failed"
+    )
+    if status_out is not None:
+        status_out.update({
+            "status": pass_status,
+            "successful_chunks": successful_chunks,
+            "failed_chunks": failed_chunks,
+            "changed": total,
+        })
     if log_fn:
+        if failed_chunks:
+            log_fn(
+                f"Okuma hızı kısaltma tamamlanamadı: {successful_chunks}/{total_chunks} "
+                f"paket başarılı, {failed_chunks} paket başarısız",
+                "warn" if successful_chunks else "err",
+            )
         if total:
             log_fn(f"Okuma hızı: {total} satır kısaltıldı ✓", "ok")
-        else:
+        elif pass_status == "completed":
             log_fn("Okuma hızı: uygun kısaltma bulunamadı", "ok")
         if reject_counts:
             log_fn(f"Kısaltma: {sum(reject_counts.values())} öneri güvenlik filtresinden döndü "
@@ -7315,8 +7356,15 @@ def semantic_reconciliation_pass(
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
     progress_callback=None,
+    status_out: dict | None = None,
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     locked_terms = {
         str(source).strip(): str(target).strip()
         for source, target in (locked_terms or {}).items()
@@ -7359,6 +7407,8 @@ def semantic_reconciliation_pass(
         "reflow_recovered": 0,
         "details": [],
     }
+    if status_out is not None:
+        status_out["total_chunks"] = len(batches)
     result = list(tr_blocks or [])
     if log_fn and clusters:
         log_fn(
@@ -7367,11 +7417,22 @@ def semantic_reconciliation_pass(
             f"yaklaşık {len(batches)} ek API isteği",
             "warn" if coverage_pct >= 60.0 else "info",
         )
-    if not clusters or not api_key or not model:
+    if not clusters:
+        if status_out is not None:
+            status_out["status"] = "completed"
+        return result, stats
+    if not api_key or not model:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": "missing_api_config"})
         return result, stats
 
-    from openai import OpenAI
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url=base_url)
+    except Exception as exc:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(exc)})
+        raise
     validator_cues = _semantic_validator_cues(src_map, result, cues)
     before_reason_map = _semantic_reason_map(
         result, validator_cues, locked_terms, scene_gap_sec=scene_gap_sec)
@@ -7391,6 +7452,8 @@ def semantic_reconciliation_pass(
     all_cluster_ids = {cluster["cluster"] for cluster in clusters}
     processed_covered_ids = set()
     cancelled = False
+    successful_batches = 0
+    partial_batches = 0
     system_prompt = (
         f"You are the final bilingual subtitle semantic reconciler for {src_lang} to {tgt_lang}. "
         "Inspect each small cluster across neighboring cues. Correct only real meaning errors: "
@@ -7485,6 +7548,7 @@ def semantic_reconciliation_pass(
                 parsed = _salvage_json_objects(raw)
                 if not parsed:
                     raise ValueError("response_not_array")
+                partial_batches += 1
                 stats["details"].append({
                     "clusters": [c["cluster"] for c in batch],
                     "status": "partial_response",
@@ -7496,6 +7560,7 @@ def semantic_reconciliation_pass(
                         f"{len(parsed)} tamamlanmış küme doğrulanacak.", "warn")
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
+            successful_batches += 1
         except RequestCancelled:
             cancelled = True
             break
@@ -7805,8 +7870,28 @@ def semantic_reconciliation_pass(
         stats["details"].append({"status": "cancelled"})
         if log_fn:
             log_fn("Nihai anlam mutabakatÄ± durduruldu; kÄ±smi deÄŸiÅŸiklikler uygulanmadÄ±", "warn")
+        if status_out is not None:
+            status_out.update({
+                "status": "cancelled",
+                "successful_chunks": successful_batches,
+                "failed_chunks": max(0, len(batches) - successful_batches),
+                "changed": 0,
+            })
         return list(tr_blocks or []), stats
 
+    failed_batches = max(0, len(batches) - successful_batches)
+    pass_status = (
+        "completed" if successful_batches == len(batches) and not partial_batches
+        else "partial" if successful_batches
+        else "failed"
+    )
+    if status_out is not None:
+        status_out.update({
+            "status": pass_status,
+            "successful_chunks": successful_batches,
+            "failed_chunks": failed_batches,
+            "changed": int(stats.get("fixed", 0)),
+        })
     if log_fn:
         log_fn(
             f"Nihai anlam mutabakatı: {stats['clusters']} küme, "

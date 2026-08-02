@@ -341,6 +341,23 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         self.assertEqual(result, blocks)
         self.assertEqual(n, 0)
 
+    def test_total_api_failure_is_reported(self):
+        blocks = _b((1, "Memories geri döndü."))
+        src = _s(**{"1": "The Memories returned."})
+
+        status = {}
+        with patch("openai.OpenAI"), patch(
+                "subtitle_translator_gui._safe_chat_create",
+                side_effect=RuntimeError("provider unavailable")):
+            result, n = gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model",
+                locked_terms={"Memories": "Anılar"}, status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(n, 0)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["failed_chunks"], 1)
+
     def test_rejects_wrong_case_suffix_and_accepts_harmonized_suffix(self):
         bad = gui._validate_term_normalize_candidate(
             "Troy'un kitabı", "Truva'na kitabı", [("Troy", "Truva")])

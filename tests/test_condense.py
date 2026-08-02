@@ -6,6 +6,7 @@ _block_duration ve find_fast_lines.
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # hybrid_translate dış subtitle_localizer projesini import edebilir;
 # bu testler sadece saf fonksiyonları kullandığı için modülü doğrudan içe alıyoruz.
@@ -74,6 +75,24 @@ class FindFastLinesTest(unittest.TestCase):
         fast = ht.find_fast_lines(blocks, cps_limit=21.0)
         ids = [f[0] for f in fast]
         self.assertEqual(ids, ["1", "3"])
+
+
+class CondensePassStatusTest(unittest.TestCase):
+    def test_total_api_failure_is_not_reported_as_completed(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "A" * 60)]
+        status = {}
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create",
+                side_effect=RuntimeError("provider unavailable")):
+            result, changed = ht.condense_fast_lines(
+                blocks, "key", helper_model="model", status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(changed, 0)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["successful_chunks"], 0)
+        self.assertEqual(status["failed_chunks"], 1)
 
 
 if __name__ == "__main__":

@@ -6131,7 +6131,8 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
 
 def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, helper_url: str,
                            helper_model: str, log_fn=None,
-                           locked_terms: dict | None = None) -> tuple:
+                           locked_terms: dict | None = None,
+                           status_out: dict | None = None) -> tuple:
     """_mixed_term_autofix_plan'ın GÜVENLİ bulduğu (yalnızca çevrilmeden-kalmış-
     İngilizce-sızıntısı sınıfı) karışık-terim örneklerini yardımcı modelle düzeltir.
     Riskli/belirsiz durumlar (bkz. plan fonksiyonunun docstring'i) dokunulmadan
@@ -6139,9 +6140,17 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
 
     Saf modül fonksiyonu — App'e bağlı değil, çağıran helper_key/url/model'i
     kendi rolünden (ör. 'polish') çözüp geçirir. Döner: (yeni_blocks, düzeltilen_sayısı)."""
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     plan = _mixed_term_autofix_plan(
         sorted_blocks, src_map, locked_terms=locked_terms)
     if not plan:
+        if status_out is not None:
+            status_out["status"] = "completed"
         return sorted_blocks, 0
 
     by_idx_text = {str(idx): text for idx, _ts, text in sorted_blocks}
@@ -6153,14 +6162,22 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
         uniq_fixes = list(dict.fromkeys(fixes))
         items.append({"id": idx, "tr": text,
                      "fixes": [{"wrong": w, "correct": c} for w, c in uniq_fixes]})
-    if not items or not helper_key:
+    if not items:
+        if status_out is not None:
+            status_out["status"] = "completed"
+        return sorted_blocks, 0
+    if not helper_key:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": "missing_api_key"})
         return sorted_blocks, 0
 
     try:
         from openai import OpenAI as _OAI
-    except Exception:
+        client = _OAI(api_key=helper_key, base_url=helper_url)
+    except Exception as exc:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(exc)})
         return sorted_blocks, 0
-    client = _OAI(api_key=helper_key, base_url=helper_url)
 
     sys_prompt = (
         "Sen bir altyazı terim-tutarlılık editörüsün. Her satırda 'fixes' listesindeki "
@@ -6176,6 +6193,10 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
 
     result_map = {}
     CHUNK = 60
+    total_chunks = (len(items) + CHUNK - 1) // CHUNK
+    successful_chunks = 0
+    if status_out is not None:
+        status_out["total_chunks"] = total_chunks
     for cs in range(0, len(items), CHUNK):
         chunk = items[cs:cs + CHUNK]
         chunk_ids = {str(item["id"]) for item in chunk}
@@ -6189,15 +6210,16 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
                 temperature=0.2,
             )
             if not resp.choices:
-                continue
+                raise ValueError("empty_response")
             content = resp.choices[0].message.content or ""
             raw = _extract_json_array(content)
             if not raw.strip():
-                continue
+                raise ValueError("response_not_array")
             data = json.loads(raw)
+            if not isinstance(data, list):
+                raise ValueError("response_not_array")
+            successful_chunks += 1
         except Exception:
-            continue
-        if not isinstance(data, list):
             continue
         chunk_results = {}
         conflicting_ids = set()
@@ -6246,6 +6268,25 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
         if rejected:
             detail = ", ".join(f"{k}:{v}" for k, v in rejected_reasons.items())
             log_fn(f"⚠ Terim normalizasyonu: {rejected} öneri güvenlik filtresinden döndü ({detail})", "warn")
+    failed_chunks = max(0, total_chunks - successful_chunks)
+    pass_status = (
+        "completed" if successful_chunks == total_chunks
+        else "partial" if successful_chunks
+        else "failed"
+    )
+    if status_out is not None:
+        status_out.update({
+            "status": pass_status,
+            "successful_chunks": successful_chunks,
+            "failed_chunks": failed_chunks,
+            "changed": fixed_count,
+        })
+    if log_fn and failed_chunks:
+        log_fn(
+            f"Terim normalizasyonu tamamlanamadı: {successful_chunks}/{total_chunks} "
+            f"paket başarılı, {failed_chunks} paket başarısız",
+            "warn" if successful_chunks else "err",
+        )
     return new_blocks, fixed_count
 
 
@@ -7179,7 +7220,8 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         for title in (
                 "Tutarlılık taraması", "Critic Pass", "Polish Pass",
                 "Native Okuyucu", "QC", "Nihai Anlam Mutabakatı",
-                "Terim Normalizasyonu", "SDH temizleme", "Satır düzenleme"):
+                "Terim Normalizasyonu", "Okuma Hızı Kısaltma",
+                "SDH temizleme", "Satır düzenleme"):
             lines.append(f"{title}: kısmi onarım gereği atlandı")
         return lines
 
@@ -7206,6 +7248,8 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
          ("Final-Semantic",)),
         ("Terim Normalizasyonu", bool(snapshot.get("term_normalize")),
          ("Term-Normalize",)),
+        ("Okuma Hızı Kısaltma", bool(snapshot.get("condense")),
+         ("Condense",)),
         ("SDH temizleme", bool(snapshot.get("clean_sdh")), ("SDH",)),
         ("Satır düzenleme", bool(snapshot.get("linebreak")), ("Line-break",)),
     )
@@ -12531,6 +12575,7 @@ class App(ctk.CTk):
                             snapshot.get("output_dir", ""))
                         artifact_stem = _season_canon_artifact_stem(
                             slug, season, episode, source_path, run_id)
+                        semantic_status = {}
                         self._maybe_semantic_reconciliation(
                             output_path, src_map, output_blocks,
                             src_lang=self._effective_file_source_language(
@@ -12540,14 +12585,24 @@ class App(ctk.CTk):
                             target_coverage=0.0,
                             report_path=report_dir / (
                                 f"{artifact_stem}.sezon-anlam-mutabakati.txt"),
-                            raise_errors=True)
+                            raise_errors=True, status_out=semantic_status)
+                        if semantic_status.get("status") != "completed":
+                            raise RuntimeError(
+                                "sezon anlam denetimi tamamlanamadı: "
+                                f"{semantic_status.get('status', 'unknown')}")
                     if snapshot.get("term_normalize", True):
+                        term_status = {}
                         output_blocks, _ = _normalize_mixed_terms(
                             output_blocks, src_map,
                             self._helper_api_key("polish"),
                             self._helper_api_base_url("polish"),
                             self._helper_api_model("polish"),
-                            log_fn=self._log, locked_terms=locked_terms)
+                            log_fn=self._log, locked_terms=locked_terms,
+                            status_out=term_status)
+                        if term_status.get("status") not in {"completed", "skipped"}:
+                            raise RuntimeError(
+                                "sezon terim denetimi tamamlanamadı: "
+                                f"{term_status.get('status', 'unknown')}")
                     changes = [
                         (str(idx), before.get(str(idx), ""), text)
                         for idx, _ts, text in output_blocks
@@ -12936,11 +12991,24 @@ class App(ctk.CTk):
         _post_ui(self, _upd)
 
     def _maybe_condense(self, blocks, mm_k, mm_u, mm_m, tgt, src_map=None,
-                        locked_terms=None):
+                        locked_terms=None, status_out: dict | None = None):
         """condense_var açıksa CPS sınırını aşan satırları kısaltır. Aksi halde blocks aynen döner."""
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            })
         if not getattr(self, "condense_var", None) or not self.condense_var.get():
+            if status_out is not None:
+                status_out["status"] = "skipped"
             return blocks
         if not blocks or not mm_k:
+            if status_out is not None:
+                status_out.update({
+                    "status": "skipped" if not blocks else "failed",
+                    "error": "missing_api_key" if blocks else "",
+                })
             return blocks
         import hybrid_translate as ht
         try:
@@ -12957,14 +13025,21 @@ class App(ctk.CTk):
                     else self._update_tokens),
                 src_map=src_map,
                 locked_terms=locked_terms,
-                cancel_context=cancel_context)
+                cancel_context=cancel_context,
+                status_out=status_out)
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
+                if status_out is not None:
+                    status_out.update({"status": "cancelled", "changed": 0})
                 return blocks
             return new_blocks
         except RequestCancelled:
+            if status_out is not None:
+                status_out["status"] = "cancelled"
             return blocks
         except Exception as e:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(e)})
             self._log_exc("Kısaltma pass hatası", e)
             return blocks
 
@@ -16658,9 +16733,18 @@ class App(ctk.CTk):
                                        force=False, target_coverage=0.65,
                                        report_path=None, locked_terms=None,
                                        analysis_result=None,
-                                       raise_errors=False) -> int:
+                                       raise_errors=False,
+                                       status_out: dict | None = None) -> int:
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            })
         if ((not force and not self._semantic_reconcile_enabled())
                 or not src_clean_map or not blocks):
+            if status_out is not None:
+                status_out["status"] = "skipped"
             return 0
         try:
             import hybrid_translate as ht
@@ -16722,6 +16806,7 @@ class App(ctk.CTk):
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("critic")),
                 progress_callback=semantic_progress,
+                status_out=status_out,
                 **cancel_kwargs,
             )
             if self.__dict__.get("_stop_flag", False) or (
@@ -16772,8 +16857,12 @@ class App(ctk.CTk):
                     self._log(f"Anlamsal mutabakat raporu yazılamadı: {exc}", "warn")
             return int(stats.get("fixed", 0))
         except RequestCancelled:
+            if status_out is not None:
+                status_out["status"] = "cancelled"
             raise
         except Exception as e:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(e)})
             self._log(f"Nihai anlam mutabakatı hatası: {e}", "warn")
             if raise_errors:
                 raise
@@ -16782,7 +16871,8 @@ class App(ctk.CTk):
     def _run_final_semantic_checks(self, out_path, src_clean_map, blocks,
                                    src_lang=None, cues=None, changed_ids=None,
                                    source_path=None, locked_terms=None,
-                                   analysis_result=None) -> int:
+                                   analysis_result=None,
+                                   status_out: dict | None = None) -> int:
         before_backtranslation = {
             str(idx): text for idx, _ts, text in (blocks or [])
         }
@@ -16797,7 +16887,8 @@ class App(ctk.CTk):
         fixed += self._maybe_semantic_reconciliation(
             out_path, src_clean_map, blocks, src_lang=src_lang,
             cues=cues, changed_ids=changed_ids, source_path=source_path,
-            locked_terms=locked_terms, analysis_result=analysis_result)
+            locked_terms=locked_terms, analysis_result=analysis_result,
+            status_out=status_out)
         return fixed
 
     def _get_locked_terms_dict(self, fp: str | None, tgt: str) -> dict:
@@ -20942,16 +21033,20 @@ class App(ctk.CTk):
             if _quality_api_allowed:
                 self._record_file_status(
                     filepath, "Okuma Hızı Kısaltma", "running")
+                _condense_status = {}
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks,
                     self._helper_api_key("analysis"),
                     self._helper_api_base_url("analysis"),
                     self._helper_api_model("analysis"),
                     tgt, src_map=_src_map_for_condense,
-                    locked_terms=_locked_terms)
+                    locked_terms=_locked_terms,
+                    status_out=_condense_status)
+                _pass_status["Condense"] = dict(_condense_status)
             if self._stop_flag:
                 break
-            _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
+            if _quality_api_allowed:
+                _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
 
             if self.clean_sdh_var.get():
                 self._record_file_status(filepath, "SDH Temizleme", "running")
@@ -21052,11 +21147,13 @@ class App(ctk.CTk):
                     self._record_file_status(
                         filepath, "Terim Normalizasyonu", "running")
                     _before_termnorm = list(sorted_blocks)
+                    _term_status = {}
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, {str(c.index): _clean_src(c.text) for c in cues},
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), log_fn=self._log,
-                        locked_terms=_locked_terms)
+                        locked_terms=_locked_terms, status_out=_term_status)
+                    _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
                         sorted_blocks, _pass_history)
@@ -21068,6 +21165,7 @@ class App(ctk.CTk):
             if _quality_api_allowed:
                 self._record_file_status(
                     filepath, "Nihai Anlam Mutabakatı", "running")
+                _semantic_status = {}
                 self._run_final_semantic_checks(
                     out_path, {str(c.index): _clean_src(c.text) for c in cues},
                     sorted_blocks, src_lang=file_src, cues=cues,
@@ -21075,12 +21173,15 @@ class App(ctk.CTk):
                     locked_terms=_locked_terms,
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions,
-                                     idiom_map, cultural_refs))
+                                     idiom_map, cultural_refs),
+                    status_out=_semantic_status)
+                _pass_status["Final-Semantic"] = dict(_semantic_status)
             if self._stop_flag:
                 break
-            _record_pass_change(
-                _pass_trace, "Final-Semantic", _before_semantic,
-                sorted_blocks, _pass_history)
+            if _quality_api_allowed:
+                _record_pass_change(
+                    _pass_trace, "Final-Semantic", _before_semantic,
+                    sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
@@ -22056,6 +22157,7 @@ class App(ctk.CTk):
                                 if _final_cons_fixes:
                                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp, _pass_history)
                             _before_pass = list(pp)
+                            _condense_status = {}
                             pp = self._maybe_condense(
                                 pp,
                                 self._helper_api_key("analysis"),
@@ -22063,7 +22165,9 @@ class App(ctk.CTk):
                                 self._helper_api_model("analysis"),
                                 tgt,
                                 src_map=_src_map_from_cues(_orig_cues),
-                                locked_terms=_locked_terms)
+                                locked_terms=_locked_terms,
+                                status_out=_condense_status)
+                            _pass_status["Condense"] = dict(_condense_status)
                             if self._stop_flag:
                                 break
                             _record_pass_change(_pass_trace, "Condense", _before_pass, pp, _pass_history)
@@ -22134,13 +22238,16 @@ class App(ctk.CTk):
                                         and self.term_normalize_var.get()):
                                     try:
                                         _before_termnorm = list(pp)
+                                        _term_status = {}
                                         pp, _ = _normalize_mixed_terms(
                                             pp, _src_map,
                                             self._helper_api_key("polish"),
                                             self._helper_api_base_url("polish"),
                                              self._helper_api_model("polish"),
                                              log_fn=self._log,
-                                             locked_terms=_locked_terms)
+                                             locked_terms=_locked_terms,
+                                             status_out=_term_status)
+                                        _pass_status["Term-Normalize"] = dict(_term_status)
                                         if self._stop_flag:
                                             break
                                         _record_pass_change(
@@ -22149,13 +22256,16 @@ class App(ctk.CTk):
                                     except Exception:
                                         pass
                                 _before_semantic = list(pp)
+                                _semantic_status = {}
                                 self._run_final_semantic_checks(
                                     output_path, _src_map, pp,
                                     src_lang=source_language or self._snap_get("src_lang", "English"),
                                     cues=_orig_cues, changed_ids=_pass_history.keys(),
                                     source_path=str(_src_path),
                                     locked_terms=_locked_terms,
-                                    analysis_result=_analysis_result)
+                                    analysis_result=_analysis_result,
+                                    status_out=_semantic_status)
+                                _pass_status["Final-Semantic"] = dict(_semantic_status)
                                 if self._stop_flag:
                                     break
                                 _record_pass_change(
@@ -22633,12 +22743,15 @@ class App(ctk.CTk):
             if sorted_blocks and _quality_api_allowed and not self._stop_flag:
                 self._record_file_status(fp, "Okuma Hızı Kısaltma", "running")
                 _before_pass = list(sorted_blocks)
+                _condense_status = {}
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks, self._helper_api_key("analysis"),
                     self._helper_api_base_url("analysis"),
                     self._helper_api_model("analysis"), _tgt_lang,
                     src_map=src_blocks,
-                    locked_terms=_locked_terms_for(fp))
+                    locked_terms=_locked_terms_for(fp),
+                    status_out=_condense_status)
+                _pass_status["Condense"] = dict(_condense_status)
                 if self._stop_flag:
                     break
                 _record_pass_change(_pass_trace, "Condense", _before_pass, sorted_blocks, _pass_history)
@@ -22684,11 +22797,14 @@ class App(ctk.CTk):
                 try:
                     self._record_file_status(fp, "Terim Normalizasyonu", "running")
                     _before_termnorm = list(sorted_blocks)
+                    _term_status = {}
                     sorted_blocks, _ = _normalize_mixed_terms(
                         sorted_blocks, src_blocks,
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), log_fn=self._log,
-                        locked_terms=_locked_terms_for(fp))
+                        locked_terms=_locked_terms_for(fp),
+                        status_out=_term_status)
+                    _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
                         sorted_blocks, _pass_history)
@@ -22700,16 +22816,20 @@ class App(ctk.CTk):
             if _quality_api_allowed:
                 self._record_file_status(
                     fp, "Nihai Anlam Mutabakatı", "running")
+                _semantic_status = {}
                 self._run_final_semantic_checks(
                     out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
                     cues=_src_cues, changed_ids=_pass_history.keys(),
                     source_path=fp, locked_terms=_locked_terms_for(fp),
-                    analysis_result=_analysis_result)
+                    analysis_result=_analysis_result,
+                    status_out=_semantic_status)
+                _pass_status["Final-Semantic"] = dict(_semantic_status)
             if self._stop_flag:
                 break
-            _record_pass_change(
-                _pass_trace, "Final-Semantic", _before_semantic,
-                sorted_blocks, _pass_history)
+            if _quality_api_allowed:
+                _record_pass_change(
+                    _pass_trace, "Final-Semantic", _before_semantic,
+                    sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
@@ -23718,13 +23838,16 @@ class App(ctk.CTk):
                         _before_pass = list(pp_blocks)
                         self._record_file_status(
                             filepath, "Okuma Hızı Kısaltma", "running")
+                        _condense_status = {}
                         pp_blocks = self._maybe_condense(
                             pp_blocks,
                             self._helper_api_key("analysis"),
                             self._helper_api_base_url("analysis"),
                             self._helper_api_model("analysis"),
                             tgt, src_map=_src_map_from_cues(cues),
-                            locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                            locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                            status_out=_condense_status)
+                        _pass_status["Condense"] = dict(_condense_status)
                         if self._stop_flag:
                             break
                         _record_pass_change(_pass_trace, "Condense", _before_pass, pp_blocks, _pass_history)
@@ -23820,12 +23943,15 @@ class App(ctk.CTk):
                         self._record_file_status(
                             filepath, "Terim Normalizasyonu", "running")
                         _before_termnorm = list(_final_blocks)
+                        _term_status = {}
                         _final_blocks, _ = _normalize_mixed_terms(
                             _final_blocks, _src_map,
                             self._helper_api_key("polish"),
                             self._helper_api_base_url("polish"),
                             self._helper_api_model("polish"), log_fn=self._log,
-                            locked_terms=_locked_terms)
+                            locked_terms=_locked_terms,
+                            status_out=_term_status)
+                        _pass_status["Term-Normalize"] = dict(_term_status)
                         _record_pass_change(
                             _pass_trace, "Term-Normalize", _before_termnorm,
                             _final_blocks, _pass_history)
@@ -23836,11 +23962,14 @@ class App(ctk.CTk):
                 _before_semantic = list(_final_blocks)
                 self._record_file_status(
                     filepath, "Nihai Anlam Mutabakatı", "running")
+                _semantic_status = {}
                 self._run_final_semantic_checks(
                     out_path, _src_map, _final_blocks, src_lang=file_src,
                     cues=cues, changed_ids=_pass_history.keys(),
                     source_path=filepath, locked_terms=_locked_terms,
-                    analysis_result=_full_analysis)
+                    analysis_result=_full_analysis,
+                    status_out=_semantic_status)
+                _pass_status["Final-Semantic"] = dict(_semantic_status)
                 if self._stop_flag:
                     break
                 _record_pass_change(

@@ -251,6 +251,24 @@ class SemanticClusterBuilderTest(unittest.TestCase):
         self.assertEqual(suspects, {"4", "8", "11", "15"})
 
 class SemanticReconciliationPassTest(unittest.TestCase):
+    def test_total_api_failure_is_reported(self):
+        blocks = [("1", "00:00:01 --> 00:00:02", "Mevcut çeviri.")]
+        src_map = {"1": "Current translation."}
+        status = {}
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create",
+                side_effect=RuntimeError("provider unavailable")):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m",
+                changed_ids={"1"}, status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["successful_chunks"], 0)
+        self.assertEqual(status["failed_chunks"], 1)
+
     def test_matching_scene_plan_is_injected_into_cluster_payload(self):
         blocks = [("7", "00:00:01 --> 00:00:02", "Onu geri ver.")]
         src_map = {"7": "Give it back."}

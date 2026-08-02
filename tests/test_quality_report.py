@@ -248,6 +248,39 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Native Okuyucu: çalıştı") for line in audit))
 
+    def test_expensive_final_pass_failures_are_not_reported_as_zero_change(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_trace": {
+                "Condense": 0, "Term-Normalize": 0, "Final-Semantic": 0,
+            },
+            "pass_status": {
+                "Condense": {
+                    "status": "failed", "successful_chunks": 0,
+                    "failed_chunks": 1, "total_chunks": 1,
+                },
+                "Term-Normalize": {
+                    "status": "partial", "successful_chunks": 1,
+                    "failed_chunks": 1, "total_chunks": 2,
+                },
+                "Final-Semantic": {
+                    "status": "failed", "successful_chunks": 0,
+                    "failed_chunks": 3, "total_chunks": 3,
+                },
+            },
+        }, {
+            "condense": True,
+            "term_normalize": True,
+            "semantic_reconcile": True,
+        })
+
+        self.assertIn(
+            "Okuma Hızı Kısaltma: başarısız, 0/1 paket başarılı", audit)
+        self.assertIn(
+            "Terim Normalizasyonu: kısmi tamamlandı, 1/2 paket başarılı", audit)
+        self.assertIn(
+            "Nihai Anlam Mutabakatı: başarısız, 0/3 paket başarılı", audit)
+
     def test_successful_qc_with_no_issues_is_reported_as_completed(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",
