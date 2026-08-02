@@ -153,6 +153,7 @@ def _scan_subtitle_folders(paths, cancel_check=None):
 
 
 def _safe_chat_create(client, cancel_context=None, **kwargs):
+    checkpoint_label = str(kwargs.pop("_checkpoint_label", "") or "")
     model = kwargs.get("model", "")
     requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
@@ -229,11 +230,13 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     from provider_retry import chat_create_with_compat
     if cancel_context is None:
         return chat_create_with_compat(
-            client, model, kwargs, requested_format=requested_format)
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label)
     cancel_context.register(client)
     try:
         result = chat_create_with_compat(
-            client, model, kwargs, requested_format=requested_format)
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label)
         cancel_context.raise_if_cancelled()
         return result
     except Exception as exc:
@@ -10604,6 +10607,7 @@ class App(ctk.CTk):
             self._active_run_record = record
             self._quality_issues = {}
             self._quality_issue_seq = 0
+            self._quality_checkpoint_stages_seen = set()
         try:
             atomic_write_json(_active_run_state_path(), record)
         except Exception as exc:
@@ -10621,13 +10625,40 @@ class App(ctk.CTk):
         self._log(f"Çalıştırma kimliği: {run_id}", "info")
         return run_id
 
-    def _quality_checkpoint_hit(self, count: int):
+    def _quality_checkpoint_hit(self, count: int, checkpoint_label: str = ""):
+        labels = {
+            "analysis_context_chunk": "Yardımcı analiz chunk'ı",
+            "analysis_character_examples": "Karakter örnekleri",
+            "analysis_pronoun_map": "Hitap haritası",
+            "analysis_scene_plan": "Sahne planı",
+            "analysis_idiom_map": "Deyim haritası",
+            "analysis_cultural_refs": "Kültürel referanslar",
+            "context_review": "Bağlam incelemesi",
+            "critic": "Critic Pass",
+            "polish": "Polish Pass",
+            "native_reader": "Native Okuyucu",
+            "native_verification": "Native doğrulaması",
+            "semantic_reconciliation": "Nihai anlam mutabakatı",
+            "quality_control": "Kalite kontrolü",
+            "condense": "Kısaltma geçişi",
+            "backtranslation": "Geri çeviri",
+            "backtranslation_compare": "Geri çeviri karşılaştırması",
+            "backtranslation_fix": "Geri çeviri düzeltmesi",
+        }
+        stage = labels.get(str(checkpoint_label or ""), "API paketi")
         if int(count) == 1:
             self._log(
                 "Çökme kurtarma: tamamlanmış API istekleri "
                 "checkpoint'ten alınıyor.", "ok")
+        seen = self.__dict__.setdefault("_quality_checkpoint_stages_seen", set())
+        if checkpoint_label and checkpoint_label not in seen:
+            seen.add(checkpoint_label)
+            self._log(
+                f"Çökme kurtarma: {stage} tamamlanmış checkpoint'ten sürdürüldü.",
+                "ok",
+            )
         self._set_status(
-            f"Çökme kurtarma: {int(count)} API isteği yeniden gönderilmedi")
+            f"Çökme kurtarma: {stage}; toplam {int(count)} istek yeniden gönderilmedi")
 
     def _record_file_status(self, filepath: str, phase: str, status: str):
         timing_log = None
@@ -10901,6 +10932,61 @@ class App(ctk.CTk):
         _post_ui(self, _write)
 
     def _provider_wait_callback(self, event: str, remaining: int, waiting: int):
+        if event == "circuit_open":
+            self._log(
+                f"Sağlayıcı art arda hata verdi; yeni istekler {remaining} sn "
+                "duraklatıldı. Süre sonunda tek kontrol isteği gönderilecek.",
+                "warn",
+            )
+            self._set_status(
+                f"Sağlayıcı kullanılamıyor; güvenli bekleme: {remaining} sn")
+            return
+        if event == "circuit_reopen":
+            self._log(
+                f"Sağlayıcı kontrol isteği de başarısız; {remaining} sn sonra "
+                "yeniden kontrol edilecek.",
+                "warn",
+            )
+            self._set_status(
+                f"Sağlayıcı hâlâ kullanılamıyor; yeni kontrol: {remaining} sn")
+            return
+        if event in {"circuit_start", "circuit_tick"}:
+            self._set_status(
+                f"Sağlayıcı kullanılamıyor; kontrol isteğine {remaining} sn")
+            return
+        if event == "circuit_probe":
+            self._log(
+                "Sağlayıcı kontrol ediliyor; yalnız bir deneme isteği gönderildi...",
+                "info",
+            )
+            self._set_status("Sağlayıcı kontrol isteğine yanıt bekleniyor")
+            return
+        if event == "circuit_recovered":
+            self._log(
+                "Sağlayıcı yeniden yanıt veriyor; bekleyen işlemler devam ediyor.",
+                "ok",
+            )
+            self._set_status("API bağlantısı düzeldi; işlem devam ediyor")
+            return
+        if event == "request_start":
+            self._set_status(
+                f"API isteği gönderildi; yanıt bekleniyor ({waiting} aktif)")
+            return
+        if event == "request_tick":
+            self._set_status(
+                f"API yanıtı bekleniyor: {remaining} sn ({waiting} aktif istek)")
+            return
+        if event == "request_success":
+            if waiting:
+                self._set_status(
+                    f"API yanıtı alındı; {waiting} istek hâlâ bekleniyor")
+            return
+        if event == "request_failure":
+            self._set_status(
+                "API isteği başarısız; yeniden deneme kararı hazırlanıyor")
+            return
+        if event == "circuit_end":
+            return
         retry_match = re.fullmatch(
             r"retry_(start|tick|end|success)_(\d+)_(\d+)", event)
         if retry_match:
@@ -15920,6 +16006,7 @@ class App(ctk.CTk):
                         )
                     resp = _safe_chat_create(
                         fix_client, model=fix_model,
+                        _checkpoint_label="backtranslation_fix",
                         messages=[{"role": "user", "content": fix_prompt}],
                         max_tokens=200, temperature=0.2,
                         cancel_context=self.__dict__.get("_helper_request_canceller"),
@@ -16359,6 +16446,7 @@ class App(ctk.CTk):
             try:
                 resp = _safe_chat_create(
                     client, model=model,
+                    _checkpoint_label="context_review",
                     cancel_context=self.__dict__.get(
                         "_helper_request_canceller"),
                     messages=[{"role": "system", "content": sys_prompt},
@@ -16659,6 +16747,7 @@ class App(ctk.CTk):
                     resp = _safe_chat_create(
                         client,
                         cancel_context=cancel_context,
+                        _checkpoint_label="polish",
                         model=helper_model,
                         messages=[
                             {"role": "system", "content": sys_prompt},

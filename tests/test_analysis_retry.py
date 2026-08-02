@@ -203,6 +203,41 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
         self.assertEqual(analyze_mock.call_count, 2)
         self.assertTrue(any("JSON degil" in msg for _level, msg in logs))
 
+    def test_provider_503_is_not_retried_again_above_central_retry_layer(self):
+        import hybrid_translate as ht
+
+        fake_models = types.ModuleType("subtitle_localizer.models")
+
+        class ContextAnalysisRequest:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        fake_models.ContextAnalysisRequest = ContextAnalysisRequest
+        fake_pkg = types.ModuleType("subtitle_localizer")
+        fake_pkg.models = fake_models
+
+        with patch.dict(sys.modules, {
+            "subtitle_localizer": fake_pkg,
+            "subtitle_localizer.models": fake_models,
+        }), patch.object(ht, "_ensure_path", lambda: None), \
+             patch.object(
+                 ht, "_analyze_context_openai_compatible",
+                 side_effect=TemporaryError("temporarily unavailable"),
+             ) as analyze_mock, patch.object(ht.time, "sleep") as sleep_mock:
+            result = ht.analyze_with_helper(
+                cues=[SimpleNamespace(index=1, text="hello")],
+                helper_api_key="key",
+                helper_url="https://reseller.example/v1",
+                helper_model="gpt-5.4",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(analyze_mock.call_count, 1)
+        sleep_mock.assert_not_called()
+
     def test_invalid_json_after_retries_uses_fallback_context(self):
         import hybrid_translate as ht
 

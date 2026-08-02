@@ -1298,6 +1298,7 @@ def _generate_character_examples(
         resp = _safe_chat_create(
             client,
             cancel_context=cancel_context,
+            _checkpoint_label="analysis_character_examples",
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=900,
@@ -1389,6 +1390,7 @@ def _generate_pronoun_map(
         resp = _safe_chat_create(
             client,
             cancel_context=cancel_context,
+            _checkpoint_label="analysis_pronoun_map",
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=400,
@@ -1658,6 +1660,7 @@ def _extract_emotional_arc(
                 resp = _safe_chat_create(
                     client,
                     cancel_context=cancel_context,
+                    _checkpoint_label="analysis_scene_plan",
                     model=helper_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=8000,
@@ -1756,6 +1759,7 @@ def _generate_idiom_map(
         resp = _safe_chat_create(
             client,
             cancel_context=cancel_context,
+            _checkpoint_label="analysis_idiom_map",
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=800,
@@ -1858,6 +1862,7 @@ def _generate_cultural_refs(
         resp = _safe_chat_create(
             client,
             cancel_context=cancel_context,
+            _checkpoint_label="analysis_cultural_refs",
             model=helper_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=600,
@@ -2209,6 +2214,7 @@ API_REQUEST_TIMEOUT_SECONDS = 300
 
 
 def _safe_chat_create(client, cancel_context=None, **kwargs):
+    checkpoint_label = str(kwargs.pop("_checkpoint_label", "") or "")
     model = kwargs.get("model", "")
     requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
@@ -2281,11 +2287,13 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     from provider_retry import chat_create_with_compat
     if cancel_context is None:
         return chat_create_with_compat(
-            client, model, kwargs, requested_format=requested_format)
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label)
     cancel_context.register(client)
     try:
         result = chat_create_with_compat(
-            client, model, kwargs, requested_format=requested_format)
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label)
         cancel_context.raise_if_cancelled()
         return result
     except Exception as exc:
@@ -2601,6 +2609,7 @@ def _analyze_context_openai_compatible(
     resp = _safe_chat_create(
         client,
         cancel_context=cancel_context,
+        _checkpoint_label="analysis_context_chunk",
         model=model,
         messages=_messages,
         max_tokens=int(depth_cfg["max_tokens"]),
@@ -2782,11 +2791,12 @@ def analyze_with_helper(
             except Exception as e:
                 estr = str(e)
                 invalid_json = "invalid json" in estr.lower()
-                transient = (
+                provider_transient = (
                     "429" in estr or "rate limit" in estr.lower()
                     or any(c in estr for c in ("500", "502", "503", "504"))
-                    or invalid_json
                 )
+                transient = invalid_json or (
+                    provider_transient and not use_openai_compatible)
                 last_exc = e
                 if transient and attempt < 2:
                     if invalid_json and log_fn:
@@ -3396,6 +3406,7 @@ def _verify_native_candidates(
     resp = _safe_chat_create(
         client,
         cancel_context=cancel_context,
+        _checkpoint_label="native_verification",
         model=helper_model,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max(300, len(candidates) * 30),
@@ -3640,6 +3651,7 @@ def native_reader_pass(
             resp = _safe_chat_create(
                 client,
                 cancel_context=cancel_context,
+                _checkpoint_label="native_reader",
                 model=helper_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=len(chunk) * 80,
@@ -3941,6 +3953,7 @@ def condense_fast_lines(
             resp = _safe_chat_create(
                 client,
                 cancel_context=cancel_context,
+                _checkpoint_label="condense",
                 model=helper_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=len(chunk) * 60,
@@ -4069,7 +4082,9 @@ def back_translation_check(
         back_map = {}
         try:
             resp = _safe_chat_create(
-                client, cancel_context=cancel_context, model=model,
+                client, cancel_context=cancel_context,
+                _checkpoint_label="backtranslation",
+                model=model,
                 messages=[{"role": "user", "content": bt_prompt}],
                 max_tokens=len(chunk) * 60 + 300, temperature=0.0,
             )
@@ -4107,7 +4122,9 @@ def back_translation_check(
         )
         try:
             resp = _safe_chat_create(
-                client, cancel_context=cancel_context, model=model,
+                client, cancel_context=cancel_context,
+                _checkpoint_label="backtranslation_compare",
+                model=model,
                 messages=[{"role": "user", "content": cmp_prompt}],
                 max_tokens=len(chunk) * 40 + 300, temperature=0.0,
             )
@@ -4275,6 +4292,7 @@ def quality_check_with_helper(
                 resp = _safe_chat_create(
                     client,
                     cancel_context=cancel_context,
+                    _checkpoint_label="quality_control",
                     model=helper_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=12000,   # 3000 yetersizdi: çok hatalı dosyalarda JSON kesilip TÜM sorunlar düşüyordu
@@ -7291,6 +7309,7 @@ def semantic_reconciliation_pass(
             resp = _safe_chat_create(
                 client,
                 cancel_context=cancel_context,
+                _checkpoint_label="semantic_reconciliation",
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -10347,6 +10366,7 @@ def critic_pass_with_helper(
             resp = _safe_chat_create(
                 client,
                 cancel_context=cancel_context,
+                _checkpoint_label="critic",
                 model=helper_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=len(chunk) * 60,

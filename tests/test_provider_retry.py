@@ -14,6 +14,11 @@ def _client(url="https://api.shuaiapi.com/v1", key="sk-reseller"):
 
 
 class RetryAfterParsingTest(unittest.TestCase):
+    def test_status_code_with_underscore_is_parsed_as_transient(self):
+        exc = RuntimeError("status_code=503, 服务暂时不可用，请稍后重试")
+        self.assertEqual(provider_retry._status_code(exc), 503)
+        self.assertTrue(provider_retry._is_transient_provider_error(exc))
+
     def test_retry_after_header_seconds(self):
         exc = SimpleNamespace(
             status_code=429,
@@ -132,6 +137,102 @@ class ProviderCooldownRegistryTest(unittest.TestCase):
         self.assertEqual(events[0][0], "retry_start_1_3")
         self.assertEqual(events[-1], ("retry_end_1_3", 0, 0))
 
+    def test_three_transient_failures_open_circuit_then_one_probe_recovers(self):
+        now = [100.0]
+        events = []
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: now[0],
+            sleeper=lambda delay: now.__setitem__(0, now[0] + delay),
+            wait_callback=lambda *args: events.append(args),
+        )
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        client = _client()
+        error = TemporaryError("temporarily unavailable")
+        self.assertIsNone(registry.record_transient_failure(client, error))
+        self.assertIsNone(registry.record_transient_failure(client, error))
+        self.assertEqual(
+            registry.record_transient_failure(client, error),
+            provider_retry.PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+        )
+
+        waited = registry.before_request(client)
+        self.assertEqual(
+            waited, provider_retry.PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
+        registry.request_started()
+        registry.request_finished(client, True)
+        self.assertEqual(registry.before_request(client), 0.0)
+        self.assertIn("circuit_open", [event[0] for event in events])
+        self.assertIn("circuit_probe", [event[0] for event in events])
+        self.assertIn("circuit_recovered", [event[0] for event in events])
+
+    def test_permanent_response_resets_old_transient_failure_count(self):
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: 100.0,
+            sleeper=lambda _delay: None,
+        )
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        class PermanentError(RuntimeError):
+            status_code = 503
+
+        client = _client()
+        temporary = TemporaryError("temporarily unavailable")
+        permanent = PermanentError(
+            "model_not_found: No available channel for model gpt-5.4")
+        self.assertIsNone(registry.record_transient_failure(client, temporary))
+        self.assertIsNone(registry.record_transient_failure(client, temporary))
+        self.assertIsNone(registry.record_transient_failure(client, permanent))
+        self.assertIsNone(registry.record_transient_failure(client, temporary))
+
+    def test_failed_probe_reopens_circuit_with_visible_event(self):
+        now = [100.0]
+        events = []
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: now[0],
+            sleeper=lambda delay: now.__setitem__(0, now[0] + delay),
+            wait_callback=lambda *args: events.append(args),
+        )
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        client = _client()
+        error = TemporaryError("temporarily unavailable")
+        for _ in range(3):
+            registry.record_transient_failure(client, error)
+        registry.before_request(client)
+        registry.request_started()
+        registry.request_finished(client, False)
+        self.assertEqual(
+            registry.record_transient_failure(client, error),
+            provider_retry.PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+        )
+
+        self.assertIn("circuit_reopen", [event[0] for event in events])
+
+    def test_circuit_is_model_scoped_not_entire_reseller_key(self):
+        registry = provider_retry.ProviderCooldownRegistry(
+            clock=lambda: 100.0,
+            sleeper=lambda _delay: None,
+        )
+
+        class TemporaryError(RuntimeError):
+            status_code = 503
+
+        client = _client()
+        error = TemporaryError("temporarily unavailable")
+        for _ in range(3):
+            registry.record_transient_failure(
+                client, error, model="gpt-5.4")
+
+        self.assertEqual(
+            registry.before_request(client, model="gpt-5.4-mini"), 0.0)
+
 
 class SafeChatCooldownIntegrationTest(unittest.TestCase):
     def _assert_wrapper_records_429(self, fn):
@@ -177,6 +278,8 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
             error, error, error, error, error, response]
         waits = []
         with mock.patch.object(
+            provider_retry, "PROVIDER_CIRCUIT_COOLDOWN_SECONDS", 0.0,
+        ), mock.patch.object(
             provider_retry._REGISTRY,
             "wait_for_retry",
             side_effect=lambda delay, attempt, total: waits.append(
@@ -283,6 +386,40 @@ class ResponseCheckpointTest(unittest.TestCase):
                 for path in root.rglob("*.json"))
             self.assertNotIn("sk-hidden", checkpoint_text)
             self.assertNotIn("critic packet 1", checkpoint_text)
+
+    def test_stage_label_does_not_change_existing_checkpoint_identity(self):
+        client = self._mock_client(self._response("ok"))
+        kwargs = {"messages": [{"role": "user", "content": "same request"}]}
+        legacy = provider_retry._response_checkpoint_key(
+            client, "gpt-5.4", kwargs)
+        labelled = provider_retry._response_checkpoint_key(
+            client, "gpt-5.4", kwargs,
+            checkpoint_label="native_reader")
+        self.assertEqual(legacy, labelled)
+
+    def test_checkpoint_reports_named_analysis_stage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            kwargs = {"messages": [{"role": "user", "content": "scene page"}]}
+            first = self._mock_client(self._response('{"scenes":[]}'))
+            provider_retry.configure_response_checkpoint(root, "run-origin")
+            provider_retry.chat_create_with_compat(
+                first, "gpt-5.4", kwargs,
+                checkpoint_label="analysis_scene_plan")
+
+            hits = []
+            resumed = self._mock_client(RuntimeError("must not call API"))
+            resumed.chat.completions.create.side_effect = AssertionError(
+                "completed analysis stage must be replayed")
+            provider_retry.configure_response_checkpoint(
+                root, "run-origin", allow_reads=True,
+                hit_callback=lambda count, label: hits.append((count, label)))
+            provider_retry.chat_create_with_compat(
+                resumed, "gpt-5.4", kwargs,
+                checkpoint_label="analysis_scene_plan")
+
+            resumed.chat.completions.create.assert_not_called()
+            self.assertEqual(hits, [(1, "analysis_scene_plan")])
 
     def test_cached_response_is_consumed_once_before_live_retry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -467,6 +604,41 @@ class ProviderWaitUiCallbackTest(unittest.TestCase):
         self.assertIn("19 sn", statuses[-3])
         self.assertIn("yanıt bekleniyor", statuses[-2])
         self.assertIn("işlem devam ediyor", statuses[-1])
+
+    def test_circuit_callback_reports_pause_probe_and_recovery(self):
+        logs = []
+        statuses = []
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _log=lambda *args: logs.append(args),
+            _set_status=statuses.append,
+        )
+        gui.App._provider_wait_callback(app, "circuit_open", 60, 0)
+        gui.App._provider_wait_callback(app, "circuit_tick", 30, 1)
+        gui.App._provider_wait_callback(app, "circuit_probe", 0, 1)
+        gui.App._provider_wait_callback(app, "circuit_reopen", 60, 1)
+        gui.App._provider_wait_callback(app, "circuit_recovered", 0, 0)
+
+        self.assertEqual(len(logs), 4)
+        self.assertIn("60 sn", logs[0][0])
+        self.assertIn("tek kontrol", logs[0][0])
+        self.assertIn("kontrol", logs[1][0])
+        self.assertIn("başarısız", logs[2][0])
+        self.assertIn("yeniden", logs[3][0])
+        self.assertIn("devam", statuses[-1])
+
+    def test_request_heartbeat_shows_elapsed_wait(self):
+        statuses = []
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _log=lambda *_args: None,
+            _set_status=statuses.append,
+        )
+        gui.App._provider_wait_callback(app, "request_start", 0, 2)
+        gui.App._provider_wait_callback(app, "request_tick", 47, 2)
+
+        self.assertIn("47 sn", statuses[-1])
+        self.assertIn("2 aktif", statuses[-1])
 
 
 if __name__ == "__main__":
