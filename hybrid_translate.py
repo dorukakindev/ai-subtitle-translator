@@ -11316,6 +11316,7 @@ def submit_batch(
     session_fingerprint: str = "",
     run_context: dict = None,
     locked_terms: dict = None,
+    expected_source_hash: str = "",
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
 
@@ -11326,7 +11327,10 @@ def submit_batch(
     _resolve_output_path: Kural 2'de araya dosya-adı alt-klasörü girer, ayrıca çıktı
     her zaman .srt iken kaynak .vtt/.ass olabilir)."""
     source_sig = _cache_sig(source_path) if source_path else ""
-    source_hash = source_sig.removeprefix("sha256:") if source_sig else ""
+    current_source_hash = source_sig.removeprefix("sha256:") if source_sig else ""
+    if expected_source_hash and current_source_hash != expected_source_hash:
+        raise RuntimeError("source_changed_before_batch_submit")
+    source_hash = expected_source_hash or current_source_hash
     output_baseline = _file_state_signature(output_path) if output_path else None
 
     from openai import OpenAI

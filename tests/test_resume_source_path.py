@@ -136,6 +136,27 @@ class SubmitBatchPersistsRecoveryInfoTest(unittest.TestCase):
             else:
                 bid_path.unlink(missing_ok=True)
 
+    def test_source_change_is_rejected_before_client_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.srt"
+            source.write_text("changed", encoding="utf-8")
+            with patch("openai.OpenAI") as openai_cls:
+                with self.assertRaisesRegex(
+                        RuntimeError, "source_changed_before_batch_submit"):
+                    ht.submit_batch(
+                        "k", [{"a": 1}], None, {"c1": [("f", 1)]},
+                        output_path=str(Path(tmp) / "output.srt"),
+                        source_path=str(source),
+                        expected_source_hash="0" * 64,
+                    )
+            openai_cls.assert_not_called()
+
+    def test_gui_hybrid_submit_passes_stable_source_hash(self):
+        source = inspect.getsource(gui.App._run_hybrid)
+        self.assertIn("expected_source_hash=_expected_source_hash", source)
+        twowave = inspect.getsource(gui.App._run_twowave_batches)
+        self.assertIn("expected_source_hash=expected_source_hash", twowave)
+
 
 class ResumeSourceResolutionTest(unittest.TestCase):
     """_wait_batch_hybrid'in kaynak çözümleme mantığı (saklanan yol > geriye hesaplama).

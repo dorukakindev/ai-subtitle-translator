@@ -21665,16 +21665,27 @@ class App(ctk.CTk):
         # Parse her dosyayı bir kez yap — hem boş-filtre hem blok sayımı için kullan
         self._block_cache: dict = {}
         valid_files = []
+        source_hashes = {}
         for fp in srt_files:
             if self._is_queued_file_removed(fp):
                 continue
+            before_hash = _file_content_sha256(fp)
             blocks = list(parse_subtitle(fp))
+            after_hash = _file_content_sha256(fp)
+            if not before_hash or before_hash != after_hash:
+                self._log(
+                    f"{Path(fp).name}: kaynak okunurken değişti; batch'e alınmadı",
+                    "err")
+                self._update_file_progress(
+                    fp, "Kaynak dosya değişti", 100, "error")
+                continue
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
                 self._update_file_progress(
                     fp, "Geçerli altyazı bloğu yok", 100, "skip")
             else:
                 self._block_cache[fp] = blocks
+                source_hashes[fp] = after_hash
                 valid_files.append(fp)
         if not valid_files:
             self._log("Geçerli altyazı dosyası yok!", "err")
@@ -21745,6 +21756,17 @@ class App(ctk.CTk):
                     f"Şema '{sname}', kaynak '{group_src}': "
                     f"{len(group)} dosya, {len(reqs)} istek", "info")
         requests, file_map = all_requests, all_file_map
+        changed_sources = [
+            fp for fp in valid_files
+            if _file_content_sha256(fp) != source_hashes.get(fp)
+        ]
+        if changed_sources:
+            for fp in changed_sources:
+                self._log(
+                    f"{Path(fp).name}: istek hazırlanırken kaynak değişti; "
+                    "hiçbir batch gönderilmedi", "err")
+            self._set_running(False)
+            return
         # Cache'ten blok sayısını al — dosyaları tekrar parse etme
         total_blocks = sum(len(self._block_cache[fp]) for fp in valid_files)
         self._set_stat(self.stat_blocks_var, str(total_blocks))
@@ -21766,7 +21788,6 @@ class App(ctk.CTk):
                 selected_roots=self._output_selection_roots()))
             for fp in valid_files
         }
-        source_hashes = {fp: _file_content_sha256(fp) for fp in valid_files}
         output_baselines = {
             fp: _file_state_signature(output_paths[fp]) for fp in valid_files
         }
@@ -23445,7 +23466,8 @@ class App(ctk.CTk):
 
     def _run_twowave_batches(self, openai_key, requests, fmap, out_path,
                              source_path, output_dir, fname, progress_fn=None,
-                             source_language="", target_language="", stage_path=None):
+                             source_language="", target_language="", stage_path=None,
+                             expected_source_hash=""):
         """İki-dalgalı zincirli batch (B3) — TEK dosya için sıralı submit-wait-submit-wait.
 
         A dalgasını gönderir, BEKLER, A'nın kuyruk çevirilerini B dalgasının ilk chunk'ına
@@ -23478,7 +23500,8 @@ class App(ctk.CTk):
                                   run_context=_batch_run_context(
                                       getattr(self, "_active_snapshot", None) or {},
                                       api_key=openai_key),
-                                  locked_terms=frozen_locked_terms)
+                                  locked_terms=frozen_locked_terms,
+                                  expected_source_hash=expected_source_hash)
             if not bid:
                 return None, None
             self._register_batch(bid, openai_key, b_url)
@@ -23628,7 +23651,14 @@ class App(ctk.CTk):
             self._log(f"\n── [{fi+1}/{n_files}] {fname} — Analiz ──", "info")
 
             try:
+                _stable_source_hash = _file_content_sha256(filepath)
                 cues = ht.load_subtitle(filepath)
+                if (_file_content_sha256(filepath) != _stable_source_hash
+                        or not _stable_source_hash):
+                    self._log(
+                        f"{fname}: kaynak okunurken değişti; batch'e alınmadı",
+                        "err")
+                    continue
                 if not cues:
                     self._log(f"{fname}: geçerli SRT bloğu yok, atlandı", "warn")
                     self._record_file_status(
@@ -23848,7 +23878,12 @@ class App(ctk.CTk):
                 # istekler saklanıp Faz2'de sıralı işlenir (kapansa 'devam ettir'le kalınan
                 # yerden alınamaz — bilinçli takas, bkz. _run_twowave_batches). Yalnız
                 # hybrid-batch modunda anlamlı (sync'in zincir makinesi burada).
-                _expected_source_hash = _file_content_sha256(filepath)
+                if _file_content_sha256(filepath) != _stable_source_hash:
+                    self._log(
+                        f"{fname}: istek hazırlanırken kaynak değişti; batch gönderilmedi",
+                        "err")
+                    continue
+                _expected_source_hash = _stable_source_hash
                 _output_baseline = _file_state_signature(out_path)
                 if getattr(self, "twowave_var", None) and self.twowave_var.get():
                     self._twowave_pending[str(filepath)] = requests
@@ -23873,7 +23908,8 @@ class App(ctk.CTk):
                     run_context=_batch_run_context(
                         getattr(self, "_active_snapshot", None) or {},
                         api_key=openai_key),
-                    locked_terms=self._get_locked_terms_dict(filepath, tgt))
+                    locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                    expected_source_hash=_expected_source_hash)
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",
@@ -23964,7 +24000,8 @@ class App(ctk.CTk):
                         openai_key, _tw_reqs, fmap, out_path,
                         str(filepath), output_dir, fname, progress_fn=_pfn,
                         source_language=file_src, target_language=tgt,
-                        stage_path=_tw_stage)
+                        stage_path=_tw_stage,
+                        expected_source_hash=_expected_source_hash)
                     if not _tw_result or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
