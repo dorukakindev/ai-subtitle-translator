@@ -20153,6 +20153,7 @@ class App(ctk.CTk):
                 filepath, _expected_source_hash,
                 {req["custom_id"] for req in batch_reqs},
                 allow_incomplete_resume=_allow_partial_resume)
+            _partial_repair_only = False
             if _allow_partial_resume:
                 _partial_path = _partial_output_path(out_path)
                 try:
@@ -20166,11 +20167,12 @@ class App(ctk.CTk):
                 else:
                     if _partial_raw and _partial_missing:
                         raw_map = _partial_raw
+                        _partial_repair_only = True
                         self._log(
                             f"Kısmi onarım: {_partial_recovered} sağlam cue "
                             f"{_partial_path.name} dosyasından korundu; yalnız "
-                            f"{_partial_missing} eksik cue'nun chunk'ları "
-                            "yeniden çevrilecek.",
+                            f"{_partial_missing} eksik cue doğrudan satır "
+                            "onarımına gönderilecek.",
                             "ok",
                         )
             _ckpt_scope = str(Path(filepath).resolve())
@@ -20234,7 +20236,8 @@ class App(ctk.CTk):
                     # yalnızca zinciri (prev_pairs) besle.
                     if cid_hint in raw_map:
                         raw = raw_map[cid_hint]
-                        if _chunk_response_retry_reason(raw, req):
+                        if (not _partial_repair_only
+                                and _chunk_response_retry_reason(raw, req)):
                             self._retry_hata(
                                 client, raw_map, [req],
                                 max_rounds=self._max_retry)
@@ -20330,7 +20333,9 @@ class App(ctk.CTk):
                 break
 
             # ── Retry + Birleştir ─────────────────────────────────────────────
-            self._retry_hata(client, raw_map, batch_reqs, max_rounds=self._max_retry)
+            if not _partial_repair_only:
+                self._retry_hata(
+                    client, raw_map, batch_reqs, max_rounds=self._max_retry)
             for req in batch_reqs:
                 cid = req.get("custom_id", "")
                 raw = raw_map.get(cid, "")

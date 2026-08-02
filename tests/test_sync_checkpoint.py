@@ -397,6 +397,8 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertLess(load_at, save_at)
         self.assertLess(save_at, stop_after_main_at)
         self.assertLess(save_at, quality_at)
+        self.assertIn("if not _partial_repair_only:", source)
+        self.assertIn("eksik cue doğrudan satır", source)
         self.assertLess(quality_at, clear_at)
 
 
