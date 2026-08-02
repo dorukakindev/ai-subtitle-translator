@@ -72,6 +72,40 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("Film ve Video", "\n".join(text for _i, _ts, text in result))
         self.assertIn("Gerçek diyalog.", "\n".join(text for _i, _ts, text in result))
 
+    def test_source_ocr_quote_markers_are_normalized(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "'Her şey ortaktı."),
+            ("2", "00:00:03,100 --> 00:00:04,000", "ihtiyacına göre#"),
+            ("3", "00:00:04,100 --> 00:00:05,000", "İhtiyacımız olan bu#"),
+            ("4", "00:00:05,100 --> 00:00:06,000", '"Yüzünü çimenlere bastır,'),
+            ("5", "00:00:06,100 --> 00:00:07,000", 'iyi geldiğini hissedersin."'),
+            ("6", "00:00:07,100 --> 00:00:08,000", "İhtiyaçları olan bu#"),
+        ]
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "'...had all things common."),
+            ("2", "00:00:03,100 --> 00:00:04,000", "as every man had need#"),
+            ("3", "00:00:04,100 --> 00:00:05,000", "That's what we need#"),
+            ("4", "00:00:05,100 --> 00:00:06,000", "'Try to press your face into grass"),
+            ("5", "00:00:06,100 --> 00:00:07,000", "and you'll feel how good it is."),
+            ("6", "00:00:07,100 --> 00:00:08,000", "That's what they need#"),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = [
+            text for _idx, _ts, text in result
+            if text != "discord: ceviri2"
+        ]
+
+        self.assertEqual(dialogue, [
+            '"Her şey ortaktı.',
+            'ihtiyacına göre"',
+            "İhtiyacımız olan bu.",
+            '"Yüzünü çimenlere bastır,',
+            'iyi geldiğini hissedersin."',
+            "İhtiyaçları olan bu.",
+        ])
+
     def test_html_wrapped_resync_credit_is_removed(self):
         blocks = [
             (

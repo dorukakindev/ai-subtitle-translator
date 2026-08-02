@@ -255,7 +255,7 @@ def _locked_source_term_present(term: str, source_text: str) -> bool:
     key = str(term or "").strip()
     if not key or not value:
         return False
-    if len(key) <= 3 and key.isupper():
+    if key.isupper() and any(char.isalpha() for char in key):
         return re.search(
             r"(?<!\w)" + re.escape(key) + r"(?!\w)", value, re.UNICODE
         ) is not None
@@ -6397,6 +6397,10 @@ def _source_negation_requires_turkish_negation(text: str) -> bool:
     src = _semantic_text_for_validator(text)
     if re.search(r"\b(?:cannot|can\s+not|can['\u2019]?t)\s+wait\b", src, re.IGNORECASE):
         return False
+    if ("?" in src
+            and re.search(r"\bwon['\u2019]?t\s+you(?:\s+please)?\s+\w+", src,
+                          re.IGNORECASE)):
+        return False
     return _has_source_negation(src)
 
 
@@ -9321,6 +9325,13 @@ def _has_content_word_loss(old: str, new: str, source_text: str = "") -> bool:
     if not missing:
         return False
     if source_text:
+        new_only = [
+            nt for nt in n_tokens
+            if nt not in o_tokens and not _has_stem_match(nt, o_tokens)
+        ]
+        if (not new_only and len(n_tokens) < len(o_tokens)
+                and matched >= 2):
+            return True
         return len(missing) >= 2
     if len(o_tokens) <= 3:
         return len(o_tokens) >= 3 and len(missing) >= 2 and matched == 0
@@ -9841,6 +9852,15 @@ def validate_semantic_reconciliation_candidate(
     """Allow a source-driven retranslation while retaining structural and source guards."""
     old = str(original_text or "")
     new = str(candidate_text or "")
+    src = str(source_text or "")
+    if (re.search(r"\b(?:n|_)othing\s+constructive\b", src, re.IGNORECASE)
+            and re.search(r"\byapıcı\s+hiçbir\s+şey\s+değil\b", new,
+                          re.IGNORECASE)):
+        return False, "nothing_constructive_regression"
+    if (re.search(r"\b(?:cry|cy)\b", src, re.IGNORECASE)
+            and re.search(r"\bağla\w*", old, re.IGNORECASE)
+            and not re.search(r"\bağla\w*", new, re.IGNORECASE)):
+        return False, "cry_meaning_loss"
     new_core = re.sub(r'''["' “”‘’»«…)\].,!?;:]+$''', "", new.strip())
     if (_looks_like_early_turkish_verb_closure(old)
             and re.search(

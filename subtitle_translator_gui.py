@@ -2669,15 +2669,45 @@ def _delivery_source_map(blocks: list, source_cues) -> dict:
     return result
 
 
+def _normalize_delivery_ocr_quote_markers(blocks: list, src_map: dict) -> tuple[list, int]:
+    normalized = []
+    quote_open = False
+    changed = 0
+    for idx, ts, text in blocks or []:
+        source = str((src_map or {}).get(str(idx), "") or "")
+        value = str(text or "")
+        starts_quote = bool(re.match(r"^\s*'", source))
+        ends_marker = bool(re.search(r"#\s*$", source))
+        if starts_quote:
+            updated = re.sub(r'^\s*[\'"“”]?\s*', '"', value, count=1)
+            changed += updated != value
+            value = updated
+            quote_open = True
+        if ends_marker:
+            if re.search(r"#\s*$", value):
+                closer = '"' if quote_open else "."
+                updated = re.sub(r"#\s*$", closer, value)
+                changed += updated != value
+                value = updated
+            quote_open = False
+        elif quote_open and re.search(r'["”]\s*$', value):
+            quote_open = False
+        normalized.append((idx, ts, value))
+    return normalized, changed
+
+
 def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                                  log_fn=None, source_cues=None) -> list:
     if normalize_language_name(target_language, allow_auto=False) != "Turkish":
         return list(blocks or [])
 
     blocks = list(blocks or [])
+    quote_markers_fixed = 0
     if source_cues:
         src_map = _delivery_source_map(blocks, source_cues)
         blocks = clean_sdh(blocks, src_map=src_map, source_driven=True)
+        blocks, quote_markers_fixed = _normalize_delivery_ocr_quote_markers(
+            blocks, src_map)
 
     work = []
     hats_removed = 0
@@ -2769,7 +2799,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 f"{credits_removed} eski kredi cue'su, "
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "
-                f"{sdh_removed} SDH/müzik cue'su temizlendi",
+                f"{sdh_removed} SDH/müzik cue'su temizlendi, "
+                f"{quote_markers_fixed} bozuk OCR tırnak işareti düzeltildi",
                 "ok",
             )
     return cleaned
@@ -3884,7 +3915,8 @@ _PARTIAL_ENGLISH_LEAK_RE = re.compile(r'\b(?:Egyptian|creation|mythology)\b', re
 _PARTIAL_ENGLISH_LEAK_PHRASE_RE = re.compile(
     r"\bIn\s+(?:18|19|20)\d{2}\b"
     r"|\bInstitute\s+for\s+Learning\s+and\s+Brain(?:\s+Sciences)?\b"
-    r"|\bmedical\s+student(?:['’]s)?\s+disease\b",
+    r"|\bmedical\s+student(?:['’]s)?\s+disease\b"
+    r"|\bThe\s+[A-Z][\w'’\-]+\s+couple\b",
     re.I,
 )
 
@@ -4382,6 +4414,22 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 permanent_failure_cb()
             except Exception:
                 pass
+
+    unresolved_mixed = 0
+    for block_pos, _idx, _ts, src in hata_indices:
+        text = str(out[block_pos][2] or "")
+        if (not text.startswith("[HATA")
+                and "[ÇEVİRİ EKSİK]" not in text
+                and _is_untranslated(src, text)):
+            idx, ts, _old = out[block_pos]
+            out[block_pos] = (idx, ts, "[ÇEVİRİ EKSİK]")
+            unresolved_mixed += 1
+    if unresolved_mixed and log_fn:
+        log_fn(
+            f"{unresolved_mixed} onarılamayan karışık/çevrilmemiş satır "
+            "[ÇEVİRİ EKSİK] olarak karantinaya alındı",
+            "err",
+        )
 
     if drop_positions:
         drop_set = set(drop_positions)

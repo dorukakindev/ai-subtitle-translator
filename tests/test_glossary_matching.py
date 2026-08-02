@@ -70,6 +70,15 @@ class GlossMissReasonTest(unittest.TestCase):
         out = ht.run_validators(tr, cues, gloss)
         self.assertEqual(out[0][3], "GLOSS_MISS:cat=>kedi")
 
+    def test_all_caps_title_term_does_not_override_lowercase_dialogue(self):
+        gloss = {"AGITATORS": "AJİTATÖRLER"}
+        cues = [self._cue(1, "We send our agitators there.")]
+        tr = [(1, "00:00:01,000 --> 00:00:02,000", "Ajitatörlerimizi oraya gönderiyoruz.")]
+        self.assertEqual(ht.run_validators(tr, cues, gloss), [])
+        self.assertFalse(ht._locked_source_term_present(
+            "AGITATORS", "We send our agitators there."))
+        self.assertTrue(ht._locked_source_term_present("AGITATORS", "AGITATORS"))
+
 
 class SchemaGlossaryInjectionTest(unittest.TestCase):
     """Şema gömülü sözlüğü (Warhammer) build_requests'e enjekte oluyor mu +

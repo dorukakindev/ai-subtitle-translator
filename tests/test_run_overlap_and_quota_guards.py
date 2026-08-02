@@ -213,6 +213,29 @@ class PermanentQuotaFailureTest(unittest.TestCase):
         self.assertEqual(repaired, 1)
         self.assertEqual(result[0][2], "Kıza söyledim.")
 
+    def test_unresolved_mixed_source_line_is_quarantined(self):
+        blocks = [(
+            982,
+            "01:03:08,000 --> 01:03:10,000",
+            "The Krauss couple dün kendi dairelerinde asıldı.",
+        )]
+        raw = {"982": "The Krauss couple were hung yesterday in their own flat."}
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"982","t":"The Krauss couple dün kendi dairelerinde asıldı."}]'))],
+            usage=None,
+        )
+
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish")
+
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(repaired, 0)
+        self.assertEqual(result[0][2], "[ÇEVİRİ EKSİK]")
+
     def test_repair_stops_during_retry_wait_when_user_cancels(self):
         blocks = [
             (str(idx), "00:00:01,000 --> 00:00:02,000", "[HATA]")

@@ -97,6 +97,14 @@ class PolishValidatorEndToEndTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_negation")
 
+    def test_polite_wont_you_request_may_be_affirmative_in_turkish(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gramofonu getirmez misin?",
+            "Gramofonu getirir misin?",
+            source_text="Won't you bring the gramophone?",
+        )
+        self.assertTrue(ok, msg=reason)
+
 
 if __name__ == "__main__":
     unittest.main()

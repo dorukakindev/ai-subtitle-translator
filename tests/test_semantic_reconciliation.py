@@ -325,6 +325,36 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "missing_predicate")
 
+    def test_pure_clause_deletion_is_rejected(self):
+        ok, reason = ht.validate_semantic_reconciliation_candidate(
+            "Biraz otur da düşün, saçmalıyorsun.",
+            "Biraz otur da düşün.",
+            source_text="Sit down a bit and think, you are talking nonsense.",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "semantic_rewrite_unverified")
+
+    def test_nothing_constructive_false_predicate_is_rejected(self):
+        ok, reason = ht.validate_semantic_reconciliation_candidate(
+            "Senin aksine yapıcı hiçbir şey.",
+            "Senin aksine, yapıcı hiçbir şey değil.",
+            source_text="_othing constructive, unlike you.",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "nothing_constructive_regression")
+
+    def test_ocr_cry_meaning_cannot_be_replaced_with_thinking(self):
+        ok, reason = ht.validate_semantic_reconciliation_candidate(
+            "Sonra ne yapacaklarını ağlaşırlardı.",
+            "Sonra ne yapacaklarını düşünürlerdi.",
+            source_text="And after that they started to cy about what to do.",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "cry_meaning_loss")
+
     def test_unchanged_proposal_is_not_counted_or_rejected(self):
         blocks = [("1", "00:00:01 --> 00:00:02", "Zaten doğru.")]
         src_map = {"1": "Already correct."}
