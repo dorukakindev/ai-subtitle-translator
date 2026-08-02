@@ -5504,6 +5504,25 @@ def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool
             if not unicodedata.combining(ch)
         ).casefold()
 
+    def _one_edit_apart(left: str, right: str) -> bool:
+        if abs(len(left) - len(right)) > 1:
+            return False
+        if len(left) > len(right):
+            left, right = right, left
+        i = j = edits = 0
+        while i < len(left) and j < len(right):
+            if left[i] == right[j]:
+                i += 1
+                j += 1
+                continue
+            edits += 1
+            if edits > 1:
+                return False
+            if len(left) == len(right):
+                i += 1
+            j += 1
+        return edits + (j < len(right)) <= 1
+
     if proper_name and _latin_base(raw_value) in _latin_base(source_text):
         return True
 
@@ -5524,6 +5543,11 @@ def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool
                 suffix = folded_value[len(folded_source):].lstrip("'\u2019")
                 if suffix in _PRESERVED_TERM_TR_SUFFIXES:
                     return True
+            name_stem = re.split(r"['\u2019]", folded_value, maxsplit=1)[0]
+            if (source_token[:1].isupper()
+                    and min(len(name_stem), len(folded_source)) >= 5
+                    and _one_edit_apart(name_stem, folded_source)):
+                return True
     return False
 
 

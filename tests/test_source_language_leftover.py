@@ -90,6 +90,23 @@ class SourceLanguageLeftoverTest(unittest.TestCase):
                 self.assertFalse(ht.has_non_turkish_target_leak(
                     translated, source_text=source))
 
+    def test_source_proper_name_one_letter_spelling_correction_is_allowed(self):
+        cases = [
+            ("Dvořák", "We tackled Dvorjak, Franck,"),
+            ("Dvořák'ı", "We tackled Dvorjak, Franck,"),
+            ("Dvořák'a", "We tackled Dvorjak, Franck,"),
+        ]
+        for translated, source in cases:
+            with self.subTest(translated=translated):
+                self.assertIsNone(ht.non_turkish_leak_token(
+                    translated, source_text=source))
+
+        self.assertEqual(
+            ht.non_turkish_leak_token(
+                "Mädchen'e söyledim", source_text="I told Madeline."),
+            "Mädchen'e",
+        )
+
     def test_homoglyph_normalization_allows_cyrillic_a_in_turkish_word(self):
         self.assertEqual(ht.normalize_latin_homoglyphs("BАNA"), "BANA")
         self.assertFalse(ht.has_non_turkish_target_leak("O da BАNA kavanozda şeyler getirdi."))

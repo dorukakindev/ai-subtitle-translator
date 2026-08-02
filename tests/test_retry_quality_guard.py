@@ -127,6 +127,17 @@ class RetryQualityGuardTest(unittest.TestCase):
 
         self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
 
+    def test_corrected_dvorak_spelling_does_not_retry_chunk(self):
+        request = UpstreamProviderRecoveryTest._req([
+            {"i": 409, "t": "We tackled Dvorjak, Franck,"},
+        ])
+        for translated in ("Dvořák", "Dvořák'ı", "Dvořák'a"):
+            with self.subTest(translated=translated):
+                raw = json.dumps(
+                    [{"i": 409, "t": translated}], ensure_ascii=False)
+                self.assertEqual(
+                    gui._chunk_response_retry_reason(raw, request), "")
+
     def test_retry_hata_retries_parsed_non_turkish_target_leak(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
