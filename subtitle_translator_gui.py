@@ -4068,6 +4068,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=15,
                               source_cues=None, cancel_check=None,
+                              cancel_context=None,
                               system_prompt=None, locked_terms=None,
                               permanent_failure_cb=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
@@ -4087,7 +4088,10 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
 
     def _cancelled():
         try:
-            return bool(cancel_check and cancel_check())
+            return bool(
+                (cancel_check and cancel_check())
+                or (cancel_context is not None
+                    and cancel_context.is_cancelled()))
         except Exception:
             return False
 
@@ -4220,6 +4224,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 try:
                     resp = _safe_chat_create(
                         client,
+                        cancel_context=cancel_context,
                         _checkpoint_label="translation_repair",
                         model=model,
                         messages=[
@@ -4301,6 +4306,10 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             break
                         continue
                     break  # success
+                except RequestCancelled:
+                    if log_fn:
+                        log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
+                    break
                 except Exception as e:
                     if log_fn:
                         log_fn(f"  ?? Onarim batch basarisiz: {e}", "warn")
@@ -4559,7 +4568,7 @@ def _sanitize_precontext_data(data: dict, tgt: str, log_fn=None,
 
 
 def analyze_file_precontext(client, blocks, model, src, tgt,
-                            log_fn=None, token_cb=None):
+                            log_fn=None, token_cb=None, cancel_context=None):
     """Tek API çağrısıyla dosya düzeyi bağlam çıkarır: özet, karakterler,
     sen/siz hitap haritası ve sabit terimler. Hata durumunda None döner."""
     texts = [_clean_src(t) for (_i, _ts, t) in blocks if _clean_src(t)]
@@ -4593,7 +4602,7 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
     try:
         from hybrid_translate import _safe_chat_create
         resp = _safe_chat_create(
-            client, model=model,
+            client, model=model, cancel_context=cancel_context,
             _checkpoint_label="precontext_analysis",
             messages=[
                 {"role": "system",
@@ -4634,6 +4643,8 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
             parsed, tgt, log_fn, source_text="\n".join(texts))
         parsed["_analysis_complete"] = complete
         return parsed
+    except RequestCancelled:
+        raise
     except Exception as ex:
         if log_fn:
             log_fn(f"Ön-bağlam analizi başarısız: {ex}", "warn")
@@ -4705,7 +4716,8 @@ def normalize_schema_name(name: str) -> str:
 
 
 def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback=None,
-                                 filename: str = "", return_details: bool = False):
+                                 filename: str = "", return_details: bool = False,
+                                 cancel_context=None):
     """Detects content type from sampled subtitle cues using the selected OpenAI model.
     Baş+orta+son örnekleme: tür sinyali her zaman ilk sahnede olmaz (örn. aksiyonla
     açılan romantik dram)."""
@@ -4770,6 +4782,7 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             from hybrid_translate import _safe_chat_create
             resp = _safe_chat_create(
                 client,
+                cancel_context=cancel_context,
                 _checkpoint_label="content_type_detection",
                 model=model,
                 messages=[
@@ -4798,6 +4811,8 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             # fallback: try plain-text match
             cat = _match_category(content, categories)
             return ({"category": cat, "confidence": None} if cat else None), content != ""
+        except RequestCancelled:
+            raise
         except Exception as e:
             if log_fn:
                 log_fn(f"İçerik türü tespit hatası: {e}", "warn")
@@ -4832,7 +4847,8 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
 
 
 def detect_source_language_with_ai(client, cues, model, log_fn=None,
-                                   token_callback=None, filename: str = "") -> str:
+                                   token_callback=None, filename: str = "",
+                                   cancel_context=None) -> str:
     """Altyazının baskın konuşma dilini desteklenen kaynak dillerden biriyle eşler."""
     texts = []
     for cue in cues:
@@ -4860,6 +4876,7 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
     try:
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             _checkpoint_label="source_language_detection",
             model=model,
             messages=[
@@ -4887,6 +4904,8 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
             return detected
         if log_fn:
             log_fn(f"[{Path(filename).name}] Kaynak dil yanıtı eşleşmedi: {content[:80]}", "warn")
+    except RequestCancelled:
+        raise
     except Exception as e:
         if log_fn:
             log_fn(f"[{Path(filename).name}] Kaynak dil tespiti başarısız: {e}", "warn")
@@ -4935,7 +4954,8 @@ def parse_source_languages_response(content: str) -> tuple[dict, set]:
 
 
 def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
-                                          log_fn=None, token_callback=None) -> dict:
+                                          log_fn=None, token_callback=None,
+                                          cancel_context=None) -> dict:
     """Birden çok dosyanın baskın dilini tek model çağrısında tespit eder."""
     items = []
     id_to_path = {}
@@ -4979,6 +4999,7 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
     try:
         resp = _safe_chat_create(
             client,
+            cancel_context=cancel_context,
             _checkpoint_label="source_language_detection",
             model=model,
             messages=[
@@ -5010,6 +5031,8 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
             language = normalize_language_name(raw_val, allow_auto=False)
             if language:
                 results[filepath] = language
+    except RequestCancelled:
+        raise
     except Exception as e:
         if log_fn:
             log_fn(f"Toplu kaynak dil tespiti başarısız: {e}", "warn")
@@ -6132,6 +6155,7 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
 def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, helper_url: str,
                            helper_model: str, log_fn=None,
                            locked_terms: dict | None = None,
+                           cancel_context=None, token_callback=None,
                            status_out: dict | None = None) -> tuple:
     """_mixed_term_autofix_plan'ın GÜVENLİ bulduğu (yalnızca çevrilmeden-kalmış-
     İngilizce-sızıntısı sınıfı) karışık-terim örneklerini yardımcı modelle düzeltir.
@@ -6195,20 +6219,27 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     CHUNK = 60
     total_chunks = (len(items) + CHUNK - 1) // CHUNK
     successful_chunks = 0
+    cancelled = False
     if status_out is not None:
         status_out["total_chunks"] = total_chunks
     for cs in range(0, len(items), CHUNK):
+        if cancel_context is not None and cancel_context.is_cancelled():
+            cancelled = True
+            break
         chunk = items[cs:cs + CHUNK]
         chunk_ids = {str(item["id"]) for item in chunk}
         try:
             resp = _safe_chat_create(
-                client, model=helper_model,
+                client, model=helper_model, cancel_context=cancel_context,
                 _checkpoint_label="term_normalization",
                 messages=[{"role": "system", "content": sys_prompt},
                          {"role": "user", "content": json.dumps({"items": chunk}, ensure_ascii=False)}],
                 max_tokens=max(800, len(chunk) * 100),
                 temperature=0.2,
             )
+            if token_callback and getattr(resp, "usage", None):
+                total, cached = _get_usage_details(resp.usage)
+                token_callback(total, cached=cached)
             if not resp.choices:
                 raise ValueError("empty_response")
             content = resp.choices[0].message.content or ""
@@ -6219,6 +6250,9 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             if not isinstance(data, list):
                 raise ValueError("response_not_array")
             successful_chunks += 1
+        except RequestCancelled:
+            cancelled = True
+            break
         except Exception:
             continue
         chunk_results = {}
@@ -6270,7 +6304,8 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             log_fn(f"⚠ Terim normalizasyonu: {rejected} öneri güvenlik filtresinden döndü ({detail})", "warn")
     failed_chunks = max(0, total_chunks - successful_chunks)
     pass_status = (
-        "completed" if successful_chunks == total_chunks
+        "cancelled" if cancelled
+        else "completed" if successful_chunks == total_chunks
         else "partial" if successful_chunks
         else "failed"
     )
@@ -12650,6 +12685,10 @@ class App(ctk.CTk):
                             self._helper_api_base_url("polish"),
                             self._helper_api_model("polish"),
                             log_fn=self._log, locked_terms=locked_terms,
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"),
+                            token_callback=self._token_callback_for_model(
+                                self._helper_api_model("polish")),
                             status_out=term_status)
                         if term_status.get("status") not in {"completed", "skipped"}:
                             raise RuntimeError(
@@ -16240,7 +16279,9 @@ class App(ctk.CTk):
                             schema=schema, profanity=profanity,
                             log_fn=self._log, token_cb=self._update_tokens,
                             source_cues=cues,
-                            cancel_check=lambda: self._stop_flag)
+                            cancel_check=lambda: self._stop_flag,
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                     except Exception:
                         pass
 
@@ -18720,7 +18761,9 @@ class App(ctk.CTk):
                 cues = []
             language = detect_source_language_with_ai(
                 client, cues, model, self._log,
-                token_callback=token_callback, filename=fp)
+                token_callback=token_callback, filename=fp,
+                cancel_context=self.__dict__.get(
+                    "_helper_request_canceller"))
             return fp, language
 
         with ThreadPoolExecutor(max_workers=min(4, len(files))) as ex:
@@ -19322,7 +19365,11 @@ class App(ctk.CTk):
                 return fp, detect_content_type_with_ai(
                     client, cues, model, self._log,
                     token_callback=self._token_callback_for_model(model),
-                    filename=fp, return_details=True)
+                    filename=fp, return_details=True,
+                    cancel_context=self.__dict__.get(
+                        "_helper_request_canceller"))
+            except RequestCancelled:
+                raise
             except Exception as e:
                 self._log(f"[{Path(fp).name}] Tür tespiti hatası: {e}", "warn")
                 return fp, {"category": "Otomatik", "confidence": None}
@@ -19614,7 +19661,11 @@ class App(ctk.CTk):
                     file_src = (source_languages or {}).get(fp, src)
                     return fp, analyze_file_precontext(client, blocks, model, file_src, tgt,
                                                        log_fn=self._log,
-                                                       token_cb=self._update_tokens)
+                                                       token_cb=self._update_tokens,
+                                                       cancel_context=self.__dict__.get(
+                                                           "_helper_request_canceller"))
+                except RequestCancelled:
+                    raise
                 except Exception as e:
                     # Tek dosya parse/analiz hatası tüm koşuyu çökertmemeli
                     # (ex.map hatayı ana thread'e yeniden fırlatırdı → UI 'çalışıyor'da kalırdı)
@@ -20464,6 +20515,7 @@ class App(ctk.CTk):
             schema=schema_dict, profanity=profanity,
             log_fn=self._log, token_cb=self._update_tokens,
             source_cues=cues, cancel_check=lambda: self._stop_flag,
+            cancel_context=self.__dict__.get("_helper_request_canceller"),
             system_prompt=system_prompt, locked_terms=locked_terms,
             permanent_failure_cb=(
                 self._block_automatic_recovery_for_permanent_provider),
@@ -20696,8 +20748,12 @@ class App(ctk.CTk):
                         detected_name = detect_content_type_with_ai(
                             client, cues, model, self._log,
                             token_callback=self._token_callback_for_model(model),
-                            filename=filepath)
+                            filename=filepath,
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                         schema_dict = self._schema_by_name(detected_name)
+                    except RequestCancelled:
+                        raise
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
@@ -21071,6 +21127,8 @@ class App(ctk.CTk):
                     log_fn=self._log, token_cb=self._update_tokens,
                     source_cues=cues,
                     cancel_check=lambda: self._stop_flag,
+                    cancel_context=self.__dict__.get(
+                        "_helper_request_canceller"),
                     system_prompt=system_prompt,
                     locked_terms=_locked_terms,
                     permanent_failure_cb=(
@@ -21345,7 +21403,12 @@ class App(ctk.CTk):
                         sorted_blocks, {str(c.index): _clean_src(c.text) for c in cues},
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), log_fn=self._log,
-                        locked_terms=_locked_terms, status_out=_term_status)
+                        locked_terms=_locked_terms,
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"),
+                        token_callback=self._token_callback_for_model(
+                            self._helper_api_model("polish")),
+                        status_out=_term_status)
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
@@ -22225,6 +22288,8 @@ class App(ctk.CTk):
                                         token_cb=self._update_tokens,
                                         source_cues=_orig_cues,
                                         cancel_check=lambda: self._stop_flag,
+                                        cancel_context=self.__dict__.get(
+                                            "_helper_request_canceller"),
                                         locked_terms=_locked_terms)
                                 except Exception as repair_exc:
                                     self._log(
@@ -22465,6 +22530,10 @@ class App(ctk.CTk):
                                              self._helper_api_model("polish"),
                                              log_fn=self._log,
                                              locked_terms=_locked_terms,
+                                             cancel_context=self.__dict__.get(
+                                                 "_helper_request_canceller"),
+                                             token_callback=self._token_callback_for_model(
+                                                 self._helper_api_model("polish")),
                                              status_out=_term_status)
                                         _pass_status["Term-Normalize"] = dict(_term_status)
                                         if self._stop_flag:
@@ -22817,6 +22886,8 @@ class App(ctk.CTk):
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=_src_cues,
                         cancel_check=lambda: self._stop_flag,
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"),
                         locked_terms=_locked_terms_for(fp),
                         permanent_failure_cb=(
                             self._block_automatic_recovery_for_permanent_provider))
@@ -23042,6 +23113,10 @@ class App(ctk.CTk):
                         self._helper_api_key("polish"), self._helper_api_base_url("polish"),
                         self._helper_api_model("polish"), log_fn=self._log,
                         locked_terms=_locked_terms_for(fp),
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"),
+                        token_callback=self._token_callback_for_model(
+                            self._helper_api_model("polish")),
                         status_out=_term_status)
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
@@ -23539,8 +23614,12 @@ class App(ctk.CTk):
                         detected_name = detect_content_type_with_ai(
                             client, cues, model, self._log,
                             token_callback=self._token_callback_for_model(model),
-                            filename=filepath)
+                            filename=filepath,
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                         schema_dict = self._schema_by_name(detected_name)
+                    except RequestCancelled:
+                        raise
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
 
@@ -23910,7 +23989,9 @@ class App(ctk.CTk):
                         profanity=self.profanity_var.get(),
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=cues,
-                        cancel_check=lambda: self._stop_flag)
+                        cancel_check=lambda: self._stop_flag,
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"))
                 except Exception as e:
                     self._log(f"[{fname}] Eksik satır onarımı atlandı: {e}", "warn")
                 if self._stop_flag:
@@ -24228,6 +24309,10 @@ class App(ctk.CTk):
                             self._helper_api_base_url("polish"),
                             self._helper_api_model("polish"), log_fn=self._log,
                             locked_terms=_locked_terms,
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"),
+                            token_callback=self._token_callback_for_model(
+                                self._helper_api_model("polish")),
                             status_out=_term_status)
                         _pass_status["Term-Normalize"] = dict(_term_status)
                         _record_pass_change(

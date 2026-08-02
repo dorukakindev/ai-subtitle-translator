@@ -587,7 +587,8 @@ class CacheIntegrityTest(unittest.TestCase):
                                   _update_series_memory_from_precontext=lambda *args, **kwargs: None)
 
             analyzed_fps = []
-            def fake_analyze(client, blocks, model, src, tgt, log_fn=None, token_cb=None):
+            def fake_analyze(client, blocks, model, src, tgt, log_fn=None,
+                             token_cb=None, cancel_context=None):
                 analyzed_fps.append("analyzed")
                 return {"characters": [{"name": "NewChar"}], "terms": {"new": "yeni"}}
 

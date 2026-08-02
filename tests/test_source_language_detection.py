@@ -639,7 +639,7 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         calls = []
 
         def fake_detect(client, cues, model, log_fn=None,
-                        token_callback=None, filename=""):
+                        token_callback=None, filename="", cancel_context=None):
             calls.append(filename)
             return "French"
 
