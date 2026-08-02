@@ -5492,6 +5492,9 @@ def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool
             if not unicodedata.combining(ch)
         ).casefold()
 
+    if proper_name and _latin_base(raw_value) in _latin_base(source_text):
+        return True
+
     for source_token in _GLOSSARY_WORD_RE.findall(str(source_text)):
         source_value = source_token.casefold()
         if value == source_value:

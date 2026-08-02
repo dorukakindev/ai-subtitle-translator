@@ -93,6 +93,18 @@ class UpstreamProviderRecoveryTest(unittest.TestCase):
 
 
 class RetryQualityGuardTest(unittest.TestCase):
+    def test_source_backed_name_in_neighbor_cue_does_not_retry_chunk(self):
+        request = UpstreamProviderRecoveryTest._req([
+            {"i": 1, "t": "Anselmo Suárez-Romero wrote it."},
+            {"i": 2, "t": "She was the son of doña Mendizábal."},
+        ])
+        raw = json.dumps([
+            {"i": 1, "t": "Bunu yazdı."},
+            {"i": 2, "t": "Suárez-Romero ve doña Mendizábal anılıyor."},
+        ], ensure_ascii=False)
+
+        self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
+
     def test_retry_hata_retries_parsed_non_turkish_target_leak(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False

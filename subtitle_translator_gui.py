@@ -3953,6 +3953,15 @@ def _chunk_src_map_from_request(req: dict) -> dict:
         return {}
 
 
+def _chunk_leak_source_text(chunk_src_map: dict, item_id) -> str:
+    own = str(chunk_src_map.get(str(item_id), "") or "")
+    neighbors = [
+        str(text or "") for idx, text in chunk_src_map.items()
+        if str(idx) != str(item_id) and str(text or "").strip()
+    ]
+    return "\n".join([own, *neighbors])
+
+
 def _chunk_response_retry_reason(raw, req: dict | None) -> str:
     if raw is None:
         return "missing_response"
@@ -3971,7 +3980,8 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
         if any(
             ht.has_non_turkish_target_leak(
                 it.get("t", ""),
-                source_text=chunk_src_map.get(str(it.get("i")), ""),
+                source_text=_chunk_leak_source_text(
+                    chunk_src_map, it.get("i")),
             )
             for it in items
         ):
@@ -12837,7 +12847,8 @@ class App(ctk.CTk):
                 for it in items:
                     tok = ht.non_turkish_leak_token(
                         str(it.get("t", "")),
-                        source_text=chunk_src_map.get(str(it.get("i")), ""),
+                        source_text=_chunk_leak_source_text(
+                            chunk_src_map, it.get("i")),
                     )
                     if tok:
                         return tok
@@ -13018,7 +13029,8 @@ class App(ctk.CTk):
                     if isinstance(item, dict):
                         tok = ht.non_turkish_leak_token(
                             str(item.get("t", "")),
-                            source_text=chunk_src_map.get(str(item.get("i")), ""),
+                            source_text=_chunk_leak_source_text(
+                                chunk_src_map, item.get("i")),
                         )
                         if tok:
                             item["t"] = "[HATA_NON_TURKISH_TARGET]"
