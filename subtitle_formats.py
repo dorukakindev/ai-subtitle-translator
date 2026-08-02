@@ -228,7 +228,7 @@ def _vtt_ts_to_srt(ts: str) -> str:
     """WebVTT zaman damgasını (HH:MM:SS.mmm veya MM:SS.mmm) SRT formatına çevirir.
     Milisaniye kısmı 3 haneye tamamlanır (SRT geçerliliği: ,5 → ,500; ,12 → ,120)."""
     ts = ts.strip()
-    match = re.fullmatch(r'(?:(\d{1,2}):)?(\d{1,2}):(\d{2})[.,](\d*)', ts)
+    match = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d*)', ts)
     if not match:
         return ts
     hour, minute, second, ms = match.groups()
@@ -376,7 +376,7 @@ def _format_ass_text(text: str) -> str:
 _VTT_TAG = re.compile(
     r'</?(?:b|i|u|c(?:\.[^\s>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?|ruby|rt)\s*>',
     re.IGNORECASE)
-_VTT_CUE_TS_TAG = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
+_VTT_CUE_TS_TAG = re.compile(r'<\d+:\d{2}(?::\d{2})?[.,]\d{3}>')
 
 
 def _adjacent_vtt_cue_id(value: str, expected_index: int) -> bool:
@@ -404,7 +404,7 @@ def parse_vtt(filepath: str) -> list:
     blocks = []
     idx = 1
     lines = content.replace('\r\n', '\n').replace('\r', '\n').splitlines()
-    ts_re = re.compile(r'^\d{1,2}:\d{2}(?::\d{2})?[.,]\d+\s*-->')
+    ts_re = re.compile(r'^\d+:\d{2}(?::\d{2})?[.,]\d+\s*-->')
     i = 0
     while i < len(lines):
         line = lines[i].strip()
@@ -427,6 +427,7 @@ def parse_vtt(filepath: str) -> list:
             i += 1
             continue
 
+        cue_has_id = ts_idx > i
         ts_line = lines[ts_idx].strip()
         ts_parts = ts_line.split('-->')
         if len(ts_parts) < 2:
@@ -449,7 +450,7 @@ def parse_vtt(filepath: str) -> list:
             if ts_re.match(current):
                 break
             if i + 1 < len(lines) and ts_re.match(lines[i + 1].strip()):
-                if _adjacent_vtt_cue_id(current, idx + 1):
+                if cue_has_id or _adjacent_vtt_cue_id(current, idx + 1):
                     break
                 text_lines.append(current)
                 i += 1

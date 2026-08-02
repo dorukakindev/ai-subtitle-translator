@@ -2176,8 +2176,8 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
 
 # ── SRT yardımcıları ──────────────────────────────────────────────────────────
 _TS_LINE_RE = re.compile(
-    r"^\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*"
-    r"\d{1,2}:\d{2}:\d{2}[,.]\d{3}(?:\s+.*)?$")
+    r"^\d+:\d{2}:\d{2}[,.]\d{3}\s*-->\s*"
+    r"\d+:\d{2}:\d{2}[,.]\d{3}(?:\s+.*)?$")
 
 
 def parse_srt(filepath):

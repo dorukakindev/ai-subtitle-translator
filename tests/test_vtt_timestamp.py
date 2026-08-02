@@ -22,6 +22,9 @@ class VttTimestampTest(unittest.TestCase):
     def test_excess_ms_truncated_to_three(self):
         self.assertEqual(_vtt_ts_to_srt("00:00:01.123456"), "00:00:01,123")
 
+    def test_three_digit_hour_preserved(self):
+        self.assertEqual(_vtt_ts_to_srt("100:00:01.500"), "100:00:01,500")
+
     def test_all_outputs_have_three_ms_digits(self):
         for ts in ("00:00:00.0", "00:00:09.99", "10:20:30.7", "5:00.4"):
             out = _vtt_ts_to_srt(ts)

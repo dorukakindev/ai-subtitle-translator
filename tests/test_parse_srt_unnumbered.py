@@ -29,6 +29,13 @@ class ParseSrtTest(unittest.TestCase):
         self.assertEqual(b[0], ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba"))
         self.assertEqual(b[1][2], "Dünya")
 
+    def test_three_digit_hour_srt(self):
+        p = _write(
+            self.d, "long.srt",
+            "1\n100:00:01,000 --> 100:00:02,000\nCentury line\n")
+        self.assertEqual(gui.parse_srt(p), [
+            ("1", "100:00:01,000 --> 100:00:02,000", "Century line")])
+
     def test_unnumbered_srt_recovered(self):
         # İndeks satırı YOK — ilk satır zaman damgası. Eskiden hepsi düşüyordu.
         p = _write(self.d, "u.srt",
