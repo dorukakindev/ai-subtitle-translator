@@ -512,6 +512,19 @@ class ResponseCheckpointTest(unittest.TestCase):
                 fresh.choices[0].message.content, "fresh retry response")
             resumed.chat.completions.create.assert_called_once()
 
+    def test_empty_success_response_is_not_checkpointed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            empty = self._mock_client(self._response("   "))
+            kwargs = {"messages": [{"role": "user", "content": "packet"}]}
+            provider_retry.configure_response_checkpoint(root, "run-origin")
+
+            provider_retry.chat_create_with_compat(
+                empty, "gpt-5.4", kwargs,
+                checkpoint_label="native_reader")
+
+            self.assertEqual(list(root.rglob("*.json")), [])
+
     def test_changed_request_does_not_reuse_stale_response(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / ".quality_response_checkpoint"

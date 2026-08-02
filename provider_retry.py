@@ -166,6 +166,8 @@ def _response_checkpoint_save(client, model: str, kwargs: dict, response,
         content = choice.message.content
     except Exception:
         return
+    if not isinstance(content, str) or not content.strip():
+        return
     finish_reason = getattr(choice, "finish_reason", None)
     if finish_reason not in (None, "stop"):
         return
