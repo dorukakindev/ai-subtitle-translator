@@ -1,4 +1,5 @@
 import unittest
+from tempfile import TemporaryDirectory
 from pathlib import Path
 
 import subtitle_translator_gui as gui
@@ -37,7 +38,7 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             "discord: ceviri2",
         ))
         self.assertEqual(result[-1], (
-            "413",
+            "412",
             "00:00:10,001 --> 00:00:12,001",
             "discord: ceviri2",
         ))
@@ -45,15 +46,14 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             block for block in result[1:-1]
             if block[2] == "discord: ceviri2"]
         self.assertEqual(len(middle), 1)
-        self.assertEqual(middle[0][0], "412")
+        self.assertEqual(middle[0][0], "50")
         by_id = {str(idx): (ts, text) for idx, ts, text in result}
         self.assertEqual(by_id["1"][1], "Hala buradayım.")
         self.assertEqual(by_id["2"][1], r"{\i1}Sarı Çizgili{\i0}")
         self.assertEqual(by_id["49"][1], "Göstermelik")
-        self.assertNotIn("50", by_id)
-        self.assertNotIn("51", by_id)
-        self.assertNotIn("52", by_id)
-        self.assertNotIn("410", by_id)
+        joined = "\n".join(text for _ts, text in by_id.values())
+        self.assertNotIn("gotwoot", joined)
+        self.assertNotIn("Sylf", joined)
         self.assertEqual(
             gui._prepare_upload_ready_blocks(result, "Turkish"),
             result,
@@ -264,9 +264,41 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         middle_start, middle_end = gui._srt_timestamp_bounds(signatures[1][1])
         self.assertGreater(middle_start, gui._srt_timestamp_bounds(blocks[1][1])[1])
         self.assertLess(middle_end, gui._srt_timestamp_bounds(blocks[2][1])[0])
-        original = {idx: ts for idx, ts, _text in blocks}
-        delivered = {idx: ts for idx, ts, _text in result if idx in original}
-        self.assertEqual(delivered, original)
+        delivered_dialogue = [
+            (ts, text) for _idx, ts, text in result
+            if text != "discord: ceviri2"]
+        self.assertEqual(
+            delivered_dialogue,
+            [(ts, text) for _idx, ts, text in blocks],
+        )
+
+    def test_middle_signature_round_trip_keeps_auditable_dialogue_timings(self):
+        source_blocks = [
+            ("1", "00:00:10,000 --> 00:00:12,000", "One."),
+            ("2", "00:00:12,100 --> 00:00:14,000", "Two."),
+            ("3", "00:00:18,000 --> 00:00:20,000", "Three."),
+            ("4", "00:00:20,100 --> 00:00:22,000", "Four."),
+        ]
+        translated = [
+            (idx, ts, text) for (idx, ts, _source), text in zip(
+                source_blocks, ("Bir.", "Iki.", "Uc.", "Dort."))]
+        delivered = gui._prepare_upload_ready_blocks(translated, "Turkish")
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source_blocks, "English")
+            gui.write_srt(output_path, delivered, "English")
+
+            reparsed = gui.parse_srt(output_path)
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual([idx for idx, _ts, _text in reparsed],
+                         ["0", "1", "2", "3", "4", "5", "6"])
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["delivery_signatures"], 3)
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["extra_dialogue_ids"], [])
 
     def test_all_final_write_flows_use_shared_delivery_guard(self):
         source = Path(gui.__file__).read_text(encoding="utf-8")

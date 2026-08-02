@@ -2557,6 +2557,23 @@ def _delivery_middle_signature_slot(blocks: list):
     return left[0] + 1, start, end
 
 
+def _normalize_delivery_ids(blocks: list) -> list:
+    normalized = []
+    previous = -1
+    for idx, ts, text in blocks:
+        if _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip()):
+            current = previous + 1
+        else:
+            try:
+                requested = int(str(idx))
+            except (TypeError, ValueError):
+                requested = previous + 1
+            current = max(requested, previous + 1)
+        normalized.append((str(current), ts, text))
+        previous = current
+    return normalized
+
+
 def _delivery_source_map(blocks: list, source_cues) -> dict:
     source_blocks = []
     for cue in source_cues or []:
@@ -2651,40 +2668,34 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             head_start = max(0, head_end - 2000)
         else:
             head_start, head_end = 0, 1
-        numeric_ids = [
-            int(str(idx)) for idx, _ts, _text in cleaned
-            if str(idx).isdigit()]
-        next_signature_id = max(numeric_ids, default=len(cleaned)) + 1
         middle_slot = _delivery_middle_signature_slot(cleaned)
         if middle_slot:
             middle_pos, middle_start, middle_end = middle_slot
             cleaned = [
                 *cleaned[:middle_pos],
                 (
-                    str(next_signature_id),
+                    "",
                     f"{_srt_ms_timestamp(middle_start)} --> "
                     f"{_srt_ms_timestamp(middle_end)}",
                     _DELIVERY_SIGNATURE,
                 ),
                 *cleaned[middle_pos:],
             ]
-            tail_id = next_signature_id + 1
-        else:
-            tail_id = next_signature_id
         cleaned = [
             (
-                "0",
+                "",
                 f"{_srt_ms_timestamp(head_start)} --> {_srt_ms_timestamp(head_end)}",
                 _DELIVERY_SIGNATURE,
             ),
             *cleaned,
             (
-                str(tail_id),
+                "",
                 f"{_srt_ms_timestamp(last_end + 1)} --> "
                 f"{_srt_ms_timestamp(last_end + 2001)}",
                 _DELIVERY_SIGNATURE,
             ),
         ]
+        cleaned = _normalize_delivery_ids(cleaned)
 
     if log_fn:
         if unresolved:
@@ -6880,9 +6891,7 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
                     pass
     if not required_ids:
         return False
-    for idx, (start, end) in required_spans:
-        if idx in translated_ids:
-            continue
+    for _idx, (start, end) in required_spans:
         if not any(out_start <= start and out_end >= end
                    for out_start, out_end in translated_spans):
             return False
@@ -7041,24 +7050,36 @@ def _subtitle_delivery_audit(source_path: str, output_path: str) -> dict:
     except Exception as exc:
         audit["error"] = str(exc)
         return audit
-    source_map = {str(idx): (str(ts), str(text or "")) for idx, ts, text in source}
+    source_rows = [
+        (str(idx), str(ts), str(text or "")) for idx, ts, text in source]
     output_dialogue = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in output
         if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
     ]
-    output_map = {idx: (ts, text) for idx, ts, text in output_dialogue}
-    missing = sorted(idx for idx in source_map if idx not in output_map)
-    expected_removed = [
-        idx for idx in missing
-        if _is_delivery_credit(source_map[idx][1])
-        or _is_delivery_sdh_only(source_map[idx][1])
-    ]
-    missing_dialogue = [idx for idx in missing if idx not in expected_removed]
-    extras = sorted(idx for idx in output_map if idx not in source_map)
-    timestamp_mismatches = sorted(
-        idx for idx in source_map.keys() & output_map.keys()
-        if source_map[idx][0] != output_map[idx][0]
-    )
+    unmatched_output = list(output_dialogue)
+    missing_dialogue = []
+    expected_removed = []
+    timestamp_mismatches = []
+    for source_idx, source_ts, source_text in source_rows:
+        match_pos = next(
+            (pos for pos, (_idx, output_ts, _text) in enumerate(unmatched_output)
+             if output_ts == source_ts),
+            None,
+        )
+        if match_pos is not None:
+            unmatched_output.pop(match_pos)
+        elif (id_match_pos := next(
+                (pos for pos, (output_idx, _ts, _text)
+                 in enumerate(unmatched_output)
+                 if output_idx == source_idx), None)) is not None:
+            unmatched_output.pop(id_match_pos)
+            timestamp_mismatches.append(source_idx)
+        elif (_is_delivery_credit(source_text)
+              or _is_delivery_sdh_only(source_text)):
+            expected_removed.append(source_idx)
+        else:
+            missing_dialogue.append(source_idx)
+    extras = sorted(idx for idx, _ts, _text in unmatched_output)
     output_texts = [text for _idx, _ts, text in output_dialogue]
     unresolved_markers = sum(
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
@@ -7076,7 +7097,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str) -> dict:
     ))
     audit.update({
         "status": "review" if needs_review else "ok",
-        "source_cues": len(source),
+        "source_cues": len(source_rows),
         "output_cues": len(output),
         "dialogue_output_cues": len(output_dialogue),
         "missing_dialogue_ids": missing_dialogue,
