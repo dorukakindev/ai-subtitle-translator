@@ -7163,6 +7163,7 @@ def _format_pass_trace(trace: dict) -> str:
 def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     snapshot = snapshot or {}
     trace = row.get("pass_trace") or {}
+    pass_status = row.get("pass_status") or {}
     status = str(row.get("run_status") or "done")
     lines = []
 
@@ -7209,6 +7210,25 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         ("Satır düzenleme", bool(snapshot.get("linebreak")), ("Line-break",)),
     )
     for title, enabled, labels in features:
+        status_info = next(
+            (pass_status.get(label) for label in labels
+             if isinstance(pass_status.get(label), dict)), None)
+        if status_info and status_info.get("status") in {
+                "failed", "partial", "cancelled"}:
+            state = status_info["status"]
+            successful = int(status_info.get("successful_chunks", 0) or 0)
+            total = int(status_info.get("total_chunks", 0) or 0)
+            changed = int(status_info.get("changed", 0) or 0)
+            detail = f", {successful}/{total} paket başarılı" if total else ""
+            if changed:
+                detail += f", {changed} cue değiştirdi"
+            state_text = {
+                "failed": "başarısız",
+                "partial": "kısmi tamamlandı",
+                "cancelled": "durduruldu",
+            }[state]
+            lines.append(f"{title}: {state_text}{detail}")
+            continue
         ran = [label for label in labels if label in trace]
         if ran:
             changed = sum(int(trace.get(label, 0) or 0) for label in ran)
@@ -17649,6 +17669,7 @@ class App(ctk.CTk):
                         self._update_file_progress(fp, "Native Okuyucu", 65)
                         self._set_phase("Native Okuyucu", f"{fname}  ({i+1}/{n})")
                         self._log(f"Native Okuyucu Pass — {len(blocks)} satır...", "info")
+                        _native_status = {}
                         blocks = ht.native_reader_pass(
                             tr_blocks=blocks,
                             helper_api_key=helper_keys.get("critic", ""),
@@ -17662,7 +17683,8 @@ class App(ctk.CTk):
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
                             progress_callback=App._pass_progress_callback(
                                 self, fp, "Native Okuyucu", 65.0, 82.0),
-                            cancel_context=self.__dict__.get("_helper_request_canceller"))
+                            cancel_context=self.__dict__.get("_helper_request_canceller"),
+                            status_out=_native_status)
                     except Exception as e:
                         self._log(f"Native Pass hatası: {e}", "warn")
 
@@ -20719,6 +20741,7 @@ class App(ctk.CTk):
                 )
 
             _pass_trace = {}
+            _pass_status = {}
             _pass_history = {}
             _record_pass_change(
                 _pass_trace, "Repair", _before_repair,
@@ -20793,6 +20816,7 @@ class App(ctk.CTk):
                 self._update_file_progress(filepath, "Native Okuyucu", 94)
                 self._log(f"Native Okuyucu Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
+                _native_status = {}
                 sorted_blocks = ht.native_reader_pass(
                     tr_blocks=sorted_blocks,
                     helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
@@ -20809,10 +20833,13 @@ class App(ctk.CTk):
                     scene_gap_sec=float(self._snap_get(
                         "scene_gap_seconds", self._scene_gap_seconds)),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
+                    status_out=_native_status,
                 )
+                _pass_status["Native"] = dict(_native_status)
                 if self._stop_flag:
                     break
-                _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
+                if _native_status.get("status") == "completed":
+                    _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
 
             if (sorted_blocks and _quality_api_allowed
                     and (self.critic_var.get() or self.polish_var.get()
@@ -21067,6 +21094,7 @@ class App(ctk.CTk):
                 "cons": _cons_fixes, "pass_fix": _pass_fix,
                 "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
                 "pass_trace": _pass_trace,
+                "pass_status": _pass_status,
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
                 "tm_hits": self._tm.hit_count_session(),
@@ -21783,6 +21811,7 @@ class App(ctk.CTk):
                                 _resume_schema = self._schema_by_name("Otomatik")
 
                             _pass_trace = {}
+                            _pass_status = {}
                             _pass_history = {}
                             _before_repair = list(pp)
                             if _orig_cues and not self._stop_flag:
@@ -21912,6 +21941,7 @@ class App(ctk.CTk):
                             if self.native_var.get() and pp:
                                 self._set_status("Native Okuyucu...")
                                 _before_pass = list(pp)
+                                _native_status = {}
                                 pp = ht.native_reader_pass(
                                     tr_blocks=pp, helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
@@ -21924,10 +21954,13 @@ class App(ctk.CTk):
                                         "Native Okuyucu", 94.0, 96.0),
                                     scene_gap_sec=float(self._snap_get(
                                         "scene_gap_seconds", self._scene_gap_seconds)),
-                                    cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                    cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                    status_out=_native_status)
+                                _pass_status["Native"] = dict(_native_status)
                                 if self._stop_flag:
                                     break
-                                _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
+                                if _native_status.get("status") == "completed":
+                                    _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                                 _before_pass = list(pp)
                                 pp, _final_cons_fixes = ht.final_consistency_sweep(
@@ -22105,6 +22138,7 @@ class App(ctk.CTk):
                                                     "qc_auto": _qc_auto_fixes,
                                                     "qc": _qc_fixes,
                                                     "pass_trace": _pass_trace,
+                                                    "pass_status": _pass_status,
                                                     "pass_history": _pass_history,
                                                     "pass_coverage": _pc,
                                                     "tm_hits": self._tm.hit_count_session()})
@@ -22320,6 +22354,7 @@ class App(ctk.CTk):
             _pass_fix = 0
             _qc_stats = {"qc": 0, "qc_auto": 0}
             _pass_trace = {}
+            _pass_status = {}
             _pass_history = {}
             # Kaynağı DOSYA BAŞINA BİR KEZ parse et; tüm adımlar bunu paylaşır
             try:
@@ -22456,6 +22491,7 @@ class App(ctk.CTk):
                 try:
                     self._record_file_status(fp, "Native Okuyucu", "running")
                     _before_pass = list(sorted_blocks)
+                    _native_status = {}
                     sorted_blocks = ht.native_reader_pass(
                         tr_blocks=sorted_blocks,
                         helper_api_key=self._helper_api_key("critic"),
@@ -22471,10 +22507,13 @@ class App(ctk.CTk):
                             self, fp, "Native Okuyucu", 94.0, 96.0),
                         scene_gap_sec=float(self._snap_get(
                             "scene_gap_seconds", self._scene_gap_seconds)),
-                        cancel_context=self.__dict__.get("_helper_request_canceller"))
+                        cancel_context=self.__dict__.get("_helper_request_canceller"),
+                        status_out=_native_status)
+                    _pass_status["Native"] = dict(_native_status)
                     if self._stop_flag:
                         break
-                    _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
+                    if _native_status.get("status") == "completed":
+                        _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"Native Pass hatası: {e}", "warn")
             if (sorted_blocks and _quality_api_allowed and not self._stop_flag
@@ -22650,6 +22689,7 @@ class App(ctk.CTk):
                 "pass_fix": _pass_fix,
                 "qc_auto": _qc_stats["qc_auto"], "qc": _qc_stats["qc"],
                 "pass_trace": _pass_trace,
+                "pass_status": _pass_status,
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
                 "helper_analysis": False,
@@ -23459,6 +23499,7 @@ class App(ctk.CTk):
                 _pre_pass = {str(b[0]): b[2] for b in _final_blocks}
                 _pass_fix, _qc_fixes, _qc_auto_fixes = 0, 0, 0
                 _pass_trace = {}
+                _pass_status = {}
                 _pass_history = {}
 
                 # Bağlam incelemesi — batch'te zincirleme bağlam yoktur (chunk'lar paralel),
@@ -23533,6 +23574,7 @@ class App(ctk.CTk):
                             self._set_status(f"Native Okuyucu: {fname}")
                             self._log(f"Native Okuyucu Pass başlıyor ({len(pp_blocks)} satır)...", "info")
                             _before_pass = list(pp_blocks)
+                            _native_status = {}
                             pp_blocks = ht.native_reader_pass(
                                 tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
@@ -23546,10 +23588,13 @@ class App(ctk.CTk):
                                     self, filepath, "Native Okuyucu", 94.0, 96.0),
                                 scene_gap_sec=float(self._snap_get(
                                     "scene_gap_seconds", self._scene_gap_seconds)),
-                                cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                status_out=_native_status)
+                            _pass_status["Native"] = dict(_native_status)
                             if self._stop_flag:
                                 break
-                            _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
+                            if _native_status.get("status") == "completed":
+                                _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                             self._record_file_status(
                                 filepath, "Final Tutarlılık", "running")
@@ -23787,6 +23832,7 @@ class App(ctk.CTk):
                     "cons": _cons_fixes, "pass_fix": _pass_fix,
                     "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
                     "pass_trace": _pass_trace,
+                    "pass_status": _pass_status,
                     "pass_history": _pass_history,
                     "pass_coverage": _pc,
                     "tm_hits": self._tm.hit_count_session(),

@@ -1,4 +1,5 @@
 import json
+import inspect
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -16,20 +17,50 @@ def _response(payload):
 
 
 class PassProgressFeedbackTest(unittest.TestCase):
+    def test_all_native_gui_calls_collect_real_completion_status(self):
+        source = inspect.getsource(gui.App)
+        self.assertEqual(
+            source.count("ht.native_reader_pass("),
+            source.count("status_out=_native_status"),
+        )
+        self.assertGreaterEqual(
+            source.count('_native_status.get("status") == "completed"'), 4)
+
+    def test_native_does_not_report_natural_when_every_request_failed(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
+        status = {}
+        logs = []
+        with patch("openai.OpenAI", return_value=MagicMock()), patch.object(
+                ht, "_safe_chat_create", side_effect=RuntimeError("503")):
+            result = ht.native_reader_pass(
+                blocks, "key", status_out=status,
+                log_fn=lambda message, tag="": logs.append((message, tag)))
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(status, {
+            "status": "failed", "successful_chunks": 0,
+            "failed_chunks": 1, "total_chunks": 1, "changed": 0,
+        })
+        self.assertTrue(any("tamamlanamadı" in message for message, _ in logs))
+        self.assertFalse(any("zaten doğal" in message for message, _ in logs))
+
     def test_native_reports_request_wait_and_completion(self):
         events = []
+        status = {}
         with patch("openai.OpenAI", return_value=MagicMock()), \
              patch.object(ht, "_safe_chat_create", return_value=_response([])):
             ht.native_reader_pass(
                 [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")],
                 "key",
                 progress_callback=lambda *args: events.append(args),
+                status_out=status,
             )
 
         self.assertEqual(events, [
             (0, 1, "requesting"),
             (1, 1, "completed"),
         ])
+        self.assertEqual(status["status"], "completed")
 
     def test_semantic_reports_each_api_batch(self):
         cluster = {

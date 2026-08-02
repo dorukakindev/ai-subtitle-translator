@@ -234,6 +234,20 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("İşlem dökümü:", txt)
         self.assertIn("Native Okuyucu: çalıştı, 0 cue değiştirdi", txt)
 
+    def test_native_failure_is_not_reported_as_successful_zero_change(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_trace": {},
+            "pass_status": {"Native": {
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 3, "total_chunks": 3,
+            }},
+        }, {"native": True})
+
+        self.assertIn("Native Okuyucu: başarısız, 0/3 paket başarılı", audit)
+        self.assertFalse(any(
+            line.startswith("Native Okuyucu: çalıştı") for line in audit))
+
     def test_repair_only_audit_marks_every_quality_pass_skipped(self):
         audit = gui._quality_feature_audit({
             "repair_only": True,

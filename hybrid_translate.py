@@ -3458,6 +3458,7 @@ def native_reader_pass(
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
     progress_callback=None,
+    status_out: dict | None = None,
 ) -> list:
     """Native reader reflex pass — Helper reads translated subtitles as a native viewer
     and naturally rewrites lines that 'sound translated'.
@@ -3473,7 +3474,15 @@ def native_reader_pass(
 
     Returns modified tr_blocks list with naturalness improvements applied.
     """
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     if not tr_blocks:
+        if status_out is not None:
+            status_out["status"] = "skipped"
         return tr_blocks
 
     CHUNK_SIZE = 150
@@ -3487,6 +3496,8 @@ def native_reader_pass(
     except Exception as e:
         if log_fn:
             log_fn(f"Native Pass bağlantı hatası: {e}", "err")
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(e)})
         return tr_blocks
 
     context_info = build_polish_context_hint(analysis_result, tgt_lang)
@@ -3560,6 +3571,7 @@ def native_reader_pass(
         CHUNK_SIZE,
     )
     total_chunks = len(native_chunks)
+    successful_chunks = 0
     cancelled = False
 
     for chunk_num, chunk in enumerate(native_chunks, 1):
@@ -3675,6 +3687,7 @@ def native_reader_pass(
             fixes = json.loads(content)
             if not isinstance(fixes, list):
                 continue
+            successful_chunks += 1
             chunk_pos_by_id = {str(idx): pos for pos, (idx, _ts, _text) in enumerate(chunk)}
             fix_by_id = {}
             conflicting_fix_ids = set()
@@ -3838,9 +3851,30 @@ def native_reader_pass(
                     pass
 
     if cancelled:
+        if status_out is not None:
+            status_out.update({
+                "status": "cancelled",
+                "successful_chunks": successful_chunks,
+                "failed_chunks": max(0, total_chunks - successful_chunks),
+                "total_chunks": total_chunks, "changed": 0,
+            })
         if log_fn:
             log_fn("Native Pass durduruldu; kısmi değişiklikler uygulanmadı", "warn")
         return list(tr_blocks)
+
+    failed_chunks = max(0, total_chunks - successful_chunks)
+    pass_status = (
+        "completed" if successful_chunks == total_chunks
+        else "partial" if successful_chunks
+        else "failed"
+    )
+    if status_out is not None:
+        status_out.update({
+            "status": pass_status,
+            "successful_chunks": successful_chunks,
+            "failed_chunks": failed_chunks,
+            "total_chunks": total_chunks, "changed": total_fixed,
+        })
 
     if log_fn:
         if total_rejected:
@@ -3848,9 +3882,14 @@ def native_reader_pass(
             log_fn(f"Native Pass: {total_rejected} öneri güvenlik filtresinden döndü ({reason_txt})", "warn")
         if total_cap_rejected:
             log_fn(f"Native Pass: {total_cap_rejected} öneri %20 sınırı nedeniyle atlandı", "warn")
+        if failed_chunks:
+            log_fn(
+                f"Native Pass tamamlanamadı: {successful_chunks}/{total_chunks} paket başarılı, "
+                f"{failed_chunks} paket başarısız",
+                "warn" if successful_chunks else "err")
         if total_fixed:
             log_fn(f"Native Pass: {total_fixed} satır doğallaştırıldı ✓", "ok")
-        else:
+        elif pass_status == "completed":
             log_fn("Native Pass: tüm satırlar zaten doğal ✓", "ok")
 
     return result
