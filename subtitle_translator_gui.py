@@ -7863,6 +7863,7 @@ class App(ctk.CTk):
         self._motion_active_filepath = None
         self._motion_progress_value = 0.0
         self._motion_progress_target = 0.0
+        self._motion_activity_text = ""
 
         # ── Log dosyası ───────────────────────────────────────────────────────
         import datetime
@@ -9559,7 +9560,7 @@ class App(ctk.CTk):
             command=self._on_light_animations_changed,
         ).grid(row=0, column=0)
         ctk.CTkLabel(
-            motion_fr, text="Hafif ilerleme animasyonları",
+            motion_fr, text="Canlı ilerleme animasyonları",
             font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
@@ -9760,9 +9761,12 @@ class App(ctk.CTk):
                     row=0, column=i, sticky="nse", pady=12)
 
         # ── Progress ──────────────────────────────────────────────────────────
-        pb_fr = ctk.CTkFrame(main, fg_color=PANEL, corner_radius=12)
+        pb_fr = ctk.CTkFrame(
+            main, fg_color=PANEL, corner_radius=12,
+            border_width=1, border_color=BORDER)
         pb_fr.grid(row=1, column=0, sticky="ew", pady=(0,10))
         pb_fr.grid_columnconfigure(0, weight=1)
+        self._phase_card = pb_fr
 
         # Satır 0: faz adı (büyük + renkli) + hız + ETA + geçen zaman
         pb_top = ctk.CTkFrame(pb_fr, fg_color="transparent")
@@ -9777,9 +9781,16 @@ class App(ctk.CTk):
                                        text_color=FG2, anchor="w")
         self._phase_lbl.grid(row=0, column=1, sticky="w", padx=(4,0))
 
+        self._phase_activity_lbl = ctk.CTkLabel(
+            pb_top, text="", width=94, anchor="e",
+            font=ctk.CTkFont("Segoe UI", 9, "bold"),
+            text_color=FG2)
+        self._phase_activity_lbl.grid(
+            row=0, column=2, sticky="e", padx=(8, 4))
+
         # Speed and elapsed time display
         speed_elapsed_fr = ctk.CTkFrame(pb_top, fg_color="transparent")
-        speed_elapsed_fr.grid(row=0, column=2, sticky="e", padx=(8,0))
+        speed_elapsed_fr.grid(row=0, column=3, sticky="e", padx=(8,0))
         speed_elapsed_fr.grid_columnconfigure((0,1,2), weight=0)
         self.speed_lbl = ctk.CTkLabel(speed_elapsed_fr, text="",
                                       font=ctk.CTkFont("Segoe UI", 10),
@@ -10952,6 +10963,18 @@ class App(ctk.CTk):
         _post_ui(self, _write)
 
     def _provider_wait_callback(self, event: str, remaining: int, waiting: int):
+        if event in {
+                "circuit_open", "circuit_reopen", "circuit_start",
+                "circuit_tick", "start", "tick"}:
+            self._motion_activity_text = "BEKLİYOR"
+        elif event in {"circuit_probe", "request_start", "request_tick"}:
+            self._motion_activity_text = "API"
+        elif event.startswith("retry_"):
+            self._motion_activity_text = (
+                "API" if "_end_" in event or "_success_" in event
+                else "YENİDEN")
+        elif event in {"request_success", "circuit_recovered"}:
+            self._motion_activity_text = "ÇALIŞIYOR"
         if event == "circuit_open":
             self._log(
                 f"Sağlayıcı art arda hata verdi; yeni istekler {remaining} sn "
@@ -11791,7 +11814,7 @@ class App(ctk.CTk):
 
     def _on_window_motion(self, event=None):
         if event is None or getattr(event, "widget", self) is self:
-            self._motion_pause_until = time.monotonic() + 0.35
+            self._motion_pause_until = time.monotonic() + 0.65
 
     def _cancel_motion_animation(self, snap: bool = False):
         after_id = self.__dict__.get("_motion_after_id")
@@ -11804,8 +11827,16 @@ class App(ctk.CTk):
         if snap:
             target = float(self.__dict__.get("_motion_progress_target", 0.0))
             self._motion_progress_value = target
+            phase_color = self.__dict__.get("_motion_phase_color", ACCENT)
             try:
                 self.progress.set(target)
+                self.progress.configure(progress_color=phase_color)
+                self._phase_dot.configure(text="●", text_color=phase_color)
+                self._phase_activity_lbl.configure(
+                    text="ÇALIŞIYOR" if self.__dict__.get("_is_running", False) else "")
+                self._phase_card.configure(
+                    border_width=1,
+                    border_color=_mix_hex_color(BORDER, phase_color, 0.38))
             except Exception:
                 pass
             for row in self.__dict__.get("_job_rows", {}).values():
@@ -11814,6 +11845,8 @@ class App(ctk.CTk):
                 try:
                     row["pb"].set(value)
                     row["dot"].configure(text_color=row.get("color", FG2))
+                    if row.get("state") != "running":
+                        row["frame"].configure(border_width=0)
                 except Exception:
                     pass
 
@@ -11835,7 +11868,7 @@ class App(ctk.CTk):
             return
         try:
             self._motion_after_id = self.after(
-                80, lambda: App._motion_tick(self))
+                110, lambda: App._motion_tick(self))
         except Exception:
             self._motion_after_id = None
 
@@ -11851,11 +11884,23 @@ class App(ctk.CTk):
 
         self._motion_step = (self.__dict__.get("_motion_step", 0) + 1) % 32
         wave = (math.sin(self._motion_step * math.pi / 16.0) + 1.0) / 2.0
+        base_color = self.__dict__.get("_motion_phase_color", ACCENT)
         phase_color = _mix_hex_color(
-            FG2, self.__dict__.get("_motion_phase_color", ACCENT),
-            0.58 + wave * 0.42)
+            _mix_hex_color(PANEL, base_color, 0.52),
+            _mix_hex_color(FG, base_color, 0.72), wave)
+        dot_frames = ("●", "◉", "◎", "◉")
+        dot_text = dot_frames[(self._motion_step // 4) % len(dot_frames)]
+        activity = str(
+            self.__dict__.get("_motion_activity_text") or "ÇALIŞIYOR")
+        activity_dots = "·" * (1 + (self._motion_step // 3) % 3)
         try:
-            self._phase_dot.configure(text_color=phase_color)
+            self._phase_dot.configure(text=dot_text, text_color=phase_color)
+            self._phase_activity_lbl.configure(
+                text=f"{activity} {activity_dots}", text_color=phase_color)
+            self._phase_card.configure(
+                border_width=1,
+                border_color=_mix_hex_color(BORDER, phase_color, 0.72))
+            self.progress.configure(progress_color=phase_color)
         except Exception:
             pass
 
@@ -11866,6 +11911,13 @@ class App(ctk.CTk):
                 active_row["dot"].configure(text_color=_mix_hex_color(
                     FG2, active_row.get("color", ACCENT),
                     0.58 + wave * 0.42))
+                active_row["frame"].configure(
+                    border_width=1,
+                    border_color=_mix_hex_color(
+                        BORDER, active_row.get("color", ACCENT),
+                        0.42 + wave * 0.48))
+                active_row["pb"].configure(progress_color=_mix_hex_color(
+                    active_row.get("color", ACCENT), FG, wave * 0.28))
             except Exception:
                 pass
 
@@ -11903,8 +11955,17 @@ class App(ctk.CTk):
         def _upd():
             try:
                 self._motion_phase_color = color
+                self._motion_activity_text = (
+                    "" if key in {"hazır", "tamam"} else "ÇALIŞIYOR")
+                self._motion_step = 0
                 self._phase_lbl.configure(text=phase, text_color=color)
-                self._phase_dot.configure(text_color=color)
+                self._phase_dot.configure(text="●", text_color=color)
+                self._phase_card.configure(
+                    border_width=1,
+                    border_color=_mix_hex_color(BORDER, color, 0.78))
+                self.progress.configure(progress_color=color)
+                self._phase_activity_lbl.configure(
+                    text="" if key in {"hazır", "tamam"} else "ÇALIŞIYOR ·")
                 if detail:
                     self.progress_lbl.configure(text=detail)
                 App._ensure_motion_animation(self)
@@ -12382,6 +12443,7 @@ class App(ctk.CTk):
                         previous["pb"].set(previous["value"])
                         previous["dot"].configure(
                             text_color=previous.get("color", ACCENT))
+                        previous["frame"].configure(border_width=0)
                 row["dot"].configure(text=dot_text, text_color=color)
                 row["phase"].configure(text=phase,  text_color=color)
                 row["pb"].configure(progress_color=color)
@@ -12402,12 +12464,19 @@ class App(ctk.CTk):
                     row["pb"].set(value)
                     if status == "done" and App._motion_enabled(self):
                         row["frame"].configure(border_width=1, border_color=GREEN)
+                        def _bright_flash(r=row):
+                            try:
+                                r["frame"].configure(
+                                    border_color=_mix_hex_color(GREEN, FG, 0.42))
+                            except Exception:
+                                pass
                         def _clear_flash(r=row):
                             try:
                                 r["frame"].configure(border_width=0)
                             except Exception:
                                 pass
-                        self.after(520, _clear_flash)
+                        self.after(150, _bright_flash)
+                        self.after(680, _clear_flash)
                 self._refresh_job_board_title()
             except Exception:
                 pass

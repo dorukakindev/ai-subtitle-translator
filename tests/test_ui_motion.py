@@ -15,9 +15,21 @@ class _Var:
 class _Progress:
     def __init__(self):
         self.values = []
+        self.configured = []
 
     def set(self, value):
         self.values.append(value)
+
+    def configure(self, **kwargs):
+        self.configured.append(kwargs)
+
+
+class _Widget:
+    def __init__(self):
+        self.configured = []
+
+    def configure(self, **kwargs):
+        self.configured.append(kwargs)
 
 
 class UiMotionTest(unittest.TestCase):
@@ -71,6 +83,40 @@ class UiMotionTest(unittest.TestCase):
         gui.App._on_window_motion(app, event)
 
         self.assertGreater(app._motion_pause_until, gui.time.monotonic())
+
+    def test_motion_tick_shows_visible_activity_signal(self):
+        scheduled = []
+        dot = _Widget()
+        activity = _Widget()
+        card = _Widget()
+        progress = _Progress()
+        app = SimpleNamespace(
+            light_animations_var=_Var(True),
+            _is_running=True,
+            _is_shutting_down=False,
+            _motion_after_id=None,
+            _motion_pause_until=0.0,
+            _motion_step=0,
+            _motion_phase_color=gui.INFO_BLUE,
+            _motion_activity_text="ÇALIŞIYOR",
+            _motion_progress_value=0.4,
+            _motion_progress_target=0.4,
+            _motion_active_filepath=None,
+            _job_rows={},
+            _phase_dot=dot,
+            _phase_activity_lbl=activity,
+            _phase_card=card,
+            progress=progress,
+            after=lambda delay, callback: scheduled.append((delay, callback)) or "tick-2",
+        )
+
+        gui.App._motion_tick(app)
+
+        self.assertIn(dot.configured[-1]["text"], {"●", "◉", "◎"})
+        self.assertTrue(activity.configured[-1]["text"].startswith("ÇALIŞIYOR"))
+        self.assertEqual(card.configured[-1]["border_width"], 1)
+        self.assertIn("progress_color", progress.configured[-1])
+        self.assertEqual(scheduled[0][0], 110)
 
 
 if __name__ == "__main__":
