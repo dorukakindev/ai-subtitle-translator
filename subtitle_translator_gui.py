@@ -12468,7 +12468,7 @@ class App(ctk.CTk):
             return
         tgt = snapshot.get("tgt_lang") or "Turkish"
         report_lines = ["# Sezon Sonu Kanon Denetimi", ""]
-        total_suspects = total_fixed = 0
+        total_suspects = total_fixed = total_errors = 0
         self._log(
             f"Sezon Sonu Kanon Denetimi: {len(groups)} sezon, "
             f"{sum(len(items) for items in groups.values())} bölüm inceleniyor...",
@@ -12511,7 +12511,8 @@ class App(ctk.CTk):
                             canon_hint=canon_hint, force=True,
                             target_coverage=0.0,
                             report_path=report_dir / (
-                                f"{artifact_stem}.sezon-anlam-mutabakati.txt"))
+                                f"{artifact_stem}.sezon-anlam-mutabakati.txt"),
+                            raise_errors=True)
                     if snapshot.get("term_normalize", True):
                         output_blocks, _ = _normalize_mixed_terms(
                             output_blocks, src_map,
@@ -12550,10 +12551,22 @@ class App(ctk.CTk):
                 except RequestCancelled:
                     raise
                 except Exception as exc:
+                    total_errors += 1
                     report_lines.append(f"- E{episode:02d}: hata — {exc}")
+                    recorder = getattr(self, "_record_file_status", None)
+                    if callable(recorder):
+                        recorder(
+                            source_path, "Sezon kanon denetimi hatası", "error")
+                    with self._run_record_lock:
+                        active = getattr(self, "_active_run_record", None)
+                        if active is not None:
+                            active.setdefault("season_canon_errors", []).append({
+                                "source_path": str(source_path),
+                                "error": str(exc),
+                            })
                     self._log(
                         f"Sezon kanon denetimi [{Path(source_path).name}]: {exc}",
-                        "warn",
+                        "err",
                     )
             report_lines.append("")
         report_dir = _resolve_report_dir(
@@ -12568,11 +12581,12 @@ class App(ctk.CTk):
             if record is not None:
                 record["fixes_applied"] = int(record.get("fixes_applied", 0)) + total_fixed
                 record.setdefault("reports", []).append(str(report_path))
-        self._log(
+        summary = (
             f"Sezon Sonu Kanon Denetimi tamamlandı: {total_suspects} şüpheli cue, "
-            f"{total_fixed} düzeltme — {report_path}",
-            "ok",
-        )
+            f"{total_fixed} düzeltme")
+        if total_errors:
+            summary += f", {total_errors} bölüm denetlenemedi"
+        self._log(f"{summary} — {report_path}", "warn" if total_errors else "ok")
 
     def _start_season_canon_finalizer(self):
         self._season_canon_finalizing = True
@@ -16587,7 +16601,8 @@ class App(ctk.CTk):
                                        source_path=None, canon_hint="",
                                        force=False, target_coverage=0.65,
                                        report_path=None, locked_terms=None,
-                                       analysis_result=None) -> int:
+                                       analysis_result=None,
+                                       raise_errors=False) -> int:
         if ((not force and not self._semantic_reconcile_enabled())
                 or not src_clean_map or not blocks):
             return 0
@@ -16700,8 +16715,12 @@ class App(ctk.CTk):
                 except Exception as exc:
                     self._log(f"Anlamsal mutabakat raporu yazılamadı: {exc}", "warn")
             return int(stats.get("fixed", 0))
+        except RequestCancelled:
+            raise
         except Exception as e:
             self._log(f"Nihai anlam mutabakatı hatası: {e}", "warn")
+            if raise_errors:
+                raise
             return 0
 
     def _run_final_semantic_checks(self, out_path, src_clean_map, blocks,

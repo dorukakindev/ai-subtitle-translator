@@ -270,6 +270,86 @@ class SeasonCanonRunRoutingTest(unittest.TestCase):
 
             semantic.assert_not_called()
 
+    def test_failed_episode_is_not_left_marked_done(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "show.S01E01.srt"
+            output = root / "out.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nThe Negotiator arrived.\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nArabulucu geldi.\n",
+                encoding="utf-8")
+            statuses = []
+            record = {
+                "run_id": "run-failed", "reports": [], "errors": 0,
+                "files": {str(source): {
+                    "status": "done", "output_path": str(output),
+                }},
+            }
+            def record_status(path, phase, status):
+                statuses.append((path, phase, status))
+                record["files"][str(path)]["phase"] = phase
+                record["files"][str(path)]["status"] = status
+
+            app = SimpleNamespace(
+                _active_snapshot={
+                    "input_dir": str(root), "output_dir": str(root / "out"),
+                    "tgt_lang": "Turkish", "src_lang": "English",
+                    "term_normalize": False,
+                },
+                _active_run_record=record,
+                _run_record_lock=threading.RLock(),
+                _season_canon_groups=lambda: {
+                    (str(root), "show", 1, "en"): [(1, str(source), output)]
+                },
+                _effective_file_source_language=lambda *_args: "English",
+                _get_locked_terms_dict=lambda *_args: {
+                    "Negotiator": "Müzakereci"
+                },
+                _series_mem_for=lambda *_args: (
+                    SimpleNamespace(build_hint=lambda: "SERIES CANON",
+                                    get_address_map=lambda: []), 1, 1),
+                _maybe_semantic_reconciliation=MagicMock(
+                    side_effect=RuntimeError("provider unavailable")),
+                _record_file_status=record_status,
+                _log=MagicMock(),
+            )
+
+            gui.App._run_season_canon_audit(app)
+
+            self.assertEqual(statuses, [(
+                str(source), "Sezon kanon denetimi hatası", "error")])
+            self.assertEqual(record["files"][str(source)]["status"], "error")
+            self.assertEqual(
+                record["season_canon_errors"][0]["source_path"], str(source))
+            self.assertTrue(any(call.args[1] == "err" for call in app._log.call_args_list))
+
+    def test_semantic_reconcile_can_propagate_errors_for_required_pass(self):
+        app = SimpleNamespace(
+            _active_snapshot={"src_lang": "English", "tgt_lang": "Turkish"},
+            src_var=SimpleNamespace(get=lambda: "English"),
+            tgt_var=SimpleNamespace(get=lambda: "Turkish"),
+            _stop_flag=False,
+            _helper_request_canceller=None,
+            _helper_api_key=lambda _role: "key",
+            _helper_api_base_url=lambda _role: "https://api.example/v1",
+            _helper_api_model=lambda _role: "gpt-5.4-mini",
+            _get_locked_terms_dict=lambda *_args: {},
+            _run_scene_gap=lambda: 3.0,
+            _token_callback_for_model=lambda _model: None,
+            _log=MagicMock(),
+        )
+        blocks = [(1, "00:00:01,000 --> 00:00:02,000", "Arabulucu geldi.")]
+        with patch("hybrid_translate.semantic_reconciliation_pass",
+                   side_effect=RuntimeError("provider unavailable")), \
+                self.assertRaisesRegex(RuntimeError, "provider unavailable"):
+            gui.App._maybe_semantic_reconciliation(
+                app, "out.srt", {"1": "The Negotiator arrived."}, blocks,
+                source_path="show.S01E01.srt", force=True,
+                raise_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
