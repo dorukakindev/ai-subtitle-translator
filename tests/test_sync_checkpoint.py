@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import subtitle_translator_gui as gui
 
@@ -275,6 +275,58 @@ class SyncCheckpointTest(unittest.TestCase):
 
         self.assertTrue(self.app._clear_sync_stage_ckpt("film.srt"))
         self.assertEqual(gui.load_sync_stage_store(self.stage_path)["entries"], {})
+
+    def test_manual_partial_resume_reuses_quality_response_namespace(self):
+        source = Path(self.tmpdir.name) / "film.srt"
+        partial = Path(self.tmpdir.name) / "film.partial.srt"
+        source.write_text("source", encoding="utf-8")
+        partial.write_text("partial", encoding="utf-8")
+        gui.save_sync_stage_entry_to_store(
+            self.stage_path, str(source), "source-hash", self.fingerprint,
+            "old-run", {"chunk_0": "ok"})
+        app = SimpleNamespace(
+            _active_snapshot={
+                "resume_origin_run_id": "new-run", "crash_resume": False},
+            _force_retranslate_paths=set(),
+            _sync_stage_ckpt_path=lambda: self.stage_path,
+            _ckpt_fingerprint=lambda: self.fingerprint,
+            _quality_checkpoint_hit=MagicMock(),
+            _log=MagicMock(),
+        )
+
+        with patch("provider_retry.configure_response_checkpoint") as configure:
+            namespace = gui.App._configure_file_response_checkpoint(
+                app, str(source), "source-hash", partial)
+
+        self.assertEqual(namespace, "old-run")
+        self.assertEqual(configure.call_args.args[1], "old-run")
+        self.assertTrue(configure.call_args.kwargs["allow_reads"])
+
+    def test_force_retranslate_does_not_reuse_old_quality_namespace(self):
+        source = Path(self.tmpdir.name) / "film.srt"
+        partial = Path(self.tmpdir.name) / "film.partial.srt"
+        source.write_text("source", encoding="utf-8")
+        partial.write_text("partial", encoding="utf-8")
+        gui.save_sync_stage_entry_to_store(
+            self.stage_path, str(source), "source-hash", self.fingerprint,
+            "old-run", {"chunk_0": "ok"})
+        app = SimpleNamespace(
+            _active_snapshot={
+                "resume_origin_run_id": "new-run", "crash_resume": False},
+            _force_retranslate_paths={str(source)},
+            _sync_stage_ckpt_path=lambda: self.stage_path,
+            _ckpt_fingerprint=lambda: self.fingerprint,
+            _quality_checkpoint_hit=MagicMock(),
+            _log=MagicMock(),
+        )
+
+        with patch("provider_retry.configure_response_checkpoint") as configure:
+            namespace = gui.App._configure_file_response_checkpoint(
+                app, str(source), "source-hash", partial)
+
+        self.assertEqual(namespace, "")
+        self.assertEqual(configure.call_args.args[1], "new-run")
+        self.assertFalse(configure.call_args.kwargs["allow_reads"])
 
     def test_partial_retry_reuses_sound_cues_and_marks_only_missing_chunk(self):
         source = [

@@ -234,6 +234,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
         ]
         raw = {str(idx): f"Source dialogue {idx}." for idx in range(1, 32)}
         log = MagicMock()
+        permanent = MagicMock()
 
         with patch(
             "subtitle_translator_gui._safe_chat_create",
@@ -250,11 +251,13 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                 src_lang="English",
                 tgt_lang="Turkish",
                 log_fn=log,
+                permanent_failure_cb=permanent,
             )
 
         self.assertEqual(create.call_count, 1)
         self.assertEqual(repaired, 0)
         self.assertEqual(result, blocks)
+        permanent.assert_called_once_with()
         self.assertTrue(any(
             "model kanalı yok" in str(call.args[0])
             for call in log.call_args_list
@@ -329,6 +332,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
 
         self.assertEqual(create.call_count, 1)
         self.assertEqual(unresolved, {"chunk_1"})
+        self.assertTrue(app._auto_retry_blocked_by_permanent_provider)
         app._resend_missing_blocks.assert_not_called()
         self.assertTrue(any(
             "kalan chunk ve alt-istek kurtarmaları gönderilmeyecek"

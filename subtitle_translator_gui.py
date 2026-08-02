@@ -4042,7 +4042,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=15,
                               source_cues=None, cancel_check=None,
-                              system_prompt=None, locked_terms=None):
+                              system_prompt=None, locked_terms=None,
+                              permanent_failure_cb=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -4304,6 +4305,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 log_fn(f"✓  {repaired}/{len(hata_indices)} satır onarıldı", "ok")
             else:
                 log_fn("⚠  Onarım başarısız — son çareye düşülecek", "warn")
+        if permanent_failure and permanent_failure_cb:
+            try:
+                permanent_failure_cb()
+            except Exception:
+                pass
 
     if drop_positions:
         drop_set = set(drop_positions)
@@ -5230,7 +5236,7 @@ _BATCH_RUN_CONTEXT_KEYS = (
     "semantic_reconcile", "review", "twowave", "clean_sdh", "linebreak",
     "chain_ctx", "style", "analysis_depth", "content_type",
     "main_model_name", "main_api_base_url", "helper_models", "helper_urls",
-    "api_key_fingerprint",
+    "api_key_fingerprint", "resume_origin_run_id",
 )
 
 
@@ -6520,10 +6526,23 @@ def _batch_write_guard_reason(source_path, output_path, expected_source_hash="",
     return ""
 
 
+def _file_recovery_is_retryable(state: dict) -> bool:
+    state = state or {}
+    if state.get("status") in {"done", "skip"}:
+        return False
+    phase = str(state.get("phase") or "").casefold()
+    return not any(marker in phase for marker in (
+        "kaynak değişti", "hedef değişti", "çıktı değişti",
+        "geçerli altyazı bloğu yok", "sıradan kaldırıldı",
+    ))
+
+
 def _interrupted_run_pending_files(record: dict) -> list[str]:
+    if (record or {}).get("recovery_blocked_reason") == "permanent_provider":
+        return []
     return [
         str(path) for path, state in dict((record or {}).get("files") or {}).items()
-        if (state or {}).get("status") not in {"done", "skip"}
+        if _file_recovery_is_retryable(state)
         and Path(path).is_file()
     ]
 
@@ -7814,6 +7833,20 @@ def load_sync_stage_store(path: Path) -> dict:
     except Exception:
         pass
     return store
+
+
+def matching_sync_stage_run_id(path: Path, source_path: str,
+                               source_hash: str, fingerprint: str) -> str:
+    entry = load_sync_stage_store(path).get("entries", {}).get(
+        _sync_stage_key(source_path))
+    if not isinstance(entry, dict):
+        return ""
+    if (entry.get("source_hash") != str(source_hash)
+            or entry.get("fingerprint") != str(fingerprint)
+            or not isinstance(entry.get("raw_map"), dict)
+            or not entry.get("raw_map")):
+        return ""
+    return str(entry.get("run_id") or "")
 
 
 def _sync_stage_key(source_path: str) -> str:
@@ -10890,6 +10923,21 @@ class App(ctk.CTk):
             if timing_log:
                 logger(timing_log, "err" if status == "error" else "ok")
 
+    def _block_automatic_recovery_for_permanent_provider(self):
+        self._auto_retry_blocked_by_permanent_provider = True
+        lock = self.__dict__.get("_run_record_lock")
+        if lock is None:
+            return
+        with lock:
+            record = self.__dict__.get("_active_run_record")
+            if record is None:
+                return
+            record["recovery_blocked_reason"] = "permanent_provider"
+            try:
+                atomic_write_json(_active_run_state_path(), record)
+            except Exception:
+                pass
+
     def _file_timing_snapshot(self, filepath: str) -> dict:
         with self._run_record_lock:
             record = (
@@ -11729,12 +11777,20 @@ class App(ctk.CTk):
     def _schedule_failed_file_retry(self, record: dict | None) -> bool:
         if not record or record.get("status") in {"tamamlandı", "durduruldu"}:
             return False
+        run_settings = dict(record.get("settings") or {})
+        if str(run_settings.get("mode") or "sync").casefold() != "sync":
+            return False
         snapshot = getattr(self, "_active_snapshot", {}) or {}
         if not snapshot.get("auto_retry_files"):
             return False
+        if getattr(self, "_auto_retry_blocked_by_permanent_provider", False):
+            self._log(
+                "Kalıcı API/model/anahtar hatası nedeniyle dosyalar otomatik "
+                "yeniden gönderilmeyecek.", "warn")
+            return False
         failed = []
         for filepath, item in dict(record.get("files") or {}).items():
-            if item.get("status") in {"done", "skip"}:
+            if not _file_recovery_is_retryable(item):
                 continue
             if not Path(filepath).is_file():
                 continue
@@ -11751,7 +11807,7 @@ class App(ctk.CTk):
         self._file_integrity_preflight_done = False
         self._auto_retry_continuation = True
         retry_settings = copy.deepcopy(
-            dict(record.get("settings") or snapshot))
+            dict(run_settings or snapshot))
         retry_settings["crash_resume"] = True
         retry_settings["auto_retry_repair_only"] = True
         retry_settings["resume_origin_run_id"] = str(
@@ -12387,6 +12443,7 @@ class App(ctk.CTk):
         else:
             App._cancel_motion_animation(self, snap=True)
         if running and not getattr(self, "_run_state_initialized", False):
+            self._auto_retry_blocked_by_permanent_provider = False
             self._season_canon_done = False
             self._season_canon_finalizing = False
             self._run_state_initialized = True
@@ -13079,6 +13136,8 @@ class App(ctk.CTk):
 
         # Kurtarma adımı
         if self._stop_flag or permanent_failure:
+            if permanent_failure:
+                self._block_automatic_recovery_for_permanent_provider()
             return set(req_by_id)
         strict_fallback = set()
         for cid, req in req_by_id.items():
@@ -19131,6 +19190,61 @@ class App(ctk.CTk):
     def _sync_stage_ckpt_path(self) -> Path:
         return state_path(__file__, ".sync_stage_checkpoint.json")
 
+    def _configure_file_response_checkpoint(self, filepath: str,
+                                            source_hash: str,
+                                            partial_path: Path) -> str:
+        from provider_retry import configure_response_checkpoint
+
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        current_run_id = str(snapshot.get("resume_origin_run_id") or "")
+        namespace = current_run_id
+        allow_reads = bool(snapshot.get("crash_resume"))
+        forced = {
+            os.path.normcase(os.path.abspath(str(path)))
+            for path in getattr(self, "_force_retranslate_paths", set())
+        }
+        normalized = os.path.normcase(os.path.abspath(str(filepath)))
+        recovered_run_id = ""
+        if (normalized not in forced
+                and Path(partial_path).is_file()):
+            recovered_run_id = matching_sync_stage_run_id(
+                self._sync_stage_ckpt_path(), filepath, source_hash,
+                self._ckpt_fingerprint())
+            if recovered_run_id:
+                namespace = recovered_run_id
+                allow_reads = True
+        configure_response_checkpoint(
+            state_path(__file__, ".quality_response_checkpoint"),
+            namespace,
+            allow_reads=allow_reads,
+            hit_callback=self._quality_checkpoint_hit,
+        )
+        if recovered_run_id and recovered_run_id != current_run_id:
+            self._log(
+                "Kısmi devam: daha önce tamamlanan analiz ve kalite API "
+                "istekleri de checkpoint'ten alınacak.", "ok")
+            return recovered_run_id
+        return ""
+
+    def _configure_saved_response_checkpoint(self, saved_snapshot: dict) -> str:
+        namespace = str(
+            (saved_snapshot or {}).get("resume_origin_run_id") or "")
+        if not namespace:
+            return ""
+        from provider_retry import configure_response_checkpoint
+        configure_response_checkpoint(
+            state_path(__file__, ".quality_response_checkpoint"),
+            namespace,
+            allow_reads=True,
+            hit_callback=getattr(self, "_quality_checkpoint_hit", None),
+        )
+        logger = getattr(self, "_log", None)
+        if callable(logger):
+            logger(
+                "Batch devamı: tamamlanan kalite API istekleri eski "
+                "çalıştırma checkpoint'inden alınacak.", "ok")
+        return namespace
+
     def _save_sync_stage_ckpt(self, filepath: str, source_hash: str,
                               raw_map: dict) -> bool:
         snapshot = getattr(self, "_active_snapshot", None) or {}
@@ -19333,9 +19447,13 @@ class App(ctk.CTk):
                 self._log(
                     f"{Path(fp).name}: kaynak dosya okunurken değişti; yanlış "
                     "çıktı yazmamak için atlandı.", "err")
+                self._update_file_progress(
+                    fp, "Kaynak değişti", 100, "error")
                 continue
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
+                self._update_file_progress(
+                    fp, "Geçerli altyazı bloğu yok", 100, "skip")
             else:
                 self._block_cache[fp] = blocks
                 valid_files.append(fp)
@@ -19708,6 +19826,7 @@ class App(ctk.CTk):
         failed_files = []
         skipped_files = []
         used_ckpt_keys = set()
+        resumed_quality_namespaces = {}
 
         def send_one(req):
             body = req["body"]
@@ -19775,6 +19894,14 @@ class App(ctk.CTk):
                         pass  # parse edilemediyse yeniden çevir
                 _expected_source_hash = _after_source_hash
                 _output_baseline = _file_state_signature(out_path)
+                _partial_candidate = _partial_output_path(out_path)
+                _quality_resume_namespace = (
+                    self._configure_file_response_checkpoint(
+                        filepath, _expected_source_hash,
+                        _partial_candidate))
+                if _quality_resume_namespace:
+                    resumed_quality_namespaces.setdefault(
+                        _quality_resume_namespace, set()).add(filepath)
                 # ─────────────────────────────────────────────────────────────
                 self._set_stat(self.stat_blocks_var, str(len(cues)))
 
@@ -19930,7 +20057,6 @@ class App(ctk.CTk):
             total     = len(batch_reqs)
             completed = [0]
             failed    = [0]
-            _partial_candidate = _partial_output_path(out_path)
             _force_retranslate = {
                 os.path.normcase(os.path.abspath(str(path)))
                 for path in getattr(self, "_force_retranslate_paths", set())
@@ -20167,7 +20293,9 @@ class App(ctk.CTk):
                     source_cues=cues,
                     cancel_check=lambda: self._stop_flag,
                     system_prompt=system_prompt,
-                    locked_terms=_locked_terms)
+                    locked_terms=_locked_terms,
+                    permanent_failure_cb=(
+                        self._block_automatic_recovery_for_permanent_provider))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _quality_api_allowed = not _blocks_have_translation_failures(
@@ -20575,6 +20703,14 @@ class App(ctk.CTk):
         if should_clear_sync_ckpt(
                 self._stop_flag, summary["is_recovery_complete"]):
             self._clear_sync_ckpt(used_ckpt_keys)
+        if not self._stop_flag and resumed_quality_namespaces:
+            from provider_retry import clear_response_checkpoint_namespace
+            completed_set = set(completed_files)
+            for namespace, paths in resumed_quality_namespaces.items():
+                if paths <= completed_set:
+                    clear_response_checkpoint_namespace(
+                        state_path(__file__, ".quality_response_checkpoint"),
+                        namespace)
         self._save_quality_report(report_rows, output_dir)
         self._force_retranslate_paths = set()
         self._set_running(False)
@@ -20618,6 +20754,8 @@ class App(ctk.CTk):
             blocks = list(parse_subtitle(fp))
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
+                self._update_file_progress(
+                    fp, "Geçerli altyazı bloğu yok", 100, "skip")
             else:
                 self._block_cache[fp] = blocks
                 valid_files.append(fp)
@@ -20944,6 +21082,8 @@ class App(ctk.CTk):
                             self._active_snapshot = _merge_batch_resume_snapshot(
                                 resume_base_snapshot, _saved_context)
                             App._freeze_run_variable_reads(self)
+                            App._configure_saved_response_checkpoint(
+                                self, self._active_snapshot)
                             _terminal = self._wait_batch_hybrid(
                                 batch_client, bid, saved_fmap, out_path,
                                 openai_key=api_key,
@@ -21078,6 +21218,8 @@ class App(ctk.CTk):
                 self._active_snapshot = _merge_batch_resume_snapshot(
                     original_snapshot, group["run_context"])
                 App._freeze_run_variable_reads(self)
+                App._configure_saved_response_checkpoint(
+                    self, self._active_snapshot)
                 retry_list = [
                     req for req in group["requests"]
                     if req["custom_id"] in group["file_map"]
@@ -21804,7 +21946,9 @@ class App(ctk.CTk):
                         log_fn=self._log, token_cb=self._update_tokens,
                         source_cues=_src_cues,
                         cancel_check=lambda: self._stop_flag,
-                        locked_terms=_locked_terms_for(fp))
+                        locked_terms=_locked_terms_for(fp),
+                        permanent_failure_cb=(
+                            self._block_automatic_recovery_for_permanent_provider))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _record_pass_change(

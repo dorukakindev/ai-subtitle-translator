@@ -17,6 +17,7 @@ class BatchRunContextTest(unittest.TestCase):
             "helper_models": {"critic": "gpt-5.4-mini"},
             "helper_keys": {"critic": "secret-helper"},
             "main_api_key": "secret-main",
+            "resume_origin_run_id": "original-run",
         }
         context = gui._batch_run_context(snapshot, api_key="secret-main")
         self.assertEqual(context["context_version"], 1)
@@ -24,6 +25,7 @@ class BatchRunContextTest(unittest.TestCase):
         self.assertNotIn("main_api_key", context)
         self.assertNotIn("helper_keys", context)
         self.assertNotEqual(context["api_key_fingerprint"], "secret-main")
+        self.assertEqual(context["resume_origin_run_id"], "original-run")
 
     def test_resume_merge_keeps_current_credentials(self):
         current = {
@@ -36,6 +38,18 @@ class BatchRunContextTest(unittest.TestCase):
         self.assertEqual(merged["tgt_lang"], "Turkish")
         self.assertEqual(merged["main_api_key"], "current-main")
         self.assertEqual(merged["helper_keys"]["critic"], "current-helper")
+
+    def test_batch_resume_reuses_original_quality_checkpoint_namespace(self):
+        app = SimpleNamespace(_log=MagicMock())
+        with patch("provider_retry.configure_response_checkpoint") as configure, \
+                patch("subtitle_translator_gui.state_path",
+                      return_value=Path("checkpoint-root")):
+            namespace = gui.App._configure_saved_response_checkpoint(
+                app, {"resume_origin_run_id": "original-run"})
+
+        self.assertEqual(namespace, "original-run")
+        self.assertEqual(configure.call_args.args[1], "original-run")
+        self.assertTrue(configure.call_args.kwargs["allow_reads"])
 
 
 class RegularBatchResumeIsolationTest(unittest.TestCase):

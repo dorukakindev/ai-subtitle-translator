@@ -224,6 +224,110 @@ class AutomaticRetryTest(unittest.TestCase):
                 stub._resume_snapshot_override["resume_origin_run_id"],
                 "run-original")
 
+    def test_source_or_output_changed_files_are_not_auto_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source_changed = Path(tmp) / "source.srt"
+            output_changed = Path(tmp) / "output.srt"
+            source_changed.write_text("x", encoding="utf-8")
+            output_changed.write_text("x", encoding="utf-8")
+            scheduled = []
+            stub = SimpleNamespace(
+                _active_snapshot={"auto_retry_files": True},
+                _auto_retry_attempts={}, _selected_files=[],
+                _log=lambda *args: None,
+                after=lambda *args: scheduled.append(args),
+            )
+            record = {
+                "run_id": "run-original", "status": "başarısız",
+                "settings": {"auto_retry_files": True},
+                "files": {
+                    str(source_changed): {
+                        "status": "error", "phase": "Kaynak değişti"},
+                    str(output_changed): {
+                        "status": "error", "phase": "Hedef değişti"},
+                },
+            }
+
+            self.assertFalse(
+                gui.App._schedule_failed_file_retry(stub, record))
+            self.assertEqual(stub._selected_files, [])
+            self.assertEqual(scheduled, [])
+
+    def test_batch_failure_is_never_resubmitted_as_automatic_file_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.srt"
+            source.write_text("x", encoding="utf-8")
+            scheduled = []
+            stub = SimpleNamespace(
+                _active_snapshot={"auto_retry_files": True},
+                _auto_retry_attempts={}, _selected_files=[],
+                _log=lambda *args: None,
+                after=lambda *args: scheduled.append(args),
+            )
+            record = {
+                "run_id": "batch-run", "status": "başarısız",
+                "settings": {"auto_retry_files": True, "mode": "batch"},
+                "files": {str(source): {
+                    "status": "error", "phase": "Faz-2 hatası"}},
+            }
+
+            self.assertFalse(
+                gui.App._schedule_failed_file_retry(stub, record))
+            self.assertEqual(scheduled, [])
+
+    def test_permanent_provider_failure_blocks_whole_file_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.srt"
+            source.write_text("x", encoding="utf-8")
+            scheduled = []
+            stub = SimpleNamespace(
+                _active_snapshot={"auto_retry_files": True},
+                _auto_retry_attempts={}, _selected_files=[],
+                _auto_retry_blocked_by_permanent_provider=True,
+                _log=lambda *args: None,
+                after=lambda *args: scheduled.append(args),
+            )
+            record = {
+                "run_id": "sync-run", "status": "başarısız",
+                "settings": {"auto_retry_files": True, "mode": "sync"},
+                "files": {str(source): {
+                    "status": "error", "phase": "Ana Çeviri"}},
+            }
+
+            self.assertFalse(
+                gui.App._schedule_failed_file_retry(stub, record))
+            self.assertEqual(scheduled, [])
+
+    def test_permanent_file_state_is_not_saved_as_crash_resume_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.srt"
+            retryable = Path(tmp) / "retryable.srt"
+            source.write_text("x", encoding="utf-8")
+            retryable.write_text("x", encoding="utf-8")
+            record = {"files": {
+                str(source): {
+                    "status": "error", "phase": "Kaynak değişti"},
+                str(retryable): {
+                    "status": "error", "phase": "Faz-2 hatası"},
+            }}
+
+            self.assertEqual(
+                gui._interrupted_run_pending_files(record),
+                [str(retryable)])
+
+    def test_permanent_provider_run_is_not_resumed_after_app_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.srt"
+            source.write_text("x", encoding="utf-8")
+            record = {
+                "recovery_blocked_reason": "permanent_provider",
+                "files": {str(source): {
+                    "status": "error", "phase": "Eksik çeviri"}},
+            }
+
+            self.assertEqual(
+                gui._interrupted_run_pending_files(record), [])
+
     def test_failed_quality_row_cannot_be_promoted_to_done(self):
         source = str(Path("movie.srt"))
         record = {
