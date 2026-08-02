@@ -16704,6 +16704,7 @@ class App(ctk.CTk):
             fix_key = self._helper_api_key("qc")
             fix_url = self._helper_api_base_url("qc")
             fix_model = self._helper_api_model("qc")
+            fix_token_callback = self._token_callback_for_model(fix_model)
             n_fixed = 0
             fix_successful = 0
             fix_failed = 0
@@ -16746,6 +16747,9 @@ class App(ctk.CTk):
                         max_tokens=200, temperature=0.2,
                         cancel_context=self.__dict__.get("_helper_request_canceller"),
                     )
+                    if getattr(resp, "usage", None):
+                        total, cached = ht._get_usage_details(resp.usage)
+                        fix_token_callback(total, cached=cached)
                     if self.__dict__.get("_stop_flag", False):
                         if status_out is not None:
                             status_out.update({"status": "cancelled", "changed": n_fixed})
@@ -18091,6 +18095,7 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 analysis_result=analysis_result,
                 cancel_context=cancel_context,
+                token_callback=self._token_callback_for_model(qc_model),
                 status_out=status_out,
             )
         except Exception as e:
@@ -18133,6 +18138,7 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 locked_terms=locked_terms,
                 cancel_context=cancel_context,
+                token_callback=self._token_callback_for_model(qc_model),
             )
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
@@ -18173,6 +18179,7 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 locked_terms=locked_terms,
                 cancel_context=cancel_context,
+                token_callback=self._token_callback_for_model(qc_model),
             )
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
@@ -21253,6 +21260,8 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     analysis_result=(context, char_examples, pronoun_map),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
+                    token_callback=self._token_callback_for_model(
+                        self._helper_api_model("qc")),
                     status_out=_qc_status,
                 )
                 _pass_status["QC"] = dict(_qc_status)
@@ -21271,6 +21280,8 @@ class App(ctk.CTk):
                             log_fn=self._log,
                             locked_terms=_locked_terms,
                             cancel_context=self.__dict__.get("_helper_request_canceller"),
+                            token_callback=self._token_callback_for_model(
+                                self._helper_api_model("qc")),
                         )
                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_auto
@@ -21297,6 +21308,8 @@ class App(ctk.CTk):
                             log_fn=self._log,
                             locked_terms=_locked_terms,
                             cancel_context=self.__dict__.get("_helper_request_canceller"),
+                            token_callback=self._token_callback_for_model(
+                                self._helper_api_model("qc")),
                         )
                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_approved
@@ -22387,6 +22400,8 @@ class App(ctk.CTk):
                                     helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
                                     cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                    token_callback=self._token_callback_for_model(
+                                        self._helper_api_model("qc")),
                                     status_out=_qc_status)
                                 _pass_status["QC"] = dict(_qc_status)
                                 if _issues:
@@ -22401,7 +22416,9 @@ class App(ctk.CTk):
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
                                             log_fn=self._log,
                                             locked_terms=_locked_terms,
-                                            cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                            cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                            token_callback=self._token_callback_for_model(
+                                                self._helper_api_model("qc")))
                                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_auto
                                         _qc_auto_fixes += _n_auto
@@ -22424,7 +22441,9 @@ class App(ctk.CTk):
                                             tgt_lang=tgt, base_url=self._helper_api_base_url("qc"),
                                             log_fn=self._log,
                                             locked_terms=_locked_terms,
-                                            cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                            cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                            token_callback=self._token_callback_for_model(
+                                                self._helper_api_model("qc")))
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
                             if self._stop_flag:
@@ -24126,6 +24145,8 @@ class App(ctk.CTk):
                                 log_fn=self._log,
                                 analysis_result=_full_analysis,
                                 cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                token_callback=self._token_callback_for_model(
+                                    self._helper_api_model("qc")),
                                 status_out=_qc_status)
                             _pass_status["QC"] = dict(_qc_status)
                             if issues:
@@ -24144,6 +24165,8 @@ class App(ctk.CTk):
                                         locked_terms=self._get_locked_terms_dict(
                                             filepath, tgt),
                                         cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                        token_callback=self._token_callback_for_model(
+                                            self._helper_api_model("qc")),
                                     )
                                     _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_auto
@@ -24171,6 +24194,8 @@ class App(ctk.CTk):
                                         locked_terms=self._get_locked_terms_dict(
                                             filepath, tgt),
                                         cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                        token_callback=self._token_callback_for_model(
+                                            self._helper_api_model("qc")),
                                     )
                                     _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_approved

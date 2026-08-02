@@ -47,6 +47,45 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         self.assertEqual(fixes, 1)
         self.assertEqual(blocks[0][2], "Merhaba dünya")
 
+    def test_backtranslation_fix_reports_response_usage(self):
+        app = gui.App.__new__(gui.App)
+        app.backtrans_var = MagicMock()
+        app.backtrans_var.get.return_value = True
+        app._log = MagicMock()
+        app._update_tokens = MagicMock()
+        app._helper_api_key = MagicMock(return_value="test_key")
+        app._helper_api_base_url = MagicMock(
+            return_value="https://api.openai.com/v1")
+        app._helper_api_model = MagicMock(return_value="gpt-5.4-mini")
+        app._get_locked_terms_dict = MagicMock(return_value={})
+        app.src_var = MagicMock()
+        app.src_var.get.return_value = "English"
+        app.tgt_var = MagicMock()
+        app.tgt_var.get.return_value = "Turkish"
+        flags = [{
+            "idx": "1", "src": "Hello world", "tr": "Bozuk Ã§eviri",
+            "back": "Broken translation", "reason": "Meaning mismatch",
+        }]
+        choice = MagicMock()
+        choice.message.content = "Merhaba dÃ¼nya"
+        response = MagicMock(choices=[choice])
+        response.usage = MagicMock()
+        response.usage.total_tokens = 29
+        response.usage.prompt_tokens_details.cached_tokens = 7
+        blocks = [(1, "00:00:01 -> 00:00:03", "Bozuk Ã§eviri")]
+
+        with patch("hybrid_translate.back_translation_check",
+                   return_value=flags), patch(
+                "hybrid_translate._safe_chat_create",
+                return_value=response), patch(
+                "hybrid_translate.validate_polish_candidate",
+                return_value=(True, "")), patch(
+                "builtins.open", unittest.mock.mock_open()):
+            app._maybe_backtranslation_check(
+                "out.srt", {"1": "Hello world"}, blocks, src_lang="en")
+
+        app._update_tokens.assert_called_once_with(29, price=5.0, cached=7)
+
     def test_backtranslation_disabled_returns_zero(self):
         """When backtranslation option is off, _maybe_backtranslation_check returns 0 immediately."""
         app = gui.App.__new__(gui.App)

@@ -33,6 +33,9 @@ class _StubApp:
     def _write_qc_change_report(self, fp, records):
         return gui.App._write_qc_change_report(self, fp, records)
 
+    def _token_callback_for_model(self, model):
+        return lambda *args, **kwargs: None
+
 
 class WriteQcChangeReportTest(unittest.TestCase):
     def test_no_records_writes_nothing(self):

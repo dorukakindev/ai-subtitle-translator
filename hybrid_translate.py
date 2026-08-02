@@ -4312,6 +4312,7 @@ def quality_check_with_helper(
     log_fn=None,
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
     cancel_context=None,
+    token_callback=None,
     status_out: dict | None = None,
 ) -> list:
     """
@@ -4454,6 +4455,9 @@ def quality_check_with_helper(
                     max_tokens=12000,   # 3000 yetersizdi: çok hatalı dosyalarda JSON kesilip TÜM sorunlar düşüyordu
                     temperature=0.2,
                 )
+                if token_callback and getattr(resp, "usage", None):
+                    total, cached = _get_usage_details(resp.usage)
+                    token_callback(total, cached=cached)
                 content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
                 if not content:
                     chunk_errors += 1
@@ -10077,6 +10081,7 @@ def qc_auto_fix(
     helper_api_key: str = None,
     locked_terms: dict | None = None,
     cancel_context=None,
+    token_callback=None,
 ) -> list:
     """Re-translate QC-flagged blocks with explicit error feedback via OpenAI / Helper LLM.
 
@@ -10175,6 +10180,9 @@ def qc_auto_fix(
                 max_completion_tokens=300,
                 temperature=0.2,
             )
+            if token_callback and getattr(resp, "usage", None):
+                total, cached = _get_usage_details(resp.usage)
+                token_callback(total, cached=cached)
             new_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if new_text and new_text != "[HATA]":
                 ok, _reason = validate_polish_candidate(

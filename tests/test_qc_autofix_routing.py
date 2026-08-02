@@ -3,6 +3,8 @@ Deterministic unit tests for QC auto-fix provider/model/key routing audit.
 Directly invokes production functions and App method call sites with stub objects.
 Does NOT instantiate App() or make network calls.
 """
+import ast
+import inspect
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -57,6 +59,29 @@ class QCAutoFixRoutingTest(unittest.TestCase):
             self.assertEqual(model_used, "claude-3-5-sonnet")
             self.assertEqual(result[0][2], "Günaydın!")
 
+    def test_qc_auto_fix_reports_response_usage(self):
+        callback = MagicMock()
+        fake_usage = SimpleNamespace(
+            total_tokens=23,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=6),
+        )
+        with patch("openai.OpenAI", return_value=SimpleNamespace()), patch(
+                "hybrid_translate._safe_chat_create") as mock_safe_create:
+            mock_safe_create.return_value = SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content="GÃ¼naydÄ±n!"))],
+                usage=fake_usage,
+            )
+            ht.qc_auto_fix(
+                issues=self.sample_issues,
+                tr_blocks=self.sample_blocks,
+                helper_api_key="key",
+                model="model",
+                token_callback=callback,
+            )
+
+        callback.assert_called_once_with(23, cached=6)
+
     def test_app_qc_auto_fix_call_sites_parity(self):
         """Verify that stub App methods pass helper_api_key('qc'), helper_api_model('qc'), and helper_api_base_url('qc')."""
         # Create a stub App that simulates the GUI helper resolvers
@@ -66,6 +91,7 @@ class QCAutoFixRoutingTest(unittest.TestCase):
             _helper_api_key=lambda r: "sk-QC-HELPER-KEY" if r == "qc" else "sk-OTHER-KEY",
             _helper_api_model=lambda r: "qc-helper-model-v1" if r == "qc" else "other-model",
             _helper_api_base_url=lambda r: "https://qc.endpoint.ai/v1" if r == "qc" else "https://other.ai/v1",
+            _token_callback_for_model=lambda model: lambda *args, **kwargs: None,
             _log=lambda *args, **kwargs: None,
             _log_exc=lambda *args, **kwargs: None,
             _write_qc_change_report=lambda *args, **kwargs: None,
@@ -150,6 +176,22 @@ class QCAutoFixRoutingTest(unittest.TestCase):
                                       f"QC helper model missing in {name}")
 
         self.assertEqual(total_qc_calls_checked, 8, "Expected exactly 8 ht.qc_auto_fix calls across execution flows")
+
+    def test_every_gui_qc_call_reports_token_usage(self):
+        tree = ast.parse(inspect.getsource(gui))
+        calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {"quality_check_with_helper", "qc_auto_fix"}:
+                continue
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "ht":
+                calls.append(node)
+
+        self.assertGreater(len(calls), 0)
+        for call in calls:
+            keywords = {kw.arg for kw in call.keywords}
+            self.assertIn("token_callback", keywords, call.func.attr)
 
 
 if __name__ == "__main__":

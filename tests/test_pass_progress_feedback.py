@@ -16,6 +16,15 @@ def _response(payload):
     )
 
 
+def _response_with_usage(payload, total=17, cached=4):
+    response = _response(payload)
+    response.usage = SimpleNamespace(
+        total_tokens=total,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
+    )
+    return response
+
+
 class PassProgressFeedbackTest(unittest.TestCase):
     def test_all_native_gui_calls_collect_real_completion_status(self):
         source = inspect.getsource(gui.App)
@@ -100,6 +109,19 @@ class PassProgressFeedbackTest(unittest.TestCase):
         self.assertEqual(status["status"], "failed")
         self.assertEqual(status["failed_chunks"], 1)
         self.assertTrue(any("tamamlanamadı" in message for message, _ in logs))
+
+    def test_qc_reports_response_usage(self):
+        callback = MagicMock()
+        with patch("openai.OpenAI", return_value=MagicMock()), patch.object(
+                ht, "_safe_chat_create",
+                return_value=_response_with_usage({"issues": []})):
+            issues = ht.quality_check_with_helper(
+                [SimpleNamespace(index=1, text="Hello.")],
+                [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")],
+                "key", token_callback=callback)
+
+        self.assertEqual(issues, [])
+        callback.assert_called_once_with(17, cached=4)
 
     def test_native_does_not_report_natural_when_every_request_failed(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
