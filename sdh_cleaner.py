@@ -345,6 +345,11 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
             and words_no_digits[-1] in _SDH_SOUND_NOUNS
             and all(w in _SDH_SOUND_MODIFIERS for w in words_no_digits[:-1])):
         return True
+    if (len(words_no_digits) >= 2
+            and words_no_digits[-1] in {"sound", "sounds", "noise", "noises"}
+            and all(w in _SDH_KEYWORDS or w in _SDH_SOUND_MODIFIERS
+                    for w in words_no_digits[:-1])):
+        return True
 
     return False
 

@@ -27,6 +27,10 @@ class SdhKeywordCoverageTest(unittest.TestCase):
     def test_all_caps_multiword_descriptor_is_not_mistaken_for_heading(self):
         self.assertTrue(is_sdh_descriptor("OMINOUS MUSIC"))
 
+    def test_keyword_followed_by_sound_is_a_descriptor(self):
+        self.assertTrue(is_sdh_descriptor("whistle sound", bare_text=False))
+        self.assertFalse(is_sdh_descriptor("sound judgment", bare_text=False))
+
 
 
     def test_speaker_words_expanded(self):

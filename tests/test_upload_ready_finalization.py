@@ -195,6 +195,22 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("1", texts)
         self.assertEqual(texts["2"], "Dayanın.")
 
+    def test_delivery_audit_accepts_removed_whistle_sound(self):
+        source = [("1", "00:00:02,000 --> 00:00:03,000", "(whistle sound)")]
+        delivered = gui._prepare_upload_ready_blocks(
+            source, "Turkish", source_cues=source)
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source, "English")
+            gui.write_srt(output_path, delivered, "English")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1"])
+
     def test_parenthetical_dialogue_and_bracketed_ui_text_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "(No.)"),

@@ -25,6 +25,28 @@ from pathlib import Path
 import hybrid_translate as ht
 
 
+class ContextSensitiveGlossaryGuardTest(unittest.TestCase):
+    def test_context_sensitive_auxiliary_is_not_locked_as_a_term(self):
+        logs = []
+        cleaned = ht.sanitize_glossary_for_turkish(
+            {
+                "will": "vasiyetname",
+                "work": "çalışmak",
+                "last will": "son vasiyetname",
+                "field work": "saha çalışması",
+            },
+            log_fn=lambda message, tag: logs.append((message, tag)),
+        )
+
+        self.assertEqual(
+            cleaned,
+            {"last will": "son vasiyetname", "field work": "saha çalışması"},
+        )
+        self.assertTrue(any("bağlama göre değişen işlev sözcüğü" in row[0] for row in logs))
+        self.assertTrue(any("will->vasiyetname" in row[0] for row in logs))
+        self.assertTrue(any("work->çalışmak" in row[0] for row in logs))
+
+
 class RomanNumeralGlossaryGuardTest(unittest.TestCase):
     def test_wrong_roman_numeral_conversion_is_corrected(self):
         logs = []

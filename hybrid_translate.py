@@ -5664,6 +5664,10 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
 # terim tek-başına düşürülür (politika: bkz. yukarıdaki R_wqx/gloss ayrımı --
 # burası da "sadece bu terim" tarafında, "tüm sözlük" tarafında değil).
 _GLOSSARY_VERBOSE_WORD_THRESHOLD = 10
+_GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS = frozenset({
+    "be", "can", "could", "do", "had", "has", "have", "is", "may",
+    "might", "must", "shall", "should", "was", "were", "will", "work", "would",
+})
 _ROMAN_NUMERAL_RE = re.compile(
     r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
 )
@@ -5725,6 +5729,10 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if not key or not value:
             continue
         value_s = str(value)
+        if str(key).strip().lower() in _GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS:
+            gloss_dropped_terms[str(key)] = (
+                value_s, "bağlama göre değişen işlev sözcüğü")
+            continue
         roman_value = _roman_numeral_value(str(key))
         if roman_value is not None and value_s.strip().isdigit() and int(value_s.strip()) != roman_value:
             if log_fn:
