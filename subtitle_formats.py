@@ -136,6 +136,40 @@ def _decode_detected_legacy(raw: bytes) -> str | None:
     return max(candidates, default=(0.0, None), key=lambda item: item[0])[1]
 
 
+def _legacy_decode_penalty(text: str) -> int:
+    c1 = sum("\x80" <= ch <= "\x9f" for ch in text)
+    internal_punctuation = len(re.findall(
+        r"(?<=[^\W\d_])[\u2010-\u2027](?=[^\W\d_])", text))
+    return (c1 * 4) + internal_punctuation
+
+
+def _repair_embedded_mac_roman_controls(text: str) -> str:
+    if sum("\x80" <= ch <= "\x9f" for ch in text) < 2:
+        return text
+    repaired = "".join(
+        bytes((ord(ch),)).decode("mac_roman") if "\x80" <= ch <= "\x9f" else ch
+        for ch in text)
+    return repaired if _legacy_decode_penalty(repaired) < _legacy_decode_penalty(text) else text
+
+
+def _decode_cp1254_or_mac_roman(raw: bytes) -> str | None:
+    try:
+        cp1254 = raw.decode("cp1254")
+    except UnicodeDecodeError:
+        try:
+            return raw.decode("mac_roman")
+        except UnicodeDecodeError:
+            return None
+    try:
+        mac_roman = raw.decode("mac_roman")
+    except UnicodeDecodeError:
+        return cp1254
+
+    cp_penalty = _legacy_decode_penalty(cp1254)
+    mac_penalty = _legacy_decode_penalty(mac_roman)
+    return mac_roman if cp_penalty >= 2 and mac_penalty < cp_penalty else cp1254
+
+
 def read_subtitle_text(filepath) -> str:
     """Altyazı dosyasını toleranslı çözümler: utf-8-sig → utf-16 (BOM) → cp1254 → latin-1(replace).
 
@@ -176,14 +210,10 @@ def read_subtitle_text(filepath) -> str:
     if text is None:
         text = _decode_detected_legacy(raw)
     if text is None:
-        for enc in ("cp1254",):
-            try:
-                text = raw.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
+        text = _decode_cp1254_or_mac_roman(raw)
     if text is None:
         text = raw.decode("latin-1", errors="replace")
+    text = _repair_embedded_mac_roman_controls(text)
     # Satır sonlarını normalize et (eski metin-modu açılışın yaptığı gibi):
     # read_bytes()+decode() \r\n çevirmez; parser'lar \n\n'e güvenir.
     text = text.replace("\r\n", "\n").replace("\r", "\n")

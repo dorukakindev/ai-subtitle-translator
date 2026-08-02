@@ -24,6 +24,49 @@ def _write_temp(content: str, suffix: str) -> str:
 
 
 class ParseSrtTest(unittest.TestCase):
+    def test_mac_roman_names_do_not_decode_as_c1_controls(self):
+        text = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "Gregorio López, Constancia Rodríguez, Sebastián de la Peña\n\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(suffix=".srt", delete=False)
+        try:
+            tmp.write(text.encode("mac_roman"))
+            tmp.close()
+            from subtitle_formats import read_subtitle_text
+
+            decoded = read_subtitle_text(tmp.name)
+
+            self.assertIn("Gregorio López", decoded)
+            self.assertIn("Constancia Rodríguez", decoded)
+            self.assertIn("Sebastián de la Peña", decoded)
+            self.assertFalse(any("\x80" <= ch <= "\x9f" for ch in decoded))
+        finally:
+            try:
+                tmp.close()
+            except Exception:
+                pass
+            os.unlink(tmp.name)
+
+    def test_utf8_file_with_embedded_mac_roman_controls_is_repaired(self):
+        broken = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "Gregorio L\x97pez, Constancia Rodr\x92guez, "
+            "Sebasti\x87n de la Pe\x96a\n\n"
+        )
+        path = _write_temp(broken, ".srt")
+        try:
+            from subtitle_formats import read_subtitle_text
+
+            decoded = read_subtitle_text(path)
+
+            self.assertIn("Gregorio López", decoded)
+            self.assertIn("Constancia Rodríguez", decoded)
+            self.assertIn("Sebastián de la Peña", decoded)
+            self.assertFalse(any("\x80" <= ch <= "\x9f" for ch in decoded))
+        finally:
+            os.unlink(path)
+
     def test_basic_srt_parse(self):
         srt = "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n"
         path = _write_temp(srt, ".srt")
