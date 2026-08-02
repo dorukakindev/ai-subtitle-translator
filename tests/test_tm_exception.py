@@ -75,3 +75,16 @@ class TMLookupExceptionTest(unittest.TestCase):
                     "merhaba",
                 )
                 tm.close()
+
+    def test_batch_and_fuzzy_lookup_fail_open_when_database_is_temporarily_locked(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        tm = TranslationMemory(db_path=path)
+        try:
+            with patch.object(
+                    tm, "_get_conn",
+                    side_effect=sqlite3.OperationalError("database is locked")):
+                self.assertEqual(tm.lookup_batch(["hello"], tgt_lang="Turkish"), {})
+                self.assertIsNone(tm.fuzzy_lookup("hello there", tgt_lang="Turkish"))
+        finally:
+            tm.close()

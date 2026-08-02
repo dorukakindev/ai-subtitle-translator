@@ -287,32 +287,44 @@ class TranslationMemory:
         result = {}
         hashes = list(uniq.keys())
         # SQLite değişken limiti (~999) — parça parça sorgula
-        with self._lock:
-            conn = self._get_conn()
-            for i in range(0, len(hashes), 900):
-                batch = hashes[i:i + 900]
-                ph = ",".join("?" * len(batch))
-                for h, target in conn.execute(
-                        f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
-                    src = uniq.get(h)
-                    if src is not None:
-                        result[src] = target
+        try:
+            with self._lock:
+                conn = self._get_conn()
+                if conn is None:
+                    return {}
+                for i in range(0, len(hashes), 900):
+                    batch = hashes[i:i + 900]
+                    ph = ",".join("?" * len(batch))
+                    for h, target in conn.execute(
+                            f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
+                        src = uniq.get(h)
+                        if src is not None:
+                            result[src] = target
+        except Exception:
+            return {}
         # Fallback: YALNIZCA schema_name BOŞ ise ve henüz bulunamamış kaynaklar varsa eski şemasız girişleri dene
         missing_sources = [s for s in sources if s and s.strip() and s not in result]
         if (missing_sources and fingerprint and not schema_name and not source_language
                 and not context_fingerprint):
-            uniq2 = {}
-            for s in missing_sources:
-                uniq2[self._hash(s, tgt_lang, "")] = s
-            hashes2 = list(uniq2.keys())
-            for i in range(0, len(hashes2), 900):
-                batch = hashes2[i:i + 900]
-                ph = ",".join("?" * len(batch))
-                for h, target in conn.execute(
-                        f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
-                    src = uniq2.get(h)
-                    if src is not None:
-                        result[src] = target
+            try:
+                with self._lock:
+                    conn = self._get_conn()
+                    if conn is None:
+                        return result
+                    uniq2 = {}
+                    for s in missing_sources:
+                        uniq2[self._hash(s, tgt_lang, "")] = s
+                    hashes2 = list(uniq2.keys())
+                    for i in range(0, len(hashes2), 900):
+                        batch = hashes2[i:i + 900]
+                        ph = ",".join("?" * len(batch))
+                        for h, target in conn.execute(
+                                f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
+                            src = uniq2.get(h)
+                            if src is not None:
+                                result[src] = target
+            except Exception:
+                return result
         return result
 
     def fuzzy_lookup(self, source: str, threshold: float = FUZZY_THRESHOLD,
@@ -361,8 +373,14 @@ class TranslationMemory:
             params.append(profanity.strip().lower()[:20])
         sql = ("SELECT source, target FROM tm WHERE "
                + " AND ".join(clauses) + " LIMIT 500")
-        with self._lock:
-            rows = self._get_conn().execute(sql, params).fetchall()
+        try:
+            with self._lock:
+                conn = self._get_conn()
+                if conn is None:
+                    return None
+                rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return None
 
         best_target = None
         best_ratio  = 0.0

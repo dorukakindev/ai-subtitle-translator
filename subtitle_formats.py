@@ -18,6 +18,10 @@ _SOURCE_MALFORMED_FORMAT_TAG = re.compile(
     re.IGNORECASE,
 )
 _VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
+_VTT_SRT_UNSAFE_TAG = re.compile(
+    r'</?(?:c(?:\.[^\s>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?)\s*>',
+    re.IGNORECASE,
+)
 _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 _SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _SOURCE_EMPTY_OVERRIDE = re.compile(r'\{\}')
@@ -257,8 +261,8 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
     if not src_text or not tr_text or tr_text.startswith("[HATA") or tr_text.strip() == "[ÇEVİRİ EKSİK]":
         return tr_text
 
-    src = src_text.strip()
-    out = tr_text
+    src = _VTT_SRT_UNSAFE_TAG.sub("", src_text).strip()
+    out = _VTT_SRT_UNSAFE_TAG.sub("", tr_text)
 
     # 1) Baştaki ASS override etiketleri (konum bilgisi)
     m_lead = _LEAD_OVERRIDE_RE.match(src)
@@ -541,8 +545,11 @@ def parse_any(filepath: str) -> list:
     """
     ext = Path(filepath).suffix.lower()
     if ext == '.srt':
-        from subtitle_translator_gui import parse_srt
-        return parse_srt(filepath)
+        from subtitle_localizer.srt import parse_srt
+        return [
+            (str(cue.index), f"{cue.start} --> {cue.end}", cue.text)
+            for cue in parse_srt(read_subtitle_text(filepath))
+        ]
     if ext == '.vtt':
         return parse_vtt(filepath)
     if ext in ('.ass', '.ssa'):

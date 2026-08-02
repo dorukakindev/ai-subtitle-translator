@@ -514,6 +514,87 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertEqual(stats["fixed"], 0)
         self.assertEqual(stats["details"][-1]["reason"], "unresolved_cluster_issue")
 
+    def test_partial_split_sentence_rewrite_is_rejected_atomically(self):
+        cues = [
+            SimpleNamespace(index="1", start="00:00:01", end="00:00:02",
+                            text="I thought that"),
+            SimpleNamespace(index="2", start="00:00:02", end="00:00:03",
+                            text="you knew."),
+        ]
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "SanmÄ±ÅŸtÄ±m"),
+            ("2", "00:00:02 --> 00:00:03", "bildiÄŸini."),
+        ]
+        src_map = {"1": "I thought that", "2": "you knew."}
+        payload = [{
+            "cluster": "c1",
+            "fixes": [{"id": "1", "text": "BildiÄŸini dÃ¼ÅŸÃ¼ndÃ¼m", "reason": "flow"}],
+        }]
+
+        with patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", return_value=_response(payload)), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}), \
+             patch("hybrid_translate.validate_semantic_reconciliation_candidate",
+                   return_value=(True, "")):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", cues=cues,
+                changed_ids={"1"},
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertEqual(stats["rejected"], 1)
+        self.assertEqual(stats["details"][-1]["reason"], "fragment_group_partial")
+
+    def test_cancellation_discards_already_applied_batch_changes(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:02", "Eski bir."),
+            ("2", "00:00:02 --> 00:00:03", "Eski iki."),
+        ]
+        src_map = {"1": "First.", "2": "Second."}
+        clusters = [
+            {
+                "cluster": f"c{i}",
+                "items": [{"id": str(i), "source": src_map[str(i)],
+                           "translation": blocks[i - 1][2], "suspect": True,
+                           "reasons": ["POST_PASS_CHANGED"]}],
+                "suspect_ids": [str(i)],
+            }
+            for i in (1, 2)
+        ]
+
+        class Canceller:
+            cancelled = False
+
+            def is_cancelled(self):
+                return self.cancelled
+
+        canceller = Canceller()
+
+        def first_response(*_args, **_kwargs):
+            canceller.cancelled = True
+            return _response([{
+                "cluster": "c1",
+                "fixes": [{"id": "1", "text": "Ä°lk.", "reason": "meaning"}],
+            }])
+
+        with patch("hybrid_translate.build_semantic_reconciliation_clusters",
+                   return_value=clusters), \
+             patch("hybrid_translate._semantic_cluster_batches",
+                   return_value=[[clusters[0]], [clusters[1]]]), \
+             patch("openai.OpenAI"), \
+             patch("hybrid_translate._safe_chat_create", side_effect=first_response), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}), \
+             patch("hybrid_translate.validate_semantic_reconciliation_candidate",
+                   return_value=(True, "")):
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map, blocks, api_key="k", model="m", cancel_context=canceller,
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(stats["fixed"], 0)
+        self.assertIn({"status": "cancelled"}, stats["details"])
+
     def test_permanent_auth_error_stops_remaining_batches(self):
         blocks = [
             ("1", "00:00:01 --> 00:00:02", "Bir."),

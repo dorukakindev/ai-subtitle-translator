@@ -39,6 +39,30 @@ class _FakeCanvas:
         self.position = position
 
 
+class _GridProbe:
+    def __init__(self):
+        self.columns = []
+
+    def grid_columnconfigure(self, column, **kwargs):
+        self.columns.append((column, kwargs))
+
+
+class _CardProbe:
+    def __init__(self):
+        self.layouts = []
+
+    def grid_configure(self, **kwargs):
+        self.layouts.append(kwargs)
+
+
+class _MainProbe:
+    def __init__(self, width):
+        self.width = width
+
+    def winfo_width(self):
+        return self.width
+
+
 class MultiMonitorDpiTest(unittest.TestCase):
     def test_main_panel_is_vertically_scrollable(self):
         source = inspect.getsource(gui.App._build_main)
@@ -77,6 +101,30 @@ class MultiMonitorDpiTest(unittest.TestCase):
 
     def test_missing_canvas_is_safe(self):
         self.assertFalse(gui._refresh_scrollable_frame_after_dpi(object()))
+
+    def test_stat_cards_use_two_rows_when_main_panel_is_narrow(self):
+        self.assertEqual(gui._dashboard_stat_columns(899), 3)
+        self.assertEqual(gui._dashboard_stat_columns(900), 6)
+
+    def test_dashboard_reflow_preserves_a_compact_three_column_grid(self):
+        cards = [_CardProbe() for _ in range(6)]
+        app = type("AppProbe", (), {
+            "_dashboard_layout_after_id": "stale",
+            "_main_frame": _MainProbe(680),
+            "_stats_frame": _GridProbe(),
+            "_stat_cards": cards,
+            "_dashboard_stat_layout_cols": None,
+        })()
+
+        gui.App._refresh_dashboard_layout(app)
+
+        self.assertEqual(app._dashboard_layout_after_id, None)
+        self.assertEqual(app._dashboard_stat_layout_cols, 3)
+        self.assertEqual(
+            [(card.layouts[-1]["row"], card.layouts[-1]["column"])
+             for card in cards],
+            [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+        )
 
 
 if __name__ == "__main__":

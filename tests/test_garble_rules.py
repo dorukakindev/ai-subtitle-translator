@@ -95,6 +95,10 @@ class StraySuffixR3Test(unittest.TestCase):
     def test_natural_word_ending_in_deki_pattern_not_confused(self):
         self.assertEqual(ht.find_garble_tokens("evdeki eşyalar dağınıktı."), [])
 
+    def test_genitive_teki_is_valid_turkish(self):
+        self.assertEqual(ht.find_garble_tokens("Ayyaşın teki."), [])
+        self.assertEqual(ht.find_garble_tokens("Beyinsizin teki."), [])
+
 
 class ImpossibleSuffixR4Test(unittest.TestCase):
     def test_toplumlarde_flagged(self):

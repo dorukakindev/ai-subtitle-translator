@@ -426,6 +426,14 @@ def _log_view_at_bottom(yview, tolerance: float = 0.002) -> bool:
         return False
 
 
+def _dashboard_stat_columns(content_width: int) -> int:
+    """Dar ana panelde istatistik kartlarını iki satıra böler."""
+    try:
+        return 6 if int(content_width) >= 900 else 3
+    except (TypeError, ValueError):
+        return 3
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -7980,6 +7988,8 @@ class App(ctk.CTk):
         self._drain_ui_queue_id  = None
         self._pending_batches_after_id = None
         self._dpi_refresh_after_id = None
+        self._dashboard_layout_after_id = None
+        self._dashboard_stat_layout_cols = None
         self._run_record_lock = threading.RLock()
         self._active_run_record = None
         self._last_run_record = _load_last_run_record()
@@ -9227,7 +9237,7 @@ class App(ctk.CTk):
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Terim Normalizasyonu (karışık-terim otomatik düzeltme — YALNIZCA sızıntı sınıfı)
-        self.term_normalize_var = ctk.BooleanVar(value=False)
+        self.term_normalize_var = ctk.BooleanVar(value=True)
         tn_fr = ctk.CTkFrame(sb, fg_color="transparent")
         tn_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         tn_fr.grid_columnconfigure(1, weight=1)
@@ -9874,6 +9884,8 @@ class App(ctk.CTk):
             main, fg_color=PANEL, corner_radius=12,
             border_width=1, border_color=BORDER_SOFT)
         sf.grid(row=0, column=0, sticky="ew", pady=(0,10))
+        self._stats_frame = sf
+        self._stat_cards = []
 
         stats = [
             ("DOSYA",       "stat_files",  FG),
@@ -9893,6 +9905,7 @@ class App(ctk.CTk):
                 padx=(8 if i == 0 else 4, 8 if i == 5 else 4),
                 pady=12, sticky="nsew")
             c.grid_columnconfigure(0, weight=1)
+            self._stat_cards.append(c)
 
             ctk.CTkFrame(
                 c, height=3, corner_radius=2, fg_color=color,
@@ -9937,6 +9950,11 @@ class App(ctk.CTk):
                 ctk.CTkLabel(c, text=name,
                              font=ctk.CTkFont("Consolas", 9, "bold"),
                              text_color=FG2).pack(pady=(0,12))
+
+        try:
+            self.after_idle(self._refresh_dashboard_layout)
+        except Exception:
+            pass
 
         # ── Progress ──────────────────────────────────────────────────────────
         pb_fr = ctk.CTkFrame(
@@ -10203,6 +10221,49 @@ class App(ctk.CTk):
         except Exception:
             self._dpi_refresh_after_id = None
 
+    def _schedule_dashboard_layout(self):
+        if getattr(self, "_is_shutting_down", False):
+            return
+        pending = getattr(self, "_dashboard_layout_after_id", None)
+        if pending is not None:
+            try:
+                self.after_cancel(pending)
+            except Exception:
+                pass
+        try:
+            self._dashboard_layout_after_id = self.after(
+                180, self._refresh_dashboard_layout)
+        except Exception:
+            self._dashboard_layout_after_id = None
+
+    def _refresh_dashboard_layout(self):
+        self._dashboard_layout_after_id = None
+        main = getattr(self, "_main_frame", None)
+        stats_frame = getattr(self, "_stats_frame", None)
+        cards = list(getattr(self, "_stat_cards", ()) or ())
+        if main is None or stats_frame is None or not cards:
+            return
+        try:
+            columns = _dashboard_stat_columns(main.winfo_width())
+        except Exception:
+            return
+        if columns == getattr(self, "_dashboard_stat_layout_cols", None):
+            return
+        self._dashboard_stat_layout_cols = columns
+        try:
+            for column in range(6):
+                stats_frame.grid_columnconfigure(
+                    column, weight=1 if column < columns else 0)
+            for index, card in enumerate(cards):
+                row, column = divmod(index, columns)
+                card.grid_configure(
+                    row=row, column=column,
+                    padx=(8 if column == 0 else 4,
+                          8 if column == columns - 1 else 4),
+                    pady=(12 if row == 0 else 4, 12))
+        except Exception:
+            pass
+
     def _refresh_after_dpi_scaling(self):
         self._dpi_refresh_after_id = None
         if getattr(self, "_is_shutting_down", False):
@@ -10218,6 +10279,7 @@ class App(ctk.CTk):
                 main.grid_columnconfigure(0, weight=1)
             except Exception:
                 pass
+        self._refresh_dashboard_layout()
         for frame in (
             getattr(self, "_main_frame", None),
             getattr(self, "_sb", None),
@@ -12033,6 +12095,7 @@ class App(ctk.CTk):
     def _on_window_motion(self, event=None):
         if event is None or getattr(event, "widget", self) is self:
             self._motion_pause_until = time.monotonic() + 0.65
+            App._schedule_dashboard_layout(self)
 
     def _cancel_motion_animation(self, snap: bool = False):
         after_id = self.__dict__.get("_motion_after_id")

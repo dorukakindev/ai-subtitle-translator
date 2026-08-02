@@ -395,6 +395,16 @@ class GetSubtitleFilesTest(unittest.TestCase):
 
 
 class ParseSrtEdgeCasesTest(unittest.TestCase):
+    def test_parse_any_srt_keeps_three_digit_hour_cues_without_gui_import(self):
+        path = _write_temp(
+            "1\n100:00:01,000 --> 100:00:02,000\nCentury line\n", ".srt")
+        try:
+            from subtitle_formats import parse_any
+            self.assertEqual(parse_any(path), [
+                ("1", "100:00:01,000 --> 100:00:02,000", "Century line")])
+        finally:
+            os.unlink(path)
+
     def test_semicolon_timestamp_separators_reach_hybrid_parser(self):
         srt = (
             "1\n00;02;32,000 --> 00;02;38,000\nFirst\n\n"

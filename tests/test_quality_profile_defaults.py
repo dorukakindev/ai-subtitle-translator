@@ -40,6 +40,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "self.critic_var = ctk.BooleanVar(value=True)",
             "self.native_var = ctk.BooleanVar(value=True)",
             "self.semantic_reconcile_var = ctk.BooleanVar(value=True)",
+            "self.term_normalize_var = ctk.BooleanVar(value=True)",
             "self.season_canon_var = ctk.BooleanVar(value=True)",
             'self.media_mode_var = ctk.StringVar(value="Dizi")',
             "self.backup_raw_var = ctk.BooleanVar(value=True)",

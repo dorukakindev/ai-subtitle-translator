@@ -71,13 +71,16 @@ class RestoreFormatTagsTest(unittest.TestCase):
         self.assertEqual(restore_format_tags("", "Çeviri."), "Çeviri.")
         self.assertEqual(restore_format_tags("<i>Hi.</i>", ""), "")
 
-    def test_vtt_class_voice_lang_tags_restored(self):
+    def test_vtt_metadata_tags_do_not_leak_into_srt_output(self):
         self.assertEqual(restore_format_tags("<c.yellow>Yellow text</c>", "Sarı metin"),
-                         "<c.yellow>Sarı metin</c>")
+                         "Sarı metin")
         self.assertEqual(restore_format_tags("<v Roger>Voice text</v>", "Ses metni"),
-                         "<v Roger>Ses metni</v>")
+                         "Ses metni")
         self.assertEqual(restore_format_tags("<lang en>English text</lang>", "İngilizce metin"),
-                         "<lang en>İngilizce metin</lang>")
+                         "İngilizce metin")
+        self.assertEqual(
+            restore_format_tags("<i><v Roger>Voice text</v></i>", "Ses metni"),
+            "<i>Ses metni</i>")
 
     def test_math_operators_inside_and_outside_tags(self):
         # Etiket içindeki matematiksel < / > operatörleri
