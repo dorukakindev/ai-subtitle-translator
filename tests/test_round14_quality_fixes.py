@@ -52,6 +52,35 @@ class FinalConsistencySweepTest(unittest.TestCase):
 
 
 class ReviewPassFragmentGuardTest(unittest.TestCase):
+    def test_review_pass_reports_api_failure_instead_of_successful_zero_change(self):
+        cues = [("1", "00:00:01,000 --> 00:00:02,000", "Hello")]
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba")]
+        app = object.__new__(gui.App)
+        app._stop_flag = False
+        app._main_api_base_url = lambda: ""
+        app._main_api_key = lambda: "sk-test"
+        app._cached_blocks_for = lambda _fp: cues
+        app._locked_terms_hint = lambda _fp, _tgt: ""
+        app._update_tokens = lambda *args, **kwargs: None
+        app._set_status = lambda *args, **kwargs: None
+        app._log = lambda *args, **kwargs: None
+        app._log_exc = lambda *args, **kwargs: None
+        status = {}
+
+        with mock.patch.object(gui, "OpenAI"), \
+             mock.patch.object(gui, "_safe_chat_create",
+                               side_effect=RuntimeError("provider down")):
+            out_blocks, fixes = gui.App._review_pass(
+                app, "dummy.srt", blocks, "gpt-5.4", "Turkish",
+                status_out=status)
+
+        self.assertEqual(out_blocks, blocks)
+        self.assertEqual(fixes, 0)
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["successful_chunks"], 0)
+        self.assertEqual(status["failed_chunks"], 1)
+        self.assertEqual(status["total_chunks"], 1)
+
     def test_review_pass_rejects_fragment_terminal_backslide(self):
         cues = [
             ("1", "00:00:01,000 --> 00:00:02,000", "Hello"),

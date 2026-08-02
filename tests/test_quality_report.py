@@ -248,6 +248,22 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Native Okuyucu: çalıştı") for line in audit))
 
+    def test_review_failure_is_not_reported_as_successful_zero_change(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "review_expected": True,
+            "pass_trace": {"Review": 0},
+            "pass_status": {"Review": {
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 2, "total_chunks": 2,
+            }},
+        }, {})
+
+        self.assertIn(
+            "Bağlam İncelemesi: başarısız, 0/2 paket başarılı", audit)
+        self.assertFalse(any(
+            line.startswith("Bağlam İncelemesi: çalıştı") for line in audit))
+
     def test_expensive_final_pass_failures_are_not_reported_as_zero_change(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",
@@ -322,6 +338,8 @@ class BuildQualityReportTextTest(unittest.TestCase):
             "Yardımcı Analiz: kısmi onarım gereği atlandı", audit)
         self.assertIn(
             "Critic Pass: kısmi onarım gereği atlandı", audit)
+        self.assertIn(
+            "Bağlam İncelemesi: kısmi onarım gereği atlandı", audit)
         self.assertIn(
             "Nihai Anlam Mutabakatı: kısmi onarım gereği atlandı", audit)
 

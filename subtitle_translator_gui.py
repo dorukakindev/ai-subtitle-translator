@@ -7218,7 +7218,7 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         lines.append("Yardımcı Analiz: kısmi onarım gereği atlandı")
         lines.append("Zincirleme Bağlam: kısmi onarım gereği atlandı")
         for title in (
-                "Tutarlılık taraması", "Critic Pass", "Polish Pass",
+                "Tutarlılık taraması", "Bağlam İncelemesi", "Critic Pass", "Polish Pass",
                 "Native Okuyucu", "QC", "Nihai Anlam Mutabakatı",
                 "Geri Çeviri", "Terim Normalizasyonu", "Okuma Hızı Kısaltma",
                 "SDH temizleme", "Satır düzenleme"):
@@ -7240,6 +7240,7 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
 
     features = (
         ("Tutarlılık taraması", True, ("Consistency", "Final-Consistency")),
+        ("Bağlam İncelemesi", bool(row.get("review_expected")), ("Review",)),
         ("Critic Pass", bool(snapshot.get("critic")), ("Critic",)),
         ("Polish Pass", bool(snapshot.get("polish")), ("Polish",)),
         ("Native Okuyucu", bool(snapshot.get("native")), ("Native",)),
@@ -17045,7 +17046,8 @@ class App(ctk.CTk):
         except Exception:
             return ""
 
-    def _review_pass(self, fp: str, sorted_blocks: list, model: str, tgt: str) -> tuple:
+    def _review_pass(self, fp: str, sorted_blocks: list, model: str, tgt: str,
+                     status_out: dict | None = None) -> tuple:
         """Batch çevirisi sonrası ana modelle tam-bağlam incelemesi. (bloklar, düzeltme_sayısı) döner.
 
         Batch modunda chunk'lar birbirinin çevirisini göremez (istekler önceden
@@ -17053,10 +17055,18 @@ class App(ctk.CTk):
         terim/hitap tutarsızlıklarını ve çeviri hatalarını düzeltir."""
         REVIEW_CHUNK = 80
         REVIEW_CTX   = 8   # önceki chunk'tan taşınan bağlam çifti sayısı
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            })
         try:
             b_url = self._main_api_base_url()
             client = OpenAI(api_key=self._main_api_key(), base_url=b_url if b_url else None)
         except Exception as e:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(e)})
             self._log_exc("Bağlam incelemesi başlatılamadı", e)
             return sorted_blocks, 0
 
@@ -17068,6 +17078,9 @@ class App(ctk.CTk):
                 src_cues = []
         src_map = _src_map_from_cues(src_cues)
         if not src_map:
+            if status_out is not None:
+                status_out.update({
+                    "status": "failed", "error": "source_text_missing"})
             self._log("Bağlam incelemesi: kaynak metin bulunamadı, atlandı", "warn")
             return sorted_blocks, 0
         import hybrid_translate as ht
@@ -17140,6 +17153,10 @@ class App(ctk.CTk):
         fixed_total = 0
         review_rejected = 0
         review_rejected_reasons = {}
+        successful_chunks = 0
+        failed_chunks = 0
+        attempted_chunks = 0
+        cancelled = False
         for chunk_no, (cs, chunk_end) in enumerate(review_ranges, 1):
             if self._stop_flag:
                 break
@@ -17156,6 +17173,7 @@ class App(ctk.CTk):
                         it["frag_group"] = review_frag_group_ids[it["i"]]
             if not items:
                 continue
+            attempted_chunks += 1
             payload = {"review": items}
             chunk_ids = {it["i"] for it in items}
             chunk_groups = [
@@ -17186,10 +17204,13 @@ class App(ctk.CTk):
                 if resp.usage:
                     tot, cached = _get_usage_details(resp.usage)
                     self._update_tokens(tot, cached=cached)
-                raw   = _extract_json_array((resp.choices[0].message.content or "").strip())
-                fixes = json.loads(raw) if raw.strip() else []
+                content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+                raw = _extract_json_array(content)
+                if not raw.strip():
+                    raise ValueError("empty review response")
+                fixes = json.loads(raw)
                 if not isinstance(fixes, list):
-                    fixes = []
+                    raise ValueError("review response is not a JSON array")
                 fix_by_id = {}
                 conflicting_ids = set()
                 for it in fixes:
@@ -17287,11 +17308,28 @@ class App(ctk.CTk):
                         fixed_total += 1
                         self._log(f"  ✏ İnceleme #{old_idx}: {old_t!r}", "warn")
                         self._log(f"       → {new_t!r}", "ok")
+                successful_chunks += 1
                 self._set_status(f"Bağlam incelemesi {chunk_no}/{total_chunks} — {Path(fp).name}")
             except RequestCancelled:
+                cancelled = True
                 break
             except Exception as e:
+                failed_chunks += 1
                 self._log_exc(f"Bağlam incelemesi chunk {chunk_no}/{total_chunks} hatası", e)
+        if status_out is not None:
+            if self._stop_flag or cancelled:
+                pass_status = "cancelled"
+            elif failed_chunks:
+                pass_status = "partial" if successful_chunks else "failed"
+            else:
+                pass_status = "completed"
+            status_out.update({
+                "status": pass_status,
+                "successful_chunks": successful_chunks,
+                "failed_chunks": failed_chunks,
+                "total_chunks": attempted_chunks,
+                "changed": fixed_total,
+            })
         if review_rejected:
             reason_bits = ", ".join(
                 f"{reason}:{count}" for reason, count in sorted(review_rejected_reasons.items())
@@ -22105,8 +22143,11 @@ class App(ctk.CTk):
                                     self._set_status("Bağlam incelemesi...")
                                     self._log(f"Bağlam incelemesi başlıyor ({len(pp)} satır)...", "info")
                                     _before_rev = list(pp)
+                                    _review_status = {}
                                     pp, _rev_fixes = self._review_pass(
-                                        str(_src_path), pp, self._main_model_name(), tgt)
+                                        str(_src_path), pp, self._main_model_name(), tgt,
+                                        status_out=_review_status)
+                                    _pass_status["Review"] = dict(_review_status)
                                     if self._stop_flag:
                                         break
                                     _record_pass_change(_pass_trace, "Review", _before_rev, pp, _pass_history)
@@ -22381,6 +22422,9 @@ class App(ctk.CTk):
                                                     "qc": _qc_fixes,
                                                     "pass_trace": _pass_trace,
                                                     "pass_status": _pass_status,
+                                                    "review_expected": bool(
+                                                        self.review_pass_var.get()
+                                                        and pp and _orig_cues),
                                                     "pass_history": _pass_history,
                                                     "pass_coverage": _pc,
                                                     "tm_hits": self._tm.hit_count_session()})
@@ -22680,7 +22724,11 @@ class App(ctk.CTk):
                 self._record_file_status(fp, "Bağlam İncelemesi", "running")
                 self._log(f"Bağlam incelemesi başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
-                sorted_blocks, _rev_fixes = self._review_pass(fp, sorted_blocks, model_name, _tgt_lang)
+                _review_status = {}
+                sorted_blocks, _rev_fixes = self._review_pass(
+                    fp, sorted_blocks, model_name, _tgt_lang,
+                    status_out=_review_status)
+                _pass_status["Review"] = dict(_review_status)
                 _record_pass_change(_pass_trace, "Review", _before_pass, sorted_blocks, _pass_history)
             _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
             # ── Kalite geçişleri (tüm modlarda, toggle açıksa) ──────────────
@@ -22957,6 +23005,8 @@ class App(ctk.CTk):
                 "qc_auto": _qc_stats["qc_auto"], "qc": _qc_stats["qc"],
                 "pass_trace": _pass_trace,
                 "pass_status": _pass_status,
+                "review_expected": bool(
+                    self.review_pass_var.get() and _review_needed),
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
                 "helper_analysis": False,
@@ -23779,7 +23829,11 @@ class App(ctk.CTk):
                         self._set_status(f"Bağlam incelemesi: {fname}")
                         self._log(f"Bağlam incelemesi başlıyor ({len(_final_blocks)} satır)...", "info")
                         _before_rev = list(_final_blocks)
-                        _final_blocks, _rev_fixes = self._review_pass(filepath, _final_blocks, model, tgt)
+                        _review_status = {}
+                        _final_blocks, _rev_fixes = self._review_pass(
+                            filepath, _final_blocks, model, tgt,
+                            status_out=_review_status)
+                        _pass_status["Review"] = dict(_review_status)
                         if self._stop_flag:
                             break
                         _record_pass_change(_pass_trace, "Review", _before_rev, _final_blocks, _pass_history)
@@ -24123,6 +24177,7 @@ class App(ctk.CTk):
                     "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
                     "pass_trace": _pass_trace,
                     "pass_status": _pass_status,
+                    "review_expected": bool(self.review_pass_var.get()),
                     "pass_history": _pass_history,
                     "pass_coverage": _pc,
                     "tm_hits": self._tm.hit_count_session(),
