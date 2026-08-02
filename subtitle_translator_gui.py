@@ -6907,6 +6907,22 @@ def _partial_output_path(out_path) -> Path:
     return path.with_name(f"{path.stem}.partial{path.suffix}")
 
 
+def _archive_completed_partial_output(partial_path, out_path) -> Path | None:
+    partial = Path(partial_path)
+    if not partial.is_file():
+        return None
+    archive_dir = Path(out_path).parent / "Raporlar" / "Kurtarma"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / f"{Path(out_path).stem}.pre-repair.bak{partial.suffix}"
+    serial = 2
+    while target.exists():
+        target = archive_dir / (
+            f"{Path(out_path).stem}.pre-repair.{serial}.bak{partial.suffix}")
+        serial += 1
+    partial.replace(target)
+    return target
+
+
 def _partial_retry_raw_map(partial_blocks, file_map: dict, source_cues) -> tuple:
     source_map = {}
     for cue in source_cues or []:
@@ -20037,13 +20053,27 @@ class App(ctk.CTk):
             repaired_blocks, raw_src_map, cues)
         complete = not missing_after
         write_path = out_path if complete else partial_path
-        _write_srt_preserving_text(write_path, repaired_blocks)
+        write_blocks = list(repaired_blocks)
+        if complete:
+            write_blocks = _prepare_upload_ready_blocks(
+                write_blocks, target_language=tgt,
+                log_fn=self._log, source_cues=cues)
+        _write_srt_preserving_text(write_path, write_blocks)
         _write_output_source_fingerprint(
             report_dir, write_path, expected_source_hash)
+        archived_partial = None
         if complete:
+            try:
+                archived_partial = _archive_completed_partial_output(
+                    partial_path, out_path)
+            except Exception as exc:
+                self._log(
+                    f"Kısmi çıktı Raporlar\\Kurtarma klasörüne taşınamadı: {exc}",
+                    "warn")
             self._log(
                 f"Kısmi onarım tamamlandı: {repaired} eksik cue çevrildi; "
-                "sağlam cue'lara ve kalite geçişlerine dokunulmadı.",
+                "sağlam çeviri metinlerine ve API kalite geçişlerine "
+                "dokunulmadı; deterministik nihai teslim temizliği uygulandı.",
                 "ok",
             )
         else:
@@ -20054,9 +20084,9 @@ class App(ctk.CTk):
             )
         return {
             "stopped": False, "complete": complete, "write_error": False,
-            "blocks": repaired_blocks, "repaired": repaired,
+            "blocks": write_blocks, "repaired": repaired,
             "missing_before": missing_before, "missing_after": missing_after,
-            "write_path": write_path,
+            "write_path": write_path, "archived_partial": archived_partial,
         }
 
     def _run_sync_hybrid(self, api_key, client, srt_files, src, tgt, model, output_dir):

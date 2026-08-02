@@ -396,19 +396,19 @@ class SyncCheckpointTest(unittest.TestCase):
         partial = output_dir / "film.partial.srt"
         source.write_text(
             "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n"
-            "2\n00:00:02,000 --> 00:00:03,000\nWhere are you?\n\n",
+            "2\n00:00:05,000 --> 00:00:06,000\nWhere are you?\n\n",
             encoding="utf-8",
         )
         partial.write_text(
             "1\n00:00:01,000 --> 00:00:02,000\nSağlam metin aynen kalsın.\n\n"
-            "2\n00:00:02,000 --> 00:00:03,000\n[ÇEVİRİ EKSİK]\n\n",
+            "2\n00:00:05,000 --> 00:00:06,000\n[ÇEVİRİ EKSİK]\n\n",
             encoding="utf-8",
         )
         source_hash = gui._file_content_sha256(source)
         gui._write_output_source_fingerprint(reports, partial, source_hash)
         cues = [
             SimpleNamespace(index=1, start="00:00:01,000", end="00:00:02,000", text="Hello."),
-            SimpleNamespace(index=2, start="00:00:02,000", end="00:00:03,000", text="Where are you?"),
+            SimpleNamespace(index=2, start="00:00:05,000", end="00:00:06,000", text="Where are you?"),
         ]
         app = SimpleNamespace(
             _force_retranslate_paths=set(),
@@ -424,7 +424,7 @@ class SyncCheckpointTest(unittest.TestCase):
         )
         repaired_blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", "Sağlam metin aynen kalsın."),
-            ("2", "00:00:02,000 --> 00:00:03,000", "Neredesin?"),
+            ("2", "00:00:05,000 --> 00:00:06,000", "Neredesin?"),
         ]
 
         with patch("subtitle_translator_gui._repair_untranslated_sync",
@@ -437,9 +437,18 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertTrue(result["complete"])
         self.assertEqual(repair.call_count, 1)
         final = list(gui.parse_subtitle(str(out)))
-        self.assertEqual(final, repaired_blocks)
+        real = [row for row in final if row[2] != "discord: ceviri2"]
+        self.assertEqual(
+            [(row[1], row[2]) for row in real],
+            [(row[1], row[2]) for row in repaired_blocks])
+        self.assertEqual(
+            sum(row[2] == "discord: ceviri2" for row in final), 3)
+        self.assertFalse(partial.exists())
+        self.assertTrue(Path(result["archived_partial"]).is_file())
+        self.assertIn("Raporlar", Path(result["archived_partial"]).parts)
         log_text = " ".join(str(call.args[0]) for call in app._log.call_args_list)
         self.assertIn("Yardımcı analiz ve bütün kalite geçişleri", log_text)
+        self.assertIn("deterministik nihai teslim temizliği", log_text)
 
     def test_hybrid_flow_wires_stage_checkpoint_around_quality_passes(self):
         source = inspect.getsource(gui.App._run_sync_hybrid)
