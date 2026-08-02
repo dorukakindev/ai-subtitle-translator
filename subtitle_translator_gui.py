@@ -2398,6 +2398,7 @@ def write_srt(filepath, blocks, target_language="Turkish"):
                 text = sdh_cleaner.normalize_speaker_labels(text)
                 text = sdh_cleaner.normalize_turkish_artifacts(text)
                 text = _translate_speaker_labels(text)
+                text = text.translate(_DELIVERY_HAT_MAP)
             if not text.strip():
                 text = "[ÇEVİRİ EKSİK]"
             rows.append(f"{idx}\n{ts}\n{text}\n\n")
@@ -7934,6 +7935,54 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
+def _pending_recovery_batch_ids() -> list[str]:
+    try:
+        values = _batch_id_path().read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    return [value.strip() for value in values if is_safe_batch_id(value.strip())]
+
+
+def _translation_run_owner_path() -> Path:
+    return state_path(__file__, "translation_run_owner.json")
+
+
+def _claim_translation_run_owner() -> bool:
+    path = _translation_run_owner_path()
+    with _interprocess_lock(path):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        owner_pid = int(data.get("pid") or 0)
+        if owner_pid and owner_pid != os.getpid() and _pid_alive(owner_pid):
+            stored_marker = str(data.get("process_start") or "")
+            current_marker = _process_start_marker(owner_pid)
+            if not stored_marker or not current_marker or stored_marker == current_marker:
+                return False
+        atomic_write_json(path, {
+            "pid": os.getpid(),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "process_start": _process_start_marker(os.getpid()),
+        })
+    return True
+
+
+def _release_translation_run_owner() -> None:
+    path = _translation_run_owner_path()
+    with _interprocess_lock(path):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        if int(data.get("pid") or 0) != os.getpid():
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _process_start_marker(pid: int) -> str:
     """PID yeniden kullanÄ±mÄ±nÄ± ayÄ±rt etmek iÃ§in sÃ¼reÃ§ baÅŸlangÄ±Ã§ imzasÄ±."""
     try:
@@ -12864,6 +12913,8 @@ class App(ctk.CTk):
         if not running and App._should_start_season_canon(self):
             App._start_season_canon_finalizer(self)
             return
+        if not running:
+            _release_translation_run_owner()
         s = "disabled" if (running or getattr(self, "_folder_scan_busy", False)) else "normal"
         self.start_btn.configure(state=s)
         test_btn = getattr(self, "test_btn", None)
@@ -16024,6 +16075,24 @@ class App(ctk.CTk):
             self._set_status("Klasör taraması tamamlanmadan çeviri başlatılamaz.")
             self._log("Klasör taraması sürerken çeviri başlatılamaz.", "warn")
             return
+        if not self._is_running:
+            with self._batch_lock:
+                active_batches = bool(self._active_batches)
+            pending_batches = _pending_recovery_batch_ids()
+            if active_batches or pending_batches:
+                messagebox.showwarning(
+                    "Bekleyen Batch Var",
+                    "Önce bekleyen batch'i 'Batch'i Devam Ettir' ile tamamlayın "
+                    "veya iptal edin. Yeni ücretli batch başlatılmadı.",
+                )
+                return
+            if not _claim_translation_run_owner():
+                messagebox.showwarning(
+                    "Başka Çeviri Çalışıyor",
+                    "Başka bir uygulama penceresinde çeviri sürüyor. Çift istek "
+                    "ve gereksiz token harcamasını önlemek için başlatılmadı.",
+                )
+                return
         if self._is_running:          # double-click guard — ikinci tık state'i bozmasın
             return
         self._is_running = True       # TOCTOU: hemen set et — _validate boyunca ikinci tık блокlanır
@@ -16031,9 +16100,11 @@ class App(ctk.CTk):
             key = self._validate()
         except Exception:
             self._is_running = False
+            _release_translation_run_owner()
             raise
         if not key:
             self._is_running = False
+            _release_translation_run_owner()
             return
         # NOT: Burada eskiden "çıkış klasörü girişle aynı olamaz — kaynakların üzerine
         # yazılır" diye sert bir engel vardı. Çıktı-klasörü kuralları (2026-07-10) bunu
@@ -16194,6 +16265,14 @@ class App(ctk.CTk):
         for attr in ("stat_tokens_var", "stat_done_var", "stat_fail_var", "stat_tm_var"):
             getattr(self, attr).set("0")
         self._set_eta("")
+        if not _claim_translation_run_owner():
+            messagebox.showwarning(
+                "Başka Çeviri Çalışıyor",
+                "Başka bir uygulama penceresinde çeviri veya batch kurtarması "
+                "sürüyor. Aynı batch'in iki kez işlenmesini önlemek için devam "
+                "ettirilmedi.",
+            )
+            return
         self._set_running(True)
         begin_run = getattr(self, "_begin_run_record", None)
         if callable(begin_run):
@@ -16476,6 +16555,9 @@ class App(ctk.CTk):
                 cancelled.append(bid)
             except Exception as e:
                 self._log(f"Batch iptal edilemedi ({bid}): {e}", "warn")
+        if cancelled:
+            import hybrid_translate as ht
+            ht.mark_cancelled_batch_sessions(cancelled)
         self._clear_batch_recovery(cancelled)
     def _toggle_pause_between_files(self):
         if self._pause_btw_files.is_set():
@@ -23695,7 +23777,9 @@ class App(ctk.CTk):
             },
         })
         session = ht.create_batch_session(
-            input_dir, output_dir, srt_files, fingerprint=session_fp)
+            input_dir, output_dir, srt_files, fingerprint=session_fp,
+            force_retranslate_paths=getattr(
+                self, "_force_retranslate_paths", set()))
         _summary = ht.batch_session_summary(session, srt_files)
         if _summary["completed"] > 0 or _summary["submitted"] > 0:
             self._log(
@@ -24046,23 +24130,37 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             if self._is_queued_file_removed(filepath):
+                _removal_completed = True
                 if batch_id and batch_id != "__twowave__":
+                    _cancelled = False
                     try:
                         from openai import OpenAI
                         _cancel_client = OpenAI(
                             api_key=openai_key, base_url=b_url if b_url else None)
-                        best_effort_cancel_remote_batch(
+                        _cancelled = best_effort_cancel_remote_batch(
                             _cancel_client, batch_id, self._log)
                     except Exception:
                         pass
-                    self._unregister_batch(batch_id)
-                    self._clear_batch_recovery([batch_id])
-                self._twowave_pending.pop(str(filepath), None)
-                ht.update_batch_session(session, filepath, "removed")
-                self._record_file_status(filepath, "Sıradan kaldırıldı", "skip")
-                self._log(
-                    f"[{fname}] Sıradan kaldırıldı; batch sonucu yazılmayacak.",
-                    "warn")
+                    if _cancelled:
+                        self._unregister_batch(batch_id)
+                        self._clear_batch_recovery([batch_id])
+                        ht.update_batch_session(session, filepath, "removed")
+                    else:
+                        _removal_completed = False
+                        self._log(
+                            f"[{fname}] Uzak batch iptal edilemedi; ücretli iş ve "
+                            "kurtarma kaydı korunuyor.", "err")
+                else:
+                    self._twowave_pending.pop(str(filepath), None)
+                    ht.update_batch_session(session, filepath, "removed")
+                if _removal_completed:
+                    self._record_file_status(filepath, "Sıradan kaldırıldı", "skip")
+                    self._log(
+                        f"[{fname}] Sıradan kaldırıldı; batch sonucu yazılmayacak.",
+                        "warn")
+                else:
+                    self._record_file_status(
+                        filepath, "Uzak batch iptali başarısız; kurtarma bekliyor", "error")
                 continue
             self._log(f"\n── [{si+1}/{n_sub}] {fname} — Batch bekleniyor ──", "info")
             self._set_status(f"Bekleniyor: {fname}")

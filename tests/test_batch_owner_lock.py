@@ -8,6 +8,7 @@ batch beklenirken uygulamanın ikinci bir örneği açılınca (veya App kuran b
 siler. Kilit bunu engeller: sahibi yaşayan batch'ler pencerede gösterilmez.
 """
 import json
+import inspect
 import os
 import tempfile
 import unittest
@@ -102,6 +103,57 @@ class LiveOwnedBatchIdsTest(unittest.TestCase):
     def test_no_lock_files_returns_empty(self):
         # (Ortamda başka kilit olabilir; en azından patlamamalı ve set dönmeli)
         self.assertIsInstance(gui._live_owned_batch_ids(), set)
+
+
+class TranslationRunOwnerTest(unittest.TestCase):
+    def setUp(self):
+        self._state = tempfile.TemporaryDirectory()
+        self._env = patch.dict(os.environ, {STATE_DIR_ENV: self._state.name})
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+        self._state.cleanup()
+
+    def test_second_live_process_cannot_claim_translation(self):
+        owner = gui._translation_run_owner_path()
+        owner.write_text(json.dumps({"pid": 424242}), encoding="utf-8")
+        with patch.object(gui, "_pid_alive", return_value=True):
+            self.assertFalse(gui._claim_translation_run_owner())
+
+    def test_reused_pid_owner_is_replaced(self):
+        owner = gui._translation_run_owner_path()
+        owner.write_text(json.dumps({
+            "pid": 424242,
+            "process_start": "old-process",
+        }), encoding="utf-8")
+        with patch.object(gui, "_pid_alive", return_value=True), \
+             patch.object(gui, "_process_start_marker", return_value="new-process"):
+            self.assertTrue(gui._claim_translation_run_owner())
+        self.assertEqual(
+            json.loads(owner.read_text(encoding="utf-8"))["pid"], os.getpid())
+
+    def test_current_process_claims_and_releases_translation(self):
+        self.assertTrue(gui._claim_translation_run_owner())
+        owner = gui._translation_run_owner_path()
+        self.assertEqual(
+            json.loads(owner.read_text(encoding="utf-8"))["pid"], os.getpid())
+        gui._release_translation_run_owner()
+        self.assertFalse(owner.exists())
+
+    def test_pending_recovery_ids_are_detected(self):
+        batch_ids = Path(self._state.name) / "batch_id.txt"
+        batch_ids.write_text("batch_safe\nnot safe id\n", encoding="utf-8")
+        with patch.object(gui, "_batch_id_path", return_value=batch_ids):
+            self.assertEqual(gui._pending_recovery_batch_ids(), ["batch_safe"])
+
+    def test_resume_claims_same_interprocess_owner(self):
+        source = inspect.getsource(gui.App._resume)
+        self.assertIn("if not _claim_translation_run_owner()", source)
+        self.assertLess(
+            source.index("if not _claim_translation_run_owner()"),
+            source.index("self._set_running(True)"),
+        )
 
 
 class CheckPendingBatchesFiltersLiveTest(unittest.TestCase):

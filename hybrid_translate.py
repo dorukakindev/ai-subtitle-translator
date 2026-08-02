@@ -4,6 +4,7 @@ Mevcut subtitle_localizer projesini import ederek kullanir.
 """
 
 import re
+import os
 import sys
 import json
 import math
@@ -1112,7 +1113,8 @@ def _recover_submitted_batch_links(session: dict, filepaths: list,
 
 
 def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
-                         fingerprint: str = "") -> dict:
+                         fingerprint: str = "",
+                         force_retranslate_paths=()) -> dict:
     """Create or merge a batch session for the given file list.
 
     If a session already exists for this input_dir, completed/submitted statuses
@@ -1124,6 +1126,10 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
     prune_batch_sessions()
     existing = load_batch_session(input_dir)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    forced = {
+        os.path.normcase(os.path.abspath(str(path)))
+        for path in (force_retranslate_paths or ())
+    }
 
     replaced = None
     if existing and fingerprint and existing.get("fingerprint") != fingerprint:
@@ -1144,16 +1150,17 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
                 continue
             entry = session["files"][key]
             status = entry.get("status")
-            if status == "failed":
+            is_forced = os.path.normcase(os.path.abspath(key)) in forced
+            if is_forced and status != "submitted":
+                session["files"][key] = {
+                    "status": "pending", "source_hash": source_hash}
+            elif status == "failed":
                 session["files"][key] = {
                     "status": "pending", "source_hash": source_hash}
             elif status == "completed":
                 stored_hash = str(entry.get("source_hash") or "")
                 out_path = str(entry.get("out_path") or "")
-                stored_output = entry.get("output_state")
                 output_ok = bool(out_path and Path(out_path).is_file())
-                if stored_output is not None:
-                    output_ok = output_ok and _file_state_signature(out_path) == stored_output
                 if (stored_hash and stored_hash != source_hash) or not output_ok:
                     session["files"][key] = {
                         "status": "pending", "source_hash": source_hash}
@@ -1184,6 +1191,14 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
                 old_entry = (replaced.get("files") or {}).get(key, {})
                 if old_entry.get("status") == "submitted" and old_entry.get("batch_id"):
                     session["files"][key] = dict(old_entry)
+        for fp in filepaths:
+            key = str(fp)
+            if (os.path.normcase(os.path.abspath(key)) in forced
+                    and session["files"][key].get("status") != "submitted"):
+                session["files"][key] = {
+                    "status": "pending",
+                    "source_hash": _cache_sig(key).removeprefix("sha256:"),
+                }
 
     _recover_submitted_batch_links(session, filepaths, fingerprint)
     _save_batch_session(session)
@@ -1249,6 +1264,35 @@ def update_recovered_batch_session(batch_id: str, filepath: str, status: str,
             if status == "completed" and out_path else None),
     )
     return True
+
+
+def mark_cancelled_batch_sessions(batch_ids) -> int:
+    """Make successfully cancelled paid batches retryable on the next run."""
+    wanted = {str(batch_id) for batch_id in (batch_ids or []) if batch_id}
+    if not wanted:
+        return 0
+    root = _session_dir()
+    if not root.exists():
+        return 0
+    changed = 0
+    for path in root.glob("*_session.json"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                session = json.load(f)
+            touched = False
+            for entry in (session.get("files") or {}).values():
+                if (entry.get("status") == "submitted"
+                        and entry.get("batch_id") in wanted):
+                    entry["status"] = "failed"
+                    entry["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    entry["cancelled"] = True
+                    touched = True
+                    changed += 1
+            if touched:
+                _save_batch_session(session)
+        except Exception:
+            continue
+    return changed
 
 
 def clear_batch_session(input_dir: str):

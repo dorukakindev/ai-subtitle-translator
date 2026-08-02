@@ -589,7 +589,7 @@ def parse_any(filepath: str) -> list:
 
 
 def get_subtitle_files(directory: str, recursive: bool = True,
-                        exclude_dir_names=("ÇIKTI",),
+                        exclude_dir_names=("ÇIKTI", "Raporlar"),
                         exclude_suffixes=(".ham.srt",),
                         exclude_paths=(),
                         cancel_check=None) -> list:

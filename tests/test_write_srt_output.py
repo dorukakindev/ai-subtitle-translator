@@ -90,6 +90,17 @@ class WriteSrtOutputTest(unittest.TestCase):
         blocks = gui.parse_srt(p)
         self.assertEqual(blocks[0][2], "öyle mi?")
 
+    def test_final_writer_removes_hats_added_by_local_fixes(self):
+        p = os.path.join(self.d, "grail.srt")
+        gui.write_srt(
+            p,
+            [("1", "00:00:01,000 --> 00:00:02,000", "De Heilige Graal")],
+            target_language="Turkish",
+        )
+        text = Path(p).read_text(encoding="utf-8")
+        self.assertIn("Kutsal Kase", text)
+        self.assertNotRegex(text, r"[âîûÂÎÛ]")
+
     def test_write_normalizes_cyrillic_latin_homoglyphs(self):
         p = os.path.join(self.d, "homoglyph.srt")
         gui.write_srt(p, [("1", "00:00:01,000 --> 00:00:02,000", "O da BАNA geldi.")])

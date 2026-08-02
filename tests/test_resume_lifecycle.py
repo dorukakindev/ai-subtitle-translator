@@ -1,3 +1,4 @@
+import inspect
 import threading
 import unittest
 from pathlib import Path
@@ -130,13 +131,25 @@ class BatchOwnerCancellationTest(unittest.TestCase):
         client = MagicMock()
         client.batches.cancel.side_effect = lambda bid: events.append(("cancel", bid))
 
-        with patch.object(gui, "OpenAI", return_value=client):
+        with patch.object(gui, "OpenAI", return_value=client), \
+                patch("hybrid_translate.mark_cancelled_batch_sessions",
+                      side_effect=lambda ids: events.append(("session", tuple(ids)))):
             gui.App._cancel_active_batches(app)
 
         self.assertEqual(events[0], "owner")
         self.assertEqual(app._active_batches, {})
         self.assertIn(("cancel", "batch_A"), events)
+        self.assertIn(("session", ("batch_A",)), events)
         self.assertIn(("recovery", ("batch_A",)), events)
+
+    def test_queue_removal_keeps_recovery_when_remote_cancel_fails(self):
+        source = inspect.getsource(gui.App._run_hybrid)
+        removal = source.index("if self._is_queued_file_removed(filepath):")
+        waiting = source.index("Batch bekleniyor", removal)
+        block = source[removal:waiting]
+        self.assertIn("_cancelled = best_effort_cancel_remote_batch", block)
+        self.assertIn("if _cancelled:", block)
+        self.assertIn("kurtarma kaydı korunuyor", block)
 
 
 if __name__ == "__main__":

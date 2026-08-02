@@ -152,6 +152,50 @@ class BatchSessionLinkRecoveryTest(unittest.TestCase):
 
             self.assertEqual(resumed["files"][str(source)]["status"], "pending")
 
+    def test_user_edited_completed_output_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.srt"
+            output = root / "output.srt"
+            source.write_text("source", encoding="utf-8")
+            output.write_text("first final", encoding="utf-8")
+            fingerprint = ht.batch_session_fingerprint(
+                str(root), str(root / "out"), [str(source)], {})
+            with patch.object(ht, "_session_dir", return_value=root):
+                session = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(source)], fingerprint)
+                ht.update_batch_session(
+                    session, str(source), "completed", out_path=str(output),
+                    output_state=ht._file_state_signature(str(output)))
+                output.write_text("user corrected final", encoding="utf-8")
+                resumed = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(source)], fingerprint)
+
+            entry = resumed["files"][str(source)]
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual(
+                entry["output_state"], ht._file_state_signature(str(output)))
+
+    def test_explicit_retranslate_choice_resets_completed_entry(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.srt"
+            output = root / "output.srt"
+            source.write_text("source", encoding="utf-8")
+            output.write_text("final", encoding="utf-8")
+            fingerprint = ht.batch_session_fingerprint(
+                str(root), str(root / "out"), [str(source)], {})
+            with patch.object(ht, "_session_dir", return_value=root):
+                session = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(source)], fingerprint)
+                ht.update_batch_session(
+                    session, str(source), "completed", out_path=str(output))
+                forced = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(source)], fingerprint,
+                    force_retranslate_paths={str(source).upper()})
+
+            self.assertEqual(forced["files"][str(source)]["status"], "pending")
+
     def test_settings_change_preserves_paid_submitted_batch(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -171,6 +215,25 @@ class BatchSessionLinkRecoveryTest(unittest.TestCase):
 
             self.assertEqual(resumed["files"][str(source)]["status"], "submitted")
             self.assertEqual(resumed["files"][str(source)]["batch_id"], "batch-paid")
+
+    def test_successfully_cancelled_batch_becomes_retryable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "source.srt"
+            source.write_text("source", encoding="utf-8")
+            fingerprint = ht.batch_session_fingerprint(
+                str(root), str(root / "out"), [str(source)], {})
+            with patch.object(ht, "_session_dir", return_value=root):
+                session = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(source)], fingerprint)
+                ht.update_batch_session(
+                    session, str(source), "submitted", batch_id="batch-cancel")
+                changed = ht.mark_cancelled_batch_sessions(["batch-cancel"])
+                retried = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(source)], fingerprint)
+
+            self.assertEqual(changed, 1)
+            self.assertEqual(retried["files"][str(source)]["status"], "pending")
 
 
 if __name__ == "__main__":

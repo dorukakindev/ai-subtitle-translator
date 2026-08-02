@@ -447,6 +447,20 @@ class GetSubtitleFilesTest(unittest.TestCase):
             names = [Path(f).name for f in files]
             self.assertEqual(names, ["Film.srt"])
 
+    def test_recursive_scan_excludes_reports_directory(self):
+        from subtitle_formats import get_subtitle_files
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            reports = root / "Raporlar"
+            reports.mkdir()
+            (root / "episode.srt").write_text("", encoding="utf-8")
+            (reports / "episode.upload-ready-copy.srt").write_text(
+                "", encoding="utf-8")
+
+            files = get_subtitle_files(d, recursive=True)
+
+            self.assertEqual([Path(f).name for f in files], ["episode.srt"])
+
     def test_cikti_file_named_not_excluded(self):
         """Dizin değil DOSYA adı 'ÇIKTI.srt' ise dışlanmaz (yalnız dizin bileşeni sayılır)."""
         from subtitle_formats import get_subtitle_files
