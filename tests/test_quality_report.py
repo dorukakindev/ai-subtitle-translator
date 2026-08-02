@@ -264,6 +264,29 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Bağlam İncelemesi: çalıştı") for line in audit))
 
+    def test_auto_glossary_failure_is_not_reported_as_no_suggestions(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_status": {"Auto-Glossary": {
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 1, "total_chunks": 1,
+            }},
+        }, {"auto_glossary": True})
+
+        self.assertIn("Auto-Glossary: başarısız", audit)
+        self.assertNotIn("Auto-Glossary: çalıştı, 0 öneri, 0 terim eklendi", audit)
+
+    def test_auto_glossary_success_reports_suggestions_and_writes(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_status": {"Auto-Glossary": {
+                "status": "completed", "suggested": 4, "written": 2,
+            }},
+        }, {"auto_glossary": True})
+
+        self.assertIn(
+            "Auto-Glossary: çalıştı, 4 öneri, 2 terim eklendi", audit)
+
     def test_expensive_final_pass_failures_are_not_reported_as_zero_change(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",

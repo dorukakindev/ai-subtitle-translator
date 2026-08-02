@@ -311,6 +311,22 @@ class ParserAndValidationTest(unittest.TestCase):
             [("Arc Reactor", "Ark Reaktörü")],
         )
 
+    def test_auto_glossary_reports_empty_provider_response_as_failure(self):
+        cues = [SimpleNamespace(index=1, text="The Arc Reactor is ready.")]
+        blocks = [("1", "", "Ark Reaktörü hazır.")]
+        response = SimpleNamespace(choices=[], usage=None)
+        status = {}
+        with mock.patch("openai.OpenAI", return_value=object()), \
+                mock.patch.object(ht, "_safe_chat_create", return_value=response):
+            result = ht.build_glossary_suggestions(
+                cues, blocks, "English", "Turkish", "key",
+                status_out=status)
+
+        self.assertEqual(result, [])
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["failed_chunks"], 1)
+        self.assertEqual(status["total_chunks"], 1)
+
     def test_auto_glossary_preserves_json_format(self):
         with tempfile.TemporaryDirectory() as d:
             glossary = Path(d) / "glossary.json"

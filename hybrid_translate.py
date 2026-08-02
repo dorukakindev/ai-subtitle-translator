@@ -10226,6 +10226,9 @@ def build_glossary_suggestions(
     helper_model: str = "gpt-5.4-mini",
     existing_glossary: dict = None,
     log_fn=None,
+    token_callback=None,
+    cancel_context=None,
+    status_out: dict | None = None,
 ) -> list:
     """Extract translation pairs worth adding to the glossary from a completed translation.
 
@@ -10237,13 +10240,23 @@ def build_glossary_suggestions(
 
     Returns list of {src, tgt, category, reason} dicts.
     """
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     if not cues or not tr_blocks:
+        if status_out is not None:
+            status_out["status"] = "skipped"
         return []
 
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
     except Exception as e:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(e)})
         if log_fn:
             log_fn(f"Glossary builder bağlantı hatası: {e}", "err")
         return []
@@ -10257,6 +10270,8 @@ def build_glossary_suggestions(
             pairs.append({"src": src, "tgt": tgt_text})
 
     if not pairs:
+        if status_out is not None:
+            status_out["status"] = "skipped"
         return []
 
     # Tüm dosyaya eşit yayılan 200 örnek (eskiden 400'e adımlayıp 200'e kırpınca yalnız
@@ -10284,6 +10299,8 @@ def build_glossary_suggestions(
     )
 
     try:
+        if status_out is not None:
+            status_out["total_chunks"] = 1
         resp = _safe_chat_create(
             client,
             _checkpoint_label="glossary_builder",
@@ -10291,9 +10308,19 @@ def build_glossary_suggestions(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1500,
             temperature=0.2,
+            cancel_context=cancel_context,
         )
-        raw = (resp.choices[0].message.content or "").strip()
+        if token_callback and getattr(resp, "usage", None):
+            total, cached = _get_usage_details(resp.usage)
+            token_callback(total, cached=cached)
+        raw = ((resp.choices[0].message.content or "").strip()
+               if resp.choices else "")
         if not raw:
+            if status_out is not None:
+                status_out.update({
+                    "status": "failed", "failed_chunks": 1,
+                    "error": "empty_response",
+                })
             return []
         raw = _strip_code_fence(raw)
         try:
@@ -10304,8 +10331,18 @@ def build_glossary_suggestions(
                 try:
                     data = json.loads(raw[s:e2])
                 except Exception:
+                    if status_out is not None:
+                        status_out.update({
+                            "status": "failed", "failed_chunks": 1,
+                            "error": "invalid_json",
+                        })
                     return []
             else:
+                if status_out is not None:
+                    status_out.update({
+                        "status": "failed", "failed_chunks": 1,
+                        "error": "invalid_json",
+                    })
                 return []
 
         # LLM bazen {"suggestions": [...]} yerine doğrudan [...] döner
@@ -10343,9 +10380,24 @@ def build_glossary_suggestions(
 
         if log_fn:
             log_fn(f"Glossary builder: {len(new_suggestions)} yeni terim önerildi", "ok")
+        if status_out is not None:
+            status_out.update({
+                "status": "completed", "successful_chunks": 1,
+                "failed_chunks": 0, "changed": 0,
+                "suggested": len(new_suggestions), "written": 0,
+            })
         return new_suggestions
 
+    except RequestCancelled:
+        if status_out is not None:
+            status_out.update({"status": "cancelled"})
+        return []
     except Exception as e:
+        if status_out is not None:
+            status_out.update({
+                "status": "failed", "failed_chunks": 1,
+                "error": str(e),
+            })
         if log_fn:
             log_fn(f"Glossary builder hatası: {e}", "err")
         return []

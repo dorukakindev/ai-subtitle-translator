@@ -7221,7 +7221,7 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 "Tutarlılık taraması", "Bağlam İncelemesi", "Critic Pass", "Polish Pass",
                 "Native Okuyucu", "QC", "Nihai Anlam Mutabakatı",
                 "Geri Çeviri", "Terim Normalizasyonu", "Okuma Hızı Kısaltma",
-                "SDH temizleme", "Satır düzenleme"):
+                "Auto-Glossary", "SDH temizleme", "Satır düzenleme"):
             lines.append(f"{title}: kısmi onarım gereği atlandı")
         return lines
 
@@ -7237,6 +7237,32 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     chain_detail = f", {chunk_count} chunk" if chunk_count else ""
     lines.append(
         f"Zincirleme Bağlam: {'çalıştı' if chain_on else 'kapalı'}{chain_detail}")
+
+    auto_enabled = bool(snapshot.get("auto_glossary"))
+    auto_status = pass_status.get("Auto-Glossary")
+    if isinstance(auto_status, dict):
+        auto_state = str(auto_status.get("status") or "")
+        if auto_state == "completed":
+            lines.append(
+                f"Auto-Glossary: çalıştı, "
+                f"{int(auto_status.get('suggested', 0) or 0)} öneri, "
+                f"{int(auto_status.get('written', 0) or 0)} terim eklendi")
+        elif auto_state == "skipped":
+            lines.append("Auto-Glossary: incelenecek çift olmadığı için atlandı")
+        elif auto_state in {"failed", "partial", "cancelled"}:
+            auto_text = {
+                "failed": "başarısız", "partial": "kısmi tamamlandı",
+                "cancelled": "durduruldu",
+            }[auto_state]
+            lines.append(f"Auto-Glossary: {auto_text}")
+        elif auto_enabled:
+            lines.append("Auto-Glossary: açık, çalışma kaydı yok")
+        else:
+            lines.append("Auto-Glossary: kapalı")
+    elif auto_enabled:
+        lines.append("Auto-Glossary: açık, çalışma kaydı yok")
+    else:
+        lines.append("Auto-Glossary: kapalı")
 
     features = (
         ("Tutarlılık taraması", True, ("Consistency", "Final-Consistency")),
@@ -18325,7 +18351,8 @@ class App(ctk.CTk):
         dlg.protocol("WM_DELETE_WINDOW", cancel)
 
     # ── Auto-Glossary ─────────────────────────────────────────────────────────
-    def _run_auto_glossary(self, cues: list, tr_blocks: list, filepath: str):
+    def _run_auto_glossary(self, cues: list, tr_blocks: list, filepath: str,
+                           status_out: dict | None = None):
         """Build glossary suggestions from a completed translation and show review dialog."""
         import hybrid_translate as ht
         mm_key = self._helper_api_key("analysis")
@@ -18335,8 +18362,15 @@ class App(ctk.CTk):
         effective = getattr(self, "_effective_file_source_language", None)
         src = effective(filepath, src_default) if callable(effective) else src_default
         tgt = App._run_setting(self, "tgt_lang", "tgt_var", "Turkish")
+        run_status = status_out if status_out is not None else {}
 
         if not mm_key:
+            run_status.clear()
+            run_status.update({
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+                "error": "missing_api_key",
+            })
             self._log("Auto-Glossary: OpenAI API anahtarı gerekli", "warn")
             return
 
@@ -18344,6 +18378,11 @@ class App(ctk.CTk):
             self,
             "global_glossary_path", "glossary_var", "") or "").strip()
         existing = ht.load_glossary(glossary_path) if glossary_path else {}
+        token_callback_factory = getattr(
+            self, "_token_callback_for_model", None)
+        token_callback = (
+            token_callback_factory(mm_mdl)
+            if callable(token_callback_factory) else None)
 
         self._log(f"Auto-Glossary: {Path(filepath).name} analiz ediliyor...", "info")
         suggestions = ht.build_glossary_suggestions(
@@ -18356,10 +18395,17 @@ class App(ctk.CTk):
             helper_model=mm_mdl,
             existing_glossary=existing,
             log_fn=self._log,
+            token_callback=token_callback,
+            cancel_context=self.__dict__.get("_helper_request_canceller"),
+            status_out=run_status,
         )
 
         if not suggestions:
-            self._log("Auto-Glossary: yeni terim önerisi yok", "ok")
+            state = run_status.get("status")
+            if state == "completed":
+                self._log("Auto-Glossary: yeni terim önerisi yok", "ok")
+            elif state == "skipped":
+                self._log("Auto-Glossary: incelenecek kaynak/çeviri çifti yok", "info")
             return
 
         done_event    = threading.Event()
@@ -18394,8 +18440,15 @@ class App(ctk.CTk):
                                 for src_term, tgt_term in approved.items())
                     atomic_write_text(gp, "\n".join(rows).lstrip("\n") + "\n")
                 self._log(f"Auto-Glossary: {written} terim sözlüğe eklendi", "ok")
+                run_status["written"] = written
             except Exception as e:
+                run_status.update({"status": "failed", "error": str(e)})
                 self._log(f"Auto-Glossary yazma hatası: {e}", "err")
+        elif status == "stopped":
+            run_status["status"] = "cancelled"
+        elif status == "timeout":
+            run_status.update({
+                "status": "failed", "error": "dialog_timeout"})
 
     def _show_glossary_dialog(self, suggestions: list, result_holder: list,
                                done_event: threading.Event, glossary_path: str):
@@ -21390,7 +21443,11 @@ class App(ctk.CTk):
                     filepath, context, pronoun_map, tgt)
             if self.auto_glossary_var.get():
                 self._record_file_status(filepath, "Auto-Glossary", "running")
-                self._run_auto_glossary(cues, sorted_blocks, filepath)
+                _auto_glossary_status = {}
+                self._run_auto_glossary(
+                    cues, sorted_blocks, filepath,
+                    status_out=_auto_glossary_status)
+                _pass_status["Auto-Glossary"] = dict(_auto_glossary_status)
             ht.clear_context_cache(filepath)
             self._update_file_progress(filepath,
                 f"Tamamlandı  {len(sorted_blocks)} satır", 100, "done")
@@ -23039,11 +23096,17 @@ class App(ctk.CTk):
             # Auto-Glossary (düz sync/batch'te de) — Cue nesnesi gerektiğinden kaynağı
             # load_subtitle ile yükle (_src_cues tuple olabilir; build_glossary c.text ister)
             if self.auto_glossary_var.get():
+                _auto_glossary_status = {}
                 try:
                     self._record_file_status(fp, "Auto-Glossary", "running")
-                    self._run_auto_glossary(ht.load_subtitle(fp), sorted_blocks, fp)
+                    self._run_auto_glossary(
+                        ht.load_subtitle(fp), sorted_blocks, fp,
+                        status_out=_auto_glossary_status)
                 except Exception as _ag_e:
+                    _auto_glossary_status.update({
+                        "status": "failed", "error": str(_ag_e)})
                     self._log(f"Auto-Glossary atlandı: {_ag_e}", "warn")
+                _pass_status["Auto-Glossary"] = dict(_auto_glossary_status)
             _written_files.append(fp)
             self._record_file_status(fp, "Tamamlandı", "done")
             if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
@@ -24165,7 +24228,12 @@ class App(ctk.CTk):
                 if self.auto_glossary_var.get():
                     self._record_file_status(
                         filepath, "Auto-Glossary", "running")
-                    self._run_auto_glossary(cues, _final_blocks, filepath)
+                    _auto_glossary_status = {}
+                    self._run_auto_glossary(
+                        cues, _final_blocks, filepath,
+                        status_out=_auto_glossary_status)
+                    _pass_status["Auto-Glossary"] = dict(
+                        _auto_glossary_status)
 
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu)
                 _hata_n, _cps_n = _count_hata_cps(_final_blocks)
