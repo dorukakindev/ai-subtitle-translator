@@ -2655,7 +2655,22 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             int(str(idx)) for idx, _ts, _text in cleaned
             if str(idx).isdigit()]
         next_signature_id = max(numeric_ids, default=len(cleaned)) + 1
-        tail_id = next_signature_id
+        middle_slot = _delivery_middle_signature_slot(cleaned)
+        if middle_slot:
+            middle_pos, middle_start, middle_end = middle_slot
+            cleaned = [
+                *cleaned[:middle_pos],
+                (
+                    str(next_signature_id),
+                    f"{_srt_ms_timestamp(middle_start)} --> "
+                    f"{_srt_ms_timestamp(middle_end)}",
+                    _DELIVERY_SIGNATURE,
+                ),
+                *cleaned[middle_pos:],
+            ]
+            tail_id = next_signature_id + 1
+        else:
+            tail_id = next_signature_id
         cleaned = [
             (
                 "0",
@@ -2680,7 +2695,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             )
         elif cleaned:
             log_fn(
-                "Nihai teslim koruması: baş/son discord imzası yenilendi; "
+                "Nihai teslim koruması: baş/orta/son discord imzası yenilendi; "
                 f"{credits_removed} eski kredi cue'su, "
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "

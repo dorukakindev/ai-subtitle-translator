@@ -37,12 +37,15 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             "discord: ceviri2",
         ))
         self.assertEqual(result[-1], (
-            "412",
+            "413",
             "00:00:10,001 --> 00:00:12,001",
             "discord: ceviri2",
         ))
-        self.assertFalse(any(
-            block[2] == "discord: ceviri2" for block in result[1:-1]))
+        middle = [
+            block for block in result[1:-1]
+            if block[2] == "discord: ceviri2"]
+        self.assertEqual(len(middle), 1)
+        self.assertEqual(middle[0][0], "412")
         by_id = {str(idx): (ts, text) for idx, ts, text in result}
         self.assertEqual(by_id["1"][1], "Hala buradayım.")
         self.assertEqual(by_id["2"][1], r"{\i1}Sarı Çizgili{\i0}")
@@ -244,7 +247,7 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(ids[:3], ["0", "1", "2"])
         self.assertTrue(gui._existing_output_is_complete(result, blocks))
 
-    def test_only_head_and_tail_signatures_are_added_without_moving_dialogue(self):
+    def test_head_middle_and_tail_signatures_are_added_without_moving_dialogue(self):
         blocks = [
             ("1", "00:00:10,000 --> 00:00:12,000", "Bir."),
             ("2", "00:00:12,100 --> 00:00:14,000", "İki."),
@@ -254,10 +257,13 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
         signatures = [block for block in result
                       if block[2] == "discord: ceviri2"]
-        self.assertEqual(len(signatures), 2)
+        self.assertEqual(len(signatures), 3)
         self.assertEqual(signatures[0][0], "0")
-        self.assertGreater(gui._srt_timestamp_bounds(signatures[1][1])[0],
+        self.assertGreater(gui._srt_timestamp_bounds(signatures[2][1])[0],
                            gui._srt_timestamp_bounds(blocks[-1][1])[1])
+        middle_start, middle_end = gui._srt_timestamp_bounds(signatures[1][1])
+        self.assertGreater(middle_start, gui._srt_timestamp_bounds(blocks[1][1])[1])
+        self.assertLess(middle_end, gui._srt_timestamp_bounds(blocks[2][1])[0])
         original = {idx: ts for idx, ts, _text in blocks}
         delivered = {idx: ts for idx, ts, _text in result if idx in original}
         self.assertEqual(delivered, original)
