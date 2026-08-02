@@ -21944,6 +21944,7 @@ class App(ctk.CTk):
         self._set_running(False)   # #2: upload sonrası ilk poll'dan önce Stop'ta UI kilitlenmesin
 
     def _resume_batches(self, api_key, batch_ids):
+        import hybrid_translate as ht
         output_dir = self.output_var.get()
         src, tgt   = self.src_var.get(), self.tgt_var.get()
         current_key_fingerprint = hashlib.sha256(
@@ -22022,6 +22023,7 @@ class App(ctk.CTk):
                             App._freeze_run_variable_reads(self)
                             App._configure_saved_response_checkpoint(
                                 self, self._active_snapshot)
+                            _resume_result = {}
                             _terminal = self._wait_batch_hybrid(
                                 batch_client, bid, saved_fmap, out_path,
                                 openai_key=api_key,
@@ -22033,13 +22035,18 @@ class App(ctk.CTk):
                                 schema_name=_saved_schema_name,
                                 expected_source_hash=fmap_data.get("source_hash", ""),
                                 output_baseline=fmap_data.get("output_baseline"),
-                                locked_terms=fmap_data.get("locked_terms"))
+                                locked_terms=fmap_data.get("locked_terms"),
+                                result_out=_resume_result)
                         finally:
                             App._unfreeze_run_variable_reads(self)
                             self._active_snapshot = copy.deepcopy(resume_base_snapshot)
                             App._freeze_run_variable_reads(self)
                         if _terminal:
                             hybrid_completed_bids.append(bid)
+                        _resume_status = _resume_result.get("status")
+                        if _resume_status in ("completed", "failed"):
+                            ht.update_recovered_batch_session(
+                                bid, _saved_src, _resume_status, out_path=out_path)
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
                             break
                     else:
@@ -22203,7 +22210,7 @@ class App(ctk.CTk):
                            openai_key, is_last=True, report_rows=None, source_path="",
                            source_language="", target_language="", schema_name="",
                            expected_source_hash="", output_baseline=None,
-                           locked_terms=None):
+                           locked_terms=None, result_out=None):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -22221,6 +22228,8 @@ class App(ctk.CTk):
         _consecutive_errors = 0
         _MAX_CONSECUTIVE_ERRORS = 10
         terminal = False   # OpenAI batch'i terminal duruma ulaştı mı (kurtarma silinebilir mi)
+        if result_out is not None:
+            result_out["status"] = "submitted"
         while not self._stop_flag:
             try:
                 b         = client.batches.retrieve(batch_id)
@@ -22698,6 +22707,8 @@ class App(ctk.CTk):
                                                      "translation_chunks": len(file_map),
                                                      "tm_hits": self._tm.hit_count_session()})
                             terminal = True
+                            if result_out is not None:
+                                result_out["status"] = "completed"
                         except Exception as ppe:
                             self._log_exc(f"Post-processing [{Path(output_path).name}]", ppe)
                         finally:
@@ -22706,6 +22717,8 @@ class App(ctk.CTk):
                 elif b.status in ("failed","expired","cancelled"):
                     self._unregister_batch(batch_id)
                     terminal = True
+                    if result_out is not None:
+                        result_out["status"] = "failed"
                     self._set_eta("")
                     self._log(f"Batch başarısız: {b.status}", "err")
                     if b.error_file_id:
@@ -24553,7 +24566,10 @@ class App(ctk.CTk):
                 })
 
                 ht.clear_context_cache(filepath)
-                ht.update_batch_session(session, filepath, "completed")
+                ht.update_batch_session(
+                    session, filepath, "completed", out_path=out_path,
+                    source_hash=_expected_source_hash,
+                    output_state=ht._file_state_signature(out_path))
                 self._record_file_status(filepath, "Tamamlandı", "done")
                 if _tw_batch_ids:
                     self._clear_batch_recovery(_tw_batch_ids)

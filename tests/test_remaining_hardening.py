@@ -32,15 +32,21 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
             changed[key] = value
             self.assertNotEqual(first, ht.analysis_fingerprint(**changed), key)
 
-    def test_batch_fingerprint_hashes_file_content(self):
+    def test_batch_fingerprint_is_stable_when_files_are_added(self):
         with tempfile.TemporaryDirectory() as d:
             fp = Path(d) / "a.srt"
             fp.write_text("AAAA", encoding="utf-8")
-            stamp = fp.stat().st_mtime_ns
             first = ht.batch_session_fingerprint(d, d, [str(fp)], {})
-            fp.write_text("BBBB", encoding="utf-8")
-            os.utime(fp, ns=(stamp, stamp))
-            second = ht.batch_session_fingerprint(d, d, [str(fp)], {})
+            second_fp = Path(d) / "b.srt"
+            second_fp.write_text("BBBB", encoding="utf-8")
+            second = ht.batch_session_fingerprint(
+                d, d, [str(fp), str(second_fp)], {})
+            self.assertEqual(first, second)
+
+    def test_batch_fingerprint_changes_with_settings(self):
+        with tempfile.TemporaryDirectory() as d:
+            first = ht.batch_session_fingerprint(d, d, [], {"model": "a"})
+            second = ht.batch_session_fingerprint(d, d, [], {"model": "b"})
             self.assertNotEqual(first, second)
 
     def test_context_cache_uses_declared_source_for_identity(self):

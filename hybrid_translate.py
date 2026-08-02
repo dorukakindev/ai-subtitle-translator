@@ -1037,17 +1037,10 @@ def prune_batch_sessions(max_age_days: int = 90, now: float = None,
 
 def batch_session_fingerprint(input_dir: str, output_dir: str, filepaths: list,
                               settings: dict) -> str:
-    files = []
-    for fp in filepaths or []:
-        p = Path(fp)
-        try:
-            files.append((str(p.resolve()), _cache_sig(str(p))))
-        except OSError:
-            files.append((str(p), ""))
     payload = {
+        "version": 2,
         "input_dir": str(Path(input_dir).expanduser().resolve()),
         "output_dir": str(Path(output_dir).expanduser().resolve()),
-        "files": files,
         "settings": settings or {},
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1132,7 +1125,9 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
     existing = load_batch_session(input_dir)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
 
+    replaced = None
     if existing and fingerprint and existing.get("fingerprint") != fingerprint:
+        replaced = existing
         existing = None
 
     if existing:
@@ -1142,11 +1137,31 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
         # Merge: add new files as pending, keep existing statuses intact
         for fp in filepaths:
             key = str(fp)
+            source_hash = _cache_sig(key).removeprefix("sha256:")
             if key not in session["files"]:
-                session["files"][key] = {"status": "pending"}
-            elif session["files"][key].get("status") == "failed":
-                # Retry failed files on next run
-                session["files"][key] = {"status": "pending"}
+                session["files"][key] = {
+                    "status": "pending", "source_hash": source_hash}
+                continue
+            entry = session["files"][key]
+            status = entry.get("status")
+            if status == "failed":
+                session["files"][key] = {
+                    "status": "pending", "source_hash": source_hash}
+            elif status == "completed":
+                stored_hash = str(entry.get("source_hash") or "")
+                out_path = str(entry.get("out_path") or "")
+                stored_output = entry.get("output_state")
+                output_ok = bool(out_path and Path(out_path).is_file())
+                if stored_output is not None:
+                    output_ok = output_ok and _file_state_signature(out_path) == stored_output
+                if (stored_hash and stored_hash != source_hash) or not output_ok:
+                    session["files"][key] = {
+                        "status": "pending", "source_hash": source_hash}
+                else:
+                    entry["source_hash"] = source_hash
+                    entry["output_state"] = _file_state_signature(out_path)
+            elif not entry.get("source_hash"):
+                entry["source_hash"] = source_hash
     else:
         session = {
             "version": 1,
@@ -1155,8 +1170,20 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
             "input_dir": str(input_dir),
             "output_dir": output_dir,
             "fingerprint": fingerprint,
-            "files": {str(fp): {"status": "pending"} for fp in filepaths},
+            "files": {
+                str(fp): {
+                    "status": "pending",
+                    "source_hash": _cache_sig(str(fp)).removeprefix("sha256:"),
+                }
+                for fp in filepaths
+            },
         }
+        if replaced:
+            for fp in filepaths:
+                key = str(fp)
+                old_entry = (replaced.get("files") or {}).get(key, {})
+                if old_entry.get("status") == "submitted" and old_entry.get("batch_id"):
+                    session["files"][key] = dict(old_entry)
 
     _recover_submitted_batch_links(session, filepaths, fingerprint)
     _save_batch_session(session)
@@ -1171,7 +1198,8 @@ def _save_batch_session(session: dict):
 
 
 def update_batch_session(session: dict, filepath: str, status: str,
-                         batch_id: str = None, out_path: str = None):
+                         batch_id: str = None, out_path: str = None,
+                         source_hash: str = None, output_state: dict = None):
     """Update a file's status in the session and persist to disk immediately."""
     key = str(filepath)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1181,11 +1209,46 @@ def update_batch_session(session: dict, filepath: str, status: str,
         entry["batch_id"] = batch_id
     if out_path is not None:
         entry["out_path"] = out_path
+    if source_hash is not None:
+        entry["source_hash"] = source_hash
+    if output_state is not None:
+        entry["output_state"] = output_state
     if status == "submitted":
         entry["submitted_at"] = now
     elif status in ("completed", "failed"):
         entry["completed_at"] = now
     _save_batch_session(session)
+
+
+def update_recovered_batch_session(batch_id: str, filepath: str, status: str,
+                                   out_path: str = None) -> bool:
+    """Persist a resumed batch's terminal state in its original session."""
+    if status not in ("completed", "failed"):
+        return False
+    root = _session_dir()
+    if not root.exists():
+        return False
+    matches = []
+    for path in root.glob("*_session.json"):
+        try:
+            with open(path, encoding="utf-8") as f:
+                session = json.load(f)
+            entry = (session.get("files") or {}).get(str(filepath), {})
+            if entry.get("batch_id") == batch_id:
+                matches.append(session)
+        except Exception:
+            continue
+    if len(matches) != 1:
+        return False
+    update_batch_session(
+        matches[0], filepath, status, batch_id=batch_id, out_path=out_path,
+        source_hash=(
+            _cache_sig(filepath).removeprefix("sha256:") if filepath else ""),
+        output_state=(
+            _file_state_signature(out_path)
+            if status == "completed" and out_path else None),
+    )
+    return True
 
 
 def clear_batch_session(input_dir: str):
