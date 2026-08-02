@@ -39,6 +39,25 @@ class BatchRunContextTest(unittest.TestCase):
         self.assertEqual(merged["main_api_key"], "current-main")
         self.assertEqual(merged["helper_keys"]["critic"], "current-helper")
 
+    def test_boundary_quality_revision_overrides_saved_passes_only(self):
+        current = {
+            "tgt_lang": "German",
+            "polish": True,
+            "backtrans": True,
+            "quality_snapshot_revision": 2,
+        }
+        saved = {
+            "context_version": 1,
+            "tgt_lang": "Turkish",
+            "polish": False,
+            "backtrans": False,
+        }
+        merged = gui._merge_batch_resume_snapshot(current, saved)
+        self.assertEqual(merged["tgt_lang"], "Turkish")
+        self.assertTrue(merged["polish"])
+        self.assertTrue(merged["backtrans"])
+        self.assertEqual(merged["quality_snapshot_revision"], 2)
+
     def test_batch_resume_reuses_original_quality_checkpoint_namespace(self):
         app = SimpleNamespace(_log=MagicMock())
         with patch("provider_retry.configure_response_checkpoint") as configure, \

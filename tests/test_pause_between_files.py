@@ -4,12 +4,24 @@ Directly invokes production App._wait_between_files and App._stop with stub obje
 Does NOT instantiate App() or open GUI windows.
 """
 import inspect
+import queue
 import threading
 import time
 import unittest
 from types import SimpleNamespace
 
 import subtitle_translator_gui as gui
+
+
+class _Var:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
 
 
 class PauseBetweenFilesTest(unittest.TestCase):
@@ -67,6 +79,47 @@ class PauseBetweenFilesTest(unittest.TestCase):
         self.assertEqual(results, ["continue"])
         self.assertTrue(any("Duraklatıldı" in log[0] for log in self.logs))
         self.assertTrue(any("Devam ediliyor" in log[0] for log in self.logs))
+
+    def test_paused_quality_change_applies_only_at_next_file_boundary(self):
+        stub = self._make_stub(paused=True)
+        stub._active_snapshot = {"critic": True, "polish": False}
+        stub._frozen_run_var_getters = []
+        stub._ui_queue = queue.Queue()
+        stub._is_shutting_down = False
+        stub.critic_var = _Var(True)
+        stub.polish_var = _Var(False)
+        results = []
+
+        worker = threading.Thread(target=lambda: results.append(
+            gui.App._wait_between_files(
+                stub, file_index=0, total_files=2,
+                current_filename="file1.srt")))
+        worker.start()
+        time.sleep(0.05)
+
+        stub.polish_var.set(True)
+        self.assertFalse(stub._active_snapshot["polish"])
+        stub._pause_btw_files.set()
+
+        fn, args, kwargs = stub._ui_queue.get(timeout=1.0)
+        fn(*args, **kwargs)
+        worker.join(timeout=2.0)
+
+        self.assertEqual(results, ["continue"])
+        self.assertTrue(stub._active_snapshot["polish"])
+        self.assertEqual(stub._active_snapshot["quality_snapshot_revision"], 1)
+        self.assertTrue(stub.polish_var.get())
+
+    def test_boundary_merge_rejects_non_quality_settings(self):
+        snapshot = {"polish": False, "main_model_name": "gpt-5.4"}
+        changed = gui._apply_boundary_quality_values(snapshot, {
+            "polish": True,
+            "main_model_name": "different-model",
+            "chunk_size": 99,
+        })
+        self.assertEqual(changed, {"polish": (False, True)})
+        self.assertEqual(snapshot["main_model_name"], "gpt-5.4")
+        self.assertNotIn("chunk_size", snapshot)
 
     def test_wait_between_files_wakes_and_returns_stopped_on_stop_flag(self):
         """Verify worker wakes up within ~0.3s and returns 'stopped' when _stop_flag becomes True."""
@@ -171,6 +224,18 @@ class PauseBetweenFilesTest(unittest.TestCase):
         for name, method in methods_to_check:
             src = inspect.getsource(method)
             self.assertIn("_wait_between_files", src, f"Missing _wait_between_files checkpoint in {name}")
+
+    def test_file_reports_include_dynamic_backtranslation_state(self):
+        for method in (
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        ):
+            self.assertIn(
+                '("backtrans",self.backtrans_var.get())',
+                inspect.getsource(method),
+            )
 
     def test_partial_write_does_not_clear_recovery_or_report_success(self):
         """A stop at the pause boundary must remain recoverable and suppress completion UI."""

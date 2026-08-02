@@ -764,6 +764,38 @@ WORKFLOW_PROFILES = {
     },
 }
 
+_BOUNDARY_QUALITY_VARS = {
+    "critic": ("critic_var", "Critic"),
+    "polish": ("polish_var", "Polish"),
+    "native": ("native_var", "Native Reader"),
+    "qc": ("qc_var", "QC"),
+    "condense": ("condense_var", "Okuma Hızı Kısaltma"),
+    "backtrans": ("backtrans_var", "Geri Çeviri"),
+    "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
+    "review": ("review_pass_var", "Bağlam İncelemesi"),
+    "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
+    "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
+    "linebreak": ("linebreak_var", "Satır Bölme"),
+}
+
+
+def _apply_boundary_quality_values(snapshot: dict, values: dict) -> dict:
+    if not isinstance(snapshot, dict) or not isinstance(values, dict):
+        return {}
+    changed = {}
+    for key in _BOUNDARY_QUALITY_VARS:
+        if key not in values:
+            continue
+        new_value = bool(values[key])
+        old_value = bool(snapshot.get(key))
+        snapshot[key] = new_value
+        if old_value != new_value:
+            changed[key] = (old_value, new_value)
+    if changed:
+        snapshot["quality_snapshot_revision"] = int(
+            snapshot.get("quality_snapshot_revision", 0) or 0) + 1
+    return changed
+
 
 def _content_detection_detail(value) -> dict:
     if isinstance(value, dict):
@@ -5383,6 +5415,13 @@ def _batch_run_context(snapshot: dict, api_key: str = "") -> dict:
 def _merge_batch_resume_snapshot(current: dict, saved: dict) -> dict:
     merged = copy.deepcopy(current if isinstance(current, dict) else {})
     merged.update(_batch_run_context(saved))
+    if int(merged.get("quality_snapshot_revision", 0) or 0) > 0:
+        current_snapshot = current if isinstance(current, dict) else {}
+        for key in _BOUNDARY_QUALITY_VARS:
+            if key in current_snapshot:
+                merged[key] = copy.deepcopy(current_snapshot[key])
+        merged["quality_snapshot_revision"] = int(
+            current_snapshot.get("quality_snapshot_revision", 0) or 0)
     return merged
 
 
@@ -16633,6 +16672,54 @@ class App(ctk.CTk):
             self._log("Devam ediliyor...", "ok")
 
 
+    def _capture_boundary_quality_settings(self) -> dict:
+        if not isinstance(getattr(self, "_active_snapshot", None), dict):
+            return {}
+        App._unfreeze_run_variable_reads(self)
+        try:
+            values = {}
+            for key, (attr, _label) in _BOUNDARY_QUALITY_VARS.items():
+                var = getattr(self, attr, None)
+                if var is not None:
+                    values[key] = bool(var.get())
+            changed = _apply_boundary_quality_values(
+                self._active_snapshot, values)
+        finally:
+            App._freeze_run_variable_reads(self)
+        if changed:
+            details = ", ".join(
+                f"{_BOUNDARY_QUALITY_VARS[key][1]}: "
+                f"{'Açık' if new_value else 'Kapalı'}"
+                for key, (_old_value, new_value) in changed.items()
+            )
+            self._log(
+                f"Sonraki dosya kalite ayarları güncellendi — {details}", "ok")
+        else:
+            self._log("Sonraki dosya kalite ayarları değişmedi.", "info")
+        return changed
+
+    def _refresh_quality_settings_at_boundary(self) -> dict:
+        if threading.current_thread() is threading.main_thread():
+            return App._capture_boundary_quality_settings(self)
+        if getattr(self, "_ui_queue", None) is None:
+            return {}
+        completed = threading.Event()
+        result = {}
+
+        def _capture():
+            try:
+                result.update(App._capture_boundary_quality_settings(self))
+            finally:
+                completed.set()
+
+        _post_ui(self, _capture)
+        while not completed.wait(timeout=0.1):
+            if (getattr(self, "_stop_flag", False)
+                    or getattr(self, "_is_shutting_down", False)):
+                return {}
+        return result
+
+
     def _wait_between_files(self, file_index: int, total_files: int, current_filename: str = "") -> str:
         """Dosya tamamlandıktan sonra, eğer sonraki dosya varsa ve 'Duraklat' düğmesine basılmışsa
         worker iş parçacığını duraklatır.
@@ -16645,7 +16732,8 @@ class App(ctk.CTk):
         if getattr(self, "_stop_flag", False) or file_index >= total_files - 1:
             return "stopped" if getattr(self, "_stop_flag", False) else "continue"
 
-        if not self._pause_btw_files.is_set():
+        was_paused = not self._pause_btw_files.is_set()
+        if was_paused:
             fn_label = f" — '{current_filename}' tamamlandı." if current_filename else "."
             self._log(f"Duraklatıldı{fn_label} Devam bekleniyor...", "warn")
             self._set_status("Duraklatıldı — Devam bekleniyor...")
@@ -16660,6 +16748,7 @@ class App(ctk.CTk):
 
             self._log("Devam ediliyor...", "ok")
             self._set_status("Çeviriliyor...")
+            App._refresh_quality_settings_at_boundary(self)
 
         return "continue"
 
@@ -21755,7 +21844,7 @@ class App(ctk.CTk):
                 pass
             # Rapor satırı
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
-            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             _analysis_status = (
                 f"{'tamam' if _analysis_ok else 'kısmi'} — "
                 f"{len(_analysis_locked_terms)} terim, "
@@ -22571,6 +22660,8 @@ class App(ctk.CTk):
                                 bid, _saved_src, _resume_status, out_path=out_path)
                         if self._wait_between_files(i, len(batch_ids), Path(out_path).name) == "stopped":
                             break
+                        resume_base_snapshot = copy.deepcopy(
+                            getattr(self, "_active_snapshot", None) or resume_base_snapshot)
                     else:
                         saved_requests, request_error = _saved_regular_requests(
                             fmap_data, saved_fmap)
@@ -23203,7 +23294,7 @@ class App(ctk.CTk):
                                     1 for b in pp
                                     if _pre_pass.get(str(b[0])) is not None
                                     and _clean_src(_pre_pass[str(b[0])]) != _clean_src(b[2]))
-                                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+                                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                                 _resume_analysis_status = (
                                     "tamam (önbellek)" if _analysis_result
                                     else "kullanılamadı (resume önbelleği yok)")
@@ -23814,7 +23905,7 @@ class App(ctk.CTk):
             total_warnings += w
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _translation_chunks = _file_translation_chunk_count(file_map, fp)
-            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+            _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
                 "output_path": str(_write_path),
@@ -25087,7 +25178,7 @@ class App(ctk.CTk):
                     f"{len(getattr(_analysis_context, 'characters', ()) or ())} karakter, "
                     f"{len(_analysis_examples or {})} örnek, "
                     f"{len(_analysis_idioms or {})} deyim")
-                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+                _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
                     "name": fname, "source_path": filepath,
                     "output_path": str(out_path),
