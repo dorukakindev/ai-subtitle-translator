@@ -171,6 +171,20 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertIn('"analysis_status": "kapalı (düz batch)"', src)
         self.assertIn('"translation_chunks": _translation_chunks', src)
 
+    def test_hybrid_reports_include_actual_analysis_and_chain_state(self):
+        flows = (
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._run_hybrid,
+        )
+        for flow in flows:
+            with self.subTest(flow=flow.__name__):
+                src = inspect.getsource(flow)
+                self.assertIn('"helper_analysis": True', src)
+                self.assertIn('"analysis_status":', src)
+                self.assertIn('"chain_ctx":', src)
+                self.assertIn('"translation_chunks":', src)
+
     def test_hybrid_final_tail_reuses_single_raw_map(self):
         src = inspect.getsource(gui.App._run_hybrid)
         tail = src[src.rfind("_run_final_semantic_checks("):src.find(

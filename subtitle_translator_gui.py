@@ -21536,6 +21536,11 @@ class App(ctk.CTk):
                 "pass_status": _pass_status,
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
+                "helper_analysis": True,
+                "analysis_status": _analysis_status,
+                "chain_ctx": bool(App._run_setting(
+                    self, "chain_ctx", "chain_ctx_var", True)),
+                "translation_chunks": len(batch_reqs),
                 "tm_hits": self._tm.hit_count_session(),
                 "run_status": "error" if _has_missing else "done",
             })
@@ -22619,6 +22624,9 @@ class App(ctk.CTk):
                                     if _pre_pass.get(str(b[0])) is not None
                                     and _clean_src(_pre_pass[str(b[0])]) != _clean_src(b[2]))
                                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
+                                _resume_analysis_status = (
+                                    "tamam (önbellek)" if _analysis_result
+                                    else "kullanılamadı (resume önbelleği yok)")
                                 report_rows.append({"name": Path(output_path).name,
                                                     "source_path": str(_src_path),
                                                     "output_path": str(output_path),
@@ -22633,9 +22641,14 @@ class App(ctk.CTk):
                                                     "review_expected": bool(
                                                         self.review_pass_var.get()
                                                         and pp and _orig_cues),
-                                                    "pass_history": _pass_history,
-                                                    "pass_coverage": _pc,
-                                                    "tm_hits": self._tm.hit_count_session()})
+                                                     "pass_history": _pass_history,
+                                                     "pass_coverage": _pc,
+                                                     "helper_analysis": True,
+                                                     "analysis_status": _resume_analysis_status,
+                                                     "chain_ctx": bool(App._run_setting(
+                                                         self, "chain_ctx", "chain_ctx_var", True)),
+                                                     "translation_chunks": len(file_map),
+                                                     "tm_hits": self._tm.hit_count_session()})
                             terminal = True
                         except Exception as ppe:
                             self._log_exc(f"Post-processing [{Path(output_path).name}]", ppe)
@@ -24444,6 +24457,15 @@ class App(ctk.CTk):
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu)
                 _hata_n, _cps_n = _count_hata_cps(_final_blocks)
                 _cps_avg, _cps_max = _cps_stats(_final_blocks)
+                _analysis_context = analysis_tuple[0]
+                _analysis_examples = analysis_tuple[1]
+                _analysis_idioms = analysis_tuple[5]
+                _analysis_status = (
+                    f"{'tamam' if analysis_ok else 'kısmi/başarısız'} — "
+                    f"{len(getattr(_analysis_context, 'recurring_terms', {}) or {})} terim, "
+                    f"{len(getattr(_analysis_context, 'characters', ()) or ())} karakter, "
+                    f"{len(_analysis_examples or {})} örnek, "
+                    f"{len(_analysis_idioms or {})} deyim")
                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
                     "name": fname, "source_path": filepath,
@@ -24458,6 +24480,11 @@ class App(ctk.CTk):
                     "review_expected": bool(self.review_pass_var.get()),
                     "pass_history": _pass_history,
                     "pass_coverage": _pc,
+                    "helper_analysis": True,
+                    "analysis_status": _analysis_status,
+                    "chain_ctx": bool(App._run_setting(
+                        self, "chain_ctx", "chain_ctx_var", True)),
+                    "translation_chunks": len(fmap),
                     "tm_hits": self._tm.hit_count_session(),
                 })
 
