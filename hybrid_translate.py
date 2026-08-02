@@ -6487,6 +6487,18 @@ def _turkish_profanity_intensity(text: str) -> int:
     return max_tier
 
 
+_SOURCE_RACIAL_SLUR_RE = re.compile(r"\bnigg(?:er|a)s?\b", re.I)
+_TURKISH_RACIAL_REFERENCE_RE = re.compile(
+    r"\b(?:zenci\w*|siyah\w*|kara\s+köle\w*|köle\w*)\b", re.I)
+
+
+def _has_identity_slur_loss(source_text: str, target_text: str) -> bool:
+    return bool(
+        _SOURCE_RACIAL_SLUR_RE.search(str(source_text or ""))
+        and not _TURKISH_RACIAL_REFERENCE_RE.search(str(target_text or ""))
+    )
+
+
 def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                    series_terms: dict = None,
                    scene_gap_sec: float = SCENE_GAP_SEC) -> list:
@@ -9023,6 +9035,46 @@ def locked_term_violation(
     return False
 
 
+_NUMERIC_WORD_TOKEN_RE = re.compile(r"\d+(?:[.,]\d+)?|[^\W\d_]+", re.UNICODE)
+_TURKISH_PLURAL_SUFFIX_RE = re.compile(
+    r"(.+?)(?:lar|ler)(?:[iıuü]|[iıuü]n|da|de|dan|den)?$", re.I)
+
+
+def _numeric_noun_stem(word: str) -> str:
+    stem = str(word or "").casefold()
+    if len(stem) > 3 and stem[-1:] in "iıuü":
+        stem = stem[:-1]
+    soften = {"ğ": "k", "b": "p", "c": "ç", "d": "t"}
+    if stem[-1:] in soften:
+        stem = stem[:-1] + soften[stem[-1]]
+    return stem
+
+
+def _has_numeric_plural_regression(old: str, new: str) -> bool:
+    old_tokens = _NUMERIC_WORD_TOKEN_RE.findall(str(old or "").casefold())
+    new_tokens = _NUMERIC_WORD_TOKEN_RE.findall(str(new or "").casefold())
+    old_number_positions = {}
+    for pos, token in enumerate(old_tokens):
+        if token[:1].isdigit():
+            old_number_positions.setdefault(token, []).append(pos)
+    for pos, token in enumerate(new_tokens):
+        if token not in old_number_positions:
+            continue
+        for new_word in new_tokens[pos + 1:pos + 4]:
+            plural_match = _TURKISH_PLURAL_SUFFIX_RE.fullmatch(new_word)
+            if not plural_match:
+                continue
+            plural_stem = plural_match.group(1)
+            for old_pos in old_number_positions[token]:
+                for old_word in old_tokens[old_pos + 1:old_pos + 4]:
+                    if (_TURKISH_PLURAL_SUFFIX_RE.fullmatch(old_word) is None
+                            and (_share_stem(plural_stem, old_word)
+                                 or _numeric_noun_stem(plural_stem)
+                                 == _numeric_noun_stem(old_word))):
+                        return True
+    return False
+
+
 def _source_backed_spelled_number_drift(src_text: str, old_text: str,
                                         new_text: str) -> bool:
     src_vals = _source_spelled_numbers(src_text)
@@ -9314,6 +9366,10 @@ def validate_polish_candidate(
         return False, "fragment_redistribution_regression"
     if _has_medical_adjective_deletion(src, old, new):
         return False, "medical_adjective_deletion"
+    if _has_identity_slur_loss(src, new):
+        return False, "identity_slur_loss"
+    if _has_numeric_plural_regression(old, new):
+        return False, "numeric_plural_regression"
     if _has_proposition_drift(old, new, source_text=src):
         return False, "proposition_drift"
     if _has_content_word_drift(old, new, source_text=src):

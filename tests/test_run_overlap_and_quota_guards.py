@@ -15,6 +15,12 @@ class MultiLineSdhFallbackTest(unittest.TestCase):
             "- [scream]\n- Get out of here!"
         ))
 
+    def test_parenthetical_narrative_prose_is_not_sdh_only(self):
+        self.assertFalse(gui._src_is_sdh_only(
+            "(son of dońa Delores Mendizábal, an\n"
+            "illustrious and wealthy lady from Havana)"
+        ))
+
     def test_hata_for_sdh_only_source_is_dropped_not_marked_missing(self):
         blocks = [("547", "00:20:23,290 --> 00:20:24,790", "[HATA]")]
         result, marked = gui._fill_hata_with_source(

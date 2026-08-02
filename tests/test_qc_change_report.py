@@ -40,7 +40,8 @@ class WriteQcChangeReportTest(unittest.TestCase):
             fp = str(Path(td) / "episode.srt")
             app = _StubApp()
             gui.App._write_qc_change_report(app, fp, [])
-            self.assertFalse((Path(td) / "episode.qc_degisiklikler.txt").exists())
+            self.assertFalse(
+                (Path(td) / "Raporlar" / "episode.qc_degisiklikler.txt").exists())
 
     def test_records_written_with_source_before_after(self):
         with tempfile.TemporaryDirectory() as td:
@@ -53,7 +54,7 @@ class WriteQcChangeReportTest(unittest.TestCase):
                  "after": "Öyle mi?", "problem": "Meaning Shift"},
             ]
             gui.App._write_qc_change_report(app, fp, records)
-            report_path = Path(td) / "episode.qc_degisiklikler.txt"
+            report_path = Path(td) / "Raporlar" / "episode.qc_degisiklikler.txt"
             self.assertTrue(report_path.exists())
             text = report_path.read_text(encoding="utf-8")
             self.assertIn("#12", text)
@@ -97,7 +98,7 @@ class RunQualityCheckInlineReportTest(unittest.TestCase):
                 )
 
             self.assertEqual(result[0][2], "Beyinsizin teki (gerçek çeviri).")
-            report_path = Path(td) / "episode.qc_degisiklikler.txt"
+            report_path = Path(td) / "Raporlar" / "episode.qc_degisiklikler.txt"
             self.assertTrue(report_path.exists())
             text = report_path.read_text(encoding="utf-8")
             # Rapor GERÇEKTEN uygulanan metni göstermeli, dialogdaki öneriyi değil.
@@ -113,7 +114,8 @@ class RunQualityCheckInlineReportTest(unittest.TestCase):
                     app, fp, orig_cues=[], blocks=[("1", "ts", "text")],
                     mm_key="k", mm_url="u", mm_model="m", tgt="Turkish",
                 )
-            self.assertFalse((Path(td) / "episode.qc_degisiklikler.txt").exists())
+            self.assertFalse(
+                (Path(td) / "Raporlar" / "episode.qc_degisiklikler.txt").exists())
 
     def test_unchanged_text_not_recorded(self):
         # qc_auto_fix satırı değiştirmezse (ör. re-translate başarısız oldu ve
@@ -137,7 +139,8 @@ class RunQualityCheckInlineReportTest(unittest.TestCase):
                     app, fp, orig_cues=[], blocks=blocks,
                     mm_key="k", mm_url="u", mm_model="m", tgt="Turkish",
                 )
-            self.assertFalse((Path(td) / "episode.qc_degisiklikler.txt").exists())
+            self.assertFalse(
+                (Path(td) / "Raporlar" / "episode.qc_degisiklikler.txt").exists())
 
 
 if __name__ == "__main__":

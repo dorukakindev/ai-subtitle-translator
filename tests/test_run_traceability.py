@@ -132,6 +132,16 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("Yardımcı Analiz", detail)
         self.assertIn("Ana Çeviri", detail)
 
+    def test_phase_aliases_do_not_split_semantic_or_mislabel_tm(self):
+        self.assertEqual(
+            gui._timing_phase_label("Nihai Mutabakat"),
+            "Nihai Anlam Mutabakatı",
+        )
+        self.assertEqual(
+            gui._timing_phase_label("Çeviri Hafızası"),
+            "Çeviri Hafızası",
+        )
+
     def test_file_status_logs_stage_and_terminal_durations(self):
         record = {
             "files": {

@@ -33,7 +33,8 @@ class WriteCriticChangeReportTest(unittest.TestCase):
             fp = str(Path(td) / "episode.srt")
             app = _StubApp()
             gui.App._write_critic_change_report(app, fp, [])
-            self.assertFalse((Path(td) / "episode.critic_degisiklikler.txt").exists())
+            self.assertFalse(
+                (Path(td) / "Raporlar" / "episode.critic_degisiklikler.txt").exists())
 
     def test_records_written_with_source_before_after_reason(self):
         with tempfile.TemporaryDirectory() as td:
@@ -46,7 +47,7 @@ class WriteCriticChangeReportTest(unittest.TestCase):
                  "after": "Öyle mi?", "reason": "GARBLE_TOKEN(musun)"},
             ]
             gui.App._write_critic_change_report(app, fp, records)
-            report_path = Path(td) / "episode.critic_degisiklikler.txt"
+            report_path = Path(td) / "Raporlar" / "episode.critic_degisiklikler.txt"
             self.assertTrue(report_path.exists())
             text = report_path.read_text(encoding="utf-8")
             self.assertIn("#12", text)
@@ -70,7 +71,9 @@ class WriteCriticChangeReportTest(unittest.TestCase):
 
             gui.App._write_critic_change_report(app, fp, records)
 
-            report_path = Path(td) / "output" / "episode" / "episode.critic_degisiklikler.txt"
+            report_path = (
+                Path(td) / "output" / "episode" / "Raporlar"
+                / "episode.critic_degisiklikler.txt")
             self.assertTrue(report_path.exists())
             self.assertFalse(any(level == "err" for level, _ in app.logs))
 

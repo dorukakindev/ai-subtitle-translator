@@ -3808,16 +3808,26 @@ def _src_is_sdh_only(src_text: str) -> bool:
     """Kaynak satır yalnızca SFX/SDH köşeli-parantez/parantez/nota içeriği mi
     (gerçek diyalog kelimesi yok). _is_untranslated'daki iki ayrı kontrolde
     (boş çeviri + source==target) aynı mantık kullanılıyor, tek yerden."""
-    src_text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
-    src_text = re.sub(r'(?m)^\s*[-–—]\s*(?=[(\[])', '', src_text)
-    no_sdh = re.sub(r'\([^)]*\)|\[[^\]]*\]|[♪_]+', '', src_text).strip()
-    if re.search(r'\([^)]*\)|\[[^\]]*\]', src_text):
-        no_sdh = re.sub(
-            r"^(?:[A-Z][A-Za-z0-9 .'\-]{0,30}:\s*)",
-            "",
-            no_sdh,
-        ).strip()
-    return (not no_sdh) or bool(_SDH_ONLY_SRC_RE.match(src_text.strip()))
+    if sdh_cleaner.src_is_sfx_only(src_text):
+        return True
+    value = re.sub(r'\{\\[^}]*\}', '', str(src_text or '')).strip()
+    value = re.sub(r'(?m)^\s*[-–—]\s*(?=[(\[])', '', value).strip()
+    value = re.sub(
+        r"^(?:[A-Z][A-Za-z0-9 .'’\-]{0,30}:\s*)(?=[(\[])",
+        "",
+        value,
+    ).strip()
+    groups = re.findall(r"\[([^\]]*)\]|\(([^)]*)\)", value)
+    if not groups or re.sub(r"\[[^\]]*\]|\([^)]*\)", "", value).strip():
+        return False
+    return all(
+        sdh_cleaner.is_sdh_descriptor(
+            re.sub(r"^(?:both|all)\s+", "", (square or paren).strip(),
+                   flags=re.IGNORECASE),
+            bare_text=False,
+        )
+        for square, paren in groups
+    )
 
 
 def _src_text_is_all_caps(src_text: str) -> bool:
@@ -6522,11 +6532,9 @@ def _timing_phase_label(phase: str) -> str:
     value = re.sub(r"\s+", " ", str(phase or "").strip())
     value = re.sub(r"\s+\d+\s*/\s*\d+(?:\s*\([^)]*\))?$", "", value)
     folded = value.casefold()
-    if "analiz" in folded:
-        return "Yardımcı Analiz"
-    if folded.startswith(("çeviri", "anında", "batch")):
-        return "Ana Çeviri"
     aliases = (
+        ("çeviri hafızası", "Çeviri Hafızası"),
+        ("nihai mutabakat", "Nihai Anlam Mutabakatı"),
         ("final tutarlılık", "Final Tutarlılık"),
         ("tutarlılık", "Tutarlılık Taraması"),
         ("bağlam incele", "Bağlam İncelemesi"),
@@ -6550,6 +6558,10 @@ def _timing_phase_label(phase: str) -> str:
     for token, label in aliases:
         if token in folded:
             return label
+    if "analiz" in folded:
+        return "Yardımcı Analiz"
+    if folded.startswith(("çeviri", "anında", "batch")):
+        return "Ana Çeviri"
     return value or "İşleniyor"
 
 
@@ -16183,7 +16195,10 @@ class App(ctk.CTk):
                     pass
             # Rapor yaz
             try:
-                rpath = str(Path(out_path).with_suffix(".geri_ceviri.txt"))
+                rpath = str(
+                    Path(out_path).parent / "Raporlar"
+                    / f"{Path(out_path).stem}.geri_ceviri.txt")
+                Path(rpath).parent.mkdir(parents=True, exist_ok=True)
                 out = [f"# Geri Çeviri Anlam Kontrolü — {len(flags)} satır ({n_fixed} düzeltildi)",
                        f"# {n_fixed} satır otomatik düzeltildi, {len(flags) - n_fixed} rapor-only.", ""]
                 for f in flags:
@@ -16289,7 +16304,8 @@ class App(ctk.CTk):
                 try:
                     rpath = str(
                         report_path
-                        or Path(out_path).with_suffix(".anlamsal_mutabakat.txt"))
+                        or Path(out_path).parent / "Raporlar"
+                        / f"{Path(out_path).stem}.anlamsal_mutabakat.txt")
                     lines = [
                         "# Nihai Anlam Mutabakatı",
                         f"# Küme: {stats['clusters']} | Şüpheli cue: {stats['suspects']} | "
@@ -17474,7 +17490,10 @@ class App(ctk.CTk):
         if not applied_records:
             return
         try:
-            report_path = Path(fp).with_name(Path(fp).stem + ".qc_degisiklikler.txt")
+            report_path = (
+                Path(fp).parent / "Raporlar"
+                / f"{Path(fp).stem}.qc_degisiklikler.txt")
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [f"QC Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
             for rec in applied_records:
                 lines.append(f"#{rec['id']}  [{rec['problem']}]")
@@ -17497,7 +17516,9 @@ class App(ctk.CTk):
         if not applied_records:
             return
         try:
-            report_path = Path(fp).with_name(Path(fp).stem + ".critic_degisiklikler.txt")
+            report_path = (
+                Path(fp).parent / "Raporlar"
+                / f"{Path(fp).stem}.critic_degisiklikler.txt")
             report_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [f"Critic Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
             for rec in applied_records:

@@ -206,6 +206,32 @@ class ValidatePolishNewGuardsTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "medical_adjective_deletion")
 
+    def test_racial_slur_cannot_be_replaced_with_generic_insult(self):
+        ok, reason = _VALIDATE_SRC(
+            "Zenci öfkelendi ve saymayı reddetti.",
+            "Orospu çocuğu öfkelendi ve saymayı reddetti.",
+            "The nigger got angry and refused to keep count.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "identity_slur_loss")
+
+    def test_racial_slur_can_keep_explicit_identity_reference(self):
+        ok, reason = _VALIDATE_SRC(
+            "Zenci öfkelendi ve saymayı reddetti.",
+            "Pis zenci öfkelendi ve saymayı reddetti.",
+            "The nigger got angry and refused to keep count.",
+        )
+        self.assertTrue(ok, reason)
+
+    def test_numbered_noun_cannot_gain_turkish_plural_suffix(self):
+        ok, reason = _VALIDATE_SRC(
+            "Geçen yıl 700 şeker sandığı ürettik.",
+            "Geçen yıl 700 şeker sandıkları ürettik.",
+            "Last year we made 700 boxes of sugar.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "numeric_plural_regression")
+
     def test_content_loss_general_reason(self):
         ok, reason = _VALIDATE(
             "Oyuncak diye pazarlanıyor ama",

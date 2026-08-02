@@ -818,7 +818,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
             app._maybe_semantic_reconciliation(
                 str(out_path), {"1": "Source."}, blocks
             )
-            report = out_path.with_suffix(".anlamsal_mutabakat.txt")
+            report = (
+                out_path.parent / "Raporlar"
+                / "episode.anlamsal_mutabakat.txt")
             self.assertTrue(report.exists())
             report_text = report.read_text(encoding="utf-8")
             self.assertIn("Planlanan kapsam: 1/1", report_text)
