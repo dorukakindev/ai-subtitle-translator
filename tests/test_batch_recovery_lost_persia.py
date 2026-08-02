@@ -175,6 +175,95 @@ class BatchRecoveryLostPersiaTests(unittest.TestCase):
                 gui.__file__, "batch_fmap_batch_new.json").exists())
             client.batches.create.assert_called_once()
 
+    def test_crash_intent_recovers_existing_remote_batch_without_resubmit(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.dict(os.environ, {STATE_DIR_ENV: tmpdir}):
+            source = Path(tmpdir) / "source.srt"
+            source.write_text("source", encoding="utf-8")
+            output = Path(tmpdir) / "out.srt"
+            run_id = "crash-safe"
+            token = f"{run_id}-0"
+            part = {
+                "part_index": 0,
+                "requests": [{"custom_id": "c0"}],
+                "fmap": {"c0": [[1, "ts", str(source)]]},
+            }
+            manifest = {
+                "type": "regular_run", "run_id": run_id, "part_count": 1,
+                "output_dir": tmpdir,
+                "output_paths": {str(source): str(output)},
+                "source_languages": {str(source): "English"},
+                "schema_names": {str(source): "Film"},
+                "source_hashes": {str(source): gui._file_content_sha256(source)},
+                "output_baselines": {str(source): {"exists": False}},
+                "locked_terms_by_file": {str(source): {}},
+                "run_context": {
+                    "context_version": 1,
+                    "api_key_fingerprint": hashlib.sha256(b"key").hexdigest(),
+                    "main_api_base_url": "",
+                },
+                "parts": [part],
+            }
+            gui._regular_batch_manifest_path(run_id).write_text(
+                json.dumps(manifest), encoding="utf-8")
+            intent = gui._regular_batch_intent_path(run_id, 0)
+            intent.write_text(json.dumps({
+                "run_id": run_id, "part_index": 0,
+                "input_file_id": "input-file", "recovery_intent": token,
+            }), encoding="utf-8")
+            remote = SimpleNamespace(
+                id="batch_orphan", input_file_id="input-file",
+                metadata={"recovery_intent": token})
+            client = mock.MagicMock()
+            client.batches.list.return_value = [remote]
+            app = object.__new__(gui.App)
+            app._log = mock.MagicMock()
+            app._register_batch = mock.MagicMock()
+            with mock.patch("openai.OpenAI", return_value=client):
+                recovered = app._reconcile_regular_batch_intents("key")
+
+            self.assertEqual(recovered, ["batch_orphan"])
+            self.assertFalse(intent.exists())
+            self.assertTrue(state_path(
+                gui.__file__, "batch_fmap_batch_orphan.json").exists())
+            client.batches.create.assert_not_called()
+
+    def test_hybrid_crash_intent_recovers_remote_batch_without_resubmit(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.dict(os.environ, {STATE_DIR_ENV: tmpdir}):
+            token = "hybrid-intent"
+            fmap_data = {
+                "type": "hybrid", "source_path": str(Path(tmpdir) / "source.srt"),
+                "output_path": str(Path(tmpdir) / "out.srt"),
+                "run_context": {
+                    "context_version": 1,
+                    "api_key_fingerprint": hashlib.sha256(b"key").hexdigest(),
+                },
+                "fmap": {"c0": [[1, "ts", "source"]]},
+            }
+            intent = ht._hybrid_batch_intent_path(token)
+            intent.write_text(json.dumps({
+                "recovery_intent": token, "input_file_id": "input-hybrid",
+                "base_url": "", "fmap_data": fmap_data,
+            }), encoding="utf-8")
+            remote = SimpleNamespace(
+                id="batch_hybrid_orphan", input_file_id="input-hybrid",
+                metadata={"recovery_intent": token})
+            client = mock.MagicMock()
+            client.batches.list.return_value = [remote]
+            app = object.__new__(gui.App)
+            app._log = mock.MagicMock()
+            app._register_batch = mock.MagicMock()
+            with mock.patch("openai.OpenAI", return_value=client), \
+                 mock.patch.object(ht, "update_recovered_batch_session") as update:
+                recovered = app._reconcile_hybrid_batch_intents("key")
+
+            self.assertEqual(recovered, ["batch_hybrid_orphan"])
+            self.assertFalse(intent.exists())
+            self.assertTrue(ht._batch_fmap_path("batch_hybrid_orphan").exists())
+            client.batches.create.assert_not_called()
+            update.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5285,6 +5285,40 @@ def _regular_batch_manifest_path(run_id: str) -> Path:
     return state_path(__file__, f"batch_run_{safe_run_id}.json")
 
 
+def _regular_batch_intent_path(run_id: str, part_index: int) -> Path:
+    safe_run_id = re.sub(r"[^A-Za-z0-9_-]", "", str(run_id or ""))
+    return state_path(__file__, f"batch_intent_{safe_run_id}_{int(part_index)}.json")
+
+
+def _pending_regular_batch_intents() -> list[Path]:
+    return sorted(state_dir(__file__).glob("batch_intent_*.json"))
+
+
+def _pending_hybrid_batch_intents() -> list[Path]:
+    return sorted(state_dir(__file__).glob("hybrid_batch_intent_*.json"))
+
+
+def _regular_fmap_from_manifest(manifest: dict, part: dict,
+                                manifest_path: Path) -> dict:
+    return {
+        "type": "regular",
+        "output_dir": manifest.get("output_dir", ""),
+        "run_id": str(manifest.get("run_id") or ""),
+        "run_manifest": str(manifest_path),
+        "part_index": int(part["part_index"]),
+        "part_count": int(manifest["part_count"]),
+        "output_paths": manifest.get("output_paths") or {},
+        "source_languages": manifest.get("source_languages") or {},
+        "schema_names": manifest.get("schema_names") or {},
+        "source_hashes": manifest.get("source_hashes") or {},
+        "output_baselines": manifest.get("output_baselines") or {},
+        "run_context": manifest.get("run_context") or {},
+        "locked_terms_by_file": manifest.get("locked_terms_by_file") or {},
+        "requests": part.get("requests") or [],
+        "fmap": part.get("fmap") or {},
+    }
+
+
 def _regular_manifest_missing_indices(manifest: dict, seen_indices) -> list[int]:
     try:
         part_count = int(manifest.get("part_count", 0))
@@ -16105,7 +16139,8 @@ class App(ctk.CTk):
             with self._batch_lock:
                 active_batches = bool(self._active_batches)
             pending_batches = _pending_recovery_batch_ids()
-            if active_batches or pending_batches:
+            if (active_batches or pending_batches or _pending_regular_batch_intents()
+                    or _pending_hybrid_batch_intents()):
                 messagebox.showwarning(
                     "Bekleyen Batch Var",
                     "Önce bekleyen batch'i 'Batch'i Devam Ettir' ile tamamlayın "
@@ -16253,6 +16288,8 @@ class App(ctk.CTk):
         key = self._validate()
         if not key:
             return
+        App._reconcile_regular_batch_intents(self, key)
+        App._reconcile_hybrid_batch_intents(self, key)
         bid_path = _batch_id_path()
         if not bid_path.exists():
             messagebox.showerror("Hata", "batch_id.txt bulunamadı.")
@@ -22021,14 +22058,24 @@ class App(ctk.CTk):
             _created_batch_id = ""
             _metadata_ready = False
             _metadata_cancelled = False
+            _intent_path = None
             try:
                 self._log(f"Yükleniyor ({ci+1}/{len(chunks)})...", "info")
                 with open(jpath, "rb") as f:
                     up = client.files.create(file=f, purpose="batch")
+                _intent_path = _regular_batch_intent_path(run_id, ci)
+                _intent_token = f"{run_id}-{ci}"
+                atomic_write_json(_intent_path, {
+                    "run_id": run_id,
+                    "part_index": ci,
+                    "input_file_id": up.id,
+                    "recovery_intent": _intent_token,
+                })
                 batch = client.batches.create(
                     input_file_id=up.id,
                     endpoint="/v1/chat/completions",
-                    completion_window="24h")
+                    completion_window="24h",
+                    metadata={"recovery_intent": _intent_token})
                 _created_batch_id = batch.id
                 batch_ids.append(batch.id)
                 mutate_batch_ids(_batch_id_path(), add=[batch.id])
@@ -22054,6 +22101,7 @@ class App(ctk.CTk):
                 }
                 atomic_write_json(fmap_path, fmap_data)
                 _metadata_ready = True
+                _intent_path.unlink(missing_ok=True)
                 batch_runs.append((batch.id, slice_fmap, chunk))
                 self._log(f"Batch oluşturuldu: {batch.id}", "ok")
             except Exception as e:
@@ -22151,6 +22199,126 @@ class App(ctk.CTk):
             manifest_path.unlink(missing_ok=True)
         self._set_running(False)   # #2: upload sonrası ilk poll'dan önce Stop'ta UI kilitlenmesin
 
+    def _reconcile_regular_batch_intents(self, api_key):
+        from openai import OpenAI
+
+        key_fingerprint = hashlib.sha256(
+            str(api_key).encode("utf-8")).hexdigest()
+        recovered = []
+        for intent_path in _pending_regular_batch_intents():
+            with _interprocess_lock(intent_path):
+                if not intent_path.exists():
+                    continue
+                try:
+                    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+                    run_id = str(intent["run_id"])
+                    part_index = int(intent["part_index"])
+                    input_file_id = str(intent["input_file_id"])
+                    intent_token = str(intent["recovery_intent"])
+                    manifest_path = _regular_batch_manifest_path(run_id)
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    context = manifest["run_context"]
+                    if context.get("api_key_fingerprint") != key_fingerprint:
+                        self._log(
+                            f"[HATA] {run_id}: yetim batch niyeti farklı API "
+                            "anahtarına ait; uzlaştırılmadı.", "err")
+                        continue
+                    part = next(
+                        row for row in manifest["parts"]
+                        if int(row["part_index"]) == part_index)
+                    client = OpenAI(
+                        api_key=api_key,
+                        base_url=str(context.get("main_api_base_url") or "") or None)
+                    match = None
+                    for remote in client.batches.list(limit=100):
+                        metadata = getattr(remote, "metadata", None) or {}
+                        if not isinstance(metadata, dict) and hasattr(metadata, "model_dump"):
+                            metadata = metadata.model_dump()
+                        if (str((metadata or {}).get("recovery_intent") or "") == intent_token
+                                or str(getattr(remote, "input_file_id", "")) == input_file_id):
+                            match = remote
+                            break
+                    if match is None:
+                        self._log(
+                            f"[HATA] {run_id}: sağlayıcıda {part_index + 1}. parçanın "
+                            "uzak batch'i doğrulanamadı. Çift ücret riskine karşı yeniden "
+                            "gönderilmedi; niyet kaydı korundu.", "err")
+                        continue
+                    batch_id = str(match.id)
+                    atomic_write_json(
+                        state_path(__file__, f"batch_fmap_{batch_id}.json"),
+                        _regular_fmap_from_manifest(manifest, part, manifest_path))
+                    mutate_batch_ids(_batch_id_path(), add=[batch_id])
+                    self._register_batch(
+                        batch_id, api_key,
+                        str(context.get("main_api_base_url") or ""))
+                    intent_path.unlink(missing_ok=True)
+                    recovered.append(batch_id)
+                    self._log(
+                        f"Yetim ücretli batch kurtarıldı: {batch_id} "
+                        f"({part_index + 1}/{manifest['part_count']})", "ok")
+                except Exception as exc:
+                    self._log(
+                        f"Yetim batch niyeti uzlaştırılamadı ({intent_path.name}): "
+                        f"{exc}. Kayıt korundu.", "err")
+        return recovered
+
+    def _reconcile_hybrid_batch_intents(self, api_key):
+        from openai import OpenAI
+        import hybrid_translate as ht
+
+        key_fingerprint = hashlib.sha256(
+            str(api_key).encode("utf-8")).hexdigest()
+        recovered = []
+        for intent_path in _pending_hybrid_batch_intents():
+            with _interprocess_lock(intent_path):
+                if not intent_path.exists():
+                    continue
+                try:
+                    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+                    fmap_data = intent["fmap_data"]
+                    context = fmap_data["run_context"]
+                    if context.get("api_key_fingerprint") != key_fingerprint:
+                        self._log(
+                            "[HATA] Yetim hybrid batch farklı API anahtarına ait; "
+                            "uzlaştırılmadı.", "err")
+                        continue
+                    client = OpenAI(
+                        api_key=api_key,
+                        base_url=str(intent.get("base_url") or "") or None)
+                    token = str(intent["recovery_intent"])
+                    input_file_id = str(intent["input_file_id"])
+                    match = None
+                    for remote in client.batches.list(limit=100):
+                        metadata = getattr(remote, "metadata", None) or {}
+                        if not isinstance(metadata, dict) and hasattr(metadata, "model_dump"):
+                            metadata = metadata.model_dump()
+                        if (str((metadata or {}).get("recovery_intent") or "") == token
+                                or str(getattr(remote, "input_file_id", "")) == input_file_id):
+                            match = remote
+                            break
+                    if match is None:
+                        self._log(
+                            "[HATA] Sağlayıcıda yetim hybrid batch doğrulanamadı; "
+                            "çift ücret riskine karşı yeniden gönderilmedi.", "err")
+                        continue
+                    batch_id = str(match.id)
+                    atomic_write_json(ht._batch_fmap_path(batch_id), fmap_data)
+                    mutate_batch_ids(_batch_id_path(), add=[batch_id])
+                    self._register_batch(
+                        batch_id, api_key, str(intent.get("base_url") or ""))
+                    ht.update_recovered_batch_session(
+                        batch_id, str(fmap_data.get("source_path") or ""),
+                        "submitted", out_path=str(fmap_data.get("output_path") or ""))
+                    intent_path.unlink(missing_ok=True)
+                    recovered.append(batch_id)
+                    self._log(f"Yetim ücretli hybrid batch kurtarıldı: {batch_id}", "ok")
+                except Exception as exc:
+                    self._log(
+                        f"Yetim hybrid batch niyeti uzlaştırılamadı "
+                        f"({intent_path.name}): {exc}. Kayıt korundu.", "err")
+        return recovered
+
     def _submit_missing_regular_batch_parts(self, api_key, batch_ids):
         from openai import OpenAI
         import tempfile
@@ -22229,41 +22397,37 @@ class App(ctk.CTk):
                 jpath = Path(tmp.name)
                 created_id = ""
                 metadata_ready = False
+                intent_path = None
                 try:
                     with tmp as handle:
                         for request in requests:
                             handle.write(json.dumps(request, ensure_ascii=False) + "\n")
                     with open(jpath, "rb") as handle:
                         uploaded = client.files.create(file=handle, purpose="batch")
+                    intent_path = _regular_batch_intent_path(run_id, part_index)
+                    intent_token = f"{run_id}-{part_index}"
+                    atomic_write_json(intent_path, {
+                        "run_id": run_id,
+                        "part_index": part_index,
+                        "input_file_id": uploaded.id,
+                        "recovery_intent": intent_token,
+                    })
                     batch = client.batches.create(
                         input_file_id=uploaded.id,
                         endpoint="/v1/chat/completions",
-                        completion_window="24h")
+                        completion_window="24h",
+                        metadata={"recovery_intent": intent_token})
                     created_id = batch.id
                     mutate_batch_ids(_batch_id_path(), add=[created_id])
                     self._register_batch(
                         created_id, api_key,
                         str(context.get("main_api_base_url") or ""))
-                    fmap_data = {
-                        "type": "regular",
-                        "output_dir": manifest.get("output_dir", ""),
-                        "run_id": run_id,
-                        "run_manifest": str(manifest_path),
-                        "part_index": part_index,
-                        "part_count": int(manifest["part_count"]),
-                        "output_paths": manifest.get("output_paths") or {},
-                        "source_languages": manifest.get("source_languages") or {},
-                        "schema_names": manifest.get("schema_names") or {},
-                        "source_hashes": manifest.get("source_hashes") or {},
-                        "output_baselines": manifest.get("output_baselines") or {},
-                        "run_context": context,
-                        "locked_terms_by_file": manifest.get("locked_terms_by_file") or {},
-                        "requests": requests,
-                        "fmap": saved_fmap,
-                    }
+                    fmap_data = _regular_fmap_from_manifest(
+                        manifest, part, manifest_path)
                     atomic_write_json(
                         state_path(__file__, f"batch_fmap_{created_id}.json"), fmap_data)
                     metadata_ready = True
+                    intent_path.unlink(missing_ok=True)
                     expanded.append(created_id)
                     self._log(
                         f"Eksik batch parçası yeniden gönderildi: "

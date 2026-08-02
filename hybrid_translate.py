@@ -979,6 +979,11 @@ def _batch_fmap_path(batch_id: str) -> Path:
     return state_path(__file__, f"batch_fmap_{batch_id}.json")
 
 
+def _hybrid_batch_intent_path(token: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(token or ""))
+    return state_path(__file__, f"hybrid_batch_intent_{safe}.json")
+
+
 def _session_path(input_dir: str) -> Path:
     try:
         key = str(Path(input_dir).expanduser().resolve()).replace("\\", "/").casefold().rstrip("/")
@@ -11439,6 +11444,23 @@ def submit_batch(
         raise RuntimeError("source_changed_before_batch_submit")
     source_hash = expected_source_hash or current_source_hash
     output_baseline = _file_state_signature(output_path) if output_path else None
+    fmap_data = None
+    if file_map is not None:
+        fmap_data = {
+            "type": "hybrid",
+            "output_path": output_path or "",
+            "source_path": source_path or "",
+            "output_dir": output_dir or "",
+            "source_language": source_language or "",
+            "target_language": target_language or "",
+            "schema_name": schema_name or "",
+            "session_fingerprint": session_fingerprint or "",
+            "run_context": dict(run_context or {}),
+            "locked_terms": dict(locked_terms or {}),
+            "source_hash": source_hash,
+            "output_baseline": output_baseline,
+            "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
+        }
 
     from openai import OpenAI
     client = OpenAI(api_key=openai_api_key, base_url=base_url or None)
@@ -11465,33 +11487,33 @@ def submit_batch(
         except Exception:
             pass
 
+    intent_path = None
+    intent_token = hashlib.sha256(
+        f"{source_path}|{time.time_ns()}|{os.getpid()}".encode("utf-8")
+    ).hexdigest()[:24]
+    if fmap_data is not None:
+        intent_path = _hybrid_batch_intent_path(intent_token)
+        atomic_write_json(intent_path, {
+            "recovery_intent": intent_token,
+            "input_file_id": uploaded.id,
+            "base_url": base_url or "",
+            "fmap_data": fmap_data,
+        })
     batch = client.batches.create(
         input_file_id=uploaded.id,
         endpoint="/v1/chat/completions",
         completion_window="24h",
+        metadata={"recovery_intent": intent_token},
     )
 
     try:
         mutate_batch_ids(_batch_id_path(), add=[batch.id])
 
-        if file_map is not None:
+        if fmap_data is not None:
             fmap_path = _batch_fmap_path(batch.id)
-            fmap_data = {
-                "type": "hybrid",
-                "output_path": output_path or "",
-                "source_path": source_path or "",
-                "output_dir": output_dir or "",
-                "source_language": source_language or "",
-                "target_language": target_language or "",
-                "schema_name": schema_name or "",
-                "session_fingerprint": session_fingerprint or "",
-                "run_context": dict(run_context or {}),
-                "locked_terms": dict(locked_terms or {}),
-                "source_hash": source_hash,
-                "output_baseline": output_baseline,
-                "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},
-            }
             atomic_write_json(fmap_path, fmap_data)
+        if intent_path is not None:
+            intent_path.unlink(missing_ok=True)
     except Exception as exc:
         cancelled = best_effort_cancel_remote_batch(client, batch.id, log_fn)
         if cancelled:
@@ -11499,6 +11521,8 @@ def submit_batch(
                 mutate_batch_ids(_batch_id_path(), remove=[batch.id])
             except Exception:
                 pass
+            if intent_path is not None:
+                intent_path.unlink(missing_ok=True)
         raise RuntimeError(
             f"Batch oluşturuldu ancak recovery metadata kaydedilemedi ({batch.id}); "
             f"uzak iptal={'başarılı' if cancelled else 'başarısız'}"

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import hybrid_translate as ht
@@ -143,9 +144,15 @@ class OrphanBatchCancellationTest(unittest.TestCase):
         self._env.stop()
         self._td.cleanup()
 
+    def _fail_only_fmap_write(self, path, data):
+        if Path(path).name.startswith("hybrid_batch_intent_"):
+            return self._real_atomic_write_json(path, data)
+        raise OSError("disk full")
+
     def test_fmap_write_failure_cancels_remote_batch_and_removes_id(self):
+        self._real_atomic_write_json = ht.atomic_write_json
         with patch("openai.OpenAI", return_value=self.client), \
-             patch.object(ht, "atomic_write_json", side_effect=OSError("disk full")):
+             patch.object(ht, "atomic_write_json", side_effect=self._fail_only_fmap_write):
             with self.assertRaisesRegex(RuntimeError, "recovery metadata"):
                 ht.submit_batch(
                     "key", self.requests, file_map=self.fmap, log_fn=MagicMock())
@@ -155,8 +162,9 @@ class OrphanBatchCancellationTest(unittest.TestCase):
 
     def test_failed_remote_cancel_preserves_batch_id_for_manual_recovery(self):
         self.client.batches.cancel.side_effect = RuntimeError("provider unavailable")
+        self._real_atomic_write_json = ht.atomic_write_json
         with patch("openai.OpenAI", return_value=self.client), \
-             patch.object(ht, "atomic_write_json", side_effect=OSError("disk full")):
+             patch.object(ht, "atomic_write_json", side_effect=self._fail_only_fmap_write):
             with self.assertRaisesRegex(RuntimeError, "uzak iptal=başarısız"):
                 ht.submit_batch(
                     "key", self.requests, file_map=self.fmap, log_fn=MagicMock())

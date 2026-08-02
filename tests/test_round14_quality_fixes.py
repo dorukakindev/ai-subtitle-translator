@@ -165,6 +165,8 @@ class GitIgnoreCoverageTest(unittest.TestCase):
             ".gui_settings.json.bak.*",
             "batch_fmap_*.json",
             "batch_run_*.json",
+            "batch_intent_*.json",
+            "hybrid_batch_intent_*.json",
             "batch_id.txt",
             "translation_run_owner.json",
             "translation_run_owner.json.lock",
