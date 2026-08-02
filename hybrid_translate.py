@@ -4210,6 +4210,7 @@ def quality_check_with_helper(
     log_fn=None,
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
     cancel_context=None,
+    status_out: dict | None = None,
 ) -> list:
     """
     Compare original cues with translated blocks.
@@ -4219,6 +4220,12 @@ def quality_check_with_helper(
         analysis_result: Optional tuple of (ContextMemory, char_examples_dict, pronoun_map)
             from analyze_with_helper() to provide context injection for better QC.
     """
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     try:
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
@@ -4237,6 +4244,8 @@ def quality_check_with_helper(
                 all_pairs.append({"id": str(cue_id), "orig": cue_text, "tr": tr_text})
 
         if not all_pairs:
+            if status_out is not None:
+                status_out["status"] = "completed"
             return []
 
         total_chunks = math.ceil(len(all_pairs) / QC_CHUNK)
@@ -4292,9 +4301,12 @@ def quality_check_with_helper(
 
         all_issues = []
         chunk_errors = 0
+        successful_chunks = 0
+        cancelled = False
 
         for chunk_i, cs in enumerate(range(0, len(all_pairs), QC_CHUNK)):
             if cancel_context is not None and cancel_context.is_cancelled():
+                cancelled = True
                 break
             chunk = all_pairs[cs:cs + QC_CHUNK]
             chunk_by_id = {pair["id"]: pair for pair in chunk}
@@ -4356,6 +4368,7 @@ def quality_check_with_helper(
                 data = _extract_json_object(content)   # prose önsöz/kod-çiti toleransı
                 if not isinstance(data, dict) or "issues" not in data:
                     raise ValueError("geçerli issues JSON nesnesi bulunamadı")
+                successful_chunks += 1
                 raw_issues = data.get("issues", []) if isinstance(data, dict) else []
                 chunk_issues = []
                 for raw_issue in raw_issues if isinstance(raw_issues, list) else []:
@@ -4378,6 +4391,7 @@ def quality_check_with_helper(
                 if log_fn and chunk_issues:
                     log_fn(f"  QC chunk {chunk_num}: {len(chunk_issues)} sorun", "warn")
             except RequestCancelled:
+                cancelled = True
                 break
             except Exception as chunk_err:
                 chunk_errors += 1
@@ -4385,12 +4399,27 @@ def quality_check_with_helper(
                     log_fn(f"QC chunk {chunk_num} hatası: {chunk_err}", "err")
                 continue
 
+        pass_status = (
+            "cancelled" if cancelled
+            else "completed" if successful_chunks == total_chunks
+            else "partial" if successful_chunks
+            else "failed"
+        )
+        if status_out is not None:
+            status_out.update({
+                "status": pass_status,
+                "successful_chunks": successful_chunks,
+                "failed_chunks": max(0, total_chunks - successful_chunks),
+                "total_chunks": total_chunks,
+            })
         if log_fn:
-            if chunk_errors:
+            if cancelled:
+                log_fn("QC durduruldu; tarama tamamlanmadı", "warn")
+            elif chunk_errors:
                 log_fn(
-                    f"QC tamamlandı: {chunk_errors} chunk atlandı, "
+                    f"QC tamamlanamadı: {successful_chunks}/{total_chunks} chunk başarılı, "
                     f"{len(all_issues)} sorun bulundu",
-                    "warn",
+                    "warn" if successful_chunks else "err",
                 )
             elif all_issues:
                 log_fn(f"QC tamamlandı: {len(all_issues)} sorun bulundu", "warn")
@@ -4398,6 +4427,8 @@ def quality_check_with_helper(
                 log_fn("QC tamamlandı: sorun bulunamadı ✓", "ok")
         return all_issues
     except Exception as e:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(e)})
         if log_fn:
             tb = traceback.format_exception(type(e), e, e.__traceback__)
             compact = "".join(tb[-2:]).strip().replace("\n", " | ")

@@ -7218,7 +7218,10 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             state = status_info["status"]
             successful = int(status_info.get("successful_chunks", 0) or 0)
             total = int(status_info.get("total_chunks", 0) or 0)
-            changed = int(status_info.get("changed", 0) or 0)
+            changed = max(
+                int(status_info.get("changed", 0) or 0),
+                sum(int(trace.get(label, 0) or 0) for label in labels),
+            )
             detail = f", {successful}/{total} paket başarılı" if total else ""
             if changed:
                 detail += f", {changed} cue değiştirdi"
@@ -7232,6 +7235,9 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         ran = [label for label in labels if label in trace]
         if ran:
             changed = sum(int(trace.get(label, 0) or 0) for label in ran)
+            lines.append(f"{title}: çalıştı, {changed} cue değiştirdi")
+        elif status_info and status_info.get("status") == "completed":
+            changed = int(status_info.get("changed", 0) or 0)
             lines.append(f"{title}: çalıştı, {changed} cue değiştirdi")
         elif enabled:
             reason = "dosya tamamlanamadığı için atlandı" if status == "error" else "açık, çalışma kaydı yok"
@@ -17768,13 +17774,15 @@ class App(ctk.CTk):
                         self._update_file_progress(fp, "QC Kontrolü", 72)
                         self._set_phase("QC Kontrolü", f"{fname}  ({i+1}/{n})")
                         self._log(f"QC Kontrolü — {len(blocks)} satır...", "info")
+                        _qc_status = {}
                         blocks = self._run_quality_check_inline(
                             fp, orig_cues, blocks, 
                             helper_keys.get("qc", ""),
                             helper_urls.get("qc", ""),
                             helper_models.get("qc", "gpt-5.4-mini"),
                             tgt, analysis_result=analysis_result,
-                            use_passed_credentials=True)
+                            use_passed_credentials=True,
+                            status_out=_qc_status)
                     except Exception as e:
                         self._log(f"QC hatası: {e}", "warn")
                 elif do_qc:
@@ -17836,8 +17844,9 @@ class App(ctk.CTk):
             self._set_phase("Hazır", "Durduruldu.")
 
     def _run_quality_check_inline(self, fp, orig_cues, blocks, mm_key, mm_url,
-                                  mm_model, tgt, analysis_result=None,
-                                  stats=None, use_passed_credentials=False):
+                                   mm_model, tgt, analysis_result=None,
+                                   stats=None, use_passed_credentials=False,
+                                   status_out=None):
         """QC kontrolü yap, dialog göster, onaylanan düzeltmeleri uygula. Güncel blocks döner.
 
         Uygulanan TÜM düzeltmeler (otomatik + dialogdan onaylı) <dosya>.qc_degisiklikler.txt'e
@@ -17861,13 +17870,14 @@ class App(ctk.CTk):
             issues = ht.quality_check_with_helper(
                 cues=orig_cues,
                 tr_blocks=blocks,
-                helper_api_key=mm_key,
-                helper_url=mm_url,
-                helper_model=mm_model,
+                helper_api_key=qc_key,
+                helper_url=qc_url,
+                helper_model=qc_model,
                 tgt_lang=tgt,
                 log_fn=self._log,
                 analysis_result=analysis_result,
                 cancel_context=cancel_context,
+                status_out=status_out,
             )
         except Exception as e:
             self._log_exc("QC hatası", e)
@@ -20959,6 +20969,7 @@ class App(ctk.CTk):
             if self.qc_var.get() and sorted_blocks and _quality_api_allowed:
                 self._record_file_status(filepath, "QC", "running")
                 self._set_status(f"{self._helper_display_name('qc')} QC: {fname}")
+                _qc_status = {}
                 issues = ht.quality_check_with_helper(
                     cues=cues,
                     tr_blocks=sorted_blocks,
@@ -20967,7 +20978,9 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     analysis_result=(context, char_examples, pronoun_map),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
+                    status_out=_qc_status,
                 )
+                _pass_status["QC"] = dict(_qc_status)
                 if issues:
                     auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
                     if auto_issues:
@@ -22064,11 +22077,14 @@ class App(ctk.CTk):
                                 _record_pass_change(_pass_trace, "Line-break", _before_pass, pp, _pass_history)
                             if self.qc_var.get() and pp and _orig_cues:
                                 self._set_status("QC kontrolü...")
+                                _qc_status = {}
                                 _issues = ht.quality_check_with_helper(
                                     cues=_orig_cues, tr_blocks=pp,
                                     helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
-                                    cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                    cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                    status_out=_qc_status)
+                                _pass_status["QC"] = dict(_qc_status)
                                 if _issues:
                                     _auto_qc, _review_qc = ht.split_qc_issues_for_review(_issues)
                                     if _auto_qc:
@@ -22645,13 +22661,17 @@ class App(ctk.CTk):
                 try:
                     self._record_file_status(fp, "QC", "running")
                     _before_pass = list(sorted_blocks)
+                    _qc_status = {}
                     sorted_blocks = self._run_quality_check_inline(
                         str(out_path), _src_cues, sorted_blocks,
                         self._helper_api_key("qc"), self._helper_api_base_url("qc"),
                         self._helper_api_model("qc"), _tgt_lang,
                         analysis_result=_analysis_result,
-                        stats=_qc_stats)
-                    _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
+                        stats=_qc_stats,
+                        status_out=_qc_status)
+                    _pass_status["QC"] = dict(_qc_status)
+                    if _qc_status.get("status") == "completed":
+                        _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     self._log(f"QC hatası: {e}", "warn")
             if self._stop_flag:
@@ -23723,12 +23743,15 @@ class App(ctk.CTk):
                         if self.qc_var.get() and pp_blocks:
                             self._record_file_status(filepath, "QC", "running")
                             self._set_status(f"{self._helper_display_name('qc')} QC: {fname}")
+                            _qc_status = {}
                             issues = ht.quality_check_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt,
                                 log_fn=self._log,
                                 analysis_result=_full_analysis,
-                                cancel_context=self.__dict__.get("_helper_request_canceller"))
+                                cancel_context=self.__dict__.get("_helper_request_canceller"),
+                                status_out=_qc_status)
+                            _pass_status["QC"] = dict(_qc_status)
                             if issues:
                                 auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
                                 if auto_issues:

@@ -248,6 +248,18 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Native Okuyucu: çalıştı") for line in audit))
 
+    def test_successful_qc_with_no_issues_is_reported_as_completed(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_trace": {},
+            "pass_status": {"QC": {
+                "status": "completed", "successful_chunks": 2,
+                "failed_chunks": 0, "total_chunks": 2, "changed": 0,
+            }},
+        }, {"qc": True})
+
+        self.assertIn("QC: çalıştı, 0 cue değiştirdi", audit)
+
     def test_repair_only_audit_marks_every_quality_pass_skipped(self):
         audit = gui._quality_feature_audit({
             "repair_only": True,

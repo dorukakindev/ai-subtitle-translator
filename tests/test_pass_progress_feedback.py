@@ -85,6 +85,22 @@ class PassProgressFeedbackTest(unittest.TestCase):
         self.assertTrue(any("tamamlanamadı" in message for message, _ in logs))
         self.assertFalse(any("ek düzeltme gerekmedi" in message for message, _ in logs))
 
+    def test_qc_reports_failed_when_every_request_failed(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
+        cues = [SimpleNamespace(index=1, text="Hello.")]
+        status = {}
+        logs = []
+        with patch("openai.OpenAI", return_value=MagicMock()), patch.object(
+                ht, "_safe_chat_create", side_effect=RuntimeError("503")):
+            issues = ht.quality_check_with_helper(
+                cues, blocks, "key", status_out=status,
+                log_fn=lambda message, tag="": logs.append((message, tag)))
+
+        self.assertEqual(issues, [])
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["failed_chunks"], 1)
+        self.assertTrue(any("tamamlanamadı" in message for message, _ in logs))
+
     def test_native_does_not_report_natural_when_every_request_failed(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
         status = {}

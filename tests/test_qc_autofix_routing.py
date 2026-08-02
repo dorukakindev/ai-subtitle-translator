@@ -81,7 +81,7 @@ class QCAutoFixRoutingTest(unittest.TestCase):
             call_records.append(kwargs)
             return kwargs.get("tr_blocks", [])
 
-        with patch("hybrid_translate.quality_check_with_helper", return_value=self.sample_issues), \
+        with patch("hybrid_translate.quality_check_with_helper", return_value=self.sample_issues) as qc_check, \
              patch("hybrid_translate.qc_auto_fix", side_effect=mock_qc_auto_fix):
             gui.App._run_quality_check_inline(
                 stub,
@@ -93,6 +93,11 @@ class QCAutoFixRoutingTest(unittest.TestCase):
                 mm_model="main-model",
                 tgt="Turkish",
             )
+
+        qc_kwargs = qc_check.call_args.kwargs
+        self.assertEqual(qc_kwargs["helper_api_key"], "sk-QC-HELPER-KEY")
+        self.assertEqual(qc_kwargs["helper_model"], "qc-helper-model-v1")
+        self.assertEqual(qc_kwargs["helper_url"], "https://qc.endpoint.ai/v1")
 
         self.assertGreaterEqual(len(call_records), 1)
         for rec in call_records:

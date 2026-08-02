@@ -103,7 +103,7 @@ class PassSafetyGuardsTest(unittest.TestCase):
         self.assertEqual(issues, [])
         self.assertTrue(any(
             level == "warn"
-            and "1 chunk atlandı, 0 sorun bulundu" in message
+            and "QC tamamlanamadı: 1/2 chunk başarılı, 0 sorun bulundu" in message
             for level, message in logs
         ))
 
