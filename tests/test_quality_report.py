@@ -302,6 +302,25 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn(
             "Auto-Glossary: çalıştı, 4 öneri, 2 terim eklendi", audit)
 
+    def test_series_memory_save_failure_is_visible(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_status": {"Series-Memory": {"status": "failed"}},
+        }, {"series_memory": True})
+
+        self.assertIn("Dizi Hafızası: başarısız", audit)
+
+    def test_non_series_memory_skip_is_not_reported_as_success(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_status": {"Series-Memory": {
+                "status": "skipped", "reason": "not_series",
+            }},
+        }, {"series_memory": True})
+
+        self.assertIn(
+            "Dizi Hafızası: atlandı, dizi bölümü algılanmadı", audit)
+
     def test_expensive_final_pass_failures_are_not_reported_as_zero_change(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",

@@ -7221,7 +7221,8 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 "Tutarlılık taraması", "Bağlam İncelemesi", "Critic Pass", "Polish Pass",
                 "Native Okuyucu", "QC", "Nihai Anlam Mutabakatı",
                 "Geri Çeviri", "Terim Normalizasyonu", "Okuma Hızı Kısaltma",
-                "Auto-Glossary", "SDH temizleme", "Satır düzenleme"):
+                "Auto-Glossary", "Dizi Hafızası", "SDH temizleme",
+                "Satır düzenleme"):
             lines.append(f"{title}: kısmi onarım gereği atlandı")
         return lines
 
@@ -7263,6 +7264,28 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         lines.append("Auto-Glossary: açık, çalışma kaydı yok")
     else:
         lines.append("Auto-Glossary: kapalı")
+
+    series_enabled = bool(snapshot.get("series_memory"))
+    series_status = pass_status.get("Series-Memory")
+    if not series_enabled:
+        lines.append("Dizi Hafızası: kapalı")
+    elif isinstance(series_status, dict):
+        series_state = str(series_status.get("status") or "")
+        if series_state == "completed":
+            lines.append("Dizi Hafızası: çalıştı, bölüm kanonu kaydedildi")
+        elif series_state == "failed":
+            lines.append("Dizi Hafızası: başarısız")
+        elif series_state == "skipped":
+            reason = str(series_status.get("reason") or "")
+            detail = {
+                "not_series": "dizi bölümü algılanmadı",
+                "analysis_incomplete": "analiz veya çeviri tamamlanmadı",
+            }.get(reason, "uygulanmadı")
+            lines.append(f"Dizi Hafızası: atlandı, {detail}")
+        else:
+            lines.append("Dizi Hafızası: açık, çalışma kaydı yok")
+    else:
+        lines.append("Dizi Hafızası: açık, çalışma kaydı yok")
 
     features = (
         ("Tutarlılık taraması", True, ("Consistency", "Final-Consistency")),
@@ -19676,19 +19699,34 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    def _commit_precontext_series_memory(self, fp: str, target_language: str = "tr"):
+    def _commit_precontext_series_memory(self, fp: str, target_language: str = "tr",
+                                         status_out: dict | None = None):
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({"status": "not_started", "changed": 0})
         data = (getattr(self, "_run_precontext_data", None) or {}).get(fp)
         if not isinstance(data, dict) or data.get("_analysis_complete") is False:
+            if status_out is not None:
+                status_out.update({
+                    "status": "skipped", "reason": "analysis_incomplete"})
             return
         sm_obj, season, ep = self._series_mem_for(fp, persistent=True)
         if sm_obj is None:
+            if status_out is not None:
+                status_out.update({"status": "skipped", "reason": "not_series"})
             return
         try:
             self._merge_precontext_into_series_memory(
                 sm_obj, season, ep, data, target_language=target_language)
-            sm_obj.save()
-        except Exception:
-            pass
+            saved = sm_obj.save()
+            if saved is False:
+                raise OSError("series memory could not be saved")
+            if status_out is not None:
+                status_out.update({"status": "completed", "changed": 1})
+        except Exception as exc:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(exc)})
+            self._log(f"Dizi hafızası kaydedilemedi: {exc}", "warn")
 
     def _merge_analysis_into_series_memory(self, sm_obj, season, ep, context,
                                            pronoun_map, target_language):
@@ -19716,19 +19754,31 @@ class App(ctk.CTk):
             pass
 
     def _update_series_memory_from_analysis(self, fp: str, context, pronoun_map,
-                                            target_language: str = None):
+                                            target_language: str = None,
+                                            status_out: dict | None = None):
         """Hybrid analizini yalnız başarılı çıktıdan sonra kalıcı hafızaya işler."""
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({"status": "not_started", "changed": 0})
         sm_obj, season, ep = self._series_mem_for(fp, persistent=True)
         if sm_obj is None:
+            if status_out is not None:
+                status_out.update({"status": "skipped", "reason": "not_series"})
             return
         target_language = target_language or App._run_setting(
             self, "tgt_lang", "tgt_var", "Turkish")
         try:
             self._merge_analysis_into_series_memory(
                 sm_obj, season, ep, context, pronoun_map, target_language)
-            sm_obj.save()
-        except Exception:
-            pass
+            saved = sm_obj.save()
+            if saved is False:
+                raise OSError("series memory could not be saved")
+            if status_out is not None:
+                status_out.update({"status": "completed", "changed": 1})
+        except Exception as exc:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(exc)})
+            self._log(f"Dizi hafızası kaydedilemedi: {exc}", "warn")
 
     # ── Sync mod çökme kurtarma (per-chunk checkpoint) ────────────────────────
     # Sync mod yarıda çökerse/durdurulursa, tamamlanan chunk'lar bu dosyaya yazılır;
@@ -21439,8 +21489,17 @@ class App(ctk.CTk):
                             _file_pm.update_pronoun_map(pronoun_map)
                     except Exception:
                         pass
+                _series_memory_status = {}
                 self._update_series_memory_from_analysis(
-                    filepath, context, pronoun_map, tgt)
+                    filepath, context, pronoun_map, tgt,
+                    status_out=_series_memory_status)
+                _pass_status["Series-Memory"] = dict(
+                    _series_memory_status)
+            else:
+                _pass_status["Series-Memory"] = {
+                    "status": "skipped", "reason": "analysis_incomplete",
+                    "changed": 0,
+                }
             if self.auto_glossary_var.get():
                 self._record_file_status(filepath, "Auto-Glossary", "running")
                 _auto_glossary_status = {}
@@ -23102,7 +23161,11 @@ class App(ctk.CTk):
                 schema_name=schema_dict.get("name", ""),
                 source_language=_file_src_lang)
             if _hata_n == 0 and _n_filled == 0:
-                self._commit_precontext_series_memory(fp, _tgt_lang)
+                _series_memory_status = {}
+                self._commit_precontext_series_memory(
+                    fp, _tgt_lang, status_out=_series_memory_status)
+                _pass_status["Series-Memory"] = dict(
+                    _series_memory_status)
             # Auto-Glossary (düz sync/batch'te de) — Cue nesnesi gerektiğinden kaynağı
             # load_subtitle ile yükle (_src_cues tuple olabilir; build_glossary c.text ister)
             if self.auto_glossary_var.get():
@@ -24247,8 +24310,17 @@ class App(ctk.CTk):
                         or "[ÇEVİRİ EKSİK]" in str(text or "")
                         for _idx, _ts, text in _final_blocks):
                     _context, _char_examples, _pronoun_map, *_rest = analysis_tuple
+                    _series_memory_status = {}
                     self._update_series_memory_from_analysis(
-                        filepath, _context, _pronoun_map, tgt)
+                        filepath, _context, _pronoun_map, tgt,
+                        status_out=_series_memory_status)
+                    _pass_status["Series-Memory"] = dict(
+                        _series_memory_status)
+                else:
+                    _pass_status["Series-Memory"] = {
+                        "status": "skipped", "reason": "analysis_incomplete",
+                        "changed": 0,
+                    }
                 if self.auto_glossary_var.get():
                     self._record_file_status(
                         filepath, "Auto-Glossary", "running")

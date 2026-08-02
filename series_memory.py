@@ -280,9 +280,11 @@ class SeriesMemory:
                         disk = {}
                     self._data = self._merge_saved_data(disk, self._data)
                     atomic_write_json(self._path, self._data)
+            return True
         except Exception as e:
             import sys
             print(f"[series_memory] kaydetme hatası {self._path}: {e}", file=sys.stderr)
+            return False
 
     # ── Birleştirme (ilk karar kanon) ─────────────────────────────────────────
 

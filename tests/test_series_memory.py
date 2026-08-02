@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import series_memory as sm
 
@@ -213,11 +214,18 @@ class PersistenceTest(unittest.TestCase):
             m.merge_terms({"Hive": "Kovan"})
             m.merge_characters([{"name": "Sam", "speaking_style": "blunt"}])
             m.mark_episode(1, 1)
-            m.save()
+            self.assertTrue(m.save())
             m2 = sm.SeriesMemory.load(td, "the-show")
             self.assertEqual(m2._data["terms"]["Hive"], "Kovan")
             self.assertEqual(m2._data["characters"]["Sam"]["style"], "blunt")
             self.assertIn("s01e01", m2._data["updated_eps"])
+
+    def test_save_failure_is_reported_to_caller(self):
+        with tempfile.TemporaryDirectory() as td:
+            memory = sm.SeriesMemory.load(td, "the-show")
+            with mock.patch.object(
+                    sm, "atomic_write_json", side_effect=OSError("disk full")):
+                self.assertFalse(memory.save())
 
     def test_corrupt_json_recovers(self):
         with tempfile.TemporaryDirectory() as td:
@@ -432,6 +440,19 @@ class RunOverlayTest(unittest.TestCase):
             app._update_series_memory_from_analysis(e1, context, {})
             self.assertEqual(sm.SeriesMemory.load(td, "show").get_terms(),
                              {"Hive": "Kovan"})
+
+    def test_persistent_memory_failure_reaches_quality_status(self):
+        app = self._app(["Show.S01E01.srt"])
+        app._series_mem_for = lambda *_args, **_kwargs: (
+            SimpleNamespace(save=lambda: False), 1, 1)
+        app._merge_analysis_into_series_memory = lambda *_args: None
+        status = {}
+
+        app._update_series_memory_from_analysis(
+            "Show.S01E01.srt", SimpleNamespace(), {}, "Turkish",
+            status_out=status)
+
+        self.assertEqual(status["status"], "failed")
 
 
 if __name__ == "__main__":
