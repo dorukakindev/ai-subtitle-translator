@@ -19142,12 +19142,15 @@ class App(ctk.CTk):
             self._ckpt_fingerprint(), run_id, raw_map, log_fn=self._log)
 
     def _load_sync_stage_ckpt(self, filepath: str, source_hash: str,
-                              expected_ids: set) -> dict:
+                              expected_ids: set,
+                              allow_incomplete_resume: bool = False) -> dict:
         snapshot = getattr(self, "_active_snapshot", None)
-        if not isinstance(snapshot, dict) or not snapshot.get("crash_resume"):
+        crash_resume = bool(
+            isinstance(snapshot, dict) and snapshot.get("crash_resume"))
+        if not crash_resume and not allow_incomplete_resume:
             return {}
-        run_id = str(snapshot.get("resume_origin_run_id") or "")
-        if not run_id:
+        run_id = str((snapshot or {}).get("resume_origin_run_id") or "")
+        if crash_resume and not run_id:
             return {}
         store = load_sync_stage_store(self._sync_stage_ckpt_path())
         entry = store.get("entries", {}).get(_sync_stage_key(filepath))
@@ -19155,7 +19158,7 @@ class App(ctk.CTk):
             return {}
         if (entry.get("source_hash") != str(source_hash)
                 or entry.get("fingerprint") != self._ckpt_fingerprint()
-                or entry.get("run_id") != run_id):
+                or (crash_resume and entry.get("run_id") != run_id)):
             return {}
         raw_map = entry.get("raw_map")
         if not isinstance(raw_map, dict):
@@ -19927,9 +19930,20 @@ class App(ctk.CTk):
             total     = len(batch_reqs)
             completed = [0]
             failed    = [0]
+            _partial_candidate = _partial_output_path(out_path)
+            _force_retranslate = {
+                os.path.normcase(os.path.abspath(str(path)))
+                for path in getattr(self, "_force_retranslate_paths", set())
+            }
+            _allow_partial_resume = (
+                _partial_candidate.is_file()
+                and os.path.normcase(os.path.abspath(str(filepath)))
+                not in _force_retranslate
+            )
             raw_map = self._load_sync_stage_ckpt(
                 filepath, _expected_source_hash,
-                {req["custom_id"] for req in batch_reqs})
+                {req["custom_id"] for req in batch_reqs},
+                allow_incomplete_resume=_allow_partial_resume)
             _retry_snapshot = getattr(self, "_active_snapshot", {}) or {}
             if _retry_snapshot.get("auto_retry_repair_only"):
                 _partial_path = _partial_output_path(out_path)

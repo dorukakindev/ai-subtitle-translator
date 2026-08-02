@@ -225,6 +225,18 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertEqual(
             self.app._load_sync_stage_ckpt("film.srt", "source-hash", set(raw)), {})
 
+    def test_manual_rerun_can_resume_stage_when_incomplete_output_exists(self):
+        raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
+        self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
+        self.app._active_snapshot["crash_resume"] = False
+        self.app._active_snapshot["resume_origin_run_id"] = "different-run"
+
+        restored = self.app._load_sync_stage_ckpt(
+            "film.srt", "source-hash", set(raw),
+            allow_incomplete_resume=True)
+
+        self.assertEqual(restored, raw)
+
     def test_stage_checkpoint_is_bound_to_original_run(self):
         raw = {"chunk_0": '[{"i":"1","t":"Merhaba"}]'}
         self.app._save_sync_stage_ckpt("film.srt", "source-hash", raw)
