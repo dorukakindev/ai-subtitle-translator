@@ -19662,14 +19662,17 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    def _update_series_memory_from_analysis(self, fp: str, context, pronoun_map):
+    def _update_series_memory_from_analysis(self, fp: str, context, pronoun_map,
+                                            target_language: str = None):
         """Hybrid analizini yalnız başarılı çıktıdan sonra kalıcı hafızaya işler."""
         sm_obj, season, ep = self._series_mem_for(fp, persistent=True)
         if sm_obj is None:
             return
+        target_language = target_language or App._run_setting(
+            self, "tgt_lang", "tgt_var", "Turkish")
         try:
             self._merge_analysis_into_series_memory(
-                sm_obj, season, ep, context, pronoun_map, self.tgt_var.get())
+                sm_obj, season, ep, context, pronoun_map, target_language)
             sm_obj.save()
         except Exception:
             pass
@@ -21383,7 +21386,8 @@ class App(ctk.CTk):
                             _file_pm.update_pronoun_map(pronoun_map)
                     except Exception:
                         pass
-                self._update_series_memory_from_analysis(filepath, context, pronoun_map)
+                self._update_series_memory_from_analysis(
+                    filepath, context, pronoun_map, tgt)
             if self.auto_glossary_var.get():
                 self._record_file_status(filepath, "Auto-Glossary", "running")
                 self._run_auto_glossary(cues, sorted_blocks, filepath)
@@ -24157,7 +24161,7 @@ class App(ctk.CTk):
                         for _idx, _ts, text in _final_blocks):
                     _context, _char_examples, _pronoun_map, *_rest = analysis_tuple
                     self._update_series_memory_from_analysis(
-                        filepath, _context, _pronoun_map)
+                        filepath, _context, _pronoun_map, tgt)
                 if self.auto_glossary_var.get():
                     self._record_file_status(
                         filepath, "Auto-Glossary", "running")

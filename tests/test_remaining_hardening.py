@@ -201,6 +201,28 @@ class MemoryIsolationTest(unittest.TestCase):
             self.assertEqual(result, ("memory", 1, 2))
             tk_get.assert_not_called()
 
+    def test_series_memory_persist_uses_snapshot_target_without_reading_tk(self):
+        tk_get = mock.MagicMock(side_effect=AssertionError("Tk read"))
+        memory = SimpleNamespace(save=mock.MagicMock())
+        merge = mock.MagicMock()
+        stub = SimpleNamespace(
+            tgt_var=SimpleNamespace(get=tk_get),
+            _active_snapshot={"tgt_lang": "German"},
+            _series_mem_for=lambda *_args, **_kwargs: (memory, 1, 2),
+            _merge_analysis_into_series_memory=merge,
+        )
+        with mock.patch.object(gui.threading, "current_thread",
+                               return_value=object()), \
+             mock.patch.object(gui.threading, "main_thread",
+                               return_value=object()):
+            gui.App._update_series_memory_from_analysis(
+                stub, "Show.S01E02.srt", SimpleNamespace(), {})
+
+        tk_get.assert_not_called()
+        merge.assert_called_once_with(
+            memory, 1, 2, mock.ANY, {}, "German")
+        memory.save.assert_called_once_with()
+
     def test_fuzzy_tm_isolates_model_profanity_and_schema(self):
         with tempfile.TemporaryDirectory() as d:
             tm = TranslationMemory(str(Path(d) / "tm.db"))
