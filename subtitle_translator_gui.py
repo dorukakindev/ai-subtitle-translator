@@ -8055,6 +8055,8 @@ class App(ctk.CTk):
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
         self._worker_lock    = threading.Lock()
         self._worker_threads = set()
+        self._credential_save_lock = threading.Lock()
+        self._main_custom_key_save_generation = 0
         self._selected_files = []   # manually picked files; empty = use input folder
         self._selected_folder_roots = []
         self._file_list_files = []
@@ -9082,7 +9084,7 @@ class App(ctk.CTk):
                 pass
         try:
             self.main_custom_key_entry._entry.bind(
-                "<FocusOut>", lambda _e: self._save_settings(), add="+")
+                "<FocusOut>", self._on_main_custom_key_focus_out, add="+")
         except Exception:
             pass
 
@@ -10250,7 +10252,7 @@ class App(ctk.CTk):
             self._log_resize_dragging = False
             grip.configure(fg_color=BORDER)
             try:
-                self._save_settings()
+                self._save_settings(save_credentials=False)
             except Exception:
                 pass
 
@@ -14381,6 +14383,31 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _on_main_custom_key_focus_out(self, _event=None):
+        self._save_settings(save_credentials=False)
+        key = self.main_custom_key_entry.get().strip()
+        lock = getattr(self, "_credential_save_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._credential_save_lock = lock
+        generation = getattr(self, "_main_custom_key_save_generation", 0) + 1
+        self._main_custom_key_save_generation = generation
+
+        def _persist():
+            with lock:
+                if generation != getattr(
+                        self, "_main_custom_key_save_generation", generation):
+                    return
+                if key:
+                    if not credential_store.save_key("main_custom", key):
+                        self._log(
+                            "keyring kullanılamıyor, anahtar obfuscated fallback dosyada saklandı",
+                            "warn")
+                else:
+                    credential_store.delete_key("main_custom")
+
+        self._start_worker(_persist)
+
     def _on_helper_provider_change_role(self, role: str):
         pass
 
@@ -14974,7 +15001,7 @@ class App(ctk.CTk):
             self.helper_role_key_vars[role].set("")
             self._on_helper_model_change_role(role)
         self._api_key_assignments[role] = profile_id
-        self._save_settings()
+        self._save_settings(save_credentials=False)
         if notify:
             self._log(
                 f"API profili atandı: {profile['name']} → {API_PROFILE_ROLE_LABELS[role]}",
@@ -15326,7 +15353,7 @@ class App(ctk.CTk):
             dlg.destroy()
 
         def _save():
-            self._save_settings()
+            self._save_settings(save_credentials=False)
             dlg.destroy()
 
         dlg.grid_columnconfigure(0, weight=1)

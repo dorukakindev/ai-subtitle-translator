@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import subtitle_translator_gui as gui
 
@@ -74,6 +74,7 @@ class ApiKeyProfileTest(unittest.TestCase):
 
     def test_assign_reseller_to_main_populates_custom_route(self):
         app = app_stub()
+        app._save_settings = Mock()
         pid = "b" * 32
         app._api_key_profiles[pid] = {
             "name": "GPT Reseller", "provider": "openai_compatible",
@@ -87,6 +88,7 @@ class ApiKeyProfileTest(unittest.TestCase):
         self.assertEqual(app.main_custom_url_var.get(), "https://reseller.test/v1")
         self.assertEqual(app.main_custom_key_entry.get(), "sk-profile")
         self.assertEqual(app._api_key_assignments["main"], pid)
+        app._save_settings.assert_called_once_with(save_credentials=False)
 
     def test_assign_claude_to_critic_populates_custom_helper(self):
         app = app_stub()

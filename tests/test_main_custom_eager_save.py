@@ -6,13 +6,69 @@ değiştirebilir — bu iki nokta (_start/_on_close) diğer TÜM ayarların kayd
 YEGÂNE yerlerdi. "api url'yi de hatırlasın" geri bildirimi üzerine bu 3 alan için
 kasıtlı bir istisna eklendi: switch tıklanınca VE alandan çıkınca da kaydeder."""
 import json
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tests._gui_app import make_app
 import subtitle_translator_gui as gui
+
+
+class MainCustomCredentialSaveTest(unittest.TestCase):
+    def test_ui_only_setting_saves_do_not_touch_credential_store(self):
+        main_source = inspect.getsource(gui.App._build_main)
+        advanced_source = inspect.getsource(gui.App._show_advanced_settings)
+        self.assertIn(
+            "self._save_settings(save_credentials=False)",
+            main_source[main_source.index("def _grip_release"):],
+        )
+        self.assertIn(
+            "self._save_settings(save_credentials=False)",
+            advanced_source[advanced_source.index("def _save"):],
+        )
+
+    def test_focus_out_queues_only_custom_key_without_blocking_ui(self):
+        queued = []
+        app = SimpleNamespace(
+            main_custom_key_entry=SimpleNamespace(
+                get=lambda: "sk-HloolAPI-test"),
+            _save_settings=mock.Mock(),
+            _start_worker=lambda target: queued.append(target),
+            _log=mock.Mock(),
+        )
+
+        with mock.patch.object(gui.credential_store, "save_key") as mock_save:
+            gui.App._on_main_custom_key_focus_out(app)
+            mock_save.assert_not_called()
+            app._save_settings.assert_called_once_with(save_credentials=False)
+            self.assertEqual(len(queued), 1)
+            queued[0]()
+
+        mock_save.assert_called_once_with("main_custom", "sk-HloolAPI-test")
+
+    def test_newer_focus_out_supersedes_queued_stale_key(self):
+        queued = []
+        entry = SimpleNamespace(value="old")
+        entry.get = lambda: entry.value
+        app = SimpleNamespace(
+            main_custom_key_entry=entry,
+            _save_settings=mock.Mock(),
+            _start_worker=lambda target: queued.append(target),
+            _log=mock.Mock(),
+        )
+        gui.App._on_main_custom_key_focus_out(app)
+        entry.value = "new"
+        gui.App._on_main_custom_key_focus_out(app)
+
+        with mock.patch.object(
+                gui.credential_store, "save_key", return_value=True) as mock_save:
+            queued[0]()
+            queued[1]()
+
+        mock_save.assert_called_once_with("main_custom", "new")
 
 
 class MainCustomEagerSaveTest(unittest.TestCase):
