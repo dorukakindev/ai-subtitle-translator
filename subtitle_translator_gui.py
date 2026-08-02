@@ -18557,7 +18557,15 @@ class App(ctk.CTk):
     def _resume_after_preflight(self, flag_name: str, label: str):
         """Onaydan sonra yeni bir UI turunda ana başlatma akışına güvenle döner."""
         setattr(self, flag_name, True)
+        active_snapshot = getattr(self, "_active_snapshot", None)
+        resume_snapshot = None
+        if (isinstance(active_snapshot, dict)
+                and (active_snapshot.get("crash_resume")
+                     or active_snapshot.get("auto_retry_repair_only"))):
+            resume_snapshot = copy.deepcopy(active_snapshot)
         self._set_running(False)
+        if resume_snapshot is not None:
+            self._resume_snapshot_override = resume_snapshot
         self._log(f"{label} onaylandı; çeviri başlatılıyor.", "ok")
 
         def _resume():

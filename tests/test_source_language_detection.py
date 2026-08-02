@@ -133,6 +133,37 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertIn(("idle",), events)
         self.assertEqual(events[-1], ("start",))
 
+    def test_resume_after_preflight_preserves_repair_only_snapshot(self):
+        events = []
+        stub = SimpleNamespace(
+            _file_integrity_preflight_done=False,
+            _active_snapshot={
+                "crash_resume": True,
+                "auto_retry_repair_only": True,
+                "resume_origin_run_id": "run-original",
+            },
+            _resume_snapshot_override=None,
+            _log=lambda *_args: None,
+            after_idle=lambda fn: fn(),
+            _start=lambda: events.append((
+                "start", dict(stub._resume_snapshot_override or {}))),
+            _is_shutting_down=False,
+        )
+
+        def set_running(value):
+            self.assertFalse(value)
+            stub._active_snapshot = None
+
+        stub._set_running = set_running
+
+        gui.App._resume_after_preflight(
+            stub, "_file_integrity_preflight_done", "Dosya ön kontrolü")
+
+        self.assertTrue(stub._file_integrity_preflight_done)
+        self.assertEqual(events[0][1]["resume_origin_run_id"], "run-original")
+        self.assertTrue(events[0][1]["auto_retry_repair_only"])
+        self.assertTrue(events[0][1]["crash_resume"])
+
     def test_resume_after_preflight_surfaces_start_failure(self):
         logged = []
         statuses = []
