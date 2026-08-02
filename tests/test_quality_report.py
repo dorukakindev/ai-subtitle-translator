@@ -27,6 +27,24 @@ class CountHataCpsTest(unittest.TestCase):
         self.assertEqual(cps, 1)
 
 
+class FileTranslationChunkCountTest(unittest.TestCase):
+    def test_counts_only_chunks_belonging_to_requested_file(self):
+        file_map = {
+            "chunk_0": [(1, "ts", "C:/subs/a.srt")],
+            "chunk_1": [(2, "ts", "C:/subs/a.srt"),
+                        (3, "ts", "C:/subs/a.srt")],
+            "chunk_2": [(1, "ts", "C:/subs/b.srt")],
+            "empty": [],
+        }
+
+        self.assertEqual(
+            gui._file_translation_chunk_count(file_map, "C:/subs/a.srt"), 2)
+        self.assertEqual(
+            gui._file_translation_chunk_count(file_map, "C:/subs/b.srt"), 1)
+        self.assertEqual(
+            gui._file_translation_chunk_count(file_map, "C:/subs/c.srt"), 0)
+
+
 class PassTraceTest(unittest.TestCase):
     def test_counts_text_changes_ignoring_restored_tags(self):
         before = [

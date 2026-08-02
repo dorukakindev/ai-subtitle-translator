@@ -150,6 +150,18 @@ class PipelinePassParityTest(unittest.TestCase):
         fill_pos = src.rfind("_fill_hata_with_source(")
         self.assertTrue(polish_pos < terminal_sdh_pos < fill_pos)
 
+    def test_jsonl_import_loads_consistency_module_before_polish_sweep(self):
+        src = inspect.getsource(gui.App._import_jsonl)
+        import_pos = src.find("import hybrid_translate as ht")
+        sweep_pos = src.find("ht.final_consistency_sweep(")
+        self.assertTrue(0 <= import_pos < sweep_pos)
+
+    def test_plain_batch_report_does_not_claim_helper_analysis(self):
+        src = inspect.getsource(gui.App._write_results)
+        self.assertIn('"helper_analysis": False', src)
+        self.assertIn('"analysis_status": "kapalı (düz batch)"', src)
+        self.assertIn('"translation_chunks": _translation_chunks', src)
+
     def test_hybrid_final_tail_reuses_single_raw_map(self):
         src = inspect.getsource(gui.App._run_hybrid)
         tail = src[src.rfind("_run_final_semantic_checks("):src.find(

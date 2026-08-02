@@ -5219,6 +5219,18 @@ def collect_results(raw_map, file_map, log_fn=None):
     return file_blocks
 
 
+def _file_translation_chunk_count(file_map: dict, filepath) -> int:
+    target = os.path.normcase(os.path.abspath(str(filepath)))
+    count = 0
+    for info in (file_map or {}).values():
+        for row in info or ():
+            if (len(row) >= 3 and
+                    os.path.normcase(os.path.abspath(str(row[2]))) == target):
+                count += 1
+                break
+    return count
+
+
 def _slice_file_map(file_map: dict, requests: list) -> dict:
     ids = {req.get("custom_id") for req in requests or []}
     return {cid: info for cid, info in (file_map or {}).items() if cid in ids}
@@ -15988,6 +16000,7 @@ class App(ctk.CTk):
 
                 # Apply Polish Pass if enabled
                 if polish_on and blocks:
+                    import hybrid_translate as ht
                     self._set_status("Doğallaştırma...")
                     self._log(f"Polish Pass başlıyor ({len(blocks)} satır)...", "info")
                     _mm_key = self._helper_api_key("polish")
@@ -22562,6 +22575,7 @@ class App(ctk.CTk):
                                            issue_fn=self._record_quality_issue))
             total_warnings += w
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
+            _translation_chunks = _file_translation_chunk_count(file_map, fp)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
@@ -22575,11 +22589,11 @@ class App(ctk.CTk):
                 "pass_trace": _pass_trace,
                 "pass_history": _pass_history,
                 "pass_coverage": _pc,
-                "helper_analysis": True,
-                "analysis_status": _analysis_status,
+                "helper_analysis": False,
+                "analysis_status": "kapalı (düz batch)",
                 "chain_ctx": bool(App._run_setting(
                     self, "chain_ctx", "chain_ctx_var", True)),
-                "translation_chunks": total,
+                "translation_chunks": _translation_chunks,
                 "tm_hits": self._tm.hit_count_session(),
                 "run_status": "error" if _has_missing else "done",
             })
