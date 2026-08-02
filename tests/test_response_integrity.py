@@ -23,6 +23,12 @@ class TranslationItemsTest(unittest.TestCase):
         self.assertEqual(mode, "envelope")
         self.assertEqual(items, [{"i": "1", "t": "Merhaba"}])
 
+    def test_skips_provider_metadata_before_translation_array(self):
+        items, mode = translation_items_from_raw(
+            'provider-meta: {"request":"ok"}\n[{"i":"1","t":"Merhaba"}]')
+        self.assertEqual(mode, "array")
+        self.assertEqual(items, [{"i": "1", "t": "Merhaba"}])
+
     def test_salvages_complete_prefix_objects(self):
         items, mode = translation_items_from_raw(
             '[{"i":1,"t":"A"},{"i":2,"t":"B"},{"i":3,"t":')

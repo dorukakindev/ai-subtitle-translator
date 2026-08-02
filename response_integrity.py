@@ -94,9 +94,12 @@ def translation_items_from_raw(raw: str) -> tuple[list | None, str]:
     if not value:
         return None, "invalid"
     candidates = [value]
-    balanced = _balanced_json(value)
-    if balanced and balanced != value:
-        candidates.append(balanced)
+    for pos, char in enumerate(value):
+        if char not in "[{":
+            continue
+        balanced = _balanced_json(value[pos:])
+        if balanced and balanced not in candidates:
+            candidates.append(balanced)
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
@@ -106,7 +109,7 @@ def translation_items_from_raw(raw: str) -> tuple[list | None, str]:
             return parsed, "array"
         if isinstance(parsed, dict) and isinstance(parsed.get("tr"), list):
             return parsed["tr"], "envelope"
-        return None, "invalid"
+        continue
     salvaged = _salvage_array(value)
     if salvaged:
         return salvaged, "salvaged"
