@@ -19838,6 +19838,26 @@ class App(ctk.CTk):
                 status_out.update({"status": "failed", "error": str(exc)})
             self._log(f"Dizi hafızası kaydedilemedi: {exc}", "warn")
 
+    def _update_resumed_series_memory(self, fp: str, analysis_result,
+                                      target_language: str,
+                                      status_out: dict | None = None):
+        import hybrid_translate as ht
+        if status_out is not None:
+            status_out.clear()
+        if (not analysis_result
+                or ht.analysis_result_is_degraded(analysis_result)):
+            if status_out is not None:
+                status_out.update({
+                    "status": "skipped", "reason": "analysis_incomplete",
+                    "changed": 0,
+                })
+            return
+        context = analysis_result[0]
+        pronoun_map = analysis_result[2]
+        self._update_series_memory_from_analysis(
+            fp, context, pronoun_map, target_language,
+            status_out=status_out)
+
     # ── Sync mod çökme kurtarma (per-chunk checkpoint) ────────────────────────
     # Sync mod yarıda çökerse/durdurulursa, tamamlanan chunk'lar bu dosyaya yazılır;
     # aynı işi tekrar başlatınca o chunk'lar API'ye GÖNDERİLMEZ (token/para tasarrufu).
@@ -22602,6 +22622,13 @@ class App(ctk.CTk):
                                 source_cues=_orig_cues)
                             write_srt(output_path, _delivery_blocks, tgt)
                             self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map, tgt)
+                            _series_memory_status = {}
+                            self._update_resumed_series_memory(
+                                str(_src_path) if _src_path is not None else source_path,
+                                _analysis_result, tgt,
+                                status_out=_series_memory_status)
+                            _pass_status["Series-Memory"] = dict(
+                                _series_memory_status)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
