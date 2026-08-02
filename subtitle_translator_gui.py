@@ -7011,6 +7011,21 @@ def _write_output_source_fingerprint(report_dir, output_path, source_hash) -> bo
         return False
 
 
+def _partial_output_recovery_allowed(report_dir, partial_path, source_path,
+                                     force_retranslate_paths=()) -> bool:
+    normalized = os.path.normcase(os.path.abspath(str(source_path)))
+    forced = {
+        os.path.normcase(os.path.abspath(str(path)))
+        for path in (force_retranslate_paths or ())
+    }
+    return (
+        normalized not in forced
+        and Path(partial_path).is_file()
+        and _output_matches_source_fingerprint(
+            report_dir, partial_path, source_path)
+    )
+
+
 def _cps_stats(blocks) -> tuple:
     """(cps_avg, cps_max) — CPS dağılım istatistiklerini döndürür."""
     values = []
@@ -20132,39 +20147,32 @@ class App(ctk.CTk):
                 os.path.normcase(os.path.abspath(str(path)))
                 for path in getattr(self, "_force_retranslate_paths", set())
             }
-            _allow_partial_resume = (
-                _partial_candidate.is_file()
-                and os.path.normcase(os.path.abspath(str(filepath)))
-                not in _force_retranslate
-            )
+            _allow_partial_resume = _partial_output_recovery_allowed(
+                report_dir, _partial_candidate, filepath, _force_retranslate)
             raw_map = self._load_sync_stage_ckpt(
                 filepath, _expected_source_hash,
                 {req["custom_id"] for req in batch_reqs},
                 allow_incomplete_resume=_allow_partial_resume)
-            _retry_snapshot = getattr(self, "_active_snapshot", {}) or {}
-            if _retry_snapshot.get("auto_retry_repair_only"):
+            if _allow_partial_resume:
                 _partial_path = _partial_output_path(out_path)
-                if (_partial_path.is_file()
-                        and _output_matches_source_fingerprint(
-                            report_dir, _partial_path, filepath)):
-                    try:
-                        _partial_raw, _partial_recovered, _partial_missing = (
-                            _partial_retry_raw_map(
-                                parse_subtitle(str(_partial_path)), fmap, cues))
-                    except Exception as exc:
+                try:
+                    _partial_raw, _partial_recovered, _partial_missing = (
+                        _partial_retry_raw_map(
+                            parse_subtitle(str(_partial_path)), fmap, cues))
+                except Exception as exc:
+                    self._log(
+                        f"Kısmi çıktı kurtarması kullanılamadı: {exc}",
+                        "warn")
+                else:
+                    if _partial_raw and _partial_missing:
+                        raw_map = _partial_raw
                         self._log(
-                            f"Kısmi çıktı kurtarması kullanılamadı: {exc}",
-                            "warn")
-                    else:
-                        if _partial_raw and _partial_missing:
-                            raw_map = _partial_raw
-                            self._log(
-                                f"Otomatik onarım: {_partial_recovered} sağlam cue "
-                                f"{_partial_path.name} dosyasından korundu; yalnız "
-                                f"{_partial_missing} eksik cue'nun chunk'ları "
-                                "yeniden çevrilecek.",
-                                "ok",
-                            )
+                            f"Kısmi onarım: {_partial_recovered} sağlam cue "
+                            f"{_partial_path.name} dosyasından korundu; yalnız "
+                            f"{_partial_missing} eksik cue'nun chunk'ları "
+                            "yeniden çevrilecek.",
+                            "ok",
+                        )
             _ckpt_scope = str(Path(filepath).resolve())
             prefilled_keys = set()
             if not App._run_setting(self, "chain_ctx", "chain_ctx_var", True):

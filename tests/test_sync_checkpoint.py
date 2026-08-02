@@ -365,6 +365,25 @@ class SyncCheckpointTest(unittest.TestCase):
             gui._chunk_response_retry_reason(raw_map["chunk_25"], requests[1]),
             "hata_line")
 
+    def test_valid_partial_output_is_resumed_without_retry_flag(self):
+        source = Path(self.tmpdir.name) / "film.srt"
+        partial = Path(self.tmpdir.name) / "film.partial.srt"
+        reports = Path(self.tmpdir.name) / "Raporlar"
+        source.write_text("source", encoding="utf-8")
+        partial.write_text("partial", encoding="utf-8")
+        source_hash = gui._file_content_sha256(source)
+        self.assertTrue(gui._write_output_source_fingerprint(
+            reports, partial, source_hash))
+
+        self.assertTrue(gui._partial_output_recovery_allowed(
+            reports, partial, source, ()))
+        self.assertFalse(gui._partial_output_recovery_allowed(
+            reports, partial, source, (str(source),)))
+
+        source.write_text("changed", encoding="utf-8")
+        self.assertFalse(gui._partial_output_recovery_allowed(
+            reports, partial, source, ()))
+
     def test_hybrid_flow_wires_stage_checkpoint_around_quality_passes(self):
         source = inspect.getsource(gui.App._run_sync_hybrid)
 
