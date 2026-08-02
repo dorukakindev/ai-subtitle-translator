@@ -63,6 +63,25 @@ class ConcurrentTestTranslationGuardTest(unittest.TestCase):
 
 
 class PermanentQuotaFailureTest(unittest.TestCase):
+    def test_repair_handles_visible_missing_translation_marker(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[ÇEVİRİ EKSİK]")]
+        raw = {"1": "Where are you?"}
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"1","t":"Neredesin?"}]'))],
+            usage=None,
+        )
+
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, client=object(), src_lang="English",
+                tgt_lang="Turkish")
+
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], "Neredesin?")
+
     def test_repair_injects_and_enforces_locked_terms(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
         raw = {"1": "Biotechnology Supply Laboratory is closed."}

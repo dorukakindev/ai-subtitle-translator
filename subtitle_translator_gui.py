@@ -2406,6 +2406,20 @@ def write_srt(filepath, blocks, target_language="Turkish"):
         raise
 
 
+def _write_srt_preserving_text(filepath, blocks):
+    """Kısmi onarımda sağlam cue metinlerine yeniden işlem uygulamadan yaz."""
+    out = Path(filepath).with_suffix(".srt")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for idx, ts, text in blocks:
+        value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        value = re.sub(r"\n{2,}", "\n", value)
+        if not value.strip():
+            value = "[ÇEVİRİ EKSİK]"
+        rows.append(f"{idx}\n{ts}\n{value}\n\n")
+    atomic_write_text(out, "".join(rows))
+
+
 _DELIVERY_SIGNATURE = "discord: ceviri2"
 _DELIVERY_SIGNATURE_RE = re.compile(
     r"^\s*(?:discord\s*:\s*)?ceviri2\s*$", re.IGNORECASE)
@@ -4125,7 +4139,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     drop_positions = []
     for i, (idx, ts, text) in enumerate(out):
         src = raw_src_map.get(str(idx), "")
-        if str(text).startswith("[HATA") or _is_untranslated(src, str(text)):
+        if (str(text).startswith("[HATA")
+                or "[ÇEVİRİ EKSİK]" in str(text)
+                or _is_untranslated(src, str(text))):
             if not (src and src.strip()):
                 continue
             if _src_is_sdh_only(src):
@@ -4251,6 +4267,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     for (block_pos, idx, ts, _src) in batch:
                         current_text = str(out[block_pos][2] or "")
                         if (not current_text.startswith("[HATA")
+                                and "[ÇEVİRİ EKSİK]" not in current_text
                                 and not _is_untranslated(_src, current_text)):
                             continue
                         translated = result_map.get(str(idx))
@@ -4271,6 +4288,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                                 repaired += 1
                     unresolved = any(
                         str(out[block_pos][2] or "").startswith("[HATA")
+                        or "[ÇEVİRİ EKSİK]" in str(out[block_pos][2] or "")
                         or _is_untranslated(_src, str(out[block_pos][2] or ""))
                         for block_pos, _idx, _ts, _src in batch
                     )
@@ -6857,6 +6875,33 @@ def _blocks_have_translation_failures(blocks) -> bool:
     )
 
 
+def _partial_missing_translation_ids(blocks, raw_src_map, source_cues=()) -> list[str]:
+    existing = {str(idx): str(text or "") for idx, _ts, text in (blocks or [])}
+    source_ids = []
+    for cue in source_cues or []:
+        try:
+            if hasattr(cue, "text"):
+                idx, text = str(cue.index), str(cue.text or "")
+            else:
+                idx, text = str(cue[0]), str(cue[2] or "")
+        except (TypeError, ValueError, IndexError):
+            continue
+        if text.strip() and not _src_is_sdh_only(text):
+            source_ids.append(idx)
+    if not source_ids:
+        source_ids = [str(idx) for idx in (raw_src_map or {})]
+    missing = []
+    for idx in source_ids:
+        src = str((raw_src_map or {}).get(idx, "") or "")
+        text = existing.get(idx, "")
+        if (not text.strip()
+                or text.startswith("[HATA")
+                or "[ÇEVİRİ EKSİK]" in text
+                or _is_untranslated(src, text)):
+            missing.append(idx)
+    return missing
+
+
 def _partial_output_path(out_path) -> Path:
     path = Path(out_path)
     return path.with_name(f"{path.stem}.partial{path.suffix}")
@@ -7088,6 +7133,22 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     trace = row.get("pass_trace") or {}
     status = str(row.get("run_status") or "done")
     lines = []
+
+    if row.get("repair_only"):
+        before = int(row.get("repair_missing_before", 0) or 0)
+        after = int(row.get("repair_missing_after", 0) or 0)
+        repaired = int(trace.get("Repair", 0) or 0)
+        lines.append(
+            f"Yalnız Eksik Cue Onarımı: çalıştı, {before} eksikten "
+            f"{repaired} cue onarıldı, {after} eksik kaldı")
+        lines.append("Yardımcı Analiz: kısmi onarım gereği atlandı")
+        lines.append("Zincirleme Bağlam: kısmi onarım gereği atlandı")
+        for title in (
+                "Tutarlılık taraması", "Critic Pass", "Polish Pass",
+                "Native Okuyucu", "QC", "Nihai Anlam Mutabakatı",
+                "Terim Normalizasyonu", "SDH temizleme", "Satır düzenleme"):
+            lines.append(f"{title}: kısmi onarım gereği atlandı")
+        return lines
 
     helper_on = bool(row.get("helper_analysis", snapshot.get("hybrid_mode")))
     if helper_on:
@@ -19894,6 +19955,110 @@ class App(ctk.CTk):
         self._set_status("Tamamlandı." if not self._stop_flag else "Durduruldu.")
         self._set_eta("")
 
+    def _run_partial_repair_only_file(
+            self, filepath, cues, out_path, report_dir, expected_source_hash,
+            output_baseline, client, file_src, tgt, model, profanity):
+        import hybrid_translate as ht
+
+        force_retranslate = {
+            os.path.normcase(os.path.abspath(str(path)))
+            for path in getattr(self, "_force_retranslate_paths", set())
+        }
+        partial_path = _partial_output_path(out_path)
+        if not _partial_output_recovery_allowed(
+                report_dir, partial_path, filepath, force_retranslate):
+            return None
+        try:
+            partial_blocks = list(parse_subtitle(str(partial_path)))
+        except Exception as exc:
+            self._log(f"Kısmi çıktı kurtarması kullanılamadı: {exc}", "warn")
+            return None
+        if not partial_blocks:
+            return None
+
+        raw_src_map = _raw_src_map_from_cues(cues)
+        missing_before = _partial_missing_translation_ids(
+            partial_blocks, raw_src_map, cues)
+        partial_baseline = _file_state_signature(partial_path)
+        schema_dict = self._get_file_schema(filepath)
+        glossary = ht.load_glossary(self._get_file_glossary(filepath))
+        glossary = self._merge_schema_glossary(glossary, schema_dict)
+        locked_terms = {
+            **ht.sanitize_glossary_for_turkish(
+                glossary, target_language=tgt),
+            **self._get_locked_terms_dict(filepath, tgt),
+        }
+        system_prompt = _build_sync_system_prompt(
+            file_src, tgt, schema_dict, profanity)
+        self._log(
+            f"Kısmi onarım modu: {len(partial_blocks) - len(missing_before)} "
+            f"sağlam cue aynen korunacak; yalnız {len(missing_before)} eksik cue "
+            "çevrilecek. Yardımcı analiz ve bütün kalite geçişleri "
+            "atlanıyor.",
+            "ok",
+        )
+        self._record_file_status(filepath, "Yalnız Eksik Cue Onarımı", "running")
+        repaired_blocks, repaired = _repair_untranslated_sync(
+            partial_blocks, raw_src_map, client,
+            src_lang=file_src, tgt_lang=tgt, model=model,
+            schema=schema_dict, profanity=profanity,
+            log_fn=self._log, token_cb=self._update_tokens,
+            source_cues=cues, cancel_check=lambda: self._stop_flag,
+            system_prompt=system_prompt, locked_terms=locked_terms,
+            permanent_failure_cb=(
+                self._block_automatic_recovery_for_permanent_provider),
+        )
+        if self._stop_flag:
+            return {"stopped": True}
+
+        guard_reason = _batch_write_guard_reason(
+            filepath, partial_path, expected_source_hash, partial_baseline)
+        if not guard_reason and not _partial_missing_translation_ids(
+                repaired_blocks, raw_src_map, cues):
+            guard_reason = _batch_write_guard_reason(
+                filepath, out_path, expected_source_hash, output_baseline)
+        if guard_reason:
+            label = "kaynak" if guard_reason == "source_changed" else "hedef"
+            self._log(
+                f"{Path(filepath).name}: kısmi onarım sırasında {label} "
+                "dosya değişti; sonuç yazılmadı.",
+                "err",
+            )
+            return {
+                "stopped": False, "complete": False, "write_error": True,
+                "blocks": repaired_blocks, "repaired": repaired,
+                "missing_before": missing_before,
+                "missing_after": _partial_missing_translation_ids(
+                    repaired_blocks, raw_src_map, cues),
+                "write_path": partial_path,
+            }
+
+        missing_after = _partial_missing_translation_ids(
+            repaired_blocks, raw_src_map, cues)
+        complete = not missing_after
+        write_path = out_path if complete else partial_path
+        _write_srt_preserving_text(write_path, repaired_blocks)
+        _write_output_source_fingerprint(
+            report_dir, write_path, expected_source_hash)
+        if complete:
+            self._log(
+                f"Kısmi onarım tamamlandı: {repaired} eksik cue çevrildi; "
+                "sağlam cue'lara ve kalite geçişlerine dokunulmadı.",
+                "ok",
+            )
+        else:
+            self._log(
+                f"Kısmi onarım tamamlanamadı: {len(missing_after)} eksik cue "
+                f"{partial_path.name} içinde kaldı.",
+                "err",
+            )
+        return {
+            "stopped": False, "complete": complete, "write_error": False,
+            "blocks": repaired_blocks, "repaired": repaired,
+            "missing_before": missing_before, "missing_after": missing_after,
+            "write_path": write_path,
+        }
+
     def _run_sync_hybrid(self, api_key, client, srt_files, src, tgt, model, output_dir):
         self._block_cache = {}   # önceki çalışmadan kalan cache'i temizle
         import hybrid_translate as ht
@@ -19981,6 +20146,62 @@ class App(ctk.CTk):
                 _expected_source_hash = _after_source_hash
                 _output_baseline = _file_state_signature(out_path)
                 _partial_candidate = _partial_output_path(out_path)
+                _repair_only_result = self._run_partial_repair_only_file(
+                    filepath, cues, out_path, report_dir,
+                    _expected_source_hash, _output_baseline,
+                    client, file_src, tgt, model, profanity)
+                if _repair_only_result is not None:
+                    if _repair_only_result.get("stopped"):
+                        break
+                    _repair_blocks = _repair_only_result.get("blocks") or []
+                    _repair_missing = _repair_only_result.get("missing_after") or []
+                    _repair_complete = bool(
+                        _repair_only_result.get("complete")
+                        and not _repair_only_result.get("write_error"))
+                    _write_path = _repair_only_result.get(
+                        "write_path", _partial_candidate)
+                    _cps_avg, _cps_max = _cps_stats(_repair_blocks)
+                    report_rows.append({
+                        "name": fname, "source_path": filepath,
+                        "output_path": str(_write_path),
+                        "total": len(_repair_blocks),
+                        "hata": len(_repair_missing), "cps": 0,
+                        "cps_avg": _cps_avg, "cps_max": _cps_max,
+                        "cons": 0,
+                        "pass_fix": int(_repair_only_result.get("repaired", 0)),
+                        "qc_auto": 0, "qc": 0, "warn": 0,
+                        "pass_trace": {
+                            "Repair": int(_repair_only_result.get("repaired", 0))},
+                        "pass_history": {},
+                        "pass_coverage": "repair-only",
+                        "tm_hits": self._tm.hit_count_session(),
+                        "run_status": "done" if _repair_complete else "error",
+                        "repair_only": True,
+                        "repair_missing_before": len(
+                            _repair_only_result.get("missing_before") or []),
+                        "repair_missing_after": len(_repair_missing),
+                        "helper_analysis": False,
+                        "chain_ctx": False,
+                        "translation_chunks": 0,
+                        "analysis_status": "kısmi onarım modunda atlandı",
+                    })
+                    if _repair_complete:
+                        completed_files.append(filepath)
+                        self._clear_sync_stage_ckpt(filepath)
+                        self._update_file_progress(
+                            filepath,
+                            f"Eksik cue onarımı tamamlandı  {len(_repair_blocks)} satır",
+                            100, "done")
+                    else:
+                        failed_files.append(filepath)
+                        self._update_file_progress(
+                            filepath, f"Eksik çeviri: {len(_repair_missing)}",
+                            100, "error")
+                    file_pct = int((fi + 1) / n_files * 100)
+                    self._set_progress(file_pct)
+                    if self._wait_between_files(fi, n_files, fname) == "stopped":
+                        break
+                    continue
                 _quality_resume_namespace = (
                     self._configure_file_response_checkpoint(
                         filepath, _expected_source_hash,

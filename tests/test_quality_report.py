@@ -216,6 +216,31 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("İşlem dökümü:", txt)
         self.assertIn("Native Okuyucu: çalıştı, 0 cue değiştirdi", txt)
 
+    def test_repair_only_audit_marks_every_quality_pass_skipped(self):
+        audit = gui._quality_feature_audit({
+            "repair_only": True,
+            "repair_missing_before": 7,
+            "repair_missing_after": 0,
+            "pass_trace": {"Repair": 7},
+            "run_status": "done",
+        }, {
+            "critic": True,
+            "polish": True,
+            "native": True,
+            "qc": True,
+            "semantic_reconcile": True,
+        })
+
+        self.assertIn(
+            "Yalnız Eksik Cue Onarımı: çalıştı, 7 eksikten 7 cue onarıldı, 0 eksik kaldı",
+            audit)
+        self.assertIn(
+            "Yardımcı Analiz: kısmi onarım gereği atlandı", audit)
+        self.assertIn(
+            "Critic Pass: kısmi onarım gereği atlandı", audit)
+        self.assertIn(
+            "Nihai Anlam Mutabakatı: kısmi onarım gereği atlandı", audit)
+
     def test_delivery_audit_compares_real_source_and_output(self):
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "source.srt"

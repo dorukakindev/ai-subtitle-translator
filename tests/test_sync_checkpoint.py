@@ -384,6 +384,63 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertFalse(gui._partial_output_recovery_allowed(
             reports, partial, source, ()))
 
+    def test_partial_repair_only_preserves_healthy_text_and_skips_pipeline(self):
+        root = Path(self.tmpdir.name)
+        source_dir = root / "source"
+        output_dir = root / "output"
+        reports = output_dir / "Raporlar"
+        source_dir.mkdir()
+        output_dir.mkdir()
+        source = source_dir / "film.srt"
+        out = output_dir / "film.srt"
+        partial = output_dir / "film.partial.srt"
+        source.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\nWhere are you?\n\n",
+            encoding="utf-8",
+        )
+        partial.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nSağlam metin aynen kalsın.\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n[ÇEVİRİ EKSİK]\n\n",
+            encoding="utf-8",
+        )
+        source_hash = gui._file_content_sha256(source)
+        gui._write_output_source_fingerprint(reports, partial, source_hash)
+        cues = [
+            SimpleNamespace(index=1, start="00:00:01,000", end="00:00:02,000", text="Hello."),
+            SimpleNamespace(index=2, start="00:00:02,000", end="00:00:03,000", text="Where are you?"),
+        ]
+        app = SimpleNamespace(
+            _force_retranslate_paths=set(),
+            _get_file_schema=lambda _fp: {"name": "Otomatik", "rules": []},
+            _get_file_glossary=lambda _fp: "",
+            _merge_schema_glossary=lambda glossary, _schema: glossary,
+            _get_locked_terms_dict=lambda _fp, _tgt: {},
+            _log=MagicMock(),
+            _record_file_status=MagicMock(),
+            _update_tokens=MagicMock(),
+            _stop_flag=False,
+            _block_automatic_recovery_for_permanent_provider=MagicMock(),
+        )
+        repaired_blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Sağlam metin aynen kalsın."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "Neredesin?"),
+        ]
+
+        with patch("subtitle_translator_gui._repair_untranslated_sync",
+                   return_value=(repaired_blocks, 1)) as repair:
+            result = gui.App._run_partial_repair_only_file(
+                app, str(source), cues, out, reports, source_hash,
+                gui._file_state_signature(out), object(), "English",
+                "Turkish", "gpt-5.4", "Orta")
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(repair.call_count, 1)
+        final = list(gui.parse_subtitle(str(out)))
+        self.assertEqual(final, repaired_blocks)
+        log_text = " ".join(str(call.args[0]) for call in app._log.call_args_list)
+        self.assertIn("Yardımcı analiz ve bütün kalite geçişleri", log_text)
+
     def test_hybrid_flow_wires_stage_checkpoint_around_quality_passes(self):
         source = inspect.getsource(gui.App._run_sync_hybrid)
 
@@ -398,7 +455,10 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertLess(save_at, stop_after_main_at)
         self.assertLess(save_at, quality_at)
         self.assertIn("if not _partial_repair_only:", source)
-        self.assertIn("eksik cue doğrudan satır", source)
+        repair_only_at = source.index("_run_partial_repair_only_file")
+        analysis_at = source.index("Yardimci model analizi")
+        self.assertLess(repair_only_at, analysis_at)
+        self.assertIn("continue", source[repair_only_at:analysis_at])
         self.assertLess(quality_at, clear_at)
 
 
