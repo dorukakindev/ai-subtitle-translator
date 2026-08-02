@@ -4112,6 +4112,7 @@ def back_translation_check(
     token_callback=None,
     chunk_size: int = 40,
     cancel_context=None,
+    status_out: dict | None = None,
 ) -> list:
     """Geri Ã§eviri anlam kontrolÃ¼ (RAPOR-ONLY â€” Ã§eviriyi DEÄÄ°ÅTÄ°RMEZ).
 
@@ -4122,10 +4123,18 @@ def back_translation_check(
       deÄŸiÅŸen olgu, atlanan/eklenen anlam) iÅŸaretlenir â€” Ã¼slup/eÅŸanlam/sÃ¶zdizimi DEÄÄ°L.
 
     Dönüş: [{"idx","src","tr","back","reason"}] (yalnız işaretlenenler)."""
+    if status_out is not None:
+        status_out.clear()
+        status_out.update({
+            "status": "not_started", "successful_chunks": 0,
+            "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+        })
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key, base_url=base_url)
     except Exception as e:
+        if status_out is not None:
+            status_out.update({"status": "failed", "error": str(e)})
         if log_fn:
             log_fn(f"Geri çeviri: bağlantı hatası: {e}", "err")
         return []
@@ -4144,13 +4153,22 @@ def back_translation_check(
         items.append({"idx": sidx, "src": src, "tr": tr})
 
     if not items:
+        if status_out is not None:
+            status_out["status"] = "completed"
         return []
     if log_fn:
         log_fn(f"Geri çeviri anlam kontrolü: {len(items)} satır incelenecek...", "info")
 
     flagged = []
+    total_chunks = (len(items) + chunk_size - 1) // chunk_size
+    successful_chunks = 0
+    partial_chunks = 0
+    cancelled = False
+    if status_out is not None:
+        status_out["total_chunks"] = total_chunks
     for start in range(0, len(items), chunk_size):
         if cancel_context is not None and cancel_context.is_cancelled():
+            cancelled = True
             break
         chunk = items[start:start + chunk_size]
 
@@ -4178,10 +4196,22 @@ def back_translation_check(
                 except TypeError:
                     token_callback(tot)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
-            for o in json.loads(_extract_json_array(content) or "[]"):
+            payload = _extract_json_array(content)
+            if not payload:
+                raise ValueError("stage1_response_not_array")
+            parsed = json.loads(payload)
+            if not isinstance(parsed, list):
+                raise ValueError("stage1_response_not_array")
+            for o in parsed:
                 if isinstance(o, dict) and o.get("id") is not None:
                     back_map[str(o["id"])] = str(o.get("en", "")).strip()
+            expected_ids = {it["idx"] for it in chunk}
+            returned_ids = {sid for sid, text in back_map.items() if text}
+            if not returned_ids:
+                raise ValueError("stage1_missing_items")
+            stage1_partial = not expected_ids <= returned_ids
         except RequestCancelled:
+            cancelled = True
             break
         except Exception as e:
             if log_fn:
@@ -4192,6 +4222,7 @@ def back_translation_check(
         cmp_payload = [{"id": it["idx"], "src": it["src"], "back": back_map.get(it["idx"], "")}
                        for it in chunk if back_map.get(it["idx"])]
         if not cmp_payload:
+            partial_chunks += 1
             continue
         cmp_prompt = (
             f"You compare an ORIGINAL {src_lang} subtitle line ('src') with a blind "
@@ -4218,8 +4249,14 @@ def back_translation_check(
                 except TypeError:
                     token_callback(tot)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+            payload = _extract_json_array(content)
+            if not payload:
+                raise ValueError("stage2_response_not_array")
+            parsed = json.loads(payload)
+            if not isinstance(parsed, list):
+                raise ValueError("stage2_response_not_array")
             by_idx = {it["idx"]: it for it in chunk}
-            for o in json.loads(_extract_json_array(content) or "[]"):
+            for o in parsed:
                 if not isinstance(o, dict):
                     continue
                 fid = str(o.get("id", ""))
@@ -4228,16 +4265,40 @@ def back_translation_check(
                     it = by_idx[fid]
                     flagged.append({"idx": fid, "src": it["src"], "tr": it["tr"],
                                     "back": back_map.get(fid, ""), "reason": reason})
+            successful_chunks += 1
+            if stage1_partial:
+                partial_chunks += 1
         except RequestCancelled:
+            cancelled = True
             break
         except Exception as e:
             if log_fn:
                 log_fn(f"Geri çeviri stage-2 chunk hatası: {e}", "warn")
             continue
 
+    failed_chunks = max(0, total_chunks - successful_chunks)
+    pass_status = (
+        "cancelled" if cancelled
+        else "completed" if successful_chunks == total_chunks and not partial_chunks
+        else "partial" if successful_chunks or partial_chunks
+        else "failed"
+    )
+    if status_out is not None:
+        status_out.update({
+            "status": pass_status,
+            "successful_chunks": successful_chunks,
+            "failed_chunks": failed_chunks,
+            "changed": 0,
+        })
     if log_fn:
+        if failed_chunks or partial_chunks:
+            log_fn(
+                f"Geri çeviri tamamlanamadı: {successful_chunks}/{total_chunks} "
+                f"paket başarılı, {failed_chunks} paket başarısız",
+                "warn" if successful_chunks else "err",
+            )
         log_fn(f"Geri çeviri: {len(flagged)} şüpheli satır işaretlendi (çeviri değiştirilMEDİ)",
-               "warn" if flagged else "ok")
+               "warn" if flagged or pass_status != "completed" else "ok")
     return flagged
 
 

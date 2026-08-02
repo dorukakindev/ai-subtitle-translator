@@ -255,6 +255,10 @@ class BuildQualityReportTextTest(unittest.TestCase):
                 "Condense": 0, "Term-Normalize": 0, "Final-Semantic": 0,
             },
             "pass_status": {
+                "Backtranslation": {
+                    "status": "failed", "successful_chunks": 0,
+                    "failed_chunks": 2, "total_chunks": 2,
+                },
                 "Condense": {
                     "status": "failed", "successful_chunks": 0,
                     "failed_chunks": 1, "total_chunks": 1,
@@ -269,11 +273,14 @@ class BuildQualityReportTextTest(unittest.TestCase):
                 },
             },
         }, {
+            "backtrans": True,
             "condense": True,
             "term_normalize": True,
             "semantic_reconcile": True,
         })
 
+        self.assertIn(
+            "Geri Çeviri: başarısız, 0/2 paket başarılı", audit)
         self.assertIn(
             "Okuma Hızı Kısaltma: başarısız, 0/1 paket başarılı", audit)
         self.assertIn(

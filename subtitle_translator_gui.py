@@ -7220,7 +7220,7 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         for title in (
                 "Tutarlılık taraması", "Critic Pass", "Polish Pass",
                 "Native Okuyucu", "QC", "Nihai Anlam Mutabakatı",
-                "Terim Normalizasyonu", "Okuma Hızı Kısaltma",
+                "Geri Çeviri", "Terim Normalizasyonu", "Okuma Hızı Kısaltma",
                 "SDH temizleme", "Satır düzenleme"):
             lines.append(f"{title}: kısmi onarım gereği atlandı")
         return lines
@@ -7246,6 +7246,8 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         ("QC", bool(snapshot.get("qc")), ("QC auto", "QC")),
         ("Nihai Anlam Mutabakatı", bool(snapshot.get("semantic_reconcile")),
          ("Final-Semantic",)),
+        ("Geri Çeviri", bool(snapshot.get("backtrans")),
+         ("Backtranslation",)),
         ("Terim Normalizasyonu", bool(snapshot.get("term_normalize")),
          ("Term-Normalize",)),
         ("Okuma Hızı Kısaltma", bool(snapshot.get("condense")),
@@ -16589,11 +16591,18 @@ class App(ctk.CTk):
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
 
     def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks,
-                                     src_lang=None, source_path=None) -> int:
+                                     src_lang=None, source_path=None,
+                                     status_out: dict | None = None) -> int:
         """Geri çeviri anlam kontrolü. Açıksa çalışır: Türkçeyi tekrar
         kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
         log'a yazar. Flag'lenen satırları helper model ile düzeltir. Düzeltilen
         satır sayısını döner."""
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            })
         if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
             enabled = bool(self._active_snapshot.get("backtrans"))
         else:
@@ -16602,8 +16611,12 @@ class App(ctk.CTk):
             except Exception:
                 enabled = False
         if not enabled:
+            if status_out is not None:
+                status_out["status"] = "skipped"
             return 0
         if not src_clean_map or not blocks:
+            if status_out is not None:
+                status_out["status"] = "skipped"
             return 0
         try:
             import hybrid_translate as ht
@@ -16630,7 +16643,8 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 token_callback=self._token_callback_for_model(
                     self._helper_api_model("qc")),
-                cancel_context=self.__dict__.get("_helper_request_canceller"))
+                cancel_context=self.__dict__.get("_helper_request_canceller"),
+                status_out=status_out)
             if self.__dict__.get("_stop_flag", False):
                 return 0
             if not flags:
@@ -16641,8 +16655,12 @@ class App(ctk.CTk):
             fix_url = self._helper_api_base_url("qc")
             fix_model = self._helper_api_model("qc")
             n_fixed = 0
+            fix_successful = 0
+            fix_failed = 0
             for f in flags:
                 if self.__dict__.get("_stop_flag", False):
+                    if status_out is not None:
+                        status_out.update({"status": "cancelled", "changed": n_fixed})
                     return n_fixed
                 try:
                     src, tr, back, reason = f.get("src",""), f.get("tr",""), f.get("back",""), f.get("reason","")
@@ -16679,10 +16697,14 @@ class App(ctk.CTk):
                         cancel_context=self.__dict__.get("_helper_request_canceller"),
                     )
                     if self.__dict__.get("_stop_flag", False):
+                        if status_out is not None:
+                            status_out.update({"status": "cancelled", "changed": n_fixed})
                         return n_fixed
                     fixed_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
                     if not fixed_text:
+                        fix_failed += 1
                         continue
+                    fix_successful += 1
                     fixed_text = fixed_text.strip("\"'")
                     ok, _reason = validate_polish_candidate(
                         tr, fixed_text, source_text=src,
@@ -16694,7 +16716,17 @@ class App(ctk.CTk):
                                 n_fixed += 1
                                 break
                 except Exception:
-                    pass
+                    fix_failed += 1
+            if status_out is not None:
+                status_out["total_chunks"] = int(
+                    status_out.get("total_chunks", 0) or 0) + len(flags)
+                status_out["successful_chunks"] = int(
+                    status_out.get("successful_chunks", 0) or 0) + fix_successful
+                status_out["failed_chunks"] = int(
+                    status_out.get("failed_chunks", 0) or 0) + fix_failed
+                status_out["changed"] = n_fixed
+                if fix_failed:
+                    status_out["status"] = "partial"
             # Rapor yaz
             try:
                 rpath = str(
@@ -16716,6 +16748,8 @@ class App(ctk.CTk):
                 self._log(f"Geri çeviri raporu yazılamadı: {_re}", "warn")
             return n_fixed
         except Exception as e:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(e)})
             self._log(f"Geri çeviri kontrolü hatası: {e}", "warn")
             return 0
 
@@ -16872,13 +16906,15 @@ class App(ctk.CTk):
                                    src_lang=None, cues=None, changed_ids=None,
                                    source_path=None, locked_terms=None,
                                    analysis_result=None,
-                                   status_out: dict | None = None) -> int:
+                                   status_out: dict | None = None,
+                                   backtranslation_status_out: dict | None = None) -> int:
         before_backtranslation = {
             str(idx): text for idx, _ts, text in (blocks or [])
         }
         fixed = self._maybe_backtranslation_check(
             out_path, src_clean_map, blocks, src_lang=src_lang,
-            source_path=source_path)
+            source_path=source_path,
+            status_out=backtranslation_status_out)
         changed_ids = set(changed_ids or [])
         changed_ids.update(
             str(idx) for idx, _ts, text in (blocks or [])
@@ -21166,6 +21202,7 @@ class App(ctk.CTk):
                 self._record_file_status(
                     filepath, "Nihai Anlam Mutabakatı", "running")
                 _semantic_status = {}
+                _back_status = {}
                 self._run_final_semantic_checks(
                     out_path, {str(c.index): _clean_src(c.text) for c in cues},
                     sorted_blocks, src_lang=file_src, cues=cues,
@@ -21174,8 +21211,10 @@ class App(ctk.CTk):
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions,
                                      idiom_map, cultural_refs),
-                    status_out=_semantic_status)
+                    status_out=_semantic_status,
+                    backtranslation_status_out=_back_status)
                 _pass_status["Final-Semantic"] = dict(_semantic_status)
+                _pass_status["Backtranslation"] = dict(_back_status)
             if self._stop_flag:
                 break
             if _quality_api_allowed:
@@ -22257,6 +22296,7 @@ class App(ctk.CTk):
                                         pass
                                 _before_semantic = list(pp)
                                 _semantic_status = {}
+                                _back_status = {}
                                 self._run_final_semantic_checks(
                                     output_path, _src_map, pp,
                                     src_lang=source_language or self._snap_get("src_lang", "English"),
@@ -22264,8 +22304,10 @@ class App(ctk.CTk):
                                     source_path=str(_src_path),
                                     locked_terms=_locked_terms,
                                     analysis_result=_analysis_result,
-                                    status_out=_semantic_status)
+                                    status_out=_semantic_status,
+                                    backtranslation_status_out=_back_status)
                                 _pass_status["Final-Semantic"] = dict(_semantic_status)
+                                _pass_status["Backtranslation"] = dict(_back_status)
                                 if self._stop_flag:
                                     break
                                 _record_pass_change(
@@ -22817,13 +22859,16 @@ class App(ctk.CTk):
                 self._record_file_status(
                     fp, "Nihai Anlam Mutabakatı", "running")
                 _semantic_status = {}
+                _back_status = {}
                 self._run_final_semantic_checks(
                     out_path, src_blocks, sorted_blocks, src_lang=_file_src_lang,
                     cues=_src_cues, changed_ids=_pass_history.keys(),
                     source_path=fp, locked_terms=_locked_terms_for(fp),
                     analysis_result=_analysis_result,
-                    status_out=_semantic_status)
+                    status_out=_semantic_status,
+                    backtranslation_status_out=_back_status)
                 _pass_status["Final-Semantic"] = dict(_semantic_status)
+                _pass_status["Backtranslation"] = dict(_back_status)
             if self._stop_flag:
                 break
             if _quality_api_allowed:
@@ -23963,13 +24008,16 @@ class App(ctk.CTk):
                 self._record_file_status(
                     filepath, "Nihai Anlam Mutabakatı", "running")
                 _semantic_status = {}
+                _back_status = {}
                 self._run_final_semantic_checks(
                     out_path, _src_map, _final_blocks, src_lang=file_src,
                     cues=cues, changed_ids=_pass_history.keys(),
                     source_path=filepath, locked_terms=_locked_terms,
                     analysis_result=_full_analysis,
-                    status_out=_semantic_status)
+                    status_out=_semantic_status,
+                    backtranslation_status_out=_back_status)
                 _pass_status["Final-Semantic"] = dict(_semantic_status)
+                _pass_status["Backtranslation"] = dict(_back_status)
                 if self._stop_flag:
                     break
                 _record_pass_change(

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import subtitle_translator_gui as gui
 import hybrid_translate as ht
@@ -71,6 +72,48 @@ class BackTranslationPrefilterTest(unittest.TestCase):
         blocks = [("1", _TS, "[HATA]"), ("2", _TS, "Tamam"), ("3", _TS, "[KAHKAHA]")]
         src = {"1": "whatever", "2": "Okay", "3": "[LAUGHS]"}
         self.assertEqual(ht.back_translation_check(src, blocks, api_key="x"), [])
+
+    def test_total_stage_failure_is_reported(self):
+        blocks = [("1", _TS, "Bu yeterince uzun bir çeviri satırıdır.")]
+        src = {"1": "This is a sufficiently long source subtitle line."}
+        status = {}
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create",
+                side_effect=RuntimeError("provider unavailable")):
+            result = ht.back_translation_check(
+                src, blocks, api_key="x", status_out=status)
+
+        self.assertEqual(result, [])
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["successful_chunks"], 0)
+        self.assertEqual(status["failed_chunks"], 1)
+
+    def test_two_stage_success_is_reported_completed(self):
+        blocks = [("1", _TS, "Bu yeterince uzun bir çeviri satırıdır.")]
+        src = {"1": "This is a sufficiently long source subtitle line."}
+        responses = [
+            SimpleNamespace(
+                usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(
+                    content='[{"id":"1","en":"A long translated line."}]'))],
+            ),
+            SimpleNamespace(
+                usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))],
+            ),
+        ]
+        status = {}
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create", side_effect=responses):
+            result = ht.back_translation_check(
+                src, blocks, api_key="x", status_out=status)
+
+        self.assertEqual(result, [])
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["successful_chunks"], 1)
+        self.assertEqual(status["failed_chunks"], 0)
 
 
 if __name__ == "__main__":
