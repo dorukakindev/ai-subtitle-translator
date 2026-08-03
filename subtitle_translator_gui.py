@@ -17368,6 +17368,13 @@ class App(ctk.CTk):
                                    analysis_result=None,
                                    status_out: dict | None = None,
                                    backtranslation_status_out: dict | None = None) -> int:
+        progress_path = str(source_path or out_path)
+        progress_name = Path(progress_path).name
+        if App._run_setting(self, "backtrans", "backtrans_var", False):
+            self._set_phase(
+                "Geri Çeviri", f"{progress_name} — anlam kontrolü")
+            self._update_file_progress(
+                progress_path, "Geri Çeviri", 96)
         before_backtranslation = {
             str(idx): text for idx, _ts, text in (blocks or [])
         }
@@ -17380,6 +17387,13 @@ class App(ctk.CTk):
             str(idx) for idx, _ts, text in (blocks or [])
             if before_backtranslation.get(str(idx), text) != text
         )
+        if App._run_setting(
+                self, "semantic_reconcile", "semantic_reconcile_var", True):
+            self._set_phase(
+                "Nihai Anlam Mutabakatı",
+                f"{progress_name} — kaynakla son karşılaştırma")
+            self._update_file_progress(
+                progress_path, "Nihai Anlam Mutabakatı", 98)
         fixed += self._maybe_semantic_reconciliation(
             out_path, src_clean_map, blocks, src_lang=src_lang,
             cues=cues, changed_ids=changed_ids, source_path=source_path,

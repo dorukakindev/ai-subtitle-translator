@@ -5,6 +5,36 @@ import subtitle_translator_gui as gui
 
 
 class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
+    def test_final_semantic_wrapper_updates_visible_phase_for_both_passes(self):
+        app = gui.App.__new__(gui.App)
+        app._active_snapshot = None
+        app.backtrans_var = MagicMock()
+        app.backtrans_var.get.return_value = True
+        app.semantic_reconcile_var = MagicMock()
+        app.semantic_reconcile_var.get.return_value = True
+        app._set_phase = MagicMock()
+        app._update_file_progress = MagicMock()
+        app._maybe_backtranslation_check = MagicMock(return_value=0)
+        app._maybe_semantic_reconciliation = MagicMock(return_value=0)
+
+        app._run_final_semantic_checks(
+            "output.srt", {"1": "Hello."},
+            [(1, "00:00:01,000 --> 00:00:02,000", "Merhaba.")],
+            source_path=r"C:\input\source.srt",
+        )
+
+        self.assertEqual(
+            [call.args[0] for call in app._set_phase.call_args_list],
+            ["Geri Çeviri", "Nihai Anlam Mutabakatı"],
+        )
+        self.assertEqual(
+            [call.args[1] for call in app._update_file_progress.call_args_list],
+            ["Geri Çeviri", "Nihai Anlam Mutabakatı"],
+        )
+        self.assertTrue(all(
+            call.args[0] == r"C:\input\source.srt"
+            for call in app._update_file_progress.call_args_list))
+
     def test_backtranslation_check_returns_int_and_modifies_blocks(self):
         """_maybe_backtranslation_check returns integer fix count and modifies blocks in-place."""
         app = gui.App.__new__(gui.App)
