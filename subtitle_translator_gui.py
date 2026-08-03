@@ -4006,6 +4006,10 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
         "see", "saw", "hear", "heard", "leave", "left", "stay",
     }
     folded = [token.casefold() for token in tokens]
+    if " ".join(folded) in {
+            "good morning", "good afternoon", "good evening", "good night",
+            "happy birthday", "merry christmas", "sweet dreams"}:
+        return False
     if folded[0] in dialogue_starters:
         return False
     if any(token in verb_like for token in folded):
@@ -4013,10 +4017,29 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
     return True
 
 
-def _is_untranslated(src_text: str, tr_text: str) -> bool:
-    import re
-    if not src_text:
+def _repair_identity_text(text: str) -> str:
+    value = _clean_src(str(text or ""))
+    value = re.sub(r"[^\w]+", " ", value, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _is_locked_identity_translation(src_text: str, tr_text: str,
+                                    locked_terms=None) -> bool:
+    src_norm = _repair_identity_text(src_text)
+    tr_norm = _repair_identity_text(tr_text)
+    if not src_norm or src_norm != tr_norm:
         return False
+    for source, target in (locked_terms or {}).items():
+        if (_repair_identity_text(source) == src_norm
+                and _repair_identity_text(target) == tr_norm):
+            return True
+    return False
+
+
+def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
+                         source_language: str | None = None) -> str:
+    if not src_text:
+        return ""
     if not tr_text:
         # Boş çeviri: kaynak SFX/SDH-only İSE meşru olabilir (clean_sdh nasılsa
         # boşa indirir) — ama gerçek diyalog içeriyorsa bu SESSİZ bir çeviri
@@ -4024,21 +4047,27 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
         # kısa/ünlem cue'lar modelce atlanıp komşu cue'ya birleştirilebiliyor).
         # True dönmesi _repair_untranslated_sync'in bunu yakalayıp doğru kaynakla
         # yeniden çevirmesini sağlar.
-        return not _src_is_sdh_only(src_text)
+        return "empty_dialogue" if not _src_is_sdh_only(src_text) else ""
     if _MUSIC_ONLY_RE.match(src_text.strip()) or _MUSIC_ONLY_RE.match(tr_text.strip()):
-        return False
+        return ""
     if _src_is_numeric_only(src_text):
-        return False
-    leaked = {word.lower() for word in _PARTIAL_ENGLISH_LEAK_RE.findall(src_text)}
-    if any(re.search(rf'\b{re.escape(word)}\b', tr_text, re.I) for word in leaked):
-        return True
-    if any(match.group(0).lower() in tr_text.lower()
-           for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text)):
-        return True
+        return ""
+    if _is_locked_identity_translation(src_text, tr_text, locked_terms):
+        return ""
+    source_is_english = (
+        source_language is None or _lang_iso639_1(source_language) == "en")
+    if source_is_english:
+        leaked = {word.lower() for word in _PARTIAL_ENGLISH_LEAK_RE.findall(src_text)}
+        for word in sorted(leaked):
+            if re.search(rf'\b{re.escape(word)}\b', tr_text, re.I):
+                return f"partial_english_token:{word}"
+        for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text):
+            if match.group(0).lower() in tr_text.lower():
+                return f"partial_english_phrase:{match.group(0)}"
     try:
         import hybrid_translate as ht
-        if ht.has_source_english_overlap(src_text, tr_text):
-            return True
+        if source_is_english and ht.has_source_english_overlap(src_text, tr_text):
+            return "source_english_overlap"
     except Exception:
         pass
     _src_all_caps = _src_text_is_all_caps(src_text)
@@ -4050,7 +4079,7 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
     # olduğu için "hiç içerik kalmadı" sanıp yanlışlıkla "çevrilmemiş" diye
     # işaretliyordu. Kaynak zaten çıplak BÜYÜK HARF ise bu kontrol atlanır.
     if _is_punct_only_translation(src_text, tr_text) and not _src_all_caps:
-        return True
+        return "punct_only_translation"
     _LOANWORDS = frozenset([
         "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah",
         "robot", "laser", "internet", "pizza", "taxi", "stereo",
@@ -4058,13 +4087,23 @@ def _is_untranslated(src_text: str, tr_text: str) -> bool:
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
     if src_norm == tr_norm and src_norm not in _LOANWORDS:
-        if (not _src_is_sdh_only(src_text) and not _src_all_caps
-                and not _src_is_proper_name_phrase(src_text)):
-            return True
+        if not _src_is_sdh_only(src_text):
+            if _src_all_caps:
+                if re.search(r"[!?]", str(src_text)):
+                    return "identical_all_caps_dialogue"
+            elif not _src_is_proper_name_phrase(src_text):
+                return "identical_source"
     src_words = src_text.split()
     if len(src_words) <= 2:
-        return False
-    return False
+        return ""
+    return ""
+
+
+def _is_untranslated(src_text: str, tr_text: str, *, locked_terms=None,
+                     source_language: str | None = None) -> bool:
+    return bool(_untranslated_reason(
+        src_text, tr_text, locked_terms=locked_terms,
+        source_language=source_language))
 
 
 def _chunk_src_map_from_request(req: dict) -> dict:
@@ -4086,12 +4125,9 @@ def _chunk_src_map_from_request(req: dict) -> dict:
 
 
 def _chunk_leak_source_text(chunk_src_map: dict, item_id) -> str:
-    own = str(chunk_src_map.get(str(item_id), "") or "")
-    neighbors = [
-        str(text or "") for idx, text in chunk_src_map.items()
-        if str(idx) != str(item_id) and str(text or "").strip()
-    ]
-    return "\n".join([own, *neighbors])
+    # Yabancı token yalnız kendi cue kaynağında geçiyorsa lisanslıdır. Komşu
+    # cue'daki özel ad, yanlış cue'ya sızan aynı tokenı meşrulaştıramaz.
+    return str(chunk_src_map.get(str(item_id), "") or "")
 
 
 def _chunk_response_retry_reason(raw, req: dict | None) -> str:
@@ -4144,13 +4180,37 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
         return "parse_error"
 
 
+_REPAIR_RETRY_DELAYS = (30, 60, 120)
+
+
+def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: str,
+                                       tgt_lang: str, locked_terms=None) -> str:
+    import hybrid_translate as ht
+
+    value = str(candidate or "").strip()
+    if not value:
+        return "empty_after_cleanup"
+    untranslated = _untranslated_reason(
+        src, value, locked_terms=locked_terms, source_language=src_lang)
+    if untranslated:
+        return untranslated
+    if (_lang_iso639_1(tgt_lang) == "tr"):
+        token = ht.non_turkish_leak_token(value, source_text=src)
+        if token:
+            return f"non_turkish_target:{token}"
+    if ht.locked_term_violation(src, value, locked_terms or {}):
+        return "locked_term_violation"
+    return ""
+
+
 def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=15,
                               source_cues=None, cancel_check=None,
                               cancel_context=None,
                               system_prompt=None, locked_terms=None,
-                              permanent_failure_cb=None):
+                              permanent_failure_cb=None, retry_delays=None,
+                              retry_wait_fn=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -4176,6 +4236,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
             return False
 
     def _wait_or_cancel(delay):
+        if retry_wait_fn is not None:
+            try:
+                return bool(retry_wait_fn(delay, _cancelled))
+            except Exception:
+                return False
         deadline = time.monotonic() + max(0.0, float(delay))
         while True:
             if _cancelled():
@@ -4191,6 +4256,13 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     # [HATA] ve çevrilmemiş satırları topla; kaynağı SFX/müzik-only olanları
     # onarım kuyruğuna ALMA — düşürülecekler listesine ekle.
     out = list(blocks)
+    locked_terms = {
+        str(source).strip(): str(target).strip()
+        for source, target in (locked_terms or {}).items()
+        if str(source).strip() and str(target).strip()
+    }
+    retry_delays = tuple(
+        _REPAIR_RETRY_DELAYS if retry_delays is None else retry_delays)
     if source_cues:
         existing = {str(block[0]): block for block in out}
         ordered = []
@@ -4229,7 +4301,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         src = raw_src_map.get(str(idx), "")
         if (str(text).startswith("[HATA")
                 or "[ÇEVİRİ EKSİK]" in str(text)
-                or _is_untranslated(src, str(text))):
+                or _is_untranslated(
+                    src, str(text), locked_terms=locked_terms,
+                    source_language=src_lang)):
             if not (src and src.strip()):
                 continue
             if _src_is_sdh_only(src):
@@ -4249,11 +4323,6 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
 
         sys_prompt = system_prompt or _build_sync_system_prompt(
             src_lang, tgt_lang, schema, profanity)
-        locked_terms = {
-            str(source).strip(): str(target).strip()
-            for source, target in (locked_terms or {}).items()
-            if str(source).strip() and str(target).strip()
-        }
         if locked_terms:
             rows = "; ".join(
                 f"{source} -> {target}"
@@ -4270,37 +4339,69 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
             idx: pos for pos, (idx, _text) in enumerate(source_order)
         }
 
-        # Küçük gruplar halinde çevir
+        # Küçük gruplar halinde çevir; sonraki denemeye yalnız çözülemeyen cue'lar gider.
         permanent_failure = False
+        total_attempts = len(retry_delays) + 1
         for batch_start in range(0, len(hata_indices), max_per_call):
             if _cancelled():
                 if log_fn:
                     log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
                 break
-            batch = hata_indices[batch_start:batch_start + max_per_call]
-            tr_items = [{"i": idx, "t": _clean_src(src)} for (_, idx, _, src) in batch]
-            payload_data = {"tr": tr_items}
-            if locked_terms:
-                payload_data["glossary"] = locked_terms
-            positions = [
-                source_positions[str(idx)] for _pos, idx, _ts, _src in batch
-                if str(idx) in source_positions
-            ]
-            if positions:
-                first_pos, last_pos = min(positions), max(positions)
-                ctx = [text for _idx, text in source_order[max(0, first_pos - 8):first_pos]]
-                next_ctx = [text for _idx, text in source_order[last_pos + 1:last_pos + 9]]
-                if ctx:
-                    payload_data["ctx"] = ctx
-                if next_ctx:
-                    payload_data["next_ctx"] = next_ctx
-            payload = json.dumps(payload_data, ensure_ascii=False)
-
-            for attempt in range(2):
+            pending = list(hata_indices[batch_start:batch_start + max_per_call])
+            for attempt_index in range(total_attempts):
+                if not pending:
+                    break
                 if _cancelled():
                     if log_fn:
                         log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
                     break
+                if attempt_index:
+                    delay = max(0.0, float(retry_delays[attempt_index - 1]))
+                    if log_fn:
+                        ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in pending)
+                        log_fn(
+                            f"  ↻ Eksik cue onarımı {int(delay)} sn sonra yeniden "
+                            f"denenecek ({attempt_index + 1}/{total_attempts}): {ids}",
+                            "warn",
+                        )
+                    if not _wait_or_cancel(delay):
+                        break
+
+                tr_items = [
+                    {"i": idx, "t": _clean_src(src)}
+                    for _pos, idx, _ts, src in pending
+                ]
+                payload_data = {"tr": tr_items}
+                if locked_terms:
+                    payload_data["glossary"] = locked_terms
+                positions = [
+                    source_positions[str(idx)] for _pos, idx, _ts, _src in pending
+                    if str(idx) in source_positions
+                ]
+                if positions:
+                    first_pos, last_pos = min(positions), max(positions)
+                    ctx = [
+                        text for _idx, text in
+                        source_order[max(0, first_pos - 8):first_pos]
+                    ]
+                    next_ctx = [
+                        text for _idx, text in
+                        source_order[last_pos + 1:last_pos + 9]
+                    ]
+                    if ctx:
+                        payload_data["ctx"] = ctx
+                    if next_ctx:
+                        payload_data["next_ctx"] = next_ctx
+                payload = json.dumps(payload_data, ensure_ascii=False)
+                if log_fn:
+                    log_fn(
+                        f"  Onarım denemesi {attempt_index + 1}/{total_attempts}: "
+                        f"yalnız {len(pending)} eksik cue gönderiliyor",
+                        "info",
+                    )
+
+                rejection_reasons = {}
+                rejection_candidates = {}
                 try:
                     resp = _safe_chat_create(
                         client,
@@ -4309,43 +4410,40 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         model=model,
                         messages=[
                             {"role": "system", "content": sys_prompt},
-                            {"role": "user",   "content": payload},
+                            {"role": "user", "content": payload},
                         ],
                         temperature=0.3,
                     )
-                    if not resp.choices:
-                        if attempt == 0:
-                            if not _wait_or_cancel(2):
-                                break
-                            continue
-                        break
+                    if not getattr(resp, "choices", None):
+                        raise ValueError("response_has_no_choices")
                     raw_text = (resp.choices[0].message.content or "").strip()
                     if not raw_text:
-                        if attempt == 0:
-                            if not _wait_or_cancel(2):
-                                break
-                            continue
-                        break
+                        raise ValueError("response_content_empty")
                     if token_cb and resp.usage:
                         tok, cached = _get_usage_details(resp.usage)
                         token_cb(tok, cached=cached)
-                    arr_text = _extract_json_array(raw_text)
-                    items = json.loads(arr_text)
+                    items = json.loads(_extract_json_array(raw_text))
                     if not isinstance(items, list):
-                        if attempt == 0:
-                            continue
-                        break
-                    allowed_ids = {str(idx) for _pos, idx, _ts, _src in batch}
+                        raise ValueError("response_not_array")
+
+                    allowed_ids = {
+                        str(idx) for _pos, idx, _ts, _src in pending
+                    }
                     result_map = {}
                     duplicate_ids = set()
+                    unexpected_ids = []
+                    malformed_items = 0
                     for item in items:
                         if not isinstance(item, dict) or "i" not in item:
+                            malformed_items += 1
                             continue
                         rid = str(item["i"])
+                        if rid not in allowed_ids:
+                            unexpected_ids.append(rid)
+                            continue
                         translated = item.get("t")
-                        if (rid not in allowed_ids or not isinstance(translated, str)
-                                or not translated.strip()
-                                or translated.startswith("[HATA")):
+                        if not isinstance(translated, str):
+                            rejection_reasons[rid] = "invalid_text_type"
                             continue
                         if rid in result_map:
                             duplicate_ids.add(rid)
@@ -4353,68 +4451,103 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             result_map[rid] = translated
                     for rid in duplicate_ids:
                         result_map.pop(rid, None)
-                    for (block_pos, idx, ts, _src) in batch:
-                        current_text = str(out[block_pos][2] or "")
-                        if (not current_text.startswith("[HATA")
-                                and "[ÇEVİRİ EKSİK]" not in current_text
-                                and not _is_untranslated(_src, current_text)):
-                            continue
-                        translated = result_map.get(str(idx))
-                        if translated and translated.strip():
+                        rejection_reasons[rid] = "duplicate_id"
+                    if log_fn and (unexpected_ids or malformed_items):
+                        extras = ", ".join(unexpected_ids[:8]) or "-"
+                        log_fn(
+                            f"  Onarım yanıt bütünlüğü: beklenmeyen ID={extras}; "
+                            f"biçimsiz öğe={malformed_items}",
+                            "warn",
+                        )
+
+                    next_pending = []
+                    for block_pos, idx, ts, src_text in pending:
+                        rid = str(idx)
+                        translated = result_map.get(rid)
+                        if translated is None:
+                            reason = rejection_reasons.get(rid, "missing_id")
+                        else:
                             cleaned_lines = [
-                                sdh_cleaner.strip_labels_by_source(line, _src)
+                                sdh_cleaner.strip_labels_by_source(line, src_text)
                                 for line in str(translated).splitlines()
                             ]
-                            translated = "\n".join(line for line in cleaned_lines if line)
-                            if (translated.strip()
-                                    and not _is_untranslated(_src, translated)
-                                    and (_lang_iso639_1(tgt_lang) != "tr"
-                                         or not ht.has_non_turkish_target_leak(
-                                             translated, source_text=_src))
-                                    and not ht.locked_term_violation(
-                                        _src, translated, locked_terms)):
-                                out[block_pos] = (idx, ts, translated)
-                                repaired += 1
-                    unresolved = any(
-                        str(out[block_pos][2] or "").startswith("[HATA")
-                        or "[ÇEVİRİ EKSİK]" in str(out[block_pos][2] or "")
-                        or _is_untranslated(_src, str(out[block_pos][2] or ""))
-                        for block_pos, _idx, _ts, _src in batch
-                    )
-                    if unresolved and attempt == 0:
-                        if not _wait_or_cancel(2):
-                            break
-                        continue
-                    break  # success
+                            translated = "\n".join(
+                                line for line in cleaned_lines if line)
+                            reason = _repair_candidate_rejection_reason(
+                                src_text, translated, src_lang=src_lang,
+                                tgt_lang=tgt_lang, locked_terms=locked_terms)
+                        if reason:
+                            rejection_reasons[rid] = reason
+                            rejection_candidates[rid] = str(translated or "")
+                            next_pending.append((block_pos, idx, ts, src_text))
+                            continue
+                        out[block_pos] = (idx, ts, translated)
+                        repaired += 1
+
+                    pending = next_pending
+                    if log_fn:
+                        for block_pos, idx, _ts, src_text in pending:
+                            rid = str(idx)
+                            source_preview = re.sub(
+                                r"\s+", " ", str(src_text)).strip()[:120]
+                            candidate_preview = re.sub(
+                                r"\s+", " ", rejection_candidates.get(rid, "")
+                            ).strip()[:120]
+                            log_fn(
+                                f"  Onarım reddi #{rid} "
+                                f"(deneme {attempt_index + 1}/{total_attempts}): "
+                                f"{rejection_reasons.get(rid, 'unknown')} | "
+                                f"kaynak={source_preview!r} | aday={candidate_preview!r}",
+                                "warn",
+                            )
+                        if not pending:
+                            log_fn(
+                                f"  Onarım denemesi {attempt_index + 1}: "
+                                "bütün hedef cue'lar doğrulandı",
+                                "ok",
+                            )
                 except RequestCancelled:
                     if log_fn:
                         log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
                     break
                 except Exception as e:
                     if log_fn:
-                        log_fn(f"  ?? Onarim batch basarisiz: {e}", "warn")
-                    if _is_provider_unavailable_error(e):
+                        ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in pending)
+                        log_fn(
+                            f"  Onarım isteği başarısız "
+                            f"(deneme {attempt_index + 1}/{total_attempts}, {ids}): "
+                            f"{type(e).__name__}: {e}",
+                            "warn",
+                        )
+                        if isinstance(e, (ValueError, json.JSONDecodeError)):
+                            for _pos, idx, _ts, src_text in pending:
+                                source_preview = re.sub(
+                                    r"\s+", " ", str(src_text)).strip()[:120]
+                                log_fn(
+                                    f"  Onarım reddi #{idx} "
+                                    f"(deneme {attempt_index + 1}/{total_attempts}): "
+                                    f"response_error:{e} | "
+                                    f"kaynak={source_preview!r} | aday=''",
+                                    "warn",
+                                )
+                    if (_is_provider_unavailable_error(e)
+                            or _is_permanent_provider_error(e)
+                            or (not isinstance(e, (ValueError, json.JSONDecodeError))
+                                and not _is_transient_retry_error(e))):
                         permanent_failure = True
                         if log_fn:
-                            log_fn(
-                                "  ↪ Sağlayıcıda model kanalı yok; kalan onarım "
-                                "istekleri gönderilmeyecek",
-                                "warn",
-                            )
+                            if _is_provider_unavailable_error(e):
+                                log_fn(
+                                    "  Sağlayıcıda model kanalı yok; kalan onarım "
+                                    "istekleri gönderilmeyecek",
+                                    "warn")
+                            else:
+                                log_fn(
+                                    "  ↪ Kalıcı sağlayıcı/istek hatası; kalan onarım "
+                                    "istekleri gönderilmeyecek",
+                                    "warn")
                         break
-                    if _is_permanent_provider_error(e):
-                        permanent_failure = True
-                        if log_fn:
-                            log_fn(
-                                "  ↪ Kalıcı API/bakiye hatası; kalan onarım "
-                                "istekleri gönderilmeyecek",
-                                "warn",
-                            )
-                        break
-                    if attempt == 0:
-                        if not _wait_or_cancel(2):
-                            break
-                        continue
+                if permanent_failure:
                     break
             if permanent_failure or _cancelled():
                 break
@@ -4435,7 +4568,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         text = str(out[block_pos][2] or "")
         if (not text.startswith("[HATA")
                 and "[ÇEVİRİ EKSİK]" not in text
-                and _is_untranslated(src, text)):
+                and _is_untranslated(
+                    src, text, locked_terms=locked_terms,
+                    source_language=src_lang)):
             idx, ts, _old = out[block_pos]
             out[block_pos] = (idx, ts, "[ÇEVİRİ EKSİK]")
             unresolved_mixed += 1
@@ -7180,7 +7315,9 @@ def _blocks_have_translation_failures(blocks) -> bool:
     )
 
 
-def _partial_missing_translation_ids(blocks, raw_src_map, source_cues=()) -> list[str]:
+def _partial_missing_translation_ids(blocks, raw_src_map, source_cues=(), *,
+                                     locked_terms=None,
+                                     source_language: str | None = None) -> list[str]:
     existing = {str(idx): str(text or "") for idx, _ts, text in (blocks or [])}
     source_ids = []
     for cue in source_cues or []:
@@ -7202,9 +7339,33 @@ def _partial_missing_translation_ids(blocks, raw_src_map, source_cues=()) -> lis
         if (not text.strip()
                 or text.startswith("[HATA")
                 or "[ÇEVİRİ EKSİK]" in text
-                or _is_untranslated(src, text)):
+                or _is_untranslated(
+                    src, text, locked_terms=locked_terms,
+                    source_language=source_language)):
             missing.append(idx)
     return missing
+
+
+def _polish_chunk_ranges(blocks, fragment_group_ids, chunk_size):
+    ranges = []
+    start = 0
+    total = len(blocks or [])
+    size = max(1, int(chunk_size or 1))
+
+    def _group_id(idx):
+        return fragment_group_ids.get(idx, fragment_group_ids.get(str(idx)))
+
+    while start < total:
+        end = min(total, start + size)
+        while end < total:
+            previous_gid = _group_id(blocks[end - 1][0])
+            next_gid = _group_id(blocks[end][0])
+            if previous_gid is None or previous_gid != next_gid:
+                break
+            end += 1
+        ranges.append((start, end))
+        start = end
+    return ranges
 
 
 def _partial_output_path(out_path) -> Path:
@@ -16551,13 +16712,16 @@ class App(ctk.CTk):
 
                 # Build blocks using original timestamps
                 blocks = []
-                missing = 0
                 for idx_str in sorted(ts_map, key=lambda x: int(x) if x.isdigit() else 0):
                     ts  = ts_map[idx_str]
                     txt = trans.get(idx_str, "[HATA]")
-                    if txt == "[HATA]":
-                        missing += 1
                     blocks.append((idx_str, ts, txt))
+                _raw_map_pre = _raw_src_map_from_cues(cues)
+                _repair_locked_terms = self._get_locked_terms_dict(orig_path, tgt)
+                missing_ids = _partial_missing_translation_ids(
+                    blocks, _raw_map_pre, cues,
+                    locked_terms=_repair_locked_terms,
+                    source_language=src)
 
                 # Apply SDH cleaning if enabled
                 if clean_sdh_on:
@@ -16584,22 +16748,33 @@ class App(ctk.CTk):
                         locked_terms=self._get_locked_terms_dict(orig_path, tgt))
 
                 # Çevrilemeyen satırları sync ile onarma denemesi
-                if missing:
+                if missing_ids:
                     try:
-                        _raw_map_pre = _raw_src_map_from_cues(cues)
                         _repair_client = OpenAI(api_key=api_key, base_url=b_url if b_url else None)
                         blocks, _n_repaired = _repair_untranslated_sync(
-                        blocks, _raw_map_pre, _repair_client,
-                        src_lang=src, tgt_lang=tgt,
+                            blocks, _raw_map_pre, _repair_client,
+                            src_lang=src, tgt_lang=tgt,
                             model=self._main_model_name(),
                             schema=schema, profanity=profanity,
                             log_fn=self._log, token_cb=self._update_tokens,
                             source_cues=cues,
                             cancel_check=lambda: self._stop_flag,
                             cancel_context=self.__dict__.get(
-                                "_helper_request_canceller"))
-                    except Exception:
-                        pass
+                                "_helper_request_canceller"),
+                            locked_terms=_repair_locked_terms)
+                    except Exception as repair_error:
+                        self._log(f"JSONL eksik cue onarımı başarısız: {repair_error}", "warn")
+
+                if self._stop_flag:
+                    self._log(
+                        "JSONL dönüştürme durduruldu; eksik cue varken nihai dosya yazılmadı.",
+                        "warn")
+                    return
+
+                remaining_missing_ids = _partial_missing_translation_ids(
+                    blocks, _raw_map_pre, cues,
+                    locked_terms=_repair_locked_terms,
+                    source_language=src)
 
                 if clean_sdh_on:
                     try:
@@ -16609,17 +16784,17 @@ class App(ctk.CTk):
                     except Exception:
                         pass
 
-                if missing:
+                if remaining_missing_ids:
                     # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
                     try:
-                        _raw_map = _raw_src_map_from_cues(cues)
-                        blocks, _n_filled_save = _fill_hata_with_source(blocks, _raw_map, log_fn=self._log)
-                        blocks = _restore_tags_blocks(blocks, _raw_map)
+                        blocks, _n_filled_save = _fill_hata_with_source(
+                            blocks, _raw_map_pre, log_fn=self._log)
+                        blocks = _restore_tags_blocks(blocks, _raw_map_pre)
                     except Exception:
                         pass
                 else:
                     try:
-                        blocks = _restore_tags_blocks(blocks, _raw_src_map_from_cues(cues))
+                        blocks = _restore_tags_blocks(blocks, _raw_map_pre)
                     except Exception:
                         pass
 
@@ -16627,6 +16802,7 @@ class App(ctk.CTk):
                     self._maybe_merge_cues(blocks), tgt, self._log,
                     source_cues=cues)
                 write_srt(out_path, _delivery_blocks, tgt)
+                missing = len(remaining_missing_ids)
                 self._log(f"Kaydedildi: {out_path}  ({len(blocks)} satır, {missing} eksik)", "ok")
                 _post_ui(self, messagebox.showinfo, "Tamamlandı",
                               f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
@@ -17933,11 +18109,20 @@ class App(ctk.CTk):
         attempted_chunks = 0
         successful_chunks = 0
         permanent_error = None
-        for cs in range(0, len(sorted_blocks), POLISH_CHUNK):
+        polish_ranges = _polish_chunk_ranges(
+            sorted_blocks, frag_group_ids, POLISH_CHUNK)
+        global_group_expected = {}
+        for idx, _ts, text in sorted_blocks:
+            if str(text).startswith("[HATA"):
+                continue
+            gid = frag_group_ids.get(idx, frag_group_ids.get(str(idx)))
+            if gid is not None:
+                global_group_expected.setdefault(gid, []).append(str(idx))
+        for chunk_num, (cs, chunk_end) in enumerate(polish_ranges, 1):
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
                 break
-            chunk = sorted_blocks[cs:cs + POLISH_CHUNK]
+            chunk = sorted_blocks[cs:chunk_end]
             items = []
             original_by_id = {}
             neighbor_texts_by_id = {}
@@ -17965,14 +18150,11 @@ class App(ctk.CTk):
             # Grubun BEKLENEN üyeleri (cue sırasında) — apply_polish_group_atomic'in
             # kısmi-yanıt ve birleşik-anlam kontrolleri için. [HATA] cue'ları original_by_id'de
             # olmadığından zaten dışarıda kalır.
-            chunk_group_expected = {}
-            for idx, _ts, _text in chunk:
-                sid = str(idx)
-                if sid not in original_by_id:
-                    continue
-                gid = frag_group_ids.get(idx, frag_group_ids.get(sid))
-                if gid is not None:
-                    chunk_group_expected.setdefault(gid, []).append(sid)
+            chunk_group_expected = {
+                gid: list(expected_ids)
+                for gid, expected_ids in global_group_expected.items()
+                if any(sid in original_by_id for sid in expected_ids)
+            }
             if not items:
                 continue
             attempted_chunks += 1
@@ -17992,12 +18174,11 @@ class App(ctk.CTk):
                 if ctx_lines:
                     payload["ctx"] = ctx_lines
             next_lines = []
-            for n_idx, n_ts, n_text in sorted_blocks[cs + POLISH_CHUNK:cs + POLISH_CHUNK + POLISH_CTX]:
+            for n_idx, n_ts, n_text in sorted_blocks[chunk_end:chunk_end + POLISH_CTX]:
                 next_lines.append(n_text)
             if next_lines:
                 payload["next_ctx"] = next_lines
-            chunk_num = cs // POLISH_CHUNK + 1
-            total_chunks = math.ceil(len(sorted_blocks) / POLISH_CHUNK)
+            total_chunks = len(polish_ranges)
 
             for attempt in range(2):  # 1 retry on failure
                 try:
@@ -18328,9 +18509,14 @@ class App(ctk.CTk):
                 # için bunu kaynak/analiz önbelleği gibi kullanma.
                 orig_cues = None
                 analysis_result = None
+                if do_critic or do_polish or do_native:
+                    self._log(
+                        f"{fname}: gerçek kaynak altyazı seçilmediği için Critic, Polish ve "
+                        "Native Okuyucu atlandı; kaynak doğrulaması olmadan çeviri değiştirilmeyecek.",
+                        "warn")
 
                 # Critic Pass
-                if do_critic:
+                if do_critic and orig_cues:
                     try:
                         self._update_file_progress(fp, "Critic Pass", 20)
                         self._set_phase("Critic Pass", f"{fname}  ({i+1}/{n})")
@@ -18358,7 +18544,7 @@ class App(ctk.CTk):
                         self._log(f"Critic Pass hatası: {e}", "warn")
 
                 # Polish Pass
-                if do_polish:
+                if do_polish and orig_cues:
                     try:
                         self._update_file_progress(fp, "Polish Pass", 55)
                         self._set_phase("Polish Pass", f"{fname}  ({i+1}/{n})")
@@ -18376,7 +18562,7 @@ class App(ctk.CTk):
                         self._log(f"Polish Pass hatası: {e}", "warn")
 
                 # Native Okuyucu Pass
-                if do_native:
+                if do_native and orig_cues:
                     try:
                         self._update_file_progress(fp, "Native Okuyucu", 65)
                         self._set_phase("Native Okuyucu", f"{fname}  ({i+1}/{n})")
@@ -20897,8 +21083,6 @@ class App(ctk.CTk):
             return None
 
         raw_src_map = _raw_src_map_from_cues(cues)
-        missing_before = _partial_missing_translation_ids(
-            partial_blocks, raw_src_map, cues)
         partial_baseline = _file_state_signature(partial_path)
         schema_dict = self._get_file_schema(filepath)
         glossary = ht.load_glossary(self._get_file_glossary(filepath))
@@ -20908,6 +21092,9 @@ class App(ctk.CTk):
                 glossary, target_language=tgt),
             **self._get_locked_terms_dict(filepath, tgt),
         }
+        missing_before = _partial_missing_translation_ids(
+            partial_blocks, raw_src_map, cues, locked_terms=locked_terms,
+            source_language=file_src)
         system_prompt = _build_sync_system_prompt(
             file_src, tgt, schema_dict, profanity)
         self._log(
@@ -20935,7 +21122,8 @@ class App(ctk.CTk):
         guard_reason = _batch_write_guard_reason(
             filepath, partial_path, expected_source_hash, partial_baseline)
         if not guard_reason and not _partial_missing_translation_ids(
-                repaired_blocks, raw_src_map, cues):
+                repaired_blocks, raw_src_map, cues, locked_terms=locked_terms,
+                source_language=file_src):
             guard_reason = _batch_write_guard_reason(
                 filepath, out_path, expected_source_hash, output_baseline)
         if guard_reason:
@@ -20950,12 +21138,14 @@ class App(ctk.CTk):
                 "blocks": repaired_blocks, "repaired": repaired,
                 "missing_before": missing_before,
                 "missing_after": _partial_missing_translation_ids(
-                    repaired_blocks, raw_src_map, cues),
+                    repaired_blocks, raw_src_map, cues,
+                    locked_terms=locked_terms, source_language=file_src),
                 "write_path": partial_path,
             }
 
         missing_after = _partial_missing_translation_ids(
-            repaired_blocks, raw_src_map, cues)
+            repaired_blocks, raw_src_map, cues, locked_terms=locked_terms,
+            source_language=file_src)
         complete = not missing_after
         write_path = out_path if complete else partial_path
         write_blocks = list(repaired_blocks)
@@ -24789,6 +24979,14 @@ class App(ctk.CTk):
                         filepath, "Eksik Çeviri Onarımı", "running")
                     _raw_map_pre = _raw_src_map_from_cues(cues)
                     _repair_client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
+                    _repair_locked_terms = {
+                        **ht.sanitize_glossary_for_turkish(
+                            dict(glossary or {}), target_language=tgt),
+                        **ht.sanitize_glossary_for_turkish(
+                            dict(getattr(context, "recurring_terms", {}) or {}),
+                            target_language=tgt),
+                        **self._get_locked_terms_dict(filepath, tgt),
+                    }
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
                         _final_blocks, _raw_map_pre, _repair_client,
                         src_lang=file_src, tgt_lang=tgt,
@@ -24799,7 +24997,8 @@ class App(ctk.CTk):
                         source_cues=cues,
                         cancel_check=lambda: self._stop_flag,
                         cancel_context=self.__dict__.get(
-                            "_helper_request_canceller"))
+                            "_helper_request_canceller"),
+                        locked_terms=_repair_locked_terms)
                 except Exception as e:
                     self._log(f"[{fname}] Eksik satır onarımı atlandı: {e}", "warn")
                 if self._stop_flag:

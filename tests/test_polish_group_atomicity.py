@@ -11,6 +11,20 @@ bağımsız uygulanır — mevcut davranış korunur.
 import unittest
 
 import hybrid_translate as ht
+import subtitle_translator_gui as gui
+
+
+class PolishChunkBoundaryTest(unittest.TestCase):
+    def test_fragment_group_crossing_nominal_boundary_stays_in_one_chunk(self):
+        blocks = [
+            (str(i), "00:00:00,000 --> 00:00:01,000", f"Satır {i}")
+            for i in range(1, 302)
+        ]
+        ranges = gui._polish_chunk_ranges(
+            blocks, {"150": "fg_150_151", "151": "fg_150_151"}, 150)
+
+        self.assertEqual(ranges[0], (0, 151))
+        self.assertFalse(any(start == 150 for start, _end in ranges))
 
 
 class AllGroupPassAppliesAllTest(unittest.TestCase):

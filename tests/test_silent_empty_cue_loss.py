@@ -328,7 +328,7 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
         with mock.patch("subtitle_translator_gui._safe_chat_create", return_value=response):
             out, repaired = gui._repair_untranslated_sync(
                 blocks, raw_src_map, client=object(),
-                src_lang="English", tgt_lang="Turkish")
+                src_lang="English", tgt_lang="Turkish", retry_delays=())
         self.assertEqual(repaired, 1)
         self.assertEqual(out[0][2], "Rapé ve hapé--")
 
@@ -343,7 +343,7 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
         with mock.patch("subtitle_translator_gui._safe_chat_create", return_value=response):
             out, repaired = gui._repair_untranslated_sync(
                 blocks, raw_src_map, client=object(),
-                src_lang="English", tgt_lang="Turkish")
+                src_lang="English", tgt_lang="Turkish", retry_delays=())
         self.assertEqual(repaired, 0)
         self.assertEqual(out[0][2], "[HATA]")
 

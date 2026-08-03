@@ -39,6 +39,9 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertNotIn("ht.load_subtitle(fp)", src)
         self.assertNotIn("ht.load_context_cache(", src)
         self.assertIn("source_driven=False", src)
+        self.assertIn("if do_critic and orig_cues:", src)
+        self.assertIn("if do_polish and orig_cues:", src)
+        self.assertIn("if do_native and orig_cues:", src)
         self.assertIn("if do_qc and orig_cues:", src)
         self.assertIn("QC atlandı: post-işlemde gerçek kaynak altyazı seçilmedi.", src)
 

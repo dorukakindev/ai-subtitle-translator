@@ -2344,7 +2344,7 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     try:
         from helper_models import normalize_helper_model_label, resolve_helper_model, _CONFIGS, _ALIASES
         norm_label = normalize_helper_model_label(model)
-        is_known_model = (model in _CONFIGS) or (model.lower() in _ALIASES) or (norm_label in _CONFIGS and norm_label != "gpt-5.4-mini")
+        is_known_model = (model in _CONFIGS) or (model.lower() in _ALIASES)
         cfg = resolve_helper_model(norm_label)
         if cfg.provider == "bedrock":
             is_bedrock = True
@@ -4319,17 +4319,19 @@ def back_translation_check(
             if not isinstance(parsed, list):
                 raise ValueError("stage1_response_not_array")
             expected_ids = {it["idx"] for it in chunk}
-            if len(parsed) == len(chunk) and all(isinstance(o, dict) for o in parsed):
-                back_map = {
-                    it["idx"]: str(o.get("en", "")).strip()
-                    for it, o in zip(chunk, parsed)
-                }
-            else:
-                for o in parsed:
-                    if isinstance(o, dict) and o.get("id") is not None:
-                        sid = str(o["id"])
-                        if sid in expected_ids and sid not in back_map:
-                            back_map[sid] = str(o.get("en", "")).strip()
+            duplicate_ids = set()
+            for o in parsed:
+                if not isinstance(o, dict) or o.get("id") is None:
+                    continue
+                sid = str(o["id"])
+                if sid not in expected_ids:
+                    continue
+                if sid in back_map:
+                    duplicate_ids.add(sid)
+                    continue
+                back_map[sid] = str(o.get("en", "")).strip()
+            for sid in duplicate_ids:
+                back_map.pop(sid, None)
             returned_ids = {sid for sid, text in back_map.items() if text}
             if not returned_ids:
                 raise ValueError("stage1_missing_items")
@@ -5175,7 +5177,7 @@ _SOURCE_ENGLISH_FUNCTION_WORDS = frozenset({
 })
 _SOURCE_ENGLISH_NGRAM_EXEMPTIONS = frozenset({
     "rock and roll", "hip hop music", "status quo ante", "ad hoc basis",
-    "de facto government", "vice versa situation",
+    "de facto government", "vice versa situation", "magna cum laude",
 })
 
 
@@ -10187,6 +10189,15 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
         if not changed:
             continue
 
+        if group_expected is not None:
+            expected_members = group_expected.get(group_id, sids)
+            missing = [s for s in expected_members if s not in proposals]
+            if missing:
+                key = "group_atomic:partial_response"
+                rejected += len(changed)
+                rejected_reasons[key] = rejected_reasons.get(key, 0) + len(changed)
+                continue
+
         all_ok = all(proposals[s][1] for s in changed)
         if not all_ok:
             fail_reason = next((proposals[s][2] for s in changed if not proposals[s][1]),
@@ -10197,14 +10208,6 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
             continue
 
         if group_expected is not None:
-            expected_members = group_expected.get(group_id, sids)
-            missing = [s for s in expected_members if s not in proposals]
-            if missing:
-                key = "group_atomic:partial_response"
-                rejected += len(changed)
-                rejected_reasons[key] = rejected_reasons.get(key, 0) + len(changed)
-                continue
-
             old_joined = "\n".join(original_by_id.get(s, "") for s in expected_members)
             new_joined = "\n".join(
                 proposals[s][0] if s in proposals else original_by_id.get(s, "")
@@ -11275,6 +11278,24 @@ def critic_pass_with_helper(
                         fragment_tag=fragment_tag,
                         locked_terms=glossary,
                     )
+                    if not ok and reason in _SEMANTIC_REWRITE_REJECTIONS:
+                        semantic_ok, semantic_reason = (
+                            validate_semantic_reconciliation_candidate(
+                                old_text,
+                                final_text,
+                                source_text=orig_dict.get(fid, ""),
+                                neighbor_texts=neighbor_texts,
+                                locked_terms=glossary,
+                            )
+                        )
+                        if semantic_ok:
+                            ok, reason = True, semantic_reason
+                    if (not ok and reason == "content_word_loss"
+                            and re.search(r"\b(?:ok|okay)\b", old_text, re.I)
+                            and not re.search(r"\b(?:ok|okay)\b", final_text, re.I)
+                            and not re.search(
+                                r"\b(?:ok|okay)\b", orig_dict.get(fid, ""), re.I)):
+                        ok, reason = True, ""
                     # Öneri SADECE satır sayısı yüzünden reddedildiyse atmadan önce
                     # orijinalin satır sayısına yeniden sarmayı dene (bkz.
                     # _reflow_to_line_count docstring — gerçek olay, 2026-07-21).
@@ -11309,6 +11330,40 @@ def critic_pass_with_helper(
                         "reason": reason,
                         "recovered": recovered,
                     })
+
+            prepared_by_id = {item["fid"]: item for item in prepared}
+            checked_fragment_groups = set()
+            for item in prepared:
+                group_ids = tuple(
+                    str(group_id) for group_id in
+                    frag_group_by_id.get(item["fid"], [item["fid"]])
+                )
+                if len(group_ids) < 2 or group_ids in checked_fragment_groups:
+                    continue
+                checked_fragment_groups.add(group_ids)
+                if not all(group_id in prepared_by_id for group_id in group_ids):
+                    continue
+                group_items = [prepared_by_id[group_id] for group_id in group_ids]
+                if not all(
+                        member["ok"]
+                        or member["reason"] in _SEMANTIC_REWRITE_REJECTIONS
+                        for member in group_items):
+                    continue
+                old_joined = "\n".join(member["old_text"] for member in group_items)
+                new_joined = "\n".join(member["final_text"] for member in group_items)
+                source_joined = " ".join(
+                    str(orig_dict.get(group_id, "") or "").strip()
+                    for group_id in group_ids
+                    if str(orig_dict.get(group_id, "") or "").strip()
+                )
+                joined_ok, _joined_reason = validate_polish_candidate(
+                    old_joined, new_joined, source_text=source_joined,
+                    locked_terms=glossary)
+                if joined_ok:
+                    for member in group_items:
+                        if member["reason"] in _SEMANTIC_REWRITE_REJECTIONS:
+                            member["ok"] = True
+                            member["reason"] = ""
 
             before_reason_map = _semantic_reason_map(
                 result, cues, glossary, scene_gap_sec=gap_limit)
@@ -11352,19 +11407,15 @@ def critic_pass_with_helper(
                     if locked_term_violation(group_source, group_target, glossary):
                         locked_fragment_reject_ids.update(group_ids)
 
-            accepted_ids = {item["fid"] for item in prepared if item["ok"]}
             partial_flow_group_ids = set()
             for item in prepared:
-                if not item["ok"] or not any(
-                        token in flow_group_reason_tokens
-                        for token in item["reason_toks"]):
-                    continue
                 group_ids = {
                     str(group_id)
                     for group_id in frag_group_by_id.get(
                         item["fid"], [item["fid"]])
                 }
-                if not group_ids.issubset(accepted_ids):
+                if len(group_ids) > 1 and not group_ids.issubset(
+                        set(prepared_by_id)):
                     partial_flow_group_ids.update(group_ids)
             for item in prepared:
                 fid = item["fid"]
@@ -11379,7 +11430,7 @@ def critic_pass_with_helper(
                 if ok and fid in locked_fragment_reject_ids:
                     ok = False
                     reason = "fragment_group_locked_term"
-                if ok and fid in partial_flow_group_ids:
+                if fid in partial_flow_group_ids:
                     ok = False
                     reason = (
                         "dangling_fragment_word_deletion"

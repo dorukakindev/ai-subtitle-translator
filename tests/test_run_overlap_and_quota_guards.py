@@ -98,7 +98,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                    return_value=response) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish", locked_terms=locked)
+                tgt_lang="Turkish", locked_terms=locked, retry_delays=())
         payload = __import__("json").loads(
             create.call_args.kwargs["messages"][1]["content"])
         self.assertEqual(payload["glossary"], locked)
@@ -150,7 +150,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                    return_value=response):
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish")
+                tgt_lang="Turkish", retry_delays=())
         self.assertEqual(repaired, 1)
         self.assertEqual(result[0][2], "[HATA]")
         self.assertEqual(result[1][2], "İkinci.")
@@ -179,7 +179,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                    side_effect=responses) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish")
+                tgt_lang="Turkish", retry_delays=(0,))
 
         self.assertEqual(create.call_count, 2)
         self.assertEqual(repaired, 2)
@@ -207,7 +207,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                    side_effect=responses) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish")
+                tgt_lang="Turkish", retry_delays=(0,))
 
         self.assertEqual(create.call_count, 2)
         self.assertEqual(repaired, 1)
@@ -230,7 +230,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                    return_value=response) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish")
+                tgt_lang="Turkish", retry_delays=(0,))
 
         self.assertEqual(create.call_count, 2)
         self.assertEqual(repaired, 0)
