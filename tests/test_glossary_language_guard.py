@@ -46,19 +46,30 @@ class ContextSensitiveGlossaryGuardTest(unittest.TestCase):
             {
                 "will": "vasiyetname",
                 "work": "çalışmak",
+                "works": "fabrika",
+                "superior": "amir",
                 "last will": "son vasiyetname",
                 "field work": "saha çalışması",
+                "works security": "fabrika güvenliği",
+                "superior officer": "üst düzey görevli",
             },
             log_fn=lambda message, tag: logs.append((message, tag)),
         )
 
         self.assertEqual(
             cleaned,
-            {"last will": "son vasiyetname", "field work": "saha çalışması"},
+            {
+                "last will": "son vasiyetname",
+                "field work": "saha çalışması",
+                "works security": "fabrika güvenliği",
+                "superior officer": "üst düzey görevli",
+            },
         )
         self.assertTrue(any("bağlama göre değişen işlev sözcüğü" in row[0] for row in logs))
         self.assertTrue(any("will->vasiyetname" in row[0] for row in logs))
         self.assertTrue(any("work->çalışmak" in row[0] for row in logs))
+        self.assertTrue(any("works->fabrika" in row[0] for row in logs))
+        self.assertTrue(any("superior->amir" in row[0] for row in logs))
 
 
 class RomanNumeralGlossaryGuardTest(unittest.TestCase):

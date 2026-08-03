@@ -72,6 +72,22 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("Film ve Video", "\n".join(text for _i, _ts, text in result))
         self.assertIn("Gerçek diyalog.", "\n".join(text for _i, _ts, text in result))
 
+    def test_french_subtitle_company_credit_is_removed_from_source(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Altyazi : TransPerfect Media"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Gerçek diyalog."),
+        ]
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Sous-titrage : TransPerfect Media"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Dialogue réel."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        joined = "\n".join(text for _i, _ts, text in result)
+        self.assertNotIn("TransPerfect", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
     def test_source_ocr_quote_markers_are_normalized(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "'Her şey ortaktı."),

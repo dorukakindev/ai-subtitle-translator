@@ -14,6 +14,7 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         app.semantic_reconcile_var.get.return_value = True
         app._set_phase = MagicMock()
         app._update_file_progress = MagicMock()
+        app._maybe_turkish_diacritic_repair = MagicMock(return_value=0)
         app._maybe_backtranslation_check = MagicMock(return_value=0)
         app._maybe_semantic_reconciliation = MagicMock(return_value=0)
 
@@ -25,11 +26,11 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
 
         self.assertEqual(
             [call.args[0] for call in app._set_phase.call_args_list],
-            ["Geri Çeviri", "Nihai Anlam Mutabakatı"],
+            ["Türkçe Karakter", "Geri Çeviri", "Nihai Anlam Mutabakatı"],
         )
         self.assertEqual(
             [call.args[1] for call in app._update_file_progress.call_args_list],
-            ["Geri Çeviri", "Nihai Anlam Mutabakatı"],
+            ["Türkçe Karakter", "Geri Çeviri", "Nihai Anlam Mutabakatı"],
         )
         self.assertTrue(all(
             call.args[0] == r"C:\input\source.srt"
@@ -156,6 +157,7 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         app.semantic_reconcile_var.get.return_value = True
         app._set_phase = MagicMock()
         app._update_file_progress = MagicMock()
+        app._maybe_turkish_diacritic_repair = MagicMock(return_value=0)
 
         def backtranslation(*args, status_out=None, **kwargs):
             status_out.update({"status": "completed", "flagged_ids": ["7"], "changed": 0})
