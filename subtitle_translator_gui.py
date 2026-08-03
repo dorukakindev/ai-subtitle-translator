@@ -672,7 +672,16 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 5
+QUALITY_PROFILE_VERSION = 6
+RESELLER_ROUTING_DEFAULTS = {
+    "main_custom": True,
+    "main_custom_model": "gpt-5.4",
+    "main_custom_url": "https://api.shuaiapi.com/v1",
+    "helper_model_analysis": "GPT-5.4 (Reseller)",
+    "helper_model_critic": "GPT-5.4 (Reseller)",
+    "helper_model_polish": "GPT-5.4 (Reseller)",
+    "helper_model_qc": "GPT-5.4 (Reseller)",
+}
 QUALITY_PROFILE_DEFAULTS = {
     "model": "gpt-5.4",
     "mode": "sync",
@@ -684,8 +693,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "scene_gap_seconds": 3.0,
     "temperature": 0.2,
     "critic": True,
-    "helper_model_analysis": "GPT-5.4 (Reseller)",
-    "helper_model_critic": "GPT-5.4 (Reseller)",
+    **RESELLER_ROUTING_DEFAULTS,
     "native": True,
     "semantic_reconcile": True,
     "clean_sdh": True,
@@ -827,6 +835,10 @@ def _set_windows_sleep_prevention(enabled: bool) -> bool:
 def _apply_quality_profile_defaults(settings: dict) -> bool:
     if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
         return False
+    if settings.get("quality_profile_version") == 5:
+        settings.update(RESELLER_ROUTING_DEFAULTS)
+        settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
+        return True
     if "analysis_depth" not in settings or "chunk_size" not in settings:
         return False
     settings.update(QUALITY_PROFILE_DEFAULTS)
@@ -9451,7 +9463,7 @@ class App(ctk.CTk):
         # hiç değiştirmemek. Bunun yerine AYRI, kendi etiketli alanlar: açıkken ana
         # çeviri bu alanları kullanır, OpenAI alanları görünürde/bellekte AYNEN kalır.
         # Kapatınca anında eskisi gibi OpenAI'ye döner — hiçbir şey elle geri yazılmaz.
-        self.main_custom_var = ctk.BooleanVar(value=False)
+        self.main_custom_var = ctk.BooleanVar(value=True)
         mc_fr = ctk.CTkFrame(sb, fg_color="transparent")
         mc_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         mc_fr.grid_columnconfigure(1, weight=1)
@@ -9831,7 +9843,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(critic_fr, text="Critic Pass",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="gpt-5.4-mini hataları otomatik düzeltir:\ntransliterasyon, yanlış register.",
+        ctk.CTkLabel(sb, text="Seçili yardımcı model hataları otomatik düzeltir:\ntransliterasyon, yanlış register.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -9848,7 +9860,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(polish_fr, text="Polish Pass",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Çeviri bittikten sonra gpt-5.4-mini ile\nikinci geçiş — doğal Türkçeye çevirir.",
+        ctk.CTkLabel(sb, text="Çeviri bittikten sonra seçili yardımcı modelle\nikinci geçiş — doğal Türkçeye çevirir.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -9865,7 +9877,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(qc_fr, text="QC Kontrolü",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="gpt-5.4-mini çeviriyi inceler, şüpheli\nsatırları işaretler. Onayınla düzeltir.",
+        ctk.CTkLabel(sb, text="Seçili yardımcı model çeviriyi inceler, şüpheli\nsatırları işaretler. Onayınla düzeltir.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -10092,10 +10104,7 @@ class App(ctk.CTk):
             role_container.pack(fill="x", pady=(0,2))
             self.helper_role_containers[role] = role_container
 
-            default_helper_model = (
-                "GPT-5.4 (Reseller)"
-                if role in ("analysis", "critic") else "gpt-5.4-mini"
-            )
+            default_helper_model = "GPT-5.4 (Reseller)"
             mvar = ctk.StringVar(value=default_helper_model)
             self.helper_model_vars[role] = mvar
 
@@ -14693,7 +14702,7 @@ class App(ctk.CTk):
 
     def _helper_model_config(self, role: str):
         if role not in self.helper_model_vars:
-            return resolve_helper_model("gpt-5.4-mini")
+            return resolve_helper_model("GPT-5.4 (Reseller)")
         lbl = self.helper_model_vars[role].get()
         if self._is_custom_helper_label(lbl):
             from helper_models import HelperModelConfig
@@ -24245,7 +24254,7 @@ class App(ctk.CTk):
                         base_url=b_url, target_language=target_language)
         return combined_stage, [bid_a, bid_b]
 
-    # ── Hybrid mod (Batch + gpt-5.4-mini analiz) ──────────────────────────────
+    # ── Hybrid mod (Batch + yardımcı model analizi) ───────────────────────────
     def _run_hybrid(self, openai_key, helper_key, ext_project_path):
         self._block_cache = {}   # önceki çalışmadan kalan cache'i temizle
         self._twowave_pending = {}   # B3: iki-dalgalı dosyaların Faz1'de saklanan istekleri

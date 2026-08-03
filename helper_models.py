@@ -287,13 +287,13 @@ def normalize_helper_model_label(value: str) -> str:
     key = (value or "").strip()
     if key in _CONFIGS:
         return key
-    return _ALIASES.get(key.lower(), "gpt-5.4-mini")
+    return _ALIASES.get(key.lower(), "GPT-5.4 (Reseller)")
 
 
 def resolve_helper_model(value: str) -> HelperModelConfig:
     key = normalize_helper_model_label(value)
     if key not in _CONFIGS:
-        return _CONFIGS["gpt-5.4-mini"]
+        return _CONFIGS["GPT-5.4 (Reseller)"]
     return _CONFIGS[key]
 
 

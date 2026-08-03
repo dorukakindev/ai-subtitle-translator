@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from subtitle_translator_gui import (
+    MEDIA_MODE_DEFAULTS,
     QUALITY_PROFILE_DEFAULTS,
     QUALITY_PROFILE_VERSION,
     _apply_quality_profile_defaults,
@@ -48,7 +49,8 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "self.hybrid_var = ctk.BooleanVar(value=True)",
             "self.chain_ctx_var = ctk.BooleanVar(value=True)",
             'self.analysis_depth_var = ctk.StringVar(value="Maksimum")',
-            'if role in ("analysis", "critic") else "gpt-5.4-mini"',
+            'default_helper_model = "GPT-5.4 (Reseller)"',
+            "self.main_custom_var = ctk.BooleanVar(value=True)",
         ]
         for snippet in expected:
             self.assertIn(snippet, self.source)
@@ -94,8 +96,13 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "scene_gap_seconds": 3.0,
                 "temperature": 0.2,
                 "critic": True,
+                "main_custom": True,
+                "main_custom_model": "gpt-5.4",
+                "main_custom_url": "https://api.shuaiapi.com/v1",
                 "helper_model_analysis": "GPT-5.4 (Reseller)",
                 "helper_model_critic": "GPT-5.4 (Reseller)",
+                "helper_model_polish": "GPT-5.4 (Reseller)",
+                "helper_model_qc": "GPT-5.4 (Reseller)",
                 "native": True,
                 "semantic_reconcile": True,
                 "clean_sdh": True,
@@ -108,6 +115,35 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "linebreak": False,
             },
         )
+
+    def test_v5_migration_changes_only_provider_routing(self):
+        settings = {
+            "quality_profile_version": 5,
+            "media_mode": "Film",
+            "content_type": "Sanat / Festival Filmi",
+            "series_memory": False,
+            "season_canon": False,
+            "helper_model_polish": "gpt-5.4-mini",
+            "helper_model_qc": "gpt-5.4-mini",
+        }
+
+        self.assertTrue(_apply_quality_profile_defaults(settings))
+        self.assertEqual(settings["quality_profile_version"], QUALITY_PROFILE_VERSION)
+        self.assertEqual(settings["media_mode"], "Film")
+        self.assertEqual(settings["content_type"], "Sanat / Festival Filmi")
+        self.assertFalse(settings["series_memory"])
+        self.assertFalse(settings["season_canon"])
+        self.assertTrue(settings["main_custom"])
+        for role in ("analysis", "critic", "polish", "qc"):
+            self.assertEqual(
+                settings[f"helper_model_{role}"], "GPT-5.4 (Reseller)")
+
+    def test_film_and_series_profiles_do_not_override_reseller_routing(self):
+        for mode in ("Film", "Dizi"):
+            self.assertEqual(
+                set(MEDIA_MODE_DEFAULTS[mode]),
+                {"series_memory", "season_canon"},
+            )
 
 
 if __name__ == "__main__":

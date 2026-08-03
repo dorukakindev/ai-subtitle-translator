@@ -151,6 +151,15 @@ class HelperModelRoutingTest(unittest.TestCase):
         self.assertEqual(normalize_helper_model_label("reseller gpt-5.4"), "GPT-5.4 (Reseller)")
         self.assertEqual(normalize_helper_model_label("gpt-5.4-reseller"), "GPT-5.4 (Reseller)")
 
+    def test_unknown_helper_model_falls_back_to_reseller(self):
+        from helper_models import normalize_helper_model_label, resolve_helper_model
+
+        self.assertEqual(
+            normalize_helper_model_label(""), "GPT-5.4 (Reseller)")
+        cfg = resolve_helper_model("unknown-helper-model")
+        self.assertEqual(cfg.model, "gpt-5.4")
+        self.assertEqual(cfg.base_url, "https://api.shuaiapi.com/v1")
+
     def test_claude_haiku_routes_to_147ai_anthropic_messages(self):
         from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model
 
