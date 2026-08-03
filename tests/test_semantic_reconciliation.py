@@ -888,6 +888,7 @@ class SemanticReconciliationPassTest(unittest.TestCase):
 class SemanticGuiIntegrationTest(unittest.TestCase):
     def test_wrapper_runs_after_backtranslation_and_mutates_in_place(self):
         app = gui.App.__new__(gui.App)
+        app._active_snapshot = None
         app.semantic_reconcile_var = SimpleNamespace(get=lambda: True)
         app.backtrans_var = SimpleNamespace(get=lambda: False)
         app.src_var = SimpleNamespace(get=lambda: "English")
@@ -897,6 +898,8 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         app._helper_api_base_url = MagicMock(return_value="https://example.test/v1")
         app._helper_api_model = MagicMock(return_value="m")
         app._token_callback_for_model = MagicMock(return_value=MagicMock())
+        app._set_phase = MagicMock()
+        app._update_file_progress = MagicMock()
         blocks = [("1", "00:00:01 --> 00:00:02", "Eski.")]
         stats = {
             "clusters": 1, "suspects": 1, "proposed": 1,

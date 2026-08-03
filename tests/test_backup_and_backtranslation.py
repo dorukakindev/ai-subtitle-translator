@@ -115,6 +115,35 @@ class BackTranslationPrefilterTest(unittest.TestCase):
         self.assertEqual(status["successful_chunks"], 1)
         self.assertEqual(status["failed_chunks"], 0)
 
+    def test_stage_one_uses_response_order_when_model_shifts_ids(self):
+        blocks = [
+            ("1", _TS, "Birinci yeterince uzun çeviri satırıdır."),
+            ("2", _TS, "İkinci yeterince uzun çeviri satırıdır."),
+        ]
+        src = {"1": "First source line.", "2": "Second source line."}
+        prompts = []
+
+        def respond(_client, **kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            if len(prompts) == 1:
+                return SimpleNamespace(
+                    usage=None,
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                        '[{"id":"2","en":"First back translation."},'
+                        '{"id":"3","en":"Second back translation."}]')))],
+                )
+            return SimpleNamespace(
+                usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))],
+            )
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create", side_effect=respond):
+            ht.back_translation_check(src, blocks, api_key="x")
+
+        self.assertIn('"id": "1", "src": "First source line.", "back": "First back translation."', prompts[1])
+        self.assertIn('"id": "2", "src": "Second source line.", "back": "Second back translation."', prompts[1])
+
 
 if __name__ == "__main__":
     unittest.main()

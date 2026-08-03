@@ -6324,6 +6324,9 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
     yalnızca ad+ek düzeltmesine izin verilir, cümlenin başka hiçbir yeri değişemez)."""
     if not new or not new.strip():
         return False, "empty"
+    from hybrid_translate import has_turkish_diacritic_regression
+    if has_turkish_diacritic_regression(old, new):
+        return False, "turkish_diacritic_regression"
     if old.count("\n") != new.count("\n"):
         return False, "linebreak_count"
     old_rest, new_rest = old, new
@@ -17051,8 +17054,8 @@ class App(ctk.CTk):
                                      status_out: dict | None = None) -> int:
         """Geri çeviri anlam kontrolü. Açıksa çalışır: Türkçeyi tekrar
         kaynağa çevirip anlamca sapan satırları bulur, <stem>.geri_ceviri.txt'e +
-        log'a yazar. Flag'lenen satırları helper model ile düzeltir. Düzeltilen
-        satır sayısını döner."""
+        log'a yazar. Şüpheli cue kimliklerini nihai anlam mutabakatına aktarır;
+        çeviriyi doğrudan değiştirmez."""
         if status_out is not None:
             status_out.clear()
             status_out.update({
@@ -17084,11 +17087,6 @@ class App(ctk.CTk):
             else:
                 run_src_lang = run_src_lang or self.src_var.get()
                 run_tgt_lang = self.tgt_var.get()
-            locked_getter = getattr(self, "_get_locked_terms_dict", None)
-            locked_terms = (
-                locked_getter(source_path, run_tgt_lang or "Turkish")
-                if callable(locked_getter) and source_path else {}
-            )
             flags = ht.back_translation_check(
                 src_map=src_clean_map, tr_blocks=blocks,
                 api_key=self._helper_api_key("qc"),
@@ -17105,96 +17103,18 @@ class App(ctk.CTk):
                 return 0
             if not flags:
                 return 0
-            # Fix mode: flagged satırları helper ile düzelt
-            fix_client = None
-            fix_key = self._helper_api_key("qc")
-            fix_url = self._helper_api_base_url("qc")
-            fix_model = self._helper_api_model("qc")
-            fix_token_callback = self._token_callback_for_model(fix_model)
-            n_fixed = 0
-            fix_successful = 0
-            fix_failed = 0
-            for f in flags:
-                if self.__dict__.get("_stop_flag", False):
-                    if status_out is not None:
-                        status_out.update({"status": "cancelled", "changed": n_fixed})
-                    return n_fixed
-                try:
-                    src, tr, back, reason = f.get("src",""), f.get("tr",""), f.get("back",""), f.get("reason","")
-                    idx = f["idx"]
-                    if not tr or tr == "[HATA]":
-                        continue
-                    from hybrid_translate import _safe_chat_create, validate_polish_candidate
-                    from openai import OpenAI
-                    if fix_client is None:
-                        fix_client = OpenAI(api_key=fix_key, base_url=fix_url)
-                    fix_prompt = (
-                        f"Fix the Turkish subtitle translation below. The original source is '{src}'.\n"
-                        f"Current translation: '{tr}'.\n"
-                        f"Back-translation of your current Turkish: '{back}'.\n"
-                        f"Issue detected by back-translation comparison: {reason}.\n\n"
-                        f"Translate the source '{src}' correctly into natural Turkish. "
-                        f"Output ONLY the fixed Turkish text, nothing else."
-                    )
-                    active_terms = {
-                        src_term: target_term
-                        for src_term, target_term in locked_terms.items()
-                        if ht.term_in_text(str(src_term), str(src).casefold())
-                    }
-                    if active_terms:
-                        fix_prompt += (
-                            "\nRequired source-to-target terms: "
-                            + json.dumps(active_terms, ensure_ascii=False)
-                        )
-                    resp = _safe_chat_create(
-                        fix_client, model=fix_model,
-                        _checkpoint_label="backtranslation_fix",
-                        messages=[{"role": "user", "content": fix_prompt}],
-                        max_tokens=200, temperature=0.2,
-                        cancel_context=self.__dict__.get("_helper_request_canceller"),
-                    )
-                    if getattr(resp, "usage", None):
-                        total, cached = ht._get_usage_details(resp.usage)
-                        fix_token_callback(total, cached=cached)
-                    if self.__dict__.get("_stop_flag", False):
-                        if status_out is not None:
-                            status_out.update({"status": "cancelled", "changed": n_fixed})
-                        return n_fixed
-                    fixed_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
-                    if not fixed_text:
-                        fix_failed += 1
-                        continue
-                    fix_successful += 1
-                    fixed_text = fixed_text.strip("\"'")
-                    ok, _reason = validate_polish_candidate(
-                        tr, fixed_text, source_text=src,
-                        locked_terms=locked_terms)
-                    if ok:
-                        for i, (b_idx, b_ts, b_text) in enumerate(blocks):
-                            if str(b_idx) == idx:
-                                blocks[i] = (b_idx, b_ts, fixed_text)
-                                n_fixed += 1
-                                break
-                except Exception:
-                    fix_failed += 1
             if status_out is not None:
-                status_out["total_chunks"] = int(
-                    status_out.get("total_chunks", 0) or 0) + len(flags)
-                status_out["successful_chunks"] = int(
-                    status_out.get("successful_chunks", 0) or 0) + fix_successful
-                status_out["failed_chunks"] = int(
-                    status_out.get("failed_chunks", 0) or 0) + fix_failed
-                status_out["changed"] = n_fixed
-                if fix_failed:
-                    status_out["status"] = "partial"
+                status_out["changed"] = 0
+                status_out["flagged"] = len(flags)
+                status_out["flagged_ids"] = sorted({str(f["idx"]) for f in flags})
             # Rapor yaz
             try:
                 rpath = str(
                     Path(out_path).parent / "Raporlar"
                     / f"{Path(out_path).stem}.geri_ceviri.txt")
                 Path(rpath).parent.mkdir(parents=True, exist_ok=True)
-                out = [f"# Geri Çeviri Anlam Kontrolü — {len(flags)} satır ({n_fixed} düzeltildi)",
-                       f"# {n_fixed} satır otomatik düzeltildi, {len(flags) - n_fixed} rapor-only.", ""]
+                out = [f"# Geri Çeviri Anlam Kontrolü — {len(flags)} şüpheli satır",
+                       "# Doğrudan değişiklik yapılmadı; şüpheli cue'lar Nihai Anlam Mutabakatına aktarıldı.", ""]
                 for f in flags:
                     out.append(f"[{f['idx']}] sebep: {f['reason']}")
                     out.append(f"  kaynak     : {f['src']}")
@@ -17206,7 +17126,7 @@ class App(ctk.CTk):
                 self._log(f"Geri çeviri raporu: {Path(rpath).name} ({len(flags)} satır)", "info")
             except Exception as _re:
                 self._log(f"Geri çeviri raporu yazılamadı: {_re}", "warn")
-            return n_fixed
+            return 0
         except Exception as e:
             if status_out is not None:
                 status_out.update({"status": "failed", "error": str(e)})
@@ -17375,17 +17295,15 @@ class App(ctk.CTk):
                 "Geri Çeviri", f"{progress_name} — anlam kontrolü")
             self._update_file_progress(
                 progress_path, "Geri Çeviri", 96)
-        before_backtranslation = {
-            str(idx): text for idx, _ts, text in (blocks or [])
-        }
+        back_status = backtranslation_status_out if backtranslation_status_out is not None else {}
         fixed = self._maybe_backtranslation_check(
             out_path, src_clean_map, blocks, src_lang=src_lang,
             source_path=source_path,
-            status_out=backtranslation_status_out)
+            status_out=back_status)
         changed_ids = set(changed_ids or [])
         changed_ids.update(
-            str(idx) for idx, _ts, text in (blocks or [])
-            if before_backtranslation.get(str(idx), text) != text
+            str(idx) for idx in back_status.get(
+                "flagged_ids", ())
         )
         if App._run_setting(
                 self, "semantic_reconcile", "semantic_reconcile_var", True):

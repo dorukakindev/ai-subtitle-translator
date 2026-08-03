@@ -26,6 +26,20 @@ import hybrid_translate as ht
 
 
 class ContextSensitiveGlossaryGuardTest(unittest.TestCase):
+    def test_normalizes_ascii_degraded_turkish_targets(self):
+        result = ht.sanitize_glossary_for_turkish({
+            "snake": "yilan",
+            "wine": "sarap",
+            "Mother Superior": "Basrahibe",
+            "Brother Bishop": "Piskopos Kardes",
+            "point": "dunyanin en kucuk noktasi",
+        })
+        self.assertEqual(result["snake"], "yılan")
+        self.assertEqual(result["wine"], "şarap")
+        self.assertEqual(result["Mother Superior"], "Başrahibe")
+        self.assertEqual(result["Brother Bishop"], "Piskopos Kardeş")
+        self.assertEqual(result["point"], "dünyanın en küçük noktası")
+
     def test_context_sensitive_auxiliary_is_not_locked_as_a_term(self):
         logs = []
         cleaned = ht.sanitize_glossary_for_turkish(

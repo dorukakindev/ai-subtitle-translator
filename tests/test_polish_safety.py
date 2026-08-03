@@ -22,6 +22,22 @@ class _CtkStub(SimpleNamespace):
 
 
 class PolishCandidateSafetyTest(unittest.TestCase):
+    def test_rejects_turkish_diacritic_regression_inside_larger_rewrite(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Yeniden çarmıha dönmem gerekecek.",
+            "Yeniden carmiha dönmem gerekecek ve bunu biliyorsun.",
+            source_text="I will have to get back on the cross.",
+        )
+        self.assertFalse(ok)
+        self.assertIn(reason, {"content_word_drift", "turkish_diacritic_regression"})
+
+    def test_allows_removing_circumflex_without_losing_turkish_letters(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Hâlâ rüzgâr esiyor.",
+            "Hala rüzgar esiyor.",
+        )
+        self.assertTrue(ok, reason)
+
     def test_accepts_meaning_preserving_simple_polish(self):
         ok, reason = ht.validate_polish_candidate(
             "Bu benim için iyi değil.",

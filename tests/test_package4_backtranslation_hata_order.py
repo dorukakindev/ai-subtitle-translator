@@ -35,8 +35,7 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
             call.args[0] == r"C:\input\source.srt"
             for call in app._update_file_progress.call_args_list))
 
-    def test_backtranslation_check_returns_int_and_modifies_blocks(self):
-        """_maybe_backtranslation_check returns integer fix count and modifies blocks in-place."""
+    def test_backtranslation_check_is_report_only_and_returns_flagged_ids(self):
         app = gui.App.__new__(gui.App)
         app.backtrans_var = MagicMock()
         app.backtrans_var.get.return_value = True
@@ -61,23 +60,18 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
             "reason": "Meaning mismatch"
         }]
 
-        with patch("hybrid_translate.back_translation_check", return_value=fake_flags), \
-             patch("hybrid_translate._safe_chat_create") as mock_chat, \
-             patch("hybrid_translate.validate_polish_candidate", return_value=(True, "")):
-            
-            mock_choice = MagicMock()
-            mock_choice.message.content = "Merhaba dünya"
-            mock_resp = MagicMock()
-            mock_resp.choices = [mock_choice]
-            mock_chat.return_value = mock_resp
-
+        status = {}
+        with patch("hybrid_translate.back_translation_check", return_value=fake_flags):
             with patch("builtins.open", unittest.mock.mock_open()):
-                fixes = app._maybe_backtranslation_check("out.srt", src_map, blocks, src_lang="en")
+                fixes = app._maybe_backtranslation_check(
+                    "out.srt", src_map, blocks, src_lang="en", status_out=status)
 
-        self.assertEqual(fixes, 1)
-        self.assertEqual(blocks[0][2], "Merhaba dünya")
+        self.assertEqual(fixes, 0)
+        self.assertEqual(blocks[0][2], "Bozuk çeviri")
+        self.assertEqual(status["flagged_ids"], ["1"])
+        self.assertEqual(status["changed"], 0)
 
-    def test_backtranslation_fix_reports_response_usage(self):
+    def test_backtranslation_does_not_send_per_flag_fix_requests(self):
         app = gui.App.__new__(gui.App)
         app.backtrans_var = MagicMock()
         app.backtrans_var.get.return_value = True
@@ -96,25 +90,17 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
             "idx": "1", "src": "Hello world", "tr": "Bozuk Ã§eviri",
             "back": "Broken translation", "reason": "Meaning mismatch",
         }]
-        choice = MagicMock()
-        choice.message.content = "Merhaba dÃ¼nya"
-        response = MagicMock(choices=[choice])
-        response.usage = MagicMock()
-        response.usage.total_tokens = 29
-        response.usage.prompt_tokens_details.cached_tokens = 7
         blocks = [(1, "00:00:01 -> 00:00:03", "Bozuk Ã§eviri")]
 
         with patch("hybrid_translate.back_translation_check",
                    return_value=flags), patch(
-                "hybrid_translate._safe_chat_create",
-                return_value=response), patch(
-                "hybrid_translate.validate_polish_candidate",
-                return_value=(True, "")), patch(
+                "hybrid_translate._safe_chat_create") as safe_chat, patch(
                 "builtins.open", unittest.mock.mock_open()):
             app._maybe_backtranslation_check(
                 "out.srt", {"1": "Hello world"}, blocks, src_lang="en")
 
-        app._update_tokens.assert_called_once_with(29, price=5.0, cached=7)
+        safe_chat.assert_not_called()
+        app._update_tokens.assert_not_called()
 
     def test_backtranslation_disabled_returns_zero(self):
         """When backtranslation option is off, _maybe_backtranslation_check returns 0 immediately."""
@@ -126,7 +112,7 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         fixes = app._maybe_backtranslation_check("out.srt", {"1": "Text"}, blocks)
         self.assertEqual(fixes, 0)
 
-    def test_backtranslation_fix_cannot_replace_locked_term(self):
+    def test_backtranslation_flag_cannot_directly_replace_locked_term(self):
         app = gui.App.__new__(gui.App)
         app.backtrans_var = MagicMock()
         app.backtrans_var.get.return_value = True
@@ -148,13 +134,8 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
             "back": "The ruler is coming.",
             "reason": "Meaning mismatch",
         }]
-        choice = MagicMock()
-        choice.message.content = "Hükümdar geliyor."
-        response = MagicMock(choices=[choice])
         with patch("hybrid_translate.back_translation_check",
                    return_value=flags), \
-             patch("hybrid_translate._safe_chat_create",
-                   return_value=response), \
              patch("builtins.open", unittest.mock.mock_open()):
             fixed = app._maybe_backtranslation_check(
                 "out.srt",
@@ -165,6 +146,29 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
             )
         self.assertEqual(fixed, 0)
         self.assertEqual(blocks[0][2], "İmparator geliyor.")
+
+    def test_final_semantic_receives_backtranslation_flagged_ids(self):
+        app = gui.App.__new__(gui.App)
+        app._active_snapshot = None
+        app.backtrans_var = MagicMock()
+        app.backtrans_var.get.return_value = True
+        app.semantic_reconcile_var = MagicMock()
+        app.semantic_reconcile_var.get.return_value = True
+        app._set_phase = MagicMock()
+        app._update_file_progress = MagicMock()
+
+        def backtranslation(*args, status_out=None, **kwargs):
+            status_out.update({"status": "completed", "flagged_ids": ["7"], "changed": 0})
+            return 0
+
+        app._maybe_backtranslation_check = backtranslation
+        app._maybe_semantic_reconciliation = MagicMock(return_value=0)
+        app._run_final_semantic_checks(
+            "out.srt", {"7": "Source"},
+            [(7, "00:00:01 --> 00:00:02", "Mevcut")],
+            changed_ids={"3"}, backtranslation_status_out={})
+        passed_ids = app._maybe_semantic_reconciliation.call_args.kwargs["changed_ids"]
+        self.assertEqual(passed_ids, {"3", "7"})
 
     def test_pipeline_order_in_gui_flows(self):
         """Verify _fill_hata_with_source and _restore_tags_blocks presence in _run_hybrid phase 2 success path."""

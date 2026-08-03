@@ -4318,10 +4318,18 @@ def back_translation_check(
             parsed = json.loads(payload)
             if not isinstance(parsed, list):
                 raise ValueError("stage1_response_not_array")
-            for o in parsed:
-                if isinstance(o, dict) and o.get("id") is not None:
-                    back_map[str(o["id"])] = str(o.get("en", "")).strip()
             expected_ids = {it["idx"] for it in chunk}
+            if len(parsed) == len(chunk) and all(isinstance(o, dict) for o in parsed):
+                back_map = {
+                    it["idx"]: str(o.get("en", "")).strip()
+                    for it, o in zip(chunk, parsed)
+                }
+            else:
+                for o in parsed:
+                    if isinstance(o, dict) and o.get("id") is not None:
+                        sid = str(o["id"])
+                        if sid in expected_ids and sid not in back_map:
+                            back_map[sid] = str(o.get("en", "")).strip()
             returned_ids = {sid for sid, text in back_map.items() if text}
             if not returned_ids:
                 raise ValueError("stage1_missing_items")
@@ -6057,6 +6065,21 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if not key or not value:
             continue
         value_s = str(value)
+        replacements = {
+            "basrahibe": "başrahibe", "kardes": "kardeş",
+            "tanri": "tanrı", "carmih": "çarmıh", "sarap": "şarap",
+            "yilan": "yılan", "kurbaga": "kurbağa", "seytan": "şeytan",
+            "cumasi": "cuması", "dunyanin": "dünyanın", "kucuk": "küçük",
+            "tuyler": "tüyler", "noktasi": "noktası",
+        }
+        for wrong, correct in replacements.items():
+            value_s = re.sub(
+                rf"(?<!\w){wrong}(?!\w)",
+                lambda match, repl=correct: repl[:1].upper() + repl[1:]
+                if match.group(0)[:1].isupper() else repl,
+                value_s,
+                flags=re.IGNORECASE,
+            )
         if str(key).strip().lower() in _GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS:
             gloss_dropped_terms[str(key)] = (
                 value_s, "bağlama göre değişen işlev sözcüğü")
@@ -6308,6 +6331,37 @@ _SPEAKER_PREFIX_RE = re.compile(
 
 def _ascii_fold(value: str) -> str:
     return unicodedata.normalize("NFKD", value or "").encode("ascii", "ignore").decode("ascii")
+
+
+_TURKISH_ASCII_TRANSLATION = str.maketrans({
+    "ç": "c", "ğ": "g", "ı": "i", "İ": "I", "ö": "o", "ş": "s", "ü": "u",
+    "Ç": "C", "Ğ": "G", "Ö": "O", "Ş": "S", "Ü": "U",
+})
+_TURKISH_DIACRITIC_CHARS = frozenset("çğıöşüÇĞİÖŞÜ")
+
+
+def _turkish_ascii_fold(value: str) -> str:
+    return unicodedata.normalize("NFKD", str(value or "").translate(
+        _TURKISH_ASCII_TRANSLATION)).encode("ascii", "ignore").decode("ascii")
+
+
+def has_turkish_diacritic_regression(original_text: str, candidate_text: str) -> bool:
+    """Reject replacing an existing Turkish spelling with its ASCII-degraded twin."""
+    old_words = re.findall(r"[^\W\d_]+", str(original_text or ""), re.UNICODE)
+    new_words = re.findall(r"[^\W\d_]+", str(candidate_text or ""), re.UNICODE)
+    new_by_fold = {}
+    for word in new_words:
+        new_by_fold.setdefault(_turkish_ascii_fold(word).casefold(), []).append(word)
+    for old_word in old_words:
+        if not any(char in _TURKISH_DIACRITIC_CHARS for char in old_word):
+            continue
+        matches = new_by_fold.get(_turkish_ascii_fold(old_word).casefold(), ())
+        if matches and all(
+                sum(char in _TURKISH_DIACRITIC_CHARS for char in match)
+                < sum(char in _TURKISH_DIACRITIC_CHARS for char in old_word)
+                for match in matches):
+            return True
+    return False
 
 
 def _speaker_label_prefix(text: str) -> str:
@@ -9834,6 +9888,8 @@ def validate_polish_candidate(
         return False, "content_word_drift"
     if _has_content_word_loss(old, new, source_text=src):
         return False, "content_word_loss"
+    if has_turkish_diacritic_regression(old, new):
+        return False, "turkish_diacritic_regression"
     # Son-çare yapısal kontrol: anlam-düzeyli guard'lardan (negation/question/drift/loss)
     # SONRA — "Bilmiyorum"->"Biliyorum" hem char-deletion hem negation-loss'tur; daha
     # anlamlı olan source_negation reason'ı kazansın diye burada, en sonda.

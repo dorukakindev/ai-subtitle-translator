@@ -22,12 +22,12 @@ class HelperRoutingAuditTests(unittest.TestCase):
         self.assertIn('self._helper_api_key("polish")', src_wr)
         self.assertIn('self._helper_api_key("polish")', src_sh)
 
-    def test_claim1_qc_fix_uses_qc_role(self):
-        """Claim 1: Verify _maybe_backtranslation_check fix mode uses 'qc' role first."""
+    def test_claim1_backtranslation_report_uses_qc_role(self):
+        """Backtranslation detection stays on the QC role without direct fix calls."""
         import inspect
         src = inspect.getsource(gui.App._maybe_backtranslation_check)
-        self.assertIn('fix_key = self._helper_api_key("qc")', src,
-                      "_maybe_backtranslation_check fix mode must use _helper_api_key('qc')")
+        self.assertIn('api_key=self._helper_api_key("qc")', src)
+        self.assertNotIn('_checkpoint_label="backtranslation_fix"', src)
 
     def test_general_helper_key_is_not_sent_to_non_openai_provider(self):
         helper_entry = SimpleNamespace(get=lambda: "shared-helper-key")
