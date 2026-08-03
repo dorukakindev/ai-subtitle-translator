@@ -2714,6 +2714,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     position_tags_removed = 0
     sdh_removed = 0
     for idx, ts, text in blocks:
+        if _is_delivery_credit((src_map if source_cues else {}).get(str(idx), "")):
+            continue
         value = str(text or "")
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
             continue
@@ -17908,6 +17910,7 @@ class App(ctk.CTk):
         rejected_reasons = {}
         attempted_chunks = 0
         successful_chunks = 0
+        permanent_error = None
         for cs in range(0, len(sorted_blocks), POLISH_CHUNK):
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
@@ -18054,11 +18057,19 @@ class App(ctk.CTk):
                         })
                     return list(sorted_blocks)
                 except Exception as e:
+                    if _is_permanent_provider_error(e):
+                        permanent_error = e
+                        self._log_exc(
+                            f"Polish chunk {chunk_num}/{total_chunks} kalıcı API hatası", e)
+                        break
                     if attempt == 0:
                         self._log(f"Polish chunk {chunk_num}/{total_chunks} — retry...", "warn")
                         time.sleep(2)
                     else:
                         self._log_exc(f"Polish chunk {chunk_num}/{total_chunks} hatası", e)
+            if permanent_error is not None:
+                attempted_chunks = total_chunks
+                break
 
         if self.__dict__.get("_stop_flag", False) or (
                 cancel_context is not None and cancel_context.is_cancelled()):
@@ -18111,6 +18122,8 @@ class App(ctk.CTk):
                 "failed_chunks": failed_chunks,
                 "total_chunks": attempted_chunks, "changed": changed,
             })
+            if permanent_error is not None:
+                status_out["error"] = str(permanent_error)
         if rejected:
             reason_txt = ", ".join(f"{k}:{v}" for k, v in sorted(rejected_reasons.items()))
             self._log(f"Polish Pass: {rejected} öneri güvenlik filtresinden döndü ({reason_txt})", "warn")

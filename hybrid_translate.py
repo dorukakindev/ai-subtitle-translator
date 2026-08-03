@@ -4279,6 +4279,7 @@ def back_translation_check(
     successful_chunks = 0
     partial_chunks = 0
     cancelled = False
+    permanent_error = None
     if status_out is not None:
         status_out["total_chunks"] = total_chunks
     for start in range(0, len(items), chunk_size):
@@ -4331,6 +4332,11 @@ def back_translation_check(
         except Exception as e:
             if log_fn:
                 log_fn(f"Geri çeviri stage-1 chunk hatası: {e}", "warn")
+            if _is_permanent_semantic_api_error(e):
+                permanent_error = e
+                if log_fn:
+                    log_fn("Geri çeviri kalıcı kimlik doğrulama hatası nedeniyle durduruldu", "err")
+                break
             continue
 
         # ── Stage 2: kaynak vs geri-çeviri sapma yargısı (muhafazakâr) ──
@@ -4389,6 +4395,11 @@ def back_translation_check(
         except Exception as e:
             if log_fn:
                 log_fn(f"Geri çeviri stage-2 chunk hatası: {e}", "warn")
+            if _is_permanent_semantic_api_error(e):
+                permanent_error = e
+                if log_fn:
+                    log_fn("Geri çeviri kalıcı kimlik doğrulama hatası nedeniyle durduruldu", "err")
+                break
             continue
 
     failed_chunks = max(0, total_chunks - successful_chunks)
@@ -4405,6 +4416,8 @@ def back_translation_check(
             "failed_chunks": failed_chunks,
             "changed": 0,
         })
+        if permanent_error is not None:
+            status_out["error"] = str(permanent_error)
     if log_fn:
         if failed_chunks or partial_chunks:
             log_fn(
@@ -9853,6 +9866,13 @@ def validate_semantic_reconciliation_candidate(
     old = str(original_text or "")
     new = str(candidate_text or "")
     src = str(source_text or "")
+    old_fold = _ascii_fold(old).casefold()
+    new_fold = _ascii_fold(new).casefold()
+    src_fold = _ascii_fold(src).casefold()
+    if (not re.search(r"\bburada\b", old_fold)
+            and re.search(r"\bburada\b", new_fold)
+            and not re.search(r"\b(?:here|in this place|at this place)\b", src_fold)):
+        return False, "ungrounded_here_addition"
     if (re.search(r"\b(?:n|_)othing\s+constructive\b", src, re.IGNORECASE)
             and re.search(r"\byapıcı\s+hiçbir\s+şey\s+değil\b", new,
                           re.IGNORECASE)):

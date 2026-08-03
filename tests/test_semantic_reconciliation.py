@@ -325,6 +325,16 @@ class SemanticReconciliationPassTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "missing_predicate")
 
+    def test_source_absent_here_cannot_be_added(self):
+        ok, reason = ht.validate_semantic_reconciliation_candidate(
+            "Yalnız ben değil, atalarım da.",
+            "Yalnız ben değil, atalarım da burada.",
+            source_text="Not only myself, but my ancestors as well.",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(reason, "ungrounded_here_addition")
+
     def test_pure_clause_deletion_is_rejected(self):
         ok, reason = ht.validate_semantic_reconciliation_candidate(
             "Biraz otur da düşün, saçmalıyorsun.",
