@@ -36,6 +36,9 @@ class BareImperativeNegationTest(unittest.TestCase):
     def test_krema_not_negation(self):
         self.assertFalse(ht._has_turkish_negation("Kremayı getir."))
 
+    def test_tamam_not_negation(self):
+        self.assertFalse(ht._has_turkish_negation("Tamam mı?"))
+
 
 class YokCopulaNegationTest(unittest.TestCase):
     def test_yoktur_is_negation(self):

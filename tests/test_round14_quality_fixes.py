@@ -96,7 +96,10 @@ class ReviewPassFragmentGuardTest(unittest.TestCase):
                 return SimpleNamespace(
                     usage=None,
                     choices=[SimpleNamespace(
-                        message=SimpleNamespace(content=json.dumps([{"i": "1", "t": "Merhaba."}], ensure_ascii=False))
+                        message=SimpleNamespace(content=json.dumps([
+                            {"i": "1", "t": "Merhaba."},
+                            {"i": "2", "t": "dünya."},
+                        ], ensure_ascii=False))
                     )],
                 )
 

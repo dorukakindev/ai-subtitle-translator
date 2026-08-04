@@ -6497,7 +6497,11 @@ def _has_turkish_negation(text: str) -> bool:
     if _BARE_NEGATIVE_IMPERATIVE_RE.search(tr):
         return True
     words = re.findall(r"[^\W\d_]+", tr.lower(), re.UNICODE)
-    return any(_TURKISH_NEGATION_SUFFIX_RE.search(word) for word in words)
+    suffix_exceptions = {"tamam", "hamam", "imam"}
+    return any(
+        word not in suffix_exceptions and _TURKISH_NEGATION_SUFFIX_RE.search(word)
+        for word in words
+    )
 
 
 def _question_mark_mismatch(src_text: str, tr_text: str) -> bool:

@@ -135,8 +135,8 @@ class PassSafetyGuardsTest(unittest.TestCase):
     def test_critic_current_id_applied(self):
         """2. Current critic ID’si uygulanır."""
         cues = [
-            MagicMock(index=1, text="Hello world"),
-            MagicMock(index=2, text="I am gonna fly"),
+            MagicMock(index=1, text="Hello world."),
+            MagicMock(index=2, text="I am gonna fly."),
         ]
         tr_blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba dünya"),

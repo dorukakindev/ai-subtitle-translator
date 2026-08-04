@@ -115,7 +115,7 @@ class RetryQualityGuardTest(unittest.TestCase):
 
         self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
 
-    def test_source_backed_name_in_neighbor_cue_does_not_retry_chunk(self):
+    def test_source_backed_name_in_neighbor_cue_still_retries_chunk(self):
         request = UpstreamProviderRecoveryTest._req([
             {"i": 1, "t": "Anselmo Suárez-Romero wrote it."},
             {"i": 2, "t": "She was the son of doña Mendizábal."},
@@ -125,7 +125,10 @@ class RetryQualityGuardTest(unittest.TestCase):
             {"i": 2, "t": "Suárez-Romero ve doña Mendizábal anılıyor."},
         ], ensure_ascii=False)
 
-        self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
+        self.assertEqual(
+            gui._chunk_response_retry_reason(raw, request),
+            "non_turkish_target",
+        )
 
     def test_corrected_dvorak_spelling_does_not_retry_chunk(self):
         request = UpstreamProviderRecoveryTest._req([
