@@ -15,6 +15,19 @@ def _client(url="https://api.shuaiapi.com/v1", key="sk-reseller"):
 
 
 class RetryAfterParsingTest(unittest.TestCase):
+    def test_shuai_request_id_is_preserved_for_support(self):
+        error = RuntimeError(
+            "model_not_found (request id: 20260804123456789abcdef)")
+
+        detail = provider_retry._provider_error_context(error)
+
+        self.assertEqual(detail["request_id"], "20260804123456789abcdef")
+
+    def test_success_response_request_id_is_read_from_sdk(self):
+        response = SimpleNamespace(_request_id="req_success_123")
+        self.assertEqual(
+            provider_retry._upstream_request_id(response), "req_success_123")
+
     def test_shuai_429_quota_is_distinguished_from_rate_limit(self):
         class ApiError(RuntimeError):
             status_code = 429
@@ -324,6 +337,32 @@ class ProviderCooldownRegistryTest(unittest.TestCase):
 
 
 class SafeChatCooldownIntegrationTest(unittest.TestCase):
+    def test_openai_sdk_internal_retries_are_disabled(self):
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key="sk-test",
+            base_url="https://api.shuaiapi.com/v1",
+        )
+        if not hasattr(client, "max_retries"):
+            self.skipTest("test OpenAI stub does not expose SDK retry settings")
+        response = mock.MagicMock()
+        request_client = mock.MagicMock()
+        request_client.chat.completions.create.return_value = response
+        with mock.patch.object(
+            provider_retry, "_without_sdk_retries",
+            return_value=request_client,
+        ) as disable_retries:
+            result = ht._safe_chat_create(
+                client, model="gpt-5.4", messages=[])
+
+        self.assertIs(result, response)
+        disable_retries.assert_called_once_with(client)
+        request_client.chat.completions.create.assert_called_once()
+        retry_free_client = provider_retry._without_sdk_retries(client)
+        self.assertEqual(client.max_retries, 2)
+        self.assertEqual(retry_free_client.max_retries, 0)
+
     def _assert_wrapper_records_429(self, fn):
         client = mock.MagicMock()
         client.base_url = "https://api.shuaiapi.com/v1"

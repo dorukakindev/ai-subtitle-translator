@@ -112,6 +112,7 @@ class RunTraceabilityTest(unittest.TestCase):
             "duration_seconds": 2.25, "status_code": 401,
             "reason": "kimlik doğrulama", "will_retry": False,
             "raw_error": "sk-secret-must-not-be-recorded",
+            "request_id": "req_support_123",
         }
         gui.App._record_api_event(app, "request_start", 0, 1, details)
         summary = gui.App._record_api_event(
@@ -122,6 +123,7 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertEqual(summary["terminal_failures"], 1)
         self.assertEqual(summary["operations"]["Polish Pass"]["failures"], 1)
         self.assertNotIn("sk-secret", json.dumps(summary))
+        self.assertEqual(summary["events"][-1]["request_id"], "req_support_123")
 
     def test_repair_retry_wait_reports_logical_retry_to_dashboard_record(self):
         statuses = []

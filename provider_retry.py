@@ -314,6 +314,33 @@ def _provider_request_context(client, model: str, checkpoint_label: str = "") ->
     }
 
 
+def _upstream_request_id(value) -> str:
+    direct = getattr(value, "request_id", None) or getattr(value, "_request_id", None)
+    if direct:
+        return str(direct)[:160]
+    response = getattr(value, "response", None)
+    headers = getattr(response, "headers", None) or getattr(value, "headers", None)
+    for name in ("x-request-id", "request-id", "x-request_id"):
+        header = _header_value(headers, name)
+        if header:
+            return str(header)[:160]
+    candidates = [str(value or "")]
+    body = getattr(value, "body", None)
+    if body:
+        try:
+            candidates.append(json.dumps(body, ensure_ascii=False))
+        except TypeError:
+            candidates.append(str(body))
+    for text in candidates:
+        match = re.search(
+            r"(?i)(?:request[_ -]?id)\s*[:=]\s*['\"]?([A-Za-z0-9._:-]{6,160})",
+            text,
+        )
+        if match:
+            return match.group(1).rstrip("')]}.,")
+    return ""
+
+
 def _provider_error_context(exc) -> dict:
     status = _status_code(exc)
     text = str(exc or "").casefold()
@@ -341,7 +368,11 @@ def _provider_error_context(exc) -> dict:
         reason = "bağlantı hatası"
     else:
         reason = "API hatası"
-    return {"status_code": status, "reason": reason}
+    result = {"status_code": status, "reason": reason}
+    request_id = _upstream_request_id(exc)
+    if request_id:
+        result["request_id"] = request_id
+    return result
 
 
 def _auto_group_configuration_error(text: str) -> bool:
@@ -859,6 +890,7 @@ def _chat_create_once(client, kwargs: dict, request_context=None):
     total = len(TRANSIENT_RETRY_DELAYS)
     model = str(kwargs.get("model", "") or "")
     base_context = dict(request_context or {})
+    request_client = _without_sdk_retries(client)
     for attempt in range(total + 1):
         details = dict(base_context)
         details.update({"attempt": attempt + 1, "max_attempts": total + 1})
@@ -866,7 +898,10 @@ def _chat_create_once(client, kwargs: dict, request_context=None):
         started = time.monotonic()
         request_id = _REGISTRY.request_started(details)
         try:
-            result = client.chat.completions.create(**kwargs)
+            result = request_client.chat.completions.create(**kwargs)
+            upstream_request_id = _upstream_request_id(result)
+            if upstream_request_id:
+                details["request_id"] = upstream_request_id
             details["duration_seconds"] = round(time.monotonic() - started, 3)
             _REGISTRY.request_finished(
                 client, True, model, details, request_id=request_id)
@@ -906,6 +941,16 @@ def _chat_create_once(client, kwargs: dict, request_context=None):
                         pass
                 else:
                     _REQUEST_CONTEXT.value = previous_context
+
+
+def _without_sdk_retries(client):
+    try:
+        from openai import OpenAI
+        if isinstance(client, OpenAI) and getattr(client, "max_retries", 0):
+            return client.with_options(max_retries=0)
+    except (ImportError, TypeError, AttributeError):
+        pass
+    return client
 
 
 def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,

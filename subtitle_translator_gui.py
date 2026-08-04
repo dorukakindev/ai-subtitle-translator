@@ -72,6 +72,59 @@ API_PROFILE_ROLE_LABELS = {
 }
 
 
+def _provider_preflight_targets(snapshot: dict) -> list:
+    if not isinstance(snapshot, dict):
+        return []
+    targets = [(
+        "Ana ceviri",
+        str(snapshot.get("main_api_key") or ""),
+        str(snapshot.get("main_api_base_url") or ""),
+        str(snapshot.get("main_model_name") or ""),
+    )]
+    if not snapshot.get("auto_retry_repair_only"):
+        enabled_roles = set()
+        if snapshot.get("hybrid_mode"):
+            enabled_roles.add("analysis")
+        if any(snapshot.get(key) for key in (
+                "critic", "native", "semantic_reconcile", "review")):
+            enabled_roles.add("critic")
+        if snapshot.get("polish") or snapshot.get("condense"):
+            enabled_roles.add("polish")
+        if snapshot.get("qc") or snapshot.get("backtrans"):
+            enabled_roles.add("qc")
+        helper_keys = snapshot.get("helper_keys") or {}
+        helper_urls = snapshot.get("helper_urls") or {}
+        helper_models = snapshot.get("helper_models") or {}
+        for role in sorted(enabled_roles):
+            targets.append((
+                API_PROFILE_ROLE_LABELS.get(role, role),
+                str(helper_keys.get(role) or ""),
+                str(helper_urls.get(role) or ""),
+                str(helper_models.get(role) or ""),
+            ))
+    seen = set()
+    result = []
+    for label, key, base_url, model in targets:
+        identity = (key, base_url.rstrip("/").casefold(), model.casefold())
+        if not key or not base_url or not model or identity in seen:
+            continue
+        seen.add(identity)
+        result.append((label, key, base_url, model))
+    return result
+
+
+def _visible_model_ids(response) -> set:
+    data = getattr(response, "data", None)
+    if data is None and isinstance(response, dict):
+        data = response.get("data")
+    result = set()
+    for item in data or ():
+        model_id = item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+        if model_id:
+            result.add(str(model_id))
+    return result
+
+
 def _sanitize_api_key_profiles(value) -> dict:
     profiles = {}
     if not isinstance(value, dict):
@@ -12229,6 +12282,7 @@ class App(ctk.CTk):
                     "max_attempts": int(info.get("max_attempts") or 0),
                     "status_code": info.get("status_code"),
                     "reason": str(info.get("reason") or ""),
+                    "request_id": str(info.get("request_id") or ""),
                 })
                 del api["events"][:-500]
             return copy.deepcopy(api)
@@ -12361,6 +12415,9 @@ class App(ctk.CTk):
                     f"{f' · {live_counts}' if live_counts else ''}")
             return
         if event == "request_failure":
+            request_id = str(info.get("request_id") or "")
+            if request_id:
+                self._log(f"{operation}: sağlayıcı istek kimliği: {request_id}", "info")
             reason = str(info.get("reason") or "API hatası")
             status = info.get("status_code")
             suffix = f" (HTTP {status})" if status else ""
@@ -16657,6 +16714,47 @@ class App(ctk.CTk):
                     return None
         return key
 
+    def _provider_model_preflight(self, targets: list) -> bool:
+        shuai_targets = [
+            target for target in targets
+            if "shuaiapi.com" in target[2].casefold()
+        ]
+        if not shuai_targets:
+            return True
+        self._set_phase("API Ön Kontrolü", "model ve grup erişimi doğrulanıyor")
+        self._set_status("SHUAI model/grup uygunluğu kontrol ediliyor")
+        self._log(
+            f"API ön kontrolü: {len(shuai_targets)} etkin SHUAI model rotası "
+            "token harcamadan doğrulanıyor...", "info")
+        grouped = {}
+        for label, key, base_url, model in shuai_targets:
+            grouped.setdefault((key, base_url.rstrip("/")), []).append((label, model))
+        for (key, base_url), routes in grouped.items():
+            try:
+                client = OpenAI(api_key=key, base_url=base_url)
+                client = client.with_options(max_retries=0, timeout=30.0)
+                visible = _visible_model_ids(client.models.list())
+            except Exception as exc:
+                from provider_retry import _is_transient_provider_error
+                if _is_transient_provider_error(exc):
+                    self._log(
+                        "API ön kontrolü geçici olarak tamamlanamadı; asıl isteklerin "
+                        f"görünür yeniden deneme düzeni kullanılacak: {exc}", "warn")
+                    continue
+                self._log(
+                    f"API ön kontrolü başarısız; ücretli çeviri başlatılmadı: {exc}",
+                    "err")
+                return False
+            missing = [(label, model) for label, model in routes if model not in visible]
+            if missing:
+                detail = ", ".join(f"{label}: {model}" for label, model in missing)
+                self._log(
+                    "API ön kontrolü: seçili anahtar/grup şu modeli göstermiyor; "
+                    f"ücretli çeviri başlatılmadı ({detail}).", "err")
+                return False
+        self._log("API ön kontrolü tamamlandı; etkin modeller grupta görünüyor.", "ok")
+        return True
+
 
     def _show_cost_estimate(self):
         """Hesaplanan tokenlara ve seçili modellere göre yaklaşık maliyet dökümü göster."""
@@ -16902,12 +17000,18 @@ class App(ctk.CTk):
         self._active_snapshot = _refresh_start_snapshot(
             getattr(self, "_active_snapshot", None),
             self._take_run_snapshot())
+        provider_preflight_targets = _provider_preflight_targets(
+            self._active_snapshot)
         begin_run = getattr(self, "_begin_run_record", None)
         if callable(begin_run):
             begin_run(srt_files)
 
         def _guarded_worker(target, *args):
             try:
+                if not self._provider_model_preflight(provider_preflight_targets):
+                    self._set_status("API modeli/grubu kullanılamıyor; çeviri başlatılmadı.")
+                    self._set_running(False)
+                    return
                 target(*args)
             except Exception as e:
                 self._log_exc("Arka plan is parcacigi hatasi", e)
