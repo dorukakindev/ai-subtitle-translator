@@ -2505,6 +2505,8 @@ _DELIVERY_CREDIT_COMPANION_RE = re.compile(
     r"\s*:?\s*$|^\s*(?:visit\s+us|bizi\s+ziyaret\s+edin)\s*:?\s*$",
     re.IGNORECASE,
 )
+_DELIVERY_CREDIT_LINE_CONTINUATION_RE = re.compile(
+    r"^\s*(?:&|and\b|ve\b)\s*\S", re.IGNORECASE)
 _DELIVERY_SDH_TOKEN_RE = re.compile(
     r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
 _DELIVERY_TURKISH_SDH_RE = re.compile(
@@ -2554,15 +2556,28 @@ def _is_delivery_credit(text: str) -> bool:
 
 
 def _delivery_credit_line_indexes(text: str) -> set[int]:
-    return {
-        i for i, line in enumerate(str(text or "").splitlines())
-        if _is_delivery_credit(line)
-    }
+    indexes = set()
+    credit_seen = False
+    for i, line in enumerate(str(text or "").splitlines()):
+        if _is_delivery_credit(line):
+            indexes.add(i)
+            credit_seen = True
+        elif credit_seen and _DELIVERY_CREDIT_LINE_CONTINUATION_RE.match(line):
+            indexes.add(i)
+    return indexes
 
 
 def _delivery_source_is_all_credit(text: str) -> bool:
     lines = [line for line in str(text or "").splitlines() if line.strip()]
-    return bool(lines) and all(_is_delivery_credit(line) for line in lines)
+    if not lines:
+        return False
+    credit_seen = False
+    for line in lines:
+        if _is_delivery_credit(line):
+            credit_seen = True
+        elif not (credit_seen and _DELIVERY_CREDIT_LINE_CONTINUATION_RE.match(line)):
+            return False
+    return credit_seen
 
 
 def _is_delivery_sdh_only(text: str) -> bool:

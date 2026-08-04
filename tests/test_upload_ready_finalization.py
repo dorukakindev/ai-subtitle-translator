@@ -532,6 +532,16 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertNotIn("Eclair", joined)
         self.assertIn("Gercek diyalog.", joined)
 
+    def test_ampersand_credit_continuation_is_not_missing_dialogue(self):
+        credit = "Subtitles: Paul J. MEMMI\n& Nico PAPATAKIS"
+        self.assertTrue(gui._source_cue_is_delivery_removable(credit))
+        result = gui._prepare_upload_ready_blocks(
+            [("810", "00:00:02,000 --> 00:00:03,000", credit)],
+            "Turkish",
+            source_cues=[("810", "00:00:02,000 --> 00:00:03,000", credit)],
+        )
+        self.assertFalse(any(text == credit for _idx, _ts, text in result))
+
 
 if __name__ == "__main__":
     unittest.main()
