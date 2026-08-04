@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 from app_state import atomic_write_json
 
@@ -26,6 +27,7 @@ RESPONSE_CHECKPOINT_VER = 1
 _RESPONSE_CHECKPOINT_LOCK = threading.Lock()
 _RESPONSE_CHECKPOINT = None
 _RESPONSE_CHECKPOINT_GENERATION = 0
+_REQUEST_CONTEXT = threading.local()
 
 
 def _response_checkpoint_namespace_dir(root: Path, namespace: str) -> Path:
@@ -302,6 +304,38 @@ def _circuit_key(client, model: str = "") -> str:
     return f"{_client_key(client)}|{str(model or '').strip().casefold()}"
 
 
+def _provider_request_context(client, model: str, checkpoint_label: str = "") -> dict:
+    base_url = str(getattr(client, "base_url", "") or "")
+    parsed = urlparse(base_url)
+    return {
+        "checkpoint_label": str(checkpoint_label or ""),
+        "model": str(model or ""),
+        "provider": str(parsed.hostname or parsed.netloc or "OpenAI"),
+    }
+
+
+def _provider_error_context(exc) -> dict:
+    status = _status_code(exc)
+    text = str(exc or "").casefold()
+    if status == 429 or "rate limit" in text:
+        reason = "hız sınırı"
+    elif status in {401, 403} or "invalid api key" in text:
+        reason = "kimlik doğrulama"
+    elif "quota" in text or "bakiye" in text:
+        reason = "kota veya bakiye"
+    elif "model_not_found" in text or "available channel" in text:
+        reason = "model veya kanal kullanılamıyor"
+    elif status == 408 or "timeout" in text or "timed out" in text:
+        reason = "zaman aşımı"
+    elif status in {500, 502, 503, 504, 529}:
+        reason = "sağlayıcı sunucu hatası"
+    elif "connection" in text:
+        reason = "bağlantı hatası"
+    else:
+        reason = "API hatası"
+    return {"status_code": status, "reason": reason}
+
+
 class ProviderCooldownRegistry:
     def __init__(
         self,
@@ -326,7 +360,8 @@ class ProviderCooldownRegistry:
         self._probe_owners = {}
         self._waiting = 0
         self._active_requests = 0
-        self._request_wave_started = None
+        self._request_seq = 0
+        self._active_request_details = {}
         self._heartbeat_thread = None
 
     def set_hooks(self, cancel_check=None, wait_callback=None):
@@ -334,28 +369,35 @@ class ProviderCooldownRegistry:
             self._cancel_check = cancel_check
             self._wait_callback = wait_callback
 
-    def _notify(self, event: str, remaining: float, count=None):
+    def _notify(self, event: str, remaining: float, count=None, details=None):
         callback = self._wait_callback
         if callback:
             try:
-                callback(
+                args = (
                     event,
                     max(0, int(remaining + 0.999)),
                     self._waiting if count is None else int(count),
                 )
+                try:
+                    if details:
+                        callback(*args, dict(details))
+                    else:
+                        callback(*args)
+                except TypeError:
+                    callback(*args)
             except Exception:
                 pass
 
     def _cancelled(self):
         return bool(self._cancel_check and self._cancel_check())
 
-    def _wait_until(self, deadline: float, event_prefix: str) -> float:
+    def _wait_until(self, deadline: float, event_prefix: str, details=None) -> float:
         waited = max(0.0, deadline - self._clock())
         if waited <= 0.0:
             return 0.0
         with self._lock:
             self._waiting += 1
-        self._notify(f"{event_prefix}_start", waited)
+        self._notify(f"{event_prefix}_start", waited, details=details)
         last_second = None
         try:
             while True:
@@ -368,15 +410,15 @@ class ProviderCooldownRegistry:
                 second = int(remaining + 0.999)
                 if second != last_second:
                     last_second = second
-                    self._notify(f"{event_prefix}_tick", remaining)
+                    self._notify(f"{event_prefix}_tick", remaining, details=details)
                 self._sleep(min(0.25, remaining))
         finally:
             with self._lock:
                 self._waiting = max(0, self._waiting - 1)
-            self._notify(f"{event_prefix}_end", 0.0)
+            self._notify(f"{event_prefix}_end", 0.0, details=details)
         return waited
 
-    def _before_circuit_request(self, key: str) -> float:
+    def _before_circuit_request(self, key: str, details=None) -> float:
         waited = 0.0
         while True:
             with self._lock:
@@ -392,14 +434,15 @@ class ProviderCooldownRegistry:
                         key, threading.Lock())
                     if probe_lock.acquire(blocking=False):
                         self._probe_owners[key] = threading.get_ident()
-                        self._notify("circuit_probe", 0.0)
+                        self._notify("circuit_probe", 0.0, details=details)
                         return waited
                     deadline = now + 0.5
-            waited += self._wait_until(deadline, "circuit")
+            waited += self._wait_until(deadline, "circuit", details)
 
-    def before_request(self, client, model: str = "") -> float:
+    def before_request(self, client, model: str = "", details=None) -> float:
         key = _client_key(client)
-        circuit_wait = self._before_circuit_request(_circuit_key(client, model))
+        circuit_wait = self._before_circuit_request(
+            _circuit_key(client, model), details)
         with self._lock:
             now = self._clock()
             cooldown = self._cooldown_until.get(key, 0.0)
@@ -414,7 +457,7 @@ class ProviderCooldownRegistry:
         if wait > 0.0:
             with self._lock:
                 self._waiting += 1
-            self._notify("start", wait)
+            self._notify("start", wait, details=details)
             deadline = self._clock() + wait
             last_second = None
             try:
@@ -427,20 +470,22 @@ class ProviderCooldownRegistry:
                     second = int(remaining + 0.999)
                     if second != last_second:
                         last_second = second
-                        self._notify("tick", remaining)
+                        self._notify("tick", remaining, details=details)
                     self._sleep(min(0.25, remaining))
             finally:
                 with self._lock:
                     self._waiting = max(0, self._waiting - 1)
-                self._notify("end", 0.0)
+                self._notify("end", 0.0, details=details)
         return circuit_wait + wait
 
-    def request_started(self) -> None:
+    def request_started(self, details=None) -> int:
         with self._lock:
+            self._request_seq += 1
+            request_id = self._request_seq
             self._active_requests += 1
             active = self._active_requests
-            if active == 1:
-                self._request_wave_started = self._clock()
+            self._active_request_details[request_id] = {
+                "started": self._clock(), "details": dict(details or {})}
             heartbeat = self._heartbeat_thread
             if (self._heartbeat_enabled
                     and (heartbeat is None or not heartbeat.is_alive())):
@@ -451,27 +496,37 @@ class ProviderCooldownRegistry:
                 )
                 self._heartbeat_thread = heartbeat
                 heartbeat.start()
-        self._notify("request_start", 0.0, active)
+        self._notify("request_start", 0.0, active, details)
+        return request_id
 
     def _request_heartbeat(self) -> None:
         while True:
             time.sleep(1.0)
             with self._lock:
                 active = self._active_requests
-                started = self._request_wave_started
-            if active <= 0 or started is None:
+                active_items = list(self._active_request_details.values())
+            if active <= 0 or not active_items:
                 return
+            current = min(active_items, key=lambda item: item["started"])
+            started = current["started"]
+            details = dict(current["details"])
             elapsed = max(0.0, self._clock() - started)
-            self._notify("request_tick", elapsed, active)
+            self._notify("request_tick", elapsed, active, details)
 
-    def request_finished(self, client, success: bool, model: str = "") -> None:
+    def request_finished(self, client, success: bool, model: str = "", details=None,
+                         request_id=None) -> None:
         key = _circuit_key(client, model)
         recovered = False
         with self._lock:
             self._active_requests = max(0, self._active_requests - 1)
             active = self._active_requests
-            if active == 0:
-                self._request_wave_started = None
+            if request_id is not None:
+                self._active_request_details.pop(request_id, None)
+            elif self._active_request_details:
+                oldest = min(
+                    self._active_request_details,
+                    key=lambda rid: self._active_request_details[rid]["started"])
+                self._active_request_details.pop(oldest, None)
             if success:
                 recovered = key in self._circuit_until
                 self._failure_counts.pop(key, None)
@@ -481,7 +536,9 @@ class ProviderCooldownRegistry:
                 if (owner == threading.get_ident() and probe_lock
                         and probe_lock.locked()):
                     probe_lock.release()
-        self._notify("request_success" if success else "request_failure", 0.0, active)
+        self._notify(
+            "request_success" if success else "request_failure",
+            0.0, active, details)
         if recovered:
             self._notify("circuit_recovered", 0.0)
 
@@ -495,7 +552,7 @@ class ProviderCooldownRegistry:
                     and probe_lock.locked()):
                 probe_lock.release()
 
-    def record_transient_failure(self, client, exc, model: str = "") -> float | None:
+    def record_transient_failure(self, client, exc, model: str = "", details=None) -> float | None:
         status = _status_code(exc)
         text = str(exc or "").lower()
         key = _circuit_key(client, model)
@@ -549,19 +606,21 @@ class ProviderCooldownRegistry:
             else:
                 delay = None
         if opened:
-            self._notify("circuit_open", delay)
+            self._notify("circuit_open", delay, details=details)
         elif reopened:
-            self._notify("circuit_reopen", delay)
+            self._notify("circuit_reopen", delay, details=details)
         return delay
 
-    def wait_for_retry(self, delay: float, attempt: int, total: int) -> float:
+    def wait_for_retry(self, delay: float, attempt: int, total: int, details=None) -> float:
+        if details is None:
+            details = getattr(_REQUEST_CONTEXT, "retry_details", None)
         wait = max(0.0, float(delay))
         if wait <= 0.0:
             return 0.0
         with self._lock:
             self._waiting += 1
         prefix = f"retry_{{}}_{int(attempt)}_{int(total)}"
-        self._notify(prefix.format("start"), wait)
+        self._notify(prefix.format("start"), wait, details=details)
         deadline = self._clock() + wait
         last_second = None
         try:
@@ -575,16 +634,20 @@ class ProviderCooldownRegistry:
                 second = int(remaining + 0.999)
                 if second != last_second:
                     last_second = second
-                    self._notify(prefix.format("tick"), remaining)
+                    self._notify(prefix.format("tick"), remaining, details=details)
                 self._sleep(min(0.25, remaining))
         finally:
             with self._lock:
                 self._waiting = max(0, self._waiting - 1)
-            self._notify(prefix.format("end"), 0.0)
+            self._notify(prefix.format("end"), 0.0, details=details)
         return wait
 
-    def notify_retry_success(self, attempt: int, total: int) -> None:
-        self._notify(f"retry_success_{int(attempt)}_{int(total)}", 0.0)
+    def notify_retry_success(self, attempt: int, total: int, details=None) -> None:
+        if details is None:
+            details = getattr(_REQUEST_CONTEXT, "success_details", None)
+        self._notify(
+            f"retry_success_{int(attempt)}_{int(total)}", 0.0,
+            details=details)
 
     def record_rate_limit(self, client, exc) -> float | None:
         if _status_code(exc) != 429 and "rate limit" not in str(exc or "").lower():
@@ -614,13 +677,14 @@ class ProviderWaitCancelled(RuntimeError):
     pass
 
 
-def before_provider_request(client, model: str = "") -> float:
-    return _REGISTRY.before_request(client, model)
+def before_provider_request(client, model: str = "", details=None) -> float:
+    return _REGISTRY.before_request(client, model, details)
 
 
-def record_provider_failure(client, exc, model: str = "") -> float | None:
+def record_provider_failure(client, exc, model: str = "", details=None) -> float | None:
     delay = _REGISTRY.record_rate_limit(client, exc)
-    circuit_delay = _REGISTRY.record_transient_failure(client, exc, model)
+    circuit_delay = _REGISTRY.record_transient_failure(
+        client, exc, model, details)
     return delay if delay is not None else circuit_delay
 
 
@@ -657,9 +721,26 @@ def _is_transient_provider_error(exc) -> bool:
     )
 
 
-def _wait_for_transient_retry(exc, attempt: int, total: int) -> float:
+def _wait_for_transient_retry(exc, attempt: int, total: int, details=None) -> float:
     scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
-    return _REGISTRY.wait_for_retry(scheduled, attempt, total)
+    context = dict(
+        details if details is not None
+        else getattr(_REQUEST_CONTEXT, "value", {}) or {})
+    context.update(_provider_error_context(exc))
+    context["next_attempt"] = int(attempt) + 1
+    context["max_attempts"] = int(total) + 1
+    previous_details = getattr(_REQUEST_CONTEXT, "retry_details", None)
+    _REQUEST_CONTEXT.retry_details = context
+    try:
+        return _REGISTRY.wait_for_retry(scheduled, attempt, total)
+    finally:
+        if previous_details is None:
+            try:
+                del _REQUEST_CONTEXT.retry_details
+            except AttributeError:
+                pass
+        else:
+            _REQUEST_CONTEXT.retry_details = previous_details
 
 
 def _is_custom_gpt5(client, model: str) -> bool:
@@ -769,31 +850,64 @@ def _structured_unsupported(exc) -> bool:
     return parameter and unsupported
 
 
-def _chat_create_once(client, kwargs: dict):
+def _chat_create_once(client, kwargs: dict, request_context=None):
     total = len(TRANSIENT_RETRY_DELAYS)
     model = str(kwargs.get("model", "") or "")
+    base_context = dict(request_context or {})
     for attempt in range(total + 1):
-        before_provider_request(client, model)
-        _REGISTRY.request_started()
+        details = dict(base_context)
+        details.update({"attempt": attempt + 1, "max_attempts": total + 1})
+        before_provider_request(client, model, details)
+        started = time.monotonic()
+        request_id = _REGISTRY.request_started(details)
         try:
             result = client.chat.completions.create(**kwargs)
-            _REGISTRY.request_finished(client, True, model)
+            details["duration_seconds"] = round(time.monotonic() - started, 3)
+            _REGISTRY.request_finished(
+                client, True, model, details, request_id=request_id)
             if attempt:
-                _REGISTRY.notify_retry_success(attempt, total)
+                previous_details = getattr(_REQUEST_CONTEXT, "success_details", None)
+                _REQUEST_CONTEXT.success_details = details
+                try:
+                    _REGISTRY.notify_retry_success(attempt, total)
+                finally:
+                    if previous_details is None:
+                        try:
+                            del _REQUEST_CONTEXT.success_details
+                        except AttributeError:
+                            pass
+                    else:
+                        _REQUEST_CONTEXT.success_details = previous_details
             return result
         except Exception as exc:
-            _REGISTRY.request_finished(client, False, model)
-            record_provider_failure(client, exc, model)
-            if attempt >= total or not _is_transient_provider_error(exc):
+            retryable = attempt < total and _is_transient_provider_error(exc)
+            details.update(_provider_error_context(exc))
+            details["duration_seconds"] = round(time.monotonic() - started, 3)
+            details["will_retry"] = bool(retryable)
+            _REGISTRY.request_finished(
+                client, False, model, details, request_id=request_id)
+            record_provider_failure(client, exc, model, details)
+            if not retryable:
                 raise
-            _wait_for_transient_retry(exc, attempt + 1, total)
+            previous_context = getattr(_REQUEST_CONTEXT, "value", None)
+            _REQUEST_CONTEXT.value = base_context
+            try:
+                _wait_for_transient_retry(exc, attempt + 1, total)
+            finally:
+                if previous_context is None:
+                    try:
+                        del _REQUEST_CONTEXT.value
+                    except AttributeError:
+                        pass
+                else:
+                    _REQUEST_CONTEXT.value = previous_context
 
 
 def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
-                                      requested_format=None):
+                                      requested_format=None, request_context=None):
     plain = copy.deepcopy(kwargs)
     if not _is_custom_gpt5(client, model):
-        return _chat_create_once(client, plain)
+        return _chat_create_once(client, plain, request_context)
 
     structured = copy.deepcopy(plain)
     if requested_format is not None:
@@ -801,29 +915,29 @@ def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
     else:
         structured = _translation_schema_kwargs(structured)
     if structured is None:
-        return _chat_create_once(client, plain)
+        return _chat_create_once(client, plain, request_context)
 
     key = _structured_key(client, model)
     with _STRUCTURED_LOCK:
         state = _STRUCTURED_STATES.get(key)
         probe_lock = _STRUCTURED_PROBE_LOCKS.setdefault(key, threading.Lock())
     if state is False:
-        return _chat_create_once(client, plain)
+        return _chat_create_once(client, plain, request_context)
 
     lock = probe_lock if state is None else threading.Lock()
     with lock:
         with _STRUCTURED_LOCK:
             state = _STRUCTURED_STATES.get(key)
         if state is False:
-            return _chat_create_once(client, plain)
+            return _chat_create_once(client, plain, request_context)
         try:
-            result = _chat_create_once(client, structured)
+            result = _chat_create_once(client, structured, request_context)
         except Exception as exc:
             if not _structured_unsupported(exc):
                 raise
             with _STRUCTURED_LOCK:
                 _STRUCTURED_STATES[key] = False
-            return _chat_create_once(client, plain)
+            return _chat_create_once(client, plain, request_context)
         with _STRUCTURED_LOCK:
             _STRUCTURED_STATES[key] = True
         return result
@@ -839,7 +953,9 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
     if cached is not None:
         return cached
     result = _chat_create_with_compat_uncached(
-        client, model, kwargs, requested_format=requested_format)
+        client, model, kwargs, requested_format=requested_format,
+        request_context=_provider_request_context(
+            client, model, checkpoint_label))
     _response_checkpoint_save(
         client, model, kwargs, result, requested_format=requested_format,
         checkpoint_label=checkpoint_label,

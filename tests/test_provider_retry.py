@@ -697,6 +697,40 @@ class ResellerStructuredOutputTest(unittest.TestCase):
 
 
 class ProviderWaitUiCallbackTest(unittest.TestCase):
+    def test_callback_shows_operation_model_provider_and_retry_reason(self):
+        logs = []
+        statuses = []
+        phases = []
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _log=lambda *args: logs.append(args),
+            _set_status=statuses.append,
+            _set_phase=lambda *args: phases.append(args),
+        )
+        details = {
+            "checkpoint_label": "semantic_reconciliation",
+            "model": "gpt-5.4",
+            "provider": "reseller.example",
+            "attempt": 1,
+            "max_attempts": 4,
+        }
+        gui.App._provider_wait_callback(
+            app, "request_start", 0, 1, details)
+        retry = {
+            **details, "reason": "hız sınırı", "status_code": 429,
+            "next_attempt": 2,
+        }
+        gui.App._provider_wait_callback(
+            app, "retry_start_1_3", 30, 1, retry)
+
+        self.assertIn("Nihai Anlam Mutabakatı", statuses[0])
+        self.assertIn("gpt-5.4", statuses[0])
+        self.assertIn("reseller.example", statuses[0])
+        self.assertEqual(phases[0][0], "Nihai Anlam Mutabakatı")
+        self.assertIn("hız sınırı", statuses[-1])
+        self.assertIn("2/4", statuses[-1])
+        self.assertIn("30 sn", logs[-1][0])
+
     def test_callback_logs_once_and_updates_status(self):
         logs = []
         statuses = []

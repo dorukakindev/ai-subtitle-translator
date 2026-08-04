@@ -80,6 +80,67 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("a.tr.srt", text)
         self.assertIn("b.srt", text)
 
+    def test_api_events_are_counted_and_rendered_in_run_summary(self):
+        record = {
+            "run_id": "api-run", "files": {},
+            "api": {
+                "attempts": 2, "successes": 1, "failures": 1,
+                "terminal_failures": 0, "retries": 1,
+                "provider_pauses": 0, "duration_seconds": 12.5,
+                "operations": {
+                    "Critic Pass": {
+                        "attempts": 2, "successes": 1,
+                        "failures": 1, "retries": 1,
+                    },
+                },
+            },
+        }
+        text = gui.build_run_summary_text(record)
+        self.assertIn("API SÜRECİ", text)
+        self.assertIn("Gerçek istek   : 2", text)
+        self.assertIn("Yeniden deneme : 1", text)
+        self.assertIn("Critic Pass: 2 istek, 1 başarılı, 1 başarısız, 1 tekrar", text)
+
+    def test_record_api_event_tracks_terminal_failure_without_storing_error_body(self):
+        app = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record={"api": {}},
+        )
+        details = {
+            "checkpoint_label": "polish", "model": "gpt-5.4",
+            "provider": "api.example", "attempt": 1, "max_attempts": 4,
+            "duration_seconds": 2.25, "status_code": 401,
+            "reason": "kimlik doğrulama", "will_retry": False,
+            "raw_error": "sk-secret-must-not-be-recorded",
+        }
+        gui.App._record_api_event(app, "request_start", 0, 1, details)
+        summary = gui.App._record_api_event(
+            app, "request_failure", 0, 0, details)
+
+        self.assertEqual(summary["attempts"], 1)
+        self.assertEqual(summary["failures"], 1)
+        self.assertEqual(summary["terminal_failures"], 1)
+        self.assertEqual(summary["operations"]["Polish Pass"]["failures"], 1)
+        self.assertNotIn("sk-secret", json.dumps(summary))
+
+    def test_repair_retry_wait_reports_logical_retry_to_dashboard_record(self):
+        statuses = []
+        phases = []
+        app = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record={"api": {}},
+            _record_api_event=lambda *args: gui.App._record_api_event(app, *args),
+            _set_status=statuses.append,
+            _set_phase=lambda *args: phases.append(args),
+            _motion_activity_text="",
+        )
+        result = gui.App._repair_retry_wait(app, 0, lambda: False)
+
+        self.assertTrue(result)
+        self.assertEqual(app._active_run_record["api"]["retries"], 1)
+        self.assertEqual(phases[0][0], "Eksik Çeviri Onarımı")
+        self.assertIn("gönderiliyor", statuses[-1])
+
     def test_file_timing_tracks_each_stage_and_renders_in_reports(self):
         item = {
             "status": "pending",

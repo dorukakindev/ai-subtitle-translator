@@ -7309,6 +7309,61 @@ def _timing_stage_totals(item: dict) -> list[tuple[str, float]]:
     return [(name, totals[name]) for name in order]
 
 
+_API_OPERATION_LABELS = {
+    "analysis_context_chunk": "Yardımcı Analiz",
+    "analysis_character_examples": "Karakter Örnekleri",
+    "analysis_pronoun_map": "Hitap Haritası",
+    "analysis_scene_plan": "Sahne Planı",
+    "analysis_idiom_map": "Deyim Haritası",
+    "analysis_cultural_refs": "Kültürel Referanslar",
+    "context_review": "Bağlam İncelemesi",
+    "critic": "Critic Pass",
+    "polish": "Polish Pass",
+    "native_reader": "Native Okuyucu",
+    "native_verification": "Native Doğrulaması",
+    "semantic_reconciliation": "Nihai Anlam Mutabakatı",
+    "quality_control": "Kalite Kontrolü",
+    "condense": "Kısaltma Geçişi",
+    "backtranslation": "Geri Çeviri",
+    "backtranslation_compare": "Geri Çeviri Karşılaştırması",
+    "backtranslation_fix": "Geri Çeviri Düzeltmesi",
+    "qc_autofix": "QC Otomatik Düzeltme",
+    "glossary_builder": "Sözlük Oluşturucu",
+    "ai_segmentation": "AI Segmentasyon",
+    "translation_repair": "Eksik Çeviri Onarımı",
+    "precontext_analysis": "Dosya Ön Bağlam Analizi",
+    "content_type_detection": "İçerik Türü Analizi",
+    "source_language_detection": "Kaynak Dil Analizi",
+    "term_normalization": "Terim Normalizasyonu",
+    "translation_preview": "Çeviri Önizlemesi",
+    "translation_json_repair": "JSON Yanıt Onarımı",
+    "main_translation_retry": "Ana Çeviri Yeniden Denemesi",
+    "translation_subgroup_recovery": "Alt Grup Çeviri Kurtarması",
+    "main_translation": "Ana Çeviri",
+}
+
+
+def _api_operation_label(checkpoint_label: str) -> str:
+    return _API_OPERATION_LABELS.get(
+        str(checkpoint_label or ""), "API İşlemi")
+
+
+def _api_context_text(details: dict | None, include_attempt: bool = True) -> str:
+    info = dict(details or {})
+    parts = []
+    model = str(info.get("model") or "").strip()
+    provider = str(info.get("provider") or "").strip()
+    if model:
+        parts.append(model)
+    if provider:
+        parts.append(provider)
+    attempt = int(info.get("attempt") or info.get("next_attempt") or 0)
+    maximum = int(info.get("max_attempts") or 0)
+    if include_attempt and attempt and maximum:
+        parts.append(f"deneme {attempt}/{maximum}")
+    return " · ".join(parts)
+
+
 def _run_summary_data(record: dict) -> dict:
     statuses = {"done": [], "error": [], "skip": [], "pending": []}
     for path, state in dict(record.get("files") or {}).items():
@@ -7326,6 +7381,7 @@ def _run_summary_data(record: dict) -> dict:
         "suggestions_rejected": int(record.get("suggestions_rejected", 0) or 0),
         "warnings": int(record.get("warnings", 0) or 0),
         "errors": int(record.get("errors", 0) or 0),
+        "api": copy.deepcopy(record.get("api") or {}),
         "outputs": list(dict.fromkeys(record.get("outputs") or [])),
         "reports": list(dict.fromkeys(record.get("reports") or [])),
         "completion_markers": list(dict.fromkeys(
@@ -7354,6 +7410,28 @@ def build_run_summary_text(record: dict) -> str:
         f"Reddedilen öneri : {data['suggestions_rejected']}",
         f"Uyarı / hata     : {data['warnings']} / {data['errors']}",
     ]
+    api = data["api"]
+    if api:
+        lines.extend([
+            "",
+            "API SÜRECİ:",
+            f"  Gerçek istek   : {int(api.get('attempts', 0) or 0)}",
+            f"  Başarılı       : {int(api.get('successes', 0) or 0)}",
+            f"  Başarısız      : {int(api.get('failures', 0) or 0)}",
+            f"  Kalıcı hata    : {int(api.get('terminal_failures', 0) or 0)}",
+            f"  Yeniden deneme : {int(api.get('retries', 0) or 0)}",
+            f"  Sağlayıcı mola : {int(api.get('provider_pauses', 0) or 0)}",
+            f"  API yanıt süresi: {_format_elapsed(api.get('duration_seconds'))}",
+        ])
+        operations = dict(api.get("operations") or {})
+        if operations:
+            lines.append("  İşlem dağılımı :")
+            for name, counts_by_operation in operations.items():
+                lines.append(
+                    f"    - {name}: {int(counts_by_operation.get('attempts', 0) or 0)} istek, "
+                    f"{int(counts_by_operation.get('successes', 0) or 0)} başarılı, "
+                    f"{int(counts_by_operation.get('failures', 0) or 0)} başarısız, "
+                    f"{int(counts_by_operation.get('retries', 0) or 0)} tekrar")
     for title, values in (
         ("Başarısız dosyalar", data["files"]["error"]),
         ("Üretilen çıktılar", data["outputs"]),
@@ -11757,6 +11835,12 @@ class App(ctk.CTk):
             "suggestions_rejected": 0,
             "warnings": 0,
             "errors": 0,
+            "api": {
+                "attempts": 0, "successes": 0, "failures": 0,
+                "terminal_failures": 0, "retries": 0,
+                "provider_pauses": 0, "duration_seconds": 0.0,
+                "operations": {}, "events": [],
+            },
             "outputs": [],
             "reports": [],
             "completion_markers": [],
@@ -11786,39 +11870,7 @@ class App(ctk.CTk):
         return run_id
 
     def _quality_checkpoint_hit(self, count: int, checkpoint_label: str = ""):
-        labels = {
-            "analysis_context_chunk": "Yardımcı analiz chunk'ı",
-            "analysis_character_examples": "Karakter örnekleri",
-            "analysis_pronoun_map": "Hitap haritası",
-            "analysis_scene_plan": "Sahne planı",
-            "analysis_idiom_map": "Deyim haritası",
-            "analysis_cultural_refs": "Kültürel referanslar",
-            "context_review": "Bağlam incelemesi",
-            "critic": "Critic Pass",
-            "polish": "Polish Pass",
-            "native_reader": "Native Okuyucu",
-            "native_verification": "Native doğrulaması",
-            "semantic_reconciliation": "Nihai anlam mutabakatı",
-            "quality_control": "Kalite kontrolü",
-            "condense": "Kısaltma geçişi",
-            "backtranslation": "Geri çeviri",
-            "backtranslation_compare": "Geri çeviri karşılaştırması",
-            "backtranslation_fix": "Geri çeviri düzeltmesi",
-            "qc_autofix": "QC otomatik düzeltme",
-            "glossary_builder": "Sözlük oluşturucu",
-            "ai_segmentation": "AI segmentasyon",
-            "translation_repair": "Eksik çeviri onarımı",
-            "precontext_analysis": "Dosya ön bağlam analizi",
-            "content_type_detection": "İçerik türü analizi",
-            "source_language_detection": "Kaynak dil analizi",
-            "term_normalization": "Terim normalizasyonu",
-            "translation_preview": "Çeviri önizlemesi",
-            "translation_json_repair": "JSON yanıt onarımı",
-            "main_translation_retry": "Ana çeviri yeniden denemesi",
-            "translation_subgroup_recovery": "Alt-grup çeviri kurtarması",
-            "main_translation": "Ana çeviri",
-        }
-        stage = labels.get(str(checkpoint_label or ""), "API paketi")
+        stage = _api_operation_label(checkpoint_label)
         if int(count) == 1:
             self._log(
                 "Çökme kurtarma: tamamlanmış API istekleri "
@@ -12119,7 +12171,127 @@ class App(ctk.CTk):
 
         _post_ui(self, _write)
 
-    def _provider_wait_callback(self, event: str, remaining: int, waiting: int):
+    def _record_api_event(self, event: str, remaining: int, waiting: int,
+                          details: dict | None = None):
+        info = dict(details or {})
+        operation = _api_operation_label(info.get("checkpoint_label", ""))
+        significant = (
+            event in {"request_start", "request_success", "request_failure",
+                      "circuit_open", "circuit_reopen", "circuit_recovered"}
+            or event.startswith("retry_start_")
+            or event.startswith("retry_success_")
+            or event in {"repair_retry_start", "repair_retry_end"}
+        )
+        with self._run_record_lock:
+            record = self._active_run_record
+            if not record:
+                return None
+            api = record.setdefault("api", {})
+            for key in ("attempts", "successes", "failures", "terminal_failures",
+                        "retries", "provider_pauses"):
+                api.setdefault(key, 0)
+            api.setdefault("duration_seconds", 0.0)
+            api.setdefault("operations", {})
+            api.setdefault("events", [])
+            per_operation = api["operations"].setdefault(operation, {
+                "attempts": 0, "successes": 0, "failures": 0, "retries": 0,
+            })
+            if event == "request_start":
+                api["attempts"] += 1
+                per_operation["attempts"] += 1
+            elif event == "request_success":
+                api["successes"] += 1
+                per_operation["successes"] += 1
+                api["duration_seconds"] = round(
+                    float(api.get("duration_seconds") or 0.0)
+                    + float(info.get("duration_seconds") or 0.0), 3)
+            elif event == "request_failure":
+                api["failures"] += 1
+                per_operation["failures"] += 1
+                api["duration_seconds"] = round(
+                    float(api.get("duration_seconds") or 0.0)
+                    + float(info.get("duration_seconds") or 0.0), 3)
+                if not info.get("will_retry"):
+                    api["terminal_failures"] += 1
+            elif event.startswith("retry_start_") or event == "repair_retry_start":
+                api["retries"] += 1
+                per_operation["retries"] += 1
+            elif event in {"circuit_open", "circuit_reopen"}:
+                api["provider_pauses"] += 1
+            if significant:
+                api["events"].append({
+                    "at": _timing_iso(time.time()), "event": event,
+                    "operation": operation, "remaining_seconds": int(remaining),
+                    "active_requests": int(waiting),
+                    "model": str(info.get("model") or ""),
+                    "provider": str(info.get("provider") or ""),
+                    "attempt": int(info.get("attempt") or info.get("next_attempt") or 0),
+                    "max_attempts": int(info.get("max_attempts") or 0),
+                    "status_code": info.get("status_code"),
+                    "reason": str(info.get("reason") or ""),
+                })
+                del api["events"][:-500]
+            return copy.deepcopy(api)
+
+    def _repair_retry_wait(self, delay: float, cancelled) -> bool:
+        total = max(0.0, float(delay))
+        details = {
+            "checkpoint_label": "translation_repair",
+            "reason": "önceki eksik cue adayı doğrulamadan geçmedi",
+        }
+        recorder = getattr(self, "_record_api_event", None)
+        if callable(recorder):
+            recorder("repair_retry_start", math.ceil(total), 0, details)
+        self._set_phase(
+            "Eksik Çeviri Onarımı",
+            f"Yalnız eksik cue'lar {math.ceil(total)} sn sonra yeniden denenecek")
+        deadline = time.monotonic() + total
+        last_second = None
+        while True:
+            if cancelled():
+                self._set_status("Eksik cue yeniden denemesi durduruldu")
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            second = max(1, math.ceil(remaining))
+            if second != last_second:
+                last_second = second
+                self._motion_activity_text = "YENİDEN"
+                self._set_status(
+                    f"Eksik çeviri onarımı: {second} sn sonra yalnız eksik cue'lar "
+                    "yeniden gönderilecek")
+            time.sleep(min(0.25, remaining))
+        if callable(recorder):
+            recorder("repair_retry_end", 0, 0, details)
+        self._set_status("Eksik cue yeniden denemesi gönderiliyor...")
+        return True
+
+    def _provider_wait_callback(self, event: str, remaining: int, waiting: int,
+                                details: dict | None = None):
+        info = dict(details or {})
+        operation = _api_operation_label(info.get("checkpoint_label", ""))
+        context = _api_context_text(info)
+        recorder = getattr(self, "_record_api_event", None)
+        api_stats = None
+        if callable(recorder):
+            api_stats = recorder(event, remaining, waiting, info)
+        live_counts = ""
+        if api_stats:
+            live_counts = (
+                f"API {int(api_stats.get('successes', 0))}/"
+                f"{int(api_stats.get('attempts', 0))} başarılı · "
+                f"{int(api_stats.get('retries', 0))} tekrar · "
+                f"{int(api_stats.get('terminal_failures', 0))} kalıcı hata")
+        if (info.get("checkpoint_label") and (
+                event in {"request_start", "request_success", "request_failure",
+                          "circuit_probe"}
+                or event.startswith("retry_start_"))):
+            phase_setter = getattr(self, "_set_phase", None)
+            if callable(phase_setter):
+                phase_setter(
+                    operation, " · ".join(
+                        value for value in (context, live_counts) if value))
         if event in {
                 "circuit_open", "circuit_reopen", "circuit_start",
                 "circuit_tick", "start", "tick"}:
@@ -12134,25 +12306,25 @@ class App(ctk.CTk):
             self._motion_activity_text = "ÇALIŞIYOR"
         if event == "circuit_open":
             self._log(
-                f"Sağlayıcı art arda hata verdi; yeni istekler {remaining} sn "
+                f"{operation}: sağlayıcı art arda hata verdi; yeni istekler {remaining} sn "
                 "duraklatıldı. Süre sonunda tek kontrol isteği gönderilecek.",
                 "warn",
             )
             self._set_status(
-                f"Sağlayıcı kullanılamıyor; güvenli bekleme: {remaining} sn")
+                f"{operation}: sağlayıcı kullanılamıyor; güvenli bekleme {remaining} sn")
             return
         if event == "circuit_reopen":
             self._log(
-                f"Sağlayıcı kontrol isteği de başarısız; {remaining} sn sonra "
+                f"{operation}: sağlayıcı kontrol isteği de başarısız; {remaining} sn sonra "
                 "yeniden kontrol edilecek.",
                 "warn",
             )
             self._set_status(
-                f"Sağlayıcı hâlâ kullanılamıyor; yeni kontrol: {remaining} sn")
+                f"{operation}: sağlayıcı hâlâ kullanılamıyor; yeni kontrol {remaining} sn")
             return
         if event in {"circuit_start", "circuit_tick"}:
             self._set_status(
-                f"Sağlayıcı kullanılamıyor; kontrol isteğine {remaining} sn")
+                f"{operation}: sağlayıcı kullanılamıyor; kontrol isteğine {remaining} sn")
             return
         if event == "circuit_probe":
             self._log(
@@ -12170,20 +12342,35 @@ class App(ctk.CTk):
             return
         if event == "request_start":
             self._set_status(
-                f"API isteği gönderildi; yanıt bekleniyor ({waiting} aktif)")
+                f"{operation}: API isteği gönderildi"
+                f"{f' ({context})' if context else ''}; {waiting} aktif")
             return
         if event == "request_tick":
             self._set_status(
-                f"API yanıtı bekleniyor: {remaining} sn ({waiting} aktif istek)")
+                f"{operation}: API yanıtı {remaining} sn bekleniyor"
+                f"{f' ({context})' if context else ''}; {waiting} aktif istek")
             return
         if event == "request_success":
             if waiting:
                 self._set_status(
-                    f"API yanıtı alındı; {waiting} istek hâlâ bekleniyor")
+                    f"{operation}: API yanıtı alındı; {waiting} istek hâlâ bekleniyor"
+                    f"{f' · {live_counts}' if live_counts else ''}")
+            else:
+                self._set_status(
+                    f"{operation}: API yanıtı alındı"
+                    f"{f' · {live_counts}' if live_counts else ''}")
             return
         if event == "request_failure":
+            reason = str(info.get("reason") or "API hatası")
+            status = info.get("status_code")
+            suffix = f" (HTTP {status})" if status else ""
+            retry_note = "yeniden denenecek" if info.get("will_retry") else "kalıcı hata"
+            self._log(
+                f"{operation}: API isteği başarısız — {reason}{suffix}; {retry_note}"
+                f"{f' · {context}' if context else ''}",
+                "warn" if info.get("will_retry") else "err")
             self._set_status(
-                "API isteği başarısız; yeniden deneme kararı hazırlanıyor")
+                f"{operation}: {reason}{suffix}; {retry_note}")
             return
         if event == "circuit_end":
             return
@@ -12191,38 +12378,48 @@ class App(ctk.CTk):
             r"retry_(start|tick|end|success)_(\d+)_(\d+)", event)
         if retry_match:
             phase, attempt, total = retry_match.groups()
+            next_attempt = int(
+                info.get("next_attempt") or attempt)
+            max_attempts = int(
+                info.get("max_attempts") or total)
+            reason = str(info.get("reason") or "geçici API hatası")
             if phase == "start":
                 self._log(
-                    f"Geçici API hatası: {remaining} sn sonra yeniden denenecek "
-                    f"({attempt}/{total})", "warn")
+                    f"{operation}: {reason}; {remaining} sn sonra deneme "
+                    f"{next_attempt}/{max_attempts} gönderilecek"
+                    f"{f' · {_api_context_text(info, include_attempt=False)}' if context else ''}",
+                    "warn")
             if phase in {"start", "tick"}:
                 self._set_status(
-                    f"API yeniden deneme beklemesi: {remaining} sn "
-                    f"({attempt}/{total})")
+                    f"{operation}: {reason}; {remaining} sn sonra yeniden deneme "
+                    f"{next_attempt}/{max_attempts}")
             elif phase == "end" and waiting == 0:
                 if self._stop_flag:
                     self._set_status("Durduruluyor...")
                 else:
                     self._log(
-                        f"API yeniden deneme isteği gönderiliyor ({attempt}/{total})...",
+                        f"{operation}: API denemesi {next_attempt}/{max_attempts} "
+                        "gönderiliyor...",
                         "info")
                     self._set_status(
-                        f"API yeniden deneme isteği gönderildi; yanıt bekleniyor "
-                        f"({attempt}/{total})")
+                        f"{operation}: API denemesi {next_attempt}/{max_attempts} "
+                        "gönderildi; yanıt bekleniyor")
             elif phase == "success":
+                succeeded_attempt = int(info.get("attempt") or next_attempt)
                 self._log(
-                    f"API yeniden deneme başarılı; yanıt alındı "
-                    f"({attempt}/{total}), işlem devam ediyor.", "ok")
+                    f"{operation}: API denemesi {succeeded_attempt}/{max_attempts} "
+                    "başarılı; işlem devam ediyor.", "ok")
                 self._set_status(
-                    f"API yanıtı alındı; işlem devam ediyor ({attempt}/{total})")
+                    f"{operation}: API yanıtı alındı; deneme "
+                    f"{succeeded_attempt}/{max_attempts} başarılı, işlem devam ediyor")
             return
         if event == "start" and waiting == 1:
             self._log(
-                f"Reseller kota beklemesi: {remaining} sn "
+                f"{operation}: reseller kota beklemesi {remaining} sn "
                 f"({waiting} istek sırada)", "warn")
         if event in {"start", "tick"}:
             self._set_status(
-                f"Reseller kota beklemesi: {remaining} sn "
+                f"{operation}: reseller kota beklemesi {remaining} sn "
                 f"({waiting} istek sırada)")
         elif event == "end" and waiting == 0:
             self._set_status(
@@ -16949,7 +17146,9 @@ class App(ctk.CTk):
                             cancel_check=lambda: self._stop_flag,
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
-                            locked_terms=_repair_locked_terms)
+                            locked_terms=_repair_locked_terms,
+                            retry_wait_fn=lambda delay, cancelled: (
+                                App._repair_retry_wait(self, delay, cancelled)))
                     except Exception as repair_error:
                         self._log(f"JSONL eksik cue onarımı başarısız: {repair_error}", "warn")
 
@@ -21226,6 +21425,8 @@ class App(ctk.CTk):
             system_prompt=system_prompt, locked_terms=locked_terms,
             permanent_failure_cb=(
                 self._block_automatic_recovery_for_permanent_provider),
+            retry_wait_fn=lambda delay, cancelled: (
+                App._repair_retry_wait(self, delay, cancelled)),
         )
         if self._stop_flag:
             return {"stopped": True}
@@ -21845,7 +22046,9 @@ class App(ctk.CTk):
                     system_prompt=system_prompt,
                     locked_terms=_locked_terms,
                     permanent_failure_cb=(
-                        self._block_automatic_recovery_for_permanent_provider))
+                        self._block_automatic_recovery_for_permanent_provider),
+                    retry_wait_fn=lambda delay, cancelled: (
+                        App._repair_retry_wait(self, delay, cancelled)))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _quality_api_allowed = not _blocks_have_translation_failures(
@@ -23351,7 +23554,10 @@ class App(ctk.CTk):
                                         cancel_check=lambda: self._stop_flag,
                                         cancel_context=self.__dict__.get(
                                             "_helper_request_canceller"),
-                                        locked_terms=_locked_terms)
+                                        locked_terms=_locked_terms,
+                                        retry_wait_fn=lambda delay, cancelled: (
+                                            App._repair_retry_wait(
+                                                self, delay, cancelled)))
                                 except Exception as repair_exc:
                                     self._log(
                                         f"Resume: eksik satır onarımı atlandı: {repair_exc}",
@@ -23997,7 +24203,9 @@ class App(ctk.CTk):
                             "_helper_request_canceller"),
                         locked_terms=_locked_terms_for(fp),
                         permanent_failure_cb=(
-                            self._block_automatic_recovery_for_permanent_provider))
+                            self._block_automatic_recovery_for_permanent_provider),
+                        retry_wait_fn=lambda delay, cancelled: (
+                            App._repair_retry_wait(self, delay, cancelled)))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _record_pass_change(
@@ -25149,7 +25357,9 @@ class App(ctk.CTk):
                         cancel_check=lambda: self._stop_flag,
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
-                        locked_terms=_repair_locked_terms)
+                        locked_terms=_repair_locked_terms,
+                        retry_wait_fn=lambda delay, cancelled: (
+                            App._repair_retry_wait(self, delay, cancelled)))
                 except Exception as e:
                     self._log(f"[{fname}] Eksik satır onarımı atlandı: {e}", "warn")
                 if self._stop_flag:
