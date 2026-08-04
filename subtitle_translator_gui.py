@@ -4440,6 +4440,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
                 break
             pending = list(hata_indices[batch_start:batch_start + max_per_call])
+            prior_rejections = {}
             for attempt_index in range(total_attempts):
                 if not pending:
                     break
@@ -4463,7 +4464,28 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     {"i": idx, "t": _clean_src(src)}
                     for _pos, idx, _ts, src in pending
                 ]
-                payload_data = {"tr": tr_items}
+                payload_data = {
+                    "tr": tr_items,
+                    "repair_attempt": attempt_index + 1,
+                    "repair_instructions": (
+                        "Translate every supplied cue completely. On retries, "
+                        "repair_retry lists the previous rejected candidate and exact "
+                        "rejection reason. Correct that defect instead of repeating the "
+                        "candidate. Preserve quoted work, song, book and programme titles "
+                        "when they are proper titles; translate all surrounding prose."
+                    ),
+                }
+                retry_rows = []
+                for _pos, idx, _ts, _src in pending:
+                    previous = prior_rejections.get(str(idx))
+                    if previous:
+                        retry_rows.append({
+                            "i": idx,
+                            "reason": previous[0],
+                            "previous": previous[1],
+                        })
+                if retry_rows:
+                    payload_data["repair_retry"] = retry_rows
                 if locked_terms:
                     payload_data["glossary"] = locked_terms
                 positions = [
@@ -4577,6 +4599,14 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         repaired += 1
 
                     pending = next_pending
+                    prior_rejections = {
+                        rid: (
+                            rejection_reasons.get(rid, "unknown"),
+                            rejection_candidates.get(rid, ""),
+                        )
+                        for _pos, idx, _ts, _src in pending
+                        if (rid := str(idx))
+                    }
                     if log_fn:
                         for block_pos, idx, _ts, src_text in pending:
                             rid = str(idx)

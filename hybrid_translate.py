@@ -5179,6 +5179,43 @@ _SOURCE_ENGLISH_NGRAM_EXEMPTIONS = frozenset({
     "rock and roll", "hip hop music", "status quo ante", "ad hoc basis",
     "de facto government", "vice versa situation", "magna cum laude",
 })
+_SOURCE_QUOTED_SPAN_RE = re.compile(r'["\u201c]([^"\u201d\r\n]{1,160})["\u201d]')
+_ENGLISH_TITLE_CONNECTORS = frozenset({
+    "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
+    "into", "nor", "of", "on", "or", "the", "to", "up", "via", "with",
+})
+
+
+def _quoted_english_title_key(value: str) -> str:
+    words = re.findall(r"[A-Za-z]+(?:['\u2019][A-Za-z]+)?", str(value or ""))
+    if not 2 <= len(words) <= 16:
+        return ""
+    if not all(
+            word.casefold() in _ENGLISH_TITLE_CONNECTORS
+            or word[:1].isupper()
+            for word in words):
+        return ""
+    return " ".join(word.replace("\u2019", "'").casefold() for word in words)
+
+
+def _mask_shared_quoted_english_titles(source: str, target: str) -> tuple[str, str]:
+    source_keys = {
+        key for match in _SOURCE_QUOTED_SPAN_RE.finditer(source)
+        if (key := _quoted_english_title_key(match.group(1)))
+    }
+    target_keys = {
+        key for match in _SOURCE_QUOTED_SPAN_RE.finditer(target)
+        if (key := _quoted_english_title_key(match.group(1)))
+    }
+    shared = source_keys & target_keys
+    if not shared:
+        return source, target
+
+    def _mask(match):
+        key = _quoted_english_title_key(match.group(1))
+        return " " if key in shared else match.group(0)
+
+    return _SOURCE_QUOTED_SPAN_RE.sub(_mask, source), _SOURCE_QUOTED_SPAN_RE.sub(_mask, target)
 
 
 def has_source_english_overlap(src_text: str, tr_text: str) -> bool:
@@ -5186,6 +5223,9 @@ def has_source_english_overlap(src_text: str, tr_text: str) -> bool:
     source = re.sub(r"\s+", " ", str(src_text or "")).strip()
     target = re.sub(r"\s+", " ", str(tr_text or "")).strip()
     if not source or not target or source == target:
+        return False
+    source, target = _mask_shared_quoted_english_titles(source, target)
+    if not source.strip() or not target.strip():
         return False
     src_words = re.findall(r"[A-Za-z]+", source)
     tr_words = re.findall(r"[A-Za-z]+", target)

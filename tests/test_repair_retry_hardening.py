@@ -95,6 +95,26 @@ class LicensedIdentityRepairTest(unittest.TestCase):
 
 
 class PersistentRepairRetryTest(unittest.TestCase):
+    def test_quoted_song_title_translation_is_accepted_without_retry(self):
+        source = (
+            'One seven-inch single - "I\'m the Leader of the Gang," brackets, '
+            '"I Am" by Gary Glitter.'
+        )
+        candidate = (
+            'Bir tane yedi inçlik plak: Gary Glitter\'dan '
+            '"I\'m the Leader of the Gang", parantez içinde, "I Am".'
+        )
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=_response([{"i": "318", "t": candidate}])) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                [("318", _TS, "[HATA]")], {"318": source}, object(),
+                "English", "Turkish",
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"))
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], candidate)
+        self.assertEqual(create.call_count, 1)
+
     def test_retry_sends_only_still_missing_cues(self):
         blocks = [("1", _TS, "[HATA]"), ("2", _TS, "[HATA]")]
         source = {"1": "First source.", "2": "Second source."}
@@ -140,6 +160,19 @@ class PersistentRepairRetryTest(unittest.TestCase):
         self.assertIn("Onarım reddi #8", log_text)
         self.assertIn("identical_source", log_text)
         self.assertIn("deneme 4/4", log_text)
+        payloads = [
+            json.loads(call.kwargs["messages"][1]["content"])
+            for call in create.call_args_list
+        ]
+        self.assertEqual(
+            [payload["repair_attempt"] for payload in payloads], [1, 2, 3, 4])
+        self.assertNotIn("repair_retry", payloads[0])
+        for payload in payloads[1:]:
+            self.assertEqual(payload["repair_retry"][0]["i"], "8")
+            self.assertEqual(
+                payload["repair_retry"][0]["reason"], "identical_source")
+            self.assertEqual(
+                payload["repair_retry"][0]["previous"], "Please come here.")
 
     def test_cancel_during_retry_wait_prevents_next_request(self):
         waits = []

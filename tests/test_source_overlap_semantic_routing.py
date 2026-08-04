@@ -29,6 +29,24 @@ class SourceEnglishOverlapTest(unittest.TestCase):
             with self.subTest(translation=translation):
                 self.assertFalse(ht.has_source_english_overlap(source, translation))
 
+    def test_quoted_song_titles_are_not_flagged_as_english_residue(self):
+        source = (
+            'One seven-inch single - "I\'m the Leader of the Gang," brackets, '
+            '"I Am" by Gary Glitter.'
+        )
+        translation = (
+            'Bir tane yedi inçlik plak: Gary Glitter\'dan '
+            '"I\'m the Leader of the Gang", parantez içinde, "I Am".'
+        )
+        self.assertFalse(ht.has_source_english_overlap(source, translation))
+        self.assertFalse(gui._is_untranslated(
+            source, translation, source_language="English"))
+
+    def test_quoted_ordinary_dialogue_is_still_flagged(self):
+        source = 'He said, "Please come here before dinner."'
+        translation = '"Please come here before dinner," dedi.'
+        self.assertTrue(ht.has_source_english_overlap(source, translation))
+
     def test_validator_routes_overlap_to_quality_pass(self):
         cue = SimpleNamespace(
             index=7,
