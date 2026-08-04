@@ -71,12 +71,12 @@ _SDH_KEYWORDS = {
     "scream", "screams", "screaming", "crying", "cries", "sobbing",
     "sniffles", "cough", "coughs", "coughing", "sneeze", "sneezes",
     "breathing", "panting", "grunting", "whisper", "whispers",
-    "whispering", "murmur", "murmurs", "murmuring",
+    "whispering", "murmur", "murmurs", "murmuring", "chanting",
     "music", "song", "singing", "sings", "plays", "playing",
     "tense", "dramatic", "ominous", "somber", "upbeat", "soft",
     "door", "knock", "knocks", "phone", "ringing", "beeping", "alarm",
-    "thunder", "explosion", "gunshot", "siren", "engine", "crowd",
-    "noise", "chatter", "inaudible", "indistinct", "overlapping",
+    "thunder", "thundering", "thunderclap", "explosion", "gunshot", "siren", "engine", "crowd",
+    "noise", "chatter", "conversation", "inaudible", "indistinct", "overlapping",
     "continues", "distant", "nearby",
     # Turkish captions
     "alkis", "alkislar", "alkisliyor", "tezahurat", "yuhalama",
@@ -93,18 +93,19 @@ _SDH_KEYWORDS = {
     "crash", "crashes", "crashing", "breaking", "shatter", "shattering",
     "smash", "smashing", "bark", "barks", "barking", "howl", "howling",
     "growl", "growling", "meow", "roar", "roaring", "chirping",
-    "wind", "rain", "rainfall", "storm", "waves", "water",
+    "wind", "blowing", "rain", "raining", "rainfall", "storm", "waves", "water",
     "door slam", "slamming", "door closes", "door opens", "door creaks",
     "heartbeat", "heart beating", "pulse",
     "clock ticking", "ticking", "clock",
     "phone rings", "phone ringing", "cellphone", "dialing", "dial tone",
-    "car engine", "car", "truck", "train", "horn", "honking",
+    "car engine", "car", "truck", "train", "horn", "honking", "honks", "whistles",
     "tires", "tire squeal", "brakes", "squealing",
     "gunfire", "gun", "gunshots", "shot", "rifle", "pistol", "weapon",
-    "bullet", "bullet impact", "humming", "hum", "buzzing", "rumbling",
+    "bullet", "bullet impact", "humming", "hum", "buzzing", "rumbling", "rumbles",
     "click", "clicks", "clicking", "keyboard", "typing", "beep", "ping",
     "whistle", "whistling", "shout", "shouts", "shouting",
     "yell", "yells", "yelling", "hum", "humming", "rapping",
+    "starts", "tolls", "crowing", "cooing", "shivers",
 }
 
 _SPEAKER_WORDS = {
@@ -322,10 +323,13 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     instruments = {"trumpet", "piano", "violin", "drums", "guitar", "flute"}
     if (not bare_text and len(words_no_digits) <= 10
             and not any(word in pronouns for word in words_no_digits)
-            and (words_no_digits[-1].endswith("ing")
-                 or "music" in words_no_digits
-                 or words_no_digits[-1] in instruments
-                 or words_no_digits[-1] in _SDH_ACTION_VERBS)):
+             and (words_no_digits[-1].endswith("ing")
+                  or "music" in words_no_digits
+                  or words_no_digits[0] == "chanting"
+                  or (words_no_digits[0] in {"all", "both"}
+                      and words_no_digits[-1] in _SDH_KEYWORDS)
+                  or words_no_digits[-1] in instruments
+                  or words_no_digits[-1] in _SDH_ACTION_VERBS)):
         return True
 
     # All non-digit words are SDH/speaker keywords: [soft music], [door closes], [narrator 2]
@@ -336,7 +340,8 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     if len(words_no_digits) >= 2 and words_no_digits[-1] in _SDH_ACTION_VERBS:
         return True
     if (not bare_text
-            and any(w in _SDH_ACTION_VERBS for w in words_no_digits)
+            and any(w in _SDH_ACTION_VERBS or w in _SDH_KEYWORDS
+                    for w in words_no_digits)
             and (words_no_digits[-1].endswith("ly")
                  or any(w in _SDH_KEYWORDS or w in _SPEAKER_WORDS
                         for w in words_no_digits))):

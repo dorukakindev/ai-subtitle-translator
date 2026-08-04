@@ -2479,6 +2479,7 @@ _DELIVERY_ASS_POSITION_RE = re.compile(
     r"|\\an\d+|\\a\d+",
     re.IGNORECASE,
 )
+_DELIVERY_UNKNOWN_SOURCE_RE = re.compile(r"^\s*\?{2,}\s*$")
 _DELIVERY_CREDIT_ROLE_RE = re.compile(
     r"(?:^|,)\s*(?:translator|translation|timing|typesetter|quality check|"
     r"editor|çeviri|çevirmen|zamanlama|dizgi|kalite kontrol|editör)\s*$",
@@ -2567,6 +2568,15 @@ def _is_delivery_sdh_only(text: str) -> bool:
             sdh_cleaner._ascii_fold(match.group(2)).strip()))
         for match in tokens
     )
+
+
+def _source_cue_is_delivery_removable(text: str) -> bool:
+    value = str(text or "")
+    if (_is_delivery_credit(value)
+            or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)):
+        return True
+    probe = [("1", "00:00:00,000 --> 00:00:00,001", value)]
+    return not clean_sdh(probe, src_map={"1": value}, source_driven=True)
 
 
 def _srt_timestamp_ms(value: str) -> int:
@@ -2727,7 +2737,9 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     position_tags_removed = 0
     sdh_removed = 0
     for idx, ts, text in blocks:
-        if _is_delivery_credit((src_map if source_cues else {}).get(str(idx), "")):
+        source_text = (src_map if source_cues else {}).get(str(idx), "")
+        if (_is_delivery_credit(source_text)
+                or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(str(source_text or ""))):
             continue
         value = str(text or "")
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
@@ -7840,8 +7852,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             source_with_bounds):
         if pos in used_source:
             continue
-        if (_is_delivery_credit(source_text)
-                or _is_delivery_sdh_only(source_text)):
+        if _source_cue_is_delivery_removable(source_text):
             expected_removed.append(source_idx)
         else:
             missing_dialogue.append(source_idx)

@@ -22,6 +22,17 @@ def _src(**kw):
 
 
 class SdhSourceDrivenTest(unittest.TestCase):
+    def test_common_english_sdh_phrases_are_source_sfx(self):
+        samples = [
+            "[thundering]", "[raining]", "[train whistles]",
+            "[Chanting of holy verses in praise of Lord Vishnu]",
+            "[engine starts]", "[car honks]", "[all laugh]",
+            "[indistinct conversation]", "[Eli breathing heavily]",
+            "[inhales, shivers]",
+        ]
+        for sample in samples:
+            self.assertTrue(sdh.src_is_sfx_only(sample), msg=sample)
+
     def test_chevron_speaker_markers_stripped(self):
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", ">> Merhaba."),

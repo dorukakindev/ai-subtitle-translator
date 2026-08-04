@@ -332,6 +332,29 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["expected_removed_ids"], ["1"])
 
+    def test_delivery_audit_accepts_multiline_sdh_and_unknown_placeholder(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "-[wind blowing]\n-[crickets chirping]"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "???"),
+            ("3", "00:00:04,000 --> 00:00:05,000", "[thundering]"),
+            ("4", "00:00:05,000 --> 00:00:06,000", "Real dialogue."),
+        ]
+        delivered = gui._prepare_upload_ready_blocks(
+            [("2", source[1][1], "Uydurulmuş diyalog."),
+             ("4", source[3][1], "Gerçek diyalog.")],
+            "Turkish", source_cues=source)
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source, "English")
+            gui.write_srt(output_path, delivered, "English")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2", "3"])
+
     def test_parenthetical_dialogue_and_bracketed_ui_text_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "(No.)"),
@@ -347,6 +370,23 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(texts["3"], "(f(x))")
         self.assertEqual(texts["4"], "[404 ERROR]")
         self.assertEqual(texts["5"], "[Sesame Street]")
+
+    def test_unknown_source_placeholder_cannot_gain_hallucinated_dialogue(self):
+        source_cues = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "???"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "Real dialogue."),
+        ]
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Uydurulmuş diyalog."),
+            ("2", "00:00:03,000 --> 00:00:04,000", "Gerçek diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source_cues)
+        texts = {str(idx): text for idx, _ts, text in result}
+
+        self.assertNotIn("1", texts)
+        self.assertEqual(texts["2"], "Gerçek diyalog.")
 
     def test_unresolved_translation_is_not_signed_as_complete(self):
         blocks = [
