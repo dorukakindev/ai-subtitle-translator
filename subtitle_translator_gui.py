@@ -2489,6 +2489,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
+    r"\bocr\s+(?:by|:)\s*\S|\bsubti(?:tl|fl)ing\s*:\s*\S|"
     r"\b(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
@@ -2552,6 +2553,18 @@ def _is_delivery_credit(text: str) -> bool:
     return role_lines >= 2
 
 
+def _delivery_credit_line_indexes(text: str) -> set[int]:
+    return {
+        i for i, line in enumerate(str(text or "").splitlines())
+        if _is_delivery_credit(line)
+    }
+
+
+def _delivery_source_is_all_credit(text: str) -> bool:
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    return bool(lines) and all(_is_delivery_credit(line) for line in lines)
+
+
 def _is_delivery_sdh_only(text: str) -> bool:
     value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
     if not value:
@@ -2572,7 +2585,7 @@ def _is_delivery_sdh_only(text: str) -> bool:
 
 def _source_cue_is_delivery_removable(text: str) -> bool:
     value = str(text or "")
-    if (_is_delivery_credit(value)
+    if (_delivery_source_is_all_credit(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)):
         return True
     probe = [("1", "00:00:00,000 --> 00:00:00,001", value)]
@@ -2738,7 +2751,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     sdh_removed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
-        if (_is_delivery_credit(source_text)
+        if (_delivery_source_is_all_credit(source_text)
                 or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(str(source_text or ""))):
             continue
         value = str(text or "")
@@ -2746,6 +2759,14 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             continue
         value, removed = _strip_delivery_position_tags(value)
         position_tags_removed += removed
+        source_credit_lines = _delivery_credit_line_indexes(source_text)
+        value_lines = value.splitlines()
+        source_lines = str(source_text or "").splitlines()
+        if source_credit_lines and len(source_lines) == len(value_lines):
+            value = "\n".join(
+                line for i, line in enumerate(value_lines)
+                if i not in source_credit_lines
+            )
         hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
         value = value.translate(_DELIVERY_HAT_MAP).strip()
         if not value:
@@ -4105,9 +4126,21 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
         "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah",
         "robot", "laser", "internet", "pizza", "taxi", "stereo",
     ])
+    _IDENTITY_INTERJECTIONS = frozenset(["ok", "hi", "hey", "wow", "oh", "ah"])
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
-    if src_norm == tr_norm and src_norm not in _LOANWORDS:
+    identity_tokens = re.findall(r"[^\W\d_]+", str(src_text), re.UNICODE)
+    identity_is_short_interjection = bool(
+        identity_tokens and len(identity_tokens) <= 4
+        and any(token.casefold() in _IDENTITY_INTERJECTIONS for token in identity_tokens)
+        and all(
+            token.casefold() in _IDENTITY_INTERJECTIONS
+            or (token[:1].isupper() and _src_is_proper_name_phrase(token))
+            for token in identity_tokens
+        )
+    )
+    if (src_norm == tr_norm and src_norm not in _LOANWORDS
+            and not identity_is_short_interjection):
         if not _src_is_sdh_only(src_text):
             if _src_all_caps:
                 if re.search(r"[!?]", str(src_text)):

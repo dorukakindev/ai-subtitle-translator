@@ -350,6 +350,9 @@ _ASS_SOFTLINE = re.compile(r'\\N', re.IGNORECASE)
 _ASS_HARDLINE = re.compile(r'\\n', re.IGNORECASE)
 _ASS_HSPACE   = re.compile(r'\\h', re.IGNORECASE)
 _ASS_COMMENT  = re.compile(r'\{=[^}]*\}')
+_ASS_DRAWING_MODE = re.compile(r'\{[^}]*\\p([1-9]\d*)\b[^}]*\}', re.IGNORECASE)
+_ASS_DRAWING_DATA = re.compile(
+    r'^[\s,.-]*(?:[mnlbspc]\s+)?[-\d.,\s mnlbspc]+$', re.IGNORECASE)
 
 def _clean_ass_text(text: str) -> str:
     """ASS override tag'lerini kaldır, satır kırma karakterlerini dönüştür."""
@@ -368,6 +371,13 @@ def _format_ass_text(text: str) -> str:
     text = _ASS_HARDLINE.sub('\n', text)
     text = _ASS_HSPACE.sub(' ', text)
     return text.strip()
+
+
+def _ass_is_drawing_only(text: str) -> bool:
+    if not _ASS_DRAWING_MODE.search(str(text or "")):
+        return False
+    visible = _clean_ass_text(text).strip("(){} ")
+    return bool(visible and _ASS_DRAWING_DATA.fullmatch(visible))
 
 
 
@@ -534,7 +544,10 @@ def parse_ass(filepath: str) -> list:
         start_ts = _ass_ts_to_srt(parts[start_i])
         end_ts   = _ass_ts_to_srt(parts[end_i])
         timestamp = f'{start_ts} --> {end_ts}'
-        text = _format_ass_text(parts[text_i])
+        raw_text = parts[text_i]
+        if _ass_is_drawing_only(raw_text):
+            continue
+        text = _format_ass_text(raw_text)
         if not _clean_ass_text(text).strip():
             continue
 

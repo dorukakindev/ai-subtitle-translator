@@ -507,5 +507,31 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         )
 
 
+class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_embedded_source_credit_lines_do_not_remove_real_title(self):
+        source = [("26", "00:00:02,000 --> 00:00:05,000",
+                   "~ RUN MELOS! ~\nSubtitles by Odyssey\nOCR by Inactive (Subs.com.ru)")]
+        blocks = [("26", source[0][1],
+                   "~ KOS, MELOS! ~\nAltyazi: Odyssey\nOCR: Inactive (Subs.com.ru)")]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = [text for _idx, _ts, text in result
+                    if text != "discord: ceviri2"]
+
+        self.assertEqual(dialogue, ["~ KOS, MELOS! ~"])
+        self.assertFalse(gui._source_cue_is_delivery_removable(source[0][2]))
+
+    def test_ocr_misspelled_subtitling_credit_is_removed(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Subtifling: Eclair Group"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Gercek diyalog."),
+        ]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        joined = "\n".join(text for _i, _ts, text in result)
+        self.assertNotIn("Eclair", joined)
+        self.assertIn("Gercek diyalog.", joined)
+
+
 if __name__ == "__main__":
     unittest.main()

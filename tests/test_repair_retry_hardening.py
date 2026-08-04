@@ -210,5 +210,19 @@ class RepairFlowParityTest(unittest.TestCase):
         self.assertTrue(0 <= scan_pos < stop_pos < write_pos)
 
 
+class IdentityInterjectionRegressionTest(unittest.TestCase):
+    def test_short_identity_interjections_are_valid_translations(self):
+        self.assertEqual(gui._untranslated_reason("Hey, hey!", "Hey, hey!"), "")
+        self.assertEqual(gui._untranslated_reason("Jack, hey.", "Jack, hey."), "")
+        self.assertEqual(
+            gui._untranslated_reason("Hello everyone.", "Hello everyone."),
+            "identical_source",
+        )
+        self.assertEqual(
+            gui._untranslated_reason("No, no!", "No, no!"),
+            "identical_source",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

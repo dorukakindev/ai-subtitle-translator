@@ -594,5 +594,24 @@ class ParseSrtEdgeCasesTest(unittest.TestCase):
             os.unlink(path)
 
 
+class AssDrawingRegressionTest(unittest.TestCase):
+    def test_vector_drawing_event_is_not_returned_as_dialogue(self):
+        path = _write_temp(
+            "[Events]\n"
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+            r"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\be1}{\p1\pos(10,20)}(m 0 0 l 10 0 10 10 0 10)}" "\n"
+            "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,Real dialogue\n",
+            ".ass",
+        )
+        try:
+            from subtitle_formats import parse_ass
+            blocks = parse_ass(path)
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0][2], "Real dialogue")
+
+
 if __name__ == "__main__":
     unittest.main()
