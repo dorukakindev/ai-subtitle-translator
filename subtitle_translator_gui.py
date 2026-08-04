@@ -4030,8 +4030,15 @@ def _is_locked_identity_translation(src_text: str, tr_text: str,
     if not src_norm or src_norm != tr_norm:
         return False
     for source, target in (locked_terms or {}).items():
-        if (_repair_identity_text(source) == src_norm
-                and _repair_identity_text(target) == tr_norm):
+        source_norm = _repair_identity_text(source)
+        target_norm = _repair_identity_text(target)
+        if source_norm == src_norm and target_norm == tr_norm:
+            return True
+        source_tokens = source_norm.split()
+        src_tokens = src_norm.split()
+        if (source_tokens and source_norm == target_norm
+                and len(src_tokens) % len(source_tokens) == 0
+                and src_tokens == source_tokens * (len(src_tokens) // len(source_tokens))):
             return True
     return False
 

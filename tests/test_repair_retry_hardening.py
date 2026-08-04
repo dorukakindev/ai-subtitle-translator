@@ -37,6 +37,22 @@ class LicensedIdentityRepairTest(unittest.TestCase):
             [("715", _TS, "Coitus interruptus.")],
             locked_terms=locked, source_language="Portuguese"), [])
 
+    def test_repeated_locked_latin_identity_is_not_missing(self):
+        source = "Mea culpa, mea culpa, mea culpa!"
+        locked = {"Mea culpa": "Mea culpa"}
+        blocks = [("57", _TS, source)]
+        with patch("subtitle_translator_gui._safe_chat_create") as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, {"57": source}, object(), "English", "Turkish",
+                locked_terms=locked)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(repaired, 0)
+        create.assert_not_called()
+        self.assertEqual(gui._partial_missing_translation_ids(
+            blocks, {"57": source}, [("57", _TS, source)],
+            locked_terms=locked, source_language="English"), [])
+
     def test_magna_cum_laude_is_not_english_residue(self):
         source = (
             "Dr. Genoves has three international doctorates, "
