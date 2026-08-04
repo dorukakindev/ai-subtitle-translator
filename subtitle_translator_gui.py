@@ -4748,6 +4748,18 @@ def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
     return ordered, inserted
 
 
+def _finalize_translation_blocks(blocks, raw_src_map, source_cues=None,
+                                 log_fn=None):
+    finalized = list(blocks or [])
+    if source_cues is not None:
+        finalized, _ = _reinsert_missing_dialogue_markers(
+            finalized, source_cues, log_fn=log_fn)
+    finalized, marked = _fill_hata_with_source(
+        finalized, raw_src_map, log_fn=log_fn)
+    finalized = _restore_tags_blocks(finalized, raw_src_map)
+    return finalized, marked
+
+
 # ── Ön-Bağlam Analizi (hybrid kapalıyken dosya düzeyi bağlam) ────────────────
 PRECONTEXT_SAMPLE_HEAD = 150   # baştan alınan satır sayısı
 PRECONTEXT_SAMPLE_REST = 100   # kalanından eşit aralıkla örneklenen satır sayısı
@@ -5450,26 +5462,39 @@ def parse_response(raw, chunk_info):
     return trans_map
 
 
+def _merge_jsonl_translation_payload(translations: dict, rejected_ids: set,
+                                     raw: str, expected_ids: set):
+    from response_integrity import parse_translation_payload
+    parsed = parse_translation_payload(raw, expected_ids)
+    invalid_expected = (
+        parsed.duplicate_ids | parsed.invalid_text_ids
+    ) & set(expected_ids)
+    for cue_id in invalid_expected:
+        translations.pop(cue_id, None)
+        rejected_ids.add(cue_id)
+    for cue_id, text in parsed.translations.items():
+        if cue_id in rejected_ids:
+            continue
+        if cue_id in translations:
+            translations.pop(cue_id, None)
+            rejected_ids.add(cue_id)
+            continue
+        translations[cue_id] = text
+    return parsed
+
+
 def _missing_block_items(all_items: list, current_raw: str) -> list:
     """Chunk'ın tüm 'tr' öğeleri içinden, current_raw'da BAŞARIYLA çevrilmemiş
     (yanıtta hiç yok ya da [HATA]) olanları döner. Kesilmiş yanıtlarda salvage ile
     kurtarılan kısmi sonuçları da hesaba katar — böylece yalnızca gerçekten eksik
     bloklar yeniden istenir."""
-    ok = set()
-    try:
-        parsed = json.loads(_extract_json_array(current_raw) or "[]")
-    except Exception:
-        parsed = []
-    for it in (parsed if isinstance(parsed, list) else []):
-        if (isinstance(it, dict) and "i" in it
-                and str(it.get("t", "")).strip()
-                and not str(it.get("t", "")).strip().startswith("[HATA")):
-            ok.add(str(it["i"]))
-    for it in _salvage_json_objects(current_raw):
-        if (isinstance(it, dict) and "i" in it
-                and str(it.get("t", "")).strip()
-                and not str(it.get("t", "")).strip().startswith("[HATA")):
-            ok.add(str(it["i"]))
+    from response_integrity import parse_translation_payload
+    expected_ids = {str(it.get("i")) for it in all_items if "i" in it}
+    parsed = parse_translation_payload(current_raw, expected_ids)
+    ok = {
+        cue_id for cue_id, text in parsed.translations.items()
+        if str(text).strip() and not str(text).strip().startswith("[HATA")
+    }
     return [it for it in all_items if str(it.get("i")) not in ok]
 
 
@@ -13226,6 +13251,10 @@ class App(ctk.CTk):
             report_lines.append(f"## {slug} S{season:02d}")
             for episode, source_path, output_path in items:
                 try:
+                    expected_source_hash = _file_content_sha256(source_path)
+                    output_baseline = _file_state_signature(output_path)
+                    if not expected_source_hash or not output_baseline.get("exists"):
+                        raise OSError("kaynak veya hedef dosya durumu okunamadı")
                     source_blocks = list(parse_subtitle(source_path))
                     output_blocks, unmapped = _align_delivery_blocks_to_source(
                         source_blocks, parse_srt(output_path))
@@ -13281,12 +13310,25 @@ class App(ctk.CTk):
                             raise RuntimeError(
                                 "sezon terim denetimi tamamlanamadı: "
                                 f"{term_status.get('status', 'unknown')}")
+                    output_blocks, _ = _finalize_translation_blocks(
+                        output_blocks, _raw_src_map_from_cues(source_blocks),
+                        source_cues=source_blocks, log_fn=self._log)
+                    if not _existing_output_is_complete(
+                            output_blocks, source_blocks):
+                        raise RuntimeError(
+                            "sezon denetimi sonrası cue yapısı eksik veya bozuk")
                     changes = [
                         (str(idx), before.get(str(idx), ""), text)
                         for idx, _ts, text in output_blocks
                         if before.get(str(idx), text) != text
                     ]
                     if changes:
+                        guard_reason = _batch_write_guard_reason(
+                            source_path, output_path, expected_source_hash,
+                            output_baseline)
+                        if guard_reason:
+                            raise RuntimeError(
+                                f"sezon denetimi sonucu yazılmadı ({guard_reason})")
                         report_dir = _resolve_report_dir(
                             snapshot.get("input_dir", ""),
                             snapshot.get("output_dir", ""))
@@ -14202,18 +14244,14 @@ class App(ctk.CTk):
         if not missing:
             return None
 
-        recovered = {}
-        try:
-            for it in json.loads(_extract_json_array(current_raw) or "[]"):
-                if (isinstance(it, dict) and "i" in it
-                        and str(it.get("t", "")).strip()
-                        and not str(it.get("t", "")).strip().startswith("[HATA")):
-                    recovered[str(it["i"])] = it["t"]
-        except Exception:
-            pass
-        for it in _salvage_json_objects(current_raw):
-            if isinstance(it, dict) and "i" in it:
-                recovered.setdefault(str(it["i"]), it.get("t"))
+        from response_integrity import parse_translation_payload
+        expected_ids = {str(it.get("i")) for it in all_items if "i" in it}
+        parsed_current = parse_translation_payload(current_raw, expected_ids)
+        recovered = {
+            cue_id: text
+            for cue_id, text in parsed_current.translations.items()
+            if str(text).strip() and not str(text).strip().startswith("[HATA")
+        }
 
         sys_msg = req["body"]["messages"][0]
         model   = req["body"]["model"]
@@ -16813,6 +16851,7 @@ class App(ctk.CTk):
 
                 # Translations from JSONL
                 trans = {}
+                rejected_ids = set()
                 errors = 0
                 total_tokens = 0
                 with open(jsonl_path, encoding="utf-8") as f:
@@ -16836,21 +16875,25 @@ class App(ctk.CTk):
                             self._log(f"JSONL satırı atlanıyor (parse hatası): {e}", "warn")
                             continue
                         cid_pp = obj.get("custom_id", "?")
-                        parsed = None
-                        try:
-                            parsed = json.loads(_extract_json_array(raw))
-                        except Exception:
-                            pass
-                        if isinstance(parsed, list):
-                            for it in parsed:
-                                if isinstance(it, dict) and "i" in it and "t" in it:
-                                    trans[str(it["i"])] = it["t"]
-                        elif parsed is None:
+                        parsed = _merge_jsonl_translation_payload(
+                            trans, rejected_ids, raw, set(ts_map))
+                        if parsed.parse_mode == "invalid":
                             self._log(f"Post-process {cid_pp}: JSON parse başarısız "
                                       f"(ham: {raw[:60]!r})", "err")
+                        if parsed.unexpected_ids:
+                            self._log(
+                                f"Post-process {cid_pp}: kaynakta olmayan cue kimlikleri "
+                                f"reddedildi ({', '.join(sorted(parsed.unexpected_ids)[:8])})",
+                                "err")
+                        if parsed.duplicate_ids:
+                            self._log(
+                                f"Post-process {cid_pp}: tekrarlı cue kimlikleri "
+                                f"reddedildi ({', '.join(sorted(parsed.duplicate_ids)[:8])})",
+                                "err")
 
                 self._update_batch_tokens(total_tokens)
                 self._log(f"JSONL: {len(trans)} satır çevrilmiş | {errors} hatalı chunk | "
+                          f"{len(rejected_ids)} kimlik bütünlüğü reddi | "
                           f"{len(ts_map)} timestamp", "info")
 
                 # Build blocks using original timestamps
@@ -16916,43 +16959,43 @@ class App(ctk.CTk):
                         "warn")
                     return
 
+                if clean_sdh_on:
+                    blocks = clean_sdh(
+                        blocks, src_map=_src_map_from_cues(cues),
+                        source_driven=True)
+
+                blocks, _n_filled_save = _finalize_translation_blocks(
+                    blocks, _raw_map_pre, source_cues=cues,
+                    log_fn=self._log)
                 remaining_missing_ids = _partial_missing_translation_ids(
                     blocks, _raw_map_pre, cues,
                     locked_terms=_repair_locked_terms,
                     source_language=src)
 
-                if clean_sdh_on:
-                    try:
-                        blocks = clean_sdh(
-                            blocks, src_map=_src_map_from_cues(cues),
-                            source_driven=True)
-                    except Exception:
-                        pass
-
-                if remaining_missing_ids:
-                    # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
-                    try:
-                        blocks, _n_filled_save = _fill_hata_with_source(
-                            blocks, _raw_map_pre, log_fn=self._log)
-                        blocks = _restore_tags_blocks(blocks, _raw_map_pre)
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        blocks = _restore_tags_blocks(blocks, _raw_map_pre)
-                    except Exception:
-                        pass
-
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     self._maybe_merge_cues(blocks), tgt, self._log,
                     source_cues=cues)
-                write_srt(out_path, _delivery_blocks, tgt)
                 missing = len(remaining_missing_ids)
-                self._log(f"Kaydedildi: {out_path}  ({len(blocks)} satır, {missing} eksik)", "ok")
+                _write_path = _partial_output_path(out_path) if missing else Path(out_path)
+                write_srt(_write_path, _delivery_blocks, tgt)
+                _quarantined = (
+                    _quarantine_incomplete_final(out_path) if missing else None)
+                if missing:
+                    self._log(
+                        f"JSONL: {missing} eksik çeviri kaldı; kısmi çıktı "
+                        f"{_write_path.name} olarak ayrıldı ve tamamlandı sayılmadı.",
+                        "err")
+                    if _quarantined:
+                        self._log(
+                            f"Önceki eksik nihai çıktı karantinaya alındı: "
+                            f"{_quarantined.name}", "warn")
+                else:
+                    self._log(
+                        f"Kaydedildi: {_write_path}  ({len(blocks)} satır)", "ok")
                 _post_ui(self, messagebox.showinfo, "Tamamlandı",
                               f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
                               f"{missing} satır eksik (orijinalde vardı ama çeviri yok)\n\n"
-                              f"Konum:\n{out_path}")
+                              f"Konum:\n{_write_path}")
             except Exception as e:
                 self._log(f"Dönüştürme hatası: {e}", "err")
                 # 'e' except bloğu bitince silinir; after() lambda'yı SONRA çalıştırır —
@@ -21149,6 +21192,8 @@ class App(ctk.CTk):
             return None
 
         raw_src_map = _raw_src_map_from_cues(cues)
+        partial_blocks, _ = _reinsert_missing_dialogue_markers(
+            partial_blocks, cues, log_fn=self._log)
         partial_baseline = _file_state_signature(partial_path)
         schema_dict = self._get_file_schema(filepath)
         glossary = ht.load_glossary(self._get_file_glossary(filepath))
@@ -21209,6 +21254,9 @@ class App(ctk.CTk):
                 "write_path": partial_path,
             }
 
+        repaired_blocks, _n_filled = _finalize_translation_blocks(
+            repaired_blocks, raw_src_map, source_cues=cues,
+            log_fn=self._log)
         missing_after = _partial_missing_translation_ids(
             repaired_blocks, raw_src_map, cues, locked_terms=locked_terms,
             source_language=file_src)
@@ -22119,15 +22167,19 @@ class App(ctk.CTk):
                 _record_pass_change(
                     _pass_trace, "Final-SDH", _before_final_sdh,
                     sorted_blocks, _pass_history)
-            _n_filled = 0
+            _raw_map = _raw_src_map_from_cues(cues)
             try:
-                _raw_map = _raw_src_map_from_cues(cues)
-                sorted_blocks, _ = _reinsert_missing_dialogue_markers(
-                    sorted_blocks, cues, log_fn=self._log)
-                sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
-                sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
-            except Exception:
-                pass
+                sorted_blocks, _n_filled = _finalize_translation_blocks(
+                    sorted_blocks, _raw_map, source_cues=cues,
+                    log_fn=self._log)
+            except Exception as finalize_error:
+                self._log_exc(
+                    f"[{fname}] nihai yapı/etiket koruması başarısız",
+                    finalize_error)
+                failed_files.append(filepath)
+                self._update_file_progress(
+                    filepath, "Nihai yapı koruması başarısız", 100, "error")
+                continue
             _final_guard_reason = _batch_write_guard_reason(
                 filepath, out_path, _expected_source_hash, _output_baseline)
             if _final_guard_reason:
@@ -22146,10 +22198,10 @@ class App(ctk.CTk):
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _has_missing = _hata_n > 0
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
-            _quarantined = (
-                _quarantine_incomplete_final(out_path) if _has_missing else None)
             self._record_file_status(filepath, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, tgt)
+            _quarantined = (
+                _quarantine_incomplete_final(out_path) if _has_missing else None)
             _write_output_source_fingerprint(
                 report_dir, _write_path, _expected_source_hash)
             self._save_raw_backup(
@@ -23586,12 +23638,12 @@ class App(ctk.CTk):
                                     _pass_trace, "Final-SDH", _before_final_sdh,
                                     pp, _pass_history)
                             # (_orig_cues None olabilir — o durumda yardımcı dokunmaz)
-                            try:
-                                _raw_map = _raw_src_map_from_cues(_orig_cues)
-                                pp, _ = _fill_hata_with_source(pp, _raw_map, log_fn=self._log)
-                                pp = _restore_tags_blocks(pp, _raw_map)
-                            except Exception:
-                                pass
+                            _raw_map = _raw_src_map_from_cues(_orig_cues)
+                            pp, _ = _finalize_translation_blocks(
+                                pp, _raw_map, source_cues=_orig_cues,
+                                log_fn=self._log)
+                            _hata_n_pre, _ = _count_hata_cps(pp)
+                            _has_missing = _hata_n_pre > 0
                             _guard_reason = _batch_write_guard_reason(
                                 source_path, output_path,
                                 expected_source_hash, output_baseline)
@@ -23604,8 +23656,29 @@ class App(ctk.CTk):
                             _delivery_blocks = _prepare_upload_ready_blocks(
                                 self._maybe_merge_cues(pp), tgt, self._log,
                                 source_cues=_orig_cues)
-                            write_srt(output_path, _delivery_blocks, tgt)
-                            self._save_raw_backup(output_path, _raw_backup_blocks, _raw_map, tgt)
+                            _write_path = (
+                                _partial_output_path(output_path)
+                                if _has_missing else Path(output_path))
+                            write_srt(_write_path, _delivery_blocks, tgt)
+                            _quarantined = (
+                                _quarantine_incomplete_final(output_path)
+                                if _has_missing else None)
+                            self._save_raw_backup(
+                                _write_path, _raw_backup_blocks, _raw_map, tgt)
+                            if _has_missing:
+                                self._log(
+                                    f"Resume: {_hata_n_pre} eksik çeviri kaldı; "
+                                    f"kısmi çıktı {_write_path.name} olarak ayrıldı "
+                                    "ve tamamlandı sayılmadı.",
+                                    "err")
+                                if _quarantined:
+                                    self._log(
+                                        f"Önceki eksik nihai çıktı karantinaya "
+                                        f"alındı: {_quarantined.name}", "warn")
+                                terminal = True
+                                if result_out is not None:
+                                    result_out["status"] = "failed"
+                                break
                             _series_memory_status = {}
                             self._update_resumed_series_memory(
                                 str(_src_path) if _src_path is not None else source_path,
@@ -24191,14 +24264,18 @@ class App(ctk.CTk):
                 _record_pass_change(
                     _pass_trace, "Final-SDH", _before_final_sdh,
                     sorted_blocks, _pass_history)
-            _n_filled = 0
             try:
-                sorted_blocks, _ = _reinsert_missing_dialogue_markers(
-                    sorted_blocks, _src_cues, log_fn=self._log)
-                sorted_blocks, _n_filled = _fill_hata_with_source(sorted_blocks, _raw_map, log_fn=self._log)
-                sorted_blocks = _restore_tags_blocks(sorted_blocks, _raw_map)
-            except Exception:
-                pass
+                sorted_blocks, _n_filled = _finalize_translation_blocks(
+                    sorted_blocks, _raw_map, source_cues=_src_cues,
+                    log_fn=self._log)
+            except Exception as finalize_error:
+                self._log_exc(
+                    f"[{Path(fp).name}] nihai yapı/etiket koruması başarısız",
+                    finalize_error)
+                self._record_file_status(
+                    fp, "Nihai yapı koruması başarısız", "error")
+                _failed_files.append(fp)
+                continue
             final_guard_reason = _batch_write_guard_reason(
                 fp, out_path, expected_source_hash, baseline)
             if final_guard_reason:
@@ -24215,14 +24292,13 @@ class App(ctk.CTk):
             _write_path = out_path
             if _has_missing:
                 _write_path = _partial_output_path(out_path)
-                _quarantined = _quarantine_incomplete_final(out_path)
-            else:
-                _quarantined = None
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log,
                 source_cues=_src_cues)
             self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
+            _quarantined = (
+                _quarantine_incomplete_final(out_path) if _has_missing else None)
             _write_output_source_fingerprint(
                 report_dir, _write_path,
                 expected_source_hash or _file_content_sha256(fp))
@@ -25085,20 +25161,26 @@ class App(ctk.CTk):
                     if str(_txt or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(_txt or "")
                 )
                 if _unresolved_missing:
+                    _partial_path = _partial_output_path(out_path)
                     try:
-                        _partial_path = _partial_output_path(out_path)
-                        _quarantined = _quarantine_incomplete_final(out_path)
                         write_srt(
                             str(_partial_path),
                             self._maybe_merge_cues(_final_blocks), tgt)
+                        _quarantined = _quarantine_incomplete_final(out_path)
                         if _quarantined:
                             self._log(
                                 f"Önceki eksik nihai çıktı karantinaya alındı: "
                                 f"{_quarantined.name}",
                                 "warn",
                             )
-                    except Exception:
-                        pass
+                    except Exception as partial_error:
+                        self._log_exc(
+                            f"[{fname}] kısmi çıktı yazılamadı",
+                            partial_error)
+                        ht.update_batch_session(session, filepath, "failed")
+                        self._record_file_status(
+                            filepath, "Kısmi çıktı yazılamadı", "error")
+                        continue
                     self._log(
                         f"{fname}: {_unresolved_missing} eksik çeviri kaldı; "
                         "Critic/Polish atlandı, dosya tamamlandı sayılmayacak.",
@@ -25435,17 +25517,18 @@ class App(ctk.CTk):
                         _pass_trace, "Final-SDH", _before_final_sdh,
                         _final_blocks, _pass_history)
                 _raw_map = _raw_src_map_from_cues(cues)
-                _n_filled = 0
                 try:
-                    _final_blocks, _ = _reinsert_missing_dialogue_markers(
-                        _final_blocks, cues, log_fn=self._log)
-                    _final_blocks, _n_filled = _fill_hata_with_source(_final_blocks, _raw_map, log_fn=self._log)
-                except Exception:
-                    pass
-                try:
-                    _final_blocks = _restore_tags_blocks(_final_blocks, _raw_map)
-                except Exception:
-                    pass
+                    _final_blocks, _n_filled = _finalize_translation_blocks(
+                        _final_blocks, _raw_map, source_cues=cues,
+                        log_fn=self._log)
+                except Exception as finalize_error:
+                    self._log_exc(
+                        f"[{fname}] nihai yapı/etiket koruması başarısız",
+                        finalize_error)
+                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, "Nihai yapı koruması başarısız", "error")
+                    continue
                 _hata_n_pre, _ = _count_hata_cps(_final_blocks)
                 _has_missing = _hata_n_pre > 0
                 _guard_reason = _batch_write_guard_reason(
@@ -25459,13 +25542,13 @@ class App(ctk.CTk):
                         filepath, "Kaynak/hedef değişti", "error")
                     continue
                 _write_path = _partial_output_path(out_path) if _has_missing else out_path
-                _quarantined = (
-                    _quarantine_incomplete_final(out_path) if _has_missing else None)
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     self._maybe_merge_cues(_final_blocks), tgt, self._log,
                     source_cues=cues)
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)
+                _quarantined = (
+                    _quarantine_incomplete_final(out_path) if _has_missing else None)
                 self._save_raw_backup(_write_path, _raw_backup_blocks, _raw_map, tgt)
                 if _has_missing:
                     self._log(

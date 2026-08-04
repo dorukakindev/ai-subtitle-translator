@@ -56,9 +56,9 @@ class PipelinePassParityTest(unittest.TestCase):
         """[HATA] count must run before it is converted to a visible marker."""
         src = inspect.getsource(gui.App._run_hybrid)
         unresolved_pos = src.find("_unresolved_missing = sum(")
-        fill_pos = src.find("_fill_hata_with_source")
+        fill_pos = src.find("_finalize_translation_blocks")
         critic_pos = src.find("ht.critic_pass_with_helper")
-        self.assertGreater(fill_pos, unresolved_pos, "_fill_hata_with_source must not hide unresolved markers")
+        self.assertGreater(fill_pos, unresolved_pos, "finalization must not hide unresolved markers")
         self.assertLess(unresolved_pos, critic_pos, "_unresolved_missing must be checked before ht.critic_pass_with_helper!")
 
     def test_write_results_uses_canonical_tail_order_and_review_gate(self):
@@ -67,9 +67,8 @@ class PipelinePassParityTest(unittest.TestCase):
         sdh_pos = src.find("clean_sdh")
         linebreak_pos = src.find("apply_line_breaks")
         qc_pos = src.find("_run_quality_check_inline")
-        fill_pos = src.find("_fill_hata_with_source")
-        restore_pos = src.find("_restore_tags_blocks")
-        self.assertTrue(condense_pos < sdh_pos < linebreak_pos < qc_pos < fill_pos < restore_pos)
+        finalize_pos = src.find("_finalize_translation_blocks")
+        self.assertTrue(condense_pos < sdh_pos < linebreak_pos < qc_pos < finalize_pos)
         self.assertNotIn("ht.qc_auto_fix", src, "plain batch QC must retain severity split and user review")
 
     def test_resume_qc_counters_record_applied_diffs(self):
@@ -113,10 +112,9 @@ class PipelinePassParityTest(unittest.TestCase):
             with self.subTest(flow=flow.__name__):
                 src = inspect.getsource(flow)
                 semantic_pos = src.rfind("_run_final_semantic_checks(")
-                fill_pos = src.rfind("_fill_hata_with_source(")
-                restore_pos = src.rfind("_restore_tags_blocks(")
+                finalize_pos = src.rfind("_finalize_translation_blocks(")
                 self.assertGreaterEqual(semantic_pos, 0)
-                self.assertTrue(semantic_pos < fill_pos < restore_pos)
+                self.assertTrue(semantic_pos < finalize_pos)
                 self.assertIn('changed_ids=_pass_history.keys()', src)
 
     def test_final_quality_scans_receive_locked_terms_and_source_language(self):
@@ -150,9 +148,8 @@ class PipelinePassParityTest(unittest.TestCase):
             with self.subTest(flow=flow.__name__):
                 src = inspect.getsource(flow)
                 normalize_pos = src.rfind("_normalize_mixed_terms(")
-                fill_pos = src.rfind("_fill_hata_with_source(")
-                restore_pos = src.rfind("_restore_tags_blocks(")
-                self.assertTrue(normalize_pos < fill_pos < restore_pos)
+                finalize_pos = src.rfind("_finalize_translation_blocks(")
+                self.assertTrue(normalize_pos < finalize_pos)
 
     def test_plain_sync_without_chain_can_run_opt_in_review(self):
         src = inspect.getsource(gui.App._write_results)
@@ -172,15 +169,15 @@ class PipelinePassParityTest(unittest.TestCase):
                 src = inspect.getsource(flow)
                 semantic_pos = src.rfind("_run_final_semantic_checks(")
                 final_sdh_pos = src.rfind('"Final-SDH"')
-                fill_pos = src.rfind("_fill_hata_with_source(")
-                self.assertTrue(semantic_pos < final_sdh_pos < fill_pos)
+                finalize_pos = src.rfind("_finalize_translation_blocks(")
+                self.assertTrue(semantic_pos < final_sdh_pos < finalize_pos)
 
     def test_jsonl_import_repeats_source_driven_sdh_after_polish(self):
         src = inspect.getsource(gui.App._import_jsonl)
         polish_pos = src.find("self._polish_pass(")
         terminal_sdh_pos = src.rfind("source_driven=True")
-        fill_pos = src.rfind("_fill_hata_with_source(")
-        self.assertTrue(polish_pos < terminal_sdh_pos < fill_pos)
+        finalize_pos = src.rfind("_finalize_translation_blocks(")
+        self.assertTrue(polish_pos < terminal_sdh_pos < finalize_pos)
 
     def test_jsonl_import_first_sdh_pass_is_source_driven(self):
         src = inspect.getsource(gui.App._import_jsonl)

@@ -239,7 +239,7 @@ class RepairFlowParityTest(unittest.TestCase):
         source = inspect.getsource(gui.App._import_jsonl)
         scan_pos = source.find("missing_ids = _partial_missing_translation_ids(")
         stop_pos = source.find("if self._stop_flag:", scan_pos)
-        write_pos = source.find("write_srt(out_path", stop_pos)
+        write_pos = source.find("write_srt(_write_path", stop_pos)
         self.assertTrue(0 <= scan_pos < stop_pos < write_pos)
 
 

@@ -176,20 +176,19 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         self.assertNotIn("Türkçe Karakter", src)
 
     def test_pipeline_order_in_gui_flows(self):
-        """Verify _fill_hata_with_source and _restore_tags_blocks presence in _run_hybrid phase 2 success path."""
+        """Verify fail-closed finalization in _run_hybrid phase 2 success path."""
         import inspect
         src = inspect.getsource(gui.App._run_hybrid)
         
-        # Verify _fill_hata_with_source is called in success path
-        self.assertIn("_fill_hata_with_source(_final_blocks", src)
+        self.assertIn("_finalize_translation_blocks(", src)
         
-        # Verify order: final semantic checks before _fill_hata_with_source before write_srt
+        # Verify order: final semantic checks before finalization before write_srt
         bt_pos = src.rfind("_run_final_semantic_checks(")
-        fill_pos = src.rfind("_fill_hata_with_source(")
+        fill_pos = src.rfind("_finalize_translation_blocks(")
         write_pos = src.rfind("write_srt(")
         
-        self.assertGreater(fill_pos, bt_pos, "_fill_hata_with_source must follow final semantic checks")
-        self.assertGreater(write_pos, fill_pos, "write_srt must follow _fill_hata_with_source")
+        self.assertGreater(fill_pos, bt_pos, "finalization must follow final semantic checks")
+        self.assertGreater(write_pos, fill_pos, "write_srt must follow finalization")
 
     def test_hybrid_batch_tail_hata_counting_and_raw_backup(self):
         """Simulate post-processing pass producing [HATA], verify [ÇEVİRİ EKSİK] output, report counting _n_filled, and raw backup preservation."""
