@@ -15,6 +15,26 @@ def _client(url="https://api.shuaiapi.com/v1", key="sk-reseller"):
 
 
 class RetryAfterParsingTest(unittest.TestCase):
+    def test_shuai_429_quota_is_distinguished_from_rate_limit(self):
+        class ApiError(RuntimeError):
+            status_code = 429
+
+        quota = provider_retry._provider_error_context(
+            ApiError("insufficient_quota"))
+        rate = provider_retry._provider_error_context(
+            ApiError("rate_limit_exceeded"))
+
+        self.assertEqual(quota["reason"], "kota veya bakiye tükendi")
+        self.assertEqual(rate["reason"], "hız veya eşzamanlılık sınırı")
+
+    def test_shuai_context_error_has_actionable_reason(self):
+        class ApiError(RuntimeError):
+            status_code = 413
+
+        detail = provider_retry._provider_error_context(
+            ApiError("context_length_exceeded"))
+        self.assertEqual(detail["reason"], "bağlam uzunluğu aşıldı")
+
     def test_status_code_with_underscore_is_parsed_as_transient(self):
         exc = RuntimeError("status_code=503, 服务暂时不可用，请稍后重试")
         self.assertEqual(provider_retry._status_code(exc), 503)
@@ -197,7 +217,7 @@ class ProviderCooldownRegistryTest(unittest.TestCase):
         client = _client()
         temporary = TemporaryError("temporarily unavailable")
         permanent = PermanentError(
-            "model_not_found: No available channel for model gpt-5.4")
+            "model_not_found: auto groups is not enabled")
         self.assertIsNone(registry.record_transient_failure(client, temporary))
         self.assertIsNone(registry.record_transient_failure(client, temporary))
         self.assertIsNone(registry.record_transient_failure(client, permanent))
@@ -251,7 +271,7 @@ class ProviderCooldownRegistryTest(unittest.TestCase):
 
         registry.record_transient_failure(
             client,
-            PermanentError("model_not_found: No available channel for model gpt-5.4"),
+            PermanentError("model_not_found: auto groups is not enabled"),
             model="gpt-5.4",
         )
 
@@ -381,7 +401,7 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         self.assertEqual(waits, [(30.0, 1, 3)])
 
-    def test_permanent_model_channel_503_is_not_retried(self):
+    def test_model_channel_503_uses_documented_retry_schedule(self):
         client = mock.MagicMock()
         client.base_url = "https://api.shuaiapi.com/v1"
         client.api_key = "sk-reseller"
@@ -391,6 +411,28 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         error = ChannelError(
             "model_not_found: No available channel for model gpt-5.4")
+        response = mock.MagicMock()
+        client.chat.completions.create.side_effect = [error, response]
+        with mock.patch("provider_retry._wait_for_transient_retry") as wait:
+            wait.return_value = 30.0
+            result = ht._safe_chat_create(
+                client, model="gpt-5.4", messages=[])
+
+        self.assertIs(result, response)
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        wait.assert_called_once_with(error, 1, 3)
+
+    def test_disabled_auto_group_configuration_is_not_retried(self):
+        client = mock.MagicMock()
+        client.base_url = "https://api.shuaiapi.com/v1"
+        client.api_key = "sk-reseller"
+
+        class ChannelError(RuntimeError):
+            status_code = 503
+
+        error = ChannelError(
+            "model_not_found: Failed to get available channel for model "
+            "gpt-5.4 under group auto(auto): auto groups is not enabled")
         client.chat.completions.create.side_effect = error
         with mock.patch("provider_retry._wait_for_transient_retry") as wait:
             with self.assertRaises(ChannelError):

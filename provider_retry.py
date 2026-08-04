@@ -317,12 +317,20 @@ def _provider_request_context(client, model: str, checkpoint_label: str = "") ->
 def _provider_error_context(exc) -> dict:
     status = _status_code(exc)
     text = str(exc or "").casefold()
-    if status == 429 or "rate limit" in text:
-        reason = "hız sınırı"
-    elif status in {401, 403} or "invalid api key" in text:
+    if any(marker in text for marker in (
+            "insufficient_quota", "pre_consume_token_quota_failed",
+            "token quota is not enough")):
+        reason = "kota veya bakiye tükendi"
+    elif status == 429 or "rate limit" in text:
+        reason = "hız veya eşzamanlılık sınırı"
+    elif status == 401 or "invalid api key" in text:
         reason = "kimlik doğrulama"
-    elif "quota" in text or "bakiye" in text:
-        reason = "kota veya bakiye"
+    elif status == 403:
+        reason = "anahtarın model, grup veya IP erişimi engelli"
+    elif status == 404:
+        reason = "model adı veya API yolu bulunamadı"
+    elif status == 413 or "context_length_exceeded" in text:
+        reason = "bağlam uzunluğu aşıldı"
     elif "model_not_found" in text or "available channel" in text:
         reason = "model veya kanal kullanılamıyor"
     elif status == 408 or "timeout" in text or "timed out" in text:
@@ -334,6 +342,14 @@ def _provider_error_context(exc) -> dict:
     else:
         reason = "API hatası"
     return {"status_code": status, "reason": reason}
+
+
+def _auto_group_configuration_error(text: str) -> bool:
+    lowered = str(text or "").casefold()
+    return (
+        "model_not_found" in lowered
+        and "auto groups is not enabled" in lowered
+    )
 
 
 class ProviderCooldownRegistry:
@@ -564,14 +580,7 @@ class ProviderCooldownRegistry:
                 "pre_consume_token_quota_failed",
                 "token quota is not enough",
             ))
-            or (
-                "model_not_found" in text
-                and any(marker in text for marker in (
-                    "no available channel",
-                    "failed to get available channel",
-                    "auto groups is not enabled",
-                ))
-            )
+            or _auto_group_configuration_error(text)
         )
         if status == 429 or permanent:
             self._clear_circuit_state(key)
@@ -704,11 +713,7 @@ def _is_transient_provider_error(exc) -> bool:
         "token quota is not enough",
     )):
         return False
-    if "model_not_found" in text and any(marker in text for marker in (
-        "no available channel",
-        "failed to get available channel",
-        "auto groups is not enabled",
-    )):
+    if _auto_group_configuration_error(text):
         return False
     return (
         status in {408, 429, 500, 502, 503, 504, 529}
