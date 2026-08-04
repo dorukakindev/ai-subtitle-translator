@@ -2487,7 +2487,7 @@ _DELIVERY_CREDIT_ROLE_RE = re.compile(
 _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
-    r"\bsubtitles?\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
+    r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
     r"\b(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|edit(?:ed|or)?|"
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"

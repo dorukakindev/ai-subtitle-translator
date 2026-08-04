@@ -6465,11 +6465,26 @@ def _source_negation_requires_turkish_negation(text: str) -> bool:
     src = _semantic_text_for_validator(text)
     if re.search(r"\b(?:cannot|can\s+not|can['\u2019]?t)\s+wait\b", src, re.IGNORECASE):
         return False
+    if re.search(r"\bfor no reason\b|\bstain\w*\s+with\s+sin\b", src,
+                 re.IGNORECASE):
+        return False
     if ("?" in src
             and re.search(r"\bwon['\u2019]?t\s+you(?:\s+please)?\s+\w+", src,
                           re.IGNORECASE)):
         return False
     return _has_source_negation(src)
+
+
+def _has_unanchored_negation_addition(source_text: str, original_text: str,
+                                      candidate_text: str) -> bool:
+    if _has_turkish_negation(original_text) or not _has_turkish_negation(candidate_text):
+        return False
+    src = _semantic_text_for_validator(source_text)
+    if re.search(r"\b(?:for no reason|no wonder)\b", src, re.IGNORECASE):
+        return True
+    if re.search(r"\bstain\w*\s+with\s+sin\b", src, re.IGNORECASE):
+        src = re.sub(r"\bsin\b", "", src, flags=re.IGNORECASE)
+    return not _source_negation_requires_turkish_negation(src)
 
 
 def _has_turkish_negation(text: str) -> bool:
@@ -9809,6 +9824,8 @@ def validate_polish_candidate(
         return False, "negation_scope"
     if src and _has_explicit_answer_polarity_flip(src, new):
         return False, "source_polarity"
+    if src and _has_unanchored_negation_addition(src, old, new):
+        return False, "source_negation_addition"
     if src and _question_mark_mismatch(src, new):
         return False, "source_question"
     if src and _has_question_main_content_drift(src, old, new):
@@ -10102,6 +10119,8 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
         return False, "non_turkish_target"
     if src and _source_negation_requires_turkish_negation(src) and not _has_turkish_negation(new):
         return False, "source_negation"
+    if src and _has_unanchored_negation_addition(src, old, new):
+        return False, "source_negation_addition"
     if _has_content_word_drift(old, new, source_text=src):
         return False, "content_word_drift"
     return True, ""

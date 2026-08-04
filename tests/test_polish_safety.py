@@ -156,6 +156,25 @@ class PolishCandidateSafetyTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_negation")
 
+    def test_rejects_unanchored_negation_addition(self):
+        for source, old, new in (
+            (
+                "My hands are stained with sin.",
+                "Ellerim günahla lekeli.",
+                "Ellerim günahla lekelenmiş değil.",
+            ),
+            (
+                "You're fighting for no reason.",
+                "Boşu boşuna kavga ediyorsun.",
+                "Boşu boşuna kavga etmiyorsun.",
+            ),
+        ):
+            with self.subTest(source=source):
+                ok, reason = ht.validate_polish_candidate(
+                    old, new, source_text=source)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "source_negation_addition")
+
     def test_rejects_non_english_source_negation_loss(self):
         for source in (
             "Non voglio andare.",

@@ -105,6 +105,15 @@ class PolishValidatorEndToEndTest(unittest.TestCase):
         )
         self.assertTrue(ok, msg=reason)
 
+    def test_non_predicate_negative_phrases_do_not_require_turkish_negation(self):
+        for source in (
+            "My hands are stained with sin.",
+            "You're fighting for no reason.",
+        ):
+            with self.subTest(source=source):
+                self.assertFalse(
+                    ht._source_negation_requires_turkish_negation(source))
+
 
 if __name__ == "__main__":
     unittest.main()
