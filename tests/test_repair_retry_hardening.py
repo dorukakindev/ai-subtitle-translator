@@ -223,6 +223,27 @@ class IdentityInterjectionRegressionTest(unittest.TestCase):
             "identical_source",
         )
 
+    def test_real_repair_flow_accepts_identity_interjections_without_retry(self):
+        source = {"96": "Hey, hey!", "981": "Jack, hey.", "1441": "Hey, hey."}
+        blocks = [(idx, _TS, "[HATA]") for idx in source]
+        response = _response([
+            {"i": "96", "t": "Hey, hey!"},
+            {"i": "981", "t": "Jack, hey."},
+            {"i": "1441", "t": "Hey, hey."},
+        ])
+
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=response) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, source, object(), "English", "Turkish",
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"))
+
+        self.assertEqual(repaired, 3)
+        self.assertEqual([text for _idx, _ts, text in result], list(source.values()))
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(gui._partial_missing_translation_ids(
+            result, source, result, source_language="English"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
