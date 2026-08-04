@@ -2479,6 +2479,7 @@ _DELIVERY_ASS_POSITION_RE = re.compile(
     r"|\\an\d+|\\a\d+",
     re.IGNORECASE,
 )
+_DELIVERY_ASS_STYLE_RE = re.compile(r"\\([ibu])([01])", re.IGNORECASE)
 _DELIVERY_UNKNOWN_SOURCE_RE = re.compile(r"^\s*\?{2,}\s*$")
 _DELIVERY_CREDIT_ROLE_RE = re.compile(
     r"(?:^|,)\s*(?:translator|translation|timing|typesetter|quality check|"
@@ -2541,6 +2542,27 @@ def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
         return "{" + cleaned + "}" if cleaned else ""
 
     return _DELIVERY_ASS_BLOCK_RE.sub(_clean, str(text or "")), removed
+
+
+def _normalize_delivery_ass_style_tags(text: str) -> str:
+    def _convert(match):
+        commands = _DELIVERY_ASS_STYLE_RE.findall(match.group(1))
+        if not commands:
+            return match.group(0)
+        return "".join(
+            f"<{tag.lower()}>" if state == "1" else f"</{tag.lower()}>"
+            for tag, state in commands
+        )
+
+    value = _DELIVERY_ASS_BLOCK_RE.sub(_convert, str(text or ""))
+    for tag in ("i", "b", "u"):
+        opens = len(re.findall(fr"<{tag}>", value, re.IGNORECASE))
+        closes = len(re.findall(fr"</{tag}>", value, re.IGNORECASE))
+        if closes > opens:
+            value = f"<{tag}>" * (closes - opens) + value
+        elif opens > closes:
+            value += f"</{tag}>" * (opens - closes)
+    return value
 
 
 def _is_delivery_credit(text: str) -> bool:
@@ -2774,6 +2796,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             continue
         value, removed = _strip_delivery_position_tags(value)
         position_tags_removed += removed
+        value = _normalize_delivery_ass_style_tags(value)
         source_credit_lines = _delivery_credit_line_indexes(source_text)
         value_lines = value.splitlines()
         source_lines = str(source_text or "").splitlines()

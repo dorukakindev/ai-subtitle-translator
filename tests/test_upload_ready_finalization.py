@@ -49,7 +49,7 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(middle[0][0], "50")
         by_id = {str(idx): (ts, text) for idx, ts, text in result}
         self.assertEqual(by_id["1"][1], "Hala buradayım.")
-        self.assertEqual(by_id["2"][1], r"{\i1}Sarı Çizgili{\i0}")
+        self.assertEqual(by_id["2"][1], "<i>Sarı Çizgili</i>")
         self.assertEqual(by_id["49"][1], "Göstermelik")
         joined = "\n".join(text for _ts, text in by_id.values())
         self.assertNotIn("gotwoot", joined)
@@ -58,6 +58,20 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             gui._prepare_upload_ready_blocks(result, "Turkish"),
             result,
         )
+
+    def test_dangling_ass_italic_is_balanced_as_srt_html(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", r"{\i1}Telsiz konuşması"),
+            ("2", "00:00:04,000 --> 00:00:05,000", r"Şarkı sözü{\i0}"),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        dialogue = [text for _idx, _ts, text in result if "ceviri2" not in text]
+
+        self.assertEqual(dialogue, [
+            "<i>Telsiz konuşması</i>",
+            "<i>Şarkı sözü</i>",
+        ])
 
     def test_subtitle_company_credit_is_removed(self):
         blocks = [
