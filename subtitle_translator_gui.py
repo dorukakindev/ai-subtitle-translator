@@ -17233,75 +17233,6 @@ class App(ctk.CTk):
         except Exception as e:
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
 
-    def _maybe_turkish_diacritic_repair(self, out_path, src_clean_map, blocks,
-                                        source_path=None,
-                                        status_out: dict | None = None) -> int:
-        if status_out is not None:
-            status_out.clear()
-            status_out.update({
-                "status": "not_started", "successful_chunks": 0,
-                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
-            })
-        if not src_clean_map or not blocks:
-            if status_out is not None:
-                status_out["status"] = "skipped"
-            return 0
-        if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
-            target_language = self._active_snapshot.get("tgt_lang") or "Turkish"
-        else:
-            try:
-                target_language = self.tgt_var.get() or "Turkish"
-            except Exception:
-                target_language = "Turkish"
-        if str(target_language).strip().lower() not in {"turkish", "türkçe", "turkce"}:
-            if status_out is not None:
-                status_out["status"] = "skipped"
-            return 0
-        try:
-            import hybrid_translate as ht
-            before = {str(idx): str(text or "") for idx, _ts, text in blocks}
-            result, changed = ht.repair_turkish_ascii_diacritics(
-                src_map=src_clean_map, tr_blocks=blocks,
-                api_key=self._helper_api_key("polish"),
-                base_url=self._helper_api_base_url("polish"),
-                model=self._helper_api_model("polish"),
-                log_fn=self._log,
-                token_callback=self._token_callback_for_model(
-                    self._helper_api_model("polish")),
-                cancel_context=self.__dict__.get("_helper_request_canceller"),
-                status_out=status_out,
-            )
-            if self.__dict__.get("_stop_flag", False):
-                return 0
-            blocks[:] = result
-            details = []
-            for idx, _ts, text in result:
-                sid = str(idx)
-                if before.get(sid) != str(text or ""):
-                    details.append((sid, before.get(sid, ""), str(text or "")))
-            if status_out is not None:
-                status_out["changed_ids"] = [sid for sid, _old, _new in details]
-            if details:
-                rpath = (Path(out_path).parent / "Raporlar"
-                         / f"{Path(out_path).stem}.turkce_karakter_onarimi.txt")
-                rpath.parent.mkdir(parents=True, exist_ok=True)
-                lines = [f"# Türkçe Karakter Onarımı — {len(details)} satır", ""]
-                for sid, old, new in details:
-                    lines.extend([f"[{sid}] önce: {old}", f"      sonra: {new}", ""])
-                with open(rpath, "w", encoding="utf-8") as fh:
-                    fh.write("\n".join(lines))
-                self._log(f"Türkçe karakter raporu: {rpath.name} ({len(details)} satır)", "info")
-            return int(changed)
-        except RequestCancelled:
-            if status_out is not None:
-                status_out["status"] = "cancelled"
-            raise
-        except Exception as exc:
-            if status_out is not None:
-                status_out.update({"status": "failed", "error": str(exc)})
-            self._log(f"Türkçe karakter onarımı hatası: {exc}", "warn")
-            return 0
-
     def _maybe_backtranslation_check(self, out_path, src_clean_map, blocks,
                                      src_lang=None, source_path=None,
                                      status_out: dict | None = None) -> int:
@@ -17543,14 +17474,7 @@ class App(ctk.CTk):
                                    backtranslation_status_out: dict | None = None) -> int:
         progress_path = str(source_path or out_path)
         progress_name = Path(progress_path).name
-        self._set_phase(
-            "Türkçe Karakter", f"{progress_name} — yazım denetimi")
-        self._update_file_progress(
-            progress_path, "Türkçe Karakter", 95)
-        diacritic_status = {}
-        fixed = self._maybe_turkish_diacritic_repair(
-            out_path, src_clean_map, blocks, source_path=source_path,
-            status_out=diacritic_status)
+        fixed = 0
         if App._run_setting(self, "backtrans", "backtrans_var", False):
             self._set_phase(
                 "Geri Çeviri", f"{progress_name} — anlam kontrolü")
@@ -17562,9 +17486,6 @@ class App(ctk.CTk):
             source_path=source_path,
             status_out=back_status)
         changed_ids = set(changed_ids or [])
-        changed_ids.update(
-            str(idx) for idx in diacritic_status.get(
-                "changed_ids", ()))
         changed_ids.update(
             str(idx) for idx in back_status.get(
                 "flagged_ids", ())

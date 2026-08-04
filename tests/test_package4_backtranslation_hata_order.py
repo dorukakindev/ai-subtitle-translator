@@ -5,7 +5,7 @@ import subtitle_translator_gui as gui
 
 
 class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
-    def test_final_semantic_wrapper_updates_visible_phase_for_both_passes(self):
+    def test_final_semantic_wrapper_updates_visible_phase_for_enabled_passes(self):
         app = gui.App.__new__(gui.App)
         app._active_snapshot = None
         app.backtrans_var = MagicMock()
@@ -14,7 +14,6 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         app.semantic_reconcile_var.get.return_value = True
         app._set_phase = MagicMock()
         app._update_file_progress = MagicMock()
-        app._maybe_turkish_diacritic_repair = MagicMock(return_value=0)
         app._maybe_backtranslation_check = MagicMock(return_value=0)
         app._maybe_semantic_reconciliation = MagicMock(return_value=0)
 
@@ -26,11 +25,11 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
 
         self.assertEqual(
             [call.args[0] for call in app._set_phase.call_args_list],
-            ["Türkçe Karakter", "Geri Çeviri", "Nihai Anlam Mutabakatı"],
+            ["Geri Çeviri", "Nihai Anlam Mutabakatı"],
         )
         self.assertEqual(
             [call.args[1] for call in app._update_file_progress.call_args_list],
-            ["Türkçe Karakter", "Geri Çeviri", "Nihai Anlam Mutabakatı"],
+            ["Geri Çeviri", "Nihai Anlam Mutabakatı"],
         )
         self.assertTrue(all(
             call.args[0] == r"C:\input\source.srt"
@@ -157,8 +156,6 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
         app.semantic_reconcile_var.get.return_value = True
         app._set_phase = MagicMock()
         app._update_file_progress = MagicMock()
-        app._maybe_turkish_diacritic_repair = MagicMock(return_value=0)
-
         def backtranslation(*args, status_out=None, **kwargs):
             status_out.update({"status": "completed", "flagged_ids": ["7"], "changed": 0})
             return 0
@@ -171,6 +168,12 @@ class TestPackage4BacktranslationAndHataOrder(unittest.TestCase):
             changed_ids={"3"}, backtranslation_status_out={})
         passed_ids = app._maybe_semantic_reconciliation.call_args.kwargs["changed_ids"]
         self.assertEqual(passed_ids, {"3", "7"})
+
+    def test_final_semantic_wrapper_has_no_hidden_turkish_character_pass(self):
+        import inspect
+        src = inspect.getsource(gui.App._run_final_semantic_checks)
+        self.assertNotIn("_maybe_turkish_diacritic_repair", src)
+        self.assertNotIn("Türkçe Karakter", src)
 
     def test_pipeline_order_in_gui_flows(self):
         """Verify _fill_hata_with_source and _restore_tags_blocks presence in _run_hybrid phase 2 success path."""
