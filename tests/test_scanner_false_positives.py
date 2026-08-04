@@ -35,6 +35,26 @@ class ScannerFalsePositiveTest(unittest.TestCase):
             0,
         )
 
+    def test_title_with_and_connector_not_flagged(self):
+        value = "Sparks and Quencher!"
+        self.assertEqual(
+            _scan({"1": value}, [("1", "00:00:01,000 --> 00:00:03,000", value)]),
+            0,
+        )
+
+    def test_locked_identity_term_not_flagged(self):
+        value = "ACME-X 7"
+        self.assertEqual(
+            gui.scan_translation_quality(
+                "x.srt",
+                [("1", "00:00:01,000 --> 00:00:03,000", value)],
+                src_clean_map={"1": value},
+                locked_terms={value: value},
+                source_language="English",
+            ),
+            0,
+        )
+
     def test_place_names_with_lowercase_particles_not_flagged(self):
         for value in (
             "Valle de Guadalupe",

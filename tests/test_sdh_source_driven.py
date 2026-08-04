@@ -33,6 +33,23 @@ class SdhSourceDrivenTest(unittest.TestCase):
         for sample in samples:
             self.assertTrue(sdh.src_is_sfx_only(sample), msg=sample)
 
+    def test_live_run_parenthetical_effects_are_source_sfx(self):
+        samples = [
+            "(vomits)", "(disappointed grunt)", "(breathes noisily)",
+            "(weeps)", "(Geoff yelps)", "(loud kissing noises)",
+            "(orgasms noisily)", "(makes modem dialling noises)",
+            "(# \"Singin' in the Rain\")",
+            "- (Anne sobs)\n- (door bursts open)",
+            "(chokes)", "(zip)", "(sniffs)", "(cat wails)", "(yawns)",
+            "(sirens)", "(thud)", "(machine whirrs)",
+            "(# theme from \"The A-Team\")", "(feedback)",
+            "(Nokia ringtone)", "('80s-style cheesy solo)", "(yelp)",
+            "(bleeping)",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(sdh.src_is_sfx_only(sample), msg=sample)
+
     def test_chevron_speaker_markers_stripped(self):
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", ">> Merhaba."),
@@ -213,7 +230,9 @@ class SdhSourceDrivenTest(unittest.TestCase):
         self.assertNotIn("1", [b[0] for b in result])
 
     def test_technical_or_dialogue_parentheses_are_not_sfx_only(self):
-        for text in ("[OK]", "(No.)", "(f(x))", "(Hey!)"):
+        for text in (
+                "[OK]", "(No.)", "(f(x))", "(Hey!)", "(#1 choice)",
+                "(Han Solo)"):
             with self.subTest(text=text):
                 self.assertFalse(sdh.src_is_sfx_only(text))
         self.assertTrue(sdh.src_is_sfx_only("[door closes]"))

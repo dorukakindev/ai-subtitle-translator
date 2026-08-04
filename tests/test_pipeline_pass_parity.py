@@ -119,6 +119,26 @@ class PipelinePassParityTest(unittest.TestCase):
                 self.assertTrue(semantic_pos < fill_pos < restore_pos)
                 self.assertIn('changed_ids=_pass_history.keys()', src)
 
+    def test_final_quality_scans_receive_locked_terms_and_source_language(self):
+        flows = [
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        ]
+        for flow in flows:
+            with self.subTest(flow=flow.__name__):
+                tree = ast.parse(textwrap.dedent(inspect.getsource(flow)))
+                calls = [
+                    node for node in ast.walk(tree)
+                    if isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "scan_translation_quality"
+                ]
+                self.assertEqual(len(calls), 1)
+                keywords = {keyword.arg for keyword in calls[0].keywords}
+                self.assertIn("locked_terms", keywords)
+                self.assertIn("source_language", keywords)
+
     def test_term_normalize_precedes_canonical_tail_in_all_four_flows(self):
         flows = [
             gui.App._run_sync_hybrid,
@@ -161,6 +181,15 @@ class PipelinePassParityTest(unittest.TestCase):
         terminal_sdh_pos = src.rfind("source_driven=True")
         fill_pos = src.rfind("_fill_hata_with_source(")
         self.assertTrue(polish_pos < terminal_sdh_pos < fill_pos)
+
+    def test_jsonl_import_first_sdh_pass_is_source_driven(self):
+        src = inspect.getsource(gui.App._import_jsonl)
+        first_sdh_pos = src.find("blocks = clean_sdh(")
+        polish_pos = src.find("self._polish_pass(")
+        first_call = src[first_sdh_pos:polish_pos]
+        self.assertGreaterEqual(first_sdh_pos, 0)
+        self.assertIn("src_map=_src_map_from_cues(cues)", first_call)
+        self.assertIn("source_driven=True", first_call)
 
     def test_jsonl_import_loads_consistency_module_before_polish_sweep(self):
         src = inspect.getsource(gui.App._import_jsonl)

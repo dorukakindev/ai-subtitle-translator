@@ -4054,7 +4054,7 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
         return False
     name_particles = {
         "al", "au", "da", "de", "del", "della", "der", "di", "do", "dos",
-        "du", "la", "las", "le", "los", "van", "von", "y",
+        "du", "la", "las", "le", "los", "van", "von", "y", "and",
     }
     if (not tokens[0][0].isupper()
             or not tokens[-1][0].isupper()
@@ -6076,6 +6076,10 @@ _MIXED_TERM_EXTRA_STOPS = frozenset({
     # Apostrophe-split contractions in all-caps captions (HAVEN'T -> HAVEN).
     "haven", "didn", "doesn", "don", "isn", "aren", "wasn", "weren",
     "couldn", "wouldn", "shouldn", "won", "cant",
+    # Hitap/akrabalık sözcükleri özel ad değildir; çekimli Türkçe karşılıkları
+    # cümle başındaki başka bir büyük harfli sözcüğe bağlanmamalı.
+    "daddy", "mommy", "mummy", "father", "mother", "grandpa", "grandma",
+    "brother", "sister", "uncle", "auntie", "aunty",
 })
 
 
@@ -6805,7 +6809,8 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
 
 def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                              src_clean_map: dict = None,
-                             issue_fn=None) -> int:
+                             issue_fn=None, *, locked_terms=None,
+                             source_language: str | None = None) -> int:
     """Çeviri sonrası kalite taraması.
     - Kaynak ile aynı kalan satırları (çevrilmemiş) tespit eder
     - Anormal uzunluk oranı olanları (< 0.12 veya > 5.0) tespit eder
@@ -6871,7 +6876,9 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         if not src_text:
             continue
 
-        if _is_untranslated(src_text, tr_text):
+        if _is_untranslated(
+                src_text, tr_text, locked_terms=locked_terms,
+                source_language=source_language):
             untranslated.append(str(idx))
             warnings += 1
 
@@ -16861,7 +16868,9 @@ class App(ctk.CTk):
 
                 # Apply SDH cleaning if enabled
                 if clean_sdh_on:
-                    blocks = clean_sdh(blocks)
+                    blocks = clean_sdh(
+                        blocks, src_map=_src_map_from_cues(cues),
+                        source_driven=True)
 
                 # Apply Polish Pass if enabled
                 if polish_on and blocks:
@@ -22169,7 +22178,8 @@ class App(ctk.CTk):
                 _w = scan_translation_quality(
                     filepath, sorted_blocks, log_fn=self._log,
                     src_clean_map={str(c.index): _clean_src(c.text) for c in cues},
-                    issue_fn=self._record_quality_issue)
+                    issue_fn=self._record_quality_issue,
+                    locked_terms=_locked_terms, source_language=file_src)
             except Exception:
                 pass
             # Rapor satırı
@@ -23609,7 +23619,13 @@ class App(ctk.CTk):
                                 try:
                                     scan_translation_quality(str(_src_path), pp,
                                                              log_fn=self._log, src_clean_map=_src_map,
-                                                             issue_fn=self._record_quality_issue)
+                                                             issue_fn=self._record_quality_issue,
+                                                             locked_terms=_locked_terms,
+                                                             source_language=(
+                                                                 source_language
+                                                                 or self._effective_file_source_language(
+                                                                     str(_src_path), self._snap_get(
+                                                                         "src_lang", "English"))))
                                 except Exception:
                                     pass
                                 self._store_tm_pairs(
@@ -24230,8 +24246,10 @@ class App(ctk.CTk):
             self._record_file_status(fp, "Nihai Teslim Denetimi", "running")
             w = (_hata_n if _has_missing else
                  scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
-                                           src_clean_map=src_blocks,
-                                           issue_fn=self._record_quality_issue))
+                                          src_clean_map=src_blocks,
+                                          issue_fn=self._record_quality_issue,
+                                          locked_terms=_locked_terms_for(fp),
+                                          source_language=_file_src_lang))
             total_warnings += w
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _translation_chunks = _file_translation_chunk_count(file_map, fp)
@@ -25471,7 +25489,9 @@ class App(ctk.CTk):
                         filepath, "Nihai Teslim Denetimi", "running")
                     _w = scan_translation_quality(filepath, _final_blocks,
                                                   log_fn=self._log, src_clean_map=_src_map,
-                                                  issue_fn=self._record_quality_issue)
+                                                  issue_fn=self._record_quality_issue,
+                                                  locked_terms=_locked_terms,
+                                                  source_language=file_src)
                 except Exception:
                     pass
                 self._record_file_status(

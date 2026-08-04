@@ -251,16 +251,21 @@ _SDH_ACTION_VERBS = {
     "scrapes", "stomp", "bubbling", "snoring", "whinnies", "whinny",
     "blaring", "slaps", "gasps", "grunts",
     "screams", "growls", "groans", "sighs", "chattering",
+    "vomits", "vomiting", "breathes", "breathing", "weeps", "weeping",
+    "yelps", "yelping", "orgasms", "orgasming", "bursts", "dialling",
+    "dialing", "kissing", "chokes", "choking", "sniffs", "sniffing",
+    "wails", "wailing", "yawns", "yawning", "whirrs", "bleeping",
 }
 
 _SDH_SOUND_MODIFIERS = {
     "loud", "sudden", "distant", "faint", "soft", "heavy", "sharp",
-    "quiet", "continuous", "muffled", "nearby",
+    "quiet", "continuous", "muffled", "nearby", "disappointed",
 }
 
 _SDH_SOUND_NOUNS = {
     "crash", "slam", "bang", "boom", "thud", "click", "beep", "buzz",
-    "rumble", "scream", "shout", "whisper", "knock", "ring",
+    "rumble", "scream", "shout", "whisper", "knock", "ring", "grunt",
+    "zip", "siren", "sirens", "thud", "feedback", "ringtone", "yelp",
 }
 
 _KNOWN_LANGUAGES = {
@@ -317,10 +322,13 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     if len(words_no_digits) == 1:
         return (words_no_digits[0] in _SDH_KEYWORDS
                 or words_no_digits[0] in _SPEAKER_WORDS
-                or words_no_digits[0] in _SDH_ACTION_VERBS)
+                or words_no_digits[0] in _SDH_ACTION_VERBS
+                or words_no_digits[0] in _SDH_SOUND_NOUNS)
 
     pronouns = {"i", "you", "he", "she", "we", "they", "it"}
-    instruments = {"trumpet", "piano", "violin", "drums", "guitar", "flute"}
+    instruments = {
+        "trumpet", "piano", "violin", "drums", "guitar", "flute", "solo",
+    }
     if (not bare_text and len(words_no_digits) <= 10
             and not any(word in pronouns for word in words_no_digits)
              and (words_no_digits[-1].endswith("ing")
@@ -348,12 +356,11 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
         return True
     if (len(words_no_digits) >= 2
             and words_no_digits[-1] in _SDH_SOUND_NOUNS
-            and all(w in _SDH_SOUND_MODIFIERS for w in words_no_digits[:-1])):
+            and not any(word in pronouns for word in words_no_digits)):
         return True
     if (len(words_no_digits) >= 2
             and words_no_digits[-1] in {"sound", "sounds", "noise", "noises"}
-            and all(w in _SDH_KEYWORDS or w in _SDH_SOUND_MODIFIERS
-                    for w in words_no_digits[:-1])):
+            and not any(word in pronouns for word in words_no_digits)):
         return True
 
     return False
@@ -747,6 +754,8 @@ def src_is_sfx_only(src_text: str) -> bool:
     for start, end in spans:
         raw = text[start:end]
         inner = raw[1:-1].strip()
+        if re.match(r'^#\s*(?:["“‘\']|(?:theme|music|song)\b)', inner, re.I):
+            continue
         colon_follows = text[end:].lstrip().startswith(":")
         is_descriptor = is_sdh_descriptor(inner)
         is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)

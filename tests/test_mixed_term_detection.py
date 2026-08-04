@@ -323,6 +323,23 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_kinship_address_is_not_treated_as_proper_term(self):
+        blocks = _b(
+            (1, "- Timmy!\n- Baba!"),
+            (2, "Hadi, bakalım babanın ne planladığını."),
+            (3, "Babam bugün geliyor."),
+            (4, "Hadi, babam bizi bekliyor."),
+            (5, "Babacığım, burada mısın?"),
+        )
+        src = _s(**{
+            "1": "- Timmy!\n- Daddy!",
+            "2": "So, guess what Daddy's got planned?",
+            "3": "Daddy is coming today.",
+            "4": "Come on, Daddy is waiting for us.",
+            "5": "Daddy, are you here?",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_empty_blocks_returns_empty(self):
         self.assertEqual(gui.detect_mixed_term_renderings([], {}), [])
 
