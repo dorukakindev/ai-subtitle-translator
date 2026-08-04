@@ -258,11 +258,14 @@ _SRT_SAFE_ASS_OVERRIDE_RE = re.compile(r'^\{(?:\\[ibus][01])+\}$', re.IGNORECASE
 
 
 def _strip_srt_unsafe_ass_overrides(text: str) -> str:
-    return _ASS_OVERRIDE_BLOCK_RE.sub(
-        lambda match: match.group(0)
-        if _SRT_SAFE_ASS_OVERRIDE_RE.fullmatch(match.group(0)) else "",
-        text,
-    )
+    def _safe_part(match):
+        block = match.group(0)
+        if _SRT_SAFE_ASS_OVERRIDE_RE.fullmatch(block):
+            return block
+        safe = re.findall(r'\\[ibus][01]', block, re.IGNORECASE)
+        return "{" + "".join(safe) + "}" if safe else ""
+
+    return _ASS_OVERRIDE_BLOCK_RE.sub(_safe_part, text)
 
 
 def _match_full_wrap(src_body: str):

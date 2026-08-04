@@ -102,6 +102,15 @@ class RestoreFormatTagsTest(unittest.TestCase):
             "SARI ÇİZGİLİ",
         )
 
+    def test_safe_italic_survives_mixed_position_override(self):
+        self.assertEqual(
+            restore_format_tags(
+                r"{\pos(332,52)\i1}I dreamed of this day{\i0}",
+                "Bu günü düşledim",
+            ),
+            r"{\i1}Bu günü düşledim{\i0}",
+        )
+
     def test_literal_braced_dialogue_is_not_reappended_from_source(self):
         self.assertEqual(
             restore_format_tags(
