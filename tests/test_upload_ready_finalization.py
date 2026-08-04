@@ -214,6 +214,22 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("N.F.D.C.", joined)
         self.assertIn("Gerçek diyalog.", joined)
 
+    def test_film_editor_credit_is_not_treated_as_subtitle_credit(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Kurgu: L. Tsitsina"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Gerçek diyalog."),
+        ]
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Editor: L. Tsitsina"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Real dialogue."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        joined = "\n".join(text for _idx, _ts, text in result)
+        self.assertIn("L. Tsitsina", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
     def test_production_credit_and_dialogue_url_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Müzik:"),

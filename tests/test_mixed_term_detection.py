@@ -293,6 +293,21 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_transliterated_name_beats_unrelated_sentence_initial_word(self):
+        blocks = _b(
+            (1, "- Merhaba.\n- İçeri gir, Dmitri."),
+            (2, "Kal Dmitri, nereye gidebiliriz?"),
+            (3, "Merhaba, Dmitri."),
+            (4, "Teşekkür ederim, Dmitri."),
+        )
+        src = _s(**{
+            "1": "- Hello.\n- Go inside, Dmitry.",
+            "2": "Stay Dmitry, where can we go?",
+            "3": "Hello, Dmitry.",
+            "4": "Thank you, Dmitry.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_bracketed_narrator_label_not_a_mixed_term(self):
         blocks = _b(
             (1, "Josh bunu biliyordu."),

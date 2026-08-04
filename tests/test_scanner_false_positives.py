@@ -56,6 +56,16 @@ class ScannerFalsePositiveTest(unittest.TestCase):
             0,
         )
 
+    def test_long_cast_name_list_not_flagged_or_retried(self):
+        value = (
+            "M. Andreeva, N. Krujkov, B. Bratkovsky\n"
+            "G. Stahanova, R. Brijjikaite, V. Surikov"
+        )
+        self.assertEqual(
+            _scan({"1": value}, [("1", "00:00:01,000 --> 00:00:06,000", value)]),
+            0,
+        )
+
     def test_short_title_case_commands_still_flagged(self):
         for value in ("Come Here", "Wait Here", "Please Stop"):
             with self.subTest(value=value):
@@ -89,6 +99,12 @@ class ScannerFalsePositiveTest(unittest.TestCase):
     def test_properly_translated_not_flagged(self):
         src = {"1": "he ran away very fast"}
         blk = [("1", "00:00:01,000 --> 00:00:08,000", "çok hızlı kaçıp gitti")]
+        self.assertEqual(_scan(src, blk), 0)
+
+    def test_source_etymology_token_is_not_reported_as_target_garble(self):
+        src = {"1": "The face was ondwlita in Old English."}
+        blk = [("1", "00:00:01,000 --> 00:00:05,000",
+                "Eski İngilizcede yüze ondwlita denirdi.")]
         self.assertEqual(_scan(src, blk), 0)
 
 

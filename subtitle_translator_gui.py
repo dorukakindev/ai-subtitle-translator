@@ -2488,7 +2488,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
-    r"\b(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|edit(?:ed|or)?|"
+    r"\b(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
@@ -3979,7 +3979,7 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
     text = re.sub(r"^\s*[-–—]\s*", "", text)
     text = re.sub(r"[\s.!?…,:;]+$", "", text)
     tokens = re.findall(r"[^\W\d_]+(?:['’\-][^\W\d_]+)*", text, re.UNICODE)
-    if not 1 <= len(tokens) <= 8:
+    if not 1 <= len(tokens) <= 40:
         return False
     name_particles = {
         "al", "au", "da", "de", "del", "della", "der", "di", "do", "dos",
@@ -4006,6 +4006,8 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
         "see", "saw", "hear", "heard", "leave", "left", "stay",
     }
     folded = [token.casefold() for token in tokens]
+    if len(tokens) > 8:
+        return len(re.findall(r"[,;\n]", text)) >= 3
     if " ".join(folded) in {
             "good morning", "good afternoon", "good evening", "good night",
             "happy birthday", "merry christmas", "sweet dreams"}:
@@ -6119,7 +6121,15 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                                 matched = w
                                 matched_size = len(cluster)
                             break
-                found_token, found_idx = (matched or cand_words[0]), cid
+                similar = max(
+                    cand_words,
+                    key=lambda word: difflib.SequenceMatcher(
+                        None, word.casefold(), term.casefold()).ratio(),
+                )
+                similarity = difflib.SequenceMatcher(
+                    None, similar.casefold(), term.casefold()).ratio()
+                found_token, found_idx = (
+                    matched or (similar if similarity >= 0.72 else cand_words[0])), cid
                 break
             if not found_token:
                 continue
@@ -6842,6 +6852,13 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
             if str(idx) in _untranslated_ids:
                 continue  # zaten 'çevrilmemiş' işaretli — ayrıca token-token garble sayma
             hits = ht.find_garble_tokens(tr_text)
+            source_words = {
+                word.casefold() for word in re.findall(r"[^\W\d_]+", orig.get(str(idx), ""), re.UNICODE)
+            }
+            hits = [
+                hit for hit in hits
+                if str(hit[0]).casefold().strip("'’") not in source_words
+            ]
             if hits:
                 garble_lines.append((str(idx), hits[0][0]))
                 warnings += 1
