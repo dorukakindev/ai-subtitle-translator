@@ -86,6 +86,26 @@ class RetryAfterParsingTest(unittest.TestCase):
         exc = RuntimeError("HTTP 429: quota exceeded; try again in 12.5 seconds")
         self.assertEqual(provider_retry.retry_after_seconds(exc), 12.5)
 
+    def test_shuai_structured_retry_after_from_error_body(self):
+        exc = SimpleNamespace(
+            status_code=524,
+            response=SimpleNamespace(headers={}),
+            body={"error": {"retry_after": 120}},
+        )
+        self.assertEqual(provider_retry.retry_after_seconds(exc), 120.0)
+
+    def test_structured_retry_after_is_capped(self):
+        exc = SimpleNamespace(body={"retry_after": 900})
+        self.assertEqual(provider_retry.retry_after_seconds(exc), 600.0)
+
+    def test_plain_request_timed_out_is_transient(self):
+        self.assertTrue(provider_retry._is_transient_provider_error(
+            RuntimeError("Request timed out.")))
+
+    def test_cloudflare_524_is_transient(self):
+        exc = SimpleNamespace(status_code=524)
+        self.assertTrue(provider_retry._is_transient_provider_error(exc))
+
 
 class ProviderCooldownRegistryTest(unittest.TestCase):
     def test_clearing_hooks_prevents_late_ui_callback(self):
@@ -439,6 +459,22 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
             provider_retry._wait_for_transient_retry(error, 1, 3)
 
         self.assertEqual(waits, [(30.0, 1, 3)])
+
+    def test_structured_retry_after_extends_transient_wait(self):
+        error = SimpleNamespace(
+            status_code=524,
+            body={"error": {"retry_after": 120}},
+        )
+        waits = []
+        with mock.patch.object(
+            provider_retry._REGISTRY,
+            "wait_for_retry",
+            side_effect=lambda delay, attempt, total: waits.append(
+                (delay, attempt, total)) or delay,
+        ):
+            provider_retry._wait_for_transient_retry(error, 1, 3)
+
+        self.assertEqual(waits, [(120.0, 1, 3)])
 
     def test_model_channel_503_uses_documented_retry_schedule(self):
         client = mock.MagicMock()

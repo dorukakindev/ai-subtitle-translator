@@ -251,6 +251,66 @@ def _retry_after_header_seconds(value) -> float | None:
         return None
 
 
+def _structured_retry_after_seconds(exc, maximum: float = 600.0) -> float | None:
+    def _value_seconds(value):
+        if isinstance(value, (int, float)):
+            return min(maximum, max(0.0, float(value)))
+        text = str(value or "").strip()
+        match = re.fullmatch(
+            r"(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec(?:onds?)?)?",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+        delay = float(match.group(1))
+        if (match.group(2) or "s").lower().startswith("m"):
+            delay /= 1000.0
+        return min(maximum, max(0.0, delay))
+
+    def _walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized = str(key).strip().casefold().replace("-", "_")
+                if normalized in {
+                    "retry_after", "retry_after_seconds", "retry_delay",
+                    "retrydelay",
+                }:
+                    parsed = _value_seconds(item)
+                    if parsed is not None:
+                        return parsed
+                parsed = _walk(item)
+                if parsed is not None:
+                    return parsed
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                parsed = _walk(item)
+                if parsed is not None:
+                    return parsed
+        return None
+
+    body = getattr(exc, "body", None)
+    parsed = _walk(body)
+    if parsed is not None:
+        return parsed
+    response = getattr(exc, "response", None)
+    json_fn = getattr(response, "json", None)
+    if callable(json_fn):
+        try:
+            parsed = _walk(json_fn())
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            return parsed
+    text = getattr(response, "text", None)
+    if text:
+        try:
+            return _walk(json.loads(str(text)))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def retry_after_seconds(exc, default: float = 2.0, maximum: float = 600.0) -> float:
     headers = _headers(exc)
     retry_ms = _header_value(headers, "retry-after-ms")
@@ -263,6 +323,10 @@ def retry_after_seconds(exc, default: float = 2.0, maximum: float = 600.0) -> fl
     header_delay = _retry_after_header_seconds(_header_value(headers, "retry-after"))
     if header_delay is not None:
         return min(maximum, header_delay)
+
+    structured_delay = _structured_retry_after_seconds(exc, maximum=maximum)
+    if structured_delay is not None:
+        return structured_delay
 
     candidates = [str(exc or "")]
     body = getattr(getattr(exc, "response", None), "text", None)
@@ -747,10 +811,11 @@ def _is_transient_provider_error(exc) -> bool:
     if _auto_group_configuration_error(text):
         return False
     return (
-        status in {408, 429, 500, 502, 503, 504, 529}
+        status in {408, 429, 500, 502, 503, 504, 524, 529}
         or "rate limit" in text
         or "temporarily unavailable" in text
         or "timeout" in text
+        or "timed out" in text
         or "connection" in text
         or "server error" in text
         or "internal error" in text
@@ -759,6 +824,9 @@ def _is_transient_provider_error(exc) -> bool:
 
 def _wait_for_transient_retry(exc, attempt: int, total: int, details=None) -> float:
     scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
+    structured_delay = _structured_retry_after_seconds(exc)
+    if structured_delay is not None:
+        scheduled = max(scheduled, structured_delay)
     context = dict(
         details if details is not None
         else getattr(_REQUEST_CONTEXT, "value", {}) or {})

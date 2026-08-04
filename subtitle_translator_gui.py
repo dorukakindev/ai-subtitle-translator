@@ -21816,8 +21816,10 @@ class App(ctk.CTk):
                             scene_gap_sec=float(self._snap_get(
                                 "scene_gap_seconds", self._scene_gap_seconds)))
                     except Exception as e:
-                        self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
-                        result = None
+                        raise RuntimeError(
+                            f"{fname}: yardımcı analiz tamamlanamadı; "
+                            "dosya boş bağlamla çevrilmedi"
+                        ) from e
                     if self._stop_flag:
                         result = None
                     _analysis_ok = (
@@ -21833,10 +21835,10 @@ class App(ctk.CTk):
                     if result is None:
                         if self._stop_flag:
                             break
-                        else:
-                            self._log(f"[{fname}] Analiz başarısız — boş bağlamla çeviri devam ediyor", "warn")
-                            self._update_file_progress(filepath, "Analiz atlandı", 10, "warn")
-                            result = ht.empty_analysis_result(_lang_iso639_1(file_src))
+                        raise RuntimeError(
+                            f"{fname}: yardımcı analiz hiçbir kullanılabilir "
+                            "sonuç üretmedi; dosya boş bağlamla çevrilmedi"
+                        )
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
                     if _analysis_ok:
                         ht.save_context_cache(context, filepath, char_examples, pronoun_map,
@@ -25140,8 +25142,10 @@ class App(ctk.CTk):
                             scene_gap_sec=float(self._snap_get(
                                 "scene_gap_seconds", self._scene_gap_seconds)))
                     except Exception as e:
-                        self._log(f"[{fname}] Analiz hatası: {e} — boş bağlamla devam", "warn")
-                        result = None
+                        raise RuntimeError(
+                            f"{fname}: yardımcı analiz tamamlanamadı; "
+                            "batch boş bağlamla gönderilmedi"
+                        ) from e
                     if self._stop_flag:
                         result = None
                     _analysis_ok = (
@@ -25157,9 +25161,10 @@ class App(ctk.CTk):
                     if result is None:
                         if self._stop_flag:
                             break
-                        else:
-                            self._log(f"[{fname}] Analiz başarısız — boş bağlamla batch devam ediyor", "warn")
-                            result = ht.empty_analysis_result(_lang_iso639_1(file_src))
+                        raise RuntimeError(
+                            f"{fname}: yardımcı analiz hiçbir kullanılabilir "
+                            "sonuç üretmedi; batch boş bağlamla gönderilmedi"
+                        )
                     context, char_examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs = result
                     if _analysis_ok:
                         ht.save_context_cache(context, filepath, char_examples, pronoun_map,
