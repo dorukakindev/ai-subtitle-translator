@@ -398,6 +398,29 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["expected_removed_ids"], ["1"])
 
+    def test_delivery_audit_accepts_bare_french_stage_direction(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Petit gémissement de douleur"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "Continue until night."),
+        ]
+        translated = [
+            ("1", source[0][1], "Hafif bir acı iniltisi."),
+            ("2", source[1][1], "Geceye dek devam edin."),
+        ]
+        delivered = gui._prepare_upload_ready_blocks(
+            translated, "Turkish", source_cues=source)
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source, "French")
+            gui.write_srt(output_path, delivered, "Turkish")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1"])
+
     def test_delivery_audit_accepts_multiline_sdh_and_unknown_placeholder(self):
         source = [
             ("1", "00:00:02,000 --> 00:00:03,000", "-[wind blowing]\n-[crickets chirping]"),

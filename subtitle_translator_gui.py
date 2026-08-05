@@ -2584,6 +2584,10 @@ _DELIVERY_LANGUAGE_LABEL_RE = re.compile(
     r"(?:language|dil)|glossolalia|unintelligible|anlasilmiyor)",
     re.IGNORECASE,
 )
+_DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
+    r"^(?:(?:petit|leger)\s+)?gemissement\s+de\s+(?:douleur|plaisir)[.!…]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
@@ -2678,7 +2682,9 @@ def _is_delivery_sdh_only(text: str) -> bool:
 def _source_cue_is_delivery_removable(text: str) -> bool:
     value = str(text or "")
     if (_delivery_source_is_all_credit(value)
-            or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)):
+            or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
+            or _DELIVERY_BARE_SOURCE_SDH_RE.fullmatch(
+                sdh_cleaner._ascii_fold(value).strip())):
         return True
     probe = [("1", "00:00:00,000 --> 00:00:00,001", value)]
     return not clean_sdh(probe, src_map={"1": value}, source_driven=True)
@@ -2878,8 +2884,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     sdh_removed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
-        if (_delivery_source_is_all_credit(source_text)
-                or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(str(source_text or ""))):
+        if source_cues and _source_cue_is_delivery_removable(source_text):
             continue
         value = str(text or "")
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
