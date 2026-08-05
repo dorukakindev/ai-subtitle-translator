@@ -428,6 +428,13 @@ class GlossaryVerboseMetaCommentaryGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"ear-piercing ceremony": "kulak delme töreni"})
 
+    def test_verified_bad_pontoon_mapping_is_not_locked(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "pontoon": "sallay",
+            "Danube": "Tuna",
+        })
+        self.assertEqual(cleaned, {"Danube": "Tuna"})
+
     def test_single_wqx_leak_does_not_drop_clean_sibling(self):
         cleaned = ht.sanitize_glossary_for_turkish({
             "maggot": self.MAGGOT_NOTE,

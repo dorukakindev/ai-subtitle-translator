@@ -6996,7 +6996,40 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
             except TypeError:
                 log_fn(message, tag)
 
-    for (idx, ts, tr_text) in blocks:
+    ratio_rows = [
+        (str(idx), str(orig.get(str(idx), "") or ""), str(tr or ""))
+        for idx, _ts, tr in blocks
+    ]
+
+    def _ratio_is_neighbor_redistribution(pos: int, ratio: float) -> bool:
+        for neighbor in (pos - 1, pos + 1):
+            if not 0 <= neighbor < len(ratio_rows):
+                continue
+            left, right = sorted((pos, neighbor))
+            left_src = ratio_rows[left][1]
+            right_src = ratio_rows[right][1]
+            if (_ends_sentence_gui(left_src)
+                    and not _ellipsis_continues_gui(left_src, right_src)):
+                continue
+            neighbor_src = ratio_rows[neighbor][1]
+            neighbor_tr = ratio_rows[neighbor][2]
+            if len(neighbor_src) <= 4:
+                continue
+            neighbor_ratio = len(neighbor_tr) / len(neighbor_src)
+            complementary = (
+                (ratio < 0.12 and neighbor_ratio > 1.5)
+                or (ratio > 5.0 and neighbor_ratio < 0.4)
+            )
+            if not complementary:
+                continue
+            joined_src = ratio_rows[left][1] + " " + ratio_rows[right][1]
+            joined_tr = ratio_rows[left][2] + " " + ratio_rows[right][2]
+            joined_ratio = len(joined_tr) / max(1, len(joined_src))
+            if 0.4 <= joined_ratio <= 2.5:
+                return True
+        return False
+
+    for pos, (idx, ts, tr_text) in enumerate(blocks):
         if tr_text == "[HATA]":
             continue
         src_text = orig.get(str(idx), "")
@@ -7012,7 +7045,8 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         # Length ratio check
         if tr_text and len(src_text) > 4:  # skip trivially short
             ratio = len(tr_text) / len(src_text)
-            if ratio < 0.12 or ratio > 5.0:
+            if ((ratio < 0.12 or ratio > 5.0)
+                    and not _ratio_is_neighbor_redistribution(pos, ratio)):
                 ratio_issues.append((str(idx), round(ratio, 2)))
                 warnings += 1
 

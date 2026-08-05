@@ -4321,6 +4321,7 @@ def back_translation_check(
     total_chunks = (len(items) + chunk_size - 1) // chunk_size
     successful_chunks = 0
     partial_chunks = 0
+    missing_items = 0
     cancelled = False
     permanent_error = None
     if status_out is not None:
@@ -4360,9 +4361,50 @@ def back_translation_check(
             for sid in duplicate_ids:
                 back_map.pop(sid, None)
             returned_ids = {sid for sid, text in back_map.items() if text}
-            if not returned_ids:
-                raise ValueError("stage1_missing_items")
-            stage1_partial = not expected_ids <= returned_ids
+            missing_ids = expected_ids - returned_ids
+            for repair_attempt in range(1, 4):
+                if not missing_ids:
+                    break
+                repair_payload = [
+                    {"id": it["idx"], "tr": it["tr"]}
+                    for it in chunk if it["idx"] in missing_ids
+                ]
+                if log_fn:
+                    log_fn(
+                        f"Geri çeviri stage-1: {len(missing_ids)} eksik cue; "
+                        f"yalnız eksikler yeniden isteniyor ({repair_attempt}/3)",
+                        "warn",
+                    )
+                repair_prompt = (
+                    f"The previous response omitted these subtitle IDs. Translate ONLY "
+                    f"the missing {tgt_lang} lines below back into natural {src_lang}. "
+                    f"Do not add, omit, correct, or infer meaning. Return ONLY a JSON "
+                    f"array [{{\"id\":\"N\",\"en\":\"...\"}}].\n\n"
+                    f"{json.dumps(repair_payload, ensure_ascii=False)}"
+                )
+                repair_rows = _request_json_array(
+                    repair_prompt, "backtranslation_missing",
+                    len(repair_payload) * 60 + 300,
+                    "stage1_missing_response_not_array",
+                )
+                repaired = {}
+                duplicate_repair_ids = set()
+                for o in repair_rows:
+                    if not isinstance(o, dict) or o.get("id") is None:
+                        continue
+                    sid = str(o["id"])
+                    if sid not in missing_ids:
+                        continue
+                    if sid in repaired:
+                        duplicate_repair_ids.add(sid)
+                        continue
+                    repaired[sid] = str(o.get("en", "")).strip()
+                for sid in duplicate_repair_ids:
+                    repaired.pop(sid, None)
+                back_map.update({sid: text for sid, text in repaired.items() if text})
+                returned_ids = {sid for sid, text in back_map.items() if text}
+                missing_ids = expected_ids - returned_ids
+            stage1_partial = bool(missing_ids)
         except RequestCancelled:
             cancelled = True
             break
@@ -4381,6 +4423,7 @@ def back_translation_check(
                        for it in chunk if back_map.get(it["idx"])]
         if not cmp_payload:
             partial_chunks += 1
+            missing_items += len(missing_ids)
             continue
         cmp_prompt = (
             f"You compare an ORIGINAL {src_lang} subtitle line ('src') with a blind "
@@ -4410,6 +4453,7 @@ def back_translation_check(
             successful_chunks += 1
             if stage1_partial:
                 partial_chunks += 1
+                missing_items += len(missing_ids)
         except RequestCancelled:
             cancelled = True
             break
@@ -4435,16 +4479,24 @@ def back_translation_check(
             "status": pass_status,
             "successful_chunks": successful_chunks,
             "failed_chunks": failed_chunks,
+            "partial_chunks": partial_chunks,
+            "missing_items": missing_items,
             "changed": 0,
         })
         if permanent_error is not None:
             status_out["error"] = str(permanent_error)
     if log_fn:
-        if failed_chunks or partial_chunks:
+        if failed_chunks:
             log_fn(
                 f"Geri çeviri tamamlanamadı: {successful_chunks}/{total_chunks} "
                 f"paket başarılı, {failed_chunks} paket başarısız",
                 "warn" if successful_chunks else "err",
+            )
+        if partial_chunks:
+            log_fn(
+                f"Geri çeviri kısmi kaldı: {partial_chunks} pakette "
+                f"{missing_items} cue model tarafından eksik döndürüldü",
+                "warn",
             )
         log_fn(f"Geri çeviri: {len(flagged)} şüpheli satır işaretlendi (çeviri değiştirilMEDİ)",
                "warn" if flagged or pass_status != "completed" else "ok")
@@ -6070,6 +6122,9 @@ _GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS = frozenset({
 _ROMAN_NUMERAL_RE = re.compile(
     r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
 )
+_GLOSSARY_KNOWN_BAD_PAIRS = {
+    ("pontoon", "sallay"),
+}
 
 
 def _glossary_verbose_meta_commentary_marker(value: str) -> str | None:
@@ -6143,6 +6198,10 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
                 value_s,
                 flags=re.IGNORECASE,
             )
+        if (str(key).strip().casefold(), value_s.strip().casefold()) in _GLOSSARY_KNOWN_BAD_PAIRS:
+            gloss_dropped_terms[str(key)] = (
+                value_s, "doğrulanmış hatalı terim eşlemesi")
+            continue
         if str(key).strip().lower() in _GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS:
             gloss_dropped_terms[str(key)] = (
                 value_s, "bağlama göre değişen işlev sözcüğü")

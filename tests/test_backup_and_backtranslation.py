@@ -144,7 +144,7 @@ class BackTranslationPrefilterTest(unittest.TestCase):
         self.assertIn('"id": "1", "src": "First source line.", "back": "First back translation."', prompts[1])
         self.assertIn('"id": "2", "src": "Second source line.", "back": "Second back translation."', prompts[1])
 
-    def test_stage_one_rejects_duplicate_ids_instead_of_positional_mapping(self):
+    def test_stage_one_retries_only_missing_ids_after_duplicate_response(self):
         blocks = [
             ("1", _TS, "Birinci yeterince uzun çeviri satırıdır."),
             ("2", _TS, "İkinci yeterince uzun çeviri satırıdır."),
@@ -162,18 +162,79 @@ class BackTranslationPrefilterTest(unittest.TestCase):
                         '[{"id":"1","en":"First candidate."},'
                         '{"id":"1","en":"Wrong duplicate."}]')))],
                 )
-            return SimpleNamespace(
-                usage=None,
-                choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))],
-            )
+            if len(prompts) == 2:
+                return SimpleNamespace(
+                    usage=None,
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                        '[{"id":"1","en":"First back translation."},'
+                        '{"id":"2","en":"Second back translation."}]')))],
+                )
+            return SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="[]"))])
 
         with patch("openai.OpenAI"), patch(
                 "hybrid_translate._safe_chat_create", side_effect=respond):
             ht.back_translation_check(
                 src, blocks, api_key="x", status_out=status)
 
-        self.assertEqual(len(prompts), 1)
-        self.assertEqual(status["status"], "failed")
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(status["status"], "completed")
+        self.assertIn('"id": "1"', prompts[1])
+        self.assertIn('"id": "2"', prompts[1])
+
+    def test_persistent_missing_stage_one_ids_are_reported_as_partial(self):
+        blocks = [
+            ("1", _TS, "Birinci yeterince uzun çeviri satırıdır."),
+            ("2", _TS, "İkinci yeterince uzun çeviri satırıdır."),
+        ]
+        src = {"1": "First source line.", "2": "Second source line."}
+        responses = [
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content=(
+                    '[{"id":"1","en":"First back translation."}]')))]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="[]"))]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="[]"))]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="[]"))]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="[]"))]),
+        ]
+        status = {}
+        logs = []
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create", side_effect=responses):
+            ht.back_translation_check(
+                src, blocks, api_key="x", status_out=status,
+                log_fn=lambda message, level: logs.append((message, level)))
+
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual(status["successful_chunks"], 1)
+        self.assertEqual(status["failed_chunks"], 0)
+        self.assertEqual(status["partial_chunks"], 1)
+        self.assertEqual(status["missing_items"], 1)
+        self.assertTrue(any("1 pakette 1 cue" in message for message, _ in logs))
+
+    def test_empty_stage_one_after_repairs_counts_missing_items(self):
+        blocks = [("1", _TS, "Yeterince uzun bir çeviri satırıdır.")]
+        src = {"1": "A sufficiently long source subtitle line."}
+        empty = SimpleNamespace(usage=None, choices=[SimpleNamespace(
+            message=SimpleNamespace(content="[]"))])
+        status = {}
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create",
+                side_effect=[empty, empty, empty, empty]):
+            ht.back_translation_check(
+                src, blocks, api_key="x", status_out=status)
+
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual(status["successful_chunks"], 0)
+        self.assertEqual(status["failed_chunks"], 1)
+        self.assertEqual(status["partial_chunks"], 1)
+        self.assertEqual(status["missing_items"], 1)
 
     def test_stage_two_malformed_json_retries_only_comparison(self):
         blocks = [("1", _TS, "Bu yeterince uzun bir çeviri satırıdır.")]

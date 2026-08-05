@@ -127,6 +127,28 @@ class ScannerFalsePositiveTest(unittest.TestCase):
                 "Eski İngilizcede yüze ondwlita denirdi.")]
         self.assertEqual(_scan(src, blk), 0)
 
+    def test_cross_cue_sentence_redistribution_is_not_length_outlier(self):
+        src = {
+            "1": "Listen, it's been several days now",
+            "2": "that we pretend that nothing",
+            "3": "You have no reason to act this way",
+            "4": "if you are not afraid for yourself.",
+        }
+        blk = [
+            ("1", "00:00:01,000 --> 00:00:03,000",
+             "Dinle, birkaç gündür hiçbir şey olmamış gibi davranıyoruz,"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "ama"),
+            ("3", "00:00:04,000 --> 00:00:06,000",
+             "Kendin için korkmuyorsan böyle davranmaya hakkın yok"),
+            ("4", "00:00:06,000 --> 00:00:07,000", "ya."),
+        ]
+        self.assertEqual(_scan(src, blk), 0)
+
+    def test_isolated_truncation_remains_length_outlier(self):
+        src = {"1": "This complete sentence contains important information."}
+        blk = [("1", "00:00:01,000 --> 00:00:03,000", "Bu")]
+        self.assertEqual(_scan(src, blk), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
