@@ -42,6 +42,23 @@ class SourceEnglishOverlapTest(unittest.TestCase):
         self.assertFalse(gui._is_untranslated(
             source, translation, source_language="English"))
 
+    def test_preserved_foreign_titles_are_not_flagged_as_english_residue(self):
+        cases = [
+            (
+                'You\'re wrong, "La tabernera del puerto" is from Sorozábal.',
+                'Yanılıyorsun, "La tabernera del puerto" Sorozábal\'ındır.',
+            ),
+            (
+                'You were going to stage "El castigo es sinn fein acta" with María Guerrero.',
+                'María Guerrero\'yla "El castigo es sinn fein acta"yı sahnelemeye gidiyordun.',
+            ),
+        ]
+        for source, translation in cases:
+            with self.subTest(translation=translation):
+                self.assertFalse(ht.has_source_english_overlap(source, translation))
+                self.assertFalse(gui._is_untranslated(
+                    source, translation, source_language="English"))
+
     def test_quoted_ordinary_dialogue_is_still_flagged(self):
         source = 'He said, "Please come here before dinner."'
         translation = '"Please come here before dinner," dedi.'

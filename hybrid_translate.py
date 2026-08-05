@@ -5247,6 +5247,11 @@ _ENGLISH_TITLE_CONNECTORS = frozenset({
     "a", "an", "and", "as", "at", "but", "by", "for", "from", "in",
     "into", "nor", "of", "on", "or", "the", "to", "up", "via", "with",
 })
+_FOREIGN_TITLE_CONNECTORS = frozenset({
+    "la", "el", "los", "las", "de", "del", "un", "una",
+    "le", "les", "du", "des", "il", "lo", "gli",
+    "der", "die", "das", "von",
+})
 
 
 def _quoted_english_title_key(value: str) -> str:
@@ -5261,21 +5266,34 @@ def _quoted_english_title_key(value: str) -> str:
     return " ".join(word.replace("\u2019", "'").casefold() for word in words)
 
 
+def _quoted_preserved_title_key(value: str) -> str:
+    english_key = _quoted_english_title_key(value)
+    if english_key:
+        return english_key
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+(?:['\u2019][A-Za-zÀ-ÖØ-öø-ÿ]+)?", str(value or ""))
+    if not 2 <= len(words) <= 16:
+        return ""
+    folded = [word.replace("\u2019", "'").casefold() for word in words]
+    if not any(word in _FOREIGN_TITLE_CONNECTORS for word in folded):
+        return ""
+    return " ".join(folded)
+
+
 def _mask_shared_quoted_english_titles(source: str, target: str) -> tuple[str, str]:
     source_keys = {
         key for match in _SOURCE_QUOTED_SPAN_RE.finditer(source)
-        if (key := _quoted_english_title_key(match.group(1)))
+        if (key := _quoted_preserved_title_key(match.group(1)))
     }
     target_keys = {
         key for match in _SOURCE_QUOTED_SPAN_RE.finditer(target)
-        if (key := _quoted_english_title_key(match.group(1)))
+        if (key := _quoted_preserved_title_key(match.group(1)))
     }
     shared = source_keys & target_keys
     if not shared:
         return source, target
 
     def _mask(match):
-        key = _quoted_english_title_key(match.group(1))
+        key = _quoted_preserved_title_key(match.group(1))
         return " " if key in shared else match.group(0)
 
     return _SOURCE_QUOTED_SPAN_RE.sub(_mask, source), _SOURCE_QUOTED_SPAN_RE.sub(_mask, target)
