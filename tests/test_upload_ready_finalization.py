@@ -102,6 +102,31 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("TransPerfect", joined)
         self.assertIn("Gerçek diyalog.", joined)
 
+    def test_trailing_visiontext_ocr_marker_is_removed_from_source(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Gerçek diyalog."),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Fran Welland"),
+            ("3", "00:00:05,100 --> 00:00:06,000", "ENHOH"),
+            ("4", "00:00:06,100 --> 00:00:07,000", "yayıldı\nkullanici@fileheaven ;)"),
+            ("5", "00:00:07,100 --> 00:00:08,000", "C.M.C. tarafından işlendi"),
+        ]
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Real dialogue."),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Visiontext Subtitles: Fran Welland"),
+            ("3", "00:00:05,100 --> 00:00:06,000", "ENHOH"),
+            ("4", "00:00:06,100 --> 00:00:07,000", "ripped and spread by\nkullanici@fileheaven ;)"),
+            ("5", "00:00:07,100 --> 00:00:08,000", "Processed by C.M.C. - Paris"),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        joined = "\n".join(text for _i, _ts, text in result)
+        self.assertNotIn("Fran Welland", joined)
+        self.assertNotIn("ENHOH", joined)
+        self.assertNotIn("fileheaven", joined)
+        self.assertNotIn("C.M.C.", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
     def test_source_ocr_quote_markers_are_normalized(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "'Her şey ortaktı."),

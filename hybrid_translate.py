@@ -7714,9 +7714,11 @@ def _semantic_cluster_batches(clusters: list, max_items: int = 48) -> list:
 
 def _is_permanent_semantic_api_error(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
+    text = str(exc or "").lower()
+    if "temporarily unavailable" in text:
+        return False
     if status in (401, 403):
         return True
-    text = str(exc or "").lower()
     return any(marker in text for marker in (
         "invalid_api_key",
         "incorrect api key",

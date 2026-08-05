@@ -366,6 +366,25 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_warsaw_and_rumanian_transliterations_do_not_use_first_word(self):
+        blocks = _b(
+            (1, "Sevgili kondüktör, bizi Varşova'ya götür."),
+            (2, "Ama hemen binin, Varşova'ya gidin."),
+            (3, "Bunu Varşova'da ilk yapan sen miydin?"),
+            (4, "Yaşasın Rumen ordusu!"),
+            (5, "Yaşasın Rumen ordusu!"),
+            (6, "Rumen kadını, ana ve sevgili."),
+        )
+        src = _s(**{
+            "1": "Dear conductor, take us to Warsaw.",
+            "2": "But get on right now, and head for Warsaw.",
+            "3": "Were you the first to do it in Warsaw?",
+            "4": "Long live the Rumanian army!",
+            "5": "Long live the Rumanian army!",
+            "6": "The Rumanian woman, mother and mistress.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
 
 class ScanIntegrationTest(unittest.TestCase):
     def test_scan_reports_mixed_term_warning(self):

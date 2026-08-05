@@ -414,6 +414,8 @@ def _provider_error_context(exc) -> dict:
         reason = "kota veya bakiye tükendi"
     elif status == 429 or "rate limit" in text:
         reason = "hız veya eşzamanlılık sınırı"
+    elif "temporarily unavailable" in text:
+        reason = "sağlayıcı kanalı geçici olarak kullanılamıyor"
     elif status == 401 or "invalid api key" in text:
         reason = "kimlik doğrulama"
     elif status == 403:
@@ -667,8 +669,10 @@ class ProviderCooldownRegistry:
         status = _status_code(exc)
         text = str(exc or "").lower()
         key = _circuit_key(client, model)
+        temporary_unavailable = "temporarily unavailable" in text
         permanent = (
-            status in {400, 401, 403, 404, 409, 422}
+            (status in {400, 401, 403, 404, 409, 422}
+             and not temporary_unavailable)
             or any(marker in text for marker in (
                 "invalid api key",
                 "insufficient_quota",
@@ -799,7 +803,9 @@ def configure_provider_wait_hooks(cancel_check=None, wait_callback=None):
 def _is_transient_provider_error(exc) -> bool:
     text = str(exc or "").lower()
     status = _status_code(exc)
-    if status in {400, 401, 403, 404, 409, 422}:
+    temporary_unavailable = "temporarily unavailable" in text
+    if (status in {400, 401, 403, 404, 409, 422}
+            and not temporary_unavailable):
         return False
     if any(marker in text for marker in (
         "invalid api key",

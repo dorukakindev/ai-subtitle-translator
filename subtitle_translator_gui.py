@@ -2533,7 +2533,7 @@ _DELIVERY_ASS_POSITION_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_ASS_STYLE_RE = re.compile(r"\\([ibu])([01])", re.IGNORECASE)
-_DELIVERY_UNKNOWN_SOURCE_RE = re.compile(r"^\s*\?{2,}\s*$")
+_DELIVERY_UNKNOWN_SOURCE_RE = re.compile(r"^\s*(?:\?{2,}|ENHOH)\s*$", re.I)
 _DELIVERY_CREDIT_ROLE_RE = re.compile(
     r"(?:^|,)\s*(?:translator|translation|timing|typesetter|quality check|"
     r"editor|çeviri|çevirmen|zamanlama|dizgi|kalite kontrol|editör)\s*$",
@@ -2548,6 +2548,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
+    r"\bripped\s+and\s+(?:spread|shared)\s+by\b|\bprocessed\s+by\b|"
     r"\bçevir(?:i|en)\s*:\s*\S|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
     r"film\s+ve\s+video\s+altyazılama|"
@@ -2560,7 +2561,8 @@ _DELIVERY_CREDIT_COMPANION_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_CREDIT_LINE_CONTINUATION_RE = re.compile(
-    r"^\s*(?:&|and\b|ve\b)\s*\S", re.IGNORECASE)
+    r"^\s*(?:&|and\b|ve\b)\s*\S|"
+    r"^\s*[^\s@]+@[^\s@]+(?:\s*[;:]-?[)D])?\s*$", re.IGNORECASE)
 _DELIVERY_SDH_TOKEN_RE = re.compile(
     r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
 _DELIVERY_TURKISH_SDH_RE = re.compile(
@@ -6356,16 +6358,25 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                                 matched = w
                                 matched_size = len(cluster)
                             break
+                def _term_form(value):
+                    return value.casefold().translate(str.maketrans({
+                        "w": "v", "ş": "s", "ç": "c", "ğ": "g",
+                        "ı": "i", "ö": "o", "ü": "u",
+                    }))
+
+                term_form = _term_form(term)
                 similar = max(
                     cand_words,
                     key=lambda word: difflib.SequenceMatcher(
-                        None, word.casefold(), term.casefold()).ratio(),
+                        None, _term_form(word), term_form).ratio(),
                 )
+                similar_form = _term_form(similar)
                 similarity = difflib.SequenceMatcher(
-                    None, similar.casefold(), term.casefold()).ratio()
+                    None, similar_form, term_form).ratio()
                 transliteration_hint = (
-                    similar[:1].casefold() == term[:1].casefold()
-                    and abs(len(similar) - len(term)) <= 2
+                    similar_form[:1] == term_form[:1]
+                    and abs(len(similar_form) - len(term_form)) <= 4
+                    and similarity >= 0.56
                 )
                 found_token, found_idx = (
                     matched or (

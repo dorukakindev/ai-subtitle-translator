@@ -53,6 +53,20 @@ class RetryAfterParsingTest(unittest.TestCase):
         self.assertEqual(provider_retry._status_code(exc), 503)
         self.assertTrue(provider_retry._is_transient_provider_error(exc))
 
+    def test_temporary_channel_403_is_retryable_not_authorization_failure(self):
+        class ApiError(RuntimeError):
+            status_code = 403
+
+        error = ApiError(
+            "The channel is temporarily unavailable. Please contact the administrator.")
+
+        self.assertTrue(provider_retry._is_transient_provider_error(error))
+        self.assertFalse(ht._is_permanent_semantic_api_error(error))
+        self.assertEqual(
+            provider_retry._provider_error_context(error)["reason"],
+            "sağlayıcı kanalı geçici olarak kullanılamıyor",
+        )
+
     def test_retry_after_header_seconds(self):
         exc = SimpleNamespace(
             status_code=429,
@@ -443,6 +457,27 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
             (120.0, 3, 3),
         ])
         retry_success.assert_called_once_with(3, 3)
+
+    def test_temporary_channel_403_is_retried_by_safe_chat_wrapper(self):
+        client = mock.MagicMock()
+        client.base_url = "https://api.shuaiapi.com/v1"
+        client.api_key = "sk-reseller"
+
+        class TemporaryError(RuntimeError):
+            status_code = 403
+
+        error = TemporaryError(
+            "The channel is temporarily unavailable. Please contact the administrator.")
+        response = mock.MagicMock()
+        client.chat.completions.create.side_effect = [error, response]
+        with mock.patch("provider_retry._wait_for_transient_retry") as wait:
+            wait.return_value = 30.0
+            result = ht._safe_chat_create(
+                client, model="gpt-5.4", messages=[])
+
+        self.assertIs(result, response)
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        wait.assert_called_once_with(error, 1, 3)
 
     def test_transient_error_hint_does_not_force_120_second_first_wait(self):
         class TemporaryError(RuntimeError):
