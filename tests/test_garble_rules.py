@@ -98,6 +98,11 @@ class StraySuffixR3Test(unittest.TestCase):
         # "Mısır'daki" — apostrof-bitişik, kopuk ek DEĞİL.
         self.assertEqual(ht.find_garble_tokens("Mısır'daki Konsey başkanı."), [])
 
+    def test_quoted_title_suffix_and_ottoman_compound_are_not_garble(self):
+        self.assertEqual(
+            ht.find_garble_tokens('"Kaptan Fracassa"daki komedyenler'), [])
+        self.assertEqual(ht.find_garble_tokens("Zat-ı Alileri geldi."), [])
+
     def test_natural_word_ending_in_deki_pattern_not_confused(self):
         self.assertEqual(ht.find_garble_tokens("evdeki eşyalar dağınıktı."), [])
 

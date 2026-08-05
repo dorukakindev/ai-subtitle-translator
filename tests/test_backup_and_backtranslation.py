@@ -175,6 +175,37 @@ class BackTranslationPrefilterTest(unittest.TestCase):
         self.assertEqual(len(prompts), 1)
         self.assertEqual(status["status"], "failed")
 
+    def test_stage_two_malformed_json_retries_only_comparison(self):
+        blocks = [("1", _TS, "Bu yeterince uzun bir çeviri satırıdır.")]
+        src = {"1": "This is a sufficiently long source subtitle line."}
+        responses = [
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content=(
+                    '[{"id":"1","en":"A sufficiently long source line."}]')))]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="not json"))]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(
+                message=SimpleNamespace(content="[]"))]),
+        ]
+        status = {}
+
+        with patch("openai.OpenAI"), patch(
+                "hybrid_translate._safe_chat_create", side_effect=responses) as call:
+            result = ht.back_translation_check(
+                src, blocks, api_key="x", status_out=status)
+
+        self.assertEqual(result, [])
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(call.call_count, 3)
+        self.assertEqual(
+            call.call_args_list[1].kwargs["_checkpoint_label"],
+            "backtranslation_compare",
+        )
+        self.assertEqual(
+            call.call_args_list[2].kwargs["_checkpoint_label"],
+            "backtranslation_compare",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -136,6 +136,33 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             "İhtiyaçları olan bu.",
         ])
 
+    def test_double_apostrophe_quoted_cues_do_not_leave_mixed_markers(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "''Birinci satır''"),
+            ("2", "00:00:03,100 --> 00:00:04,000", "''ikinci satır''"),
+            ("3", "00:00:04,100 --> 00:00:05,000", "''açık alıntı..."),
+            ("4", "00:00:05,100 --> 00:00:06,000", "devam ediyor...''"),
+            ("5", "00:00:06,100 --> 00:00:07,000", "''Satır sonu''\nGördün mü?"),
+            ("6", "00:00:07,100 --> 00:00:08,000", "Başlık: ''Mekke'ye Gidiş''"),
+        ]
+        source = list(blocks)
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = [
+            text for _idx, _ts, text in result
+            if text != "discord: ceviri2"
+        ]
+
+        self.assertEqual(dialogue, [
+            '"Birinci satır"',
+            '"ikinci satır"',
+            '"açık alıntı...',
+            'devam ediyor..."',
+            '"Satır sonu"\nGördün mü?',
+            'Başlık: "Mekke\'ye Gidiş"',
+        ])
+
     def test_html_wrapped_resync_credit_is_removed(self):
         blocks = [
             (

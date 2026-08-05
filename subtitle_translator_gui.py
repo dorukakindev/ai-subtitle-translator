@@ -2802,19 +2802,54 @@ def _normalize_delivery_ocr_quote_markers(blocks: list, src_map: dict) -> tuple[
     for idx, ts, text in blocks or []:
         source = str((src_map or {}).get(str(idx), "") or "")
         value = str(text or "")
-        starts_quote = bool(re.match(r"^\s*'", source))
-        ends_marker = bool(re.search(r"#\s*$", source))
-        if starts_quote:
-            updated = re.sub(r'^\s*[\'"“”]?\s*', '"', value, count=1)
+        if "''" in source and "''" in value:
+            updated = value.replace("''", '"')
             changed += updated != value
             value = updated
-            quote_open = True
+        source_lines = source.splitlines()
+        value_lines = value.splitlines()
+        if len(source_lines) == len(value_lines):
+            for line_no, (source_line, value_line) in enumerate(
+                    zip(source_lines, value_lines)):
+                updated_line = value_line
+                if "''" in source_line and "''" in updated_line:
+                    updated_line = updated_line.replace("''", '"')
+                if re.match(r"^\s*'{2}", source_line):
+                    updated_line = re.sub(
+                        r'^\s*(?:[\'"“”]+\s*)?', '"',
+                        updated_line, count=1)
+                if (re.match(r"^\s*'{2}", source_line)
+                        and re.search(r"'{2}[.!?]?\s*$", source_line)):
+                    if re.search(r"'{2}\s*$", updated_line):
+                        updated_line = re.sub(
+                            r"'{2}\s*$", '"', updated_line).rstrip()
+                    elif updated_line.count('"') % 2:
+                        updated_line = updated_line.rstrip() + '"'
+                changed += updated_line != value_line
+                value_lines[line_no] = updated_line
+            value = "\n".join(value_lines)
+        starts_quote = bool(re.match(r"^\s*'", source))
+        ends_quote = bool(re.search(r"'{2}[.!?]?\s*$", source))
+        ends_marker = bool(re.search(r"#\s*$", source))
+        if starts_quote:
+            updated = re.sub(r'^\s*(?:[\'"“”]+\s*)?', '"', value, count=1)
+            changed += updated != value
+            value = updated
+            quote_open = not ends_quote
+            if ends_quote:
+                updated = re.sub(r'[\'"“”]+\s*$', '"', value, count=1)
+                changed += updated != value
+                value = updated
         if ends_marker:
             if re.search(r"#\s*$", value):
                 closer = '"' if quote_open else "."
                 updated = re.sub(r"#\s*$", closer, value)
                 changed += updated != value
                 value = updated
+            quote_open = False
+        elif quote_open and re.search(r"'{2}\s*$", value):
+            value = re.sub(r"'{2}\s*$", '"', value).rstrip()
+            changed += 1
             quote_open = False
         elif quote_open and re.search(r'["”]\s*$', value):
             quote_open = False
@@ -6150,7 +6185,7 @@ _MIXED_TERM_EXTRA_STOPS = frozenset({
     "with", "from", "into", "onto", "over", "under", "your", "their", "ours",
     "have", "has", "had", "want", "take", "look", "like", "sure", "think",
     "looks", "looking", "really", "actually", "little", "very", "just", "only",
-    "more", "most",
+    "more", "most", "love",
     # Apostrophe-split contractions in all-caps captions (HAVEN'T -> HAVEN).
     "haven", "didn", "doesn", "don", "isn", "aren", "wasn", "weren",
     "couldn", "wouldn", "shouldn", "won", "cant",
@@ -6180,7 +6215,12 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
 
     def _is_stop(w: str) -> bool:
         wl = w.lower()
-        return wl in ht._CONTENT_DRIFT_STOPS or wl in _MIXED_TERM_EXTRA_STOPS
+        stops = ht._CONTENT_DRIFT_STOPS | _MIXED_TERM_EXTRA_STOPS
+        if wl in stops:
+            return True
+        if w.startswith("I") and len(w) > 1:
+            return ("l" + w[1:].lower()) in stops
+        return False
 
     def _line_is_all_caps(text: str) -> bool:
         letters = [ch for ch in text if ch.isalpha()]
@@ -6323,8 +6363,17 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                 )
                 similarity = difflib.SequenceMatcher(
                     None, similar.casefold(), term.casefold()).ratio()
+                transliteration_hint = (
+                    similar[:1].casefold() == term[:1].casefold()
+                    and abs(len(similar) - len(term)) <= 2
+                )
                 found_token, found_idx = (
-                    matched or (similar if similarity >= 0.72 else cand_words[0])), cid
+                    matched or (
+                        similar
+                        if similarity >= 0.72 or transliteration_hint
+                        else cand_words[0]
+                    )
+                ), cid
                 break
             if not found_token:
                 continue
@@ -7055,7 +7104,11 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
             }
             hits = [
                 hit for hit in hits
-                if str(hit[0]).casefold().strip("'’") not in source_words
+                if (
+                    str(hit[0]).casefold().strip("'’") not in source_words
+                    and str(hit[0]).split("'", 1)[0].split("’", 1)[0].casefold()
+                    not in source_words
+                )
             ]
             if hits:
                 garble_lines.append((str(idx), hits[0][0]))

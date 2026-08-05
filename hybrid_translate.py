@@ -4274,6 +4274,49 @@ def back_translation_check(
     if log_fn:
         log_fn(f"Geri çeviri anlam kontrolü: {len(items)} satır incelenecek...", "info")
 
+    def _request_json_array(prompt, checkpoint_label, max_tokens, error_code):
+        for parse_attempt in range(1, 4):
+            messages = [{"role": "user", "content": prompt}]
+            if parse_attempt > 1:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "The previous response was not a valid JSON array. "
+                        "Return ONLY the requested JSON array, with no prose or markdown."
+                    ),
+                })
+            resp = _safe_chat_create(
+                client, cancel_context=cancel_context,
+                _checkpoint_label=checkpoint_label,
+                model=model, messages=messages,
+                max_tokens=max_tokens, temperature=0.0,
+            )
+            if token_callback and getattr(resp, "usage", None):
+                tot, cached = _get_usage_details(resp.usage)
+                try:
+                    token_callback(tot, cached=cached)
+                except TypeError:
+                    token_callback(tot)
+            content = (
+                (resp.choices[0].message.content or "").strip()
+                if resp.choices else ""
+            )
+            payload = _extract_json_array(content)
+            if payload:
+                try:
+                    parsed = json.loads(payload)
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    return parsed
+            if parse_attempt < 3 and log_fn:
+                log_fn(
+                    f"Geri çeviri {checkpoint_label}: biçimsiz JSON; "
+                    f"yalnız bu paket yeniden isteniyor ({parse_attempt + 1}/3)",
+                    "warn",
+                )
+        raise ValueError(error_code)
+
     flagged = []
     total_chunks = (len(items) + chunk_size - 1) // chunk_size
     successful_chunks = 0
@@ -4298,26 +4341,10 @@ def back_translation_check(
         )
         back_map = {}
         try:
-            resp = _safe_chat_create(
-                client, cancel_context=cancel_context,
-                _checkpoint_label="backtranslation",
-                model=model,
-                messages=[{"role": "user", "content": bt_prompt}],
-                max_tokens=len(chunk) * 60 + 300, temperature=0.0,
+            parsed = _request_json_array(
+                bt_prompt, "backtranslation", len(chunk) * 60 + 300,
+                "stage1_response_not_array",
             )
-            if token_callback and getattr(resp, "usage", None):
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
-            content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
-            payload = _extract_json_array(content)
-            if not payload:
-                raise ValueError("stage1_response_not_array")
-            parsed = json.loads(payload)
-            if not isinstance(parsed, list):
-                raise ValueError("stage1_response_not_array")
             expected_ids = {it["idx"] for it in chunk}
             duplicate_ids = set()
             for o in parsed:
@@ -4366,26 +4393,10 @@ def back_translation_check(
             f"return [] if none.\n\n{json.dumps(cmp_payload, ensure_ascii=False)}"
         )
         try:
-            resp = _safe_chat_create(
-                client, cancel_context=cancel_context,
-                _checkpoint_label="backtranslation_compare",
-                model=model,
-                messages=[{"role": "user", "content": cmp_prompt}],
-                max_tokens=len(chunk) * 40 + 300, temperature=0.0,
+            parsed = _request_json_array(
+                cmp_prompt, "backtranslation_compare", len(chunk) * 40 + 300,
+                "stage2_response_not_array",
             )
-            if token_callback and getattr(resp, "usage", None):
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
-            content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
-            payload = _extract_json_array(content)
-            if not payload:
-                raise ValueError("stage2_response_not_array")
-            parsed = json.loads(payload)
-            if not isinstance(parsed, list):
-                raise ValueError("stage2_response_not_array")
             by_idx = {it["idx"]: it for it in chunk}
             for o in parsed:
                 if not isinstance(o, dict):
@@ -5518,6 +5529,9 @@ def find_garble_tokens(text) -> list:
         if (m.start() >= 2 and s[m.start() - 1] in "\"'”’"
                 and s[m.start() - 2].isalpha()):
             continue
+        if (m.start() >= 2 and s[m.start() - 1] == "-"
+                and s[m.start() - 2].isalpha()):
+            continue
         if _garble_neighbor_is_capitalized(s, m.start(), m.end()):
             continue  # özel-isim dizisinin parçası olabilir (ör. "Monumento a la Humanidad")
         found.append((m.group(0), "R1_stray_letter"))
@@ -5535,6 +5549,9 @@ def find_garble_tokens(text) -> list:
         found.append((tok, "R2_wqx_token"))
 
     for m in _GARBLE_STRAY_SUFFIX_RE.finditer(s):
+        if (m.start() >= 2 and s[m.start() - 1] in "\"”’"
+                and s[m.start() - 2].isalpha()):
+            continue
         if (m.group(0).lower() == "teki"
                 and re.search(
                     r"\b[^\W\d_]+(?:ın|in|un|ün|nın|nin|nun|nün)\s+$",

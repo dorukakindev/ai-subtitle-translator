@@ -343,6 +343,29 @@ class MixedTermDetectionTest(unittest.TestCase):
     def test_empty_blocks_returns_empty(self):
         self.assertEqual(gui.detect_mixed_term_renderings([], {}), [])
 
+    def test_ocr_iike_iove_and_transliterated_mecca_are_not_terms(self):
+        blocks = _b(
+            (1, "Bırakın sinemanın Mekke'sine döneyim!"),
+            (2, "Bırakın sinemanın Mekke'sine döneyim!"),
+            (3, "Amerikan Mekke'sine giden biri."),
+            (4, "Mekke'nin burada olduğunu söylüyorlar."),
+            (5, "Kendimi iyi hissediyorum."),
+            (6, "Kendimi yine iyi hissediyorum."),
+            (7, "Seni seviyorum."),
+            (8, "Seni hala seviyorum."),
+        )
+        src = _s(**{
+            "1": "Let me come back to movie Mecca!",
+            "2": "Let me come back to movie Mecca!",
+            "3": "An Italian who goes to the American Mecca.",
+            "4": "They tell him the Mecca is here.",
+            "5": "I feel Iike myself.",
+            "6": "I still feel Iike myself.",
+            "7": "I Iove you.",
+            "8": "I still Iove you.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
 
 class ScanIntegrationTest(unittest.TestCase):
     def test_scan_reports_mixed_term_warning(self):
