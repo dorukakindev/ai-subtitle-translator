@@ -23,6 +23,14 @@ TRANSIENT_RETRY_DELAYS = (30.0, 60.0, 120.0)
 PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
 PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 60.0
 RESPONSE_CHECKPOINT_VER = 1
+_QUOTA_EXHAUSTED_MARKERS = (
+    "insufficient_quota",
+    "pre_consume_token_quota_failed",
+    "token quota is not enough",
+    "预扣费额度失败",
+    "用户剩余额度",
+    "余额不足",
+)
 
 _RESPONSE_CHECKPOINT_LOCK = threading.Lock()
 _RESPONSE_CHECKPOINT = None
@@ -408,9 +416,7 @@ def _upstream_request_id(value) -> str:
 def _provider_error_context(exc) -> dict:
     status = _status_code(exc)
     text = str(exc or "").casefold()
-    if any(marker in text for marker in (
-            "insufficient_quota", "pre_consume_token_quota_failed",
-            "token quota is not enough")):
+    if any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS):
         reason = "kota veya bakiye tükendi"
     elif status == 429 or "rate limit" in text:
         reason = "hız veya eşzamanlılık sınırı"
@@ -673,12 +679,8 @@ class ProviderCooldownRegistry:
         permanent = (
             (status in {400, 401, 403, 404, 409, 422}
              and not temporary_unavailable)
-            or any(marker in text for marker in (
-                "invalid api key",
-                "insufficient_quota",
-                "pre_consume_token_quota_failed",
-                "token quota is not enough",
-            ))
+            or "invalid api key" in text
+            or any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS)
             or _auto_group_configuration_error(text)
         )
         if status == 429 or permanent:
@@ -807,12 +809,8 @@ def _is_transient_provider_error(exc) -> bool:
     if (status in {400, 401, 403, 404, 409, 422}
             and not temporary_unavailable):
         return False
-    if any(marker in text for marker in (
-        "invalid api key",
-        "insufficient_quota",
-        "pre_consume_token_quota_failed",
-        "token quota is not enough",
-    )):
+    if ("invalid api key" in text
+            or any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS)):
         return False
     if _auto_group_configuration_error(text):
         return False
