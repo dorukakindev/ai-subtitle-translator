@@ -7510,6 +7510,117 @@ def _format_api_operation(metrics: dict) -> str:
     )
 
 
+def _api_diagnostic_findings(api: dict) -> list[dict]:
+    api = api or {}
+    findings = []
+    operations = dict(api.get("operations") or {})
+    terminal_events = {}
+    for event in api.get("events") or []:
+        if (event.get("event") == "request_failure"
+                and not event.get("will_retry", False)):
+            terminal_events[str(event.get("operation") or "API İşlemi")] = event
+    for name, metrics in operations.items():
+        attempts = int(metrics.get("attempts", 0) or 0)
+        successes = int(metrics.get("successes", 0) or 0)
+        failures = int(metrics.get("failures", 0) or 0)
+        terminal = int(metrics.get("terminal_failures", 0) or 0)
+        retries = int(metrics.get("retries", 0) or 0)
+        pauses = int(metrics.get("provider_pauses", 0) or 0)
+        if terminal:
+            event = terminal_events.get(str(name), {})
+            evidence = []
+            if event.get("status_code") is not None:
+                evidence.append(f"HTTP {event['status_code']}")
+            if event.get("reason"):
+                evidence.append(str(event["reason"]))
+            if event.get("request_id"):
+                evidence.append(f"request_id={event['request_id']}")
+            findings.append({
+                "code": "terminal_api_failure", "severity": "error",
+                "pass": str(name),
+                "message": f"{terminal} kalıcı API hatası oluştu.",
+                "evidence": " | ".join(evidence),
+            })
+        if pauses:
+            findings.append({
+                "code": "provider_circuit_pause", "severity": "warning",
+                "pass": str(name),
+                "message": f"Sağlayıcı devresi {pauses} kez beklemeye geçti.",
+                "evidence": "",
+            })
+        if attempts >= 3 and failures / attempts >= 0.25:
+            findings.append({
+                "code": "high_failure_ratio", "severity": "warning",
+                "pass": str(name),
+                "message": (
+                    f"API başarısızlık oranı yüksek: {failures}/{attempts} "
+                    f"(%{failures * 100.0 / attempts:.1f})."),
+                "evidence": "",
+            })
+        if attempts >= 3 and retries >= 2 and retries / attempts >= 0.30:
+            findings.append({
+                "code": "retry_pressure", "severity": "warning",
+                "pass": str(name),
+                "message": (
+                    f"Yeniden deneme yükü yüksek: {retries}/{attempts} "
+                    f"(%{retries * 100.0 / attempts:.1f})."),
+                "evidence": "",
+            })
+        if attempts and not successes and not terminal:
+            findings.append({
+                "code": "no_success_recorded", "severity": "warning",
+                "pass": str(name),
+                "message": "İstek kaydı var ancak başarılı yanıt kaydı yok.",
+                "evidence": f"istek={attempts}, hata={failures}",
+            })
+    for name, usage in dict(api.get("usage_by_pass") or {}).items():
+        total = int(usage.get("total_tokens", 0) or 0)
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        cached = int(usage.get("cached_tokens", 0) or 0)
+        unknown = int(usage.get("unknown_cost_tokens", 0) or 0)
+        if prompt and cached > prompt:
+            findings.append({
+                "code": "cached_exceeds_prompt", "severity": "error",
+                "pass": str(name),
+                "message": "Cache tokenı giriş tokenından büyük; kullanım muhasebesi tutarsız.",
+                "evidence": f"cache={cached}, giriş={prompt}",
+            })
+        if prompt or completion:
+            if total < prompt + completion:
+                findings.append({
+                    "code": "token_total_mismatch", "severity": "error",
+                    "pass": str(name),
+                    "message": "Toplam token, giriş ve çıkış toplamından küçük.",
+                    "evidence": (
+                        f"toplam={total}, giriş={prompt}, çıkış={completion}"),
+                })
+        elif total:
+            findings.append({
+                "code": "usage_breakdown_missing", "severity": "info",
+                "pass": str(name),
+                "message": "Sağlayıcı toplam tokenı verdi ancak giriş/çıkış ayrımını vermedi.",
+                "evidence": f"toplam={total}",
+            })
+        if unknown:
+            findings.append({
+                "code": "unknown_token_price", "severity": "info",
+                "pass": str(name),
+                "message": "Bu model için yerel fiyat tanımı yok; maliyet eksik hesaplandı.",
+                "evidence": f"fiyatı bilinmeyen token={unknown}",
+            })
+    return findings
+
+
+def _format_api_diagnostic(finding: dict) -> str:
+    severity = str(finding.get("severity") or "info").upper()
+    name = str(finding.get("pass") or "API İşlemi")
+    text = f"[{severity}] {name}: {finding.get('message', '')}"
+    if finding.get("evidence"):
+        text += f" ({finding['evidence']})"
+    return text
+
+
 def _timing_phase_label(phase: str) -> str:
     value = re.sub(r"\s+", " ", str(phase or "").strip())
     value = re.sub(r"\s+\d+\s*/\s*\d+(?:\s*\([^)]*\))?$", "", value)
@@ -7742,6 +7853,10 @@ def build_run_summary_text(record: dict) -> str:
             lines.append("  Checkpoint'ten karşılanan istekler:")
             for name, count in checkpoint_hits.items():
                 lines.append(f"    - {name}: {int(count or 0)} istek")
+        diagnostics = list(api.get("diagnostics") or _api_diagnostic_findings(api))
+        if diagnostics:
+            lines.extend(["", "API / PASS TEŞHİS BULGULARI:"])
+            lines.extend(f"  - {_format_api_diagnostic(item)}" for item in diagnostics)
     for title, values in (
         ("Başarısız dosyalar", data["files"]["error"]),
         ("Üretilen çıktılar", data["outputs"]),
@@ -12416,9 +12531,17 @@ class App(ctk.CTk):
                 record["status"] = "eksik"
             else:
                 record["status"] = "tamamlandı"
+            api = record.setdefault("api", {})
+            api["diagnostics"] = _api_diagnostic_findings(api)
             snapshot = copy.deepcopy(record)
         resume_files = _interrupted_run_pending_files(snapshot)
         snapshot["resume_pending"] = list(resume_files)
+
+        for finding in (snapshot.get("api") or {}).get("diagnostics") or []:
+            tag = "err" if finding.get("severity") == "error" else "warn"
+            if finding.get("severity") == "info":
+                tag = "info"
+            self._log(f"API teşhisi: {_format_api_diagnostic(finding)}", tag)
 
         try:
             snapshot["completion_markers"] = _write_completion_markers(snapshot)
@@ -12603,6 +12726,7 @@ class App(ctk.CTk):
                     "provider": str(info.get("provider") or ""),
                     "attempt": int(info.get("attempt") or info.get("next_attempt") or 0),
                     "max_attempts": int(info.get("max_attempts") or 0),
+                    "will_retry": bool(info.get("will_retry", False)),
                     "status_code": info.get("status_code"),
                     "reason": str(info.get("reason") or ""),
                     "request_id": str(info.get("request_id") or ""),

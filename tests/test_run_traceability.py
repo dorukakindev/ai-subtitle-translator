@@ -102,6 +102,59 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("Critic Pass: 2 istek | 1 başarılı | 1 hata | 1 tekrar", text)
         self.assertIn("başarı %50.0", text)
 
+    def test_api_diagnostics_flag_only_actionable_accounting_and_retry_anomalies(self):
+        findings = gui._api_diagnostic_findings({
+            "operations": {
+                "Critic Pass": {
+                    "attempts": 4, "successes": 2, "failures": 2,
+                    "terminal_failures": 1, "retries": 2,
+                    "provider_pauses": 1, "duration_seconds": 10.0,
+                }
+            },
+            "events": [{
+                "event": "request_failure", "operation": "Critic Pass",
+                "will_retry": False, "status_code": 503,
+                "reason": "kanal yok", "request_id": "req-123",
+            }],
+            "usage_by_pass": {
+                "Critic Pass": {
+                    "total_tokens": 100, "prompt_tokens": 80,
+                    "completion_tokens": 30, "cached_tokens": 90,
+                    "unknown_cost_tokens": 100,
+                }
+            },
+        })
+        codes = {item["code"] for item in findings}
+        self.assertTrue({
+            "terminal_api_failure", "provider_circuit_pause",
+            "high_failure_ratio", "retry_pressure",
+            "cached_exceeds_prompt", "token_total_mismatch",
+            "unknown_token_price",
+        }.issubset(codes))
+        terminal = next(
+            item for item in findings if item["code"] == "terminal_api_failure")
+        self.assertIn("HTTP 503", terminal["evidence"])
+        self.assertIn("request_id=req-123", terminal["evidence"])
+
+    def test_api_diagnostics_do_not_flag_healthy_pass(self):
+        findings = gui._api_diagnostic_findings({
+            "operations": {
+                "Polish Pass": {
+                    "attempts": 5, "successes": 5, "failures": 0,
+                    "terminal_failures": 0, "retries": 0,
+                    "provider_pauses": 0, "duration_seconds": 8.0,
+                }
+            },
+            "usage_by_pass": {
+                "Polish Pass": {
+                    "total_tokens": 1000, "prompt_tokens": 800,
+                    "completion_tokens": 200, "cached_tokens": 300,
+                    "unknown_cost_tokens": 0,
+                }
+            },
+        })
+        self.assertEqual(findings, [])
+
     def test_record_api_event_tracks_terminal_failure_without_storing_error_body(self):
         app = SimpleNamespace(
             _run_record_lock=threading.RLock(),
@@ -129,6 +182,7 @@ class RunTraceabilityTest(unittest.TestCase):
             summary["operations"]["Polish Pass"]["duration_seconds"], 2.25)
         self.assertNotIn("sk-secret", json.dumps(summary))
         self.assertEqual(summary["events"][-1]["request_id"], "req_support_123")
+        self.assertFalse(summary["events"][-1]["will_retry"])
 
     def test_repair_retry_wait_reports_logical_retry_to_dashboard_record(self):
         statuses = []
@@ -446,6 +500,15 @@ class RunTraceabilityTest(unittest.TestCase):
             "reports": [],
             "log_path": "run.log",
             "last_traceback": "",
+            "api": {
+                "operations": {
+                    "Critic Pass": {
+                        "attempts": 1, "successes": 0, "failures": 1,
+                        "terminal_failures": 1, "retries": 0,
+                        "provider_pauses": 0, "duration_seconds": 1.0,
+                    }
+                }
+            },
         }
         stub = SimpleNamespace(
             _run_record_lock=threading.RLock(),
@@ -472,6 +535,13 @@ class RunTraceabilityTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(last_path.read_text(encoding="utf-8"))["run_id"],
                 result["run_id"])
+            saved = json.loads(last_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                saved["api"]["diagnostics"][0]["code"],
+                "terminal_api_failure")
+            self.assertTrue(any(
+                "API teşhisi" in call.args[0]
+                for call in stub._log.call_args_list))
         self.assertIsNone(stub._active_run_record)
         self.assertEqual(stub._last_run_record["status"], "tamamlandı")
 
