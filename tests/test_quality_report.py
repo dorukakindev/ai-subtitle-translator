@@ -63,7 +63,9 @@ class PassTraceTest(unittest.TestCase):
         before = [("1", "00:00:01,000 --> 00:00:02,000", "A")]
         after = [("1", "00:00:01,000 --> 00:00:02,000", "B")]
         self.assertEqual(gui._record_pass_change(trace, "Critic", before, after, history), 1)
-        self.assertEqual(trace, {"Critic": 1})
+        self.assertEqual(trace["Critic"], 1)
+        self.assertEqual(trace["__pass_snapshots__"][0]["changed"], 1)
+        self.assertFalse(trace["__pass_snapshots__"][0]["rolled_back"])
         self.assertEqual(history["1"][0]["pass"], "Critic")
         self.assertEqual(history["1"][0]["before"], "A")
         self.assertEqual(history["1"][0]["after"], "B")
@@ -74,7 +76,41 @@ class PassTraceTest(unittest.TestCase):
 
         self.assertEqual(
             gui._record_pass_change(trace, "Native", blocks, list(blocks)), 0)
-        self.assertEqual(trace, {"Native": 0})
+        self.assertEqual(trace["Native"], 0)
+        self.assertEqual(trace["__pass_snapshots__"][0]["changed"], 0)
+
+    def test_pass_guard_rolls_back_structural_corruption(self):
+        trace = {}
+        before = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "Güle güle."),
+        ]
+        after = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Selam."),
+            ("1", "00:00:02,000 --> 00:00:03,000", "[ÇEVİRİ EKSİK]"),
+        ]
+
+        self.assertEqual(
+            gui._record_pass_change(trace, "Critic", before, after), 0)
+        self.assertEqual(after, before)
+        event = trace["__guard_events__"][0]
+        self.assertIn("duplicate_cue_id", event["reason"])
+        self.assertIn("cue_ids_changed", event["reason"])
+        self.assertIn("new_unresolved_marker", event["reason"])
+        self.assertTrue(trace["__pass_snapshots__"][0]["rolled_back"])
+
+    def test_pass_efficiency_reports_zero_yield_without_division(self):
+        rows = gui._pass_efficiency_rows({
+            "pass_trace": {"Native": 0, "Critic": 2},
+            "timing": {"api_usage": {
+                "Native Okuyucu": {"total_tokens": 900, "cost_usd": 0.09},
+                "Critic Pass": {"total_tokens": 400, "cost_usd": 0.04},
+            }},
+        })
+        native = next(item for item in rows if item["pass"] == "Native")
+        critic = next(item for item in rows if item["pass"] == "Critic")
+        self.assertIsNone(native["tokens_per_change"])
+        self.assertEqual(critic["tokens_per_change"], 200.0)
 
     def test_multi_pass_history_summary(self):
         history = {

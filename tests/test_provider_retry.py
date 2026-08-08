@@ -1,4 +1,5 @@
 import ast
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -615,6 +616,12 @@ class ResponseCheckpointTest(unittest.TestCase):
                 for path in root.rglob("*.json"))
             self.assertNotIn("sk-hidden", checkpoint_text)
             self.assertNotIn("critic packet 1", checkpoint_text)
+            checkpoint_rows = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in root.rglob("*.json")]
+            self.assertEqual(checkpoint_rows[0]["namespace"], "run-origin")
+            self.assertEqual(checkpoint_rows[0]["model"], "gpt-4.1")
+            self.assertEqual(len(checkpoint_rows[0]["request_fingerprint"]), 16)
 
     def test_stage_label_does_not_change_existing_checkpoint_identity(self):
         client = self._mock_client(self._response("ok"))
@@ -642,13 +649,15 @@ class ResponseCheckpointTest(unittest.TestCase):
                 "completed analysis stage must be replayed")
             provider_retry.configure_response_checkpoint(
                 root, "run-origin", allow_reads=True,
-                hit_callback=lambda count, label: hits.append((count, label)))
+                hit_callback=lambda count, label, fingerprint: hits.append(
+                    (count, label, fingerprint)))
             provider_retry.chat_create_with_compat(
                 resumed, "gpt-5.4", kwargs,
                 checkpoint_label="analysis_scene_plan")
 
             resumed.chat.completions.create.assert_not_called()
-            self.assertEqual(hits, [(1, "analysis_scene_plan")])
+            self.assertEqual(hits[0][:2], (1, "analysis_scene_plan"))
+            self.assertEqual(len(hits[0][2]), 16)
 
     def test_cached_response_is_consumed_once_before_live_retry(self):
         with tempfile.TemporaryDirectory() as tmpdir:

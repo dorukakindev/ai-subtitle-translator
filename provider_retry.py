@@ -152,10 +152,21 @@ def _response_checkpoint_lookup(client, model: str, kwargs: dict,
         return None
     if callback:
         try:
-            callback(hits, str(entry.get("checkpoint_label") or checkpoint_label or ""))
+            callback(
+                hits,
+                str(entry.get("checkpoint_label") or checkpoint_label or ""),
+                str(entry.get("request_fingerprint") or key[:16]),
+            )
         except TypeError:
             try:
-                callback(hits)
+                callback(
+                    hits,
+                    str(entry.get("checkpoint_label") or checkpoint_label or ""))
+            except TypeError:
+                try:
+                    callback(hits)
+                except Exception:
+                    pass
             except Exception:
                 pass
         except Exception:
@@ -191,6 +202,9 @@ def _response_checkpoint_save(client, model: str, kwargs: dict, response,
         "finish_reason": finish_reason,
         "updated_at": time.time(),
         "checkpoint_label": str(checkpoint_label or ""),
+        "model": str(model or ""),
+        "request_fingerprint": key[:16],
+        "namespace": str(namespace or ""),
     }
     with _RESPONSE_CHECKPOINT_LOCK:
         current = _RESPONSE_CHECKPOINT
@@ -1074,10 +1088,13 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
         checkpoint_config=checkpoint_config)
     if cached is not None:
         return cached
+    request_context = _provider_request_context(
+        client, model, checkpoint_label)
+    request_context["request_fingerprint"] = _response_checkpoint_key(
+        client, model, kwargs, requested_format, checkpoint_label)[:16]
     result = _chat_create_with_compat_uncached(
         client, model, kwargs, requested_format=requested_format,
-        request_context=_provider_request_context(
-            client, model, checkpoint_label))
+        request_context=request_context)
     _response_checkpoint_save(
         client, model, kwargs, result, requested_format=requested_format,
         checkpoint_label=checkpoint_label,

@@ -7478,6 +7478,11 @@ def _api_operation_delta(current: dict, baseline: dict | None = None) -> dict:
     result["duration_seconds"] = max(
         0.0, float((current or {}).get("duration_seconds", 0.0) or 0.0)
         - float(baseline.get("duration_seconds", 0.0) or 0.0))
+    current_latencies = list((current or {}).get("latencies") or [])
+    baseline_latencies = list(baseline.get("latencies") or [])
+    result["latencies"] = current_latencies[len(baseline_latencies):]
+    for key in ("models", "providers", "request_fingerprints"):
+        result[key] = list((current or {}).get(key) or [])
     return result
 
 
@@ -7502,12 +7507,49 @@ def _format_api_operation(metrics: dict) -> str:
     completed = successes + failures
     avg = duration / completed if completed else 0.0
     success_pct = successes * 100.0 / completed if completed else 0.0
+    latencies = sorted(
+        max(0.0, float(value or 0.0))
+        for value in (metrics or {}).get("latencies") or [])
+    def percentile(ratio):
+        if not latencies:
+            return 0.0
+        pos = max(0, min(len(latencies) - 1,
+                         math.ceil(len(latencies) * ratio) - 1))
+        return latencies[pos]
+    latency_detail = ""
+    if latencies:
+        latency_detail = (
+            f" | p50 {_format_elapsed(percentile(0.50))}"
+            f" | p95 {_format_elapsed(percentile(0.95))}"
+            f" | max {_format_elapsed(latencies[-1])}")
     return (
         f"{attempts} istek | {successes} başarılı | {failures} hata | "
         f"{retries} tekrar | {terminal} kalıcı | {pauses} sağlayıcı molası | "
         f"API süresi {_format_elapsed(duration)} | ort. {_format_elapsed(avg)} | "
-        f"başarı %{success_pct:.1f}"
+        f"başarı %{success_pct:.1f}{latency_detail}"
     )
+
+
+def _stable_fingerprint(value, length: int = 16) -> str:
+    payload = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        default=str).encode("utf-8", "replace")
+    return hashlib.sha256(payload).hexdigest()[:max(8, int(length or 16))]
+
+
+def _api_usage_total(usage_by_pass: dict) -> dict:
+    result = {
+        "total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0,
+        "cached_tokens": 0, "unknown_cost_tokens": 0, "cost_usd": 0.0,
+    }
+    for usage in dict(usage_by_pass or {}).values():
+        for key in result:
+            if key == "cost_usd":
+                result[key] += float((usage or {}).get(key, 0.0) or 0.0)
+            else:
+                result[key] += int((usage or {}).get(key, 0) or 0)
+    result["cost_usd"] = round(result["cost_usd"], 10)
+    return result
 
 
 def _api_diagnostic_findings(api: dict) -> list[dict]:
@@ -7609,6 +7651,41 @@ def _api_diagnostic_findings(api: dict) -> list[dict]:
                 "message": "Bu model için yerel fiyat tanımı yok; maliyet eksik hesaplandı.",
                 "evidence": f"fiyatı bilinmeyen token={unknown}",
             })
+    ledger = _api_usage_total(api.get("usage_by_pass") or {})
+    session = dict(api.get("session_usage_delta") or {})
+    if session:
+        for key, label in (("total_tokens", "toplam token"),
+                           ("cached_tokens", "cache token"),
+                           ("unknown_cost_tokens", "fiyatı bilinmeyen token")):
+            expected = int(session.get(key, 0) or 0)
+            recorded = int(ledger.get(key, 0) or 0)
+            if expected != recorded:
+                findings.append({
+                    "code": "usage_ledger_mismatch", "severity": "error",
+                    "pass": "API Muhasebesi",
+                    "message": f"Pass toplamı ile oturum {label} sayacı uyuşmuyor.",
+                    "evidence": f"pass={recorded}, oturum={expected}",
+                })
+        expected_cost = float(session.get("cost_usd", 0.0) or 0.0)
+        recorded_cost = float(ledger.get("cost_usd", 0.0) or 0.0)
+        if abs(expected_cost - recorded_cost) > 0.000001:
+            findings.append({
+                "code": "cost_ledger_mismatch", "severity": "warning",
+                "pass": "API Muhasebesi",
+                "message": "Pass maliyet toplamı ile oturum maliyet sayacı uyuşmuyor.",
+                "evidence": f"pass=${recorded_cost:.6f}, oturum=${expected_cost:.6f}",
+            })
+    stalled = [event for event in api.get("events") or []
+               if event.get("event") == "request_stalled"]
+    if stalled:
+        longest = max(float(event.get("duration_seconds", 0.0) or 0.0)
+                      for event in stalled)
+        findings.append({
+            "code": "slow_api_request", "severity": "warning",
+            "pass": str(stalled[-1].get("operation") or "API İşlemi"),
+            "message": "En az bir API isteği olağandışı uzun süre yanıt bekledi.",
+            "evidence": f"en uzun gözlem={_format_elapsed(longest)}",
+        })
     return findings
 
 
@@ -7779,6 +7856,11 @@ def _api_context_text(details: dict | None, include_attempt: bool = True) -> str
     return " · ".join(parts)
 
 
+def _api_stall_thresholds(elapsed: float) -> tuple[int, ...]:
+    elapsed = max(0.0, float(elapsed or 0.0))
+    return tuple(threshold for threshold in (120, 240) if elapsed >= threshold)
+
+
 def _run_summary_data(record: dict) -> dict:
     statuses = {"done": [], "error": [], "skip": [], "pending": []}
     for path, state in dict(record.get("files") or {}).items():
@@ -7797,6 +7879,8 @@ def _run_summary_data(record: dict) -> dict:
         "warnings": int(record.get("warnings", 0) or 0),
         "errors": int(record.get("errors", 0) or 0),
         "api": copy.deepcopy(record.get("api") or {}),
+        "settings_fingerprint": record.get("settings_fingerprint", ""),
+        "checkpoint_origin_run_id": record.get("checkpoint_origin_run_id", ""),
         "outputs": list(dict.fromkeys(record.get("outputs") or [])),
         "reports": list(dict.fromkeys(record.get("reports") or [])),
         "completion_markers": list(dict.fromkeys(
@@ -7815,6 +7899,8 @@ def build_run_summary_text(record: dict) -> str:
         f"Bitiş            : {data['ended_at'] or 'devam ediyor'}",
         f"Toplam süre      : {_format_elapsed(data['duration_seconds'])}",
         f"Durum            : {data['status'] or 'çalışıyor'}",
+        f"Ayar parmak izi  : {data.get('settings_fingerprint') or '-'}",
+        f"Checkpoint kökeni: {data.get('checkpoint_origin_run_id') or '-'}",
         "",
         f"Toplam dosya     : {sum(counts.values())}",
         f"Tamamlanan       : {counts['done']}",
@@ -7843,6 +7929,10 @@ def build_run_summary_text(record: dict) -> str:
             lines.append("  İşlem dağılımı :")
             for name, counts_by_operation in operations.items():
                 lines.append(f"    - {name}: {_format_api_operation(counts_by_operation)}")
+                fingerprints = list(counts_by_operation.get("request_fingerprints") or [])
+                if fingerprints:
+                    lines.append(
+                        "      İstek/prompt parmak izi: " + ", ".join(fingerprints))
         usage_by_pass = dict(api.get("usage_by_pass") or {})
         if usage_by_pass:
             lines.append("  Pass bazlı API harcaması:")
@@ -7851,8 +7941,14 @@ def build_run_summary_text(record: dict) -> str:
         checkpoint_hits = dict(api.get("checkpoint_hits_by_pass") or {})
         if checkpoint_hits:
             lines.append("  Checkpoint'ten karşılanan istekler:")
+            checkpoint_fingerprints = dict(
+                api.get("checkpoint_fingerprints_by_pass") or {})
             for name, count in checkpoint_hits.items():
-                lines.append(f"    - {name}: {int(count or 0)} istek")
+                detail = f"    - {name}: {int(count or 0)} istek"
+                fingerprints = checkpoint_fingerprints.get(name) or []
+                if fingerprints:
+                    detail += " | parmak izi " + ", ".join(fingerprints)
+                lines.append(detail)
         diagnostics = list(api.get("diagnostics") or _api_diagnostic_findings(api))
         if diagnostics:
             lines.extend(["", "API / PASS TEŞHİS BULGULARI:"])
@@ -8265,9 +8361,79 @@ def _count_text_changes(before_blocks, after_blocks) -> int:
     return sum(1 for _ in _iter_text_changes(before_blocks, after_blocks))
 
 
+_STRUCTURE_GUARDED_PASSES = frozenset({
+    "Review", "Critic", "Polish", "Native", "Condense", "QC auto", "QC",
+    "Term-Normalize", "Final-Semantic",
+})
+
+
+def _pass_structure_signature(blocks) -> dict:
+    rows = [(str(idx), str(ts), str(text)) for idx, ts, text in (blocks or [])]
+    ids = [row[0] for row in rows]
+    timestamps = [row[1] for row in rows]
+    unresolved = sum(
+        1 for _idx, _ts, text in rows
+        if str(text).startswith("[HATA") or str(text).strip() == "[ÇEVİRİ EKSİK]")
+    return {
+        "cue_count": len(rows),
+        "duplicate_ids": len(ids) - len(set(ids)),
+        "empty_texts": sum(1 for _idx, _ts, text in rows if not text.strip()),
+        "unresolved_markers": unresolved,
+        "ids_sha256": hashlib.sha256(
+            "\n".join(ids).encode("utf-8", "replace")).hexdigest(),
+        "timestamps_sha256": hashlib.sha256(
+            "\n".join(timestamps).encode("utf-8", "replace")).hexdigest(),
+        "text_sha256": hashlib.sha256(
+            "\n".join(row[2] for row in rows).encode(
+                "utf-8", "replace")).hexdigest(),
+    }
+
+
+def _pass_structure_guard_reason(label: str, before_blocks, after_blocks) -> str:
+    if str(label) not in _STRUCTURE_GUARDED_PASSES:
+        return ""
+    before = _pass_structure_signature(before_blocks)
+    after = _pass_structure_signature(after_blocks)
+    reasons = []
+    if after["cue_count"] != before["cue_count"]:
+        reasons.append("cue_count_changed")
+    if after["duplicate_ids"]:
+        reasons.append("duplicate_cue_id")
+    if after["ids_sha256"] != before["ids_sha256"]:
+        reasons.append("cue_ids_changed")
+    if after["timestamps_sha256"] != before["timestamps_sha256"]:
+        reasons.append("timestamps_changed")
+    if after["empty_texts"] > before["empty_texts"]:
+        reasons.append("new_empty_translation")
+    if after["unresolved_markers"] > before["unresolved_markers"]:
+        reasons.append("new_unresolved_marker")
+    return ",".join(reasons)
+
+
 def _record_pass_change(trace: dict, label: str, before_blocks, after_blocks,
-                        history: dict = None) -> int:
+                         history: dict = None) -> int:
     """Record how many lines a quality pass changed and return that count."""
+    before_signature = _pass_structure_signature(before_blocks)
+    proposed_changes = list(_iter_text_changes(before_blocks, after_blocks))
+    guard_reason = _pass_structure_guard_reason(label, before_blocks, after_blocks)
+    if guard_reason:
+        event = {
+            "pass": str(label), "reason": guard_reason,
+            "proposed_changes": len(proposed_changes),
+            "sample_ids": [sid for sid, _old, _new in proposed_changes[:10]],
+            "before": before_signature,
+            "rejected": _pass_structure_signature(after_blocks),
+        }
+        trace.setdefault("__guard_events__", []).append(event)
+        if isinstance(after_blocks, list):
+            after_blocks[:] = copy.deepcopy(list(before_blocks or []))
+        trace.setdefault(label, 0)
+        trace.setdefault("__pass_snapshots__", []).append({
+            "pass": str(label), "changed": 0, "rolled_back": True,
+            "reason": guard_reason, "before": before_signature,
+            "after": _pass_structure_signature(after_blocks),
+        })
+        return 0
     changes = list(_iter_text_changes(before_blocks, after_blocks))
     n = len(changes)
     trace.setdefault(label, 0)
@@ -8280,13 +8446,59 @@ def _record_pass_change(trace: dict, label: str, before_blocks, after_blocks,
                     "before": old,
                     "after": new,
                 })
+    trace.setdefault("__pass_snapshots__", []).append({
+        "pass": str(label), "changed": n, "rolled_back": False,
+        "reason": "", "before": before_signature,
+        "after": _pass_structure_signature(after_blocks),
+    })
     return n
 
 
 def _format_pass_trace(trace: dict) -> str:
     if not trace:
         return ""
-    return ", ".join(f"{name}: {count}" for name, count in trace.items() if count)
+    return ", ".join(
+        f"{name}: {count}" for name, count in trace.items()
+        if not str(name).startswith("__") and count)
+
+
+_PASS_USAGE_ALIASES = {
+    "Review": "Bağlam İncelemesi",
+    "Critic": "Critic Pass",
+    "Polish": "Polish Pass",
+    "Native": "Native Okuyucu",
+    "Condense": "Okuma Hızı Kısaltma",
+    "QC auto": "QC",
+    "QC": "QC",
+    "Term-Normalize": "Terim Normalizasyonu",
+    "Final-Semantic": "Nihai Anlam Mutabakatı",
+}
+
+
+def _pass_efficiency_rows(row: dict) -> list[dict]:
+    trace = dict(row.get("pass_trace") or {})
+    timing = dict(row.get("timing") or {})
+    usage_map = dict(timing.get("api_usage") or {})
+    result = []
+    used_stages = set()
+    for label, changed in trace.items():
+        if str(label).startswith("__") or not isinstance(changed, (int, float)):
+            continue
+        stage = _PASS_USAGE_ALIASES.get(str(label), str(label))
+        usage = dict(usage_map.get(stage) or {})
+        if stage in used_stages and stage == "QC":
+            usage = {}
+        used_stages.add(stage)
+        tokens = int(usage.get("total_tokens", 0) or 0)
+        cost = float(usage.get("cost_usd", 0.0) or 0.0)
+        changed = int(changed or 0)
+        result.append({
+            "pass": str(label), "stage": stage, "changed": changed,
+            "tokens": tokens, "cost_usd": cost,
+            "tokens_per_change": round(tokens / changed, 2) if changed else None,
+            "cost_per_change": round(cost / changed, 8) if changed else None,
+        })
+    return result
 
 
 def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
@@ -8610,10 +8822,38 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
     else:
         for cue_id, steps in history.items():
             lines.append(f"\n#{cue_id}")
+            lines.append(
+                "  Zincir: " + " -> ".join(
+                    str(step.get("pass", "?")) for step in steps))
             for step in steps:
                 lines.append(f"  [{step.get('pass', '?')}]")
                 lines.append(f"  Önce: {step.get('before', '')}")
                 lines.append(f"  Sonra: {step.get('after', '')}")
+    guard_events = (row.get("pass_trace") or {}).get("__guard_events__") or []
+    lines.extend(["", "PASS GUARD / OTOMATİK GERİ ALMA"])
+    if not guard_events:
+        lines.append("- Yapısal guard ihlali yok.")
+    else:
+        for event in guard_events:
+            lines.append(
+                f"- {event.get('pass')}: geri alındı | {event.get('reason')} | "
+                f"önerilen değişiklik={event.get('proposed_changes', 0)} | "
+                f"örnek cue={','.join(event.get('sample_ids') or []) or 'yok'}")
+    lines.extend(["", "PASS VERİMİ"])
+    efficiency = _pass_efficiency_rows(row)
+    if not efficiency:
+        lines.append("- Ölçülebilir pass kaydı yok.")
+    else:
+        for item in efficiency:
+            if item["changed"]:
+                lines.append(
+                    f"- {item['pass']}: {item['changed']} cue | {item['tokens']:,} token | "
+                    f"${item['cost_usd']:.6f} | {item['tokens_per_change']:.2f} "
+                    "token/düzeltme")
+            else:
+                lines.append(
+                    f"- {item['pass']}: düzeltme yok | {item['tokens']:,} token | "
+                    f"${item['cost_usd']:.6f}")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -8778,6 +9018,8 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     trace_sums = {}
     for r in rows:
         for name, count in (r.get("pass_trace") or {}).items():
+            if str(name).startswith("__"):
+                continue
             trace_sums[name] = trace_sums.get(name, 0) + count
     trace_total = _format_pass_trace(trace_sums)
     lines += [
@@ -12229,6 +12471,16 @@ class App(ctk.CTk):
             self._active_snapshot["resume_origin_run_id"] = origin_run_id
         diagnostic_settings = self._diagnostic_run_settings(snapshot)
         diagnostic_settings["resume_origin_run_id"] = origin_run_id
+        settings_fingerprint = _stable_fingerprint(diagnostic_settings)
+        token_lock = getattr(self, "_token_lock", threading.Lock())
+        with token_lock:
+            token_baseline = {
+                "total_tokens": int(getattr(self, "_token_total", 0) or 0),
+                "cached_tokens": int(getattr(self, "_token_cached", 0) or 0),
+                "unknown_cost_tokens": int(
+                    getattr(self, "_unknown_cost_tokens", 0) or 0),
+                "cost_usd": float(getattr(self, "_cost_total", 0.0) or 0.0),
+            }
         log_path = (
             state_path(__file__, "logs")
             / f"run_{run_id}.pid{os.getpid()}.log"
@@ -12259,6 +12511,8 @@ class App(ctk.CTk):
             "status": "çalışıyor",
             "resume": bool(resume),
             "settings": diagnostic_settings,
+            "settings_fingerprint": settings_fingerprint,
+            "checkpoint_origin_run_id": origin_run_id,
             "files": {
                 str(path): {
                     "status": "pending", "phase": "Bekliyor",
@@ -12276,6 +12530,7 @@ class App(ctk.CTk):
                 "terminal_failures": 0, "retries": 0,
                 "provider_pauses": 0, "duration_seconds": 0.0,
                 "operations": {}, "events": [], "usage_by_pass": {},
+                "token_baseline": token_baseline,
             },
             "outputs": [],
             "reports": [],
@@ -12288,6 +12543,7 @@ class App(ctk.CTk):
             self._quality_issues = {}
             self._quality_issue_seq = 0
             self._quality_checkpoint_stages_seen = set()
+            self._api_stall_notices = set()
         try:
             atomic_write_json(_active_run_state_path(), record)
         except Exception as exc:
@@ -12305,7 +12561,8 @@ class App(ctk.CTk):
         self._log(f"Çalıştırma kimliği: {run_id}", "info")
         return run_id
 
-    def _quality_checkpoint_hit(self, count: int, checkpoint_label: str = ""):
+    def _quality_checkpoint_hit(self, count: int, checkpoint_label: str = "",
+                                request_fingerprint: str = ""):
         stage = _api_operation_label(checkpoint_label)
         with self._run_record_lock:
             record = self._active_run_record
@@ -12313,6 +12570,12 @@ class App(ctk.CTk):
                 api = record.setdefault("api", {})
                 hits = api.setdefault("checkpoint_hits_by_pass", {})
                 hits[stage] = int(hits.get(stage, 0) or 0) + 1
+                if request_fingerprint:
+                    fingerprints = api.setdefault(
+                        "checkpoint_fingerprints_by_pass", {}).setdefault(stage, [])
+                    if request_fingerprint not in fingerprints:
+                        fingerprints.append(request_fingerprint)
+                        del fingerprints[:-20]
         if int(count) == 1:
             self._log(
                 "Çökme kurtarma: tamamlanmış API istekleri "
@@ -12532,6 +12795,22 @@ class App(ctk.CTk):
             else:
                 record["status"] = "tamamlandı"
             api = record.setdefault("api", {})
+            baseline = dict(api.get("token_baseline") or {})
+            token_lock = getattr(self, "_token_lock", threading.Lock())
+            with token_lock:
+                current_usage = {
+                    "total_tokens": int(getattr(self, "_token_total", 0) or 0),
+                    "cached_tokens": int(getattr(self, "_token_cached", 0) or 0),
+                    "unknown_cost_tokens": int(
+                        getattr(self, "_unknown_cost_tokens", 0) or 0),
+                    "cost_usd": float(getattr(self, "_cost_total", 0.0) or 0.0),
+                }
+            api["session_usage_delta"] = {
+                key: round(current_usage[key] - float(baseline.get(key, 0) or 0), 10)
+                if key == "cost_usd" else
+                int(current_usage[key]) - int(baseline.get(key, 0) or 0)
+                for key in current_usage
+            }
             api["diagnostics"] = _api_diagnostic_findings(api)
             snapshot = copy.deepcopy(record)
         resume_files = _interrupted_run_pending_files(snapshot)
@@ -12562,6 +12841,24 @@ class App(ctk.CTk):
             snapshot["reports"] = list(dict.fromkeys(
                 list(snapshot.get("reports") or []) +
                 [str(txt_path), str(json_path)]))
+            diagnostics = list((snapshot.get("api") or {}).get("diagnostics") or [])
+            if diagnostics:
+                evidence_path = report_dir / f"api_teshis_{snapshot['run_id']}.json"
+                evidence = {
+                    "run_id": snapshot.get("run_id"),
+                    "settings_fingerprint": snapshot.get("settings_fingerprint"),
+                    "checkpoint_origin_run_id": snapshot.get("checkpoint_origin_run_id"),
+                    "diagnostics": diagnostics,
+                    "operations": (snapshot.get("api") or {}).get("operations") or {},
+                    "usage_by_pass": (snapshot.get("api") or {}).get("usage_by_pass") or {},
+                    "session_usage_delta": (
+                        snapshot.get("api") or {}).get("session_usage_delta") or {},
+                    "events": list((snapshot.get("api") or {}).get("events") or [])[-100:],
+                    "files": snapshot.get("files") or {},
+                }
+                atomic_write_json(evidence_path, evidence)
+                snapshot["reports"].append(str(evidence_path))
+                self._log(f"API hata kanıt paketi: {evidence_path}", "info")
             atomic_write_text(
                 txt_path, build_run_summary_text(snapshot), encoding="utf-8")
             atomic_write_json(json_path, snapshot)
@@ -12666,7 +12963,8 @@ class App(ctk.CTk):
         operation = _api_operation_label(info.get("checkpoint_label", ""))
         significant = (
             event in {"request_start", "request_success", "request_failure",
-                      "circuit_open", "circuit_reopen", "circuit_recovered"}
+                      "circuit_open", "circuit_reopen", "circuit_recovered",
+                      "request_stalled"}
             or event.startswith("retry_start_")
             or event.startswith("retry_success_")
             or event in {"repair_retry_start", "repair_retry_end"}
@@ -12686,7 +12984,22 @@ class App(ctk.CTk):
                 "attempts": 0, "successes": 0, "failures": 0, "retries": 0,
                 "terminal_failures": 0, "provider_pauses": 0,
                 "duration_seconds": 0.0,
+                "latencies": [], "models": [], "providers": [],
+                "request_fingerprints": [],
             })
+            for key in ("attempts", "successes", "failures", "retries",
+                        "terminal_failures", "provider_pauses"):
+                per_operation.setdefault(key, 0)
+            per_operation.setdefault("duration_seconds", 0.0)
+            for key in ("latencies", "models", "providers", "request_fingerprints"):
+                per_operation.setdefault(key, [])
+            for key, value in (
+                    ("models", info.get("model")),
+                    ("providers", info.get("provider")),
+                    ("request_fingerprints", info.get("request_fingerprint"))):
+                if value and str(value) not in per_operation[key]:
+                    per_operation[key].append(str(value))
+                    del per_operation[key][:-20]
             if event == "request_start":
                 api["attempts"] += 1
                 per_operation["attempts"] += 1
@@ -12696,6 +13009,9 @@ class App(ctk.CTk):
                 per_operation["duration_seconds"] = round(
                     float(per_operation.get("duration_seconds") or 0.0)
                     + float(info.get("duration_seconds") or 0.0), 3)
+                per_operation["latencies"].append(
+                    float(info.get("duration_seconds") or 0.0))
+                del per_operation["latencies"][:-500]
                 api["duration_seconds"] = round(
                     float(api.get("duration_seconds") or 0.0)
                     + float(info.get("duration_seconds") or 0.0), 3)
@@ -12705,6 +13021,9 @@ class App(ctk.CTk):
                 per_operation["duration_seconds"] = round(
                     float(per_operation.get("duration_seconds") or 0.0)
                     + float(info.get("duration_seconds") or 0.0), 3)
+                per_operation["latencies"].append(
+                    float(info.get("duration_seconds") or 0.0))
+                del per_operation["latencies"][:-500]
                 api["duration_seconds"] = round(
                     float(api.get("duration_seconds") or 0.0)
                     + float(info.get("duration_seconds") or 0.0), 3)
@@ -12730,6 +13049,10 @@ class App(ctk.CTk):
                     "status_code": info.get("status_code"),
                     "reason": str(info.get("reason") or ""),
                     "request_id": str(info.get("request_id") or ""),
+                    "request_fingerprint": str(
+                        info.get("request_fingerprint") or ""),
+                    "duration_seconds": float(
+                        info.get("duration_seconds") or 0.0),
                 })
                 del api["events"][:-500]
             return copy.deepcopy(api)
@@ -12847,6 +13170,24 @@ class App(ctk.CTk):
                 f"{f' ({context})' if context else ''}; {waiting} aktif")
             return
         if event == "request_tick":
+            fingerprint = str(info.get("request_fingerprint") or "")
+            stall_key = fingerprint or "|".join((
+                operation, str(info.get("model") or ""),
+                str(info.get("attempt") or "")))
+            seen = self.__dict__.setdefault("_api_stall_notices", set())
+            for threshold in _api_stall_thresholds(remaining):
+                marker = (stall_key, threshold)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                stall_info = dict(info)
+                stall_info["duration_seconds"] = float(remaining or 0.0)
+                if callable(recorder):
+                    recorder("request_stalled", remaining, waiting, stall_info)
+                self._log(
+                    f"{operation}: API isteği {_format_elapsed(remaining)} yanıt bekledi; "
+                    "istek otomatik iptal edilmedi, izleme sürüyor.",
+                    "warn" if threshold >= 240 else "info")
             self._set_status(
                 f"{operation}: API yanıtı {remaining} sn bekleniyor"
                 f"{f' ({context})' if context else ''}; {waiting} aktif istek")
@@ -20192,6 +20533,26 @@ class App(ctk.CTk):
                     detail_path, _file_process_report_text(row, run_id),
                     encoding="utf-8")
                 report_paths.append(detail_path)
+            guard_rows = []
+            for row in report_rows:
+                events = (row.get("pass_trace") or {}).get("__guard_events__") or []
+                if events:
+                    guard_rows.append({
+                        "name": row.get("name"),
+                        "source_path": row.get("source_path"),
+                        "output_path": row.get("output_path"),
+                        "guard_events": events,
+                        "pass_history": row.get("pass_history") or {},
+                    })
+            if guard_rows:
+                guard_path = rep_dir / f"pass_guard_kanit_{run_id or 'son'}.json"
+                atomic_write_json(guard_path, {
+                    "run_id": run_id,
+                    "created_at": _timing_iso(time.time()),
+                    "files": guard_rows,
+                })
+                report_paths.append(guard_path)
+                self._log(f"Pass guard kanıt paketi: {guard_path}", "warn")
             self._record_quality_report(report_rows, report_paths)
             self._log(f"Kalite raporu: {p}", "ok")
             return p

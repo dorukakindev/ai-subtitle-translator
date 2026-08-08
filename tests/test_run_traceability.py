@@ -102,6 +102,25 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("Critic Pass: 2 istek | 1 başarılı | 1 hata | 1 tekrar", text)
         self.assertIn("başarı %50.0", text)
 
+    def test_api_operation_renders_latency_distribution_and_fingerprint(self):
+        record = {
+            "run_id": "api-run", "files": {},
+            "settings_fingerprint": "settings123",
+            "checkpoint_origin_run_id": "origin123",
+            "api": {"operations": {"Native Okuyucu": {
+                "attempts": 3, "successes": 3, "failures": 0,
+                "latencies": [1.0, 2.0, 9.0],
+                "request_fingerprints": ["prompt123"],
+            }}},
+        }
+        text = gui.build_run_summary_text(record)
+        self.assertIn("p50 2.0 sn", text)
+        self.assertIn("p95 9.0 sn", text)
+        self.assertIn("max 9.0 sn", text)
+        self.assertIn("İstek/prompt parmak izi: prompt123", text)
+        self.assertIn("Ayar parmak izi  : settings123", text)
+        self.assertIn("Checkpoint kökeni: origin123", text)
+
     def test_api_diagnostics_flag_only_actionable_accounting_and_retry_anomalies(self):
         findings = gui._api_diagnostic_findings({
             "operations": {
@@ -154,6 +173,46 @@ class RunTraceabilityTest(unittest.TestCase):
             },
         })
         self.assertEqual(findings, [])
+
+    def test_api_diagnostics_reconcile_pass_ledger_and_stall_events(self):
+        findings = gui._api_diagnostic_findings({
+            "usage_by_pass": {"Polish Pass": {
+                "total_tokens": 100, "cached_tokens": 10, "cost_usd": 0.01,
+            }},
+            "session_usage_delta": {
+                "total_tokens": 120, "cached_tokens": 10,
+                "unknown_cost_tokens": 0, "cost_usd": 0.02,
+            },
+            "events": [{
+                "event": "request_stalled", "operation": "Polish Pass",
+                "duration_seconds": 240,
+            }],
+        })
+        codes = {item["code"] for item in findings}
+        self.assertIn("usage_ledger_mismatch", codes)
+        self.assertIn("cost_ledger_mismatch", codes)
+        self.assertIn("slow_api_request", codes)
+
+    def test_api_event_upgrades_legacy_operation_shape(self):
+        app = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record={"api": {"operations": {
+                "Polish Pass": {"attempts": 1},
+            }}},
+        )
+        summary = gui.App._record_api_event(app, "request_success", 0, 0, {
+            "checkpoint_label": "polish", "duration_seconds": 3.0,
+            "request_fingerprint": "fp1", "model": "gpt-5.4",
+        })
+        operation = summary["operations"]["Polish Pass"]
+        self.assertEqual(operation["latencies"], [3.0])
+        self.assertEqual(operation["request_fingerprints"], ["fp1"])
+        self.assertEqual(operation["models"], ["gpt-5.4"])
+
+    def test_stall_thresholds_are_bounded_and_monotonic(self):
+        self.assertEqual(gui._api_stall_thresholds(119), ())
+        self.assertEqual(gui._api_stall_thresholds(120), (120,))
+        self.assertEqual(gui._api_stall_thresholds(241), (120, 240))
 
     def test_record_api_event_tracks_terminal_failure_without_storing_error_body(self):
         app = SimpleNamespace(
