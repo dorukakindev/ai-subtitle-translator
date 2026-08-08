@@ -77,7 +77,7 @@ _SDH_KEYWORDS = {
     "door", "knock", "knocks", "phone", "ringing", "beeping", "alarm",
     "thunder", "thundering", "thunderclap", "explosion", "gunshot", "siren", "engine", "crowd",
     "noise", "chatter", "conversation", "inaudible", "indistinct", "overlapping",
-    "continues", "distant", "nearby",
+    "continues", "distant", "nearby", "indistinctly",
     # Turkish captions
     "alkis", "alkislar", "alkisliyor", "tezahurat", "yuhalama",
     "guluyor", "gulusme", "gulusmeler", "kahkaha", "kahkahalar",
@@ -241,7 +241,8 @@ _SDH_ACTION_VERBS = {
     "whoops", "roars", "splashing", "calls", "swelling", "plays",
     "turns", "rewinds", "whirs",
     "laughs", "scoffs", "clears", "sniffles", "sobs", "chiming",
-    "trilling", "speaking", "konusur", "konusuyor", "kapanir", "kapaniyor",
+    "trilling", "speaking", "speaks", "conversing", "konusur", "konusuyor",
+    "kapanir", "kapaniyor",
     "thudding", "clattering", "pattering", "smacking", "sloshing",
     "squawking", "croaking", "rustling", "neighing", "vocalizing",
     "clanking", "crackling", "rasping", "retching", "squelching",

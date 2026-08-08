@@ -448,6 +448,26 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["extra_dialogue_ids"], [])
 
+    def test_delivery_audit_counts_music_stars_as_expected_removal(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n**\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\n[ Speaks indistinctly ]\n\n"
+                "3\n00:00:03,000 --> 00:00:04,000\nHello\n",
+                encoding="utf-8")
+            output.write_text(
+                "3\n00:00:03,000 --> 00:00:04,000\nMerhaba\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English")
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
+
     def test_file_process_report_contains_full_pass_history(self):
         row = {
             "name": "episode.srt",

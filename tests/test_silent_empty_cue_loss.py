@@ -310,6 +310,20 @@ class RepairSyncDropsSfxOnlyTest(unittest.TestCase):
         self.assertEqual([str(block[0]) for block in out], ["1"])
         self.assertEqual(inserted, 0)
 
+    def test_final_guard_does_not_reinsert_music_stars_or_indistinct_speech(self):
+        source_cues = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "**"),
+            ("2", "00:00:02,000 --> 00:00:03,000", "[ Speaks indistinctly ]"),
+            ("3", "00:00:03,000 --> 00:00:04,000", "[ Siren wailing ]\n**"),
+            ("4", "00:00:04,000 --> 00:00:05,000", "Real dialogue."),
+        ]
+
+        out, inserted = gui._reinsert_missing_dialogue_markers(
+            [("4", source_cues[3][1], "Gercek diyalog.")], source_cues)
+
+        self.assertEqual([str(block[0]) for block in out], ["4"])
+        self.assertEqual(inserted, 0)
+
     def test_no_hata_cues_returns_blocks_unchanged(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Tamamdır.")]
         out, repaired = gui._repair_untranslated_sync(

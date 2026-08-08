@@ -2681,7 +2681,9 @@ def _is_delivery_sdh_only(text: str) -> bool:
 
 def _source_cue_is_delivery_removable(text: str) -> bool:
     value = str(text or "")
-    if (_delivery_source_is_all_credit(value)
+    if (_is_delivery_sdh_only(value)
+            or _src_is_sdh_only(value)
+            or _delivery_source_is_all_credit(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
             or _DELIVERY_BARE_SOURCE_SDH_RE.fullmatch(
                 sdh_cleaner._ascii_fold(value).strip())):
@@ -4109,6 +4111,15 @@ def _src_is_sdh_only(src_text: str) -> bool:
     if sdh_cleaner.src_is_sfx_only(src_text):
         return True
     value = re.sub(r'\{\\[^}]*\}', '', str(src_text or '')).strip()
+    lines = [
+        line for line in value.splitlines()
+        if line.strip() and not _is_delivery_sdh_only(line)
+    ]
+    if not lines:
+        return bool(value)
+    value = "\n".join(lines)
+    if sdh_cleaner.src_is_sfx_only(value):
+        return True
     value = re.sub(r'(?m)^\s*[-–—]\s*(?=[(\[])', '', value).strip()
     value = re.sub(
         r"^(?:[A-Z][A-Za-z0-9 .'’\-]{0,30}:\s*)(?=[(\[])",
@@ -4830,7 +4841,7 @@ def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
         source_ids.add(sid)
         if sid in existing:
             ordered.append(existing[sid])
-        elif src.strip() and not _src_is_sdh_only(src):
+        elif src.strip() and not _source_cue_is_delivery_removable(src):
             ordered.append((idx, ts, "[HATA]"))
             inserted += 1
     ordered.extend(block for block in out if str(block[0]) not in source_ids)
