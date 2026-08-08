@@ -5542,6 +5542,19 @@ _GARBLE_BACK_VOWELS = set("aıou")
 _GARBLE_FRONT_VOWELS = set("eiöü")
 # R6: İngilizce sıra sayısı kalıntısı (ör. "19th century").
 _GARBLE_EN_ORDINAL_RE = re.compile(r'\b\d+(?:st|nd|rd|th)\b', re.IGNORECASE)
+_KNOWN_MODEL_CORRUPTION_RE = re.compile(
+    r"\b(?:thek|iyeleri|mekişi|gerten|ekaranlıkta|balonjoje|ezehri)\b",
+    re.IGNORECASE,
+)
+_TRANSLATABLE_EN_RESIDUE_PATTERNS = (
+    re.compile(r"\bpsychedel(?:ic|ik)s?\b", re.IGNORECASE),
+    re.compile(r"\baqueous\b", re.IGNORECASE),
+    re.compile(r"\bmercury\s+nitrate\b", re.IGNORECASE),
+    re.compile(r"\badducts?\b", re.IGNORECASE),
+    re.compile(r"\bentourage\s+effect\b", re.IGNORECASE),
+    re.compile(r"\bbatch\s+reactor\b", re.IGNORECASE),
+    re.compile(r"\b(?:God|Jesus|Christ)\b", re.IGNORECASE),
+)
 
 
 _GARBLE_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
@@ -5642,7 +5655,32 @@ def find_garble_tokens(text) -> list:
     for m in _GARBLE_EN_ORDINAL_RE.finditer(s):
         found.append((m.group(0), "R6_english_ordinal"))
 
+    for match in _KNOWN_MODEL_CORRUPTION_RE.finditer(s):
+        found.append((match.group(0), "R7_model_corruption"))
+
     return found
+
+
+def find_translatable_english_residue(source_text, target_text,
+                                      locked_terms: dict | None = None) -> list[str]:
+    """Kaynakta bulunan ve Türkçeye çevrilmeden hedefte kalan kesin terimleri bul."""
+    source = str(source_text or "")
+    target = str(target_text or "")
+    if not source or not target:
+        return []
+    protected = set()
+    for src, tgt in dict(locked_terms or {}).items():
+        if str(src).strip().casefold() == str(tgt).strip().casefold():
+            protected.add(str(src).strip().casefold())
+    found = []
+    for pattern in _TRANSLATABLE_EN_RESIDUE_PATTERNS:
+        source_hits = {match.group(0).casefold() for match in pattern.finditer(source)}
+        for match in pattern.finditer(target):
+            value = match.group(0)
+            folded = value.casefold()
+            if source_hits and folded not in protected:
+                found.append(value)
+    return list(dict.fromkeys(found))
 
 # On-screen text detection: all-caps short lines, date/location patterns, standalone labels.
 _OST_DETECT_RE = re.compile(
@@ -7157,6 +7195,12 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             tokens = ",".join(dict.fromkeys(tok for tok, _rule in garble_hits))
             reasons.append(f"GARBLE_TOKEN({tokens})")
 
+        residue_hits = find_translatable_english_residue(
+            orig_clean_dict.get(str(idx), ""), text, glossary)
+        if residue_hits:
+            reasons.append(
+                "TRANSLATABLE_ENGLISH_RESIDUE(" + ",".join(residue_hits) + ")")
+
         # Single letter target: source has meaning but target is just "B" etc.
         stripped_tr = text.strip().strip(".,;:!?")
         if len(stripped_tr) == 1 and stripped_tr.isalpha():
@@ -8370,9 +8414,7 @@ _POLISH_ENGLISH_BACKSLIDE_WORD_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-_POLISH_MODEL_CORRUPTION_RE = re.compile(
-    r"\b(?:thek|Thek|THEK|iyeleri|İyeleri|IYELERI|mekişi|MEKİŞİ)\b",
-)
+_POLISH_MODEL_CORRUPTION_RE = _KNOWN_MODEL_CORRUPTION_RE
 _POLISH_SPEAKER_LABEL_RE = re.compile(
     r"(?m)^\s*[-\u2013\u2014]?\s*[\w ._'/.-]{2,30}:\s*",
     re.UNICODE,
@@ -8500,6 +8542,8 @@ def polish_risk_hints(source_text: str = "", translated_text: str = "") -> list[
     if len(tr.replace("\n", " ")) >= 42:
         hints.append("long_or_fast_line")
     if _POLISH_ENGLISH_RESIDUE_RE.search(tr) or _english_backslide_score(tr) >= 3:
+        hints.append("english_residue")
+    if find_translatable_english_residue(src, tr):
         hints.append("english_residue")
     if any(trap in tr_l for trap in _POLISH_LITERAL_TRAPS):
         hints.append("literal_or_stilted_turkish")

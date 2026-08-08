@@ -123,6 +123,16 @@ class PolishCandidateSafetyTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "model_corruption")
 
+    def test_rejects_hamilton_model_corruption_words(self):
+        for old, candidate in (
+            ("gerçekten çok kötü hissettim", "gerten çok kötü hissettim"),
+            ("yer altında karanlıkta", "yer altında ekaranlıkta"),
+        ):
+            with self.subTest(candidate=candidate):
+                ok, reason = ht.validate_polish_candidate(old, candidate)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "model_corruption")
+
     def test_rejects_new_turkic_target_drift(self):
         ok, reason = ht.validate_polish_candidate(
             "Tatillere yakın diye,",

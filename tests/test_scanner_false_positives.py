@@ -3,7 +3,9 @@ scan_translation_quality: 'çevrilmemiş görünüyor' yanlış-pozitiflerini az
 Özel ad öbekleri ve SDH/efekt satırları kaynakla aynı kalması NORMAL — bunları
 işaretlememeli; gerçekten çevrilmemiş normal cümleleri yine işaretlemeli.
 """
+import tempfile
 import unittest
+from pathlib import Path
 
 import subtitle_translator_gui as gui
 
@@ -148,6 +150,23 @@ class ScannerFalsePositiveTest(unittest.TestCase):
         src = {"1": "This complete sentence contains important information."}
         blk = [("1", "00:00:01,000 --> 00:00:03,000", "Bu")]
         self.assertEqual(_scan(src, blk), 1)
+
+    def test_source_aware_residue_uses_timestamp_when_ids_shift(self):
+        source = (
+            "765\n00:37:54,576 --> 00:37:56,099\n"
+            "The aluminum is amalgamated with aqueous mercury nitrate.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "source.srt"
+            path.write_text(source, encoding="utf-8")
+            warnings = gui.scan_translation_quality(
+                str(path),
+                [("766", "00:37:54,576 --> 00:37:56,099",
+                  "Alüminyum aqueous mercury nitrate ile amalgamlanır.")],
+                src_clean_map={"765": "The aluminum is amalgamated with aqueous mercury nitrate."},
+                source_language="English",
+            )
+        self.assertGreaterEqual(warnings, 1)
 
 
 if __name__ == "__main__":

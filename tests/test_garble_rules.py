@@ -173,5 +173,65 @@ class CleanSentenceTest(unittest.TestCase):
         self.assertEqual(ht.find_garble_tokens("   "), [])
 
 
+class TranslatableEnglishResidueTest(unittest.TestCase):
+    def test_real_hamilton_residues_are_flagged(self):
+        cases = (
+            ("a psychedelic toad", "psychedelic bir kurbağa", "psychedelic"),
+            ("aqueous mercury nitrate", "aqueous mercury nitrate ile", "aqueous"),
+            ("God can take a man", "God bir insanı kurtarabilir", "God"),
+            ("Just try Jesus", "Bir Jesus'u dene", "Jesus"),
+            ("a craving for Christ", "Christ için özlem", "Christ"),
+            ("an insoluble adduct", "çözünmeyen bir adduct", "adduct"),
+            ("an entourage effect", "bir entourage effect", "entourage effect"),
+            ("a batch reactor", "bir batch reactor", "batch reactor"),
+            ("a psychedelic researcher", "bir psychedelik araştırmacısı", "psychedelik"),
+        )
+        for source, target, expected in cases:
+            with self.subTest(target=target):
+                self.assertIn(
+                    expected,
+                    ht.find_translatable_english_residue(source, target),
+                )
+
+    def test_unrelated_names_are_not_flagged(self):
+        self.assertEqual(
+            ht.find_translatable_english_residue(
+                "Uncle Fester founded Venom Press.",
+                "Uncle Fester, Venom Press'i kurdu.",
+            ),
+            [],
+        )
+
+    def test_explicit_identity_glossary_protects_term(self):
+        self.assertEqual(
+            ht.find_translatable_english_residue(
+                "Jesus spoke.", "Jesus konuştu.", {"Jesus": "Jesus"}
+            ),
+            [],
+        )
+
+    def test_run_validators_routes_residue_to_quality_pass(self):
+        class Cue:
+            index = "765"
+            text = "The aluminum is amalgamated with aqueous mercury nitrate."
+
+        hits = ht.run_validators(
+            [("765", "00:00:01,000 --> 00:00:03,000",
+              "Alüminyum aqueous mercury nitrate ile amalgamlanır.")],
+            cues=[Cue()],
+        )
+        self.assertTrue(any("TRANSLATABLE_ENGLISH_RESIDUE" in row[3] for row in hits))
+
+
+class KnownModelCorruptionTest(unittest.TestCase):
+    def test_delivered_hamilton_corruptions_are_flagged(self):
+        for token in ("gerten", "ekaranlıkta", "balonjoje", "ezehri"):
+            with self.subTest(token=token):
+                self.assertIn(
+                    (token, "R7_model_corruption"),
+                    ht.find_garble_tokens(f"Bu {token} bozuk."),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

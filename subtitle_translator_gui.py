@@ -7005,6 +7005,13 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 orig[str(idx)] = clean
         except Exception:
             return 0
+    orig_by_timestamp = {}
+    try:
+        for _src_idx, src_ts, src_text in parse_subtitle(fp):
+            orig_by_timestamp[str(src_ts)] = re.sub(
+                r'</?[a-zA-Z][^>]*>', '', str(src_text or '')).strip()
+    except Exception:
+        pass
 
     # Common short loanwords that look "same" but are valid translations
     _LOANWORDS = frozenset([
@@ -7183,8 +7190,11 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
             if str(idx) in _untranslated_ids:
                 continue  # zaten 'çevrilmemiş' işaretli — ayrıca token-token garble sayma
             hits = ht.find_garble_tokens(tr_text)
+            source_text = str(
+                orig_by_timestamp.get(str(ts), orig.get(str(idx), "")) or "")
             source_words = {
-                word.casefold() for word in re.findall(r"[^\W\d_]+", orig.get(str(idx), ""), re.UNICODE)
+                word.casefold() for word in re.findall(
+                    r"[^\W\d_]+", source_text, re.UNICODE)
             }
             hits = [
                 hit for hit in hits
@@ -7196,6 +7206,12 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
             ]
             if hits:
                 garble_lines.append((str(idx), hits[0][0]))
+                warnings += 1
+                continue
+            residue_hits = ht.find_translatable_english_residue(
+                source_text, tr_text, locked_terms)
+            if residue_hits:
+                garble_lines.append((str(idx), residue_hits[0]))
                 warnings += 1
     except Exception:
         garble_lines = []
