@@ -93,6 +93,18 @@ class MissingDialogueTest(unittest.TestCase):
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "missing_dialogue" for f in findings))
 
+    def test_multiple_dash_prefixed_sdh_labels_are_not_missing_dialogue(self):
+        blocks = _b((376, "Onceki."), (378, "Sonraki."))
+        src = _s(**{
+            "376": "Previous.",
+            "377": "-[Ringing bell]\n-[Spitting]",
+            "378": "Next.",
+        })
+
+        findings = gui.detect_alignment_issues(blocks, src)
+
+        self.assertFalse(any(f["type"] == "missing_dialogue" for f in findings))
+
     def test_named_speaker_plus_sfx_absent_is_not_flagged(self):
         blocks = _b((82, "Buradayım."), (84, "Devam edelim."))
         src = _s(**{

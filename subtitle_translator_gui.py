@@ -4111,10 +4111,13 @@ def _src_is_sdh_only(src_text: str) -> bool:
     if sdh_cleaner.src_is_sfx_only(src_text):
         return True
     value = re.sub(r'\{\\[^}]*\}', '', str(src_text or '')).strip()
-    lines = [
-        line for line in value.splitlines()
-        if line.strip() and not _is_delivery_sdh_only(line)
-    ]
+    lines = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        ornament_free = re.sub(r"^[*â™ªâ™«_\s]+|[*â™ªâ™«_\s]+$", "", stripped)
+        if (stripped and not _is_delivery_sdh_only(stripped)
+                and not _is_delivery_sdh_only(ornament_free)):
+            lines.append(line)
     if not lines:
         return bool(value)
     value = "\n".join(lines)
@@ -4194,6 +4197,22 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
     if any(token in verb_like for token in folded):
         return len(tokens) > 4 and bool(re.search(r"[,\n]", text))
     return True
+
+
+def _src_is_scientific_name(src_text: str) -> bool:
+    text = _clean_src(str(src_text or "")).strip()
+    text = re.sub(r"[.!?…,:;]+$", "", text).strip()
+    match = re.fullmatch(
+        r"(?:[A-Z][a-z]{2,}|[A-Z]\.)\s+([a-z][a-z-]{2,})"
+        r"(?:\s+([a-z][a-z-]{2,}))?",
+        text,
+    )
+    if not match:
+        return False
+    latin_suffix = re.compile(
+        r"(?:a|ae|alis|aris|ata|atum|atus|ella|ense|ensis|ica|icum|icus|"
+        r"ii|is|oides|osa|osum|osus|um|us)$")
+    return all(latin_suffix.search(token) for token in match.groups() if token)
 
 
 def _repair_identity_text(text: str) -> str:
@@ -4289,7 +4308,8 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
             if _src_all_caps:
                 if re.search(r"[!?]", str(src_text)):
                     return "identical_all_caps_dialogue"
-            elif not _src_is_proper_name_phrase(src_text):
+            elif (not _src_is_proper_name_phrase(src_text)
+                  and not _src_is_scientific_name(src_text)):
                 return "identical_source"
     src_words = src_text.split()
     if len(src_words) <= 2:
@@ -6005,10 +6025,13 @@ def _content_shift_regions(seq: list, src_map: dict, window: int = 6,
 def _align_is_sfx_only(text: str) -> bool:
     """Kaynak satır yalnızca ses efekti / müzik etiketi mi ([...], (...), ♪).
     SDH temizliğiyle SİLİNMESİ meşru olan cue'ları, gerçek diyalogdan ayırır."""
+    if _source_cue_is_delivery_removable(text):
+        return True
     t = _align_visible(text)
     t = re.sub(r'^(?:(?:&gt;|>){1,2})\s*', '', t)
     return bool(t) and (
-        bool(_ALIGN_SDH_ONLY_RE.match(t)) or _src_is_sdh_only(t)
+        bool(_ALIGN_SDH_ONLY_RE.match(t))
+        or _source_cue_is_delivery_removable(t)
     )
 
 

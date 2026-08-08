@@ -81,6 +81,21 @@ class LicensedIdentityRepairTest(unittest.TestCase):
             "Please come here.", "Please come here.",
             source_language="English"))
 
+    def test_scientific_binomial_identity_is_not_retried(self):
+        source = "Macrolepiota procera."
+        blocks = [("321", _TS, source)]
+
+        with patch("subtitle_translator_gui._safe_chat_create") as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, {"321": source}, object(), "English", "Turkish")
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(repaired, 0)
+        create.assert_not_called()
+        self.assertEqual(gui._partial_missing_translation_ids(
+            blocks, {"321": source}, [("321", _TS, source)],
+            source_language="English"), [])
+
     def test_greetings_and_all_caps_dialogue_are_not_name_exempt(self):
         for source in (
                 "Good Morning", "Happy Birthday", "Merry Christmas",

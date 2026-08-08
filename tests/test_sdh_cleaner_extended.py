@@ -31,6 +31,17 @@ class SdhKeywordCoverageTest(unittest.TestCase):
         self.assertTrue(is_sdh_descriptor("whistle sound", bare_text=False))
         self.assertFalse(is_sdh_descriptor("sound judgment", bare_text=False))
 
+    def test_hamilton_sdh_descriptors_are_recognized(self):
+        descriptors = [
+            "Elk bugles", "Aircraft passing overhead", "Wolf howls",
+            "Chorale climbs", "Grunt-spits", "Liquid sloshes",
+            "Performer exclaims in Spanish", "Squeaking sharply",
+            "Blade grinds", "Blows softly", "speaks foreign language",
+        ]
+        for descriptor in descriptors:
+            with self.subTest(descriptor=descriptor):
+                self.assertTrue(is_sdh_descriptor(descriptor, bare_text=False))
+
 
 
     def test_speaker_words_expanded(self):

@@ -455,10 +455,13 @@ class BuildQualityReportTextTest(unittest.TestCase):
             source.write_text(
                 "1\n00:00:01,000 --> 00:00:02,000\n**\n\n"
                 "2\n00:00:02,000 --> 00:00:03,000\n[ Speaks indistinctly ]\n\n"
-                "3\n00:00:03,000 --> 00:00:04,000\nHello\n",
+                "3\n00:00:03,000 --> 00:00:04,000\n* [ Chanting ] *\n\n"
+                "4\n00:00:04,000 --> 00:00:05,000\n[ Suspenseful chord strikes ]\n\n"
+                "5\n00:00:05,000 --> 00:00:06,000\n* [ Rattling ]\n\n"
+                "6\n00:00:06,000 --> 00:00:07,000\nHello\n",
                 encoding="utf-8")
             output.write_text(
-                "3\n00:00:03,000 --> 00:00:04,000\nMerhaba\n",
+                "6\n00:00:06,000 --> 00:00:07,000\nMerhaba\n",
                 encoding="utf-8")
 
             audit = gui._subtitle_delivery_audit(
@@ -466,7 +469,7 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
         self.assertEqual(audit["status"], "ok")
         self.assertEqual(audit["missing_dialogue_ids"], [])
-        self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2", "3", "4", "5"])
 
     def test_file_process_report_contains_full_pass_history(self):
         row = {

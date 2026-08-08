@@ -77,7 +77,8 @@ _SDH_KEYWORDS = {
     "door", "knock", "knocks", "phone", "ringing", "beeping", "alarm",
     "thunder", "thundering", "thunderclap", "explosion", "gunshot", "siren", "engine", "crowd",
     "noise", "chatter", "conversation", "inaudible", "indistinct", "overlapping",
-    "continues", "distant", "nearby", "indistinctly",
+    "chord",
+    "continues", "distant", "nearby", "indistinctly", "overhead", "honk",
     # Turkish captions
     "alkis", "alkislar", "alkisliyor", "tezahurat", "yuhalama",
     "guluyor", "gulusme", "gulusmeler", "kahkaha", "kahkahalar",
@@ -239,7 +240,9 @@ _SDH_ACTION_VERBS = {
     "barking", "howling", "growling", "meow", "roaring", "chirping", "knocks", "knocking",
     "jingling", "clamoring", "chanting", "yell", "yells", "whoop",
     "whoops", "roars", "splashing", "calls", "swelling", "plays",
-    "turns", "rewinds", "whirs",
+    "turns", "rewinds", "whirs", "strikes", "rattling", "bugles",
+    "passing", "howls", "climbs", "spits", "sloshes", "exclaiming",
+    "exclaims", "squeaking", "grinds", "blows", "continue",
     "laughs", "scoffs", "clears", "sniffles", "sobs", "chiming",
     "trilling", "speaking", "speaks", "conversing", "konusur", "konusuyor",
     "kapanir", "kapaniyor",
@@ -275,7 +278,7 @@ _KNOWN_LANGUAGES = {
     "greek", "dutch", "swedish", "polish", "hebrew", "vietnamese", "thai",
     "tagalog", "swahili", "persian", "danish", "norwegian", "finnish", "czech",
     "hungarian", "romanian", "ukrainian", "cantonese", "mandarin",
-    "urdu", "punjabi", "bengali", "tamil", "telugu",
+    "urdu", "punjabi", "bengali", "tamil", "telugu", "foreign",
 }
 
 
@@ -314,6 +317,9 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
 
     # Language descriptor check: [speaking French], [speaks Latin], [in Spanish]
     if len(words) >= 2 and words[0] in ("speaking", "speaks", "in") and words[1] in _KNOWN_LANGUAGES:
+        return True
+    if ("in" in words and words[-1] in _KNOWN_LANGUAGES
+            and any(word in _SDH_ACTION_VERBS for word in words)):
         return True
 
     words_no_digits = [w for w in words if not w.isdigit()]
