@@ -195,6 +195,39 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("Yardımcı Analiz", detail)
         self.assertIn("Ana Çeviri", detail)
 
+    def test_stage_timing_captures_nested_pass_api_usage_deltas(self):
+        item = {
+            "status": "pending", "phase": "Bekliyor",
+            "queued_at": gui._timing_iso(90), "queued_epoch": 90.0,
+            "stage_timings": [], "api_usage": {},
+        }
+        gui._advance_file_timing(
+            item, "Nihai Anlam Mutabakatı", "running", now=100)
+        item["api_usage"] = {
+            "Geri Çeviri": {
+                "total_tokens": 1200, "prompt_tokens": 900,
+                "completion_tokens": 300, "cached_tokens": 100,
+                "cost_usd": 0.012, "models": ["gpt-5.4"],
+            },
+            "Nihai Anlam Mutabakatı": {
+                "total_tokens": 800, "prompt_tokens": 600,
+                "completion_tokens": 200, "cached_tokens": 0,
+                "cost_usd": 0.008, "models": ["gpt-5.4"],
+            },
+        }
+        gui._advance_file_timing(item, "Dosya Yazımı", "running", now=130)
+
+        stage = item["stage_timings"][0]
+        self.assertEqual(
+            set(stage["api_usage_by_pass"]),
+            {"Geri Çeviri", "Nihai Anlam Mutabakatı"})
+        text = gui._file_process_report_text({
+            "name": "episode.srt", "timing": item, "feature_audit": [],
+        })
+        self.assertIn("Geri Çeviri: 1,200 token", text)
+        self.assertIn("giriş 900", text)
+        self.assertIn("~$0.0120", text)
+
     def test_phase_aliases_do_not_split_semantic_or_mislabel_tm(self):
         self.assertEqual(
             gui._timing_phase_label("Nihai Mutabakat"),
@@ -237,6 +270,38 @@ class RunTraceabilityTest(unittest.TestCase):
         messages = [call.args[0] for call in stub._log.call_args_list]
         self.assertTrue(any("Aşama tamamlandı" in msg for msg in messages))
         self.assertTrue(any("toplam 1 dk 30 sn" in msg for msg in messages))
+
+    def test_file_status_logs_api_spend_when_stage_closes(self):
+        record = {
+            "files": {"episode.srt": {
+                "status": "pending", "phase": "Bekliyor",
+                "queued_at": gui._timing_iso(90), "queued_epoch": 90.0,
+                "stage_timings": [], "api_usage": {},
+            }}
+        }
+        stub = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record, _log=MagicMock(),
+        )
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(gui, "_active_run_state_path",
+                             return_value=Path(td) / "active.json"), \
+                patch.object(gui.time, "time", side_effect=[100, 130]):
+            gui.App._record_file_status(
+                stub, "episode.srt", "Critic Pass", "running")
+            record["files"]["episode.srt"]["api_usage"] = {
+                "Critic Pass": {
+                    "total_tokens": 2500, "cached_tokens": 500,
+                    "cost_usd": 0.025, "models": ["gpt-5.4"],
+                }
+            }
+            gui.App._record_file_status(
+                stub, "episode.srt", "Polish Pass", "running")
+
+        messages = [call.args[0] for call in stub._log.call_args_list]
+        self.assertTrue(any(
+            "Critic Pass: 2,500 token" in msg and "~$0.0250" in msg
+            for msg in messages))
 
     def test_all_translation_flows_feed_file_timing(self):
         expected = {

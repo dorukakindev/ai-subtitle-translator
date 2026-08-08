@@ -2464,14 +2464,35 @@ def _get_usage_details(usage):
     return total, cached
 
 
+def _get_usage_breakdown(usage):
+    total, cached = _get_usage_details(usage)
+    if not usage:
+        return total, cached, 0, 0
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens", 0) or 0
+        completion = usage.get("completion_tokens", 0) or 0
+    else:
+        prompt = getattr(usage, "prompt_tokens", 0) or 0
+        completion = getattr(usage, "completion_tokens", 0) or 0
+    return total, cached, prompt, completion
+
+
 def _report_helper_usage(response, token_callback):
     if not token_callback or not getattr(response, "usage", None):
         return
-    total, cached = _get_usage_details(response.usage)
+    total, cached, prompt, completion = _get_usage_breakdown(response.usage)
     try:
-        token_callback(total, cached=cached)
+        if prompt or completion:
+            token_callback(
+                total, cached=cached, prompt_tokens=prompt,
+                completion_tokens=completion)
+        else:
+            token_callback(total, cached=cached)
     except TypeError:
-        token_callback(total)
+        try:
+            token_callback(total, cached=cached)
+        except TypeError:
+            token_callback(total)
 
 
 def _scene_plan_payload_entry(scene: dict) -> dict | None:
@@ -2731,12 +2752,7 @@ def _analyze_context_openai_compatible(
         temperature=0.2,
         **_extra,
     )
-    if token_callback and getattr(resp, "usage", None):
-        tot, cached = _get_usage_details(resp.usage)
-        try:
-            token_callback(tot, cached=cached)
-        except TypeError:
-            token_callback(tot)
+    _report_helper_usage(resp, token_callback)
     raw = resp.choices[0].message.content if resp.choices else ""
     cleaned = _strip_code_fence(raw)
     data = _extract_json_object(cleaned)
@@ -3530,12 +3546,7 @@ def _verify_native_candidates(
         max_tokens=max(300, len(candidates) * 30),
         temperature=0.0,
     )
-    if token_callback and resp.usage:
-        tot, cached = _get_usage_details(resp.usage)
-        try:
-            token_callback(tot, cached=cached)
-        except TypeError:
-            token_callback(tot)
+    _report_helper_usage(resp, token_callback)
     content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
     content = _extract_json_array(content)
     if not content:
@@ -3787,12 +3798,7 @@ def native_reader_pass(
                 max_tokens=len(chunk) * 80,
                 temperature=0.2,
             )
-            if token_callback and resp.usage:
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
+            _report_helper_usage(resp, token_callback)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 continue
@@ -4135,12 +4141,7 @@ def condense_fast_lines(
                 max_tokens=len(chunk) * 60,
                 temperature=0.2,
             )
-            if token_callback and resp.usage:
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
+            _report_helper_usage(resp, token_callback)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 raise ValueError("empty_response")
@@ -4291,12 +4292,7 @@ def back_translation_check(
                 model=model, messages=messages,
                 max_tokens=max_tokens, temperature=0.0,
             )
-            if token_callback and getattr(resp, "usage", None):
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
+            _report_helper_usage(resp, token_callback)
             content = (
                 (resp.choices[0].message.content or "").strip()
                 if resp.choices else ""
@@ -4656,9 +4652,7 @@ def quality_check_with_helper(
                     max_tokens=12000,   # 3000 yetersizdi: çok hatalı dosyalarda JSON kesilip TÜM sorunlar düşüyordu
                     temperature=0.2,
                 )
-                if token_callback and getattr(resp, "usage", None):
-                    total, cached = _get_usage_details(resp.usage)
-                    token_callback(total, cached=cached)
+                _report_helper_usage(resp, token_callback)
                 content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
                 if not content:
                     chunk_errors += 1
@@ -7941,12 +7935,7 @@ def semantic_reconciliation_pass(
                 max_tokens=max(800, sum(len(c["items"]) for c in batch) * 90),
                 temperature=0.0,
             )
-            if token_callback and getattr(resp, "usage", None):
-                total, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(total, cached=cached)
-                except TypeError:
-                    token_callback(total)
+            _report_helper_usage(resp, token_callback)
             raw = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             payload = _extract_json_array(raw)
             if payload:
@@ -10555,9 +10544,7 @@ def qc_auto_fix(
                 max_completion_tokens=300,
                 temperature=0.2,
             )
-            if token_callback and getattr(resp, "usage", None):
-                total, cached = _get_usage_details(resp.usage)
-                token_callback(total, cached=cached)
+            _report_helper_usage(resp, token_callback)
             new_text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if new_text and new_text != "[HATA]":
                 ok, _reason = validate_polish_candidate(
@@ -10693,9 +10680,7 @@ def build_glossary_suggestions(
             temperature=0.2,
             cancel_context=cancel_context,
         )
-        if token_callback and getattr(resp, "usage", None):
-            total, cached = _get_usage_details(resp.usage)
-            token_callback(total, cached=cached)
+        _report_helper_usage(resp, token_callback)
         raw = ((resp.choices[0].message.content or "").strip()
                if resp.choices else "")
         if not raw:
@@ -11196,12 +11181,7 @@ def critic_pass_with_helper(
                 max_tokens=len(chunk) * 60,
                 temperature=0.1,
             )
-            if token_callback and getattr(resp, "usage", None):
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
+            _report_helper_usage(resp, token_callback)
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 if log_fn:
@@ -12028,6 +12008,8 @@ def save_results(
     srt_blocks = {}
     token_sum  = 0
     token_cached_sum = 0
+    token_prompt_sum = 0
+    token_completion_sum = 0
     seen_cids = set()
 
     for line in content.strip().splitlines():
@@ -12087,6 +12069,8 @@ def save_results(
 
         if body.get("usage"):
             token_sum += body["usage"].get("total_tokens", 0)
+            token_prompt_sum += body["usage"].get("prompt_tokens", 0) or 0
+            token_completion_sum += body["usage"].get("completion_tokens", 0) or 0
             try:
                 p_details = body["usage"].get("prompt_tokens_details") or {}
                 token_cached_sum += p_details.get("cached_tokens", 0) or 0
@@ -12136,9 +12120,15 @@ def save_results(
 
     if token_callback and token_sum:
         try:
-            token_callback(token_sum, cached=token_cached_sum)
+            token_callback(
+                token_sum, cached=token_cached_sum,
+                prompt_tokens=token_prompt_sum,
+                completion_tokens=token_completion_sum)
         except TypeError:
-            token_callback(token_sum)
+            try:
+                token_callback(token_sum, cached=token_cached_sum)
+            except TypeError:
+                token_callback(token_sum)
 
     source_by_id = {
         str(c.index): _clean_source_text(c.text)

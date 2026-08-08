@@ -7408,6 +7408,57 @@ def _format_elapsed(seconds) -> str:
     return f"{minutes} dk {secs:02d} sn"
 
 
+_API_USAGE_KEYS = (
+    "total_tokens", "prompt_tokens", "completion_tokens", "cached_tokens",
+    "unknown_cost_tokens", "cost_usd",
+)
+
+
+def _api_usage_delta(current: dict, baseline: dict | None = None) -> dict:
+    baseline = baseline or {}
+    result = {}
+    for key in _API_USAGE_KEYS:
+        value = float((current or {}).get(key, 0) or 0)
+        before = float(baseline.get(key, 0) or 0)
+        delta = max(0.0, value - before)
+        result[key] = delta if key == "cost_usd" else int(delta)
+    result["models"] = list((current or {}).get("models") or [])
+    return result
+
+
+def _api_usage_map_delta(current: dict, baseline: dict | None = None) -> dict:
+    baseline = baseline or {}
+    result = {}
+    for name, usage in (current or {}).items():
+        delta = _api_usage_delta(usage or {}, baseline.get(name) or {})
+        if delta.get("total_tokens"):
+            result[str(name)] = delta
+    return result
+
+
+def _format_api_usage(usage: dict) -> str:
+    usage = usage or {}
+    total = int(usage.get("total_tokens", 0) or 0)
+    prompt = int(usage.get("prompt_tokens", 0) or 0)
+    completion = int(usage.get("completion_tokens", 0) or 0)
+    cached = int(usage.get("cached_tokens", 0) or 0)
+    cost = float(usage.get("cost_usd", 0.0) or 0.0)
+    unknown = int(usage.get("unknown_cost_tokens", 0) or 0)
+    parts = [f"{total:,} token"]
+    if prompt or completion:
+        parts.append(f"giriş {prompt:,}")
+        parts.append(f"çıkış {completion:,}")
+    if cached:
+        parts.append(f"önbellek {cached:,}")
+    parts.append(f"~${cost:.4f}")
+    if unknown:
+        parts.append(f"{unknown:,} tokenın fiyatı bilinmiyor")
+    models = [str(model) for model in usage.get("models") or [] if str(model)]
+    if models:
+        parts.append("model " + ", ".join(models))
+    return " | ".join(parts)
+
+
 def _timing_phase_label(phase: str) -> str:
     value = re.sub(r"\s+", " ", str(phase or "").strip())
     value = re.sub(r"\s+\d+\s*/\s*\d+(?:\s*\([^)]*\))?$", "", value)
@@ -7462,19 +7513,31 @@ def _advance_file_timing(item: dict, phase: str, status: str,
     current = item.get("active_stage")
     if current and (terminal or current != next_label):
         stage_start = float(item.get("active_stage_epoch") or now)
-        stages.append({
+        stage = {
             "name": current,
             "started_at": item.get("active_stage_started_at") or _timing_iso(stage_start),
             "ended_at": _timing_iso(now),
             "duration_seconds": round(max(0.0, now - stage_start), 3),
-        })
+        }
+        usage_by_pass = _api_usage_map_delta(
+            item.get("api_usage") or {},
+            item.get("active_stage_usage_start") or {},
+        )
+        if usage_by_pass:
+            stage["api_usage_by_pass"] = usage_by_pass
+            if len(usage_by_pass) == 1:
+                stage["api_usage"] = next(iter(usage_by_pass.values()))
+        stages.append(stage)
         item.pop("active_stage", None)
         item.pop("active_stage_epoch", None)
         item.pop("active_stage_started_at", None)
+        item.pop("active_stage_usage_start", None)
     if not terminal and status != "pending" and not item.get("active_stage"):
         item["active_stage"] = next_label
         item["active_stage_epoch"] = now
         item["active_stage_started_at"] = _timing_iso(now)
+        item["active_stage_usage_start"] = copy.deepcopy(
+            item.get("api_usage") or {})
 
     newly_finished = terminal and not item.get("ended_at")
     if terminal:
@@ -7622,6 +7685,11 @@ def build_run_summary_text(record: dict) -> str:
                     f"{int(counts_by_operation.get('successes', 0) or 0)} başarılı, "
                     f"{int(counts_by_operation.get('failures', 0) or 0)} başarısız, "
                     f"{int(counts_by_operation.get('retries', 0) or 0)} tekrar")
+        usage_by_pass = dict(api.get("usage_by_pass") or {})
+        if usage_by_pass:
+            lines.append("  Pass bazlı API harcaması:")
+            for name, usage in usage_by_pass.items():
+                lines.append(f"    - {name}: {_format_api_usage(usage)}")
     for title, values in (
         ("Başarısız dosyalar", data["files"]["error"]),
         ("Üretilen çıktılar", data["outputs"]),
@@ -8327,10 +8395,16 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         f"- Toplam süre: {_format_elapsed(timing.get('duration_seconds'))}",
     ])
     for stage in timing.get("stage_timings") or []:
-        lines.append(
+        stage_line = (
             f"- {stage.get('name', 'İşleniyor')}: "
             f"{stage.get('started_at', '-')} → {stage.get('ended_at', '-')} "
             f"({_format_elapsed(stage.get('duration_seconds'))})")
+        usage_by_pass = stage.get("api_usage_by_pass") or {}
+        if usage_by_pass:
+            stage_line += " | API: " + "; ".join(
+                f"{name}: {_format_api_usage(usage)}"
+                for name, usage in usage_by_pass.items())
+        lines.append(stage_line)
     lines.extend(["", "YAPISAL TESLİM DENETİMİ"])
     for key, label in (
         ("status", "Durum"),
@@ -12029,7 +12103,7 @@ class App(ctk.CTk):
                 "attempts": 0, "successes": 0, "failures": 0,
                 "terminal_failures": 0, "retries": 0,
                 "provider_pauses": 0, "duration_seconds": 0.0,
-                "operations": {}, "events": [],
+                "operations": {}, "events": [], "usage_by_pass": {},
             },
             "outputs": [],
             "reports": [],
@@ -12093,6 +12167,11 @@ class App(ctk.CTk):
                     f"{stage.get('name')} | "
                     f"{_format_elapsed(stage.get('duration_seconds'))} | "
                     f"{stage.get('started_at')} → {stage.get('ended_at')}")
+                usage_by_pass = stage.get("api_usage_by_pass") or {}
+                if usage_by_pass:
+                    stage_log += " | API: " + "; ".join(
+                        f"{name}: {_format_api_usage(usage)}"
+                        for name, usage in usage_by_pass.items())
             item["phase"] = str(phase)
             if status in {"done", "error", "skip"}:
                 item["status"] = status
@@ -14196,7 +14275,46 @@ class App(ctk.CTk):
                 return schema
         return CONTENT_SCHEMAS["auto"]
 
-    def _update_tokens(self, added: int, price=_DEFAULT_TOKEN_PRICE, cached: int = 0):
+    def _record_api_usage(self, added: int, cached: int, cost_added: float,
+                          unknown_added: int = 0, model: str = "",
+                          prompt_tokens: int = 0,
+                          completion_tokens: int = 0,
+                          pass_name: str = ""):
+        lock = getattr(self, "_run_record_lock", None)
+        if lock is None:
+            return
+        with lock:
+            record = getattr(self, "_active_run_record", None)
+            if not record:
+                return
+            active = [
+                (path, item) for path, item in (record.get("files") or {}).items()
+                if item.get("active_stage")
+            ]
+            labels = {str(item.get("active_stage")) for _path, item in active}
+            stage = (str(pass_name).strip() or
+                     (next(iter(labels)) if len(labels) == 1 else "Diğer API İşlemleri"))
+
+            def add_usage(target):
+                target["total_tokens"] = int(target.get("total_tokens", 0) or 0) + int(added or 0)
+                target["prompt_tokens"] = int(target.get("prompt_tokens", 0) or 0) + int(prompt_tokens or 0)
+                target["completion_tokens"] = int(target.get("completion_tokens", 0) or 0) + int(completion_tokens or 0)
+                target["cached_tokens"] = int(target.get("cached_tokens", 0) or 0) + int(cached or 0)
+                target["unknown_cost_tokens"] = int(target.get("unknown_cost_tokens", 0) or 0) + int(unknown_added or 0)
+                target["cost_usd"] = float(target.get("cost_usd", 0.0) or 0.0) + float(cost_added or 0.0)
+                models = target.setdefault("models", [])
+                if model and model not in models:
+                    models.append(model)
+
+            api = record.setdefault("api", {})
+            add_usage(api.setdefault("usage_by_pass", {}).setdefault(stage, {}))
+            if len(active) == 1:
+                item = active[0][1]
+                add_usage(item.setdefault("api_usage", {}).setdefault(stage, {}))
+
+    def _update_tokens(self, added: int, price=_DEFAULT_TOKEN_PRICE, cached: int = 0,
+                       prompt_tokens: int = 0, completion_tokens: int = 0,
+                       model: str = "", pass_name: str = ""):
         """Token sayacını + tahmini maliyeti günceller. Maliyet AYRI birikir (kümülatif
         token × tek fiyat DEĞİL) — böylece her kaynak kendi fiyatıyla eklenir. price
         verilmezse ana model fiyatı kullanılır; Batch API çağrıları %50 indirimli geçer.
@@ -14218,6 +14336,9 @@ class App(ctk.CTk):
             cached_total = self._token_cached
             cost  = self._cost_total
             unknown_total = self._unknown_cost_tokens
+        App._record_api_usage(
+            self, added, cached, cost_added, unknown_added, model,
+            prompt_tokens, completion_tokens, pass_name)
         def _upd(t=total, c=cost, ct=cached_total, ut=unknown_total):
             try:
                 self.stat_tokens_var.set(f"{t:,}")
@@ -14238,20 +14359,39 @@ class App(ctk.CTk):
                 pass
         _post_ui(self, _upd)
 
-    def _token_callback_for_model(self, model: str, discount: float = 1.0):
+    def _token_callback_for_model(self, model: str, discount: float = 1.0,
+                                  pass_name: str = ""):
         price = _model_token_price(model)
         if price is not None:
             price *= discount
 
-        def _callback(added, cached=0):
-            self._update_tokens(added, price=price, cached=cached)
+        def _callback(added, cached=0, prompt_tokens=0, completion_tokens=0):
+            try:
+                self._update_tokens(
+                    added, price=price, cached=cached,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens, model=model,
+                    pass_name=pass_name)
+            except TypeError:
+                self._update_tokens(added, price=price, cached=cached)
         return _callback
 
-    def _update_batch_tokens(self, added: int, cached: int = 0):
+    def _token_callback_for_pass(self, model: str, pass_name: str):
+        factory = self._token_callback_for_model
+        try:
+            return factory(model, pass_name=pass_name)
+        except TypeError:
+            return factory(model)
+
+    def _update_batch_tokens(self, added: int, cached: int = 0,
+                             prompt_tokens: int = 0,
+                             completion_tokens: int = 0):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
         price = _model_token_price(self._main_model_name())
         self._update_tokens(
-            added, price=None if price is None else price * 0.5, cached=cached)
+            added, price=None if price is None else price * 0.5, cached=cached,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            model=self._main_model_name())
 
     def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = "",
                         source_language: str = ""):
@@ -17900,8 +18040,10 @@ class App(ctk.CTk):
                 src_lang=run_src_lang or "English",
                 tgt_lang=run_tgt_lang or "Turkish",
                 log_fn=self._log,
-                token_callback=self._token_callback_for_model(
-                    self._helper_api_model("qc")),
+                token_callback=App._token_callback_for_pass(
+                    self,
+                    self._helper_api_model("qc"),
+                    "Geri Çeviri"),
                 cancel_context=self.__dict__.get("_helper_request_canceller"),
                 status_out=status_out)
             if self.__dict__.get("_stop_flag", False):
@@ -18022,8 +18164,10 @@ class App(ctk.CTk):
                 ),
                 scene_gap_sec=self._run_scene_gap(),
                 log_fn=self._log,
-                token_callback=self._token_callback_for_model(
-                    self._helper_api_model("critic")),
+                token_callback=App._token_callback_for_pass(
+                    self,
+                    self._helper_api_model("critic"),
+                    "Nihai Anlam Mutabakatı"),
                 progress_callback=semantic_progress,
                 status_out=status_out,
                 **cancel_kwargs,
