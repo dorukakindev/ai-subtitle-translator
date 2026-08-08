@@ -99,7 +99,8 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertIn("API SÜRECİ", text)
         self.assertIn("Gerçek istek   : 2", text)
         self.assertIn("Yeniden deneme : 1", text)
-        self.assertIn("Critic Pass: 2 istek, 1 başarılı, 1 başarısız, 1 tekrar", text)
+        self.assertIn("Critic Pass: 2 istek | 1 başarılı | 1 hata | 1 tekrar", text)
+        self.assertIn("başarı %50.0", text)
 
     def test_record_api_event_tracks_terminal_failure_without_storing_error_body(self):
         app = SimpleNamespace(
@@ -122,6 +123,10 @@ class RunTraceabilityTest(unittest.TestCase):
         self.assertEqual(summary["failures"], 1)
         self.assertEqual(summary["terminal_failures"], 1)
         self.assertEqual(summary["operations"]["Polish Pass"]["failures"], 1)
+        self.assertEqual(
+            summary["operations"]["Polish Pass"]["terminal_failures"], 1)
+        self.assertEqual(
+            summary["operations"]["Polish Pass"]["duration_seconds"], 2.25)
         self.assertNotIn("sk-secret", json.dumps(summary))
         self.assertEqual(summary["events"][-1]["request_id"], "req_support_123")
 
@@ -301,6 +306,41 @@ class RunTraceabilityTest(unittest.TestCase):
         messages = [call.args[0] for call in stub._log.call_args_list]
         self.assertTrue(any(
             "Critic Pass: 2,500 token" in msg and "~$0.0250" in msg
+            for msg in messages))
+
+    def test_file_status_logs_per_pass_request_health_when_stage_closes(self):
+        record = {
+            "files": {"episode.srt": {
+                "status": "pending", "phase": "Bekliyor",
+                "queued_at": gui._timing_iso(90), "queued_epoch": 90.0,
+                "stage_timings": [],
+            }},
+            "api": {"operations": {}},
+        }
+        stub = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record, _log=MagicMock(),
+        )
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(gui, "_active_run_state_path",
+                             return_value=Path(td) / "active.json"), \
+                patch.object(gui.time, "time", side_effect=[100, 130]):
+            gui.App._record_file_status(
+                stub, "episode.srt", "Critic Pass", "running")
+            record["api"]["operations"] = {
+                "Critic Pass": {
+                    "attempts": 2, "successes": 1, "failures": 1,
+                    "terminal_failures": 0, "retries": 1,
+                    "provider_pauses": 0, "duration_seconds": 12.0,
+                }
+            }
+            gui.App._record_file_status(
+                stub, "episode.srt", "Polish Pass", "running")
+
+        messages = [call.args[0] for call in stub._log.call_args_list]
+        self.assertTrue(any(
+            "Critic Pass: 2 istek" in msg
+            and "ort. 6.0 sn" in msg and "başarı %50.0" in msg
             for msg in messages))
 
     def test_all_translation_flows_feed_file_timing(self):

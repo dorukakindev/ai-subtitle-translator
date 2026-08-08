@@ -7450,6 +7450,9 @@ def _format_api_usage(usage: dict) -> str:
         parts.append(f"çıkış {completion:,}")
     if cached:
         parts.append(f"önbellek {cached:,}")
+        cache_base = prompt or total
+        if cache_base:
+            parts.append(f"cache %{cached * 100.0 / cache_base:.1f}")
     parts.append(f"~${cost:.4f}")
     if unknown:
         parts.append(f"{unknown:,} tokenın fiyatı bilinmiyor")
@@ -7457,6 +7460,54 @@ def _format_api_usage(usage: dict) -> str:
     if models:
         parts.append("model " + ", ".join(models))
     return " | ".join(parts)
+
+
+_API_OPERATION_COUNT_KEYS = (
+    "attempts", "successes", "failures", "terminal_failures", "retries",
+    "provider_pauses",
+)
+
+
+def _api_operation_delta(current: dict, baseline: dict | None = None) -> dict:
+    baseline = baseline or {}
+    result = {
+        key: max(0, int((current or {}).get(key, 0) or 0)
+                 - int(baseline.get(key, 0) or 0))
+        for key in _API_OPERATION_COUNT_KEYS
+    }
+    result["duration_seconds"] = max(
+        0.0, float((current or {}).get("duration_seconds", 0.0) or 0.0)
+        - float(baseline.get("duration_seconds", 0.0) or 0.0))
+    return result
+
+
+def _api_operation_map_delta(current: dict, baseline: dict | None = None) -> dict:
+    baseline = baseline or {}
+    result = {}
+    for name, metrics in (current or {}).items():
+        delta = _api_operation_delta(metrics or {}, baseline.get(name) or {})
+        if any(delta.get(key) for key in _API_OPERATION_COUNT_KEYS):
+            result[str(name)] = delta
+    return result
+
+
+def _format_api_operation(metrics: dict) -> str:
+    attempts = int((metrics or {}).get("attempts", 0) or 0)
+    successes = int((metrics or {}).get("successes", 0) or 0)
+    failures = int((metrics or {}).get("failures", 0) or 0)
+    terminal = int((metrics or {}).get("terminal_failures", 0) or 0)
+    retries = int((metrics or {}).get("retries", 0) or 0)
+    pauses = int((metrics or {}).get("provider_pauses", 0) or 0)
+    duration = float((metrics or {}).get("duration_seconds", 0.0) or 0.0)
+    completed = successes + failures
+    avg = duration / completed if completed else 0.0
+    success_pct = successes * 100.0 / completed if completed else 0.0
+    return (
+        f"{attempts} istek | {successes} başarılı | {failures} hata | "
+        f"{retries} tekrar | {terminal} kalıcı | {pauses} sağlayıcı molası | "
+        f"API süresi {_format_elapsed(duration)} | ort. {_format_elapsed(avg)} | "
+        f"başarı %{success_pct:.1f}"
+    )
 
 
 def _timing_phase_label(phase: str) -> str:
@@ -7680,16 +7731,17 @@ def build_run_summary_text(record: dict) -> str:
         if operations:
             lines.append("  İşlem dağılımı :")
             for name, counts_by_operation in operations.items():
-                lines.append(
-                    f"    - {name}: {int(counts_by_operation.get('attempts', 0) or 0)} istek, "
-                    f"{int(counts_by_operation.get('successes', 0) or 0)} başarılı, "
-                    f"{int(counts_by_operation.get('failures', 0) or 0)} başarısız, "
-                    f"{int(counts_by_operation.get('retries', 0) or 0)} tekrar")
+                lines.append(f"    - {name}: {_format_api_operation(counts_by_operation)}")
         usage_by_pass = dict(api.get("usage_by_pass") or {})
         if usage_by_pass:
             lines.append("  Pass bazlı API harcaması:")
             for name, usage in usage_by_pass.items():
                 lines.append(f"    - {name}: {_format_api_usage(usage)}")
+        checkpoint_hits = dict(api.get("checkpoint_hits_by_pass") or {})
+        if checkpoint_hits:
+            lines.append("  Checkpoint'ten karşılanan istekler:")
+            for name, count in checkpoint_hits.items():
+                lines.append(f"    - {name}: {int(count or 0)} istek")
     for title, values in (
         ("Başarısız dosyalar", data["files"]["error"]),
         ("Üretilen çıktılar", data["outputs"]),
@@ -8404,6 +8456,11 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
             stage_line += " | API: " + "; ".join(
                 f"{name}: {_format_api_usage(usage)}"
                 for name, usage in usage_by_pass.items())
+        operations = stage.get("api_operations") or {}
+        if operations:
+            stage_line += " | İstekler: " + "; ".join(
+                f"{name}: {_format_api_operation(metrics)}"
+                for name, metrics in operations.items())
         lines.append(stage_line)
     lines.extend(["", "YAPISAL TESLİM DENETİMİ"])
     for key, label in (
@@ -12135,6 +12192,12 @@ class App(ctk.CTk):
 
     def _quality_checkpoint_hit(self, count: int, checkpoint_label: str = ""):
         stage = _api_operation_label(checkpoint_label)
+        with self._run_record_lock:
+            record = self._active_run_record
+            if record is not None:
+                api = record.setdefault("api", {})
+                hits = api.setdefault("checkpoint_hits_by_pass", {})
+                hits[stage] = int(hits.get(stage, 0) or 0) + 1
         if int(count) == 1:
             self._log(
                 "Çökme kurtarma: tamamlanmış API istekleri "
@@ -12159,9 +12222,23 @@ class App(ctk.CTk):
             item = record["files"].setdefault(
                 str(filepath), {"status": "pending", "phase": ""})
             stage_count = len(item.get("stage_timings") or [])
+            previous_active_stage = item.get("active_stage")
+            operation_exclusive = bool(
+                item.get("active_stage_api_exclusive", True))
+            operation_baseline = copy.deepcopy(
+                item.get("active_stage_api_operations_start") or {})
             newly_finished = _advance_file_timing(item, phase, status)
             if len(item.get("stage_timings") or []) > stage_count:
                 stage = item["stage_timings"][-1]
+                active_count = sum(
+                    1 for state in (record.get("files") or {}).values()
+                    if state.get("active_stage"))
+                if operation_exclusive and active_count <= 1:
+                    operation_delta = _api_operation_map_delta(
+                        (record.get("api") or {}).get("operations") or {},
+                        operation_baseline)
+                    if operation_delta:
+                        stage["api_operations"] = operation_delta
                 stage_log = (
                     f"⏱ Aşama tamamlandı: {Path(filepath).name} | "
                     f"{stage.get('name')} | "
@@ -12172,6 +12249,26 @@ class App(ctk.CTk):
                     stage_log += " | API: " + "; ".join(
                         f"{name}: {_format_api_usage(usage)}"
                         for name, usage in usage_by_pass.items())
+                operations = stage.get("api_operations") or {}
+                if operations:
+                    stage_log += " | İstekler: " + "; ".join(
+                        f"{name}: {_format_api_operation(metrics)}"
+                        for name, metrics in operations.items())
+            if (item.get("active_stage")
+                    and item.get("active_stage") != previous_active_stage):
+                item["active_stage_api_operations_start"] = copy.deepcopy(
+                    (record.get("api") or {}).get("operations") or {})
+                item["active_stage_api_exclusive"] = True
+            elif not item.get("active_stage"):
+                item.pop("active_stage_api_operations_start", None)
+                item.pop("active_stage_api_exclusive", None)
+            active_items = [
+                state for state in (record.get("files") or {}).values()
+                if state.get("active_stage")
+            ]
+            if len(active_items) > 1:
+                for state in active_items:
+                    state["active_stage_api_exclusive"] = False
             item["phase"] = str(phase)
             if status in {"done", "error", "skip"}:
                 item["status"] = status
@@ -12464,6 +12561,8 @@ class App(ctk.CTk):
             api.setdefault("events", [])
             per_operation = api["operations"].setdefault(operation, {
                 "attempts": 0, "successes": 0, "failures": 0, "retries": 0,
+                "terminal_failures": 0, "provider_pauses": 0,
+                "duration_seconds": 0.0,
             })
             if event == "request_start":
                 api["attempts"] += 1
@@ -12471,22 +12570,30 @@ class App(ctk.CTk):
             elif event == "request_success":
                 api["successes"] += 1
                 per_operation["successes"] += 1
+                per_operation["duration_seconds"] = round(
+                    float(per_operation.get("duration_seconds") or 0.0)
+                    + float(info.get("duration_seconds") or 0.0), 3)
                 api["duration_seconds"] = round(
                     float(api.get("duration_seconds") or 0.0)
                     + float(info.get("duration_seconds") or 0.0), 3)
             elif event == "request_failure":
                 api["failures"] += 1
                 per_operation["failures"] += 1
+                per_operation["duration_seconds"] = round(
+                    float(per_operation.get("duration_seconds") or 0.0)
+                    + float(info.get("duration_seconds") or 0.0), 3)
                 api["duration_seconds"] = round(
                     float(api.get("duration_seconds") or 0.0)
                     + float(info.get("duration_seconds") or 0.0), 3)
                 if not info.get("will_retry"):
                     api["terminal_failures"] += 1
+                    per_operation["terminal_failures"] += 1
             elif event.startswith("retry_start_") or event == "repair_retry_start":
                 api["retries"] += 1
                 per_operation["retries"] += 1
             elif event in {"circuit_open", "circuit_reopen"}:
                 api["provider_pauses"] += 1
+                per_operation["provider_pauses"] += 1
             if significant:
                 api["events"].append({
                     "at": _timing_iso(time.time()), "event": event,
