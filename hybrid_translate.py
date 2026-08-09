@@ -2375,7 +2375,9 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
                 temperature=kwargs.get("temperature"),
                 max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
                 api_key_str=api_key,
-                base_url=base_url
+                base_url=base_url,
+                cancel_context=cancel_context,
+                timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
             ),
             cancel_context,
         )
@@ -2391,7 +2393,9 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
                 temperature=kwargs.get("temperature"),
                 max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
                 api_key_str=api_key,
-                base_url=base_url
+                base_url=base_url,
+                cancel_context=cancel_context,
+                timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
             ),
             cancel_context,
         )
