@@ -8560,6 +8560,28 @@ def _log_exception_or_warning(owner, message: str, exc: Exception) -> None:
         log(f"{message}: {exc}", "warn")
 
 
+def _record_file_stage_if_available(owner, filepath: str, phase: str,
+                                    status: str) -> None:
+    """Record timing only when a real run record exists.
+
+    Lightweight/headless pass callers intentionally construct ``App`` without
+    Tk or a run record; accessing ordinary attributes on those instances can
+    recurse through Tk's ``__getattr__``.
+    """
+    try:
+        state = object.__getattribute__(owner, "__dict__")
+    except (AttributeError, TypeError):
+        return
+    lock = state.get("_run_record_lock") if isinstance(state, dict) else None
+    if not hasattr(lock, "__enter__"):
+        return
+    recorder = state.get("_record_file_status")
+    if callable(recorder):
+        recorder(filepath, phase, status)
+    else:
+        App._record_file_status(owner, filepath, phase, status)
+
+
 def _format_pass_trace(trace: dict) -> str:
     if not trace:
         return ""
@@ -19053,7 +19075,8 @@ class App(ctk.CTk):
         progress_name = Path(progress_path).name
         fixed = 0
         if App._run_setting(self, "backtrans", "backtrans_var", False):
-            self._record_file_status(progress_path, "Geri Çeviri", "running")
+            _record_file_stage_if_available(
+                self, progress_path, "Geri Çeviri", "running")
             self._set_phase(
                 "Geri Çeviri", f"{progress_name} — anlam kontrolü")
             self._update_file_progress(
@@ -19070,7 +19093,8 @@ class App(ctk.CTk):
         )
         if App._run_setting(
                 self, "semantic_reconcile", "semantic_reconcile_var", True):
-            self._record_file_status(
+            _record_file_stage_if_available(
+                self,
                 progress_path, "Nihai Anlam Mutabakatı", "running")
             self._set_phase(
                 "Nihai Anlam Mutabakatı",
@@ -20074,6 +20098,8 @@ class App(ctk.CTk):
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
                             status_out=_critic_status)
+                        if self._stop_flag:
+                            break
                         self._write_critic_change_report(fp, _critic_change_log)
                     except Exception as e:
                         self._log(f"Critic Pass hatası: {e}", "warn")
@@ -20093,6 +20119,8 @@ class App(ctk.CTk):
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
                             analysis_result=analysis_result,
                             status_out=_polish_status)
+                        if self._stop_flag:
+                            break
                     except Exception as e:
                         self._log(f"Polish Pass hatası: {e}", "warn")
 
@@ -20115,9 +20143,11 @@ class App(ctk.CTk):
                                 helper_models.get("critic", "gpt-5.4-mini")),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
                             progress_callback=App._pass_progress_callback(
-                                self, fp, "Native Okuyucu", 65.0, 82.0),
+                            self, fp, "Native Okuyucu", 65.0, 82.0),
                             cancel_context=self.__dict__.get("_helper_request_canceller"),
                             status_out=_native_status)
+                        if self._stop_flag:
+                            break
                     except Exception as e:
                         self._log(f"Native Pass hatası: {e}", "warn")
 

@@ -474,6 +474,11 @@ class RunTraceabilityTest(unittest.TestCase):
         for method, labels in expected.items():
             source = inspect.getsource(method)
             for label in labels:
+                if label == "Nihai Anlam Mutabakatı":
+                    self.assertIn(
+                        "self._run_final_semantic_checks(", source,
+                        f"{method.__name__}: {label}")
+                    continue
                 self.assertIn(label, source, f"{method.__name__}: {label}")
 
         report_source = inspect.getsource(gui.App._save_quality_report)
