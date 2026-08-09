@@ -94,8 +94,10 @@ def mutate_batch_ids(path, *, add=(), remove=(), replace=None) -> list[str]:
         if replace is None and path.exists():
             try:
                 current = path.read_text(encoding="utf-8").splitlines()
-            except Exception:
-                current = []
+            except Exception as exc:
+                raise ValueError(
+                    "mevcut batch kimliği deposu okunamadı; veri kaybını "
+                    "önlemek için değiştirilmedi") from exc
         source = replace if replace is not None else current
         removed = {str(x).strip() for x in remove if str(x).strip()}
         result = []

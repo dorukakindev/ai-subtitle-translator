@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import hybrid_translate as ht
 import provider_retry
 import subtitle_translator_gui as gui
+from app_state import mutate_batch_ids
 
 
 class BatchSessionFailClosedTest(unittest.TestCase):
@@ -50,6 +51,15 @@ class SyncCheckpointFailClosedTest(unittest.TestCase):
                 path, "c1", "text", "hash", log_fn=log))
             self.assertFalse(gui.clear_sync_ckpt_entries_from_store(
                 path, {"c1:hash"}, log_fn=log))
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_unreadable_batch_id_store_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "batch_id.txt"
+            original = b"batch-old-1\n\xff\xfe"
+            path.write_bytes(original)
+            with self.assertRaisesRegex(ValueError, "değiştirilmedi"):
+                mutate_batch_ids(path, add=["batch-new-2"])
             self.assertEqual(path.read_bytes(), original)
 
     def test_corrupt_stage_store_is_not_overwritten_or_cleared(self):
