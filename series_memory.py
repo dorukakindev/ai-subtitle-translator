@@ -274,9 +274,20 @@ class SeriesMemory:
             with self._lock:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 with _interprocess_lock(self._path):
-                    try:
-                        disk = json.loads(self._path.read_text(encoding="utf-8"))
-                    except Exception:
+                    if self._path.exists():
+                        try:
+                            disk = json.loads(self._path.read_text(encoding="utf-8"))
+                        except Exception as exc:
+                            raise ValueError(
+                                "mevcut dizi hafızası bozuk; veri kaybını önlemek "
+                                "için üzerine yazılmadı"
+                            ) from exc
+                        if not isinstance(disk, dict):
+                            raise ValueError(
+                                "mevcut dizi hafızası nesne biçiminde değil; veri "
+                                "kaybını önlemek için üzerine yazılmadı"
+                            )
+                    else:
                         disk = {}
                     self._data = self._merge_saved_data(disk, self._data)
                     atomic_write_json(self._path, self._data)

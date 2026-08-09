@@ -61,6 +61,10 @@ def _deobfuscate(token: str) -> str:
 _keyring_available = None
 _fallback_lock = threading.Lock()
 
+
+class CredentialStoreCorruptError(RuntimeError):
+    pass
+
 def _has_keyring() -> bool:
     global _keyring_available
     if _keyring_available is None:
@@ -85,7 +89,10 @@ def save_key(service: str, key: str) -> bool:
         try:
             import keyring
             keyring.set_password(SERVICE_NAME, service, key)
-            _cleanup_fallback(service)  # remove legacy fallback if present
+            try:
+                _cleanup_fallback(service)  # remove legacy fallback if present
+            except CredentialStoreCorruptError as exc:
+                print(f"[cred] bozuk fallback dosyası korunuyor: {exc}", file=sys.stderr)
             return True
         except Exception:
             pass  # fall through to fallback
@@ -135,9 +142,15 @@ def _read_fallback_store() -> dict:
     try:
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    except Exception as exc:
+        raise CredentialStoreCorruptError(
+            f"{p} okunamadı; mevcut anahtarlar korunmak için dosya değiştirilmedi"
+        ) from exc
+    if not isinstance(data, dict):
+        raise CredentialStoreCorruptError(
+            f"{p} nesne biçiminde değil; mevcut anahtarlar korunmak için dosya değiştirilmedi"
+        )
+    return data
 
 
 def _write_fallback_store(data: dict) -> None:
@@ -168,9 +181,13 @@ def _save_fallback(service: str, key: str) -> None:
 
 
 def _load_fallback(service: str) -> str | None:
-    with _fallback_lock:
-        with _interprocess_lock(_fallback_path()):
-            store = _read_fallback_store()
+    try:
+        with _fallback_lock:
+            with _interprocess_lock(_fallback_path()):
+                store = _read_fallback_store()
+    except CredentialStoreCorruptError as exc:
+        print(f"[cred] fallback anahtar deposu bozuk: {exc}", file=sys.stderr)
+        return None
     token = store.get(service)
     if token is None:
         return None

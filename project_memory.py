@@ -135,12 +135,23 @@ class ProjectMemory:
                     if merge_existing and self._path.exists():
                         try:
                             disk_data = json.loads(self._path.read_text(encoding="utf-8"))
-                        except Exception:
-                            disk_data = {}
+                        except Exception as exc:
+                            raise ValueError(
+                                "mevcut proje hafızası bozuk; veri kaybını önlemek "
+                                "için üzerine yazılmadı"
+                            ) from exc
+                        if not isinstance(disk_data, dict):
+                            raise ValueError(
+                                "mevcut proje hafızası nesne biçiminde değil; veri "
+                                "kaybını önlemek için üzerine yazılmadı"
+                            )
                         self._data = self._merge_data(disk_data, self._data)
                     atomic_write_json(self._path, self._data)
-            except Exception:
-                pass
+                return True
+            except Exception as exc:
+                import sys
+                print(f"[project_memory] kaydetme hatası {self._path}: {exc}", file=sys.stderr)
+                return False
 
     # ── Glossary ──────────────────────────────────────────────────────────────
 

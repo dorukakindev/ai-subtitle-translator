@@ -49,8 +49,9 @@ class FallbackRoundtripTest(unittest.TestCase):
     def test_malformed_fallback_container_fails_closed(self):
         self._fb.write_text("[]", encoding="utf-8")
         self.assertIsNone(cs.load_key("openai"))
-        cs.save_key("openai", "sk-safe")
-        self.assertEqual(cs.load_key("openai"), "sk-safe")
+        with self.assertRaises(cs.CredentialStoreCorruptError):
+            cs.save_key("openai", "sk-safe")
+        self.assertEqual(self._fb.read_text(encoding="utf-8"), "[]")
 
     def test_migrate_from_settings_strips_json(self):
         settings = Path(self._tmp.name) / ".gui_settings.json"
