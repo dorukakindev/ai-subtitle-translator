@@ -69,6 +69,21 @@ class CompletionMarkerTest(unittest.TestCase):
             self.assertEqual(markers, [str(season / "ÇEVRİLDİ.txt")])
             self.assertFalse((parent / "ÇEVRİLDİ.txt").exists())
 
+    def test_does_not_mark_whole_root_when_unselected_subtitle_remains(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "series"
+            root.mkdir()
+            selected = root / "episode 1.srt"
+            unselected = root / "episode 2.srt"
+            selected.write_text("source", encoding="utf-8")
+            unselected.write_text("source", encoding="utf-8")
+            record = self._record(root, {
+                str(selected): {"status": "done"},
+            })
+
+            self.assertEqual(gui._write_completion_markers(record), [])
+            self.assertFalse((root / "ÇEVRİLDİ.txt").exists())
+
     def test_finalize_writes_marker_and_records_it_in_summary(self):
         with tempfile.TemporaryDirectory() as td:
             temp = Path(td)

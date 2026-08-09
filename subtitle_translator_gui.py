@@ -8461,8 +8461,26 @@ def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
         groups.setdefault(group_root, []).append((str(source), state or {}))
     completed = []
     for root, members in groups.items():
-        if members and all(str(state.get("status")) == "done" for _path, state in members):
-            completed.append((root, [path for path, _state in members]))
+        if not members or not all(
+                str(state.get("status")) == "done"
+                for _path, state in members):
+            continue
+        tracked = {
+            os.path.normcase(os.path.abspath(path))
+            for path, _state in members
+        }
+        output_dir = str(settings.get("output_dir") or "")
+        excluded = _nested_output_exclusions(
+            [root], output_dir,
+            same_folder=bool(settings.get("same_folder")))
+        discovered = {
+            os.path.normcase(os.path.abspath(path))
+            for path in get_subtitle_files(
+                str(root), recursive=True, exclude_paths=excluded)
+        }
+        if discovered and not discovered <= tracked:
+            continue
+        completed.append((root, [path for path, _state in members]))
     return completed
 
 
