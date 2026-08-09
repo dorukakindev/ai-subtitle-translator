@@ -180,8 +180,14 @@ def extracted_video_metadata(subtitle_path) -> dict:
         return {}
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            return payload
+        if not isinstance(payload, dict):
+            return {}
+        source = Path(str(payload.get("source_video") or ""))
+        if not source.is_absolute() or not source.is_file():
+            return {}
+        if path.resolve().parent != _cache_root(source).resolve():
+            return {}
+        return payload
     except Exception:
         pass
     return {}

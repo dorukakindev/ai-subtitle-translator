@@ -96,11 +96,10 @@ class VideoSubtitleTests(unittest.TestCase):
                 output = vs.extract_subtitle_stream(
                     video, stream, runner=runner,
                     which=lambda name: f"{name}.exe")
-
-            self.assertTrue(output.is_file())
-            self.assertEqual(vs.extracted_video_origin(output), video.resolve())
-            self.assertEqual(vs.logical_subtitle_path(output).parent, video.parent)
-            self.assertIn("track-3.eng.srt", output.name)
+                self.assertTrue(output.is_file())
+                self.assertEqual(vs.extracted_video_origin(output), video.resolve())
+                self.assertEqual(vs.logical_subtitle_path(output).parent, video.parent)
+                self.assertIn("track-3.eng.srt", output.name)
 
     def test_cached_extraction_skips_second_ffmpeg_call(self):
         with tempfile.TemporaryDirectory() as td:
@@ -149,11 +148,12 @@ class VideoSubtitleTests(unittest.TestCase):
                 result = vs.extract_subtitle_stream(
                     video, stream, runner=runner,
                     which=lambda name: f"{name}.exe")
-
-            self.assertEqual(result, output)
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(output.read_text(encoding="utf-8"), "fresh subtitle")
-            self.assertEqual(vs.extracted_video_origin(output), video.resolve())
+                self.assertEqual(result, output)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(
+                    output.read_text(encoding="utf-8"), "fresh subtitle")
+                self.assertEqual(
+                    vs.extracted_video_origin(output), video.resolve())
 
     def test_rejects_bitmap_stream_without_running_ffmpeg(self):
         with tempfile.TemporaryDirectory() as td:
@@ -180,21 +180,40 @@ class VideoSubtitleTests(unittest.TestCase):
             mp4 = root / "Film.mp4"
             mkv.write_bytes(b"mkv")
             mp4.write_bytes(b"mp4")
-            first = root / "first.srt"
-            second = root / "second.srt"
-            first.write_text("subtitle", encoding="utf-8")
-            second.write_text("subtitle", encoding="utf-8")
-            vs._write_json_atomic(vs._origin_sidecar(first), {
-                "source_video": str(mkv.resolve()), "language": "eng"})
-            vs._write_json_atomic(vs._origin_sidecar(second), {
-                "source_video": str(mp4.resolve()), "language": "ita"})
+            with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
+                first = vs._cache_root(mkv) / "first.srt"
+                second = vs._cache_root(mp4) / "second.srt"
+                first.parent.mkdir(parents=True)
+                second.parent.mkdir(parents=True)
+                first.write_text("subtitle", encoding="utf-8")
+                second.write_text("subtitle", encoding="utf-8")
+                vs._write_json_atomic(vs._origin_sidecar(first), {
+                    "source_video": str(mkv.resolve()), "language": "eng"})
+                vs._write_json_atomic(vs._origin_sidecar(second), {
+                    "source_video": str(mp4.resolve()), "language": "ita"})
 
-            logical_first = vs.logical_subtitle_path(first)
-            logical_second = vs.logical_subtitle_path(second)
-            language = vs.extracted_video_language(first)
+                logical_first = vs.logical_subtitle_path(first)
+                logical_second = vs.logical_subtitle_path(second)
+                language = vs.extracted_video_language(first)
 
         self.assertNotEqual(logical_first, logical_second)
         self.assertEqual(language, "eng")
+
+    def test_untrusted_origin_sidecar_cannot_redirect_output_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            video = root / "Film.mkv"
+            subtitle = root / "downloaded.srt"
+            video.write_bytes(b"video")
+            subtitle.write_text("subtitle", encoding="utf-8")
+            vs._write_json_atomic(vs._origin_sidecar(subtitle), {
+                "source_video": str(video.resolve()),
+                "stream_index": 2,
+                "codec": "subrip",
+            })
+
+            self.assertEqual(vs.extracted_video_metadata(subtitle), {})
+            self.assertEqual(vs.logical_subtitle_path(subtitle), subtitle)
 
 
 if __name__ == "__main__":

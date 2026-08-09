@@ -24,19 +24,19 @@ class VideoSubtitleGuiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             video_dir = root / "videos"
-            cache_dir = root / "cache"
             video_dir.mkdir()
-            cache_dir.mkdir()
             video = video_dir / "Film.mkv"
             video.write_bytes(b"video")
-            extracted = cache_dir / "Film.track-2.eng.srt"
-            extracted.write_text("subtitle", encoding="utf-8")
-            vs._write_json_atomic(vs._origin_sidecar(extracted), {
-                "source_video": str(video.resolve()),
-            })
+            with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
+                extracted = vs._cache_root(video) / "Film.track-2.eng.srt"
+                extracted.parent.mkdir(parents=True)
+                extracted.write_text("subtitle", encoding="utf-8")
+                vs._write_json_atomic(vs._origin_sidecar(extracted), {
+                    "source_video": str(video.resolve()),
+                })
 
-            output = gui._resolve_output_path(
-                "", "", str(extracted), same_folder=True)
+                output = gui._resolve_output_path(
+                    "", "", str(extracted), same_folder=True)
 
         self.assertEqual(output, video_dir / "Film.mkv.track-2.eng.tr.srt")
 
@@ -44,10 +44,9 @@ class VideoSubtitleGuiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             old = root / "old.srt"
-            new = root / "new.srt"
+            video = root / "video.mkv"
             old.write_text("old", encoding="utf-8")
-            new.write_text("new", encoding="utf-8")
-            vs._write_json_atomic(vs._origin_sidecar(new), {"language": "ita"})
+            video.write_bytes(b"video")
             messages = []
             language_vars = {}
 
@@ -55,20 +54,28 @@ class VideoSubtitleGuiTests(unittest.TestCase):
                 messages.append(message)
                 language_vars[str(new)] = _Var("English")
 
-            stub = SimpleNamespace(
-                _selected_files=[str(old)],
-                _input_folder_explicitly_selected=False,
-                input_var=_Var(""),
-                _content_type_preflight_done=True,
-                _language_preflight_done=True,
-                _pm=object(),
-                _dedupe_paths=lambda paths: list(dict.fromkeys(paths)),
-                _refresh_selected_files_ui=refresh,
-                _file_language_vars=language_vars,
-            )
+            with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
+                new = vs._cache_root(video) / "new.srt"
+                new.parent.mkdir(parents=True)
+                new.write_text("new", encoding="utf-8")
+                vs._write_json_atomic(vs._origin_sidecar(new), {
+                    "source_video": str(video.resolve()),
+                    "language": "ita",
+                })
+                stub = SimpleNamespace(
+                    _selected_files=[str(old)],
+                    _input_folder_explicitly_selected=False,
+                    input_var=_Var(""),
+                    _content_type_preflight_done=True,
+                    _language_preflight_done=True,
+                    _pm=object(),
+                    _dedupe_paths=lambda paths: list(dict.fromkeys(paths)),
+                    _refresh_selected_files_ui=refresh,
+                    _file_language_vars=language_vars,
+                )
 
-            added = gui.App._append_extracted_video_subtitles(
-                stub, [str(new)])
+                added = gui.App._append_extracted_video_subtitles(
+                    stub, [str(new)])
 
         self.assertEqual(added, 1)
         self.assertEqual(stub._selected_files, [str(old), str(new)])
