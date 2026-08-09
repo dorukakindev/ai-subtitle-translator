@@ -190,14 +190,35 @@ def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
     return items[start:start + size], current, pages
 
 
-def _scan_subtitle_folders(paths, cancel_check=None):
+def _nested_output_exclusions(roots, output_path="", same_folder=False):
+    if same_folder or not str(output_path or "").strip():
+        return []
+    output_abs = os.path.abspath(str(output_path))
+    output_key = os.path.normcase(output_abs)
+    excluded = []
+    for root in roots or ():
+        if not str(root or "").strip():
+            continue
+        root_abs = os.path.abspath(str(root))
+        root_key = os.path.normcase(root_abs)
+        try:
+            nested = os.path.commonpath([root_key, output_key]) == root_key
+        except (OSError, ValueError):
+            nested = False
+        if nested and output_key != root_key:
+            excluded.append(output_abs)
+    return list(dict.fromkeys(excluded))
+
+
+def _scan_subtitle_folders(paths, cancel_check=None, exclude_paths=()):
     files = []
     empty = []
     for path in paths:
         if cancel_check is not None and cancel_check():
             break
         found = get_subtitle_files(
-            path, recursive=True, cancel_check=cancel_check)
+            path, recursive=True, cancel_check=cancel_check,
+            exclude_paths=exclude_paths)
         if cancel_check is not None and cancel_check():
             break
         if found:
@@ -16375,17 +16396,10 @@ class App(ctk.CTk):
         output_var = getattr(self, "output_var", None)
         output_path = (output_var.get() if output_var is not None else "") or ""
         output_path = output_path.strip()
-        excluded_outputs = []
         same_folder_var = getattr(self, "same_folder_var", None)
         same_folder = bool(same_folder_var and same_folder_var.get())
-        if output_path and not same_folder:
-            try:
-                input_abs = os.path.normcase(os.path.abspath(path))
-                output_abs = os.path.normcase(os.path.abspath(output_path))
-                if os.path.commonpath([input_abs, output_abs]) == input_abs:
-                    excluded_outputs.append(output_abs)
-            except Exception:
-                pass
+        excluded_outputs = _nested_output_exclusions(
+            [path], output_path, same_folder)
 
         def _work(cancel_check):
             files = get_subtitle_files(
@@ -16408,7 +16422,9 @@ class App(ctk.CTk):
             if result is None:
                 return
             files, memory, stats = result
-            if self.input_var.get() != path:
+            if (self.input_var.get() != path
+                    or not getattr(self, "_input_folder_explicitly_selected", False)
+                    or getattr(self, "_selected_files", None)):
                 return
             current_target = _lang_iso639_1(self.tgt_var.get())
             current_source = _lang_iso639_1(self.src_var.get())
@@ -16764,16 +16780,26 @@ class App(ctk.CTk):
             and getattr(self, "_input_folder_explicitly_selected", False)
             else ""
         )
+        output_var = getattr(self, "output_var", None)
+        output_path = (output_var.get() if output_var is not None else "") or ""
+        same_folder_var = getattr(self, "same_folder_var", None)
+        same_folder = bool(same_folder_var and same_folder_var.get())
+        excluded_outputs = _nested_output_exclusions(
+            ([base_input] if base_input else []) + list(paths),
+            output_path.strip(), same_folder)
 
         def _work(cancel_check):
             base_files = (
                 get_subtitle_files(
-                    base_input, recursive=True, cancel_check=cancel_check)
+                    base_input, recursive=True, cancel_check=cancel_check,
+                    exclude_paths=excluded_outputs)
                 if base_input else []
             )
             if cancel_check():
                 return None
-            files, empty = _scan_subtitle_folders(paths, cancel_check=cancel_check)
+            files, empty = _scan_subtitle_folders(
+                paths, cancel_check=cancel_check,
+                exclude_paths=excluded_outputs)
             if cancel_check():
                 return None
             return base_files, files, empty
@@ -16799,7 +16825,14 @@ class App(ctk.CTk):
                 and self.input_var.get()):
             self._selected_files = self._get_srt_files()
         paths = self._dedupe_paths(paths)
-        files, empty = _scan_subtitle_folders(paths)
+        output_var = getattr(self, "output_var", None)
+        output_path = (output_var.get() if output_var is not None else "") or ""
+        same_folder_var = getattr(self, "same_folder_var", None)
+        same_folder = bool(same_folder_var and same_folder_var.get())
+        excluded_outputs = _nested_output_exclusions(
+            paths, output_path.strip(), same_folder)
+        files, empty = _scan_subtitle_folders(
+            paths, exclude_paths=excluded_outputs)
         return App._apply_scanned_folder_files(self, paths, files, empty)
 
     def _apply_scanned_folder_files(self, paths, files, empty):
@@ -19033,20 +19066,13 @@ class App(ctk.CTk):
                     == os.path.normcase(os.path.abspath(root))):
                 files = list(getattr(self, "_file_list_files", ()) or ())
             else:
-                excluded_outputs = []
                 output_var = getattr(self, "output_var", None)
                 output_path = (output_var.get() if output_var is not None else "") or ""
                 output_path = output_path.strip()
                 same_folder_var = getattr(self, "same_folder_var", None)
                 same_folder = bool(same_folder_var and same_folder_var.get())
-                if output_path and not same_folder:
-                    try:
-                        root_abs = os.path.normcase(os.path.abspath(root))
-                        output_abs = os.path.normcase(os.path.abspath(output_path))
-                        if os.path.commonpath([root_abs, output_abs]) == root_abs:
-                            excluded_outputs.append(output_abs)
-                    except Exception:
-                        pass
+                excluded_outputs = _nested_output_exclusions(
+                    [root], output_path, same_folder)
                 files = get_subtitle_files(
                     root, recursive=True, exclude_paths=excluded_outputs)
         else:
