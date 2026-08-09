@@ -1,6 +1,21 @@
 from dataclasses import dataclass
 
 
+DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS = 300
+
+
+def _raise_if_cancelled(cancel_context) -> None:
+    if cancel_context is not None:
+        cancel_context.raise_if_cancelled()
+
+
+def _request_timeout_seconds(value) -> float:
+    try:
+        return max(1.0, float(value))
+    except (TypeError, ValueError):
+        return float(DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS)
+
+
 @dataclass(frozen=True)
 class HelperModelConfig:
     label: str
@@ -301,8 +316,12 @@ def is_deepseek_helper_model(value: str) -> bool:
     return resolve_helper_model(value).provider == "deepseek"
 
 
-def call_bedrock_converse(model_id: str, messages: list, temperature: float = None, max_tokens: int = None, api_key_str: str = None, base_url: str = None):
+def call_bedrock_converse(model_id: str, messages: list, temperature: float = None,
+                          max_tokens: int = None, api_key_str: str = None,
+                          base_url: str = None, cancel_context=None,
+                          timeout_seconds=DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS):
     import os
+    _raise_if_cancelled(cancel_context)
     try:
         import boto3
     except ImportError:
@@ -338,7 +357,16 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
         session_kwargs["region_name"] = region_name
 
     session = boto3.Session(**session_kwargs)
-    client = session.client("bedrock-runtime")
+    client_kwargs = {}
+    if timeout_seconds is not None:
+        try:
+            from botocore.config import Config
+            timeout = _request_timeout_seconds(timeout_seconds)
+            client_kwargs["config"] = Config(
+                connect_timeout=min(30, timeout), read_timeout=timeout)
+        except ImportError:
+            pass
+    client = session.client("bedrock-runtime", **client_kwargs)
 
     system_prompts = []
     bedrock_messages = []
@@ -406,20 +434,26 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     except Exception as e:
         raise RuntimeError(f"AWS Bedrock çağrısı başarısız oldu: {e}")
 
+    _raise_if_cancelled(cancel_context)
     output_text = response["output"]["message"]["content"][0]["text"]
 
-    usage_data = response.get("usage", {})
+    usage_data = response.get("usage")
+    usage_available = isinstance(usage_data, dict) and any(
+        key in usage_data for key in ("inputTokens", "outputTokens", "totalTokens"))
+    usage_data = usage_data if isinstance(usage_data, dict) else {}
     input_tokens = usage_data.get("inputTokens", 0)
     output_tokens = usage_data.get("outputTokens", 0)
     total_tokens = usage_data.get("totalTokens", 0)
 
     class DummyUsage:
-        def __init__(self, in_t, out_t, tot_t):
+        def __init__(self, in_t, out_t, tot_t, available):
             self.input_tokens = in_t
             self.output_tokens = out_t
             self.prompt_tokens = in_t
             self.completion_tokens = out_t
             self.total_tokens = tot_t
+            self.available = available
+            self.missing = not available
 
     class DummyChoice:
         def __init__(self, text):
@@ -432,11 +466,12 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
             self.role = "assistant"
 
     class DummyResponse:
-        def __init__(self, text, in_t, out_t, tot_t):
+        def __init__(self, text, in_t, out_t, tot_t, usage_present):
             self.choices = [DummyChoice(text)]
-            self.usage = DummyUsage(in_t, out_t, tot_t)
+            self.usage = DummyUsage(in_t, out_t, tot_t, usage_present)
+            self.usage_available = usage_present
 
-    return DummyResponse(output_text, input_tokens, output_tokens, total_tokens)
+    return DummyResponse(output_text, input_tokens, output_tokens, total_tokens, usage_available)
 
 
 def _anthropic_messages_url(base_url: str | None) -> str:
@@ -451,10 +486,14 @@ def _anthropic_messages_url(base_url: str | None) -> str:
     return url + "/messages"
 
 
-def call_anthropic_messages(model_id: str, messages: list, temperature: float = None, max_tokens: int = None, api_key_str: str = None, base_url: str = None):
+def call_anthropic_messages(model_id: str, messages: list, temperature: float = None,
+                            max_tokens: int = None, api_key_str: str = None,
+                            base_url: str = None, cancel_context=None,
+                            timeout_seconds=DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS):
     import json
     import urllib.request
     import urllib.error
+    _raise_if_cancelled(cancel_context)
 
     system_prompt = ""
     anthropic_messages = []
@@ -499,7 +538,8 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
 
     req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=300) as response:
+        with urllib.request.urlopen(
+                req, timeout=_request_timeout_seconds(timeout_seconds)) as response:
             res = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = ""
@@ -511,23 +551,29 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
     except Exception as e:
         raise RuntimeError(f"Anthropic API çağrısı başarısız oldu: {e}")
 
+    _raise_if_cancelled(cancel_context)
     output_text = ""
     for item in res.get("content", []):
         if item.get("type") == "text":
             output_text += item.get("text", "")
 
-    usage_data = res.get("usage", {})
+    usage_data = res.get("usage")
+    usage_available = isinstance(usage_data, dict) and any(
+        key in usage_data for key in ("input_tokens", "output_tokens"))
+    usage_data = usage_data if isinstance(usage_data, dict) else {}
     input_tokens = usage_data.get("input_tokens", 0)
     output_tokens = usage_data.get("output_tokens", 0)
     total_tokens = input_tokens + output_tokens
 
     class DummyUsage:
-        def __init__(self, in_t, out_t, tot_t):
+        def __init__(self, in_t, out_t, tot_t, available):
             self.input_tokens = in_t
             self.output_tokens = out_t
             self.prompt_tokens = in_t
             self.completion_tokens = out_t
             self.total_tokens = tot_t
+            self.available = available
+            self.missing = not available
 
     class DummyChoice:
         def __init__(self, text):
@@ -540,9 +586,10 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
             self.role = "assistant"
 
     class DummyResponse:
-        def __init__(self, text, in_t, out_t, tot_t):
+        def __init__(self, text, in_t, out_t, tot_t, usage_present):
             self.choices = [DummyChoice(text)]
-            self.usage = DummyUsage(in_t, out_t, tot_t)
+            self.usage = DummyUsage(in_t, out_t, tot_t, usage_present)
+            self.usage_available = usage_present
 
-    return DummyResponse(output_text, input_tokens, output_tokens, total_tokens)
+    return DummyResponse(output_text, input_tokens, output_tokens, total_tokens, usage_available)
 
