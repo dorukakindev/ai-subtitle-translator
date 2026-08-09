@@ -2797,6 +2797,8 @@ def _srt_timestamp_ms(value: str) -> int:
     if not match:
         raise ValueError(f"Geçersiz SRT zamanı: {value!r}")
     hour, minute, second, millis = map(int, match.groups())
+    if minute >= 60 or second >= 60:
+        raise ValueError(f"Geçersiz SRT zamanı: {value!r}")
     return (((hour * 60) + minute) * 60 + second) * 1000 + millis
 
 
@@ -8948,7 +8950,10 @@ def _quality_pass_has_hard_failure(pass_status: dict | None) -> bool:
     for name, detail in dict(pass_status or {}).items():
         if name not in _REQUIRED_QUALITY_PASS_KEYS or not isinstance(detail, dict):
             continue
-        if str(detail.get("status", "")).casefold() in {"failed", "cancelled"}:
+        state = str(detail.get("status", "")).casefold()
+        if state in {"failed", "cancelled"}:
+            return True
+        if name == "Post-processing" and state == "partial":
             return True
     return False
 
@@ -20575,6 +20580,15 @@ class App(ctk.CTk):
                         self._log(f"Native Pass hatası: {e}", "warn")
                         postprocess_failed = True
 
+                _manual_quality_guard = _pass_structure_guard_reason(
+                    "QC", list(parse_subtitle(str(backup_path))), blocks)
+                if _manual_quality_guard:
+                    self._log(
+                        f"{fname}: kalite geçişleri altyazı yapısını değiştirdi "
+                        f"({_manual_quality_guard}); orijinal dosya korunacak.",
+                        "err")
+                    postprocess_failed = True
+
                 # SDH temizle
                 if do_sdh:
                     try:
@@ -20600,6 +20614,7 @@ class App(ctk.CTk):
                         self._set_phase("QC Kontrolü", f"{fname}  ({i+1}/{n})")
                         self._log(f"QC Kontrolü — {len(blocks)} satır...", "info")
                         _qc_status = {}
+                        _before_manual_qc = list(blocks)
                         blocks = self._run_quality_check_inline(
                             fp, orig_cues, blocks, 
                             helper_keys.get("qc", ""),
@@ -20608,6 +20623,14 @@ class App(ctk.CTk):
                             tgt, analysis_result=analysis_result,
                             use_passed_credentials=True,
                             status_out=_qc_status)
+                        _manual_qc_guard = _pass_structure_guard_reason(
+                            "QC", _before_manual_qc, blocks)
+                        if _manual_qc_guard:
+                            self._log(
+                                f"{fname}: QC altyazı yapısını değiştirdi "
+                                f"({_manual_qc_guard}); orijinal dosya korunacak.",
+                                "err")
+                            postprocess_failed = True
                         if _pass_failed(_qc_status):
                             postprocess_failed = True
                     except Exception as e:
@@ -24248,9 +24271,7 @@ class App(ctk.CTk):
                         "warn",
                     )
             else:
-                completed_files.append(filepath)
-                self._clear_sync_stage_ckpt(filepath)
-                self._log(f"Kaydedildi: {out_path}", "ok")
+                self._log(f"Geçici nihai çıktı yazıldı: {out_path}", "info")
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
             _delivery_scan_failed = False
@@ -24267,7 +24288,18 @@ class App(ctk.CTk):
                 self._log(
                     f"{fname}: nihai teslim denetimi çalışmadı: {delivery_error}",
                     "err")
+            if not _has_missing and not _delivery_scan_failed:
+                _written_audit = _subtitle_delivery_audit(
+                    filepath, str(out_path), tgt, file_src)
+                if _delivery_audit_has_hard_error(_written_audit):
+                    _delivery_scan_failed = True
+                    self._log(
+                        f"{fname}: yazılan SRT yapısal teslim denetiminden geçmedi.",
+                        "err")
             # Rapor satırı
+            _pass_fix = sum(
+                1 for block in sorted_blocks
+                if _pre_pass.get(str(block[0])) not in (None, block[2]))
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _quality_pass_failed = _quality_pass_has_hard_failure(_pass_status)
             if _quality_pass_failed:
@@ -24322,6 +24354,9 @@ class App(ctk.CTk):
                 if self._wait_between_files(fi, n_files, fname) == "stopped":
                     break
                 continue
+            completed_files.append(filepath)
+            self._clear_sync_stage_ckpt(filepath)
+            self._log(f"Kaydedildi ve teslim denetimi geçti: {out_path}", "ok")
             # TM kaydı (ortak yardımcı)
             self._record_file_status(filepath, "Çeviri Hafızası", "running")
             self._store_tm_pairs(sorted_blocks,
@@ -25391,6 +25426,15 @@ class App(ctk.CTk):
                             if _orig_cues is None:
                                 self._log("Resume: kaynak dosya bulunamadı — etiket geri yükleme / "
                                           "[HATA] işaretleme ve TM/QC bu dosyada atlanacak", "warn")
+                                _partial_path = _move_stage_to_partial(
+                                    _stage_path, _out_obj)
+                                self._log(
+                                    "Resume: gerçek kaynak olmadan kalite ve teslim "
+                                    f"doğrulanamaz; sonuç {_partial_path.name} olarak "
+                                    "ayrıldı ve tamamlandı sayılmadı.", "err")
+                                if result_out is not None:
+                                    result_out["status"] = "failed"
+                                break
                             try:
                                 _resume_schema = (
                                     self._schema_by_name(schema_name)
@@ -25491,6 +25535,8 @@ class App(ctk.CTk):
                                         break
                                     _record_pass_change(_pass_trace, "Review", _before_rev, pp, _pass_history)
                                 except Exception as e:
+                                    _pass_status["Review"] = {
+                                        "status": "failed", "error": str(e)}
                                     self._log(f"Bağlam incelemesi hatası: {e}", "warn")
                             _analysis_result = None
                             if _orig_cues:
@@ -25801,6 +25847,18 @@ class App(ctk.CTk):
                                     self._log(
                                         f"{Path(output_path).name}: nihai teslim denetimi "
                                         f"çalışmadı: {delivery_error}", "err")
+                                if not _delivery_scan_failed:
+                                    _written_audit = _subtitle_delivery_audit(
+                                        str(_src_path), str(_write_path), tgt,
+                                        source_language or self._snap_get(
+                                            "src_lang", "English"))
+                                    if _delivery_audit_has_hard_error(
+                                            _written_audit):
+                                        _delivery_scan_failed = True
+                                        self._log(
+                                            f"{Path(output_path).name}: yazılan SRT "
+                                            "yapısal teslim denetiminden geçmedi.",
+                                            "err")
                                 _resume_quality_failed = (
                                     _delivery_scan_failed
                                     or _quality_pass_has_hard_failure(_pass_status))
@@ -26230,6 +26288,8 @@ class App(ctk.CTk):
                         _pass_history)
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
+                    _pass_status["Critic"] = {
+                        "status": "failed", "error": str(e)}
                     self._log(f"Critic Pass hatası: {e}", "warn")
             if (self.polish_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
@@ -26253,6 +26313,8 @@ class App(ctk.CTk):
                         _pass_trace, "Polish", _before_pass, sorted_blocks,
                         _pass_history)
                 except Exception as e:
+                    _pass_status["Polish"] = {
+                        "status": "failed", "error": str(e)}
                     self._log(f"Polish Pass hatası: {e}", "warn")
             if (self.native_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
@@ -26286,6 +26348,8 @@ class App(ctk.CTk):
                         _pass_trace, "Native", _before_pass, sorted_blocks,
                         _pass_history)
                 except Exception as e:
+                    _pass_status["Native"] = {
+                        "status": "failed", "error": str(e)}
                     self._log(f"Native Pass hatası: {e}", "warn")
             if (sorted_blocks and _quality_api_allowed and not self._stop_flag
                     and (self.critic_var.get() or self.polish_var.get()
@@ -26299,6 +26363,8 @@ class App(ctk.CTk):
                     if _final_cons_fixes:
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
+                    _pass_status["Post-processing"] = {
+                        "status": "failed", "error": str(e)}
                     self._log(f"Final consistency sweep hatası: {e}", "warn")
             _pass_fix = sum(
                 1 for block in sorted_blocks
@@ -26352,6 +26418,8 @@ class App(ctk.CTk):
                         _pass_trace, "QC", _before_pass, sorted_blocks,
                         _pass_history)
                 except Exception as e:
+                    _pass_status["QC"] = {
+                        "status": "failed", "error": str(e)}
                     self._log(f"QC hatası: {e}", "warn")
             if self._stop_flag:
                 break
@@ -26486,7 +26554,18 @@ class App(ctk.CTk):
                 self._log(
                     f"{Path(fp).name}: nihai teslim denetimi çalışmadı: "
                     f"{delivery_error}", "err")
+            if not _has_missing and not _delivery_scan_failed:
+                _written_audit = _subtitle_delivery_audit(
+                    fp, str(out_path), _tgt_lang, _file_src_lang)
+                if _delivery_audit_has_hard_error(_written_audit):
+                    _delivery_scan_failed = True
+                    self._log(
+                        f"{Path(fp).name}: yazılan SRT yapısal teslim "
+                        "denetiminden geçmedi.", "err")
             total_warnings += w
+            _pass_fix = sum(
+                1 for block in sorted_blocks
+                if _pre_pass.get(str(block[0])) not in (None, block[2]))
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _translation_chunks = _file_translation_chunk_count(file_map, fp)
             _quality_pass_failed = _quality_pass_has_hard_failure(_pass_status)
@@ -27456,6 +27535,8 @@ class App(ctk.CTk):
                             break
                         _record_pass_change(_pass_trace, "Review", _before_rev, _final_blocks, _pass_history)
                     except Exception as e:
+                        _pass_status["Review"] = {
+                            "status": "failed", "error": str(e)}
                         self._log(f"Bağlam incelemesi hatası: {e}", "warn")
 
                 # Post-processing: Critic Pass + Polish Pass + Native + SDH + Line Breaks + QC
@@ -27664,7 +27745,8 @@ class App(ctk.CTk):
                     except Exception as pp_e:
                         _final_blocks = pp_blocks
                         _pass_status["Post-processing"] = {
-                            "status": "partial", "error": str(pp_e),
+                            "status": "failed", "error": str(pp_e),
+                            "preserved_partial_changes": True,
                         }
                         self._log(f"Post-processing hatası: {pp_e}", "err")
 
@@ -27798,6 +27880,18 @@ class App(ctk.CTk):
                     }
                     self._log(
                         f"Nihai teslim denetimi çalışmadı: {delivery_error}", "err")
+                if not _delivery_scan_failed:
+                    _written_audit = _subtitle_delivery_audit(
+                        filepath, str(out_path), tgt, file_src)
+                    if _delivery_audit_has_hard_error(_written_audit):
+                        _delivery_scan_failed = True
+                        _pass_status["Final-Delivery"] = {
+                            "status": "failed",
+                            "error": "written_delivery_structure_invalid",
+                        }
+                        self._log(
+                            f"{fname}: yazılan SRT yapısal teslim denetiminden "
+                            "geçmedi.", "err")
                 _hybrid_quality_failed = (
                     _delivery_scan_failed
                     or _quality_pass_has_hard_failure(_pass_status))
@@ -27846,6 +27940,9 @@ class App(ctk.CTk):
 
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu)
                 _hata_n, _cps_n = _count_hata_cps(_final_blocks)
+                _pass_fix = sum(
+                    1 for block in _final_blocks
+                    if _pre_pass.get(str(block[0])) not in (None, block[2]))
                 _cps_avg, _cps_max = _cps_stats(_final_blocks)
                 _analysis_context = analysis_tuple[0]
                 _analysis_examples = analysis_tuple[1]
