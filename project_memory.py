@@ -118,7 +118,8 @@ class ProjectMemory:
         merged = {}
         for key in ("glossary", "characters", "proper_nouns", "pronoun_map"):
             values = dict(disk_data.get(key, {})) if isinstance(disk_data, dict) else {}
-            values.update(memory_data.get(key, {}))
+            for item, value in dict(memory_data.get(key, {})).items():
+                values.setdefault(item, value)
             merged[key] = values
         disk_notes = list(disk_data.get("series_notes", [])) if isinstance(disk_data, dict) else []
         memory_notes = list(memory_data.get("series_notes", []))

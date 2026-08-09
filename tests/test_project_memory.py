@@ -115,6 +115,29 @@ class ProjectMemoryOpsTest(unittest.TestCase):
                 "beta": "beta-tr",
             })
 
+    def test_two_instances_keep_first_saved_value_for_conflicting_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = ProjectMemory(td)
+            second = ProjectMemory(td)
+
+            first.update_glossary({"ward": "koğuş", "cell": "hücre"})
+            second.update_glossary({"ward": "servis", "hall": "salon"})
+
+            saved = ProjectMemory(td)
+            self.assertEqual(saved.get_glossary().get("ward"), "koğuş")
+            self.assertEqual(saved.get_glossary().get("cell"), "hücre")
+            self.assertEqual(saved.get_glossary().get("hall"), "salon")
+
+    def test_clear_remains_an_explicit_overwrite(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = ProjectMemory(td)
+            second = ProjectMemory(td)
+
+            first.update_glossary({"ward": "koğuş"})
+            second.clear()
+
+            self.assertEqual(ProjectMemory(td).get_glossary(), {})
+
     def test_getters_return_copies(self):
         pm = self._make_pm()
         pm.update_glossary({"term": "terim"})

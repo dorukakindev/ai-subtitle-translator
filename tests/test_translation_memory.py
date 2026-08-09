@@ -11,6 +11,7 @@ Kapsar:
 import tempfile
 import unittest
 import sqlite3
+from pathlib import Path
 from unittest.mock import patch
 
 import translation_memory as tm_mod
@@ -239,6 +240,36 @@ class TMSourceLanguageIsolationTest(unittest.TestCase):
         }
         self.assertIn("src_lang", columns)
         tm.close()
+
+    def test_legacy_database_adds_columns_before_dependent_indexes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "legacy_tm.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE tm (hash TEXT PRIMARY KEY, source TEXT NOT NULL, "
+                "target TEXT NOT NULL, model TEXT DEFAULT '', ts REAL DEFAULT 0)"
+            )
+            conn.execute(
+                "INSERT INTO tm (hash, source, target, model, ts) VALUES (?, ?, ?, ?, ?)",
+                ("legacy", "old source", "old target", "old-model", 0),
+            )
+            conn.commit()
+            conn.close()
+
+            tm = TranslationMemory(db_path=db_path)
+            db = tm._get_conn()
+            columns = {row[1] for row in db.execute("PRAGMA table_info(tm)").fetchall()}
+            indexes = {row[1] for row in db.execute("PRAGMA index_list(tm)").fetchall()}
+
+            self.assertTrue({"tgt_lang", "src_lang", "context_key"}.issubset(columns))
+            self.assertTrue(
+                {"idx_tgt_lang_len", "idx_tm_langs_len", "idx_tm_context_len"}.issubset(indexes)
+            )
+            self.assertEqual(
+                db.execute("SELECT target FROM tm WHERE hash = ?", ("legacy",)).fetchone()[0],
+                "old target",
+            )
+            tm.close()
 
     def test_exact_batch_and_fuzzy_are_isolated_by_source_language(self):
         tm = _tmp_tm()

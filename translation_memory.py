@@ -171,20 +171,22 @@ class TranslationMemory:
                 context_key TEXT DEFAULT ''
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tgt_lang_len ON tm(tgt_lang, LENGTH(source))")
-        
         # Migrasyon: eski DB'lerde ek kolonlar yoksa ekle
         cursor = conn.execute("PRAGMA table_info(tm)")
         columns = {row[1] for row in cursor.fetchall()}
-        for col_name, col_def in {"schema_name": " TEXT DEFAULT ''", "profanity": " TEXT DEFAULT ''",
-                                    "tgt_lang": " TEXT DEFAULT ''", "src_lang": " TEXT DEFAULT ''",
-                                    "context_key": " TEXT DEFAULT ''"}.items():
+        required_columns = {"schema_name": " TEXT DEFAULT ''", "profanity": " TEXT DEFAULT ''",
+                            "tgt_lang": " TEXT DEFAULT ''", "src_lang": " TEXT DEFAULT ''",
+                            "context_key": " TEXT DEFAULT ''"}
+        for col_name, col_def in required_columns.items():
             if col_name not in columns:
-                try:
-                    conn.execute(f"ALTER TABLE tm ADD COLUMN {col_name}{col_def}")
-                    conn.commit()
-                except Exception:
-                    pass
+                conn.execute(f"ALTER TABLE tm ADD COLUMN {col_name}{col_def}")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(tm)").fetchall()}
+        missing_columns = set(required_columns) - columns
+        if missing_columns:
+            raise sqlite3.OperationalError(
+                f"TM schema migration failed; missing columns: {', '.join(sorted(missing_columns))}"
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tgt_lang_len ON tm(tgt_lang, LENGTH(source))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tm_langs_len ON tm(tgt_lang, src_lang, LENGTH(source))")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tm_context_len ON tm(tgt_lang, src_lang, context_key, LENGTH(source))")
         conn.commit()
