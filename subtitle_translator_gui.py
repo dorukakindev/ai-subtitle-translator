@@ -4126,6 +4126,9 @@ def _chain_waves(wave_a: list, wave_b: list, wave_a_raw_map: dict,
         if not raw:
             prev_pairs = []
             continue
+        if _chunk_response_retry_reason(raw, req):
+            prev_pairs = []
+            continue
         tmap = parse_response(raw, fmap.get(cid, []))
         pairs = _chain_pairs_from_result(req["body"]["messages"][1]["content"], tmap)
         prev_pairs = pairs or []
@@ -8918,6 +8921,22 @@ def _pass_efficiency_rows(row: dict) -> list[dict]:
             "cost_per_change": round(cost / changed, 8) if changed else None,
         })
     return result
+
+
+_REQUIRED_QUALITY_PASS_KEYS = frozenset({
+    "Consistency", "Review", "Critic", "Polish", "Native", "Condense",
+    "QC", "Term-Normalize", "Final-Semantic", "Backtranslation",
+    "Post-processing", "Final-Delivery",
+})
+
+
+def _quality_pass_has_hard_failure(pass_status: dict | None) -> bool:
+    for name, detail in dict(pass_status or {}).items():
+        if name not in _REQUIRED_QUALITY_PASS_KEYS or not isinstance(detail, dict):
+            continue
+        if str(detail.get("status", "")).casefold() in {"failed", "cancelled"}:
+            return True
+    return False
 
 
 def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
@@ -15751,7 +15770,8 @@ class App(ctk.CTk):
 
         def _retry_body_for(req, reason: str):
             body = copy.deepcopy(req["body"])
-            if reason in {"adjacent_duplicate", "id_integrity", "empty_dialogue"}:
+            if reason in {"adjacent_duplicate", "id_integrity", "empty_dialogue",
+                          "cue_content_owner_mismatch"}:
                 for msg in body.get("messages", []):
                     if msg.get("role") != "user":
                         continue
@@ -15876,7 +15896,8 @@ class App(ctk.CTk):
         strict_fallback = set()
         for cid, req in req_by_id.items():
             reason = _retry_reason(cid)
-            if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue"}:
+            if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue",
+                              "cue_content_owner_mismatch"}:
                 continue
             try:
                 messages = req.get("body", {}).get("messages", [])
@@ -20420,6 +20441,12 @@ class App(ctk.CTk):
                     self._log(f"{fname}: geçerli blok yok, atlandı", "warn")
                     self._update_file_progress(fp, "Atlandı", 0, "skip")
                     continue
+                postprocess_failed = False
+
+                def _pass_failed(status):
+                    return str((status or {}).get("status", "")).lower() in {
+                        "failed", "cancelled"
+                    }
 
                 source_path = _resolve_postprocess_source(fp)
                 source_language = job.get("src_lang", "English")
@@ -20427,7 +20454,7 @@ class App(ctk.CTk):
                     ht.load_subtitle(str(source_path), source_language)
                     if source_path else None)
                 analysis_result = None
-                if do_critic or do_polish or do_native:
+                if do_critic or do_polish or do_native or do_qc:
                     if orig_cues:
                         self._log(
                             f"{fname}: kaynak rapordan bulundu: {source_path.name}",
@@ -20437,6 +20464,7 @@ class App(ctk.CTk):
                             f"{fname}: gerçek kaynak raporda bulunamadığı için Critic, Polish, "
                             "Native ve QC atlandı; kaynak doğrulaması olmadan çeviri değiştirilmeyecek.",
                             "warn")
+                        postprocess_failed = True
 
                 # Critic Pass
                 if do_critic and orig_cues:
@@ -20465,8 +20493,11 @@ class App(ctk.CTk):
                         if self._stop_flag:
                             break
                         self._write_critic_change_report(fp, _critic_change_log)
+                        if _pass_failed(_critic_status):
+                            postprocess_failed = True
                     except Exception as e:
                         self._log(f"Critic Pass hatası: {e}", "warn")
+                        postprocess_failed = True
 
                 # Polish Pass
                 if do_polish and orig_cues:
@@ -20485,8 +20516,11 @@ class App(ctk.CTk):
                             status_out=_polish_status)
                         if self._stop_flag:
                             break
+                        if _pass_failed(_polish_status):
+                            postprocess_failed = True
                     except Exception as e:
                         self._log(f"Polish Pass hatası: {e}", "warn")
+                        postprocess_failed = True
 
                 # Native Okuyucu Pass
                 if do_native and orig_cues:
@@ -20512,8 +20546,11 @@ class App(ctk.CTk):
                             status_out=_native_status)
                         if self._stop_flag:
                             break
+                        if _pass_failed(_native_status):
+                            postprocess_failed = True
                     except Exception as e:
                         self._log(f"Native Pass hatası: {e}", "warn")
+                        postprocess_failed = True
 
                 # SDH temizle
                 if do_sdh:
@@ -20522,6 +20559,7 @@ class App(ctk.CTk):
                         blocks = clean_sdh(blocks, src_map=None, source_driven=False)
                     except Exception as e:
                         self._log(f"SDH temizleme hatası: {e}", "warn")
+                        postprocess_failed = True
 
                 # Satır kırma
                 if do_linebrk:
@@ -20530,6 +20568,7 @@ class App(ctk.CTk):
                         blocks = apply_line_breaks(blocks)
                     except Exception as e:
                         self._log(f"Satır kırma hatası: {e}", "warn")
+                        postprocess_failed = True
 
                 # QC Kontrolü
                 if do_qc and orig_cues:
@@ -20546,8 +20585,11 @@ class App(ctk.CTk):
                             tgt, analysis_result=analysis_result,
                             use_passed_credentials=True,
                             status_out=_qc_status)
+                        if _pass_failed(_qc_status):
+                            postprocess_failed = True
                     except Exception as e:
                         self._log(f"QC hatası: {e}", "warn")
+                        postprocess_failed = True
                 elif do_qc:
                     self._log(
                         "QC atlandı: post-işlemde gerçek kaynak altyazı seçilmedi.",
@@ -20568,6 +20610,7 @@ class App(ctk.CTk):
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"AI segmentasyon hatası: {e}", "warn")
+                        postprocess_failed = True
                 elif do_merge or (do_ai_merge and not mm_key):
                     try:
                         if do_ai_merge and not mm_key:
@@ -20581,6 +20624,15 @@ class App(ctk.CTk):
                         self._log(f"Parçalı cue birleştirme: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"Cue birleştirme hatası: {e}", "warn")
+                        postprocess_failed = True
+
+                if postprocess_failed:
+                    self._log(
+                        f"{fname}: seçilen post-işlem geçişlerinden en az biri "
+                        "tamamlanamadı; orijinal dosya değiştirilmedi.", "err")
+                    self._update_file_progress(
+                        fp, "Post-işlem tamamlanamadı", 100, "error")
+                    continue
 
                 if orig_cues:
                     _raw_map = _raw_src_map_from_cues(orig_cues)
@@ -20657,6 +20709,8 @@ class App(ctk.CTk):
             )
         except Exception as e:
             self._log_exc("QC hatası", e)
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(e)})
             return blocks
         if self.__dict__.get("_stop_flag", False) or (
                 cancel_context is not None and cancel_context.is_cancelled()):
@@ -24063,8 +24117,12 @@ class App(ctk.CTk):
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
                         sorted_blocks, _pass_history)
-                except Exception:
-                    pass
+                except Exception as term_error:
+                    _pass_status["Term-Normalize"] = {
+                        "status": "failed", "error": str(term_error)}
+                    self._log(
+                        f"{fname}: Terim Normalizasyonu çalışmadı: "
+                        f"{term_error}", "err")
             if self._stop_flag:
                 break
             _before_semantic = list(sorted_blocks)
@@ -24175,6 +24233,19 @@ class App(ctk.CTk):
                     "err")
             # Rapor satırı
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
+            _quality_pass_failed = _quality_pass_has_hard_failure(_pass_status)
+            if _quality_pass_failed:
+                self._log(
+                    f"{fname}: seçilen kalite geçişlerinden en az biri "
+                    "tamamlanamadı; dosya tamamlandı sayılmayacak.", "err")
+            if not _has_missing and (
+                    _delivery_scan_failed or _quality_pass_failed):
+                quarantined = _quarantine_incomplete_final(out_path)
+                if quarantined:
+                    _write_path = quarantined
+                    self._log(
+                        f"{fname}: doğrulanmamış çıktı karantinaya alındı: "
+                        f"{quarantined.name}", "warn")
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             _analysis_status = (
                 f"{'tamam' if _analysis_ok else 'kısmi'} — "
@@ -24200,12 +24271,18 @@ class App(ctk.CTk):
                 "translation_chunks": len(batch_reqs),
                 "tm_hits": self._tm.hit_count_session(),
                 "delivery_scan_failed": _delivery_scan_failed,
-                "run_status": "error" if (_has_missing or _delivery_scan_failed) else "done",
+                "run_status": "error" if (
+                    _has_missing or _delivery_scan_failed
+                    or _quality_pass_failed) else "done",
             })
-            if _has_missing:
+            if _has_missing or _delivery_scan_failed or _quality_pass_failed:
                 failed_files.append(filepath)
+                failure_label = (
+                    f"Eksik çeviri: {_hata_n}" if _has_missing
+                    else "Teslim denetimi başarısız" if _delivery_scan_failed
+                    else "Kalite geçişi başarısız")
                 self._update_file_progress(
-                    filepath, f"Eksik çeviri: {_hata_n}", 100, "error")
+                    filepath, failure_label, 100, "error")
                 if self._wait_between_files(fi, n_files, fname) == "stopped":
                     break
                 continue
@@ -24227,8 +24304,10 @@ class App(ctk.CTk):
                             if hasattr(c, "name")])
                         if pronoun_map:
                             _file_pm.update_pronoun_map(pronoun_map)
-                    except Exception:
-                        pass
+                    except Exception as memory_error:
+                        self._log(
+                            f"{fname}: proje hafızası güncellenemedi: "
+                            f"{memory_error}", "warn")
                 _series_memory_status = {}
                 self._update_series_memory_from_analysis(
                     filepath, context, pronoun_map, tgt,
@@ -25253,8 +25332,10 @@ class App(ctk.CTk):
                                 if _src_path is not None:
                                     _orig_cues = ht.load_subtitle(
                                         str(_src_path), source_language)
-                            except Exception:
-                                pass
+                            except Exception as source_error:
+                                self._log(
+                                    f"Resume: kaynak dosya okunamadı: "
+                                    f"{source_error}", "warn")
                             if _orig_cues is None:
                                 self._log("Resume: kaynak dosya bulunamadı — etiket geri yükleme / "
                                           "[HATA] işaretleme ve TM/QC bu dosyada atlanacak", "warn")
@@ -25558,8 +25639,15 @@ class App(ctk.CTk):
                                         _record_pass_change(
                                             _pass_trace, "Term-Normalize",
                                             _before_termnorm, pp, _pass_history)
-                                    except Exception:
-                                        pass
+                                    except Exception as term_error:
+                                        _pass_status["Term-Normalize"] = {
+                                            "status": "failed",
+                                            "error": str(term_error),
+                                        }
+                                        self._log(
+                                            f"{Path(output_path).name}: Terim "
+                                            f"Normalizasyonu çalışmadı: {term_error}",
+                                            "err")
                                 _before_semantic = list(pp)
                                 _semantic_status = {}
                                 _back_status = {}
@@ -25661,14 +25749,27 @@ class App(ctk.CTk):
                                     self._log(
                                         f"{Path(output_path).name}: nihai teslim denetimi "
                                         f"çalışmadı: {delivery_error}", "err")
-                                self._store_tm_pairs(
-                                    pp, _src_map, self._main_model_name(), tgt,
-                                    schema_name=schema_name or self._get_file_schema(str(_src_path))["name"],
-                                    source_language=source_language or self._effective_file_source_language(
-                                        str(_src_path), self._snap_get("src_lang", "English")),
-                                    context_fingerprint=(
-                                        _file_content_sha256(_src_path)
-                                        if _src_path else ""))
+                                _resume_quality_failed = (
+                                    _delivery_scan_failed
+                                    or _quality_pass_has_hard_failure(_pass_status))
+                                if _resume_quality_failed:
+                                    quarantined = _quarantine_incomplete_final(
+                                        output_path)
+                                    if quarantined:
+                                        _write_path = quarantined
+                                        self._log(
+                                            f"Resume: doğrulanmamış çıktı "
+                                            f"karantinaya alındı: "
+                                            f"{quarantined.name}", "warn")
+                                else:
+                                    self._store_tm_pairs(
+                                        pp, _src_map, self._main_model_name(), tgt,
+                                        schema_name=schema_name or self._get_file_schema(str(_src_path))["name"],
+                                        source_language=source_language or self._effective_file_source_language(
+                                            str(_src_path), self._snap_get("src_lang", "English")),
+                                        context_fingerprint=(
+                                            _file_content_sha256(_src_path)
+                                            if _src_path else ""))
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -25682,7 +25783,7 @@ class App(ctk.CTk):
                                     else "kullanılamadı (resume önbelleği yok)")
                                 report_rows.append({"name": Path(output_path).name,
                                                     "source_path": str(_src_path),
-                                                    "output_path": str(output_path),
+                                                    "output_path": str(_write_path),
                                                     "total": len(pp), "hata": _hn, "cps": _cn,
                                                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                                                     "cons": _cons_fixes,
@@ -25704,16 +25805,23 @@ class App(ctk.CTk):
                                                      "tm_hits": self._tm.hit_count_session(),
                                                      "delivery_scan_failed": _delivery_scan_failed,
                                                      "run_status": (
-                                                         "error" if _delivery_scan_failed
+                                                         "error" if (
+                                                             _delivery_scan_failed
+                                                             or _quality_pass_has_hard_failure(
+                                                                 _pass_status))
                                                          else "done")})
                             terminal = True
-                            if _delivery_scan_failed:
+                            _resume_quality_failed = (
+                                _delivery_scan_failed
+                                or _quality_pass_has_hard_failure(_pass_status))
+                            if _resume_quality_failed:
                                 self._update_file_progress(
                                     str(_src_path or source_path),
-                                    "Teslim denetimi başarısız", 100, "error")
+                                    "Kalite/teslim denetimi başarısız",
+                                    100, "error")
                             if result_out is not None:
                                 result_out["status"] = (
-                                    "failed" if _delivery_scan_failed
+                                    "failed" if _resume_quality_failed
                                     else "completed")
                         except Exception as ppe:
                             self._log_exc(f"Post-processing [{Path(output_path).name}]", ppe)
@@ -26218,8 +26326,12 @@ class App(ctk.CTk):
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
                         sorted_blocks, _pass_history)
-                except Exception:
-                    pass
+                except Exception as term_error:
+                    _pass_status["Term-Normalize"] = {
+                        "status": "failed", "error": str(term_error)}
+                    self._log(
+                        f"{Path(fp).name}: Terim Normalizasyonu çalışmadı: "
+                        f"{term_error}", "err")
             if self._stop_flag:
                 break
             _before_semantic = list(sorted_blocks)
@@ -26307,15 +26419,33 @@ class App(ctk.CTk):
                     out_path, _raw_backup_blocks, _raw_map, _tgt_lang)
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
             self._record_file_status(fp, "Nihai Teslim Denetimi", "running")
-            w = (_hata_n if _has_missing else
-                 scan_translation_quality(fp, sorted_blocks, log_fn=self._log,
-                                          src_clean_map=src_blocks,
-                                          issue_fn=self._record_quality_issue,
-                                          locked_terms=_locked_terms_for(fp),
-                                          source_language=_file_src_lang))
+            _delivery_scan_failed = False
+            try:
+                w = (_hata_n if _has_missing else
+                     scan_translation_quality(
+                         fp, sorted_blocks, log_fn=self._log,
+                         src_clean_map=src_blocks,
+                         issue_fn=self._record_quality_issue,
+                         locked_terms=_locked_terms_for(fp),
+                         source_language=_file_src_lang))
+            except Exception as delivery_error:
+                w = 0
+                _delivery_scan_failed = True
+                self._log(
+                    f"{Path(fp).name}: nihai teslim denetimi çalışmadı: "
+                    f"{delivery_error}", "err")
             total_warnings += w
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _translation_chunks = _file_translation_chunk_count(file_map, fp)
+            _quality_pass_failed = _quality_pass_has_hard_failure(_pass_status)
+            if not _has_missing and (
+                    _delivery_scan_failed or _quality_pass_failed):
+                quarantined = _quarantine_incomplete_final(out_path)
+                if quarantined:
+                    _write_path = quarantined
+                    self._log(
+                        f"{Path(fp).name}: doğrulanmamış çıktı karantinaya "
+                        f"alındı: {quarantined.name}", "warn")
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
@@ -26338,12 +26468,17 @@ class App(ctk.CTk):
                     self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": _translation_chunks,
                 "tm_hits": self._tm.hit_count_session(),
-                "run_status": "error" if _has_missing else "done",
+                "delivery_scan_failed": _delivery_scan_failed,
+                "run_status": "error" if (
+                    _has_missing or _delivery_scan_failed
+                    or _quality_pass_failed) else "done",
             })
-            if _has_missing:
+            if _has_missing or _delivery_scan_failed or _quality_pass_failed:
                 _failed_files.append(fp)
-                self._record_file_status(
-                    fp, f"Eksik çeviri: {_hata_n}", "error")
+                self._record_file_status(fp, (
+                    f"Eksik çeviri: {_hata_n}" if _has_missing
+                    else "Teslim denetimi başarısız" if _delivery_scan_failed
+                    else "Kalite geçişi başarısız"), "error")
                 if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
                     break
                 continue
@@ -26888,8 +27023,10 @@ class App(ctk.CTk):
                                                         if hasattr(c, 'name')])
                             if pronoun_map:
                                 _file_pm.update_pronoun_map(pronoun_map)
-                        except Exception:
-                            pass
+                        except Exception as memory_error:
+                            self._log(
+                                f"{fname}: proje hafızası güncellenemedi: "
+                                f"{memory_error}", "warn")
                     self._log(f"Analiz tamam — {len(context.recurring_terms)} terim, "
                               f"{len(context.characters)} karakter"
                               + (f", {len(idiom_map)} deyim" if idiom_map else "")
@@ -27609,16 +27746,28 @@ class App(ctk.CTk):
                     }
                     self._log(
                         f"Nihai teslim denetimi çalışmadı: {delivery_error}", "err")
-                self._record_file_status(
-                    filepath, "Çeviri Hafızası", "running")
-                self._store_tm_pairs(
-                    _final_blocks, _src_map, self._main_model_name(), tgt,
-                    schema_name=file_schema_name, source_language=file_src,
-                    context_fingerprint=_expected_source_hash)
-                if analysis_ok and _n_filled == 0 and not any(
+                _hybrid_quality_failed = (
+                    _delivery_scan_failed
+                    or _quality_pass_has_hard_failure(_pass_status))
+                if _hybrid_quality_failed:
+                    quarantined = _quarantine_incomplete_final(out_path)
+                    if quarantined:
+                        out_path = str(quarantined)
+                        self._log(
+                            f"{fname}: doğrulanmamış çıktı karantinaya "
+                            f"alındı: {quarantined.name}", "warn")
+                else:
+                    self._record_file_status(
+                        filepath, "Çeviri Hafızası", "running")
+                    self._store_tm_pairs(
+                        _final_blocks, _src_map, self._main_model_name(), tgt,
+                        schema_name=file_schema_name, source_language=file_src,
+                        context_fingerprint=_expected_source_hash)
+                if (not _hybrid_quality_failed and analysis_ok
+                        and _n_filled == 0 and not any(
                         str(text or "").startswith("[HATA")
                         or "[ÇEVİRİ EKSİK]" in str(text or "")
-                        for _idx, _ts, text in _final_blocks):
+                        for _idx, _ts, text in _final_blocks)):
                     _context, _char_examples, _pronoun_map, *_rest = analysis_tuple
                     _series_memory_status = {}
                     self._update_series_memory_from_analysis(
@@ -27628,7 +27777,9 @@ class App(ctk.CTk):
                         _series_memory_status)
                 else:
                     _pass_status["Series-Memory"] = {
-                        "status": "skipped", "reason": "analysis_incomplete",
+                        "status": "skipped", "reason": (
+                            "quality_failed" if _hybrid_quality_failed
+                            else "analysis_incomplete"),
                         "changed": 0,
                     }
                 if self.auto_glossary_var.get():
@@ -27675,8 +27826,18 @@ class App(ctk.CTk):
                     "tm_hits": self._tm.hit_count_session(),
                     "delivery_scan_failed": _delivery_scan_failed,
                     "run_status": (
-                        "error" if _delivery_scan_failed else "done"),
+                        "error" if (
+                            _delivery_scan_failed
+                            or _quality_pass_has_hard_failure(_pass_status))
+                        else "done"),
                 })
+
+                if _delivery_scan_failed or _quality_pass_has_hard_failure(
+                        _pass_status):
+                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, "Kalite/teslim denetimi başarısız", "error")
+                    continue
 
                 ht.clear_context_cache(filepath)
                 ht.update_batch_session(

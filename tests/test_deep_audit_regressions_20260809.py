@@ -1,4 +1,5 @@
 import json
+import inspect
 import tempfile
 import threading
 import unittest
@@ -12,6 +13,22 @@ import subtitle_translator_gui as gui
 
 
 class CueOwnershipGuardTest(unittest.TestCase):
+    @staticmethod
+    def _request():
+        return {"custom_id": "chunk_0", "body": {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "translate"},
+                {"role": "user", "content": json.dumps({
+                    "tr": [
+                        {"i": 1, "t": "John arrived."},
+                        {"i": 2, "t": "Mary left."},
+                    ],
+                    "ctx": ["Earlier."],
+                })},
+            ],
+        }}
+
     def test_correct_ids_with_swapped_named_content_are_retried(self):
         request = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
             "tr": [
@@ -39,6 +56,41 @@ class CueOwnershipGuardTest(unittest.TestCase):
             {"i": 2, "t": "Bu tuhaftı."},
         ])
         self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
+
+    def test_failed_owner_retry_is_replaced_by_hata_not_written_as_shift(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._json_repair_pass = lambda *_args, **_kwargs: None
+        app._log = lambda *_args, **_kwargs: None
+        raw_map = {"chunk_0": json.dumps([
+            {"i": 1, "t": "Mary ayrıldı."},
+            {"i": 2, "t": "John geldi."},
+        ])}
+        unresolved = app._retry_hata(
+            MagicMock(), raw_map, [self._request()], max_rounds=0)
+        self.assertEqual(unresolved, {"chunk_0"})
+        self.assertTrue(all(
+            item["t"] == "[HATA]" for item in json.loads(raw_map["chunk_0"])))
+
+    def test_invalid_wave_tail_is_not_injected_into_next_wave(self):
+        request = self._request()
+        wave_b = [{"custom_id": "chunk_1", "body": {
+            "messages": [
+                {"role": "system", "content": "translate"},
+                {"role": "user", "content": json.dumps({
+                    "tr": [{"i": 3, "t": "Continue."}],
+                    "ctx": ["Earlier."],
+                })},
+            ]}}]
+        raw_map = {"chunk_0": json.dumps([
+            {"i": 1, "t": "Mary ayrıldı."},
+            {"i": 2, "t": "John geldi."},
+        ])}
+        result = gui._chain_waves(
+            [request], wave_b, raw_map,
+            {"chunk_0": [("1", "", "x"), ("2", "", "x")]}, 10)
+        payload = json.loads(result[0]["body"]["messages"][1]["content"])
+        self.assertNotIn("prev_tr", payload)
 
 
 class DeliveryHardeningTest(unittest.TestCase):
@@ -84,6 +136,44 @@ class DeliveryHardeningTest(unittest.TestCase):
                            "source_path": str(source)}]
             }), encoding="utf-8")
             self.assertEqual(gui._resolve_postprocess_source(output), source)
+
+    def test_manual_postprocess_does_not_write_after_selected_pass_failure(self):
+        source = inspect.getsource(gui.App._run_post_process)
+        self.assertIn("postprocess_failed = True", source)
+        failure_gate = source.index("if postprocess_failed:")
+        write_call = source.index("write_srt(fp, _delivery_blocks, tgt)")
+        self.assertLess(failure_gate, write_call)
+        self.assertIn("orijinal dosya değiştirilmedi", source)
+
+    def test_term_normalization_failures_are_not_silent(self):
+        for method in (
+                gui.App._run_sync_hybrid,
+                gui.App._wait_batch_hybrid,
+                gui.App._write_results):
+            with self.subTest(method=method.__name__):
+                source = inspect.getsource(method)
+                self.assertIn("Normalizasyonu çalışmadı", source)
+
+    def test_failed_required_quality_pass_blocks_completed_status(self):
+        self.assertTrue(gui._quality_pass_has_hard_failure({
+            "Critic": {"status": "failed"}}))
+        self.assertTrue(gui._quality_pass_has_hard_failure({
+            "Final-Semantic": {"status": "cancelled"}}))
+        self.assertFalse(gui._quality_pass_has_hard_failure({
+            "Critic": {"status": "partial"},
+            "Series-Memory": {"status": "failed"},
+        }))
+
+    def test_all_main_flows_gate_required_quality_pass_failures(self):
+        for method in (
+                gui.App._run_sync_hybrid,
+                gui.App._wait_batch_hybrid,
+                gui.App._write_results,
+                gui.App._run_hybrid):
+            with self.subTest(method=method.__name__):
+                source = inspect.getsource(method)
+                self.assertIn("_quality_pass_has_hard_failure", source)
+                self.assertIn("_quarantine_incomplete_final", source)
 
 
 class StaleArtifactTest(unittest.TestCase):
