@@ -31,8 +31,20 @@ _GENERATED_SUBTITLE_NAME_RE = re.compile(
 )
 _LEGACY_DETECT_ENCODINGS = {
     "big5", "big5hkscs", "cp932", "cp949", "euc_jp", "euc_kr",
-    "cp1251", "gb18030", "gbk", "koi8_r", "shift_jis",
+    "cp1251", "cp1253", "cp1256", "gb18030", "gbk", "koi8_r", "shift_jis",
     "shift_jis_2004", "shift_jisx0213", "windows_1251",
+}
+_SHORT_LEGACY_COMMON_LETTERS = {
+    "cp1251": set("\u043e\u0435\u0430\u0438\u043d\u0442\u0441\u0440\u0432\u043b\u043a\u043c\u0434\u043f\u0443\u044f\u044b\u044c\u0433\u0437\u0431\u0447\u0439\u0445\u0436\u0448\u044e\u0446\u0449\u044d\u0444\u044a"),
+    "cp1253": set("\u03b1\u03b5\u03bf\u03b9\u03c4\u03b7\u03c1\u03bd\u03c3\u03ba\u03c0\u03bc\u03bb\u03c5\u03c9\u03b3\u03b4\u03b8\u03c7\u03b2\u03be\u03c6\u03c8\u03b6"),
+    "cp1256": set("\u0627\u0644\u064a\u0648\u0645\u0646\u0631\u062a\u0628\u0643\u062f\u0633\u0639\u0641\u0647\u0642\u062d\u062c\u0634\u0635\u0636\u0637\u0638\u0632\u062e\u0630\u062b\u063a\u0621"),
+    "cp1254": set("abc\u00e7defg\u011fh\u0131ijklmno\u00f6prs\u015ftu\u00fcvyz"),
+}
+_SHORT_LEGACY_COMMON_BIGRAMS = {
+    "cp1251": {"ст", "но", "то", "на", "ен", "ов", "ни", "ра", "во", "ко", "по", "пр", "ри", "ив", "ве", "ет"},
+    "cp1253": {"ου", "αι", "ει", "τη", "το", "κα", "αυ", "με", "ρα", "λη", "ερ", "σε", "πρ", "στ", "ον"},
+    "cp1256": {"ال", "لل", "من", "في", "ما", "ها", "مر", "رح", "حب", "با", "لع", "عا", "لم"},
+    "cp1254": {"ar", "er", "in", "an", "en", "le", "de", "la", "ya", "ol", "şu", "bu", "mi", "ve"},
 }
 
 
@@ -87,24 +99,53 @@ def _legacy_script_ratio(text: str, encoding: str) -> float:
             for ch in letters)
     elif enc in {"cp1251", "windows_1251", "koi8_r"}:
         matched = sum("\u0400" <= ch <= "\u052f" for ch in letters)
+    elif enc in {"cp1253", "windows_1253"}:
+        matched = sum("\u0370" <= ch <= "\u03ff" or "\u1f00" <= ch <= "\u1fff"
+                      for ch in letters)
+    elif enc in {"cp1256", "windows_1256"}:
+        matched = sum("\u0600" <= ch <= "\u06ff" or "\u0750" <= ch <= "\u077f"
+                      for ch in letters)
     else:
         matched = sum(ord(ch) > 127 for ch in letters)
     return matched / len(letters)
+
+
+def _decode_short_legacy(raw: bytes) -> str | None:
+    """Kısa eski kodlu metni Yunanca/Arapçayı Kiril saymadan seçer."""
+    candidates = []
+    for encoding in ("cp1251", "cp1253", "cp1256", "cp1254"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        letters = [ch.casefold() for ch in text if ch.isalpha()]
+        if not letters:
+            continue
+        common = _SHORT_LEGACY_COMMON_LETTERS[encoding]
+        common_ratio = sum(ch in common for ch in letters) / len(letters)
+        letter_runs = re.findall(r"[^\W\d_]+", text.casefold(), flags=re.UNICODE)
+        bigrams = [word[pos:pos + 2] for word in letter_runs for pos in range(len(word) - 1)]
+        common_bigrams = _SHORT_LEGACY_COMMON_BIGRAMS[encoding]
+        bigram_ratio = (sum(pair in common_bigrams for pair in bigrams) / len(bigrams)
+                        if bigrams else 0.0)
+        script_ratio = _legacy_script_ratio(text, encoding)
+        # CP1254'te ASCII ve Türkçe harfler birlikte normaldir; diğer adayların
+        # gerçekten kendi yazı sistemine benzemesi gerekir.
+        if encoding != "cp1254" and script_ratio < 0.55:
+            continue
+        candidates.append(((common_ratio * 0.2) + (bigram_ratio * 1.2)
+                           + (script_ratio * 0.15), text))
+    if not candidates:
+        return None
+    score, text = max(candidates, key=lambda item: item[0])
+    return text if score >= 0.45 else None
 
 
 def _decode_detected_legacy(raw: bytes) -> str | None:
     if not raw:
         return None
     if len(raw) < 80:
-        try:
-            candidate = raw.decode("cp1251")
-        except UnicodeDecodeError:
-            return None
-        letters = [ch for ch in candidate if ch.isalpha()]
-        cyrillic = sum("\u0400" <= ch <= "\u052f" for ch in letters)
-        if letters and cyrillic / len(letters) >= 0.6:
-            return candidate
-        return None
+        return _decode_short_legacy(raw)
     try:
         from charset_normalizer import from_bytes
         matches = list(from_bytes(raw))[:10]
@@ -429,6 +470,10 @@ def parse_vtt(filepath: str) -> list:
                 upper.startswith(prefix + ' ') for prefix in ('NOTE', 'STYLE', 'REGION')):
             i += 1
             while i < len(lines) and lines[i].strip():
+                if ts_re.match(lines[i].strip()):
+                    break
+                if i + 1 < len(lines) and ts_re.match(lines[i + 1].strip()):
+                    break
                 i += 1
             continue
 
@@ -492,7 +537,7 @@ def _ass_lyric_track(style: str):
     return None
 
 
-def parse_ass(filepath: str) -> list:
+def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
     """ASS/SSA dosyasını parse eder. Anlam taşıyan diyalog/ekran metnini alır,
     yalnız salt efekt, karaoke, kredi ve çevirmen notu stillerini atlar.
     Returns: [(index_str, 'HH:MM:SS,mmm --> HH:MM:SS,mmm', text), ...]
@@ -521,12 +566,11 @@ def parse_ass(filepath: str) -> list:
     except ValueError:
         return []
 
+    name_i = cols.index('name') if 'name' in cols else None
     entries = []
     # Yalnızca salt efekt/çevirmen notu stillerini atla. Sign/Caption/Title/OP/ED
     # ve Karaoke ekrandaki anlamlı metin veya şarkı sözü taşıyabilir.
-    _SKIP_STYLES = re.compile(
-        r'^(fx|credit|note)$',
-        re.IGNORECASE)
+    _SKIP_STYLES = re.compile(r'^(credit|note)$', re.IGNORECASE)
 
     # Dialogue satırlarını yalnızca [Events] bölümünden çek.
     event_text = events_match.group(1) if events_match else content
@@ -553,21 +597,31 @@ def parse_ass(filepath: str) -> list:
         text = _format_ass_text(raw_text)
         if not _clean_ass_text(text).strip():
             continue
+        name = parts[name_i].strip() if name_i is not None else ""
+        if name and not re.match(rf'^\s*{re.escape(name)}\s*:', text, re.IGNORECASE):
+            # Name sütunu konuşmacı bağlamıdır. Analize/çeviriye ulaşır; kaynak
+            # güdümlü son temizlik yüklemeye hazır SRT'deki eş ön eki kaldırır.
+            text = f"{name}: {text}"
 
         entries.append((timestamp, text, style))
 
-    english_lyric_keys = {
+    preferred_track_language = str(lyric_language or "en").strip().casefold()
+    preferred_track_language = {
+        "english": "en", "en-us": "en", "en-gb": "en",
+        "japanese": "jp", "jpn": "jp", "ja": "jp", "romaji": "jp",
+    }.get(preferred_track_language, preferred_track_language)
+    preferred_lyric_keys = {
         (track[0], timestamp)
         for timestamp, _, style in entries
-        if (track := _ass_lyric_track(style)) and track[1] == 'en'
+        if (track := _ass_lyric_track(style)) and track[1] == preferred_track_language
     }
     blocks = [
         (str(i + 1), timestamp, text)
         for i, (timestamp, text, style) in enumerate(entries)
         if not (
             (track := _ass_lyric_track(style))
-            and track[1] == 'jp'
-            and (track[0], timestamp) in english_lyric_keys
+            and track[1] != preferred_track_language
+            and (track[0], timestamp) in preferred_lyric_keys
         )
     ]
 
@@ -585,7 +639,7 @@ def parse_ass(filepath: str) -> list:
     return [(str(i + 1), ts, text) for i, (_, ts, text) in enumerate(blocks)]
 
 
-def parse_any(filepath: str) -> list:
+def parse_any(filepath: str, lyric_language: str | None = None) -> list:
     """Uzantıya göre uygun parser'ı seçer.
     Returns: [(index_str, timestamp_str, text), ...]
     Bilinmeyen uzantı → [] döner.
@@ -600,7 +654,7 @@ def parse_any(filepath: str) -> list:
     if ext == '.vtt':
         return parse_vtt(filepath)
     if ext in ('.ass', '.ssa'):
-        return parse_ass(filepath)
+        return parse_ass(filepath, lyric_language=lyric_language)
     return []
 
 
