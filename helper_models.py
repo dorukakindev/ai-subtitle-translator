@@ -498,8 +498,10 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
                             base_url: str = None, cancel_context=None,
                             timeout_seconds=DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS):
     import json
+    import http.client
     import urllib.request
     import urllib.error
+    from urllib.parse import urlsplit
     _raise_if_cancelled(cancel_context)
 
     system_prompt = ""
@@ -528,26 +530,54 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
     else:
         data["max_tokens"] = 1024
 
+    url = _anthropic_messages_url(base_url)
     headers = {
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
         "User-Agent": "SubtitleTranslator/2.0",
     }
     if api_key_str:
-        url_check = (base_url or "").lower().rstrip("/")
+        url_check = (base_url or "https://api.anthropic.com/v1").lower().rstrip("/")
         is_anthropic_native = url_check.endswith("/v1") or "api.anthropic.com" in url_check or url_check.endswith("/messages") or "opencode.ai" in url_check
         if is_anthropic_native:
             headers["x-api-key"] = api_key_str
         else:
             headers["Authorization"] = f"Bearer {api_key_str}"
 
-    url = _anthropic_messages_url(base_url)
-
-    req = urllib.request.Request(url, data=json.dumps(data).encode("utf-8"), headers=headers, method="POST")
+    encoded = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=encoded, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(
-                req, timeout=_request_timeout_seconds(timeout_seconds)) as response:
-            res = json.loads(response.read().decode("utf-8"))
+        if cancel_context is not None and all(hasattr(cancel_context, attr)
+                                              for attr in ("register", "unregister")):
+            parsed = urlsplit(url)
+            connection_cls = (
+                http.client.HTTPSConnection if parsed.scheme == "https"
+                else http.client.HTTPConnection)
+            connection = connection_cls(
+                parsed.hostname, parsed.port,
+                timeout=_request_timeout_seconds(timeout_seconds))
+            cancel_context.register(connection)
+            try:
+                _raise_if_cancelled(cancel_context)
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += "?" + parsed.query
+                connection.request("POST", path, body=encoded, headers=headers)
+                response = connection.getresponse()
+                body = response.read()
+                if response.status >= 400:
+                    raise RuntimeError(
+                        f"HTTP {response.status}: "
+                        f"{body.decode('utf-8', errors='replace')[:2000]}")
+                res = json.loads(body.decode("utf-8"))
+            finally:
+                cancel_context.unregister(connection)
+                connection.close()
+        else:
+            with urllib.request.urlopen(
+                    req, timeout=_request_timeout_seconds(timeout_seconds)) as response:
+                res = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = ""
         try:

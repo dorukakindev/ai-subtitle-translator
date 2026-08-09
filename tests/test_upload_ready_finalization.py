@@ -495,12 +495,15 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             blocks,
         )
 
-    def test_zero_start_still_gets_valid_minimal_head_signature(self):
+    def test_zero_start_does_not_get_overlapping_head_signature(self):
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Başlangıç."),
         ]
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
-        self.assertEqual(result[0][1], "00:00:00,000 --> 00:00:00,001")
+        self.assertEqual(result[0][1], "00:00:00,000 --> 00:00:01,000")
+        self.assertEqual(result[0][2], "Başlangıç.")
+        self.assertEqual(sum(text == "discord: ceviri2"
+                             for _idx, _ts, text in result), 1)
 
     def test_existing_zero_id_is_shifted_to_keep_signature_ids_unique(self):
         blocks = [
@@ -510,7 +513,7 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
         ids = [idx for idx, _ts, _text in result]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(ids[:3], ["0", "1", "2"])
+        self.assertEqual(ids[:3], ["1", "2", "3"])
         self.assertTrue(gui._existing_output_is_complete(result, blocks))
 
     def test_head_middle_and_tail_signatures_are_added_without_moving_dialogue(self):

@@ -30,11 +30,12 @@ class PipelinePassParityTest(unittest.TestCase):
             )
         self.assertEqual(found, 11)
 
-    def test_post_process_flow_is_explicitly_source_less(self):
+    def test_post_process_resolves_real_source_without_reusing_target(self):
         """Existing translated SRT must not be reused as its own source."""
         src = inspect.getsource(gui.App._run_post_process)
         self.assertNotIn("_store_tm_pairs", src, "post-process must not store translation-to-translation TM pairs")
-        self.assertIn("orig_cues = None", src)
+        self.assertIn("source_path = _resolve_postprocess_source(fp)", src)
+        self.assertIn("ht.load_subtitle(str(source_path), source_language)", src)
         self.assertIn("analysis_result = None", src)
         self.assertNotIn("ht.load_subtitle(fp)", src)
         self.assertNotIn("ht.load_context_cache(", src)

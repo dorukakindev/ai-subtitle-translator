@@ -72,7 +72,8 @@ class DeliveryLiteralLinebreakTest(unittest.TestCase):
                 "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\\norada.\n",
                 encoding="utf-8",
             )
-            audit = gui._subtitle_delivery_audit(str(source), str(output))
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English")
         self.assertEqual(audit["residual_literal_newline_cues"], 1)
         self.assertTrue(gui._delivery_audit_has_hard_error(audit))
 
@@ -88,7 +89,8 @@ class DeliveryLiteralLinebreakTest(unittest.TestCase):
                 "1\n00:00:01,000 --> 00:00:02,000\nKodda \\n kullan.\n",
                 encoding="utf-8",
             )
-            audit = gui._subtitle_delivery_audit(str(source), str(output))
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English")
         self.assertEqual(audit["residual_literal_newline_cues"], 0)
         self.assertFalse(gui._delivery_audit_has_hard_error(audit))
 

@@ -525,7 +525,7 @@ def load_srt(filepath: str) -> list:
     return result
 
 
-def load_subtitle(filepath: str) -> list:
+def load_subtitle(filepath: str, source_language: str | None = None) -> list:
     """SRT/VTT/ASS -> subtitle_localizer Cue listesi. VTT/ASS, subtitle_formats ile
     (idx, SRT-zaman, metin) demetlerine cevrilip SRT metni olarak ayni parser'a verilir -
     boylece hybrid analiz/ceviri Cue nesnelerini her formatta alir (eskiden yalniz .srt)."""
@@ -534,7 +534,8 @@ def load_subtitle(filepath: str) -> list:
         _ensure_path()
         from subtitle_localizer.srt import parse_srt
         from subtitle_formats import parse_vtt, parse_ass
-        blocks = parse_vtt(filepath) if ext == ".vtt" else parse_ass(filepath)
+        blocks = (parse_vtt(filepath) if ext == ".vtt" else
+                  parse_ass(filepath, lyric_language=source_language))
         srt_text = "\n\n".join(f"{i}\n{ts}\n{txt}"
                                for i, (idx, ts, txt) in enumerate(blocks, 1))
         return parse_srt(srt_text)

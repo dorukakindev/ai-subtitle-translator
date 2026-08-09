@@ -12,6 +12,7 @@ import threading
 import traceback
 import unicodedata
 import uuid
+from collections import defaultdict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -2626,6 +2627,10 @@ _DELIVERY_CREDIT_COMPANION_RE = re.compile(
 _DELIVERY_CREDIT_LINE_CONTINUATION_RE = re.compile(
     r"^\s*(?:&|and\b|ve\b)\s*\S|"
     r"^\s*[^\s@]+@[^\s@]+(?:\s*[;:]-?[)D])?\s*$", re.IGNORECASE)
+_DELIVERY_CREDIT_LABEL_RE = re.compile(
+    r"^\s*(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|"
+    r"encod(?:ed|er)?|script|metni|çevir(?:i|en))\s*:\s*(.+?)\s*$",
+    re.IGNORECASE | re.DOTALL)
 _DELIVERY_SDH_TOKEN_RE = re.compile(
     r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
 _DELIVERY_TURKISH_SDH_RE = re.compile(
@@ -2693,6 +2698,13 @@ def _is_delivery_credit(text: str) -> bool:
     value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
     if not value:
         return False
+    label_match = _DELIVERY_CREDIT_LABEL_RE.fullmatch(value)
+    if label_match:
+        payload = label_match.group(1).strip()
+        if (payload.endswith((".", "!", "?", "…"))
+                and not re.search(r"(?:https?://|www\.|@|[_\d])", payload)
+                and payload[:1].islower()):
+            return False
     if _DELIVERY_CREDIT_STRONG_RE.search(value):
         return True
     role_lines = sum(
@@ -3031,11 +3043,15 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             ]
         first_start, _ = _srt_timestamp_bounds(cleaned[0][1])
         _, last_end = _srt_timestamp_bounds(cleaned[-1][1])
+        head_block = None
         if first_start > 0:
             head_end = first_start - 1
             head_start = max(0, head_end - 2000)
-        else:
-            head_start, head_end = 0, 1
+            head_block = (
+                "",
+                f"{_srt_ms_timestamp(head_start)} --> {_srt_ms_timestamp(head_end)}",
+                _DELIVERY_SIGNATURE,
+            )
         middle_slot = _delivery_middle_signature_slot(cleaned)
         if middle_slot:
             middle_pos, middle_start, middle_end = middle_slot
@@ -3050,11 +3066,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 *cleaned[middle_pos:],
             ]
         cleaned = [
-            (
-                "",
-                f"{_srt_ms_timestamp(head_start)} --> {_srt_ms_timestamp(head_end)}",
-                _DELIVERY_SIGNATURE,
-            ),
+            *([head_block] if head_block else []),
             *cleaned,
             (
                 "",
@@ -3074,7 +3086,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             )
         elif cleaned:
             log_fn(
-                "Nihai teslim koruması: baş/orta/son discord imzası yenilendi; "
+                "Nihai teslim koruması: güvenli baş/orta/son discord imzaları yenilendi; "
                 f"{credits_removed} eski kredi cue'su, "
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "
@@ -3087,14 +3099,45 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
 
 def _create_postprocess_backup(filepath) -> Path:
     src = Path(filepath)
-    candidate = src.with_name(f"{src.stem}.postprocess.bak{src.suffix}")
+    backup_dir = src.parent / "Raporlar"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    candidate = backup_dir / f"{src.stem}.postprocess.bak{src.suffix}"
     index = 2
     while candidate.exists():
-        candidate = src.with_name(
-            f"{src.stem}.postprocess.{index}.bak{src.suffix}")
+        candidate = backup_dir / f"{src.stem}.postprocess.{index}.bak{src.suffix}"
         index += 1
     atomic_write_bytes(candidate, src.read_bytes())
     return candidate
+
+
+def _resolve_postprocess_source(filepath) -> Path | None:
+    output = Path(filepath).resolve()
+    output_key = os.path.normcase(str(output))
+    report_files = []
+    for parent in (output.parent, *output.parents):
+        report_dir = parent / "Raporlar"
+        if report_dir.is_dir():
+            report_files.extend(report_dir.glob("ceviri_raporu*.json"))
+    for report_path in sorted(
+            set(report_files), key=lambda path: path.stat().st_mtime, reverse=True):
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for row in payload.get("files") or []:
+            candidate_output = row.get("output_path")
+            candidate_source = row.get("source_path")
+            if not candidate_output or not candidate_source:
+                continue
+            try:
+                candidate_key = os.path.normcase(
+                    str(Path(candidate_output).resolve()))
+            except OSError:
+                continue
+            source_path = Path(candidate_source)
+            if candidate_key == output_key and source_path.is_file():
+                return source_path
+    return None
 
 
 def _paths_equal(a, b) -> bool:
@@ -3176,8 +3219,11 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
 
 
 _UPLOAD_SEASON_PARENT_RE = re.compile(
-    r"(?i)(?:^|[ ._\-])s(?P<season>\d{1,2})(?=$|[ ._\-])")
+    r"(?i)(?:^|[ ._\-])(?:s|season\s*|sezon\s*)(?P<season>\d{1,2})"
+    r"(?=$|[ ._\-])|(?:^|[ ._\-])(?P<season_tr>\d{1,2})\s*sezon"
+    r"(?=$|[ ._\-])")
 _UPLOAD_DOS_SHORT_STEM_RE = re.compile(r"(?i)^[a-z0-9]{1,6}~\d+$")
+_UPLOAD_EPISODE_STEM_RE = re.compile(r"(?i)(?:^|[ ._\-])s\d{1,2}e\d{1,3}(?=$|[ ._\-])")
 
 
 def _upload_filename_issue(path) -> str:
@@ -3186,11 +3232,13 @@ def _upload_filename_issue(path) -> str:
     for parent in source.parents:
         match = _UPLOAD_SEASON_PARENT_RE.search(parent.name)
         if match:
-            season = int(match.group("season"))
+            season = int(match.group("season") or match.group("season_tr"))
             break
     if season is None:
         return ""
     stem = source.stem
+    if _UPLOAD_EPISODE_STEM_RE.search(stem):
+        return ""
     if stem.isdigit():
         return (
             f"Dosya adı yalnız bölüm numarası içeriyor; yüklemeden önce "
@@ -3199,7 +3247,15 @@ def _upload_filename_issue(path) -> str:
         return (
             "Dosya adı DOS 8.3 biçiminde kısalmış; gerçek dizi adı ile "
             "sezon/bölüm numarası yüklemeden önce doğrulanmalı.")
-    return ""
+    episode_match = re.search(
+        r"(?i)(?:^|[ ._\-])(?:episode|ep|bölüm)\s*(\d{1,3})(?=$|[ ._\-])",
+        stem)
+    episode_hint = (
+        f" (beklenen: S{season:02d}E{int(episode_match.group(1)):02d})"
+        if episode_match else "")
+    return (
+        "Dizi altyazısı dosya adında SxxExx sezon/bölüm kimliği taşımıyor"
+        f"{episode_hint}; yüklemeden önce dizi adıyla birlikte eklenmeli.")
 
 
 def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
@@ -4555,6 +4611,47 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
                 idx = str(it.get("i"))
                 if not it.get("t", "").strip() and idx in required_set:
                     return "empty_dialogue"
+            owner_tokens = {}
+            token_owners = defaultdict(set)
+            owner_stopwords = {
+                "a", "an", "and", "are", "but", "can", "could", "did",
+                "do", "does", "for", "from", "had", "has", "have", "he",
+                "hello", "here", "how", "i", "if", "in", "is", "it", "no",
+                "not", "now", "oh", "or", "please", "she", "that", "the",
+                "then", "there", "they", "this", "to", "was", "we", "were",
+                "what", "when", "where", "who", "why", "will", "would", "yes",
+                "you",
+            }
+            for idx, source_text in chunk_src_map.items():
+                tokens = set(re.findall(
+                    r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
+                    str(source_text or "")))
+                tokens = {
+                    token for token in tokens
+                    if token[0].isdigit() or token.casefold() not in owner_stopwords
+                }
+                owner_tokens[idx] = tokens
+                for token in tokens:
+                    token_owners[token.casefold()].add(idx)
+            unique_tokens = {
+                idx: {token for token in tokens
+                      if len(token_owners.get(token.casefold(), ())) == 1}
+                for idx, tokens in owner_tokens.items()
+            }
+            for it in items:
+                idx = str(it.get("i"))
+                target = str(it.get("t") or "")
+                foreign = {
+                    token for owner, tokens in unique_tokens.items()
+                    if owner != idx for token in tokens
+                    if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
+                                 re.IGNORECASE)
+                }
+                own = unique_tokens.get(idx, set())
+                if foreign and own and not any(
+                        re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
+                                  re.IGNORECASE) for token in own):
+                    return "cue_content_owner_mismatch"
             seq = [(str(it.get("i")), _align_visible(it.get("t", "")))
                    for it in items if "i" in it]
             if _find_adjacent_duplicate_ids(seq, chunk_src_map):
@@ -7497,6 +7594,31 @@ def summarize_file_outcomes(
         "title_text": title_text,
     }
 
+
+def _reconcile_delivery_outcomes(report_rows, completed_files, failed_files):
+    failed_keys = {
+        os.path.normcase(os.path.abspath(str(row.get("source_path"))))
+        for row in (report_rows or [])
+        if row.get("source_path") and row.get("run_status") == "error"
+    }
+    completed = [
+        path for path in (completed_files or [])
+        if os.path.normcase(os.path.abspath(str(path))) not in failed_keys
+    ]
+    failed = list(failed_files or [])
+    present = {
+        os.path.normcase(os.path.abspath(str(path))) for path in failed
+    }
+    for row in report_rows or []:
+        path = row.get("source_path")
+        if not path:
+            continue
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key in failed_keys and key not in present:
+            failed.append(path)
+            present.add(key)
+    return completed, failed
+
 # ── UI Dispatcher & Thread Safety Helper ────────────────────────────────────
 def _new_run_id(now=None, suffix: str = "") -> str:
     import datetime as _dt
@@ -8976,14 +9098,6 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     for output_idx, start, end, output_text in timed_output:
         if not _DELIVERY_SIGNATURE_RE.fullmatch(output_text.strip()):
             continue
-        # Legacy zero-start files cannot receive a pre-roll signature without
-        # moving real dialogue.  Keep the existing 1 ms marker compatible,
-        # while every other signature/dialogue overlap remains a hard error.
-        if start == 0 and end == 1 and any(
-                not _DELIVERY_SIGNATURE_RE.fullmatch(other_text.strip())
-                and other_start == 0
-                for _other_idx, other_start, _other_end, other_text in timed_output):
-            continue
         if any(
                 other_idx != output_idx
                 and not _DELIVERY_SIGNATURE_RE.fullmatch(other_text.strip())
@@ -9002,6 +9116,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     expected_removed = []
     timestamp_mismatches = []
     extras = []
+    source_to_output_ids = {}
     for output_idx, output_ts, _output_text in output_dialogue:
         try:
             output_bounds = _srt_timestamp_bounds(output_ts)
@@ -9013,6 +9128,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             if output_bounds else [])
         if positions:
             used_source.update(positions)
+            for pos in positions:
+                source_to_output_ids[source_with_bounds[pos][0]] = output_idx
             continue
         id_pos = next((
             pos for pos, (source_idx, _ts, _text, _bounds)
@@ -9021,6 +9138,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         ), None)
         if id_pos is not None:
             used_source.add(id_pos)
+            source_to_output_ids[source_with_bounds[id_pos][0]] = output_idx
             timestamp_mismatches.append(source_with_bounds[id_pos][0])
         else:
             extras.append(output_idx)
@@ -9053,8 +9171,13 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     expected_signatures = 0
     if (output_dialogue and normalize_language_name(
             target_language, allow_auto=False) == "Turkish"):
-        expected_signatures = 2 + bool(
-            _delivery_middle_signature_slot(output_dialogue))
+        try:
+            first_dialogue_start, _ = _srt_timestamp_bounds(output_dialogue[0][1])
+        except ValueError:
+            first_dialogue_start = 0
+        expected_signatures = (
+            1 + bool(first_dialogue_start > 0)
+            + bool(_delivery_middle_signature_slot(output_dialogue)))
     signature_mismatch = delivery_signatures != expected_signatures
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
@@ -9072,6 +9195,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "expected_removed_ids": expected_removed,
         "extra_dialogue_ids": extras,
         "timestamp_mismatch_ids": timestamp_mismatches,
+        "source_to_output_ids": source_to_output_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_sdh_cues": residual_sdh_cues,
@@ -9104,7 +9228,12 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
     return any((
         audit.get("missing_dialogue_ids"),
         audit.get("unresolved_markers"),
+        audit.get("residual_credit_cues"),
+        audit.get("residual_sdh_cues"),
         audit.get("residual_literal_newline_cues"),
+        audit.get("residual_position_tags"),
+        audit.get("hatted_letters"),
+        audit.get("signature_mismatch"),
         audit.get("invalid_timestamp_ids"),
         audit.get("reversed_timestamp_ids"),
         audit.get("signature_overlap_ids"),
@@ -15405,7 +15534,7 @@ class App(ctk.CTk):
             model=self._main_model_name())
 
     def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = "",
-                        source_language: str = ""):
+                        source_language: str = "", context_fingerprint: str = ""):
         """Kaynak↔çeviri çiftlerini TM'ye yazar; eksik işaretler ve kaynak==çeviri
         (kimlik) çiftleri hariç tutulur. DÖRT akışın ortak TM-kayıt mantığı tek yerde — birebir aynıydı,
         burada toplandı ki bir daha 'şu akışta var bu akışta yok' sürüklenmesi olmasın.
@@ -15427,7 +15556,8 @@ class App(ctk.CTk):
                     profanity = self.profanity_var.get() if hasattr(self, "profanity_var") else ""
                 if not self._tm.store_batch(
                         pairs, model, tgt_lang=tgt, profanity=profanity,
-                        schema_name=schema_name, source_language=source_language):
+                        schema_name=schema_name, source_language=source_language,
+                        context_fingerprint=context_fingerprint):
                     self._log("TM toplu kayıt başarısız; çeviri çıktısı korundu", "warn")
             self._update_tm_stat()
         except Exception as _tm_e:
@@ -18107,27 +18237,36 @@ class App(ctk.CTk):
         # Çok kaba token tahmini (yaklaşık her 4 karakter 1 token)
         base_tokens = total_chars / 4.0
 
-        def get_price(model_name):
-            if not model_name: return {"in": 0.0, "out": 0.0}
-            ml = model_name.lower().strip()
-            if ml in MODEL_PRICE:
-                p = MODEL_PRICE[ml]
-                return {"in": p, "out": p}
-            for k, v in ESTIMATED_PRICES.items():
-                if k in ml: return v
-            self._log(f"Bilinmeyen model fiyatı, fallback kullanıldı: {model_name}", "warn")
-            return ESTIMATED_PRICES["gpt-4o-mini"]  # Fallback ucuz model
+        def estimate(model_name, base_url, input_factor, output_factor):
+            price = _verified_token_price(model_name, base_url)
+            if price is None:
+                return None
+            return base_tokens * (input_factor + output_factor) / 1_000_000 * price
+
+        def add_estimate(details, label, model_name, base_url,
+                         input_factor, output_factor):
+            cost = estimate(
+                model_name, base_url, input_factor, output_factor)
+            if cost is None:
+                details.append(
+                    f"└ {label} ({model_name}): sağlayıcı panelinden doğrulanmalı")
+                return 0.0, True
+            details.append(f"└ {label} ({model_name}): ~${cost:.4f}")
+            return cost, False
 
         main_model = self._main_model_name()
-        main_price = get_price(main_model)
-        main_cost = ((base_tokens * 1.5) / 1_000_000 * main_price["in"]) + ((base_tokens * 1.1) / 1_000_000 * main_price["out"])
+        main_cost = estimate(
+            main_model, self._main_api_base_url(), 1.5, 1.1)
+        unknown_cost = main_cost is None
 
         details = [f"Tahmini Toplam Dosya: {len(paths)}",
                    f"Tahmini Toplam Karakter: {total_chars:,}",
                    f"Tahmini Baz Token: {int(base_tokens):,}\n",
-                   f"Ana Çeviri Modeli ({main_model}): ~${main_cost:.4f}"]
+                   (f"Ana Çeviri Modeli ({main_model}): ~${main_cost:.4f}"
+                    if main_cost is not None else
+                    f"Ana Çeviri Modeli ({main_model}): sağlayıcı panelinden doğrulanmalı")]
 
-        total_cost = main_cost
+        total_cost = main_cost or 0.0
 
         # Helper passes
         hybrid = self.hybrid_var.get()
@@ -18135,64 +18274,51 @@ class App(ctk.CTk):
         if hybrid:
             # Analysis
             an_m = self._helper_api_model("analysis")
-            an_p = get_price(an_m)
-            an_cost = (base_tokens / 1_000_000 * an_p["in"]) + (500 / 1_000_000 * an_p["out"])
-            details.append(f"└ Ön Analiz ({an_m}): ~${an_cost:.4f}")
+            an_cost, unknown = add_estimate(
+                details, "Ön Analiz", an_m,
+                self._helper_api_base_url("analysis"), 1.0,
+                500 / max(base_tokens, 1))
             total_cost += an_cost
+            unknown_cost |= unknown
 
         if self.critic_var.get():
             cr_m = self._helper_api_model("critic")
-            cr_p = get_price(cr_m)
-            cr_cost = ((base_tokens * 2.0) / 1_000_000 * cr_p["in"]) + ((base_tokens * 0.1) / 1_000_000 * cr_p["out"])
-            details.append(f"└ Critic Pass ({cr_m}): ~${cr_cost:.4f}")
+            cr_cost, unknown = add_estimate(
+                details, "Critic Pass", cr_m,
+                self._helper_api_base_url("critic"), 2.0, 0.1)
             total_cost += cr_cost
+            unknown_cost |= unknown
 
         if self.polish_var.get():
             pl_m = self._helper_api_model("polish")
-            pl_p = get_price(pl_m)
-            pl_cost = ((base_tokens * 1.2) / 1_000_000 * pl_p["in"]) + (base_tokens / 1_000_000 * pl_p["out"])
-            details.append(f"└ Polish Pass ({pl_m}): ~${pl_cost:.4f}")
+            pl_cost, unknown = add_estimate(
+                details, "Polish Pass", pl_m,
+                self._helper_api_base_url("polish"), 1.2, 1.0)
             total_cost += pl_cost
+            unknown_cost |= unknown
 
         if self.native_var.get():
             nt_m = self._helper_api_model("critic")
-            nt_p = get_price(nt_m)
-            nt_cost = ((base_tokens * 2.0) / 1_000_000 * nt_p["in"]) + ((base_tokens * 0.1) / 1_000_000 * nt_p["out"])
-            details.append(f"└ Native Reader ({nt_m}): ~${nt_cost:.4f}")
+            nt_cost, unknown = add_estimate(
+                details, "Native Reader", nt_m,
+                self._helper_api_base_url("critic"), 2.0, 0.1)
             total_cost += nt_cost
+            unknown_cost |= unknown
 
         if self.qc_var.get():
             qc_m = self._helper_api_model("qc")
-            qc_p = get_price(qc_m)
-            qc_cost = ((base_tokens * 2.0) / 1_000_000 * qc_p["in"]) + ((base_tokens * 0.1) / 1_000_000 * qc_p["out"])
-            details.append(f"└ QC Pass ({qc_m}): ~${qc_cost:.4f}")
+            qc_cost, unknown = add_estimate(
+                details, "QC Pass", qc_m,
+                self._helper_api_base_url("qc"), 2.0, 0.1)
             total_cost += qc_cost
+            unknown_cost |= unknown
 
-        details.append(f"\nGenel Toplam Maliyet: ~${total_cost:.4f}")
-
-        # ── Model karşılaştırması: mevcut plan vs gpt-5.4 (Batch, %50 indirimli) ────
-        # Neden: A/B testi (2026-07-10) desync sınıfının YALNIZCA gpt-5.4-full ana
-        # model olduğunda ortadan kalktığını kanıtladı; mini+geçişler bazen gpt-5.4
-        # batch'e YAKIN maliyete geliyor. Yardımcı geçiş maliyetleri ana modelden
-        # bağımsız olduğu için (total_cost - main_cost) aynen taşınır; yalnızca ana
-        # çeviri maliyeti gpt-5.4 fiyatıyla ve batch indirimiyle yeniden hesaplanır.
-        _GPT54_KEY = "gpt-5.4"
-        # TAM eşleşme (startswith DEĞİL) — "gpt-5.4-mini".startswith("gpt-5.4") True
-        # döner, yani prefix kontrolü mini/nano varyantlarını YANLIŞLIKLA "zaten
-        # gpt-5.4" sayıp karşılaştırmayı atlardı.
-        if main_model.lower().strip() != _GPT54_KEY:
-            _g54_price = get_price(_GPT54_KEY)
-            _g54_main_sync = ((base_tokens * 1.5) / 1_000_000 * _g54_price["in"]) + \
-                            ((base_tokens * 1.1) / 1_000_000 * _g54_price["out"])
-            _g54_main_batch = _g54_main_sync * 0.5   # Batch API %50 indirimli
-            _passes_cost = total_cost - main_cost
-            _alt_total = _g54_main_batch + _passes_cost
+        total_label = "Doğrulanmış USD ara toplam" if unknown_cost else "Genel Toplam Maliyet"
+        details.append(f"\n{total_label}: ~${total_cost:.4f}")
+        if unknown_cost:
             details.append(
-                f"\n── Karşılaştırma ──\n"
-                f"Mevcut plan ({main_model}): ~${total_cost:.4f}\n"
-                f"Alternatif — gpt-5.4 (Batch, %50 indirimli) + aynı geçişler: ~${_alt_total:.4f}\n"
-                f"(A/B testi: cue-kayma/desync sınıfı yalnızca gpt-5.4 ana modelde "
-                f"tamamen ortadan kalkıyor — önemli dosyalarda değerlendirin.)")
+                "Reseller/custom rota oranı ve para birimi yerel fiyat tablosundan "
+                "doğrulanamaz; kesin toplam için sağlayıcı panelini kullanın.")
 
         messagebox.showinfo("Tahmini Maliyet Hesabı", "\n".join(details))
 
@@ -19065,6 +19191,8 @@ class App(ctk.CTk):
                 "status": "not_started", "successful_chunks": 0,
                 "failed_chunks": 0, "total_chunks": 0, "changed": 0,
             })
+        rpath = (Path(out_path).parent / "Raporlar"
+                 / f"{Path(out_path).stem}.geri_ceviri.txt")
         if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
             enabled = bool(self._active_snapshot.get("backtrans"))
         else:
@@ -19073,10 +19201,12 @@ class App(ctk.CTk):
             except Exception:
                 enabled = False
         if not enabled:
+            rpath.unlink(missing_ok=True)
             if status_out is not None:
                 status_out["status"] = "skipped"
             return 0
         if not src_clean_map or not blocks:
+            rpath.unlink(missing_ok=True)
             if status_out is not None:
                 status_out["status"] = "skipped"
             return 0
@@ -19107,6 +19237,7 @@ class App(ctk.CTk):
             if self.__dict__.get("_stop_flag", False):
                 return 0
             if not flags:
+                rpath.unlink(missing_ok=True)
                 return 0
             if status_out is not None:
                 status_out["changed"] = 0
@@ -19114,10 +19245,7 @@ class App(ctk.CTk):
                 status_out["flagged_ids"] = sorted({str(f["idx"]) for f in flags})
             # Rapor yaz
             try:
-                rpath = str(
-                    Path(out_path).parent / "Raporlar"
-                    / f"{Path(out_path).stem}.geri_ceviri.txt")
-                Path(rpath).parent.mkdir(parents=True, exist_ok=True)
+                rpath.parent.mkdir(parents=True, exist_ok=True)
                 out = [f"# Geri Çeviri Anlam Kontrolü — {len(flags)} şüpheli satır",
                        "# Doğrudan değişiklik yapılmadı; şüpheli cue'lar Nihai Anlam Mutabakatına aktarıldı.", ""]
                 for f in flags:
@@ -19160,8 +19288,13 @@ class App(ctk.CTk):
                 "status": "not_started", "successful_chunks": 0,
                 "failed_chunks": 0, "total_chunks": 0, "changed": 0,
             })
+        stale_report_path = Path(
+            report_path
+            or Path(out_path).parent / "Raporlar"
+            / f"{Path(out_path).stem}.anlamsal_mutabakat.txt")
         if ((not force and not self._semantic_reconcile_enabled())
                 or not src_clean_map or not blocks):
+            stale_report_path.unlink(missing_ok=True)
             if status_out is not None:
                 status_out["status"] = "skipped"
             return 0
@@ -19234,12 +19367,9 @@ class App(ctk.CTk):
                     cancel_context is not None and cancel_context.is_cancelled()):
                 return 0
             blocks[:] = result
+            rpath = stale_report_path
             if stats.get("clusters"):
                 try:
-                    rpath = str(
-                        report_path
-                        or Path(out_path).parent / "Raporlar"
-                        / f"{Path(out_path).stem}.anlamsal_mutabakat.txt")
                     lines = [
                         "# Nihai Anlam Mutabakatı",
                         f"# Küme: {stats['clusters']} | Şüpheli cue: {stats['suspects']} | "
@@ -19267,15 +19397,18 @@ class App(ctk.CTk):
                             lines.append(f"  [{sid}] kaynak: {change.get('source', '')}")
                             lines.append(f"       önce : {change.get('before', '')}")
                             lines.append(f"       sonra: {change.get('after', '')}")
-                    Path(rpath).parent.mkdir(parents=True, exist_ok=True)
+                    rpath.parent.mkdir(parents=True, exist_ok=True)
                     with open(rpath, "w", encoding="utf-8") as fh:
                         fh.write("\n".join(lines))
                     if report_path and getattr(self, "_active_run_record", None):
                         with self._run_record_lock:
-                            self._active_run_record.setdefault("reports", []).append(rpath)
+                            self._active_run_record.setdefault("reports", []).append(
+                                str(rpath))
                     self._log(f"Anlamsal mutabakat raporu: {Path(rpath).name}", "info")
                 except Exception as exc:
                     self._log(f"Anlamsal mutabakat raporu yazılamadı: {exc}", "warn")
+            else:
+                rpath.unlink(missing_ok=True)
             return int(stats.get("fixed", 0))
         except RequestCancelled:
             if status_out is not None:
@@ -20288,15 +20421,22 @@ class App(ctk.CTk):
                     self._update_file_progress(fp, "Atlandı", 0, "skip")
                     continue
 
-                # Post-işlem girdisi çevrilmiş hedef dosyadır; gerçek kaynak seçilmediği
-                # için bunu kaynak/analiz önbelleği gibi kullanma.
-                orig_cues = None
+                source_path = _resolve_postprocess_source(fp)
+                source_language = job.get("src_lang", "English")
+                orig_cues = (
+                    ht.load_subtitle(str(source_path), source_language)
+                    if source_path else None)
                 analysis_result = None
                 if do_critic or do_polish or do_native:
-                    self._log(
-                        f"{fname}: gerçek kaynak altyazı seçilmediği için Critic, Polish ve "
-                        "Native Okuyucu atlandı; kaynak doğrulaması olmadan çeviri değiştirilmeyecek.",
-                        "warn")
+                    if orig_cues:
+                        self._log(
+                            f"{fname}: kaynak rapordan bulundu: {source_path.name}",
+                            "info")
+                    else:
+                        self._log(
+                            f"{fname}: gerçek kaynak raporda bulunamadığı için Critic, Polish, "
+                            "Native ve QC atlandı; kaynak doğrulaması olmadan çeviri değiştirilmeyecek.",
+                            "warn")
 
                 # Critic Pass
                 if do_critic and orig_cues:
@@ -20450,6 +20590,18 @@ class App(ctk.CTk):
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     blocks, tgt, self._log, source_cues=orig_cues)
                 write_srt(fp, _delivery_blocks, tgt)
+                audit_source = str(source_path or backup_path)
+                delivery_audit = _subtitle_delivery_audit(
+                    audit_source, fp, tgt, source_language)
+                if _delivery_audit_has_hard_error(delivery_audit):
+                    quarantined = _quarantine_incomplete_final(fp)
+                    self._log(
+                        f"{fname}: post-işlem çıktısı teslim denetiminden geçmedi; "
+                        f"{Path(quarantined).name if quarantined else 'karantina başarısız'}",
+                        "err")
+                    self._update_file_progress(
+                        fp, "Teslim denetimi başarısız", 100, "error")
+                    continue
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
                 self._update_file_progress(fp,
                     f"Tamamlandı  {len(blocks)} satır", 100, "done")
@@ -20606,12 +20758,13 @@ class App(ctk.CTk):
         (kaynak/öncesi/sonrası) yazar — kullanıcı bunu paylaşıp kontrol ettirebilsin
         diye. Değişen satır yoksa dosya hiç yazılmaz (eski bir rapor varsa da
         silinmez — çağıran her zaman yeni bir liste ile çağırır)."""
+        report_path = (
+            Path(fp).parent / "Raporlar"
+            / f"{Path(fp).stem}.qc_degisiklikler.txt")
         if not applied_records:
+            report_path.unlink(missing_ok=True)
             return
         try:
-            report_path = (
-                Path(fp).parent / "Raporlar"
-                / f"{Path(fp).stem}.qc_degisiklikler.txt")
             report_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [f"QC Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
             for rec in applied_records:
@@ -20632,12 +20785,13 @@ class App(ctk.CTk):
         aynı motivasyon (bkz. _write_qc_change_report yukarıda): Critic 150-200
         satır değiştirebiliyor ama hangi satırın NEDEN değiştiğini kimse
         göremiyordu."""
+        report_path = (
+            Path(fp).parent / "Raporlar"
+            / f"{Path(fp).stem}.critic_degisiklikler.txt")
         if not applied_records:
+            report_path.unlink(missing_ok=True)
             return
         try:
-            report_path = (
-                Path(fp).parent / "Raporlar"
-                / f"{Path(fp).stem}.critic_degisiklikler.txt")
             report_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [f"Critic Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
             for rec in applied_records:
@@ -20994,7 +21148,8 @@ class App(ctk.CTk):
                     row.get("source_path", ""), row.get("output_path", ""),
                     self.tgt_var.get(), self._effective_file_source_language(
                         source_path, self.src_var.get()))
-                if _delivery_audit_has_hard_error(row["delivery_audit"]):
+                if (_delivery_audit_has_hard_error(row["delivery_audit"])
+                        or row.get("delivery_scan_failed")):
                     quarantined = _quarantine_incomplete_final(row.get("output_path", ""))
                     row["run_status"] = "error"
                     row["delivery_quarantined_path"] = str(quarantined or "")
@@ -21003,6 +21158,13 @@ class App(ctk.CTk):
                         f"{Path(quarantined).name if quarantined else 'çıktı karantinaya alınamadı'}",
                         "err",
                     )
+                if isinstance(source_row, dict):
+                    source_row.update({
+                        "delivery_audit": row["delivery_audit"],
+                        "run_status": row.get("run_status"),
+                        "delivery_quarantined_path": row.get(
+                            "delivery_quarantined_path", ""),
+                    })
                 if source_path:
                     terminal_status = (
                         "error" if row.get("run_status") == "error" else "done")
@@ -22658,24 +22820,27 @@ class App(ctk.CTk):
         # ── TM ön taraması: tüm blokları tam eşleşen chunk'ları API'ye gönderme ──
         # Tüm chunk kaynaklarını TEK toplu sorguda çöz (satır-satır yerine)
         _tm_cache = {}
-        for (sname, group_src), group in _schema_groups.items():
-            _group_srcs = []
-            for req in requests:
-                if (req.get("schema_name") == sname
-                        and req.get("source_language") == group_src):
-                    try:
-                        _pl = json.loads(req["body"]["messages"][1]["content"])
-                        _group_srcs.extend(it["t"] for it in _pl.get("tr", []) if "t" in it)
-                    except Exception:
-                        pass
-            if _group_srcs:
+        _tm_groups = defaultdict(list)
+        for req in requests:
+            try:
+                req_path = file_map[req["custom_id"]][0][2]
+                req_hash = source_hashes.get(req_path) or _file_content_sha256(req_path)
+                payload = json.loads(req["body"]["messages"][1]["content"])
+                _tm_groups[(req.get("schema_name", ""),
+                            req.get("source_language", ""), req_hash)].extend(
+                    item["t"] for item in payload.get("tr", []) if "t" in item)
+            except Exception:
+                continue
+        for (sname, group_src, context_fingerprint), _group_srcs in _tm_groups.items():
+            if _group_srcs and context_fingerprint:
                 _group_cache = self._tm.lookup_batch(
                     _group_srcs, tgt_lang=tgt, model=self._main_model_name(),
                     profanity=self.profanity_var.get(), schema_name=sname,
                     source_language=group_src,
+                    context_fingerprint=context_fingerprint,
                     allow_contextless_final=False)
                 for src_t, tgt_t in _group_cache.items():
-                    _tm_cache[(src_t, sname, group_src)] = tgt_t
+                    _tm_cache[(src_t, sname, group_src, context_fingerprint)] = tgt_t
 
         def _tm_fill_chunk(req: dict) -> str | None:
             """Chunk'taki tüm bloklar TM'de tam eşleşiyorsa JSON cevabı döner, yoksa None."""
@@ -22686,9 +22851,13 @@ class App(ctk.CTk):
                     return None
                 sch_name = req.get("schema_name", "")
                 source_language = req.get("source_language", "")
+                req_path = file_map[req["custom_id"]][0][2]
+                context_fingerprint = (
+                    source_hashes.get(req_path) or _file_content_sha256(req_path))
                 results = []
                 for item in items:
-                    cached = _tm_cache.get((item["t"], sch_name, source_language))
+                    cached = _tm_cache.get((item["t"], sch_name, source_language,
+                                            context_fingerprint))
                     if cached is None:
                         fuzzy = self._tm.fuzzy_lookup(
                             item["t"], threshold=0.95, tgt_lang=tgt,
@@ -22696,6 +22865,7 @@ class App(ctk.CTk):
                             profanity=self.profanity_var.get(),
                             schema_name=sch_name,
                             source_language=source_language,
+                            context_fingerprint=context_fingerprint,
                             allow_contextless_final=False)
                         cached = fuzzy[0] if fuzzy else None
                     if cached is None:
@@ -23095,7 +23265,7 @@ class App(ctk.CTk):
 
             try:
                 _before_source_hash = _file_content_sha256(filepath)
-                cues = ht.load_subtitle(filepath)
+                cues = ht.load_subtitle(filepath, file_src)
                 _after_source_hash = _file_content_sha256(filepath)
                 if (not _before_source_hash
                         or _before_source_hash != _after_source_hash):
@@ -23123,15 +23293,25 @@ class App(ctk.CTk):
                                 getattr(self, "_force_retranslate_paths", set()))
                                 and _output_matches_source_fingerprint(
                                     report_dir, out_path, filepath)):
-                            self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
-                            self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
-                            completed_files.append(filepath)
-                            self._clear_sync_stage_ckpt(filepath)
-                            file_pct = int((fi + 1) / n_files * 100)
-                            self._set_progress(file_pct)
-                            continue
-                    except Exception:
-                        pass  # parse edilemediyse yeniden çevir
+                            existing_audit = _subtitle_delivery_audit(
+                                filepath, str(out_path), tgt, file_src)
+                            if not _delivery_audit_has_hard_error(existing_audit):
+                                self._log(f"[{fi+1}/{n_files}] {fname} — ✓ tamamlanmış, atlanıyor", "ok")
+                                self._update_file_progress(filepath, "Tamamlanmış (atlandı)", 100, "done")
+                                completed_files.append(filepath)
+                                self._clear_sync_stage_ckpt(filepath)
+                                file_pct = int((fi + 1) / n_files * 100)
+                                self._set_progress(file_pct)
+                                continue
+                            quarantined = _quarantine_incomplete_final(out_path)
+                            self._log(
+                                f"{fname}: mevcut çıktı teslim denetiminden geçmedi; "
+                                f"yeniden üretilecek ({Path(quarantined).name if quarantined else 'karantina başarısız'}).",
+                                "warn")
+                    except Exception as existing_error:
+                        self._log(
+                            f"{fname}: mevcut çıktı doğrulanamadı; yeniden üretilecek "
+                            f"({existing_error})", "warn")
                 _expected_source_hash = _after_source_hash
                 _output_baseline = _file_state_signature(out_path)
                 _partial_candidate = (
@@ -23979,6 +24159,7 @@ class App(ctk.CTk):
                 self._log(f"Kaydedildi: {out_path}", "ok")
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
+            _delivery_scan_failed = False
             try:
                 self._record_file_status(
                     filepath, "Nihai Teslim Denetimi", "running")
@@ -23987,8 +24168,11 @@ class App(ctk.CTk):
                     src_clean_map={str(c.index): _clean_src(c.text) for c in cues},
                     issue_fn=self._record_quality_issue,
                     locked_terms=_locked_terms, source_language=file_src)
-            except Exception:
-                pass
+            except Exception as delivery_error:
+                _delivery_scan_failed = True
+                self._log(
+                    f"{fname}: nihai teslim denetimi çalışmadı: {delivery_error}",
+                    "err")
             # Rapor satırı
             _cps_avg, _cps_max = _cps_stats(sorted_blocks)
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
@@ -24015,7 +24199,8 @@ class App(ctk.CTk):
                     self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": len(batch_reqs),
                 "tm_hits": self._tm.hit_count_session(),
-                "run_status": "error" if _has_missing else "done",
+                "delivery_scan_failed": _delivery_scan_failed,
+                "run_status": "error" if (_has_missing or _delivery_scan_failed) else "done",
             })
             if _has_missing:
                 failed_files.append(filepath)
@@ -24030,7 +24215,8 @@ class App(ctk.CTk):
                                  {str(c.index): _clean_src(c.text) for c in cues},
                                  self._main_model_name(), tgt,
                                  schema_name=schema_dict.get("name", ""),
-                                 source_language=file_src)
+                                 source_language=file_src,
+                                 context_fingerprint=_expected_source_hash)
             if _analysis_ok and _hata_n == 0 and _n_filled == 0:
                 if _file_pm is not None:
                     try:
@@ -24067,6 +24253,9 @@ class App(ctk.CTk):
             if self._wait_between_files(fi, n_files, fname) == "stopped":
                 break
 
+        self._save_quality_report(report_rows, output_dir)
+        completed_files, failed_files = _reconcile_delivery_outcomes(
+            report_rows, completed_files, failed_files)
         summary = summarize_file_outcomes(
             completed_files, failed_files, skipped_files, total_files=n_files, stop_flag=self._stop_flag
         )
@@ -24081,7 +24270,6 @@ class App(ctk.CTk):
                     clear_response_checkpoint_namespace(
                         state_path(__file__, ".quality_response_checkpoint"),
                         namespace)
-        self._save_quality_report(report_rows, output_dir)
         self._force_retranslate_paths = set()
         self._set_running(False)
         self._set_eta("")
@@ -25063,7 +25251,8 @@ class App(ctk.CTk):
                                     if _cand.exists():
                                         _src_path = _cand
                                 if _src_path is not None:
-                                    _orig_cues = ht.load_subtitle(str(_src_path))
+                                    _orig_cues = ht.load_subtitle(
+                                        str(_src_path), source_language)
                             except Exception:
                                 pass
                             if _orig_cues is None:
@@ -25454,6 +25643,7 @@ class App(ctk.CTk):
                             _pass_status["Series-Memory"] = dict(
                                 _series_memory_status)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
+                            _delivery_scan_failed = False
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
                                 try:
@@ -25466,13 +25656,19 @@ class App(ctk.CTk):
                                                                  or self._effective_file_source_language(
                                                                      str(_src_path), self._snap_get(
                                                                          "src_lang", "English"))))
-                                except Exception:
-                                    pass
+                                except Exception as delivery_error:
+                                    _delivery_scan_failed = True
+                                    self._log(
+                                        f"{Path(output_path).name}: nihai teslim denetimi "
+                                        f"çalışmadı: {delivery_error}", "err")
                                 self._store_tm_pairs(
                                     pp, _src_map, self._main_model_name(), tgt,
                                     schema_name=schema_name or self._get_file_schema(str(_src_path))["name"],
                                     source_language=source_language or self._effective_file_source_language(
-                                        str(_src_path), self._snap_get("src_lang", "English")))
+                                        str(_src_path), self._snap_get("src_lang", "English")),
+                                    context_fingerprint=(
+                                        _file_content_sha256(_src_path)
+                                        if _src_path else ""))
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -25505,10 +25701,20 @@ class App(ctk.CTk):
                                                      "chain_ctx": bool(App._run_setting(
                                                          self, "chain_ctx", "chain_ctx_var", True)),
                                                      "translation_chunks": len(file_map),
-                                                     "tm_hits": self._tm.hit_count_session()})
+                                                     "tm_hits": self._tm.hit_count_session(),
+                                                     "delivery_scan_failed": _delivery_scan_failed,
+                                                     "run_status": (
+                                                         "error" if _delivery_scan_failed
+                                                         else "done")})
                             terminal = True
+                            if _delivery_scan_failed:
+                                self._update_file_progress(
+                                    str(_src_path or source_path),
+                                    "Teslim denetimi başarısız", 100, "error")
                             if result_out is not None:
-                                result_out["status"] = "completed"
+                                result_out["status"] = (
+                                    "failed" if _delivery_scan_failed
+                                    else "completed")
                         except Exception as ppe:
                             self._log_exc(f"Post-processing [{Path(output_path).name}]", ppe)
                         finally:
@@ -26146,7 +26352,8 @@ class App(ctk.CTk):
             self._store_tm_pairs(
                 sorted_blocks, src_blocks, model_name, _tgt_lang,
                 schema_name=schema_dict.get("name", ""),
-                source_language=_file_src_lang)
+                source_language=_file_src_lang,
+                context_fingerprint=_expected_source_hash)
             if _hata_n == 0 and _n_filled == 0:
                 _series_memory_status = {}
                 self._commit_precontext_series_memory(
@@ -26160,7 +26367,7 @@ class App(ctk.CTk):
                 try:
                     self._record_file_status(fp, "Auto-Glossary", "running")
                     self._run_auto_glossary(
-                        ht.load_subtitle(fp), sorted_blocks, fp,
+                        ht.load_subtitle(fp, _file_src_lang), sorted_blocks, fp,
                         status_out=_auto_glossary_status)
                 except Exception as _ag_e:
                     _auto_glossary_status.update({
@@ -26173,6 +26380,8 @@ class App(ctk.CTk):
                 break
         # ── Kalite Raporu (ceviri_raporu.txt) ────────────────────────────────
         _report_path = self._save_quality_report(report_rows, output_dir)
+        _written_files, _failed_files = _reconcile_delivery_outcomes(
+            report_rows, _written_files, _failed_files)
         total_candidate = len(file_blocks)
         summary = summarize_file_outcomes(
             _written_files, _failed_files, _skipped_files, total_files=total_candidate, stop_flag=self._stop_flag
@@ -26474,6 +26683,22 @@ class App(ctk.CTk):
             file_status = session["files"].get(str(filepath), {}).get("status", "pending")
 
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
+            if file_status == "completed":
+                existing_output = _resolve_output_path(
+                    input_dir, output_dir, filepath,
+                    same_folder=self.same_folder_var.get(),
+                    selected_roots=self._output_selection_roots())
+                existing_audit = _subtitle_delivery_audit(
+                    filepath, str(existing_output), tgt, file_src)
+                if _delivery_audit_has_hard_error(existing_audit):
+                    quarantined = _quarantine_incomplete_final(existing_output)
+                    ht.update_batch_session(session, filepath, "pending")
+                    file_status = "pending"
+                    self._log(
+                        f"{fname}: tamamlandı kaydı var fakat çıktı teslim "
+                        f"denetiminden geçmedi; yeniden işlenecek "
+                        f"({Path(quarantined).name if quarantined else 'karantina başarısız'}).",
+                        "warn")
             if file_status in {"completed", "removed"}:
                 self._record_file_status(
                     filepath, "Tamamlanmış (atlandı)", "done")
@@ -26486,7 +26711,7 @@ class App(ctk.CTk):
 
             try:
                 _stable_source_hash = _file_content_sha256(filepath)
-                cues = ht.load_subtitle(filepath)
+                cues = ht.load_subtitle(filepath, file_src)
                 if (_file_content_sha256(filepath) != _stable_source_hash
                         or not _stable_source_hash):
                     self._log(
@@ -27368,6 +27593,7 @@ class App(ctk.CTk):
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
                 _w = 0
+                _delivery_scan_failed = False
                 try:
                     self._record_file_status(
                         filepath, "Nihai Teslim Denetimi", "running")
@@ -27377,6 +27603,7 @@ class App(ctk.CTk):
                                                   locked_terms=_locked_terms,
                                                   source_language=file_src)
                 except Exception as delivery_error:
+                    _delivery_scan_failed = True
                     _pass_status["Final-Delivery"] = {
                         "status": "failed", "error": str(delivery_error),
                     }
@@ -27386,7 +27613,8 @@ class App(ctk.CTk):
                     filepath, "Çeviri Hafızası", "running")
                 self._store_tm_pairs(
                     _final_blocks, _src_map, self._main_model_name(), tgt,
-                    schema_name=file_schema_name, source_language=file_src)
+                    schema_name=file_schema_name, source_language=file_src,
+                    context_fingerprint=_expected_source_hash)
                 if analysis_ok and _n_filled == 0 and not any(
                         str(text or "").startswith("[HATA")
                         or "[ÇEVİRİ EKSİK]" in str(text or "")
@@ -27445,6 +27673,9 @@ class App(ctk.CTk):
                         self, "chain_ctx", "chain_ctx_var", True)),
                     "translation_chunks": len(fmap),
                     "tm_hits": self._tm.hit_count_session(),
+                    "delivery_scan_failed": _delivery_scan_failed,
+                    "run_status": (
+                        "error" if _delivery_scan_failed else "done"),
                 })
 
                 ht.clear_context_cache(filepath)
@@ -27471,6 +27702,12 @@ class App(ctk.CTk):
                     self._stop_flag = True
 
         self._save_quality_report(report_rows, output_dir)
+        for _row in report_rows:
+            if _row.get("run_status") == "error" and _row.get("source_path"):
+                ht.update_batch_session(
+                    session, str(_row["source_path"]), "failed")
+                self._record_file_status(
+                    str(_row["source_path"]), "Teslim denetimi başarısız", "error")
         self._set_running(False)
         if not self._stop_flag:
             self._set_progress(100)

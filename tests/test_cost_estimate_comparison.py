@@ -7,21 +7,39 @@ hafızası). Kullanıcının maliyet penceresinde bu alternatifi görmesi, dosya
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import subtitle_translator_gui as gui
-from tests._gui_app import make_app
+
+
+class _Var:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
 
 
 class CostEstimateComparisonTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = make_app(gui)
-        cls.app.update_idletasks()
+        cls.app = gui.App.__new__(gui.App)
+        cls.app.model_var = _Var("gpt-5.4")
+        cls.app.main_custom_var = _Var(False)
+        cls.app.hybrid_var = _Var(False)
+        cls.app.critic_var = _Var(False)
+        cls.app.polish_var = _Var(False)
+        cls.app.native_var = _Var(False)
+        cls.app.qc_var = _Var(False)
+        cls.app._log = lambda *_args, **_kwargs: None
 
     @classmethod
     def tearDownClass(cls):
-        cls.app.destroy()
+        pass
 
     def _write_srt(self, td, n_lines=20):
         p = Path(td) / "f.srt"
@@ -32,34 +50,32 @@ class CostEstimateComparisonTest(unittest.TestCase):
         p.write_text("\n".join(body), encoding="utf-8")
         return p
 
-    def test_comparison_line_shown_when_main_model_not_gpt54(self):
+    def test_custom_route_cost_is_marked_unverified(self):
         with tempfile.TemporaryDirectory() as td:
             f = self._write_srt(td)
             self.app.model_var.set("gpt-5.4-mini")
             if hasattr(self.app, "main_custom_var"): self.app.main_custom_var.set(False)
             with patch.object(self.app, "_get_srt_files", return_value=[str(f)]), \
+                 patch.object(self.app, "_main_api_base_url", return_value="https://reseller.test/v1"), \
                  patch("subtitle_translator_gui.messagebox.showinfo") as mock_info:
                 self.app._show_cost_estimate()
             mock_info.assert_called_once()
             _, body = mock_info.call_args[0]
-            self.assertIn("Karşılaştırma", body)
-            self.assertIn("gpt-5.4 (Batch, %50 indirimli)", body)
-            self.assertIn("Mevcut plan (gpt-5.4-mini)", body)
+            self.assertIn("sağlayıcı panelinden doğrulanmalı", body)
+            self.assertNotIn("Mevcut plan", body)
 
-    def test_comparison_line_omitted_when_main_model_already_gpt54(self):
+    def test_official_route_keeps_verified_usd_estimate(self):
         with tempfile.TemporaryDirectory() as td:
             f = self._write_srt(td)
             self.app.model_var.set("gpt-5.4")
             with patch.object(self.app, "_get_srt_files", return_value=[str(f)]), \
+                 patch.object(self.app, "_main_api_base_url", return_value="https://api.openai.com/v1"), \
                  patch("subtitle_translator_gui.messagebox.showinfo") as mock_info:
                 self.app._show_cost_estimate()
             _, body = mock_info.call_args[0]
-            self.assertNotIn("Karşılaştırma", body,
-                             "zaten gpt-5.4 iken kendisiyle karşılaştırma gösterilmemeli")
+            self.assertIn("Ana Çeviri Modeli (gpt-5.4): ~$", body)
 
-    def test_alt_total_uses_batch_discount_on_main_only(self):
-        # Alternatif toplam = (gpt-5.4 ana çeviri maliyeti * 0.5) + (mevcut geçiş
-        # maliyetleri, ANA MODELDEN bağımsız — indirim SADECE ana çeviriye uygulanır).
+    def test_custom_route_never_fabricates_official_comparison_price(self):
         with tempfile.TemporaryDirectory() as td:
             f = self._write_srt(td, n_lines=200)   # büyütülmüş fark net görünsün
             self.app.model_var.set("gpt-5.4-mini")
@@ -70,18 +86,12 @@ class CostEstimateComparisonTest(unittest.TestCase):
             self.app.native_var.set(False)
             self.app.hybrid_var.set(False)
             with patch.object(self.app, "_get_srt_files", return_value=[str(f)]), \
+                 patch.object(self.app, "_main_api_base_url", return_value="https://reseller.test/v1"), \
                  patch("subtitle_translator_gui.messagebox.showinfo") as mock_info:
                 self.app._show_cost_estimate()
             _, body = mock_info.call_args[0]
-            # Yardımcı geçişler kapalıyken alternatif toplam yalnızca gpt-5.4
-            # batch ana-çeviri maliyeti olmalı; mini'nin ~5x daha ucuz olduğu
-            # düşünülünce alternatif rakam mevcut plandan BÜYÜK olmalı.
-            import re
-            m_plan = re.search(r"Mevcut plan.*?~\$([\d.]+)", body)
-            m_alt = re.search(r"Alternatif.*?~\$([\d.]+)", body)
-            self.assertIsNotNone(m_plan)
-            self.assertIsNotNone(m_alt)
-            self.assertGreater(float(m_alt.group(1)), float(m_plan.group(1)))
+            self.assertIn("sağlayıcı panelini kullanın", body)
+            self.assertNotIn("Alternatif", body)
 
 
 if __name__ == "__main__":

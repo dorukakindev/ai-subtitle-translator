@@ -237,7 +237,7 @@ class HybridResumeRepairOrderTest(unittest.TestCase):
         source = inspect.getsource(gui.App._wait_batch_hybrid)
         repair_pos = source.index("_repair_untranslated_sync(")
         missing_pos = source.index("_missing_count = sum(")
-        partial_pos = source.index("_stage_path.replace(_partial_path)")
+        partial_pos = source.index("_move_stage_to_partial(")
 
         self.assertLess(repair_pos, missing_pos)
         self.assertLess(missing_pos, partial_pos)
