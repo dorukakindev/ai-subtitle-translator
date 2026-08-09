@@ -9885,6 +9885,17 @@ def locked_term_violation(
     for source_term, target_term in (locked_terms or {}).items():
         source_term = str(source_term or "").strip()
         target_term = str(target_term or "").strip()
+        taxon = re.fullmatch(r"([A-Z][a-z]{3,})\s+[a-z][a-z-]{2,}", target_term)
+        if (taxon and source_term.casefold() == target_term.casefold()
+                and re.search(rf"\b{re.escape(taxon.group(1))}\b",
+                              source_value, re.IGNORECASE)
+                and not re.search(rf"\b{re.escape(taxon.group(1))}\b",
+                                  candidate_text, re.IGNORECASE)):
+            return True
+
+    for source_term, target_term in (locked_terms or {}).items():
+        source_term = str(source_term or "").strip()
+        target_term = str(target_term or "").strip()
         if (len(source_term) > 1 and target_term
                 and _locked_source_term_present(source_term, source_value)):
             if _locked_target_has_derivational_suffix(target_term, candidate_text):

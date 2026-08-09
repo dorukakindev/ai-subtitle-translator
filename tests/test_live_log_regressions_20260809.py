@@ -1,0 +1,149 @@
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import hybrid_translate as ht
+import subtitle_translator_gui as gui
+
+
+class DeliveryLiteralLinebreakTest(unittest.TestCase):
+    def test_speaker_plus_language_sdh_is_removable(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            "Garcia:\n[ Speaking Spanish ]"))
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            "Woman:\n[ Chanting in Spanish ]"))
+
+    def test_upload_guard_restores_model_linebreak_then_drops_sdh(self):
+        ts1 = "00:00:01,000 --> 00:00:02,000"
+        ts2 = "00:00:03,000 --> 00:00:04,000"
+        source = [
+            ("1", ts1, "Garcia:\n[ Speaking Spanish ]"),
+            ("2", ts2, "Hello."),
+        ]
+        translated = [
+            ("1", ts1, "Garcia:\\n[ İspanyolca konuşuyor ]"),
+            ("2", ts2, "Merhaba."),
+        ]
+        result = gui._prepare_upload_ready_blocks(
+            translated, "Turkish", source_cues=source)
+        dialogue = [(ts, text) for _idx, ts, text in result
+                    if text != "discord: ceviri2"]
+        self.assertEqual(dialogue, [(ts2, "Merhaba.")])
+        self.assertFalse(any("\\n" in text for _idx, _ts, text in result))
+
+    def test_upload_guard_restores_literal_linebreak_for_dialogue(self):
+        self.assertEqual(
+            gui._restore_source_linebreaks(
+                "her şeyin tıbbi kullanımla\\nbaşladığını hatırlıyorum.",
+                "is where it all began.",
+            ),
+            "her şeyin tıbbi kullanımla\nbaşladığını hatırlıyorum.",
+        )
+        self.assertEqual(
+            gui._restore_source_linebreaks(r"Kod \\n olarak yazıldı.", r"Use \\n here."),
+            r"Kod \\n olarak yazıldı.",
+        )
+
+    def test_quality_scan_skips_expected_language_sdh_removal(self):
+        warnings = gui.scan_translation_quality(
+            "missing.srt",
+            [("1", "00:00:01,000 --> 00:00:02,000", "\\n")],
+            src_clean_map={"1": "Garcia:\n[ Speaking Spanish ]"},
+        )
+        self.assertEqual(warnings, 0)
+
+    def test_delivery_audit_hard_gates_literal_newline_marker(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nHello\nthere.\n",
+                encoding="utf-8",
+            )
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\\norada.\n",
+                encoding="utf-8",
+            )
+            audit = gui._subtitle_delivery_audit(str(source), str(output))
+        self.assertEqual(audit["residual_literal_newline_cues"], 1)
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
+
+    def test_delivery_audit_preserves_source_literal_backslash_n(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nUse \\n here.\n",
+                encoding="utf-8",
+            )
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nKodda \\n kullan.\n",
+                encoding="utf-8",
+            )
+            audit = gui._subtitle_delivery_audit(str(source), str(output))
+        self.assertEqual(audit["residual_literal_newline_cues"], 0)
+        self.assertFalse(gui._delivery_audit_has_hard_error(audit))
+
+
+class PolishScientificTermTest(unittest.TestCase):
+    def test_polish_cannot_corrupt_locked_taxonomic_genus(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Muhtemelen dünyadaki en güzel psilocybe bu.",
+            "Muhtemelen dünyadaki en güzel psilosib bu.",
+            "It's probably the most beautiful psilocybe in the world.",
+            locked_terms={"psilocybe cubensis": "Psilocybe cubensis"},
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "locked_term_violation")
+
+
+class PolishUsageRouteTest(unittest.TestCase):
+    def test_polish_uses_custom_route_cost_contract(self):
+        calls = []
+
+        class FakeCompletions:
+            def create(self, **_kwargs):
+                return SimpleNamespace(
+                    usage=SimpleNamespace(
+                        total_tokens=120,
+                        prompt_tokens_details=SimpleNamespace(cached_tokens=20),
+                    ),
+                    choices=[SimpleNamespace(message=SimpleNamespace(
+                        content='[{"id":1,"tr":"Merhaba."}]'))],
+                )
+
+        class FakeOpenAI:
+            def __init__(self, **_kwargs):
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        class MockApp:
+            _stop_flag = False
+            _active_snapshot = {}
+
+            def _update_tokens(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+            def _log(self, *_args, **_kwargs):
+                pass
+
+        with patch.dict(sys.modules, {
+                "openai": SimpleNamespace(OpenAI=FakeOpenAI)}):
+            gui.App._polish_pass(
+                MockApp(),
+                [(1, "00:00:01,000 --> 00:00:02,000", "Merhaba.")],
+                "Turkish", "key", "https://api.shuaiapi.com/v1", "gpt-5.4",
+                src_map={"1": "Hello."},
+            )
+
+        self.assertTrue(calls)
+        _args, kwargs = calls[0]
+        self.assertIsNone(kwargs["price"])
+        self.assertEqual(kwargs["pass_name"], "Polish Pass")
+        self.assertEqual(kwargs["base_url"], "https://api.shuaiapi.com/v1")
+
+
+if __name__ == "__main__":
+    unittest.main()

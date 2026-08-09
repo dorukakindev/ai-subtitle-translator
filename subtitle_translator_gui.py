@@ -2762,8 +2762,21 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
             or _DELIVERY_BARE_SOURCE_SDH_RE.fullmatch(
                 sdh_cleaner._ascii_fold(value).strip())):
         return True
+    speaker_stripped = sdh_cleaner._SRC_PLAIN_SPEAKER_LABEL_RE.sub("", value).strip()
+    if (speaker_stripped != value.strip()
+            and (_is_delivery_sdh_only(speaker_stripped)
+                 or _src_is_sdh_only(speaker_stripped))):
+        return True
     probe = [("1", "00:00:00,000 --> 00:00:00,001", value)]
     return not clean_sdh(probe, src_map={"1": value}, source_driven=True)
+
+
+def _restore_source_linebreaks(text: str, source_text: str) -> str:
+    value = str(text or "")
+    source = str(source_text or "")
+    if "\n" not in value and "\\n" in value and "\\n" not in source:
+        return value.replace("\\n", "\n")
+    return value
 
 
 def _srt_timestamp_ms(value: str) -> int:
@@ -2954,6 +2967,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     quote_markers_fixed = 0
     if source_cues:
         src_map = _delivery_source_map(blocks, source_cues)
+        blocks = [
+            (idx, ts, _restore_source_linebreaks(
+                text, src_map.get(str(idx), "")))
+            for idx, ts, text in blocks
+        ]
         blocks = clean_sdh(blocks, src_map=src_map, source_driven=True)
         blocks, quote_markers_fixed = _normalize_delivery_ocr_quote_markers(
             blocks, src_map)
@@ -7190,6 +7208,8 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         src_text = orig.get(str(idx), "")
         if not src_text:
             continue
+        if _source_cue_is_delivery_removable(src_text):
+            continue
 
         if _is_untranslated(
                 src_text, tr_text, locked_terms=locked_terms,
@@ -8915,11 +8935,15 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             missing_dialogue.append(source_idx)
     extras.sort()
     output_texts = [text for _idx, _ts, text in output_dialogue]
+    output_source_map = _delivery_source_map(output_dialogue, source_rows)
     unresolved_markers = sum(
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
         for text in output_texts)
     residual_credit_cues = sum(_is_delivery_credit(text) for text in output_texts)
     residual_sdh_cues = sum(_is_delivery_sdh_only(text) for text in output_texts)
+    residual_literal_newline_cues = sum(
+        "\\n" in text and "\\n" not in output_source_map.get(str(idx), "")
+        for idx, _ts, text in output_dialogue)
     residual_position_tags = sum(
         len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
     hatted_letters = sum(
@@ -8936,7 +8960,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
-        hatted_letters, signature_mismatch, invalid_timestamp_ids,
+        residual_literal_newline_cues, hatted_letters, signature_mismatch,
+        invalid_timestamp_ids,
         reversed_timestamp_ids, signature_overlap_ids,
     ))
     audit.update({
@@ -8951,6 +8976,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_sdh_cues": residual_sdh_cues,
+        "residual_literal_newline_cues": residual_literal_newline_cues,
         "residual_position_tags": residual_position_tags,
         "hatted_letters": hatted_letters,
         "delivery_signatures": delivery_signatures,
@@ -8979,6 +9005,7 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
     return any((
         audit.get("missing_dialogue_ids"),
         audit.get("unresolved_markers"),
+        audit.get("residual_literal_newline_cues"),
         audit.get("invalid_timestamp_ids"),
         audit.get("reversed_timestamp_ids"),
         audit.get("signature_overlap_ids"),
@@ -9035,6 +9062,7 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("unresolved_markers", "Eksik çeviri işaretleri"),
         ("residual_credit_cues", "Kalan eski kredi cue'ları"),
         ("residual_sdh_cues", "Kalan SDH cue'ları"),
+        ("residual_literal_newline_cues", "Düz metin \\n kalıntısı olan cue'lar"),
         ("residual_position_tags", "Kalan konum kodları"),
         ("hatted_letters", "Şapkalı harfler"),
         ("delivery_signatures", "discord: ceviri2 imzaları"),
@@ -19731,6 +19759,9 @@ class App(ctk.CTk):
         result_map = {}
         rejected = 0
         rejected_reasons = {}
+        usage_callback = App._token_callback_for_pass(
+            self,
+            helper_model, "Polish Pass", base_url=helper_url)
         attempted_chunks = 0
         successful_chunks = 0
         partial_chunks = 0
@@ -19835,12 +19866,9 @@ class App(ctk.CTk):
                     if not raw.strip():
                         raise RuntimeError("Polish: invalid JSON response")
 
-                    tok, cached = 0, 0
-                    if resp.usage:
-                        tok, cached = _get_usage_details(resp.usage)
-                    self._update_tokens(
-                        tok, price=_model_token_price(helper_model),
-                        cached=cached)
+                    _report_response_usage(
+                        usage_callback, resp, log_fn=self._log,
+                        pass_name="Polish Pass")
                     polished = json.loads(raw)
                     if not isinstance(polished, list):
                         raise RuntimeError("Polish: expected JSON array")
