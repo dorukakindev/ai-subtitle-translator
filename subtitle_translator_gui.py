@@ -7711,6 +7711,45 @@ def _active_run_state_candidates() -> list[Path]:
     return result
 
 
+def _run_record_owner_alive(owner: dict) -> bool:
+    try:
+        pid = int((owner or {}).get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if not pid or not _pid_alive(pid):
+        return False
+    saved_marker = str((owner or {}).get("process_start") or "")
+    current_marker = _process_start_marker(pid) if saved_marker else ""
+    return not (saved_marker and current_marker
+                and saved_marker != current_marker)
+
+
+def _claim_interrupted_run_record(path, run_id: str,
+                                  claimant_pid: int | None = None) -> bool:
+    record_path = Path(path)
+    pid = int(claimant_pid or os.getpid())
+    with _interprocess_lock(record_path):
+        try:
+            data = json.loads(record_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if (not isinstance(data, dict)
+                or str(data.get("run_id") or "") != str(run_id or "")):
+            return False
+        claim = data.get("resume_claim")
+        if isinstance(claim, dict) and _run_record_owner_alive(claim):
+            if int(claim.get("pid") or 0) != pid:
+                return False
+        marker = _process_start_marker(pid)
+        data["resume_claim"] = {
+            "pid": pid,
+            "process_start": marker,
+            "claimed_at": time.time(),
+        }
+        atomic_write_json(record_path, data)
+        return True
+
+
 def _file_content_sha256(path) -> str:
     try:
         return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -7780,6 +7819,9 @@ def _load_interrupted_run_record() -> dict | None:
                 if not (saved_marker and current_marker
                         and saved_marker != current_marker):
                     continue
+            claim = data.get("resume_claim")
+            if isinstance(claim, dict) and _run_record_owner_alive(claim):
+                continue
             data = dict(data)
             data["_state_path"] = str(path)
             try:
@@ -10415,6 +10457,15 @@ class App(ctk.CTk):
 
     def _restore_interrupted_run(self, record: dict):
         self._cancel_crash_resume(forget=False)
+        record_path = str(record.get("_state_path") or "").strip()
+        if (record_path and not _claim_interrupted_run_record(
+                record_path, str(record.get("run_id") or ""))):
+            self._log(
+                "Yarım çalışma başka bir uygulama penceresinde devam ettiriliyor; "
+                "bu pencerede tekrar başlatılmadı.", "warn")
+            self._set_status("Yarım çalışma başka bir pencerede sürdürülüyor.")
+            self._crash_resume_record_path = ""
+            return
         settings = dict(record.get("settings") or {})
         files = _interrupted_run_pending_files(record)
         if not files:

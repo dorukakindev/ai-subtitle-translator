@@ -43,6 +43,20 @@ def _response_checkpoint_namespace_dir(root: Path, namespace: str) -> Path:
     return Path(root) / digest
 
 
+def _checkpoint_base_url(value) -> str:
+    raw = str(value or "").rstrip("/")
+    try:
+        parsed = urlparse(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return raw
+        userinfo, separator, hostport = parsed.netloc.rpartition("@")
+        netloc = ((userinfo + separator) if separator else "") + hostport.lower()
+        return parsed._replace(
+            scheme=parsed.scheme.lower(), netloc=netloc).geturl()
+    except Exception:
+        return raw
+
+
 def configure_response_checkpoint(path=None, namespace: str = "",
                                   allow_reads: bool = False,
                                   hit_callback=None) -> None:
@@ -90,7 +104,7 @@ def clear_response_checkpoint_namespace(path, namespace: str) -> bool:
 def _response_checkpoint_key(client, model: str, kwargs: dict,
                              requested_format=None, checkpoint_label="") -> str:
     payload = {
-        "base_url": str(getattr(client, "base_url", "") or "").rstrip("/").lower(),
+        "base_url": _checkpoint_base_url(getattr(client, "base_url", "")),
         "model": str(model or ""),
         "kwargs": kwargs,
         "requested_format": requested_format,

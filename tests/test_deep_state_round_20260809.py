@@ -143,6 +143,22 @@ class ResponseCheckpointUsageTest(unittest.TestCase):
         self.assertTrue(response.response_checkpoint_hit)
         self.assertTrue(response.usage_available)
 
+    def test_checkpoint_key_preserves_case_sensitive_provider_path(self):
+        upper = SimpleNamespace(base_url="HTTPS://API.Example.com/Official/V1")
+        lower = SimpleNamespace(base_url="https://api.example.com/official/v1")
+        host_case = SimpleNamespace(base_url="https://API.EXAMPLE.COM/Official/V1")
+        kwargs = {"messages": [{"role": "user", "content": "same"}]}
+
+        upper_key = provider_retry._response_checkpoint_key(
+            upper, "model", kwargs)
+        lower_key = provider_retry._response_checkpoint_key(
+            lower, "model", kwargs)
+        host_case_key = provider_retry._response_checkpoint_key(
+            host_case, "model", kwargs)
+
+        self.assertNotEqual(upper_key, lower_key)
+        self.assertEqual(upper_key, host_case_key)
+
 
 class AutoGlossaryFailClosedTest(unittest.TestCase):
     @staticmethod
@@ -226,6 +242,32 @@ class MultiInstanceCrashRecoveryTest(unittest.TestCase):
             self.assertEqual(recovered["run_id"], "dead-run")
             self.assertEqual(recovered["_state_path"], str(dead))
             self.assertTrue(live.exists())
+
+    def test_interrupted_run_can_have_only_one_live_resume_owner(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "active_run.999.json"
+            path.write_text(json.dumps({
+                "pid": 999, "process_start": "dead", "run_id": "run-1",
+                "files": {},
+            }), encoding="utf-8")
+
+            def marker(pid):
+                return f"marker-{pid}"
+
+            with patch.object(gui, "_process_start_marker", side_effect=marker), \
+                 patch.object(gui, "_pid_alive", side_effect=lambda pid: pid == 111):
+                self.assertTrue(gui._claim_interrupted_run_record(
+                    path, "run-1", claimant_pid=111))
+                self.assertFalse(gui._claim_interrupted_run_record(
+                    path, "run-1", claimant_pid=222))
+
+            with patch.object(gui, "_process_start_marker", side_effect=marker), \
+                 patch.object(gui, "_pid_alive", return_value=False):
+                self.assertTrue(gui._claim_interrupted_run_record(
+                    path, "run-1", claimant_pid=222))
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["resume_claim"]["pid"], 222)
 
 
 if __name__ == "__main__":
