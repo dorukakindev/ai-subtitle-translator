@@ -429,10 +429,17 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     if inference_config:
         converse_args["inferenceConfig"] = inference_config
 
+    registered_client = False
+    if cancel_context is not None:
+        cancel_context.register(client)
+        registered_client = True
     try:
         response = client.converse(**converse_args)
     except Exception as e:
         raise RuntimeError(f"AWS Bedrock çağrısı başarısız oldu: {e}")
+    finally:
+        if registered_client:
+            cancel_context.unregister(client)
 
     _raise_if_cancelled(cancel_context)
     output_text = response["output"]["message"]["content"][0]["text"]

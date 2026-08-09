@@ -1,5 +1,6 @@
 """Direct provider adapter regressions: URL, cancellation and usage telemetry."""
 import json
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -89,6 +90,46 @@ class BedrockAdapterUsageGuardTest(unittest.TestCase):
                     "model", [{"role": "user", "content": "x"}],
                     cancel_context=_Cancelled())
         boto3.Session.assert_not_called()
+
+    def test_bedrock_registers_live_client_for_transport_cancellation(self):
+        from request_cancellation import RunRequestCanceller, RequestCancelled
+
+        boto3 = MagicMock()
+        client = MagicMock()
+        boto3.Session.return_value.client.return_value = client
+        started = threading.Event()
+        release = threading.Event()
+        canceller = RunRequestCanceller()
+        errors = []
+
+        def converse(**_kwargs):
+            started.set()
+            release.wait(1)
+            raise RuntimeError("closed")
+
+        client.converse.side_effect = converse
+        client.close.side_effect = release.set
+
+        def worker():
+            try:
+                helpers.call_bedrock_converse(
+                    "model", [{"role": "user", "content": "x"}],
+                    cancel_context=canceller)
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.dict("sys.modules", {"boto3": boto3}):
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(started.wait(1))
+            self.assertEqual(canceller.cancel(), 1)
+            thread.join(1)
+
+        self.assertFalse(thread.is_alive())
+        client.close.assert_called_once_with()
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RuntimeError)
+        self.assertIn("closed", str(errors[0]))
 
 
 if __name__ == "__main__":
