@@ -264,6 +264,16 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertTrue(write_pos < pm_pos < series_pos)
         self.assertNotIn("self._stage_series_memory_from_analysis(", src)
 
+    def test_hybrid_batch_commits_project_memory_only_after_quality_success(self):
+        src = inspect.getsource(gui.App._run_hybrid)
+        success_pos = src.find("if (not _hybrid_quality_failed and analysis_ok")
+        pm_pos = src.find("_file_pm.merge_glossary_from_analysis(")
+        complete_pos = src.find(
+            'ht.update_batch_session(\n                    session, filepath, "completed"')
+
+        self.assertTrue(0 <= success_pos < pm_pos < complete_pos)
+        self.assertEqual(src.count("_file_pm.merge_glossary_from_analysis("), 1)
+
     def test_chain_retries_invalid_chunk_before_building_next_context(self):
         for flow in (gui.App._run_sync, gui.App._run_sync_hybrid):
             with self.subTest(flow=flow.__name__):

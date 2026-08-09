@@ -184,6 +184,27 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertNotEqual(second, third)
 
+    def test_fingerprint_preserves_case_sensitive_endpoint_path(self):
+        def var(value):
+            return SimpleNamespace(get=lambda: value)
+
+        app = SimpleNamespace(
+            _main_model_name=lambda: "gpt-5.4",
+            _main_api_base_url=lambda: "https://PROVIDER.example/Official/V1",
+            tgt_var=var("Turkish"), profanity_var=var("Orta"),
+            style_var=var("natural"), content_type_var=var("Film"),
+            chain_ctx_var=var(True), _active_snapshot=None,
+            _file_language_vars={},
+        )
+        first = gui.App._ckpt_fingerprint(app)
+        app._main_api_base_url = lambda: "https://provider.example/official/V1"
+        second = gui.App._ckpt_fingerprint(app)
+        app._main_api_base_url = lambda: "https://provider.example/Official/V1"
+        host_only_change = gui.App._ckpt_fingerprint(app)
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(first, host_only_change)
+
     def test_fingerprint_uses_worker_snapshot_without_tk_reads(self):
         forbidden = MagicMock(side_effect=AssertionError("Tk read"))
         app = SimpleNamespace(
@@ -449,6 +470,59 @@ class SyncCheckpointTest(unittest.TestCase):
         log_text = " ".join(str(call.args[0]) for call in app._log.call_args_list)
         self.assertIn("Yardımcı analiz ve bütün kalite geçişleri", log_text)
         self.assertIn("deterministik nihai teslim temizliği", log_text)
+
+    def test_partial_repair_does_not_complete_without_source_fingerprint(self):
+        root = Path(self.tmpdir.name)
+        source_dir = root / "source"
+        output_dir = root / "output"
+        reports = output_dir / "Raporlar"
+        source_dir.mkdir()
+        output_dir.mkdir()
+        source = source_dir / "film.srt"
+        out = output_dir / "film.srt"
+        partial = output_dir / "film.partial.srt"
+        source.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nHello.\n\n",
+            encoding="utf-8",
+        )
+        partial.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n[ÇEVİRİ EKSİK]\n\n",
+            encoding="utf-8",
+        )
+        source_hash = gui._file_content_sha256(source)
+        gui._write_output_source_fingerprint(reports, partial, source_hash)
+        cues = [SimpleNamespace(
+            index=1, start="00:00:01,000", end="00:00:02,000", text="Hello.")]
+        app = SimpleNamespace(
+            _force_retranslate_paths=set(),
+            _get_file_schema=lambda _fp: {"name": "Otomatik", "rules": []},
+            _get_file_glossary=lambda _fp: "",
+            _merge_schema_glossary=lambda glossary, _schema: glossary,
+            _get_locked_terms_dict=lambda _fp, _tgt: {},
+            _log=MagicMock(),
+            _record_file_status=MagicMock(),
+            _update_tokens=MagicMock(),
+            _stop_flag=False,
+            _block_automatic_recovery_for_permanent_provider=MagicMock(),
+        )
+        repaired = [("1", "00:00:01,000 --> 00:00:02,000", "Merhaba.")]
+
+        with patch("subtitle_translator_gui._repair_untranslated_sync",
+                   return_value=(repaired, 1)), patch(
+                       "subtitle_translator_gui._write_output_source_fingerprint",
+                       return_value=False):
+            result = gui.App._run_partial_repair_only_file(
+                app, str(source), cues, out, reports, source_hash,
+                gui._file_state_signature(out), object(), "English",
+                "Turkish", "gpt-5.4", "Orta")
+
+        self.assertFalse(result["complete"])
+        self.assertTrue(result["write_error"])
+        self.assertTrue(partial.exists())
+        self.assertIn(
+            "parmak izi yazılamadı",
+            " ".join(str(call.args[0]) for call in app._log.call_args_list),
+        )
 
     def test_hybrid_flow_wires_stage_checkpoint_around_quality_passes(self):
         source = inspect.getsource(gui.App._run_sync_hybrid)

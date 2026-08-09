@@ -75,6 +75,8 @@ API_PROFILE_ROLE_LABELS = {
 
 
 def _provider_preflight_targets(snapshot: dict) -> list:
+    from provider_retry import _checkpoint_base_url
+
     if not isinstance(snapshot, dict):
         return []
     targets = [(
@@ -107,7 +109,7 @@ def _provider_preflight_targets(snapshot: dict) -> list:
     seen = set()
     result = []
     for label, key, base_url, model in targets:
-        identity = (key, base_url.rstrip("/").casefold(), model.casefold())
+        identity = (key, _checkpoint_base_url(base_url), model.casefold())
         if not key or not base_url or not model or identity in seen:
             continue
         seen.add(identity)
@@ -8036,6 +8038,17 @@ def _api_usage_total(usage_by_pass: dict) -> dict:
 def _api_diagnostic_findings(api: dict) -> list[dict]:
     api = api or {}
     findings = []
+    checkpoint_write_failures = int(
+        api.get("checkpoint_write_failures", 0) or 0)
+    if checkpoint_write_failures:
+        findings.append({
+            "code": "checkpoint_write_failure", "severity": "warning",
+            "pass": "API Checkpoint",
+            "message": (
+                f"{checkpoint_write_failures} kalite yanıtı checkpoint'e "
+                "yazılamadı; çökme sonrası yeniden API harcaması olabilir."),
+            "evidence": "",
+        })
     operations = dict(api.get("operations") or {})
     terminal_events = {}
     for event in api.get("events") or []:
@@ -8540,7 +8553,8 @@ def _completion_marker_text(record: dict, source_files: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _write_completion_markers(record: dict) -> list[str]:
+def _write_completion_markers(record: dict, errors: list[str] | None = None) -> list[str]:
+    local_errors = errors if errors is not None else []
     written = []
     completed = _completion_marker_groups(record)
     completed_roots = {root for root, _source_files in completed}
@@ -8554,14 +8568,24 @@ def _write_completion_markers(record: dict) -> list[str]:
         if group_root is not None
     }
     for root in candidate_roots - completed_roots:
-        (root / _COMPLETION_MARKER_NAME).unlink(missing_ok=True)
+        marker = root / _COMPLETION_MARKER_NAME
+        try:
+            marker.unlink(missing_ok=True)
+        except Exception as exc:
+            local_errors.append(f"{marker}: eski işaret kaldırılamadı ({exc})")
     for root, source_files in completed:
         if not root.is_dir():
             continue
         marker = root / _COMPLETION_MARKER_NAME
-        atomic_write_text(
-            marker, _completion_marker_text(record, source_files), encoding="utf-8")
-        written.append(str(marker))
+        try:
+            atomic_write_text(
+                marker, _completion_marker_text(record, source_files),
+                encoding="utf-8")
+            written.append(str(marker))
+        except Exception as exc:
+            local_errors.append(f"{marker}: işaret yazılamadı ({exc})")
+    if errors is None and local_errors:
+        raise OSError("; ".join(local_errors))
     return written
 
 
@@ -9044,6 +9068,12 @@ def _log_exception_or_warning(owner, message: str, exc: Exception) -> None:
     log = getattr(owner, "_log", None)
     if callable(log):
         log(f"{message}: {exc}", "warn")
+
+
+def _log_persistence_failure(owner, message: str, exc: Exception) -> None:
+    log = getattr(owner, "_log", None)
+    if callable(log):
+        log(f"{message} ({type(exc).__name__})", "err")
 
 
 def _record_file_stage_if_available(owner, filepath: str, phase: str,
@@ -13373,6 +13403,7 @@ class App(ctk.CTk):
                 origin_run_id,
                 allow_reads=bool(resume or snapshot.get("crash_resume")),
                 hit_callback=self._quality_checkpoint_hit,
+                error_callback=self._quality_checkpoint_error,
             )
         except Exception as exc:
             self._log(f"Kalite checkpoint'i başlatılamadı: {exc}", "warn")
@@ -13407,6 +13438,17 @@ class App(ctk.CTk):
             )
         self._set_status(
             f"Çökme kurtarma: {stage}; toplam {int(count)} istek yeniden gönderilmedi")
+
+    def _quality_checkpoint_error(self, operation: str, exc) -> None:
+        with self._run_record_lock:
+            record = self._active_run_record
+            if record is not None:
+                api = record.setdefault("api", {})
+                api["checkpoint_write_failures"] = int(
+                    api.get("checkpoint_write_failures", 0) or 0) + 1
+        self._log(
+            "Kalite API yanıt checkpoint'i yazılamadı; mevcut yanıt "
+            f"kullanılacak ancak çökme sonrası yeniden istenebilir: {exc}", "warn")
 
     def _record_file_status(self, filepath: str, phase: str, status: str):
         timing_log = None
@@ -13654,9 +13696,15 @@ class App(ctk.CTk):
             self._log(f"API teşhisi: {_format_api_diagnostic(finding)}", tag)
 
         try:
-            snapshot["completion_markers"] = _write_completion_markers(snapshot)
+            marker_errors = []
+            snapshot["completion_markers"] = _write_completion_markers(
+                snapshot, marker_errors)
             for marker in snapshot["completion_markers"]:
                 self._log(f"Çeviri tamamlandı işareti: {marker}", "ok")
+            if marker_errors:
+                snapshot["completion_marker_errors"] = marker_errors
+                for marker_error in marker_errors:
+                    self._log(f"ÇEVRİLDİ işareti hatası: {marker_error}", "warn")
         except Exception as exc:
             snapshot["completion_marker_error"] = str(exc)
             self._log(f"ÇEVRİLDİ işareti yazılamadı: {exc}", "warn")
@@ -15231,8 +15279,10 @@ class App(ctk.CTk):
                             "sezon denetimi yazımı sonrası teslim denetimi "
                             f"başarısız ({quarantined or output_path})")
                     report_dir.mkdir(parents=True, exist_ok=True)
-                    _write_output_source_fingerprint(
-                        report_dir, output_path, expected_source_hash)
+                    if not _write_output_source_fingerprint(
+                            report_dir, output_path, expected_source_hash):
+                        raise RuntimeError(
+                            "sezon denetimi kaynak-çıktı parmak izi yazılamadı")
                     season_report_updates[str(source_path)] = {
                         "output_path": str(output_path),
                         "delivery_audit": delivery_audit,
@@ -17300,8 +17350,9 @@ class App(ctk.CTk):
         self._sync_main_custom_visibility()
         try:
             self._save_settings(save_credentials=False)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_persistence_failure(
+                self, "Özel sağlayıcı ayarı kaydedilemedi", exc)
 
     def _on_main_custom_key_focus_out(self, _event=None):
         self._save_settings(save_credentials=False)
@@ -17429,8 +17480,8 @@ class App(ctk.CTk):
         try:
             _sp  = Path(self._settings_path())
             atomic_write_json(_sp, data)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_persistence_failure(self, "Uygulama ayarları kaydedilemedi", exc)
 
         if not save_credentials:
             return
@@ -17474,8 +17525,9 @@ class App(ctk.CTk):
                 credential_store.delete_key("main_custom")
             if fallback_used:
                 self._log("keyring kullanılamıyor, anahtar obfuscated fallback dosyada saklandı", "warn")
-        except Exception:
-            pass
+        except Exception as exc:
+            _log_persistence_failure(
+                self, "API anahtarları güvenli depoya kaydedilemedi", exc)
 
     def _get_current_helper_provider(self, role: str = "analysis", model_name: str = None) -> str:
         if role not in self.helper_model_vars:
@@ -21606,7 +21658,43 @@ class App(ctk.CTk):
     def _save_quality_report(self, rows: list, output_dir: str):
         """Kalite raporunu çıktı klasörüne ceviri_raporu.txt olarak yazar."""
         if not rows:
-            return None
+            try:
+                with self._run_record_lock:
+                    active_record = self._active_run_record or {}
+                    run_id = str(active_record.get("run_id") or "")
+                rep_dir = _resolve_report_dir(self.input_var.get(), output_dir)
+                rep_dir.mkdir(parents=True, exist_ok=True)
+                text = "\n".join([
+                    "ÇEVİRİ KALİTE RAPORU",
+                    f"Çalıştırma kimliği: {run_id or '-'}",
+                    "",
+                    "Bu çalıştırmada raporlanabilir nihai çıktı üretilemedi.",
+                    "Ayrıntı için oturum logunu ve çalıştırma özetini inceleyin.",
+                    "",
+                ])
+                payload = {
+                    "run_id": run_id,
+                    "status": "no_reportable_outputs",
+                    "files": [],
+                }
+                txt_path = rep_dir / "ceviri_raporu.txt"
+                json_path = rep_dir / "ceviri_raporu.json"
+                atomic_write_text(txt_path, text, encoding="utf-8")
+                atomic_write_json(json_path, payload)
+                report_paths = [txt_path, json_path]
+                if run_id:
+                    run_path = rep_dir / f"ceviri_raporu_{run_id}.txt"
+                    run_json_path = rep_dir / f"ceviri_raporu_{run_id}.json"
+                    atomic_write_text(run_path, text, encoding="utf-8")
+                    atomic_write_json(run_json_path, payload)
+                    report_paths.extend([run_path, run_json_path])
+                self._record_quality_report([], report_paths)
+                self._log(
+                    f"Kalite raporu: {txt_path} (nihai çıktı yok)", "warn")
+                return txt_path
+            except Exception as report_error:
+                self._log(f"Boş kalite raporu yazılamadı: {report_error}", "err")
+                return None
         try:
             snapshot = dict(getattr(self, "_active_snapshot", {}) or {})
             report_rows = []
@@ -22958,6 +23046,7 @@ class App(ctk.CTk):
             namespace,
             allow_reads=allow_reads,
             hit_callback=self._quality_checkpoint_hit,
+            error_callback=getattr(self, "_quality_checkpoint_error", None),
         )
         if recovered_run_id and recovered_run_id != current_run_id:
             self._log(
@@ -22977,6 +23066,7 @@ class App(ctk.CTk):
             namespace,
             allow_reads=True,
             hit_callback=getattr(self, "_quality_checkpoint_hit", None),
+            error_callback=getattr(self, "_quality_checkpoint_error", None),
         )
         logger = getattr(self, "_log", None)
         if callable(logger):
@@ -23034,6 +23124,7 @@ class App(ctk.CTk):
         değişince eski koşunun chunk'ları 'tamamlanmış' sayılmaz — aksi hâlde ayar
         değiştirip yeniden çeviren kullanıcıya bayat çeviri geri yazılır."""
         try:
+            from provider_retry import _checkpoint_base_url
             snapshot = getattr(self, "_active_snapshot", None)
 
             def _value(key, var_name, default=""):
@@ -23048,7 +23139,7 @@ class App(ctk.CTk):
                 _value("profanity", "profanity_var"),
                 _value("style", "style_var"),
                 _value("content_type", "content_type_var"),
-                (self._main_api_base_url() or "").rstrip("/").lower(),
+                _checkpoint_base_url(self._main_api_base_url()),
                 str(bool(_value("chain_ctx", "chain_ctx_var", False))),
             ]
             if isinstance(snapshot, dict):
@@ -23659,8 +23750,14 @@ class App(ctk.CTk):
                 write_blocks, target_language=tgt,
                 log_fn=self._log, source_cues=cues)
         _write_srt_preserving_text(write_path, write_blocks)
-        _write_output_source_fingerprint(
+        fingerprint_ok = _write_output_source_fingerprint(
             report_dir, write_path, expected_source_hash)
+        if not fingerprint_ok:
+            self._log(
+                f"{Path(filepath).name}: kaynak-çıktı parmak izi yazılamadı; "
+                "dosya tamamlandı sayılmayacak.",
+                "err",
+            )
         if complete:
             delivery_audit = _subtitle_delivery_audit(
                 filepath, str(write_path), tgt, file_src)
@@ -23674,6 +23771,8 @@ class App(ctk.CTk):
                     "nihai teslim denetimi başarısız oldu; çıktı karantinaya "
                     f"alındı{f': {quarantined.name}' if quarantined else ''}.",
                     "err")
+        if complete and not fingerprint_ok:
+            complete = False
         archived_partial = None
         if complete:
             try:
@@ -23689,14 +23788,15 @@ class App(ctk.CTk):
                 "dokunulmadı; deterministik nihai teslim temizliği uygulandı.",
                 "ok",
             )
-        else:
+        elif missing_after:
             self._log(
                 f"Kısmi onarım tamamlanamadı: {len(missing_after)} eksik cue "
                 f"{partial_path.name} içinde kaldı.",
                 "err",
             )
         return {
-            "stopped": False, "complete": complete, "write_error": False,
+            "stopped": False, "complete": complete,
+            "write_error": not fingerprint_ok,
             "blocks": write_blocks, "repaired": repaired,
             "missing_before": missing_before, "missing_after": missing_after,
             "write_path": write_path, "archived_partial": archived_partial,
@@ -24641,8 +24741,12 @@ class App(ctk.CTk):
             write_srt(_write_path, _delivery_blocks, tgt)
             _quarantined = (
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
-            _write_output_source_fingerprint(
+            _fingerprint_ok = _write_output_source_fingerprint(
                 report_dir, _write_path, _expected_source_hash)
+            if not _fingerprint_ok:
+                self._log(
+                    f"{fname}: kaynak-çıktı parmak izi yazılamadı; "
+                    "dosya tamamlandı sayılmayacak.", "err")
             self._save_raw_backup(
                 _write_path, _raw_backup_blocks, _raw_map, tgt)
             if _has_missing:
@@ -24661,7 +24765,7 @@ class App(ctk.CTk):
                 self._log(f"Geçici nihai çıktı yazıldı: {out_path}", "info")
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
-            _delivery_scan_failed = False
+            _delivery_scan_failed = not _fingerprint_ok
             try:
                 self._record_file_status(
                     filepath, "Nihai Teslim Denetimi", "running")
@@ -24755,13 +24859,16 @@ class App(ctk.CTk):
             if _analysis_ok and _hata_n == 0 and _n_filled == 0:
                 if _file_pm is not None:
                     try:
-                        _file_pm.merge_glossary_from_analysis(
-                            _analysis_locked_terms)
-                        _file_pm.update_characters([
-                            c.name for c in context.characters
-                            if hasattr(c, "name")])
-                        if pronoun_map:
-                            _file_pm.update_pronoun_map(pronoun_map)
+                        if _file_pm.merge_glossary_from_analysis(
+                                _analysis_locked_terms) is False:
+                            raise OSError("proje terimleri kaydedilemedi")
+                        if _file_pm.update_characters([
+                                c.name for c in context.characters
+                                if hasattr(c, "name")]) is False:
+                            raise OSError("proje karakterleri kaydedilemedi")
+                        if (pronoun_map and _file_pm.update_pronoun_map(
+                                pronoun_map) is False):
+                            raise OSError("proje hitap haritası kaydedilemedi")
                     except Exception as memory_error:
                         self._log(
                             f"{fname}: proje hafızası güncellenemedi: "
@@ -26933,9 +27040,13 @@ class App(ctk.CTk):
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
             _quarantined = (
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
-            _write_output_source_fingerprint(
+            _fingerprint_ok = _write_output_source_fingerprint(
                 report_dir, _write_path,
                 expected_source_hash or _file_content_sha256(fp))
+            if not _fingerprint_ok:
+                self._log(
+                    f"{Path(fp).name}: kaynak-çıktı parmak izi yazılamadı; "
+                    "dosya tamamlandı sayılmayacak.", "err")
             if _has_missing:
                 self._log(
                     f"{Path(fp).name}: {_hata_n} eksik çeviri kaldı; "
@@ -26954,7 +27065,7 @@ class App(ctk.CTk):
                     out_path, _raw_backup_blocks, _raw_map, _tgt_lang)
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
             self._record_file_status(fp, "Nihai Teslim Denetimi", "running")
-            _delivery_scan_failed = False
+            _delivery_scan_failed = not _fingerprint_ok
             try:
                 w = (_hata_n if _has_missing else
                      scan_translation_quality(
@@ -27559,22 +27670,6 @@ class App(ctk.CTk):
                                                scene_gap_sec=float(self._snap_get(
                                                    "scene_gap_seconds", self._scene_gap_seconds)),
                                                log_fn=self._log)
-                    # Proje hafızasına kaydet
-                    if _analysis_ok and _file_pm is not None:
-                        try:
-                            _file_pm.merge_glossary_from_analysis(
-                                ht.sanitize_glossary_for_turkish(
-                                    dict(context.recurring_terms), target_language=tgt
-                                )
-                            )
-                            _file_pm.update_characters([c.name for c in context.characters
-                                                        if hasattr(c, 'name')])
-                            if pronoun_map:
-                                _file_pm.update_pronoun_map(pronoun_map)
-                        except Exception as memory_error:
-                            self._log(
-                                f"{fname}: proje hafızası güncellenemedi: "
-                                f"{memory_error}", "warn")
                     self._log(f"Analiz tamam — {len(context.recurring_terms)} terim, "
                               f"{len(context.characters)} karakter"
                               + (f", {len(idiom_map)} deyim" if idiom_map else "")
@@ -28350,6 +28445,25 @@ class App(ctk.CTk):
                         or "[ÇEVİRİ EKSİK]" in str(text or "")
                         for _idx, _ts, text in _final_blocks)):
                     _context, _char_examples, _pronoun_map, *_rest = analysis_tuple
+                    _file_pm = self._project_memory_for(filepath, file_src)
+                    if _file_pm is not None:
+                        try:
+                            if _file_pm.merge_glossary_from_analysis(
+                                    ht.sanitize_glossary_for_turkish(
+                                        dict(_context.recurring_terms),
+                                        target_language=tgt)) is False:
+                                raise OSError("proje terimleri kaydedilemedi")
+                            if _file_pm.update_characters([
+                                    c.name for c in _context.characters
+                                    if hasattr(c, "name")]) is False:
+                                raise OSError("proje karakterleri kaydedilemedi")
+                            if (_pronoun_map and _file_pm.update_pronoun_map(
+                                    _pronoun_map) is False):
+                                raise OSError("proje hitap haritası kaydedilemedi")
+                        except Exception as memory_error:
+                            self._log(
+                                f"{fname}: proje hafızası güncellenemedi: "
+                                f"{memory_error}", "warn")
                     _series_memory_status = {}
                     self._update_series_memory_from_analysis(
                         filepath, _context, _pronoun_map, tgt,

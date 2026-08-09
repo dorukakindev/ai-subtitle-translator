@@ -169,13 +169,13 @@ class ProjectMemory:
                 if is_self_translation(src, tgt):
                     continue
                 gl[src] = tgt
-            self.save()
+            return self.save()
 
     def merge_glossary_from_analysis(self, recurring_terms: dict):
         """ContextMemory.recurring_terms'den otomatik terim çıkarımı."""
         if not isinstance(recurring_terms, dict):
-            return
-        self.update_glossary(recurring_terms)
+            return True
+        return self.update_glossary(recurring_terms)
 
     # ── Karakter isimleri ─────────────────────────────────────────────────────
 
@@ -186,7 +186,7 @@ class ProjectMemory:
     def update_characters(self, names: list):
         """Karakter isimlerini kaydet (değişmez olarak)."""
         if not names:
-            return
+            return True
         with self._lock:
             chars = self._data.setdefault("characters", {})
             for name in names:
@@ -195,7 +195,7 @@ class ProjectMemory:
                 name = name.strip()
                 if name and name not in chars:
                     chars[name] = name
-            self.save()
+            return self.save()
 
     # ── Pronoun map ───────────────────────────────────────────────────────────
 
@@ -205,13 +205,13 @@ class ProjectMemory:
 
     def update_pronoun_map(self, pmap: dict):
         if not isinstance(pmap, dict):
-            return
+            return True
         with self._lock:
             pm = self._data.setdefault("pronoun_map", {})
             for k, v in pmap.items():
                 if k not in pm:
                     pm[k] = v
-            self.save()
+            return self.save()
 
     # ── Notlar ────────────────────────────────────────────────────────────────
 
@@ -220,7 +220,7 @@ class ProjectMemory:
             notes = self._data.setdefault("series_notes", [])
             if note and note not in notes:
                 notes.append(note)
-            self.save()
+            return self.save()
 
     def get_notes(self) -> list:
         with self._lock:
@@ -261,7 +261,7 @@ class ProjectMemory:
                 "glossary": {}, "characters": {}, "proper_nouns": {},
                 "pronoun_map": {}, "series_notes": [],
             }
-            self.save(merge_existing=False)
+            return self.save(merge_existing=False)
 
     def stats(self) -> dict:
         with self._lock:

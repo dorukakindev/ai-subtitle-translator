@@ -47,6 +47,16 @@ class MemoryCorruptionTest(unittest.TestCase):
             self.assertFalse(memory.save())
             self.assertEqual(path.read_bytes(), original)
 
+    def test_project_memory_update_reports_persistence_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / ".project_memory.json"
+            original = b'{"glossary":{"old":"eski"}'
+            path.write_bytes(original)
+            memory = ProjectMemory(tmpdir)
+
+            self.assertFalse(memory.update_glossary({"new": "yeni"}))
+            self.assertEqual(path.read_bytes(), original)
+
     def test_series_memory_does_not_replace_corrupt_existing_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / ".series_memory" / "show.json"

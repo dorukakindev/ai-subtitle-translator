@@ -135,6 +135,26 @@ class RetryAfterParsingTest(unittest.TestCase):
 
 
 class ProviderCooldownRegistryTest(unittest.TestCase):
+    def test_circuit_identity_preserves_endpoint_path_case(self):
+        upper = _client("https://PROVIDER.example/Official/V1")
+        lower = _client("https://provider.example/official/V1")
+        host_only = _client("https://provider.example/Official/V1")
+
+        self.assertNotEqual(
+            provider_retry._client_key(upper),
+            provider_retry._client_key(lower))
+        self.assertEqual(
+            provider_retry._client_key(upper),
+            provider_retry._client_key(host_only))
+
+    def test_structured_capability_identity_preserves_endpoint_path_case(self):
+        upper = _client("https://PROVIDER.example/Official/V1")
+        lower = _client("https://provider.example/official/V1")
+
+        self.assertNotEqual(
+            provider_retry._structured_key(upper, "gpt-5.4"),
+            provider_retry._structured_key(lower, "gpt-5.4"))
+
     def test_clearing_hooks_prevents_late_ui_callback(self):
         events = []
         registry = provider_retry.ProviderCooldownRegistry(
@@ -622,6 +642,26 @@ class ResponseCheckpointTest(unittest.TestCase):
             self.assertEqual(checkpoint_rows[0]["namespace"], "run-origin")
             self.assertEqual(checkpoint_rows[0]["model"], "gpt-4.1")
             self.assertEqual(len(checkpoint_rows[0]["request_fingerprint"]), 16)
+
+    def test_checkpoint_write_failure_is_reported_once_per_configuration(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            errors = []
+            root = Path(tmpdir) / ".quality_response_checkpoint"
+            client = self._mock_client(self._response("ok"))
+            provider_retry.configure_response_checkpoint(
+                root, "run-origin",
+                error_callback=lambda operation, exc: errors.append(
+                    (operation, str(exc))))
+
+            with mock.patch(
+                    "provider_retry.atomic_write_json",
+                    side_effect=OSError("disk full")):
+                provider_retry.chat_create_with_compat(
+                    client, "gpt-4.1", {"messages": []})
+                provider_retry.chat_create_with_compat(
+                    client, "gpt-4.1", {"messages": [{"role": "user"}]})
+
+            self.assertEqual(errors, [("write", "disk full")])
 
     def test_stage_label_does_not_change_existing_checkpoint_identity(self):
         client = self._mock_client(self._response("ok"))

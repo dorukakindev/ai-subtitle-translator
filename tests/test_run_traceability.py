@@ -13,6 +13,22 @@ import subtitle_translator_gui as gui
 
 
 class RunTraceabilityTest(unittest.TestCase):
+    def test_checkpoint_write_failure_is_visible_in_run_diagnostics(self):
+        record = {"api": {}}
+        stub = SimpleNamespace(
+            _run_record_lock=threading.RLock(),
+            _active_run_record=record,
+            _log=MagicMock(),
+        )
+
+        gui.App._quality_checkpoint_error(stub, "write", OSError("disk full"))
+        findings = gui._api_diagnostic_findings(record["api"])
+
+        self.assertEqual(record["api"]["checkpoint_write_failures"], 1)
+        self.assertTrue(any(
+            item["code"] == "checkpoint_write_failure" for item in findings))
+        stub._log.assert_called_once()
+
     def test_begin_run_record_builds_nested_log_path_with_two_arg_state_path(self):
         stub = SimpleNamespace(
             _active_snapshot={},

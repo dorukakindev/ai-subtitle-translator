@@ -160,6 +160,51 @@ class CompletionMarkerTest(unittest.TestCase):
             self.assertIn("ÇEVRİLDİ işaretleri", summary)
             self.assertIn(str(marker), summary)
 
+    def test_one_marker_write_failure_does_not_block_other_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            first_root = base / "first"
+            second_root = base / "second"
+            first_root.mkdir()
+            second_root.mkdir()
+            first_source = first_root / "one.srt"
+            second_source = second_root / "two.srt"
+            first_source.write_text("source", encoding="utf-8")
+            second_source.write_text("source", encoding="utf-8")
+            first_output = base / "out" / "one.srt"
+            second_output = base / "out" / "two.srt"
+            first_output.parent.mkdir()
+            first_output.write_text("translated", encoding="utf-8")
+            second_output.write_text("translated", encoding="utf-8")
+            record = {
+                "run_id": "run-marker", "ended_at": "now",
+                "settings": {
+                    "output_dir": str(base / "out"),
+                    "selected_folder_roots": [str(first_root), str(second_root)],
+                },
+                "files": {
+                    str(first_source): {
+                        "status": "done", "output_path": str(first_output)},
+                    str(second_source): {
+                        "status": "done", "output_path": str(second_output)},
+                },
+            }
+            real_write = gui.atomic_write_text
+            errors = []
+
+            def write_with_one_failure(path, text, encoding="utf-8"):
+                if Path(path).parent == first_root:
+                    raise OSError("locked")
+                return real_write(path, text, encoding=encoding)
+
+            with patch.object(gui, "atomic_write_text",
+                              side_effect=write_with_one_failure):
+                markers = gui._write_completion_markers(record, errors)
+
+            self.assertEqual(markers, [str(second_root / "ÇEVRİLDİ.txt")])
+            self.assertEqual(len(errors), 1)
+            self.assertIn("locked", errors[0])
+
     def test_diagnostic_settings_preserve_selected_roots_without_keys(self):
         snapshot = {
             "input_dir": "C:/in",

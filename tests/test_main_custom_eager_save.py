@@ -18,6 +18,23 @@ import subtitle_translator_gui as gui
 
 
 class MainCustomCredentialSaveTest(unittest.TestCase):
+    def test_persistence_failure_is_visible_without_echoing_secret(self):
+        app = SimpleNamespace(_log=mock.Mock())
+
+        gui._log_persistence_failure(
+            app, "API anahtarları güvenli depoya kaydedilemedi",
+            RuntimeError("sk-secret-value"))
+
+        message, tag = app._log.call_args.args
+        self.assertEqual(tag, "err")
+        self.assertIn("RuntimeError", message)
+        self.assertNotIn("sk-secret-value", message)
+
+    def test_settings_and_credential_failures_use_visible_safe_logger(self):
+        source = inspect.getsource(gui.App._save_settings)
+        self.assertIn("Uygulama ayarları kaydedilemedi", source)
+        self.assertIn("API anahtarları güvenli depoya kaydedilemedi", source)
+
     def test_ui_only_setting_saves_do_not_touch_credential_store(self):
         main_source = inspect.getsource(gui.App._build_main)
         advanced_source = inspect.getsource(gui.App._show_advanced_settings)

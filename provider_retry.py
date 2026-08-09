@@ -58,8 +58,8 @@ def _checkpoint_base_url(value) -> str:
 
 
 def configure_response_checkpoint(path=None, namespace: str = "",
-                                  allow_reads: bool = False,
-                                  hit_callback=None) -> None:
+                                   allow_reads: bool = False,
+                                   hit_callback=None, error_callback=None) -> None:
     global _RESPONSE_CHECKPOINT, _RESPONSE_CHECKPOINT_GENERATION
     with _RESPONSE_CHECKPOINT_LOCK:
         _RESPONSE_CHECKPOINT_GENERATION += 1
@@ -71,6 +71,8 @@ def configure_response_checkpoint(path=None, namespace: str = "",
             "namespace": str(namespace),
             "allow_reads": bool(allow_reads),
             "hit_callback": hit_callback,
+            "error_callback": error_callback,
+            "write_error_reported": False,
             "hits": 0,
             "consumed": set(),
             "generation": _RESPONSE_CHECKPOINT_GENERATION,
@@ -228,6 +230,8 @@ def _response_checkpoint_save(client, model: str, kwargs: dict, response,
         "request_fingerprint": key[:16],
         "namespace": str(namespace or ""),
     }
+    callback = None
+    callback_error = None
     with _RESPONSE_CHECKPOINT_LOCK:
         current = _RESPONSE_CHECKPOINT
         if (not current
@@ -239,6 +243,14 @@ def _response_checkpoint_save(client, model: str, kwargs: dict, response,
             entry_path = _response_checkpoint_namespace_dir(
                 root, namespace) / f"{key}.json"
             atomic_write_json(entry_path, entry)
+        except Exception as exc:
+            if not current.get("write_error_reported"):
+                current["write_error_reported"] = True
+                callback = current.get("error_callback")
+                callback_error = exc
+    if callback:
+        try:
+            callback("write", callback_error)
         except Exception:
             pass
 
@@ -406,7 +418,7 @@ def retry_after_seconds(exc, default: float = 2.0, maximum: float = 600.0) -> fl
 
 
 def _client_key(client) -> str:
-    base_url = str(getattr(client, "base_url", "") or "").lower().rstrip("/")
+    base_url = _checkpoint_base_url(getattr(client, "base_url", ""))
     api_key = getattr(client, "api_key", "")
     getter = getattr(api_key, "get_secret_value", None)
     if callable(getter):
@@ -907,7 +919,7 @@ def _is_custom_gpt5(client, model: str) -> bool:
 
 
 def _structured_key(client, model: str) -> str:
-    base_url = str(getattr(client, "base_url", "") or "").lower().rstrip("/")
+    base_url = _checkpoint_base_url(getattr(client, "base_url", ""))
     return f"{base_url}|{str(model or '').lower()}"
 
 

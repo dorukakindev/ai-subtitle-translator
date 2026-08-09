@@ -55,6 +55,22 @@ class ProviderModelPreflightTest(unittest.TestCase):
             "Ana ceviri", "key-main", "https://api.shuaiapi.com/v1", "gpt-5.4")
         ])
 
+    def test_case_sensitive_endpoint_paths_are_not_deduplicated(self):
+        snapshot = {
+            "main_api_key": "same-key",
+            "main_api_base_url": "https://PROVIDER.example/Official/V1",
+            "main_model_name": "gpt-5.4",
+            "hybrid_mode": True,
+            "helper_keys": {"analysis": "same-key"},
+            "helper_urls": {
+                "analysis": "https://provider.example/official/V1"},
+            "helper_models": {"analysis": "gpt-5.4"},
+        }
+
+        targets = gui._provider_preflight_targets(snapshot)
+
+        self.assertEqual(len(targets), 2)
+
     def test_reads_sdk_and_dictionary_model_lists(self):
         sdk_response = SimpleNamespace(data=[
             SimpleNamespace(id="gpt-5.4"), SimpleNamespace(id="gpt-5.4-mini")

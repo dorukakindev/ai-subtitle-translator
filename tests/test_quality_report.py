@@ -3,9 +3,11 @@ build_quality_report_text, _count_hata_cps ve rotate_logs testleri.
 """
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import subtitle_translator_gui as gui
 
@@ -197,6 +199,32 @@ class PassTraceTest(unittest.TestCase):
 
 
 class BuildQualityReportTextTest(unittest.TestCase):
+    def test_empty_run_replaces_stale_latest_quality_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            report_dir = root / "Raporlar"
+            report_dir.mkdir()
+            latest = report_dir / "ceviri_raporu.txt"
+            latest.write_text("OLD RUN", encoding="utf-8")
+            recorded = []
+            logs = []
+            app = SimpleNamespace(
+                _run_record_lock=threading.RLock(),
+                _active_run_record={"run_id": "run-new"},
+                input_var=SimpleNamespace(get=lambda: str(root / "input")),
+                _record_quality_report=lambda rows, paths: recorded.append(
+                    (rows, paths)),
+                _log=lambda message, tag: logs.append((message, tag)),
+            )
+
+            result = gui.App._save_quality_report(app, [], str(root))
+
+            self.assertEqual(result, latest)
+            self.assertNotIn("OLD RUN", latest.read_text(encoding="utf-8"))
+            self.assertIn("run-new", latest.read_text(encoding="utf-8"))
+            self.assertEqual(recorded[0][0], [])
+            self.assertTrue((report_dir / "ceviri_raporu.json").is_file())
+
     def test_mixed_rows_render_only_present_fields(self):
         rows = [
             {"name": "a.srt", "total": 100, "hata": 1, "cps": 2,
