@@ -6065,6 +6065,20 @@ def _pending_hybrid_batch_intents() -> list[Path]:
     return sorted(state_dir(__file__).glob("hybrid_batch_intent_*.json"))
 
 
+def _unlink_batch_intent_nonfatal(intent_path, log_fn=None) -> bool:
+    try:
+        Path(intent_path).unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        if log_fn:
+            log_fn(
+                "Batch niyet kaydı temizlenemedi; kayıtlı batch normal akışta "
+                f"izlenmeye devam edecek ({exc})",
+                "warn",
+            )
+        return False
+
+
 def _regular_fmap_from_manifest(manifest: dict, part: dict,
                                 manifest_path: Path) -> dict:
     return {
@@ -15705,6 +15719,7 @@ class App(ctk.CTk):
         # Step 0: try cheap JSON repair before full re-translation
         self._json_repair_pass(client, raw_map, requests_list)
         req_by_id = {r["custom_id"]: r for r in requests_list}
+        partial_only_cids = set()
 
         # A valid but partial JSON array is the usual provider-truncation
         # case.  Salvage it before the strict whole-chunk retry so the
@@ -15727,6 +15742,11 @@ class App(ctk.CTk):
                     1 for value in parsed.translations.values()
                     if str(value).strip() and not str(value).strip().startswith("[HATA"))
                 if missing and recovered and len(missing) < len(all_items):
+                    # A partially valid response must never fall back to a
+                    # whole-chunk retry: that would spend the translation
+                    # again and could replace the sound cues that already
+                    # arrived.  Keep this chunk on the missing-cue repair path.
+                    partial_only_cids.add(cid)
                     merged = self._resend_missing_blocks(client, req, raw)
                     if merged is not None:
                         raw_map[cid] = merged
@@ -15816,7 +15836,10 @@ class App(ctk.CTk):
             pending = [cid for cid, reason in retry_reasons.items() if reason]
             if not pending:
                 return set()
-            to_retry = [cid for cid in pending if cid not in upstream_failed]
+            to_retry = [
+                cid for cid in pending
+                if cid not in upstream_failed and cid not in partial_only_cids
+            ]
             if not to_retry:
                 break
             leak_cids = [cid for cid in to_retry if retry_reasons.get(cid) == "non_turkish_target"]
@@ -24620,7 +24643,7 @@ class App(ctk.CTk):
                 }
                 atomic_write_json(fmap_path, fmap_data)
                 _metadata_ready = True
-                _intent_path.unlink(missing_ok=True)
+                _unlink_batch_intent_nonfatal(_intent_path, self._log)
                 batch_runs.append((batch.id, slice_fmap, chunk))
                 self._log(f"Batch oluşturuldu: {batch.id}", "ok")
             except Exception as e:
@@ -24855,10 +24878,11 @@ class App(ctk.CTk):
 
         expanded = list(dict.fromkeys(batch_ids))
         runs = {}
+        unsafe_metadata = False
         for batch_id in list(expanded):
+            fmap_path = state_path(__file__, f"batch_fmap_{batch_id}.json")
             try:
-                data = json.loads(state_path(
-                    __file__, f"batch_fmap_{batch_id}.json").read_text(encoding="utf-8"))
+                data = json.loads(fmap_path.read_text(encoding="utf-8"))
                 if data.get("type", "regular") != "regular":
                     continue
                 run_id = str(data.get("run_id") or "")
@@ -24866,8 +24890,17 @@ class App(ctk.CTk):
                     continue
                 run = runs.setdefault(run_id, {"seen": set()})
                 run["seen"].add(int(data.get("part_index", 0)))
-            except Exception:
-                continue
+            except Exception as exc:
+                unsafe_metadata = True
+                self._log(
+                    f"[HATA] {batch_id}: batch parça kaydı okunamadı "
+                    f"({fmap_path.name}: {exc}); ücretli bir parçayı çoğaltmamak "
+                    "için eksik parça otomatik gönderimi durduruldu.",
+                    "err",
+                )
+
+        if unsafe_metadata:
+            return expanded
 
         key_fingerprint = hashlib.sha256(
             str(api_key).encode("utf-8")).hexdigest()
@@ -24875,7 +24908,13 @@ class App(ctk.CTk):
             manifest_path = _regular_batch_manifest_path(run_id)
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except Exception:
+            except Exception as exc:
+                self._log(
+                    f"[HATA] {run_id}: batch çalışma manifesti okunamadı "
+                    f"({manifest_path.name}: {exc}); eksik parçalar yeniden "
+                    "gönderilmedi.",
+                    "err",
+                )
                 continue
             missing = _regular_manifest_missing_indices(manifest, run["seen"])
             if not missing:
