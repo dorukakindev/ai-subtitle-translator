@@ -7673,6 +7673,36 @@ def _reconcile_delivery_outcomes(report_rows, completed_files, failed_files):
             present.add(key)
     return completed, failed
 
+
+def _source_drift_report_row(filepath: str) -> dict:
+    return {
+        "name": Path(filepath).name,
+        "source_path": str(filepath),
+        "output_path": "",
+        "total": 0,
+        "hata": 1,
+        "cps": 0,
+        "cps_avg": 0.0,
+        "cps_max": 0.0,
+        "cons": 0,
+        "pass_fix": 0,
+        "qc_auto": 0,
+        "qc": 0,
+        "warn": 0,
+        "pass_trace": {},
+        "pass_status": {"Kaynak Bütünlüğü": {
+            "status": "failed", "error": "source_changed_during_read"}},
+        "pass_history": {},
+        "pass_coverage": "kaynak değişti",
+        "helper_analysis": False,
+        "analysis_status": "kaynak okunurken değişti",
+        "chain_ctx": False,
+        "translation_chunks": 0,
+        "tm_hits": 0,
+        "delivery_scan_failed": True,
+        "run_status": "error",
+    }
+
 # ── UI Dispatcher & Thread Safety Helper ────────────────────────────────────
 def _new_run_id(now=None, suffix: str = "") -> str:
     import datetime as _dt
@@ -9971,6 +10001,21 @@ def _release_translation_run_owner() -> None:
             pass
 
 
+def _translation_run_owned_by_other_process() -> bool:
+    """Başka canlı bir çeviri süreci varsa batch silme ekranını kapalı tut."""
+    path = _translation_run_owner_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        owner_pid = int(data.get("pid") or 0)
+    except Exception:
+        return False
+    if not owner_pid or owner_pid == os.getpid() or not _pid_alive(owner_pid):
+        return False
+    stored_marker = str(data.get("process_start") or "")
+    current_marker = _process_start_marker(owner_pid)
+    return not stored_marker or not current_marker or stored_marker == current_marker
+
+
 def _process_start_marker(pid: int) -> str:
     """PID yeniden kullanÄ±mÄ±nÄ± ayÄ±rt etmek iÃ§in sÃ¼reÃ§ baÅŸlangÄ±Ã§ imzasÄ±."""
     try:
@@ -10742,6 +10787,11 @@ class App(ctk.CTk):
         """Program açılışında batch_id.txt varsa seçim penceresi gösterir."""
         self._pending_batches_after_id = None
         try:
+            if _translation_run_owned_by_other_process():
+                self._log(
+                    "Başka canlı çeviri süreci varken batch kurtarma/silme ekranı "
+                    "güvenlik için açılmadı.", "warn")
+                return
             bid_path = _batch_id_path()
             if not bid_path.exists():
                 return
@@ -19192,6 +19242,19 @@ class App(ctk.CTk):
                 write_srt(_write_path, _delivery_blocks, tgt)
                 _quarantined = (
                     _quarantine_incomplete_final(out_path) if missing else None)
+                _delivery_failed = False
+                if not missing:
+                    _delivery_audit = _subtitle_delivery_audit(
+                        orig_path, str(_write_path), tgt, src)
+                    if _delivery_audit_has_hard_error(_delivery_audit):
+                        _delivery_failed = True
+                        _quarantined = _quarantine_incomplete_final(_write_path)
+                        if _quarantined:
+                            _write_path = _quarantined
+                        self._log(
+                            "JSONL: yazılan SRT teslim denetiminden geçmedi; "
+                            f"çıktı karantinaya alındı{f': {Path(_quarantined).name}' if _quarantined else ''}.",
+                            "err")
                 if missing:
                     self._log(
                         f"JSONL: {missing} eksik çeviri kaldı; kısmi çıktı "
@@ -19201,13 +19264,21 @@ class App(ctk.CTk):
                         self._log(
                             f"Önceki eksik nihai çıktı karantinaya alındı: "
                             f"{_quarantined.name}", "warn")
-                else:
+                elif not _delivery_failed:
                     self._log(
                         f"Kaydedildi: {_write_path}  ({len(blocks)} satır)", "ok")
-                _post_ui(self, messagebox.showinfo, "Tamamlandı",
-                              f"{len(blocks)} satır SRT'ye dönüştürüldü!\n"
-                              f"{missing} satır eksik (orijinalde vardı ama çeviri yok)\n\n"
-                              f"Konum:\n{_write_path}")
+                if _delivery_failed:
+                    _post_ui(self, messagebox.showerror, "Teslim Denetimi Başarısız",
+                              f"Yazılan SRT doğrulanamadığı için teslim edilmedi.\n\n"
+                              f"Karantina:\n{_write_path}")
+                elif missing:
+                    _post_ui(self, messagebox.showwarning, "Kısmi Sonuç",
+                                  f"{len(blocks)} satır SRT'ye dönüştürüldü ancak "
+                                  f"{missing} satır eksik kaldı.\n\nKonum:\n{_write_path}")
+                else:
+                    _post_ui(self, messagebox.showinfo, "Tamamlandı",
+                                  f"{len(blocks)} satır SRT'ye dönüştürüldü!\n\n"
+                                  f"Konum:\n{_write_path}")
             except Exception as e:
                 self._log(f"Dönüştürme hatası: {e}", "err")
                 # 'e' except bloğu bitince silinir; after() lambda'yı SONRA çalıştırır —
@@ -19246,15 +19317,23 @@ class App(ctk.CTk):
                 ids = sorted(self._active_batches.keys())
                 if not ids:
                     p.unlink(missing_ok=True)
-                    return
+                    self._batch_owner_marker_failed = False
+                    return True
                 pid = _os.getpid()
                 data = {"pid": pid, "ts": time.time(), "batch_ids": ids}
                 marker = _process_start_marker(pid)
                 if marker:
                     data["process_start"] = marker
                 atomic_write_json(p, data)
-            except Exception:
-                pass   # kilit yazılamazsa eski davranışa düşülür (fail-open)
+                self._batch_owner_marker_failed = False
+                return True
+            except Exception as exc:
+                self._batch_owner_marker_failed = bool(self._active_batches)
+                self._log(
+                    "Canlı batch sahiplik işareti yazılamadı; başka pencerenin "
+                    f"kurtarma verisini silmemesi için açılış koruması devrede ({exc}).",
+                    "err")
+                return False
 
     def _clear_batch_recovery(self, batch_ids):
         """Verilen batch'lerin kurtarma dosyalarını (batch_fmap_<id>.json) siler ve
@@ -19441,6 +19520,26 @@ class App(ctk.CTk):
                     and os.path.normcase(os.path.abspath(cached_root))
                     == os.path.normcase(os.path.abspath(root))):
                 files = list(getattr(self, "_file_list_files", ()) or ())
+                output_var = getattr(self, "output_var", None)
+                output_path = (output_var.get() if output_var is not None else "") or ""
+                same_folder_var = getattr(self, "same_folder_var", None)
+                excluded_outputs = _nested_output_exclusions(
+                    [root], output_path.strip(),
+                    same_folder=bool(same_folder_var and same_folder_var.get()))
+                excluded_keys = {
+                    os.path.normcase(os.path.abspath(str(path)))
+                    for path in excluded_outputs
+                }
+                if excluded_keys:
+                    def _inside_excluded(path):
+                        path_key = os.path.normcase(os.path.abspath(str(path)))
+                        try:
+                            return any(
+                                os.path.commonpath([path_key, excluded]) == excluded
+                                for excluded in excluded_keys)
+                        except ValueError:
+                            return False
+                    files = [path for path in files if not _inside_excluded(path)]
             else:
                 output_var = getattr(self, "output_var", None)
                 output_path = (output_var.get() if output_var is not None else "") or ""
@@ -23299,6 +23398,7 @@ class App(ctk.CTk):
         # Parse her dosyayı bir kez yap — boş-filtre için cache'le
         self._block_cache: dict = {}
         valid_files = []
+        source_drift_files = []
         source_hashes = {}
         for fp in srt_files:
             if self._is_queued_file_removed(fp):
@@ -23313,6 +23413,7 @@ class App(ctk.CTk):
                     "çıktı yazmamak için atlandı.", "err")
                 self._update_file_progress(
                     fp, "Kaynak değişti", 100, "error")
+                source_drift_files.append(fp)
                 continue
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
@@ -23323,6 +23424,10 @@ class App(ctk.CTk):
                 valid_files.append(fp)
                 source_hashes[fp] = after_hash
         if not valid_files:
+            if source_drift_files:
+                self._save_quality_report(
+                    [_source_drift_report_row(fp) for fp in source_drift_files],
+                    output_dir)
             self._log("Geçerli altyazı dosyası yok!", "err")
             self._set_running(False)
             return
@@ -23670,9 +23775,11 @@ class App(ctk.CTk):
                                                schema_names=_effective_schema_names,
                                                output_paths=output_paths,
                                                source_hashes=source_hashes,
-                                               output_baselines=output_baselines,
-                                               locked_terms_by_file=
-                                               _precontext_locked_terms)
+                                                output_baselines=output_baselines,
+                                                locked_terms_by_file=
+                                                _precontext_locked_terms,
+                                                source_drift_files=source_drift_files,
+                                                total_files=len(srt_files))
             is_full_success = bool(_all_written)
             if should_clear_sync_ckpt(self._stop_flag, is_full_success):
                 self._clear_sync_ckpt(used_ckpt_keys)
@@ -24981,6 +25088,7 @@ class App(ctk.CTk):
         # Parse her dosyayı bir kez yap — hem boş-filtre hem blok sayımı için kullan
         self._block_cache: dict = {}
         valid_files = []
+        source_drift_files = []
         source_hashes = {}
         for fp in srt_files:
             if self._is_queued_file_removed(fp):
@@ -24995,6 +25103,7 @@ class App(ctk.CTk):
                     "err")
                 self._update_file_progress(
                     fp, "Kaynak dosya değişti", 100, "error")
+                source_drift_files.append(fp)
                 continue
             if not blocks:
                 self._log(f"{Path(fp).name}: geçerli altyazı bloğu yok, atlandı", "warn")
@@ -25005,6 +25114,10 @@ class App(ctk.CTk):
                 source_hashes[fp] = after_hash
                 valid_files.append(fp)
         if not valid_files:
+            if source_drift_files:
+                self._save_quality_report(
+                    [_source_drift_report_row(fp) for fp in source_drift_files],
+                    output_dir)
             self._log("Geçerli altyazı dosyası yok!", "err")
             self._set_running(False)
             return
@@ -25294,7 +25407,9 @@ class App(ctk.CTk):
                     schema_names=_effective_schema_names,
                     source_hashes=source_hashes,
                     output_baselines=output_baselines,
-                    locked_terms_by_file=locked_terms_by_file)
+                    locked_terms_by_file=locked_terms_by_file,
+                    source_drift_files=source_drift_files,
+                    total_files=len(srt_files))
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -25672,10 +25787,13 @@ class App(ctk.CTk):
                                 source_language=_saved_source_language,
                                 target_language=_saved_target_language,
                                 schema_name=_saved_schema_name,
-                                expected_source_hash=fmap_data.get("source_hash", ""),
-                                output_baseline=fmap_data.get("output_baseline"),
-                                locked_terms=fmap_data.get("locked_terms"),
-                                result_out=_resume_result)
+                            expected_source_hash=fmap_data.get("source_hash", ""),
+                            output_baseline=fmap_data.get("output_baseline"),
+                            locked_terms=fmap_data.get("locked_terms"),
+                            report_dir=_resolve_report_dir(
+                                str(_saved_context.get("input_dir") or self.input_var.get()),
+                                _saved_out_dir),
+                            result_out=_resume_result)
                         finally:
                             App._unfreeze_run_variable_reads(self)
                             self._active_snapshot = copy.deepcopy(resume_base_snapshot)
@@ -25849,10 +25967,10 @@ class App(ctk.CTk):
         self._set_running(False)   # erken-stop / hiç-poll-yok durumunda UI kilitlenmesin
 
     def _wait_batch_hybrid(self, client, batch_id, file_map, output_path,
-                           openai_key, is_last=True, report_rows=None, source_path="",
-                           source_language="", target_language="", schema_name="",
-                           expected_source_hash="", output_baseline=None,
-                           locked_terms=None, result_out=None):
+                            openai_key, is_last=True, report_rows=None, source_path="",
+                            source_language="", target_language="", schema_name="",
+                            expected_source_hash="", output_baseline=None,
+                            locked_terms=None, report_dir="", result_out=None):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -26347,6 +26465,13 @@ class App(ctk.CTk):
                                 _partial_output_path(output_path)
                                 if _has_missing else Path(output_path))
                             write_srt(_write_path, _delivery_blocks, tgt)
+                            _fingerprint_ok = _write_output_source_fingerprint(
+                                report_dir, _write_path, expected_source_hash)
+                            if not _fingerprint_ok:
+                                self._log(
+                                    f"Resume: {Path(output_path).name} için kaynak-çıktı "
+                                    "parmak izi yazılamadı; dosya tamamlandı sayılmayacak.",
+                                    "err")
                             _quarantined = (
                                 _quarantine_incomplete_final(output_path)
                                 if _has_missing else None)
@@ -26374,7 +26499,7 @@ class App(ctk.CTk):
                             _pass_status["Series-Memory"] = dict(
                                 _series_memory_status)
                             # Kalite taraması + TM kaydı (diğer akışlarla paritede; kaynak gerekli)
-                            _delivery_scan_failed = False
+                            _delivery_scan_failed = not _fingerprint_ok
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
                                 try:
@@ -26634,7 +26759,8 @@ class App(ctk.CTk):
     def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,
                        output_paths=None, source_languages=None, schema_names=None,
                        source_hashes=None, output_baselines=None,
-                       locked_terms_by_file=None):
+                       locked_terms_by_file=None, source_drift_files=(),
+                       total_files=0):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         report_dir = _resolve_report_dir(input_dir, output_dir)
@@ -26646,7 +26772,9 @@ class App(ctk.CTk):
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
         _written_files = []
         _skipped_files = []
-        _failed_files = []
+        _failed_files = list(source_drift_files or ())
+        report_rows.extend(
+            _source_drift_report_row(path) for path in _failed_files)
         def _locked_terms_for(path):
             frozen = (locked_terms_by_file or {}).get(path)
             if frozen is None:
@@ -27206,7 +27334,7 @@ class App(ctk.CTk):
         _report_path = self._save_quality_report(report_rows, output_dir)
         _written_files, _failed_files = _reconcile_delivery_outcomes(
             report_rows, _written_files, _failed_files)
-        total_candidate = len(file_blocks)
+        total_candidate = max(int(total_files or 0), len(file_blocks) + len(_failed_files))
         summary = summarize_file_outcomes(
             _written_files, _failed_files, _skipped_files, total_files=total_candidate, stop_flag=self._stop_flag
         )
@@ -27496,6 +27624,7 @@ class App(ctk.CTk):
         self._log(f"Faz 1 — {n_files} dosya analiz ediliyor ve batch'ler gönderiliyor...", "info")
         # Each entry: (..., cues, analysis_tuple, analysis_ok, file_src, schema_name)
         submitted = []
+        source_drift_rows = []
 
         for fi, filepath in enumerate(srt_files):
             if self._stop_flag:
@@ -27509,10 +27638,13 @@ class App(ctk.CTk):
 
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
             if file_status == "completed":
-                existing_output = _resolve_output_path(
-                    input_dir, output_dir, filepath,
-                    same_folder=self.same_folder_var.get(),
-                    selected_roots=self._output_selection_roots())
+                stored_output = str(
+                    session["files"].get(str(filepath), {}).get("out_path") or "")
+                existing_output = (
+                    Path(stored_output) if stored_output else _resolve_output_path(
+                        input_dir, output_dir, filepath,
+                        same_folder=self.same_folder_var.get(),
+                        selected_roots=self._output_selection_roots()))
                 existing_audit = _subtitle_delivery_audit(
                     filepath, str(existing_output), tgt, file_src)
                 if _delivery_audit_has_hard_error(existing_audit):
@@ -27542,6 +27674,11 @@ class App(ctk.CTk):
                     self._log(
                         f"{fname}: kaynak okunurken değişti; batch'e alınmadı",
                         "err")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, "Kaynak değişti", "error")
+                    source_drift_rows.append(_source_drift_report_row(filepath))
                     continue
                 if not cues:
                     self._log(f"{fname}: geçerli SRT bloğu yok, atlandı", "warn")
@@ -27858,6 +27995,8 @@ class App(ctk.CTk):
                 continue
 
         if not submitted:
+            if source_drift_rows:
+                self._save_quality_report(source_drift_rows, output_dir)
             self._log("Hiçbir dosya batch'e gönderilemedi.", "err")
             self._set_running(False)
             return
@@ -27870,7 +28009,7 @@ class App(ctk.CTk):
         # ══════════════════════════════════════════════════════════════════════
         self._log(f"\nFaz 2 — {len(submitted)} batch bekleniyor...", "info")
         n_sub = len(submitted)
-        report_rows = []   # kalite raporu satırları (dosya başına)
+        report_rows = source_drift_rows   # kalite raporu satırları (dosya başına)
 
         for si, (filepath, fname, out_path, fmap, batch_id, cues,
                  analysis_tuple, analysis_ok, file_src, file_schema_name,
