@@ -14,6 +14,7 @@ import unicodedata
 import uuid
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -397,6 +398,36 @@ def _get_usage_details(usage):
     except Exception:
         pass
     return total, cached
+
+
+def _report_response_usage(token_callback, response, *, log_fn=None,
+                           pass_name: str = "", filepath: str = "") -> bool:
+    """Forward real usage, or explicitly record when a provider omitted it."""
+    if not token_callback:
+        return bool(getattr(response, "usage", None))
+    usage = getattr(response, "usage", None)
+    if usage:
+        total, cached = _get_usage_details(usage)
+        try:
+            token_callback(total, cached=cached)
+        except TypeError:
+            token_callback(total)
+        return True
+    reporter = getattr(token_callback, "report_missing_usage", None)
+    if callable(reporter):
+        reporter()
+    else:
+        try:
+            token_callback(0, usage_available=False)
+        except TypeError:
+            return False
+    if log_fn:
+        label = pass_name or "API isteği"
+        suffix = f" [{Path(filepath).name}]" if filepath else ""
+        log_fn(
+            f"{label}{suffix}: sağlayıcı kullanım bilgisini döndürmedi; "
+            "token/maliyet sağlayıcı panelinden doğrulanmalı.", "warn")
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -943,6 +974,29 @@ def _model_token_price(model: str):
     if matches:
         return max(matches, key=lambda item: len(item[0]))[1]
     return None
+
+
+def _is_official_openai_api_route(base_url: str | None) -> bool:
+    """Whether this route can safely use the local USD OpenAI price table."""
+    value = str(base_url or "").strip()
+    if not value:
+        # The OpenAI client default route is the official API.
+        return True
+    try:
+        host = (urlparse(value).hostname or "").casefold()
+    except (TypeError, ValueError):
+        return False
+    return host in {"api.openai.com", "openai.com"}
+
+
+def _verified_token_price(model: str, base_url: str | None, *,
+                          default_is_official: bool = False):
+    """Return a USD estimate only for an explicitly verifiable OpenAI route."""
+    if not str(base_url or "").strip() and not default_is_official:
+        return None
+    if not _is_official_openai_api_route(base_url):
+        return None
+    return _model_token_price(model)
 
 POLISH_MODEL = "gpt-4.1-mini"
 
@@ -2230,12 +2284,9 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
                 max_tokens=n_cues * 60 + 400,
                 temperature=0.2,
             )
-            if token_callback and getattr(resp, "usage", None):
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
+            _report_response_usage(
+                token_callback, resp, log_fn=log_fn,
+                pass_name="AI Segmentasyon")
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             data = ht._extract_json_object(content) if content else {}
         except Exception as e:
@@ -5324,12 +5375,9 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
                 response_format={"type": "json_object"},
                 timeout=45.0,
             )
-            if token_callback and getattr(resp, "usage", None):
-                tot, cached = _get_usage_details(resp.usage)
-                try:
-                    token_callback(tot, cached=cached)
-                except TypeError:
-                    token_callback(tot)
+            _report_response_usage(
+                token_callback, resp, log_fn=log_fn,
+                pass_name="İçerik Türü Analizi", filepath=filename)
             content = (resp.choices[0].message.content or "").strip()
             try:
                 data = json.loads(content)
@@ -5418,12 +5466,9 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
             response_format={"type": "json_object"},
             timeout=45.0,
         )
-        if token_callback and getattr(resp, "usage", None):
-            total, cached = _get_usage_details(resp.usage)
-            try:
-                token_callback(total, cached=cached)
-            except TypeError:
-                token_callback(total)
+        _report_response_usage(
+            token_callback, resp, log_fn=log_fn,
+            pass_name="Kaynak Dil Analizi", filepath=filename)
         content = (resp.choices[0].message.content or "").strip()
         try:
             raw = json.loads(content).get("language", "")
@@ -5541,12 +5586,9 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
             response_format={"type": "json_object"},
             timeout=60.0,
         )
-        if token_callback and getattr(resp, "usage", None):
-            total, cached = _get_usage_details(resp.usage)
-            try:
-                token_callback(total, cached=cached)
-            except TypeError:
-                token_callback(total)
+        _report_response_usage(
+            token_callback, resp, log_fn=log_fn,
+            pass_name="Kaynak Dil Analizi")
         content = (resp.choices[0].message.content or "").strip()
         detected_map, duplicate_keys = parse_source_languages_response(content)
         for item_id, filepath in id_to_path.items():
@@ -7482,7 +7524,7 @@ def _format_elapsed(seconds) -> str:
 
 _API_USAGE_KEYS = (
     "total_tokens", "prompt_tokens", "completion_tokens", "cached_tokens",
-    "unknown_cost_tokens", "cost_usd",
+    "unknown_cost_tokens", "usage_missing_responses", "cost_usd",
 )
 
 
@@ -7503,7 +7545,7 @@ def _api_usage_map_delta(current: dict, baseline: dict | None = None) -> dict:
     result = {}
     for name, usage in (current or {}).items():
         delta = _api_usage_delta(usage or {}, baseline.get(name) or {})
-        if delta.get("total_tokens"):
+        if delta.get("total_tokens") or delta.get("usage_missing_responses"):
             result[str(name)] = delta
     return result
 
@@ -7527,7 +7569,10 @@ def _format_api_usage(usage: dict) -> str:
             parts.append(f"cache %{cached * 100.0 / cache_base:.1f}")
     parts.append(f"~${cost:.4f}")
     if unknown:
-        parts.append(f"{unknown:,} tokenın fiyatı bilinmiyor")
+        parts.append(f"{unknown:,} token maliyeti sağlayıcı panelinden doğrulanmalı")
+    missing_usage = int(usage.get("usage_missing_responses", 0) or 0)
+    if missing_usage:
+        parts.append(f"{missing_usage} yanıtta kullanım bilgisi yok")
     models = [str(model) for model in usage.get("models") or [] if str(model)]
     if models:
         parts.append("model " + ", ".join(models))
@@ -7612,7 +7657,8 @@ def _stable_fingerprint(value, length: int = 16) -> str:
 def _api_usage_total(usage_by_pass: dict) -> dict:
     result = {
         "total_tokens": 0, "prompt_tokens": 0, "completion_tokens": 0,
-        "cached_tokens": 0, "unknown_cost_tokens": 0, "cost_usd": 0.0,
+        "cached_tokens": 0, "unknown_cost_tokens": 0,
+        "usage_missing_responses": 0, "cost_usd": 0.0,
     }
     for usage in dict(usage_by_pass or {}).values():
         for key in result:
@@ -7720,8 +7766,8 @@ def _api_diagnostic_findings(api: dict) -> list[dict]:
             findings.append({
                 "code": "unknown_token_price", "severity": "info",
                 "pass": str(name),
-                "message": "Bu model için yerel fiyat tanımı yok; maliyet eksik hesaplandı.",
-                "evidence": f"fiyatı bilinmeyen token={unknown}",
+                "message": "Sağlayıcı/grup fiyatı yerelde doğrulanamadığı için maliyet eksik hesaplandı.",
+                "evidence": f"sağlayıcı panelinden doğrulanacak token={unknown}",
             })
     ledger = _api_usage_total(api.get("usage_by_pass") or {})
     session = dict(api.get("session_usage_delta") or {})
@@ -9250,7 +9296,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         lines.append(f"Pass etkileşimleri: {total_overrides}{suffix} ({joined})")
     if actual_cost is None:
         actual_cost = total_tokens / 1e6 * price
-    unknown_note = (f" + {unknown_cost_tokens:,} token fiyatı bilinmiyor"
+    unknown_note = (f" + {unknown_cost_tokens:,} token maliyeti sağlayıcı panelinden doğrulanmalı"
                     if unknown_cost_tokens else "")
     lines.append(
         f"Oturum token toplamı: {total_tokens:,}  (~${actual_cost:.4f}{unknown_note})")
@@ -15071,10 +15117,11 @@ class App(ctk.CTk):
         return CONTENT_SCHEMAS["auto"]
 
     def _record_api_usage(self, added: int, cached: int, cost_added: float,
-                          unknown_added: int = 0, model: str = "",
-                          prompt_tokens: int = 0,
-                          completion_tokens: int = 0,
-                          pass_name: str = ""):
+                           unknown_added: int = 0, model: str = "",
+                           prompt_tokens: int = 0,
+                           completion_tokens: int = 0,
+                           pass_name: str = "", file_path: str = "",
+                           usage_available: bool = True):
         lock = getattr(self, "_run_record_lock", None)
         if lock is None:
             return
@@ -15097,25 +15144,37 @@ class App(ctk.CTk):
                 target["cached_tokens"] = int(target.get("cached_tokens", 0) or 0) + int(cached or 0)
                 target["unknown_cost_tokens"] = int(target.get("unknown_cost_tokens", 0) or 0) + int(unknown_added or 0)
                 target["cost_usd"] = float(target.get("cost_usd", 0.0) or 0.0) + float(cost_added or 0.0)
+                if not usage_available:
+                    target["usage_missing_responses"] = int(
+                        target.get("usage_missing_responses", 0) or 0) + 1
                 models = target.setdefault("models", [])
                 if model and model not in models:
                     models.append(model)
 
             api = record.setdefault("api", {})
             add_usage(api.setdefault("usage_by_pass", {}).setdefault(stage, {}))
-            if len(active) == 1:
+            explicit_item = (record.get("files") or {}).get(str(file_path)) if file_path else None
+            if explicit_item is not None:
+                add_usage(explicit_item.setdefault("api_usage", {}).setdefault(stage, {}))
+            elif len(active) == 1:
                 item = active[0][1]
                 add_usage(item.setdefault("api_usage", {}).setdefault(stage, {}))
 
     def _update_tokens(self, added: int, price=_DEFAULT_TOKEN_PRICE, cached: int = 0,
                        prompt_tokens: int = 0, completion_tokens: int = 0,
-                       model: str = "", pass_name: str = ""):
+                       model: str = "", pass_name: str = "", base_url: str | None = None,
+                       file_path: str = "", usage_available: bool = True):
         """Token sayacını + tahmini maliyeti günceller. Maliyet AYRI birikir (kümülatif
         token × tek fiyat DEĞİL) — böylece her kaynak kendi fiyatıyla eklenir. price
         verilmezse ana model fiyatı kullanılır; Batch API çağrıları %50 indirimli geçer.
         cached verilirse OpenAI Prompt Caching indirimi (%50) hesaba katılır."""
         if price is _DEFAULT_TOKEN_PRICE:
-            price = _model_token_price(self._main_model_name())
+            main_url = base_url
+            if main_url is None:
+                resolver = getattr(self, "_main_api_base_url", None)
+                main_url = resolver() if callable(resolver) else None
+            price = _verified_token_price(
+                self._main_model_name(), main_url, default_is_official=True)
         with self._token_lock:
             self._token_total += added
             self._token_cached = getattr(self, "_token_cached", 0) + cached
@@ -15133,13 +15192,14 @@ class App(ctk.CTk):
             unknown_total = self._unknown_cost_tokens
         App._record_api_usage(
             self, added, cached, cost_added, unknown_added, model,
-            prompt_tokens, completion_tokens, pass_name)
+            prompt_tokens, completion_tokens, pass_name, file_path,
+            usage_available)
         def _upd(t=total, c=cost, ct=cached_total, ut=unknown_total):
             try:
                 self.stat_tokens_var.set(f"{t:,}")
                 if ut > 0:
                     self.stat_tokens_sub_var.set(
-                        f"~${c:.4f} + {ut:,} token fiyatı bilinmiyor")
+                        f"~${c:.4f} + {ut:,} token maliyeti sağlayıcı panelinden doğrulanmalı")
                 elif ct > 0:
                     self.stat_tokens_sub_var.set(f"~${c:.4f} ({ct:,} önb.)")
                 else:
@@ -15155,26 +15215,56 @@ class App(ctk.CTk):
         _post_ui(self, _upd)
 
     def _token_callback_for_model(self, model: str, discount: float = 1.0,
-                                  pass_name: str = ""):
-        price = _model_token_price(model)
+                                   pass_name: str = "", base_url: str | None = None,
+                                   file_path: str = ""):
+        if base_url is None:
+            snapshot = getattr(self, "_active_snapshot", {}) or {}
+            helper_models = snapshot.get("helper_models") or {}
+            helper_urls = snapshot.get("helper_urls") or {}
+            candidates = {
+                str(helper_urls.get(role) or "").strip()
+                for role, configured in helper_models.items()
+                if str(configured or "").strip() == str(model or "").strip()
+            }
+            candidates.discard("")
+            if len(candidates) == 1:
+                base_url = next(iter(candidates))
+            elif not candidates:
+                main_model = str(snapshot.get("main_model_name") or "").strip()
+                if main_model and main_model == str(model or "").strip():
+                    base_url = snapshot.get("main_api_base_url")
+        price = _verified_token_price(model, base_url)
         if price is not None:
             price *= discount
 
-        def _callback(added, cached=0, prompt_tokens=0, completion_tokens=0):
+        def _callback(added, cached=0, prompt_tokens=0, completion_tokens=0,
+                      usage_available=True):
             try:
-                self._update_tokens(
+                App._update_tokens(
+                    self,
                     added, price=price, cached=cached,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens, model=model,
-                    pass_name=pass_name)
+                    pass_name=pass_name, base_url=base_url,
+                    file_path=file_path, usage_available=usage_available)
             except TypeError:
-                self._update_tokens(added, price=price, cached=cached)
+                App._update_tokens(self, added, price=price, cached=cached)
+        def _report_missing_usage():
+            _callback(0, usage_available=False)
+        _callback.report_missing_usage = _report_missing_usage
         return _callback
 
-    def _token_callback_for_pass(self, model: str, pass_name: str):
-        factory = self._token_callback_for_model
+    def _token_callback_for_pass(self, model: str, pass_name: str,
+                                 base_url: str | None = None,
+                                 file_path: str = ""):
+        factory = getattr(self, "_token_callback_for_model", None)
+        if not callable(factory):
+            factory = lambda *args, **kwargs: App._token_callback_for_model(
+                self, *args, **kwargs)
         try:
-            return factory(model, pass_name=pass_name)
+            return factory(
+                model, pass_name=pass_name, base_url=base_url,
+                file_path=file_path)
         except TypeError:
             return factory(model)
 
@@ -20952,8 +21042,8 @@ class App(ctk.CTk):
         results = {}
         if not files:
             return results
-
-        token_callback = App._token_callback_for_model(self, model)
+        base_url_fn = getattr(self, "_main_api_base_url", None)
+        base_url = base_url_fn() if callable(base_url_fn) else None
 
         def _one(fp):
             filename_language = infer_source_language_from_filename(fp)
@@ -20966,7 +21056,9 @@ class App(ctk.CTk):
                 cues = []
             language = detect_source_language_with_ai(
                 client, cues, model, self._log,
-                token_callback=token_callback, filename=fp,
+                token_callback=App._token_callback_for_pass(
+                    self, model, "Kaynak Dil Analizi",
+                    base_url=base_url, file_path=fp), filename=fp,
                 cancel_context=self.__dict__.get(
                     "_helper_request_canceller"))
             return fp, language
@@ -21564,12 +21656,16 @@ class App(ctk.CTk):
         results = {}
         if not files:
             return results
+        base_url_fn = getattr(self, "_main_api_base_url", None)
+        base_url = base_url_fn() if callable(base_url_fn) else None
         def _one(fp):
             try:
                 cues = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
                 return fp, detect_content_type_with_ai(
                     client, cues, model, self._log,
-                    token_callback=self._token_callback_for_model(model),
+                    token_callback=self._token_callback_for_pass(
+                        model, "İçerik Türü Analizi",
+                        base_url=base_url, file_path=fp),
                     filename=fp, return_details=True,
                     cancel_context=self.__dict__.get(
                         "_helper_request_canceller"))
