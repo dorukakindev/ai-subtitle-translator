@@ -1,6 +1,9 @@
 import threading
 
 
+DEFAULT_CANCEL_CLEANUP_SECONDS = 0.25
+
+
 class RequestCancelled(RuntimeError):
     pass
 
@@ -50,7 +53,59 @@ class RunRequestCanceller:
         return len(clients)
 
 
-def run_cancellable_call(call, cancel_context, poll_interval=0.05):
+class CancellableCallHandle:
+    """İptal sırasında taşıma bağlantısını kapatmak için paylaşılan handle."""
+    def __init__(self, wake, close_hook=None):
+        self._wake = wake
+        self._lock = threading.RLock()
+        self._closed = False
+        self._close_hooks = []
+        if close_hook is not None:
+            self.add_close_hook(close_hook)
+
+    def add_close_hook(self, close_hook):
+        """Bir socket/HTTP client close çağrısını güvenle iptale bağlar."""
+        if not callable(close_hook):
+            return False
+        call_now = False
+        with self._lock:
+            if self._closed:
+                call_now = True
+            else:
+                self._close_hooks.append(close_hook)
+        if call_now:
+            try:
+                close_hook()
+            except Exception:
+                pass
+        return True
+
+    def close(self):
+        with self._lock:
+            if self._closed:
+                self._wake.set()
+                return
+            self._closed = True
+            hooks = list(self._close_hooks)
+            self._close_hooks.clear()
+        for hook in hooks:
+            try:
+                hook()
+            except Exception:
+                pass
+        self._wake.set()
+
+
+def run_cancellable_call(call, cancel_context, poll_interval=0.05,
+                         transport_close=None,
+                         cancel_cleanup_seconds=DEFAULT_CANCEL_CLEANUP_SECONDS):
+    """Çağrıyı iptal edilebilir yürütür.
+
+    Python iş parçacığı güvenle zorla öldürülemez. Sağlayıcı adaptörü
+    ``transport_close`` ile açık socket/client ``close`` çağrısını verdiğinde
+    iptal hem hemen döner hem de isteğin arka planda sürmesini engeller. Hook
+    yoksa bekleme yine sınırlıdır; sonuç kesinlikle akışa geri yazılmaz.
+    """
     if cancel_context is None:
         return call()
 
@@ -58,11 +113,7 @@ def run_cancellable_call(call, cancel_context, poll_interval=0.05):
     wake = threading.Event()
     outcome = {}
 
-    class _CallHandle:
-        def close(self):
-            wake.set()
-
-    handle = _CallHandle()
+    handle = CancellableCallHandle(wake, transport_close)
 
     def _worker():
         try:
@@ -85,5 +136,17 @@ def run_cancellable_call(call, cancel_context, poll_interval=0.05):
         if "error" in outcome:
             raise outcome["error"]
         return outcome.get("result")
+    except RequestCancelled:
+        # cancel() handle.close() çağırmış olabilir; doğrudan çağrı da güvenli
+        # biçimde aynı kapanış yolunu kullanır. İş parçacığı yalnız kısa süre
+        # beklenir, böylece bozuk sağlayıcı soketi uygulamayı kilitlemez.
+        handle.close()
+        try:
+            cleanup = max(0.0, float(cancel_cleanup_seconds))
+        except (TypeError, ValueError):
+            cleanup = DEFAULT_CANCEL_CLEANUP_SECONDS
+        if cleanup and not done.is_set():
+            done.wait(cleanup)
+        raise
     finally:
         cancel_context.unregister(handle)
