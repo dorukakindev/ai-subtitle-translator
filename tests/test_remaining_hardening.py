@@ -77,7 +77,7 @@ class CacheAndSessionIdentityTest(unittest.TestCase):
         loader = mock.Mock(return_value="cached")
         ht_stub = SimpleNamespace(
             load_context_cache=loader,
-            load_glossary=lambda _path: {"User": "Kullanıcı"},
+            load_glossary=lambda _path, **_kwargs: {"User": "Kullanıcı"},
         )
         stub = SimpleNamespace(
             _active_snapshot=None,

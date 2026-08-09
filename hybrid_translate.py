@@ -14,7 +14,8 @@ import traceback
 import unicodedata
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
-from app_state import (atomic_write_json, atomic_write_text, best_effort_cancel_remote_batch,
+from app_state import (_interprocess_lock, atomic_write_json, atomic_write_text,
+                       best_effort_cancel_remote_batch,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
 from subtitle_formats import clean_translation_source_text
 from request_cancellation import RequestCancelled
@@ -542,8 +543,16 @@ def load_subtitle(filepath: str, source_language: str | None = None) -> list:
     return load_srt(filepath)
 
 
-def load_glossary(filepath: str) -> dict:
-    if not filepath or not Path(filepath).exists():
+class GlossaryLoadError(ValueError):
+    pass
+
+
+def load_glossary(filepath: str, *, strict: bool = False) -> dict:
+    if not filepath:
+        return {}
+    if not Path(filepath).exists():
+        if strict:
+            raise GlossaryLoadError(f"Sözlük dosyası bulunamadı: {filepath}")
         return {}
     ext = Path(filepath).suffix.lower()
     encodings = ["utf-8-sig", "cp1254"]
@@ -556,6 +565,8 @@ def load_glossary(filepath: str) -> dict:
         except (UnicodeDecodeError, UnicodeError):
             continue
     if content is None:
+        if strict:
+            raise GlossaryLoadError(f"Sözlük dosyası okunamadı: {filepath}")
         return {}
     result = {}
     if ext == ".json":
@@ -573,8 +584,13 @@ def load_glossary(filepath: str) -> dict:
                         vs = str(v).strip()
                     if ks and vs:
                         result[ks] = vs
-        except json.JSONDecodeError:
-            pass
+            elif strict:
+                raise GlossaryLoadError(
+                    f"JSON sözlük nesne olmalı: {filepath}")
+        except json.JSONDecodeError as exc:
+            if strict:
+                raise GlossaryLoadError(
+                    f"JSON sözlük bozuk: {filepath}") from exc
     else:
         import csv
         for line in content.splitlines():
@@ -1134,6 +1150,16 @@ def _recover_submitted_batch_links(session: dict, filepaths: list,
 def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
                          fingerprint: str = "",
                          force_retranslate_paths=()) -> dict:
+    path = _session_path(input_dir)
+    with _interprocess_lock(path):
+        return _create_batch_session_unlocked(
+            input_dir, output_dir, filepaths, fingerprint,
+            force_retranslate_paths)
+
+
+def _create_batch_session_unlocked(input_dir: str, output_dir: str,
+                                   filepaths: list, fingerprint: str = "",
+                                   force_retranslate_paths=()) -> dict:
     """Create or merge a batch session for the given file list.
 
     If a session already exists for this input_dir, completed/submitted statuses
@@ -1225,38 +1251,69 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
                 }
 
     _recover_submitted_batch_links(session, filepaths, fingerprint)
-    _save_batch_session(session)
+    _save_batch_session(session, acquire_lock=False)
     return session
 
 
-def _save_batch_session(session: dict):
+def _save_batch_session(session: dict, *, acquire_lock: bool = True):
     session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     p = _session_path(session["input_dir"])
     p.parent.mkdir(exist_ok=True)
-    atomic_write_json(p, session)
+    if not acquire_lock:
+        atomic_write_json(p, session)
+        return
+    with _interprocess_lock(p):
+        if p.exists() and load_batch_session(session["input_dir"]) is None:
+            raise RuntimeError(
+                f"Batch oturum dosyası bozuk; veri kaybını önlemek için üzerine "
+                f"yazılmadı: {p}")
+        atomic_write_json(p, session)
 
 
 def update_batch_session(session: dict, filepath: str, status: str,
                          batch_id: str = None, out_path: str = None,
-                         source_hash: str = None, output_state: dict = None):
+                         source_hash: str = None, output_state: dict = None,
+                         extra_fields: dict = None):
     """Update a file's status in the session and persist to disk immediately."""
     key = str(filepath)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    entry = session["files"].setdefault(key, {})
-    entry["status"] = status
-    if batch_id is not None:
-        entry["batch_id"] = batch_id
-    if out_path is not None:
-        entry["out_path"] = out_path
-    if source_hash is not None:
-        entry["source_hash"] = source_hash
-    if output_state is not None:
-        entry["output_state"] = output_state
-    if status == "submitted":
-        entry["submitted_at"] = now
-    elif status in ("completed", "failed"):
-        entry["completed_at"] = now
-    _save_batch_session(session)
+    input_dir = session["input_dir"]
+    path = _session_path(input_dir)
+    path.parent.mkdir(exist_ok=True)
+    with _interprocess_lock(path):
+        current = load_batch_session(input_dir)
+        if path.exists() and current is None:
+            raise RuntimeError(
+                f"Batch oturum dosyası bozuk; veri kaybını önlemek için üzerine "
+                f"yazılmadı: {path}")
+        merged = current or session
+        current_fp = str(merged.get("fingerprint") or "")
+        session_fp = str(session.get("fingerprint") or "")
+        if current_fp and session_fp and current_fp != session_fp:
+            raise RuntimeError("Batch oturum parmak izi değişti; eski durum yazılmadı")
+        files = merged.setdefault("files", {})
+        entry = files.setdefault(key, {})
+        entry["status"] = status
+        if batch_id is not None:
+            entry["batch_id"] = batch_id
+        if out_path is not None:
+            entry["out_path"] = out_path
+        if source_hash is not None:
+            entry["source_hash"] = source_hash
+        if output_state is not None:
+            entry["output_state"] = output_state
+        for field, value in (extra_fields or {}).items():
+            if field not in {"status", "submitted_at", "completed_at"}:
+                entry[str(field)] = value
+        if status == "submitted":
+            entry["submitted_at"] = now
+        elif status in ("completed", "failed"):
+            entry["completed_at"] = now
+        merged["updated_at"] = now
+        atomic_write_json(path, merged)
+        if merged is not session:
+            session.clear()
+            session.update(merged)
 
 
 def update_recovered_batch_session(batch_id: str, filepath: str, status: str,
@@ -1304,32 +1361,52 @@ def mark_cancelled_batch_sessions(batch_ids) -> int:
     changed = 0
     for path in root.glob("*_session.json"):
         try:
-            with open(path, encoding="utf-8") as f:
-                session = json.load(f)
-            touched = False
-            for entry in (session.get("files") or {}).values():
-                if (entry.get("status") == "submitted"
-                        and entry.get("batch_id") in wanted):
-                    entry["status"] = "failed"
-                    entry["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                    entry["cancelled"] = True
-                    touched = True
-                    changed += 1
-            if touched:
-                _save_batch_session(session)
+            with _interprocess_lock(path):
+                with open(path, encoding="utf-8") as f:
+                    session = json.load(f)
+                touched = False
+                for entry in (session.get("files") or {}).values():
+                    if (entry.get("status") == "submitted"
+                            and entry.get("batch_id") in wanted):
+                        entry["status"] = "failed"
+                        entry["completed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        entry["cancelled"] = True
+                        touched = True
+                        changed += 1
+                if touched:
+                    session["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    atomic_write_json(path, session)
         except Exception:
             continue
     return changed
 
 
-def clear_batch_session(input_dir: str):
+def clear_batch_session(input_dir: str, fingerprint: str = "") -> bool:
     """Delete the session file for this input_dir (called when all files are done)."""
     try:
         p = _session_path(input_dir)
-        if p.exists():
+        with _interprocess_lock(p):
+            if not p.exists():
+                return True
+            with open(p, encoding="utf-8") as handle:
+                current = json.load(handle)
+            if (_canonical_session_input(current.get("input_dir", ""))
+                    != _canonical_session_input(input_dir)):
+                return False
+            current_fp = str(current.get("fingerprint") or "")
+            if fingerprint and current_fp and current_fp != fingerprint:
+                return False
+            statuses = {
+                str(entry.get("status") or "pending")
+                for entry in (current.get("files") or {}).values()
+                if isinstance(entry, dict)
+            }
+            if statuses & {"pending", "submitted", "failed"}:
+                return False
             p.unlink()
+            return True
     except Exception:
-        pass
+        return False
 
 
 def batch_session_summary(session: dict, filepaths: list) -> dict:

@@ -39,6 +39,56 @@ class BatchSessionFailClosedTest(unittest.TestCase):
                         str(root), str(root / "out"), [str(source)], "fp")
                 self.assertEqual(session_path.read_bytes(), original)
 
+    def test_stale_session_updates_merge_distinct_file_states(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = root / "first.srt"
+            second = root / "second.srt"
+            first.write_text("first", encoding="utf-8")
+            second.write_text("second", encoding="utf-8")
+            with patch.object(ht, "_session_dir", return_value=root):
+                ht.create_batch_session(
+                    str(root), str(root / "out"),
+                    [str(first), str(second)], "fingerprint")
+                stale_first = ht.load_batch_session(str(root))
+                stale_second = ht.load_batch_session(str(root))
+
+                ht.update_batch_session(
+                    stale_first, str(first), "completed",
+                    out_path=str(root / "first.tr.srt"))
+                ht.update_batch_session(
+                    stale_second, str(second), "submitted",
+                    batch_id="batch-second")
+
+                saved = ht.load_batch_session(str(root))
+                self.assertEqual(
+                    saved["files"][str(first)]["status"], "completed")
+                self.assertEqual(
+                    saved["files"][str(second)]["status"], "submitted")
+                self.assertEqual(
+                    saved["files"][str(second)]["batch_id"], "batch-second")
+
+    def test_stale_completion_does_not_clear_new_pending_work(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = root / "first.srt"
+            second = root / "second.srt"
+            first.write_text("first", encoding="utf-8")
+            second.write_text("second", encoding="utf-8")
+            with patch.object(ht, "_session_dir", return_value=root):
+                session = ht.create_batch_session(
+                    str(root), str(root / "out"), [str(first)], "fingerprint")
+                ht.update_batch_session(session, str(first), "completed")
+                ht.create_batch_session(
+                    str(root), str(root / "out"),
+                    [str(first), str(second)], "fingerprint")
+
+                self.assertFalse(ht.clear_batch_session(
+                    str(root), fingerprint="fingerprint"))
+                saved = ht.load_batch_session(str(root))
+                self.assertEqual(
+                    saved["files"][str(second)]["status"], "pending")
+
 
 class SyncCheckpointFailClosedTest(unittest.TestCase):
     def test_corrupt_sync_store_is_not_overwritten_or_partially_cleared(self):
@@ -131,6 +181,24 @@ class AutoGlossaryFailClosedTest(unittest.TestCase):
             build.assert_not_called()
             self.assertEqual(status["error"], "corrupt_glossary_store")
             self.assertEqual(glossary.read_bytes(), original)
+
+
+class MainGlossaryFailClosedTest(unittest.TestCase):
+    def test_selected_corrupt_json_glossary_raises_in_strict_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            glossary = Path(td) / "glossary.json"
+            glossary.write_text("{broken", encoding="utf-8")
+
+            with self.assertRaisesRegex(ht.GlossaryLoadError, "JSON sözlük bozuk"):
+                ht.load_glossary(str(glossary), strict=True)
+            self.assertEqual(ht.load_glossary(str(glossary)), {})
+
+    def test_selected_missing_glossary_raises_but_empty_selection_is_valid(self):
+        with tempfile.TemporaryDirectory() as td:
+            missing = str(Path(td) / "missing.json")
+            with self.assertRaisesRegex(ht.GlossaryLoadError, "bulunamadı"):
+                ht.load_glossary(missing, strict=True)
+        self.assertEqual(ht.load_glossary("", strict=True), {})
 
 
 if __name__ == "__main__":

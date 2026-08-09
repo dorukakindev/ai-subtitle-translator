@@ -12803,7 +12803,8 @@ class App(ctk.CTk):
                                      glossary: dict = None):
         schema_dict = schema_dict or self._get_file_schema(filepath)
         if glossary is None:
-            glossary = ht.load_glossary(self._get_file_glossary(filepath))
+            glossary = ht.load_glossary(
+                self._get_file_glossary(filepath), strict=True)
             glossary = self._merge_schema_glossary(glossary, schema_dict)
         return ht.load_context_cache(
             filepath,
@@ -14014,7 +14015,7 @@ class App(ctk.CTk):
 
                 # Gerçek çeviriyle birebir aynı istek hattını kullan:
                 # ctx/next_ctx, süre, frag etiketleri, glossary, proje hafızası dahil.
-                gloss = ht.load_glossary(glossary_path)
+                gloss = ht.load_glossary(glossary_path, strict=True)
                 reqs, fmap = build_requests([fp], src, tgt, model,
                                             schema=schema,
                                             profanity=profanity,
@@ -19641,7 +19642,10 @@ class App(ctk.CTk):
             except Exception:
                 pass
             try:
-                terms.update(ht.load_glossary(self._get_file_glossary(fp)) or {})
+                terms.update(ht.load_glossary(
+                    self._get_file_glossary(fp), strict=True) or {})
+            except ht.GlossaryLoadError:
+                raise
             except Exception:
                 pass
             try:
@@ -21217,7 +21221,7 @@ class App(ctk.CTk):
                 "Auto-Glossary: mevcut JSON sözlük bozuk; veri kaybını "
                 "önlemek için API çağrılmadı ve dosya değiştirilmedi", "err")
             return
-        existing = ht.load_glossary(glossary_path)
+        existing = ht.load_glossary(glossary_path, strict=True)
         token_callback_factory = getattr(
             self, "_token_callback_for_model", None)
         token_callback = (
@@ -23003,7 +23007,8 @@ class App(ctk.CTk):
 
         _profanity = self.profanity_var.get()
         _file_glossaries = {
-            fp: ht.load_glossary(self._get_file_glossary(fp)) for fp in valid_files
+            fp: ht.load_glossary(
+                self._get_file_glossary(fp), strict=True) for fp in valid_files
         }
         _auto_files = [fp for fp in valid_files
                        if self._get_file_schema(fp)["name"] == "Otomatik"]
@@ -23365,7 +23370,8 @@ class App(ctk.CTk):
             partial_blocks, cues, log_fn=self._log)
         partial_baseline = _file_state_signature(partial_path)
         schema_dict = self._get_file_schema(filepath)
-        glossary = ht.load_glossary(self._get_file_glossary(filepath))
+        glossary = ht.load_glossary(
+            self._get_file_glossary(filepath), strict=True)
         glossary = self._merge_schema_glossary(glossary, schema_dict)
         locked_terms = {
             **ht.sanitize_glossary_for_turkish(
@@ -23651,7 +23657,8 @@ class App(ctk.CTk):
                 self._set_stat(self.stat_blocks_var, str(len(cues)))
 
                 # ── Yardimci model analizi ───────────────────────────────────
-                glossary = ht.load_glossary(self._get_file_glossary(filepath))
+                glossary = ht.load_glossary(
+                    self._get_file_glossary(filepath), strict=True)
 
                 schema_dict = self._get_file_schema(filepath)
                 if schema_dict["name"] == "Otomatik":
@@ -24654,7 +24661,8 @@ class App(ctk.CTk):
 
         _profanity = self.profanity_var.get()
         _file_glossaries = {
-            fp: ht.load_glossary(self._get_file_glossary(fp)) for fp in valid_files
+            fp: ht.load_glossary(
+                self._get_file_glossary(fp), strict=True) for fp in valid_files
         }
         _auto_files = [fp for fp in valid_files
                        if self._get_file_schema(fp)["name"] == "Otomatik"]
@@ -27211,7 +27219,8 @@ class App(ctk.CTk):
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
 
-                glossary = ht.load_glossary(self._get_file_glossary(filepath))
+                glossary = ht.load_glossary(
+                    self._get_file_glossary(filepath), strict=True)
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
 
                 cached = self._load_context_cache_for_file(
@@ -27441,11 +27450,12 @@ class App(ctk.CTk):
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
                     ht.update_batch_session(session, filepath, "submitted",
-                                            batch_id=batch_id, out_path=out_path)
-                    session["files"][str(filepath)]["schema_name"] = schema_dict.get("name", "")
-                    session["files"][str(filepath)]["source_hash"] = _expected_source_hash
-                    session["files"][str(filepath)]["output_baseline"] = _output_baseline
-                    ht._save_batch_session(session)
+                                            batch_id=batch_id, out_path=out_path,
+                                            source_hash=_expected_source_hash,
+                                            extra_fields={
+                                                "schema_name": schema_dict.get("name", ""),
+                                                "output_baseline": _output_baseline,
+                                            })
                     submitted.append((
                         filepath, fname, out_path, fmap, batch_id, cues,
                         analysis_tuple, _analysis_ok, file_src, schema_dict.get("name", ""),
@@ -28253,9 +28263,15 @@ class App(ctk.CTk):
             else:
                 self._set_status("Tamamlandı.")
             if _outcome["is_recovery_complete"]:
-                ht.clear_batch_session(input_dir)
-                self._clear_batch_recovery([s[4] for s in submitted])
-                self._log("Oturum dosyası temizlendi (tüm dosyalar tamamlandı).", "info")
+                if ht.clear_batch_session(input_dir, fingerprint=session_fp):
+                    self._clear_batch_recovery([s[4] for s in submitted])
+                    self._log(
+                        "Oturum dosyası temizlendi (tüm dosyalar tamamlandı).",
+                        "info")
+                else:
+                    self._log(
+                        "Oturum dosyası başka bir süreçte değişti veya yeni bekleyen "
+                        "dosya içeriyor; kurtarma kaydı korundu.", "warn")
             self._notify(_outcome["title_text"], f"{_outcome['summary_text']} → {output_dir}")
             if _outcome["completed_count"] > 0:
                 _post_ui(self, messagebox.showinfo, _outcome["title_text"],
