@@ -199,6 +199,24 @@ def extracted_video_language(subtitle_path) -> str:
     return str(extracted_video_metadata(subtitle_path).get("language") or "").strip()
 
 
+def _cached_extraction_matches(output: Path, video: Path,
+                               stream: SubtitleStream) -> bool:
+    if not output.is_file() or output.stat().st_size <= 0:
+        return False
+    payload = extracted_video_metadata(output)
+    try:
+        cached_source = Path(str(payload.get("source_video") or "")).resolve()
+        cached_index = int(payload.get("stream_index"))
+    except (OSError, TypeError, ValueError):
+        return False
+    return (
+        cached_source == video.resolve()
+        and cached_index == int(stream.index)
+        and str(payload.get("codec") or "").strip().lower()
+        == stream.codec.strip().lower()
+    )
+
+
 def logical_subtitle_path(subtitle_path) -> Path:
     path = Path(subtitle_path)
     source_video = extracted_video_origin(path)
@@ -227,7 +245,7 @@ def extract_subtitle_stream(
     language = _safe_name(stream.language.lower(), "und")
     output = _cache_root(video) / f"{stem}.track-{stream.index}.{language}.srt"
     sidecar = _origin_sidecar(output)
-    if output.is_file() and output.stat().st_size > 0 and sidecar.is_file():
+    if _cached_extraction_matches(output, video, stream):
         return output
     output.parent.mkdir(parents=True, exist_ok=True)
     temp_output = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.tmp.srt")

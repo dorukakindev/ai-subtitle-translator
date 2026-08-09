@@ -125,6 +125,36 @@ class VideoSubtitleTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(len(calls), 1)
 
+    def test_corrupt_or_mismatched_cache_metadata_forces_reextraction(self):
+        with tempfile.TemporaryDirectory() as td:
+            video = Path(td) / "film.mkv"
+            video.write_bytes(b"video")
+            stream = vs.SubtitleStream(2, "ass", "ita")
+            calls = []
+
+            def runner(command, **_kwargs):
+                calls.append(command)
+                Path(command[-1]).write_text("fresh subtitle", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
+                output = (
+                    vs._cache_root(video)
+                    / "film.track-2.ita.srt"
+                )
+                output.parent.mkdir(parents=True)
+                output.write_text("stale subtitle", encoding="utf-8")
+                vs._origin_sidecar(output).write_text("{broken", encoding="utf-8")
+
+                result = vs.extract_subtitle_stream(
+                    video, stream, runner=runner,
+                    which=lambda name: f"{name}.exe")
+
+            self.assertEqual(result, output)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(output.read_text(encoding="utf-8"), "fresh subtitle")
+            self.assertEqual(vs.extracted_video_origin(output), video.resolve())
+
     def test_rejects_bitmap_stream_without_running_ffmpeg(self):
         with tempfile.TemporaryDirectory() as td:
             video = Path(td) / "film.mkv"
