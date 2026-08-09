@@ -4235,7 +4235,18 @@ def _src_is_scientific_name(src_text: str) -> bool:
     latin_suffix = re.compile(
         r"(?:a|ae|alis|aris|ata|atum|atus|ella|ense|ensis|ica|icum|icus|"
         r"ii|is|oides|osa|osum|osus|um|us)$")
-    return all(latin_suffix.search(token) for token in match.groups() if token)
+    tokens = [token for token in match.groups() if token]
+    if all(latin_suffix.search(token) for token in tokens):
+        return True
+    # Patronymic species epithets such as ``camemberti`` are legitimate
+    # scientific names, but accepting every short word ending in i would hide
+    # ordinary English dialogue.  Keep this exemption to a two-word binomial
+    # with a substantial lowercase epithet.
+    return (
+        len(tokens) == 1
+        and len(tokens[0]) >= 6
+        and tokens[0].endswith("i")
+    )
 
 
 def _repair_identity_text(text: str) -> str:
@@ -8536,6 +8547,17 @@ def _record_pass_change(trace: dict, label: str, before_blocks, after_blocks,
         "after": _pass_structure_signature(after_blocks),
     })
     return n
+
+
+def _log_exception_or_warning(owner, message: str, exc: Exception) -> None:
+    """Keep pass recovery diagnosable even in small test/headless callers."""
+    log_exc = getattr(owner, "_log_exc", None)
+    if callable(log_exc):
+        log_exc(message, exc)
+        return
+    log = getattr(owner, "_log", None)
+    if callable(log):
+        log(f"{message}: {exc}", "warn")
 
 
 def _format_pass_trace(trace: dict) -> str:
@@ -12866,9 +12888,17 @@ class App(ctk.CTk):
 
     def _record_quality_report(self, rows: list, report_paths: list):
         fix_keys = ("cons", "rev", "pass_fix", "qc_auto", "qc")
-        fixes = sum(
-            int(row.get(key, 0) or 0)
-            for row in (rows or []) for key in fix_keys)
+        trace_only_passes = {
+            "Repair", "Condense", "SDH", "Line-break", "Final-SDH",
+            "Term-Normalize", "Final-Semantic", "Season-Canon",
+        }
+        fixes = 0
+        for row in rows or []:
+            fixes += sum(int(row.get(key, 0) or 0) for key in fix_keys)
+            fixes += sum(
+                int(count or 0)
+                for name, count in (row.get("pass_trace") or {}).items()
+                if name in trace_only_passes)
         rows_by_name = {
             str(row.get("name", "")): row
             for row in (rows or []) if row.get("name")
@@ -14426,6 +14456,7 @@ class App(ctk.CTk):
         tgt = snapshot.get("tgt_lang") or "Turkish"
         report_lines = ["# Sezon Sonu Kanon Denetimi", ""]
         total_suspects = total_fixed = total_errors = 0
+        season_report_updates = {}
         self._log(
             f"Sezon Sonu Kanon Denetimi: {len(groups)} sezon, "
             f"{sum(len(items) for items in groups.values())} bölüm inceleniyor...",
@@ -14439,7 +14470,9 @@ class App(ctk.CTk):
                     output_baseline = _file_state_signature(output_path)
                     if not expected_source_hash or not output_baseline.get("exists"):
                         raise OSError("kaynak veya hedef dosya durumu okunamadı")
-                    source_blocks = list(parse_subtitle(source_path))
+                    source_language = self._effective_file_source_language(
+                        source_path, snapshot.get("src_lang") or "English")
+                    source_blocks = list(parse_subtitle(source_path, source_language))
                     output_blocks, unmapped = _align_delivery_blocks_to_source(
                         source_blocks, parse_srt(output_path))
                     if unmapped:
@@ -14506,6 +14539,9 @@ class App(ctk.CTk):
                         for idx, _ts, text in output_blocks
                         if before.get(str(idx), text) != text
                     ]
+                    report_dir = _resolve_report_dir(
+                        snapshot.get("input_dir", ""),
+                        snapshot.get("output_dir", ""))
                     if changes:
                         guard_reason = _batch_write_guard_reason(
                             source_path, output_path, expected_source_hash,
@@ -14513,9 +14549,6 @@ class App(ctk.CTk):
                         if guard_reason:
                             raise RuntimeError(
                                 f"sezon denetimi sonucu yazılmadı ({guard_reason})")
-                        report_dir = _resolve_report_dir(
-                            snapshot.get("input_dir", ""),
-                            snapshot.get("output_dir", ""))
                         report_dir.mkdir(parents=True, exist_ok=True)
                         artifact_stem = _season_canon_artifact_stem(
                             slug, season, episode, source_path, run_id)
@@ -14526,6 +14559,25 @@ class App(ctk.CTk):
                             output_blocks, tgt, self._log,
                             source_cues=source_blocks)
                         write_srt(output_path, delivery, tgt)
+                    delivery_audit = _subtitle_delivery_audit(
+                        source_path, output_path, tgt, source_language)
+                    if _delivery_audit_has_hard_error(delivery_audit):
+                        quarantined = _quarantine_incomplete_final(output_path)
+                        raise RuntimeError(
+                            "sezon denetimi yazımı sonrası teslim denetimi "
+                            f"başarısız ({quarantined or output_path})")
+                    report_dir.mkdir(parents=True, exist_ok=True)
+                    _write_output_source_fingerprint(
+                        report_dir, output_path, expected_source_hash)
+                    season_report_updates[str(source_path)] = {
+                        "output_path": str(output_path),
+                        "delivery_audit": delivery_audit,
+                        "season_canon_changes": len(changes),
+                        "season_canon_status": {
+                            "status": "completed", "changed": len(changes),
+                        },
+                    }
+                    self._record_file_status(source_path, "Sezon Kanonu", "done")
                     total_fixed += len(changes)
                     report_lines.append(
                         f"- E{episode:02d}: şüpheli {len(suspects)}, "
@@ -14574,6 +14626,9 @@ class App(ctk.CTk):
         if total_errors:
             summary += f", {total_errors} bölüm denetlenemedi"
         self._log(f"{summary} — {report_path}", "warn" if total_errors else "ok")
+        refresher = getattr(self, "_refresh_quality_report_after_season_canon", None)
+        if callable(refresher):
+            refresher(season_report_updates)
 
     def _start_season_canon_finalizer(self):
         self._season_canon_finalizing = True
@@ -18998,6 +19053,7 @@ class App(ctk.CTk):
         progress_name = Path(progress_path).name
         fixed = 0
         if App._run_setting(self, "backtrans", "backtrans_var", False):
+            self._record_file_status(progress_path, "Geri Çeviri", "running")
             self._set_phase(
                 "Geri Çeviri", f"{progress_name} — anlam kontrolü")
             self._update_file_progress(
@@ -19014,6 +19070,8 @@ class App(ctk.CTk):
         )
         if App._run_setting(
                 self, "semantic_reconcile", "semantic_reconcile_var", True):
+            self._record_file_status(
+                progress_path, "Nihai Anlam Mutabakatı", "running")
             self._set_phase(
                 "Nihai Anlam Mutabakatı",
                 f"{progress_name} — kaynakla son karşılaştırma")
@@ -19558,6 +19616,7 @@ class App(ctk.CTk):
         rejected_reasons = {}
         attempted_chunks = 0
         successful_chunks = 0
+        partial_chunks = 0
         permanent_error = None
         polish_ranges = _polish_chunk_ranges(
             sorted_blocks, frag_group_ids, POLISH_CHUNK)
@@ -19676,14 +19735,21 @@ class App(ctk.CTk):
                             continue
                         returned_ids.append(str(candidate["id"]))
                     expected_ids = set(original_by_id)
-                    if (malformed_items or len(returned_ids) != len(set(returned_ids))
-                            or set(returned_ids) != expected_ids):
-                        missing = sorted(expected_ids - set(returned_ids))
+                    returned_set = set(returned_ids)
+                    if (malformed_items or len(returned_ids) != len(returned_set)
+                            or not returned_set <= expected_ids):
+                        missing = sorted(expected_ids - returned_set)
                         extra = sorted(set(returned_ids) - expected_ids)
                         raise RuntimeError(
                             "Polish: incomplete/invalid JSON ids "
                             f"(missing={','.join(missing[:8]) or '-'}, "
                             f"extra={','.join(extra[:8]) or '-'})")
+                    if returned_set != expected_ids:
+                        partial_chunks += 1
+                        self._log(
+                            f"Polish chunk {chunk_num}/{total_chunks}: "
+                            f"{len(expected_ids - returned_set)} cue aynen korundu; "
+                            "dönen güvenli öneriler uygulanacak.", "warn")
                     chunk_proposals = {}
                     for item in polished:
                         if isinstance(item, dict) and "id" in item and "tr" in item:
@@ -19728,14 +19794,16 @@ class App(ctk.CTk):
                 except Exception as e:
                     if _is_permanent_provider_error(e):
                         permanent_error = e
-                        self._log_exc(
+                        _log_exception_or_warning(
+                            self,
                             f"Polish chunk {chunk_num}/{total_chunks} kalıcı API hatası", e)
                         break
                     if attempt == 0:
                         self._log(f"Polish chunk {chunk_num}/{total_chunks} — retry...", "warn")
                         time.sleep(2)
                     else:
-                        self._log_exc(f"Polish chunk {chunk_num}/{total_chunks} hatası", e)
+                        _log_exception_or_warning(
+                            self, f"Polish chunk {chunk_num}/{total_chunks} hatası", e)
             if permanent_error is not None:
                 attempted_chunks = total_chunks
                 break
@@ -19764,7 +19832,7 @@ class App(ctk.CTk):
         ratio = changed / total if total > 0 else 0
         failed_chunks = max(0, attempted_chunks - successful_chunks)
         pass_status = (
-            "completed" if successful_chunks == attempted_chunks
+            "completed" if successful_chunks == attempted_chunks and not partial_chunks
             else "partial" if successful_chunks
             else "failed"
         )
@@ -19789,6 +19857,7 @@ class App(ctk.CTk):
                 "status": pass_status,
                 "successful_chunks": successful_chunks,
                 "failed_chunks": failed_chunks,
+                "partial_chunks": partial_chunks,
                 "total_chunks": attempted_chunks, "changed": changed,
             })
             if permanent_error is not None:
@@ -20764,12 +20833,42 @@ class App(ctk.CTk):
                 })
                 report_paths.append(guard_path)
                 self._log(f"Pass guard kanıt paketi: {guard_path}", "warn")
+            with self._run_record_lock:
+                active = getattr(self, "_active_run_record", None)
+                if active is not None:
+                    active["_quality_report_rows"] = copy.deepcopy(report_rows)
+                    active["_quality_report_output_dir"] = str(output_dir or "")
             self._record_quality_report(report_rows, report_paths)
             self._log(f"Kalite raporu: {p}", "ok")
             return p
         except Exception as report_error:
             self._log(f"Kalite raporu yazılamadı: {report_error}", "err")
             return None
+
+    def _refresh_quality_report_after_season_canon(self, updates: dict) -> None:
+        """Rebuild the run report from the files actually rewritten by canon QA."""
+        if not updates:
+            return
+        with self._run_record_lock:
+            active = getattr(self, "_active_run_record", None) or {}
+            rows = copy.deepcopy(active.get("_quality_report_rows") or [])
+            output_dir = str(active.get("_quality_report_output_dir") or "")
+            by_source = {
+                os.path.normcase(os.path.abspath(str(row.get("source_path") or ""))): row
+                for row in rows if row.get("source_path")
+            }
+            for source_path, update in updates.items():
+                row = by_source.get(os.path.normcase(os.path.abspath(str(source_path))))
+                if row is None:
+                    continue
+                row.update(update)
+                row.setdefault("pass_trace", {})["Season-Canon"] = int(
+                    update.get("season_canon_changes", 0) or 0)
+                row.setdefault("pass_status", {})["Season-Canon"] = dict(
+                    update.get("season_canon_status") or {})
+            active["_quality_report_rows"] = copy.deepcopy(rows)
+        if rows and output_dir:
+            self._save_quality_report(rows, output_dir)
 
     def _open_quality_report(self):
         """Çıktı klasöründeki ceviri_raporu.txt'yi uygulama içi pencerede gösterir."""
@@ -23525,8 +23624,6 @@ class App(ctk.CTk):
                 break
             _before_semantic = list(sorted_blocks)
             if _quality_api_allowed:
-                self._record_file_status(
-                    filepath, "Nihai Anlam Mutabakatı", "running")
                 _semantic_status = {}
                 _back_status = {}
                 self._run_final_semantic_checks(
@@ -24846,7 +24943,10 @@ class App(ctk.CTk):
                                 if self._stop_flag:
                                     break
                                 if _critic_status.get("status") == "completed":
-                                    _record_pass_change(_pass_trace, "Critic", _before_pass, pp, _pass_history)
+                                    self._log("Critic Pass tamamlandı", "ok")
+                                _record_pass_change(
+                                    _pass_trace, "Critic", _before_pass, pp,
+                                    _pass_history)
                                 self._write_critic_change_report(output_path, _critic_change_log)
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
@@ -24861,7 +24961,10 @@ class App(ctk.CTk):
                                 if self._stop_flag:
                                     break
                                 if _polish_status.get("status") == "completed":
-                                    _record_pass_change(_pass_trace, "Polish", _before_pass, pp, _pass_history)
+                                    self._log("Polish Pass tamamlandı", "ok")
+                                _record_pass_change(
+                                    _pass_trace, "Polish", _before_pass, pp,
+                                    _pass_history)
                             if self.native_var.get() and pp:
                                 self._set_status("Native Okuyucu...")
                                 _before_pass = list(pp)
@@ -24884,7 +24987,10 @@ class App(ctk.CTk):
                                 if self._stop_flag:
                                     break
                                 if _native_status.get("status") == "completed":
-                                    _record_pass_change(_pass_trace, "Native", _before_pass, pp, _pass_history)
+                                    self._log("Native Okuyucu tamamlandı", "ok")
+                                _record_pass_change(
+                                    _pass_trace, "Native", _before_pass, pp,
+                                    _pass_history)
                             if pp and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                                 _before_pass = list(pp)
                                 pp, _final_cons_fixes = ht.final_consistency_sweep(
@@ -25488,7 +25594,10 @@ class App(ctk.CTk):
                     if self._stop_flag:
                         break
                     if _critic_status.get("status") == "completed":
-                        _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
+                        self._log("Critic Pass tamamlandı", "ok")
+                    _record_pass_change(
+                        _pass_trace, "Critic", _before_pass, sorted_blocks,
+                        _pass_history)
                     self._write_critic_change_report(out_path, _critic_change_log)
                 except Exception as e:
                     self._log(f"Critic Pass hatası: {e}", "warn")
@@ -25509,7 +25618,10 @@ class App(ctk.CTk):
                     if self._stop_flag:
                         break
                     if _polish_status.get("status") == "completed":
-                        _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
+                        self._log("Polish Pass tamamlandı", "ok")
+                    _record_pass_change(
+                        _pass_trace, "Polish", _before_pass, sorted_blocks,
+                        _pass_history)
                 except Exception as e:
                     self._log(f"Polish Pass hatası: {e}", "warn")
             if (self.native_var.get() and sorted_blocks
@@ -25539,7 +25651,10 @@ class App(ctk.CTk):
                     if self._stop_flag:
                         break
                     if _native_status.get("status") == "completed":
-                        _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
+                        self._log("Native Okuyucu tamamlandı", "ok")
+                    _record_pass_change(
+                        _pass_trace, "Native", _before_pass, sorted_blocks,
+                        _pass_history)
                 except Exception as e:
                     self._log(f"Native Pass hatası: {e}", "warn")
             if (sorted_blocks and _quality_api_allowed and not self._stop_flag
@@ -25602,7 +25717,10 @@ class App(ctk.CTk):
                         status_out=_qc_status)
                     _pass_status["QC"] = dict(_qc_status)
                     if _qc_status.get("status") == "completed":
-                        _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
+                        self._log("QC tamamlandı", "ok")
+                    _record_pass_change(
+                        _pass_trace, "QC", _before_pass, sorted_blocks,
+                        _pass_history)
                 except Exception as e:
                     self._log(f"QC hatası: {e}", "warn")
             if self._stop_flag:
@@ -25636,8 +25754,6 @@ class App(ctk.CTk):
                 break
             _before_semantic = list(sorted_blocks)
             if _quality_api_allowed:
-                self._record_file_status(
-                    fp, "Nihai Anlam Mutabakatı", "running")
                 _semantic_status = {}
                 _back_status = {}
                 self._run_final_semantic_checks(
@@ -26672,6 +26788,7 @@ class App(ctk.CTk):
                         or self.native_var.get()
                         or self.clean_sdh_var.get() or self.linebreak_var.get()
                         or self.qc_var.get()):
+                    pp_blocks = list(_final_blocks)
                     try:
                         pp_blocks = list(_final_blocks)   # tutarlılık-taranmış bloklardan başla
                         
@@ -26701,7 +26818,10 @@ class App(ctk.CTk):
                             if self._stop_flag:
                                 break
                             if _critic_status.get("status") == "completed":
-                                _record_pass_change(_pass_trace, "Critic", _before_pass, pp_blocks, _pass_history)
+                                self._log("Critic Pass tamamlandı", "ok")
+                            _record_pass_change(
+                                _pass_trace, "Critic", _before_pass,
+                                pp_blocks, _pass_history)
                             self._write_critic_change_report(out_path, _critic_change_log)
                         if self.polish_var.get() and pp_blocks:
                             self._record_file_status(
@@ -26719,8 +26839,10 @@ class App(ctk.CTk):
                             if self._stop_flag:
                                 break
                             if _polish_status.get("status") == "completed":
-                                _record_pass_change(_pass_trace, "Polish", _before_pass, pp_blocks, _pass_history)
                                 self._log("Polish Pass tamamlandı", "ok")
+                            _record_pass_change(
+                                _pass_trace, "Polish", _before_pass,
+                                pp_blocks, _pass_history)
                         if self.native_var.get() and pp_blocks:
                             self._record_file_status(
                                 filepath, "Native Okuyucu", "running")
@@ -26747,7 +26869,10 @@ class App(ctk.CTk):
                             if self._stop_flag:
                                 break
                             if _native_status.get("status") == "completed":
-                                _record_pass_change(_pass_trace, "Native", _before_pass, pp_blocks, _pass_history)
+                                self._log("Native Okuyucu tamamlandı", "ok")
+                            _record_pass_change(
+                                _pass_trace, "Native", _before_pass,
+                                pp_blocks, _pass_history)
                         if pp_blocks and (self.critic_var.get() or self.polish_var.get() or self.native_var.get()):
                             self._record_file_status(
                                 filepath, "Final Tutarlılık", "running")
@@ -26859,6 +26984,10 @@ class App(ctk.CTk):
                             and _clean_src(_pre_pass[str(b[0])]) != _clean_src(b[2]))
                         _final_blocks = pp_blocks
                     except Exception as pp_e:
+                        _final_blocks = pp_blocks
+                        _pass_status["Post-processing"] = {
+                            "status": "partial", "error": str(pp_e),
+                        }
                         self._log(f"Post-processing hatası: {pp_e}", "err")
 
                 # CPS uyarısı — sync-hybrid ile paritede (batch loglarında da görünsün)
@@ -26888,13 +27017,15 @@ class App(ctk.CTk):
                         _record_pass_change(
                             _pass_trace, "Term-Normalize", _before_termnorm,
                             _final_blocks, _pass_history)
-                    except Exception:
-                        pass
+                    except Exception as term_error:
+                        _pass_status["Term-Normalize"] = {
+                            "status": "failed", "error": str(term_error),
+                        }
+                        self._log(
+                            f"Terim normalizasyonu atlandı: {term_error}", "warn")
                 if self._stop_flag:
                     break
                 _before_semantic = list(_final_blocks)
-                self._record_file_status(
-                    filepath, "Nihai Anlam Mutabakatı", "running")
                 _semantic_status = {}
                 _back_status = {}
                 self._run_final_semantic_checks(
@@ -26981,8 +27112,12 @@ class App(ctk.CTk):
                                                   issue_fn=self._record_quality_issue,
                                                   locked_terms=_locked_terms,
                                                   source_language=file_src)
-                except Exception:
-                    pass
+                except Exception as delivery_error:
+                    _pass_status["Final-Delivery"] = {
+                        "status": "failed", "error": str(delivery_error),
+                    }
+                    self._log(
+                        f"Nihai teslim denetimi çalışmadı: {delivery_error}", "err")
                 self._record_file_status(
                     filepath, "Çeviri Hafızası", "running")
                 self._store_tm_pairs(

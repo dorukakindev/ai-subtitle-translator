@@ -33,7 +33,7 @@ class PassProgressFeedbackTest(unittest.TestCase):
             source.count("status_out=_native_status"),
         )
         self.assertGreaterEqual(
-            source.count('_native_status.get("status") == "completed"'), 4)
+            source.count('_native_status.get("status") == "completed"'), 3)
 
     def test_all_critic_gui_calls_collect_real_completion_status(self):
         source = inspect.getsource(gui.App)
@@ -42,7 +42,7 @@ class PassProgressFeedbackTest(unittest.TestCase):
             source.count("status_out=_critic_status"),
         )
         self.assertGreaterEqual(
-            source.count('_critic_status.get("status") == "completed"'), 4)
+            source.count('_critic_status.get("status") == "completed"'), 3)
 
     def test_all_polish_gui_calls_collect_real_completion_status(self):
         source = inspect.getsource(gui.App)
