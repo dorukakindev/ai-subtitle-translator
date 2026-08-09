@@ -15218,7 +15218,7 @@ class App(ctk.CTk):
                                    pass_name: str = "", base_url: str | None = None,
                                    file_path: str = ""):
         if base_url is None:
-            snapshot = getattr(self, "_active_snapshot", {}) or {}
+            snapshot = self.__dict__.get("_active_snapshot", {}) or {}
             helper_models = snapshot.get("helper_models") or {}
             helper_urls = snapshot.get("helper_urls") or {}
             candidates = {
@@ -15239,16 +15239,19 @@ class App(ctk.CTk):
 
         def _callback(added, cached=0, prompt_tokens=0, completion_tokens=0,
                       usage_available=True):
+            updater = getattr(self, "_update_tokens", None)
+            if not callable(updater):
+                updater = lambda *args, **kwargs: App._update_tokens(
+                    self, *args, **kwargs)
             try:
-                App._update_tokens(
-                    self,
+                updater(
                     added, price=price, cached=cached,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens, model=model,
                     pass_name=pass_name, base_url=base_url,
                     file_path=file_path, usage_available=usage_available)
             except TypeError:
-                App._update_tokens(self, added, price=price, cached=cached)
+                updater(added, price=price, cached=cached)
         def _report_missing_usage():
             _callback(0, usage_available=False)
         _callback.report_missing_usage = _report_missing_usage
@@ -15257,16 +15260,12 @@ class App(ctk.CTk):
     def _token_callback_for_pass(self, model: str, pass_name: str,
                                  base_url: str | None = None,
                                  file_path: str = ""):
-        factory = getattr(self, "_token_callback_for_model", None)
-        if not callable(factory):
-            factory = lambda *args, **kwargs: App._token_callback_for_model(
-                self, *args, **kwargs)
         try:
-            return factory(
-                model, pass_name=pass_name, base_url=base_url,
+            return App._token_callback_for_model(
+                self, model, pass_name=pass_name, base_url=base_url,
                 file_path=file_path)
         except TypeError:
-            return factory(model)
+            return App._token_callback_for_model(self, model)
 
     def _update_batch_tokens(self, added: int, cached: int = 0,
                              prompt_tokens: int = 0,

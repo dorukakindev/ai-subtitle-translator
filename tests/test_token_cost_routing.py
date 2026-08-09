@@ -46,9 +46,11 @@ class TokenCostRoutingTest(unittest.TestCase):
         with patch.object(gui, "_post_ui", side_effect=lambda _app, fn: fn()):
             gui.App._update_tokens(app, 1_000_000)
             gui.App._token_callback_for_model(
-                app, "gpt-5.4-mini")(1_000_000)
+                app, "gpt-5.4-mini",
+                base_url="https://api.openai.com/v1")(1_000_000)
             gui.App._token_callback_for_model(
-                app, "gpt-4o-mini")(1_000_000)
+                app, "gpt-4o-mini",
+                base_url="https://api.openai.com/v1")(1_000_000)
 
         self.assertAlmostEqual(app._cost_total, 30.23, places=6)
         self.assertEqual(app._unknown_cost_tokens, 0)
@@ -64,7 +66,7 @@ class TokenCostRoutingTest(unittest.TestCase):
 
         self.assertEqual(app._cost_total, 0.0)
         self.assertEqual(app._unknown_cost_tokens, 1234)
-        self.assertIn("fiyatı bilinmiyor", app.stat_tokens_sub_var.value)
+        self.assertIn("sağlayıcı panelinden doğrulanmalı", app.stat_tokens_sub_var.value)
 
     def test_callback_records_prompt_completion_and_named_pass_cost(self):
         app = self._app()
