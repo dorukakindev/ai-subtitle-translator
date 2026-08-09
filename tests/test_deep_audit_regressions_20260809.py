@@ -175,6 +175,13 @@ class DeliveryHardeningTest(unittest.TestCase):
                 self.assertIn("_quality_pass_has_hard_failure", source)
                 self.assertIn("_quarantine_incomplete_final", source)
 
+    def test_repair_only_output_runs_delivery_audit_before_completion(self):
+        source = inspect.getsource(gui.App._run_partial_repair_only_file)
+        audit_pos = source.index("_subtitle_delivery_audit")
+        archive_pos = source.index("_archive_completed_partial_output")
+        self.assertLess(audit_pos, archive_pos)
+        self.assertIn("_quarantine_incomplete_final", source)
+
 
 class StaleArtifactTest(unittest.TestCase):
     def _app(self):

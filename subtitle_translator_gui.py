@@ -23244,6 +23244,19 @@ class App(ctk.CTk):
         _write_srt_preserving_text(write_path, write_blocks)
         _write_output_source_fingerprint(
             report_dir, write_path, expected_source_hash)
+        if complete:
+            delivery_audit = _subtitle_delivery_audit(
+                filepath, str(write_path), tgt, file_src)
+            if _delivery_audit_has_hard_error(delivery_audit):
+                quarantined = _quarantine_incomplete_final(write_path)
+                if quarantined:
+                    write_path = quarantined
+                complete = False
+                self._log(
+                    f"{Path(filepath).name}: eksik cue onarımı tamamlandı ancak "
+                    "nihai teslim denetimi başarısız oldu; çıktı karantinaya "
+                    f"alındı{f': {quarantined.name}' if quarantined else ''}.",
+                    "err")
         archived_partial = None
         if complete:
             try:
