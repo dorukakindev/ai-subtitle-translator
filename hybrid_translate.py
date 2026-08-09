@@ -2482,9 +2482,18 @@ def _get_usage_breakdown(usage):
 
 
 def _report_helper_usage(response, token_callback):
-    if not token_callback or not getattr(response, "usage", None):
+    if not token_callback:
         return
-    total, cached, prompt, completion = _get_usage_breakdown(response.usage)
+    usage = getattr(response, "usage", None)
+    if usage is None or getattr(response, "usage_available", None) is False:
+        report_missing = getattr(token_callback, "report_missing_usage", None)
+        if callable(report_missing):
+            try:
+                report_missing()
+            except Exception:
+                pass
+        return
+    total, cached, prompt, completion = _get_usage_breakdown(usage)
     try:
         if prompt or completion:
             token_callback(
