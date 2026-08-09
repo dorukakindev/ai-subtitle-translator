@@ -7693,6 +7693,36 @@ def _active_run_state_path(pid: int | None = None) -> Path:
     return state_path(__file__, f"active_run.{owner_pid}.json")
 
 
+def _persist_active_run_record(owner, record: dict) -> tuple[bool, str]:
+    path = _active_run_state_path()
+    had_failure = bool(getattr(owner, "_run_record_persistence_failed", False))
+    try:
+        atomic_write_json(path, record)
+    except Exception as exc:
+        cleanup_error = ""
+        try:
+            path.unlink(missing_ok=True)
+        except Exception as cleanup_exc:
+            cleanup_error = f"; eski kayıt da kaldırılamadı: {cleanup_exc}"
+        try:
+            owner._run_record_persistence_failed = True
+        except Exception:
+            pass
+        if had_failure:
+            return False, ""
+        return False, (
+            "Çökme kurtarma kaydı güncellenemedi; eski kayıtla yanlış "
+            f"sürdürmeyi önlemek için kurtarma devre dışı bırakıldı: {exc}"
+            f"{cleanup_error}")
+    try:
+        owner._run_record_persistence_failed = False
+    except Exception:
+        pass
+    if had_failure:
+        return True, "Çökme kurtarma kaydı yeniden etkinleştirildi."
+    return True, ""
+
+
 def _active_run_state_candidates() -> list[Path]:
     own = _active_run_state_path()
     candidates = [own]
@@ -8437,6 +8467,21 @@ def build_run_summary_text(record: dict) -> str:
 _COMPLETION_MARKER_NAME = "ÇEVRİLDİ.txt"
 
 
+def _completion_marker_root(source: Path, roots: list[Path]) -> Path | None:
+    matches = []
+    for root in roots:
+        try:
+            source.resolve(strict=False).relative_to(root.resolve(strict=False))
+            matches.append(root)
+        except (OSError, ValueError):
+            continue
+    if matches:
+        return max(matches, key=lambda value: len(value.parts))
+    if source.parent.is_dir():
+        return source.parent
+    return None
+
+
 def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
     files = dict(record.get("files") or {})
     settings = dict(record.get("settings") or {})
@@ -8445,24 +8490,19 @@ def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
     groups = {}
     for filepath, state in files.items():
         source = Path(filepath)
-        matches = []
-        for root in roots:
-            try:
-                source.resolve(strict=False).relative_to(root.resolve(strict=False))
-                matches.append(root)
-            except (OSError, ValueError):
-                continue
-        if matches:
-            group_root = max(matches, key=lambda value: len(value.parts))
-        elif source.is_file():
-            group_root = source.parent
-        else:
+        group_root = _completion_marker_root(source, roots)
+        if group_root is None:
             continue
         groups.setdefault(group_root, []).append((str(source), state or {}))
     completed = []
     for root, members in groups.items():
         if not members or not all(
                 str(state.get("status")) == "done"
+                for _path, state in members):
+            continue
+        if not all(
+                str(state.get("output_path") or "").strip()
+                and Path(str(state.get("output_path"))).is_file()
                 for _path, state in members):
             continue
         tracked = {
@@ -8478,7 +8518,7 @@ def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
             for path in get_subtitle_files(
                 str(root), recursive=True, exclude_paths=excluded)
         }
-        if discovered and not discovered <= tracked:
+        if not discovered or discovered != tracked:
             continue
         completed.append((root, [path for path, _state in members]))
     return completed
@@ -8502,7 +8542,20 @@ def _completion_marker_text(record: dict, source_files: list[str]) -> str:
 
 def _write_completion_markers(record: dict) -> list[str]:
     written = []
-    for root, source_files in _completion_marker_groups(record):
+    completed = _completion_marker_groups(record)
+    completed_roots = {root for root, _source_files in completed}
+    settings = dict(record.get("settings") or {})
+    roots = [Path(value) for value in settings.get("selected_folder_roots") or ()
+             if str(value or "").strip()]
+    candidate_roots = {
+        group_root
+        for source_path in (record.get("files") or {})
+        for group_root in [_completion_marker_root(Path(source_path), roots)]
+        if group_root is not None
+    }
+    for root in candidate_roots - completed_roots:
+        (root / _COMPLETION_MARKER_NAME).unlink(missing_ok=True)
+    for root, source_files in completed:
         if not root.is_dir():
             continue
         marker = root / _COMPLETION_MARKER_NAME
@@ -9388,6 +9441,8 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         return True
     return any((
         audit.get("missing_dialogue_ids"),
+        audit.get("extra_dialogue_ids"),
+        audit.get("timestamp_mismatch_ids"),
         audit.get("unresolved_markers"),
         audit.get("residual_credit_cues"),
         audit.get("residual_sdh_cues"),
@@ -13294,11 +13349,10 @@ class App(ctk.CTk):
             self._quality_issue_seq = 0
             self._quality_checkpoint_stages_seen = set()
             self._api_stall_notices = set()
-        try:
-            atomic_write_json(_active_run_state_path(), record)
-        except Exception as exc:
-            self._log(f"Çökme kurtarma kaydı yazılamadı: {exc}", "warn")
-        else:
+        persisted, persist_message = _persist_active_run_record(self, record)
+        if persist_message:
+            self._log(persist_message, "warn" if not persisted else "ok")
+        if persisted:
             resumed_path = str(snapshot.get("resume_state_path") or "").strip()
             if resumed_path:
                 try:
@@ -13357,6 +13411,8 @@ class App(ctk.CTk):
     def _record_file_status(self, filepath: str, phase: str, status: str):
         timing_log = None
         stage_log = None
+        persist_message = ""
+        persisted = True
         with self._run_record_lock:
             record = self._active_run_record
             if not record:
@@ -13427,12 +13483,11 @@ class App(ctk.CTk):
                     f"{item.get('started_at') or '-'}, bitiş "
                     f"{item.get('ended_at') or '-'}, toplam "
                     f"{_format_elapsed(item.get('duration_seconds'))} | {stages}")
-            try:
-                atomic_write_json(_active_run_state_path(), record)
-            except Exception:
-                pass
+            persisted, persist_message = _persist_active_run_record(self, record)
         logger = getattr(self, "_log", None)
         if callable(logger):
+            if persist_message:
+                logger(persist_message, "warn" if not persisted else "ok")
             if stage_log:
                 logger(stage_log, "info")
             if timing_log:
@@ -13443,15 +13498,17 @@ class App(ctk.CTk):
         lock = self.__dict__.get("_run_record_lock")
         if lock is None:
             return
+        persist_message = ""
+        persisted = True
         with lock:
             record = self.__dict__.get("_active_run_record")
             if record is None:
                 return
             record["recovery_blocked_reason"] = "permanent_provider"
-            try:
-                atomic_write_json(_active_run_state_path(), record)
-            except Exception:
-                pass
+            persisted, persist_message = _persist_active_run_record(self, record)
+        logger = getattr(self, "_log", None)
+        if persist_message and callable(logger):
+            logger(persist_message, "warn" if not persisted else "ok")
 
     def _file_timing_snapshot(self, filepath: str) -> dict:
         with self._run_record_lock:
@@ -13507,6 +13564,8 @@ class App(ctk.CTk):
             os.path.normcase(os.path.abspath(str(row["source_path"]))): row
             for row in (rows or []) if row.get("source_path")
         }
+        persist_message = ""
+        persisted = True
         with self._run_record_lock:
             record = self._active_run_record
             if not record:
@@ -13530,10 +13589,10 @@ class App(ctk.CTk):
                     item["status"] = "done"
                 if row.get("output_path"):
                     item["output_path"] = str(row["output_path"])
-            try:
-                atomic_write_json(_active_run_state_path(), record)
-            except Exception:
-                pass
+            persisted, persist_message = _persist_active_run_record(self, record)
+        logger = getattr(self, "_log", None)
+        if persist_message and callable(logger):
+            logger(persist_message, "warn" if not persisted else "ok")
 
     def _finalize_run_record(self):
         import datetime as _dt
@@ -13642,16 +13701,16 @@ class App(ctk.CTk):
         with self._run_record_lock:
             self._last_run_record = snapshot
             self._active_run_record = None
-        if resume_files:
-            try:
-                atomic_write_json(_active_run_state_path(), snapshot)
-            except Exception as exc:
-                self._log(f"Yarım çalışma kaydı korunamadı: {exc}", "warn")
-        else:
+        persisted, persist_message = _persist_active_run_record(self, snapshot)
+        if persist_message:
+            self._log(persist_message, "warn" if not persisted else "ok")
+        if not resume_files and persisted:
             try:
                 _active_run_state_path().unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log(
+                    "Tamamlanan çalışmanın kurtarma kaydı temizlenemedi; "
+                    f"kayıt tamamlanmış durumda bırakıldı: {exc}", "warn")
         try:
             from provider_retry import (clear_response_checkpoint_namespace,
                                         configure_response_checkpoint)
@@ -14527,15 +14586,17 @@ class App(ctk.CTk):
         if isinstance(snapshot, dict):
             snapshot["shutdown_when_done"] = enabled
         lock = getattr(self, "_run_record_lock", None)
+        persist_message = ""
+        persisted = True
         if lock is not None:
             with lock:
                 record = getattr(self, "_active_run_record", None)
                 if record is not None:
                     record.setdefault("settings", {})["shutdown_when_done"] = enabled
-                    try:
-                        atomic_write_json(_active_run_state_path(), record)
-                    except Exception:
-                        pass
+                    persisted, persist_message = _persist_active_run_record(
+                        self, record)
+        if persist_message:
+            self._log(persist_message, "warn" if not persisted else "ok")
         if getattr(self, "_is_running", False):
             state = "açıldı" if enabled else "kapatıldı"
             self._log(
@@ -15180,6 +15241,9 @@ class App(ctk.CTk):
                             "status": "completed", "changed": len(changes),
                         },
                     }
+                    self.__dict__.setdefault(
+                        "_season_canon_completed_sources", set()).add(
+                            str(source_path))
                     self._record_file_status(source_path, "Sezon Kanonu", "done")
                     total_fixed += len(changes)
                     report_lines.append(
@@ -15235,18 +15299,45 @@ class App(ctk.CTk):
 
     def _start_season_canon_finalizer(self):
         self._season_canon_finalizing = True
+        self._season_canon_completed_sources = set()
         self._set_phase(
             "Sezon Kanonu", "Sezon genelinde terim ve hitap denetleniyor")
         self._set_status(
             "Sezon Sonu Kanon Denetimi çalışıyor — uygulamayı kapatmayın")
 
         def _work():
+            expected_sources = set()
             try:
+                expected_sources = {
+                    str(source_path)
+                    for items in self._season_canon_groups().values()
+                    for _episode, source_path, _output_path in items
+                }
                 self._run_season_canon_audit()
             except RequestCancelled:
                 pass
             except Exception as exc:
-                self._log(f"Sezon Sonu Kanon Denetimi hatası: {exc}", "warn")
+                if not expected_sources:
+                    with self._run_record_lock:
+                        record = getattr(self, "_active_run_record", None) or {}
+                        expected_sources = {
+                            str(source_path)
+                            for source_path, item in (record.get("files") or {}).items()
+                            if item.get("status") == "done" and item.get("output_path")
+                        }
+                completed_sources = set(getattr(
+                    self, "_season_canon_completed_sources", set()) or set())
+                pending_sources = expected_sources - completed_sources
+                recorder = getattr(self, "_record_file_status", None)
+                if callable(recorder):
+                    for source_path in sorted(pending_sources):
+                        recorder(
+                            source_path, "Sezon kanon denetimi tamamlanamadı", "error")
+                self._log(
+                    f"Sezon Sonu Kanon Denetimi hatası: {exc}"
+                    + (f"; {len(pending_sources)} bölüm hazır sayılmadı"
+                       if pending_sources else ""),
+                    "err" if pending_sources else "warn")
             finally:
                 self._season_canon_done = True
                 self._season_canon_finalizing = False
@@ -23881,7 +23972,8 @@ class App(ctk.CTk):
                                                glossary=glossary,
                                                source_language=_lang_iso639_1(file_src),
                                                scene_gap_sec=float(self._snap_get(
-                                                   "scene_gap_seconds", self._scene_gap_seconds)))
+                                                   "scene_gap_seconds", self._scene_gap_seconds)),
+                                               log_fn=self._log)
                     self._log(f"Analiz tamam — {len(context.recurring_terms)} terim, "
                               f"{len(context.characters)} karakter, "
                               f"{len(char_examples)} örnek"
@@ -24692,7 +24784,6 @@ class App(ctk.CTk):
                     cues, sorted_blocks, filepath,
                     status_out=_auto_glossary_status)
                 _pass_status["Auto-Glossary"] = dict(_auto_glossary_status)
-            ht.clear_context_cache(filepath)
             self._update_file_progress(filepath,
                 f"Tamamlandı  {len(sorted_blocks)} satır", 100, "done")
             if self._wait_between_files(fi, n_files, fname) == "stopped":
@@ -27466,7 +27557,8 @@ class App(ctk.CTk):
                                                glossary=glossary,
                                                source_language=_lang_iso639_1(file_src),
                                                scene_gap_sec=float(self._snap_get(
-                                                   "scene_gap_seconds", self._scene_gap_seconds)))
+                                                   "scene_gap_seconds", self._scene_gap_seconds)),
+                                               log_fn=self._log)
                     # Proje hafızasına kaydet
                     if _analysis_ok and _file_pm is not None:
                         try:
@@ -28331,7 +28423,6 @@ class App(ctk.CTk):
                         filepath, "Kalite/teslim denetimi başarısız", "error")
                     continue
 
-                ht.clear_context_cache(filepath)
                 ht.update_batch_session(
                     session, filepath, "completed", out_path=out_path,
                     source_hash=_expected_source_hash,

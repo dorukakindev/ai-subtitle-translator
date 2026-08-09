@@ -781,17 +781,17 @@ def _retry_failed_analysis_aux(key: str, label: str, status: dict,
 def save_context_cache(context, filepath: str, character_examples: dict = None,
                        pronoun_map: dict = None, character_styles: dict = None,
                        scene_emotions: list = None, idiom_map: dict = None,
-                       cultural_refs: list = None, target_language: str = "",
-                       analysis_depth: str = "standard", helper_model: str = "",
-                       style: str = "", schema: dict = None, glossary: dict = None,
-                       source_language: str = "", helper_url: str = "",
-                       scene_gap_sec: float = SCENE_GAP_SEC):
+                        cultural_refs: list = None, target_language: str = "",
+                        analysis_depth: str = "standard", helper_model: str = "",
+                        style: str = "", schema: dict = None, glossary: dict = None,
+                        source_language: str = "", helper_url: str = "",
+                        scene_gap_sec: float = SCENE_GAP_SEC, log_fn=None) -> bool:
     _ensure_path()
     if getattr(context, "_analysis_degraded", False):
-        return
+        return False
     sig = _cache_sig(filepath)
     if not sig or not sig.startswith("sha256:"):
-        return
+        return False
     path = _cache_path(filepath)
     character_examples, pronoun_map, character_styles, idiom_map, cultural_refs = (
         _sanitize_analysis_aux(
@@ -835,8 +835,13 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
     # Atomik yazım: yarım kalan dosya bozuk önbellek bırakmasın
     try:
         atomic_write_json(path, data)
-    except Exception:
-        pass
+    except Exception as exc:
+        if log_fn:
+            log_fn(
+                f"Yardımcı analiz önbelleği yazılamadı; sonraki "
+                f"çalıştırmada analiz yeniden yapılacak: {exc}", "warn")
+        return False
+    return True
 
 
 def _scene_plan_cache_is_stale(scenes) -> bool:

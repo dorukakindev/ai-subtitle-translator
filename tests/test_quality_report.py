@@ -460,6 +460,7 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["expected_removed_ids"], ["2"])
         self.assertEqual(audit["timestamp_mismatch_ids"], ["3"])
         self.assertEqual(audit["extra_dialogue_ids"], ["4"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
         self.assertEqual(audit["residual_credit_cues"], 1)
         self.assertEqual(audit["residual_position_tags"], 1)
         self.assertEqual(audit["hatted_letters"], 1)
@@ -483,6 +484,42 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["status"], "ok")
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["extra_dialogue_ids"], [])
+        self.assertFalse(gui._delivery_audit_has_hard_error(audit))
+
+    def test_delivery_audit_hard_gates_extra_dialogue_without_credit_text(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nHello\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n\n"
+                "2\n00:00:03,000 --> 00:00:04,000\nKaynakta olmayan satır\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English")
+
+        self.assertEqual(audit["extra_dialogue_ids"], ["2"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
+
+    def test_delivery_audit_hard_gates_shifted_timestamp(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nHello\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,100 --> 00:00:02,000\nMerhaba\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English")
+
+        self.assertEqual(audit["timestamp_mismatch_ids"], ["1"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
 
     def test_delivery_audit_counts_music_stars_as_expected_removal(self):
         with tempfile.TemporaryDirectory() as td:

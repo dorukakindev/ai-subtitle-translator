@@ -202,6 +202,41 @@ class SeasonCanonRunRoutingTest(unittest.TestCase):
                             for kind, args in calls))
         self.assertTrue(any(kind == "worker" for kind, _value in calls))
 
+    def test_finalizer_orchestration_failure_marks_unreviewed_episode_error(self):
+        statuses = []
+        source = "show.S01E01.srt"
+        record = {"files": {
+            source: {"status": "done", "output_path": "out.srt"},
+        }}
+
+        def record_status(path, phase, status):
+            statuses.append((path, phase, status))
+            record["files"][path]["status"] = status
+
+        app = SimpleNamespace(
+            _season_canon_finalizing=False,
+            _active_run_record=record,
+            _run_record_lock=threading.RLock(),
+            _season_canon_groups=lambda: {
+                ("root", "show", 1, "en"): [(1, source, Path("out.srt"))],
+            },
+            _run_season_canon_audit=MagicMock(
+                side_effect=RuntimeError("orchestration failed")),
+            _record_file_status=record_status,
+            _log=MagicMock(),
+            _set_phase=lambda *_args: None,
+            _set_status=lambda *_args: None,
+            _set_running=lambda *_args: None,
+            _start_worker=lambda target: target(),
+        )
+
+        gui.App._start_season_canon_finalizer(app)
+
+        self.assertEqual(statuses, [(
+            source, "Sezon kanon denetimi tamamlanamadı", "error")])
+        self.assertEqual(record["files"][source]["status"], "error")
+        self.assertTrue(any(call.args[1] == "err" for call in app._log.call_args_list))
+
     def test_close_warns_specifically_during_season_finalizer(self):
         app = SimpleNamespace(
             _is_shutting_down=False,

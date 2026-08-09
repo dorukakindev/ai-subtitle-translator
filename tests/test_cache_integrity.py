@@ -446,9 +446,30 @@ class CacheIntegrityTest(unittest.TestCase):
                 source_language="en", summary="s", setting="st", tone="t",
                 characters=[], recurring_terms={}, scene_notes=[]
             )
-            ht.save_context_cache(ctx, str(fp), target_language="tr")
+            self.assertFalse(
+                ht.save_context_cache(ctx, str(fp), target_language="tr"))
             cpath = ht._cache_path(str(fp))
             self.assertFalse(cpath.exists())
+
+    def test_save_context_cache_reports_atomic_write_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            fp = Path(root, "source.srt")
+            fp.write_text("source", encoding="utf-8")
+            ctx = SimpleNamespace(
+                source_language="en", summary="s", setting="st", tone="t",
+                characters=[], recurring_terms={}, scene_notes=[]
+            )
+            messages = []
+
+            with mock.patch.object(
+                    ht, "atomic_write_json", side_effect=OSError("disk full")):
+                saved = ht.save_context_cache(
+                    ctx, str(fp), target_language="tr",
+                    log_fn=lambda message, tag: messages.append((message, tag)))
+
+            self.assertFalse(saved)
+            self.assertEqual(messages[0][1], "warn")
+            self.assertIn("yeniden yapılacak", messages[0][0])
 
     def test_save_context_cache_unreadable_source_preserves_existing_cache(self):
         with tempfile.TemporaryDirectory() as root:

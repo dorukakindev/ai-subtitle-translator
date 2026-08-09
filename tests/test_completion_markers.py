@@ -10,13 +10,19 @@ import subtitle_translator_gui as gui
 
 class CompletionMarkerTest(unittest.TestCase):
     def _record(self, root, files):
+        output_dir = root / "ÇIKIŞ"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for source_path, state in files.items():
+            output_path = output_dir / f"{Path(source_path).stem}.tr.srt"
+            output_path.write_text("translated", encoding="utf-8")
+            state.setdefault("output_path", str(output_path))
         return {
             "run_id": "run-marker",
             "started_at": "2026-07-31T20:00:00",
             "ended_at": "2026-07-31T20:10:00",
             "status": "tamamlandı",
             "settings": {
-                "output_dir": str(root / "ÇIKIŞ"),
+                "output_dir": str(output_dir),
                 "selected_folder_roots": [str(root)],
             },
             "files": files,
@@ -83,6 +89,47 @@ class CompletionMarkerTest(unittest.TestCase):
 
             self.assertEqual(gui._write_completion_markers(record), [])
             self.assertFalse((root / "ÇEVRİLDİ.txt").exists())
+
+    def test_removes_stale_marker_when_current_root_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "series"
+            root.mkdir()
+            source = root / "episode 1.srt"
+            source.write_text("source", encoding="utf-8")
+            marker = root / "ÇEVRİLDİ.txt"
+            marker.write_text("ÇEVRİLDİ", encoding="utf-8")
+            record = self._record(root, {
+                str(source): {"status": "error"},
+            })
+
+            self.assertEqual(gui._write_completion_markers(record), [])
+            self.assertFalse(marker.exists())
+
+    def test_does_not_write_marker_when_recorded_output_is_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "film"
+            root.mkdir()
+            source = root / "movie.srt"
+            source.write_text("source", encoding="utf-8")
+            record = self._record(root, {str(source): {"status": "done"}})
+            Path(record["files"][str(source)]["output_path"]).unlink()
+
+            self.assertEqual(gui._write_completion_markers(record), [])
+            self.assertFalse((root / "ÇEVRİLDİ.txt").exists())
+
+    def test_does_not_write_marker_when_tracked_source_disappeared(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "film"
+            root.mkdir()
+            source = root / "movie.srt"
+            source.write_text("source", encoding="utf-8")
+            record = self._record(root, {str(source): {"status": "done"}})
+            marker = root / "ÇEVRİLDİ.txt"
+            marker.write_text("ÇEVRİLDİ", encoding="utf-8")
+            source.unlink()
+
+            self.assertEqual(gui._write_completion_markers(record), [])
+            self.assertFalse(marker.exists())
 
     def test_finalize_writes_marker_and_records_it_in_summary(self):
         with tempfile.TemporaryDirectory() as td:
