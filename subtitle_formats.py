@@ -31,18 +31,45 @@ _GENERATED_SUBTITLE_NAME_RE = re.compile(
 )
 _LEGACY_DETECT_ENCODINGS = {
     "big5", "big5hkscs", "cp932", "cp949", "euc_jp", "euc_kr",
-    "cp1251", "cp1253", "cp1256", "gb18030", "gbk", "koi8_r", "shift_jis",
-    "shift_jis_2004", "shift_jisx0213", "windows_1251",
+    "cp1250", "cp1251", "cp1252", "cp1253", "cp1255", "cp1256",
+    "gb18030", "gbk", "koi8_r", "shift_jis",
+    "shift_jis_2004", "shift_jisx0213", "windows_1251", "windows_1253",
+    "windows_1250", "windows_1252", "windows_1255", "windows_1256",
 }
+
+
+def _legacy_language_score(text: str, encoding: str) -> float:
+    """Aynı baytları farklı alfabeler geçerli saydığında dilsel adayı ayır."""
+    enc = encoding.lower().replace("-", "_")
+    family = {
+        "windows_1251": "cp1251", "koi8_r": "cp1251",
+        "windows_1250": "cp1250", "windows_1252": "cp1252", "mac_roman": "cp1252",
+        "windows_1253": "cp1253", "windows_1255": "cp1255",
+        "windows_1256": "cp1256",
+    }.get(enc, enc)
+    common = _SHORT_LEGACY_COMMON_BIGRAMS.get(family)
+    if not common:
+        return 0.0
+    words = re.findall(r"[^\W\d_]+", text.casefold(), flags=re.UNICODE)
+    bigrams = [word[pos:pos + 2] for word in words for pos in range(len(word) - 1)]
+    if not bigrams:
+        return 0.0
+    return sum(pair in common for pair in bigrams) / len(bigrams)
 _SHORT_LEGACY_COMMON_LETTERS = {
+    "cp1250": set("abcdefghijklmnoprstuwyzáąćčďéěęíĺľłńňóôŕřśšťúůýźżž"),
     "cp1251": set("\u043e\u0435\u0430\u0438\u043d\u0442\u0441\u0440\u0432\u043b\u043a\u043c\u0434\u043f\u0443\u044f\u044b\u044c\u0433\u0437\u0431\u0447\u0439\u0445\u0436\u0448\u044e\u0446\u0449\u044d\u0444\u044a"),
+    "cp1252": set("abcdefghijklmnopqrstuvwxyzàâäáåæçéèêëíîïñóôöœúûüÿ"),
     "cp1253": set("\u03b1\u03b5\u03bf\u03b9\u03c4\u03b7\u03c1\u03bd\u03c3\u03ba\u03c0\u03bc\u03bb\u03c5\u03c9\u03b3\u03b4\u03b8\u03c7\u03b2\u03be\u03c6\u03c8\u03b6"),
+    "cp1255": set("אבגדהוזחטיכלמנסעפצקרשתךםןףץ"),
     "cp1256": set("\u0627\u0644\u064a\u0648\u0645\u0646\u0631\u062a\u0628\u0643\u062f\u0633\u0639\u0641\u0647\u0642\u062d\u062c\u0634\u0635\u0636\u0637\u0638\u0632\u062e\u0630\u062b\u063a\u0621"),
     "cp1254": set("abc\u00e7defg\u011fh\u0131ijklmno\u00f6prs\u015ftu\u00fcvyz"),
 }
 _SHORT_LEGACY_COMMON_BIGRAMS = {
+    "cp1250": {"ie", "ni", "rz", "sz", "cz", "ow", "po", "pr", "ze", "st", "na", "to", "je", "dz"},
     "cp1251": {"ст", "но", "то", "на", "ен", "ов", "ни", "ра", "во", "ко", "по", "пр", "ри", "ив", "ве", "ет"},
+    "cp1252": {"le", "de", "es", "en", "la", "un", "que", "ent", "les", "ion", "th", "he", "in", "er", "an"},
     "cp1253": {"ου", "αι", "ει", "τη", "το", "κα", "αυ", "με", "ρα", "λη", "ερ", "σε", "πρ", "στ", "ον"},
+    "cp1255": {"של", "ים", "הי", "את", "על", "לא", "מה", "זה", "אנ", "בע", "ול", "הא", "אד", "לם"},
     "cp1256": {"ال", "لل", "من", "في", "ما", "ها", "مر", "رح", "حب", "با", "لع", "عا", "لم"},
     "cp1254": {"ar", "er", "in", "an", "en", "le", "de", "la", "ya", "ol", "şu", "bu", "mi", "ve"},
 }
@@ -97,6 +124,9 @@ def _legacy_script_ratio(text: str, encoding: str) -> float:
         matched = sum(
             "\uac00" <= ch <= "\ud7af" or "\u3400" <= ch <= "\u9fff"
             for ch in letters)
+    elif enc in {"cp1250", "cp1252", "cp1254", "mac_roman",
+                 "windows_1250", "windows_1252", "windows_1254"}:
+        matched = sum("\u0041" <= ch <= "\u024f" for ch in letters)
     elif enc in {"cp1251", "windows_1251", "koi8_r"}:
         matched = sum("\u0400" <= ch <= "\u052f" for ch in letters)
     elif enc in {"cp1253", "windows_1253"}:
@@ -105,6 +135,8 @@ def _legacy_script_ratio(text: str, encoding: str) -> float:
     elif enc in {"cp1256", "windows_1256"}:
         matched = sum("\u0600" <= ch <= "\u06ff" or "\u0750" <= ch <= "\u077f"
                       for ch in letters)
+    elif enc in {"cp1255", "windows_1255"}:
+        matched = sum("\u0590" <= ch <= "\u05ff" for ch in letters)
     else:
         matched = sum(ord(ch) > 127 for ch in letters)
     return matched / len(letters)
@@ -113,7 +145,8 @@ def _legacy_script_ratio(text: str, encoding: str) -> float:
 def _decode_short_legacy(raw: bytes) -> str | None:
     """Kısa eski kodlu metni Yunanca/Arapçayı Kiril saymadan seçer."""
     candidates = []
-    for encoding in ("cp1251", "cp1253", "cp1256", "cp1254"):
+    for encoding in ("cp1250", "cp1251", "cp1252", "cp1253", "cp1255",
+                     "cp1256", "cp1254", "mac_roman"):
         try:
             text = raw.decode(encoding)
         except UnicodeDecodeError:
@@ -121,20 +154,20 @@ def _decode_short_legacy(raw: bytes) -> str | None:
         letters = [ch.casefold() for ch in text if ch.isalpha()]
         if not letters:
             continue
-        common = _SHORT_LEGACY_COMMON_LETTERS[encoding]
+        family = "cp1252" if encoding == "mac_roman" else encoding
+        common = _SHORT_LEGACY_COMMON_LETTERS[family]
         common_ratio = sum(ch in common for ch in letters) / len(letters)
-        letter_runs = re.findall(r"[^\W\d_]+", text.casefold(), flags=re.UNICODE)
-        bigrams = [word[pos:pos + 2] for word in letter_runs for pos in range(len(word) - 1)]
-        common_bigrams = _SHORT_LEGACY_COMMON_BIGRAMS[encoding]
-        bigram_ratio = (sum(pair in common_bigrams for pair in bigrams) / len(bigrams)
-                        if bigrams else 0.0)
+        bigram_ratio = _legacy_language_score(text, encoding)
         script_ratio = _legacy_script_ratio(text, encoding)
         # CP1254'te ASCII ve Türkçe harfler birlikte normaldir; diğer adayların
         # gerçekten kendi yazı sistemine benzemesi gerekir.
-        if encoding != "cp1254" and script_ratio < 0.55:
+        if encoding not in {"cp1250", "cp1252", "cp1254"} and script_ratio < 0.55:
             continue
+        suspicious = len(re.findall(
+            r"(?<=[^\W\d_])(?:[\u2010-\u2017\u2020-\u2027]|[‡–—])"
+            r"(?=[^\W\d_])", text))
         candidates.append(((common_ratio * 0.2) + (bigram_ratio * 1.2)
-                           + (script_ratio * 0.15), text))
+                           + (script_ratio * 0.15) - (suspicious * 0.75), text))
     if not candidates:
         return None
     score, text = max(candidates, key=lambda item: item[0])
@@ -160,6 +193,10 @@ def _decode_detected_legacy(raw: bytes) -> str | None:
             text = raw.decode(match.encoding)
         except (LookupError, UnicodeDecodeError):
             continue
+        if re.search(
+                r"(?<=[^\W\d_])(?:[\u2010-\u2017\u2020-\u2027]|[‡–—])"
+                r"(?=[^\W\d_])", text):
+            continue
         coherence = float(getattr(match, "coherence", 0.0) or 0.0)
         chaos_value = getattr(match, "chaos", None)
         chaos = float(chaos_value) if chaos_value is not None else 1.0
@@ -171,7 +208,8 @@ def _decode_detected_legacy(raw: bytes) -> str | None:
             "cp932", "euc_jp", "shift_jis", "shift_jis_2004", "shift_jisx0213",
         }:
             punctuation_bonus = min(0.5, sum(ch in "。、！？" for ch in text) / 20)
-        score = ratio + (coherence * 2.0) - chaos + punctuation_bonus
+        language_score = _legacy_language_score(text, encoding)
+        score = ratio + (coherence * 2.0) - chaos + punctuation_bonus + (language_score * 2.0)
         if coherence >= 0.15 or ratio >= 0.2:
             candidates.append((score, text))
     return max(candidates, default=(0.0, None), key=lambda item: item[0])[1]
@@ -448,12 +486,27 @@ _VTT_TAG = re.compile(
 _VTT_CUE_TS_TAG = re.compile(r'<\d+:\d{2}(?::\d{2})?[.,]\d{3}>')
 
 
-def _adjacent_vtt_cue_id(value: str, expected_index: int) -> bool:
+def _adjacent_vtt_cue_id(value: str, expected_index: int,
+                         previous_id: str = "") -> bool:
     """Boş ayraç eksik VTT'de gerçek ID ile replik satırını ayır."""
     value = value.strip()
     if value.isdigit():
-        return value == str(expected_index)
-    return bool(re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value))
+        return value == str(expected_index) or str(previous_id).strip().isdigit()
+    if re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value):
+        return bool(re.search(r"[-_.:]", value) or re.match(
+            r"(?i)(?:cue|caption|subtitle)\d", value))
+    previous = str(previous_id or "").strip()
+    if not previous:
+        return False
+    value_tokens = {token.casefold() for token in re.findall(r"[A-Za-z]{2,}", value)}
+    previous_tokens = {
+        token.casefold() for token in re.findall(r"[A-Za-z]{2,}", previous)
+    }
+    return bool(
+        value_tokens & previous_tokens
+        and re.search(r"[-_.:]", value)
+        and re.search(r"[-_.:]", previous)
+    )
 
 def _clean_vtt_text(text: str) -> str:
     """WebVTT inline tag'lerini ve position bilgisini kaldır."""
@@ -500,7 +553,7 @@ def parse_vtt(filepath: str) -> list:
             i += 1
             continue
 
-        cue_has_id = ts_idx > i
+        cue_id = line if ts_idx > i else ""
         ts_line = lines[ts_idx].strip()
         ts_parts = ts_line.split('-->')
         if len(ts_parts) < 2:
@@ -523,7 +576,7 @@ def parse_vtt(filepath: str) -> list:
             if ts_re.match(current):
                 break
             if i + 1 < len(lines) and ts_re.match(lines[i + 1].strip()):
-                if cue_has_id or _adjacent_vtt_cue_id(current, idx + 1):
+                if _adjacent_vtt_cue_id(current, idx + 1, cue_id):
                     break
                 text_lines.append(current)
                 i += 1
@@ -615,6 +668,8 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
         if not _clean_ass_text(text).strip():
             continue
         name = parts[name_i].strip() if name_i is not None else ""
+        if not any(ch.isalpha() for ch in name):
+            name = ""
         if name and not re.match(rf'^\s*{re.escape(name)}\s*:', text, re.IGNORECASE):
             # Name sütunu konuşmacı bağlamıdır. Analize/çeviriye ulaşır; kaynak
             # güdümlü son temizlik yüklemeye hazır SRT'deki eş ön eki kaldırır.
@@ -627,6 +682,8 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
         "english": "en", "en-us": "en", "en-gb": "en",
         "japanese": "jp", "jpn": "jp", "ja": "jp", "romaji": "jp",
     }.get(preferred_track_language, preferred_track_language)
+    if preferred_track_language not in {"en", "jp"}:
+        preferred_track_language = "en"
     preferred_lyric_keys = {
         (track[0], timestamp)
         for timestamp, _, style in entries

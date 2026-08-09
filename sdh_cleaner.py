@@ -478,12 +478,17 @@ def is_sdh_only(text: str) -> bool:
     if not text or EMPTY_DASH_RE.match(text):
         return True
 
+    had_bracket_group = _has_bracket_group(text)
     stripped = _replace_bracket_groups(
         text, lambda raw: "" if is_sdh_descriptor(raw[1:-1]) else raw)
     stripped = re.sub(r"[\s,.;:!?_\-–—]+", "", stripped)
     if not stripped:
         return True
     if _bracket_group_spans(stripped):
+        return False
+    letters = [char for char in text if char.isalpha()]
+    if (not had_bracket_group and re.search(r"[.!?…]\s*$", text)
+            and letters and not all(char.isupper() for char in letters)):
         return False
     return is_sdh_descriptor(text, bare_text=True)
 
@@ -899,7 +904,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         inner = raw[1:-1].strip()
         if _is_protected_bracket_content(raw):
             return raw
-        if source_has_unverified_group and not is_sdh_descriptor(inner):
+        if not is_sdh_descriptor(inner) and not _is_speaker_name(inner):
             return raw
         return ""
     stripped = _replace_bracket_groups(tr_line, _strip_verified)
