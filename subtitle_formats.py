@@ -73,6 +73,9 @@ _SHORT_LEGACY_COMMON_BIGRAMS = {
     "cp1256": {"ال", "لل", "من", "في", "ما", "ها", "مر", "رح", "حب", "با", "لع", "عا", "لم"},
     "cp1254": {"ar", "er", "in", "an", "en", "le", "de", "la", "ya", "ol", "şu", "bu", "mi", "ve"},
 }
+_SHORT_LEGACY_DISTINCTIVE_CHARS = {
+    "cp1250": set("\u0105\u0107\u0119\u0142\u0144\u00f3\u015b\u017a\u017c"),
+}
 
 
 def clean_translation_source_text(text: str) -> str:
@@ -159,6 +162,9 @@ def _decode_short_legacy(raw: bytes) -> str | None:
         common_ratio = sum(ch in common for ch in letters) / len(letters)
         bigram_ratio = _legacy_language_score(text, encoding)
         script_ratio = _legacy_script_ratio(text, encoding)
+        distinctive = _SHORT_LEGACY_DISTINCTIVE_CHARS.get(family, set())
+        distinctive_bonus = min(
+            0.6, sum(ch in distinctive for ch in letters) * 0.1)
         # CP1254'te ASCII ve Türkçe harfler birlikte normaldir; diğer adayların
         # gerçekten kendi yazı sistemine benzemesi gerekir.
         if encoding not in {"cp1250", "cp1252", "cp1254"} and script_ratio < 0.55:
@@ -167,7 +173,8 @@ def _decode_short_legacy(raw: bytes) -> str | None:
             r"(?<=[^\W\d_])(?:[\u2010-\u2017\u2020-\u2027]|[‡–—])"
             r"(?=[^\W\d_])", text))
         candidates.append(((common_ratio * 0.2) + (bigram_ratio * 1.2)
-                           + (script_ratio * 0.15) - (suspicious * 0.75), text))
+                            + (script_ratio * 0.15) + distinctive_bonus
+                            - (suspicious * 0.75), text))
     if not candidates:
         return None
     score, text = max(candidates, key=lambda item: item[0])
@@ -514,7 +521,7 @@ def _adjacent_vtt_cue_id(value: str, expected_index: int,
         return value == str(expected_index) or str(previous_id).strip().isdigit()
     if re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value):
         return bool(re.search(r"[-_.:]", value) or re.match(
-            r"(?i)(?:cue|caption|subtitle)\d", value))
+            r"(?i)cue\d", value))
     previous = str(previous_id or "").strip()
     if not previous:
         return False

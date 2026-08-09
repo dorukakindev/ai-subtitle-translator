@@ -544,6 +544,21 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         self.assertEqual(waits, [(120.0, 1, 3)])
 
+    def test_retry_after_header_controls_transient_wait(self):
+        error = SimpleNamespace(
+            status_code=429,
+            response=SimpleNamespace(headers={"retry-after": "1"}),
+        )
+        waits = []
+        with mock.patch.object(
+            provider_retry._REGISTRY,
+            "wait_for_retry",
+            side_effect=lambda delay, attempt, total: waits.append(
+                (delay, attempt, total)) or delay,
+        ):
+            provider_retry._wait_for_transient_retry(error, 1, 3)
+        self.assertEqual(waits, [(1.0, 1, 3)])
+
     def test_model_channel_503_uses_documented_retry_schedule(self):
         client = mock.MagicMock()
         client.base_url = "https://api.shuaiapi.com/v1"

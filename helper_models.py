@@ -56,6 +56,34 @@ def _request_timeout_seconds(value) -> float:
         return float(DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS)
 
 
+def _usage_count(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 and value.is_integer() else None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _normalized_usage(usage_data, input_key, output_key, total_key=None):
+    if not isinstance(usage_data, dict):
+        return 0, 0, 0, False
+    keys = (input_key, output_key) + ((total_key,) if total_key else ())
+    present = [key for key in keys if key in usage_data]
+    if not present:
+        return 0, 0, 0, False
+    values = {key: _usage_count(usage_data.get(key)) for key in present}
+    if any(value is None for value in values.values()):
+        return 0, 0, 0, False
+    input_tokens = values.get(input_key, 0)
+    output_tokens = values.get(output_key, 0)
+    total_tokens = values.get(total_key, input_tokens + output_tokens) if total_key else input_tokens + output_tokens
+    return input_tokens, output_tokens, total_tokens, True
+
+
 @dataclass(frozen=True)
 class HelperModelConfig:
     label: str
@@ -485,13 +513,8 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     _raise_if_cancelled(cancel_context)
     output_text = response["output"]["message"]["content"][0]["text"]
 
-    usage_data = response.get("usage")
-    usage_available = isinstance(usage_data, dict) and any(
-        key in usage_data for key in ("inputTokens", "outputTokens", "totalTokens"))
-    usage_data = usage_data if isinstance(usage_data, dict) else {}
-    input_tokens = usage_data.get("inputTokens", 0)
-    output_tokens = usage_data.get("outputTokens", 0)
-    total_tokens = usage_data.get("totalTokens", 0)
+    input_tokens, output_tokens, total_tokens, usage_available = _normalized_usage(
+        response.get("usage"), "inputTokens", "outputTokens", "totalTokens")
 
     class DummyUsage:
         def __init__(self, in_t, out_t, tot_t, available):
@@ -645,13 +668,8 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
         if item.get("type") == "text":
             output_text += item.get("text", "")
 
-    usage_data = res.get("usage")
-    usage_available = isinstance(usage_data, dict) and any(
-        key in usage_data for key in ("input_tokens", "output_tokens"))
-    usage_data = usage_data if isinstance(usage_data, dict) else {}
-    input_tokens = usage_data.get("input_tokens", 0)
-    output_tokens = usage_data.get("output_tokens", 0)
-    total_tokens = input_tokens + output_tokens
+    input_tokens, output_tokens, total_tokens, usage_available = _normalized_usage(
+        res.get("usage"), "input_tokens", "output_tokens")
 
     class DummyUsage:
         def __init__(self, in_t, out_t, tot_t, available):

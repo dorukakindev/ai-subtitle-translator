@@ -155,21 +155,38 @@ def _read_fallback_store() -> dict:
 
 def _write_fallback_store(data: dict) -> None:
     p = _fallback_path()
-    atomic_write_json(p, data)
-    # Obfuscation zayıf; en azından dosyayı diğer kullanıcılardan gizle (yalnız sahibine okunur).
+    if os.name != "nt":
+        atomic_write_json(p, data)
+        return
     try:
-        import os
-        import subprocess
+        principal = os.getlogin().strip()
+    except OSError:
         user = os.environ.get("USERNAME") or ""
         domain = os.environ.get("USERDOMAIN") or ""
         principal = f"{domain}\\{user}" if domain and user else user
-        if principal:
-            subprocess.run(
-                ["icacls", str(p), "/grant:r", f"{principal}:F"],
-                check=False, capture_output=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except Exception:
-        pass
+    if not principal:
+        raise OSError("fallback anahtar deposu iÃ§in Windows kullanÄ±cÄ±sÄ± bulunamadÄ±")
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        import subprocess
+        result = subprocess.run(
+            [
+                "icacls", str(tmp), "/inheritance:r",
+                "/grant:r", f"{principal}:F",
+                "/grant:r", "*S-1-5-18:F",
+                "/grant:r", "*S-1-5-32-544:F",
+            ],
+            check=False, capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode:
+            raise OSError("fallback anahtar deposu ACL'i gÃ¼venli ayarlanamadÄ±")
+        os.replace(tmp, p)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _save_fallback(service: str, key: str) -> None:

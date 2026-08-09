@@ -38,6 +38,28 @@ class FallbackRoundtripTest(unittest.TestCase):
         raw = self._fb.read_text(encoding="utf-8")
         self.assertNotIn("sk-secret-abcdef", raw, "anahtar düz metin yazılmış!")
 
+    @unittest.skipUnless(os.name == "nt", "Windows fallback ACL applies only on Windows")
+    def test_windows_fallback_removes_inherited_acl_before_replacing_file(self):
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+            cs.save_key("openai", "sk-secret-abcdef")
+        command = run.call_args.args[0]
+        self.assertIn("/inheritance:r", command)
+        self.assertIn("*S-1-5-18:F", command)
+        self.assertIn("*S-1-5-32-544:F", command)
+        self.assertTrue(any(
+            part.endswith(":F") and not part.startswith("*S-")
+            for part in command))
+
+    @unittest.skipUnless(os.name == "nt", "Windows fallback ACL applies only on Windows")
+    def test_windows_acl_failure_preserves_existing_fallback(self):
+        original = '{"old":"value"}'
+        self._fb.write_text(original, encoding="utf-8")
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=1)):
+            with self.assertRaisesRegex(OSError, "ACL"):
+                cs.save_key("openai", "sk-secret-abcdef")
+        self.assertEqual(self._fb.read_text(encoding="utf-8"), original)
+        self.assertFalse(list(self._fb.parent.glob(f".{self._fb.name}.*.tmp")))
+
     def test_delete_key(self):
         cs.save_key("minimax", "mk-1")
         cs.delete_key("minimax")

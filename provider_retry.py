@@ -312,6 +312,18 @@ def _retry_after_header_seconds(value) -> float | None:
         return None
 
 
+def _retry_after_hint_seconds(exc, maximum: float = 600.0) -> float | None:
+    headers = _headers(exc)
+    retry_ms = _header_value(headers, "retry-after-ms")
+    if retry_ms is not None:
+        try:
+            return min(maximum, max(0.0, float(retry_ms) / 1000.0))
+        except (TypeError, ValueError):
+            pass
+    header_delay = _retry_after_header_seconds(_header_value(headers, "retry-after"))
+    return min(maximum, header_delay) if header_delay is not None else None
+
+
 def _structured_retry_after_seconds(exc, maximum: float = 600.0) -> float | None:
     def _value_seconds(value):
         if isinstance(value, (int, float)):
@@ -378,17 +390,9 @@ def _structured_retry_after_seconds(exc, maximum: float = 600.0) -> float | None
 
 
 def retry_after_seconds(exc, default: float = 2.0, maximum: float = 600.0) -> float:
-    headers = _headers(exc)
-    retry_ms = _header_value(headers, "retry-after-ms")
-    if retry_ms is not None:
-        try:
-            return min(maximum, max(0.0, float(retry_ms) / 1000.0))
-        except (TypeError, ValueError):
-            pass
-
-    header_delay = _retry_after_header_seconds(_header_value(headers, "retry-after"))
+    header_delay = _retry_after_hint_seconds(exc, maximum=maximum)
     if header_delay is not None:
-        return min(maximum, header_delay)
+        return header_delay
 
     structured_delay = _structured_retry_after_seconds(exc, maximum=maximum)
     if structured_delay is not None:
@@ -886,8 +890,11 @@ def _is_transient_provider_error(exc) -> bool:
 
 def _wait_for_transient_retry(exc, attempt: int, total: int, details=None) -> float:
     scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
+    header_delay = _retry_after_hint_seconds(exc)
     structured_delay = _structured_retry_after_seconds(exc)
-    if structured_delay is not None:
+    if header_delay is not None:
+        scheduled = header_delay
+    elif structured_delay is not None:
         scheduled = max(scheduled, structured_delay)
     context = dict(
         details if details is not None

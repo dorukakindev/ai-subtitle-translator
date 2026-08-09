@@ -67,6 +67,30 @@ class AnthropicAdapterDeliveryGuardTest(unittest.TestCase):
                 "claude", [{"role": "user", "content": "x"}], timeout_seconds=17)
         self.assertEqual(captured["timeout"], 17.0)
 
+    def test_malformed_usage_is_reported_missing_without_breaking_response(self):
+        with patch("urllib.request.urlopen", return_value=self._response({
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": "not-a-number", "output_tokens": "2"},
+        })):
+            response = helpers.call_anthropic_messages(
+                "claude", [{"role": "user", "content": "x"}],
+                base_url="https://api.anthropic.com/v1")
+        self.assertFalse(response.usage_available)
+        self.assertTrue(response.usage.missing)
+        self.assertEqual(response.usage.total_tokens, 0)
+
+    def test_numeric_string_usage_is_normalized_to_integers(self):
+        with patch("urllib.request.urlopen", return_value=self._response({
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": "3", "output_tokens": "2"},
+        })):
+            response = helpers.call_anthropic_messages(
+                "claude", [{"role": "user", "content": "x"}],
+                base_url="https://api.anthropic.com/v1")
+        self.assertTrue(response.usage_available)
+        self.assertEqual(response.usage.total_tokens, 5)
+        self.assertIsInstance(response.usage.prompt_tokens, int)
+
 
 class BedrockAdapterUsageGuardTest(unittest.TestCase):
     def test_bedrock_missing_usage_is_explicit(self):

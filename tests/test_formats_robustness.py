@@ -69,6 +69,15 @@ class VttRobustnessTest(unittest.TestCase):
             b = parse_vtt(_w(self.d, f"{text}.vtt", vtt))
             self.assertEqual([x[2] for x in b], [text, "Dunya"])
 
+    def test_caption_number_text_survives_without_separator(self):
+        vtt = (
+            "WEBVTT\n\n"
+            "00:00:01.000 --> 00:00:02.000\nCaption1\n"
+            "00:00:02.000 --> 00:00:03.000\nDone\n"
+        )
+        b = parse_vtt(_w(self.d, "caption-text.vtt", vtt))
+        self.assertEqual([x[2] for x in b], ["Caption1", "Done"])
+
     def test_note_metadata_is_skipped_but_note_prefixed_id_is_kept(self):
         vtt = ("WEBVTT\n\nNOTE ignored metadata\nline\n\n"
                "NOTE-1\n00:00:01.000 --> 00:00:02.000\nGercek cue\n")

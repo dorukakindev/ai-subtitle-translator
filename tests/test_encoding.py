@@ -152,6 +152,15 @@ class ReadSubtitleTextTest(unittest.TestCase):
         finally:
             os.unlink(fp)
 
+    def test_short_cp1250_is_not_misread_as_cp1252(self):
+        body = "1\n00:00:01,000 --> 00:00:03,000\nZa\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144\n"
+        fd, fp = tempfile.mkstemp(suffix=".srt"); os.close(fd)
+        Path(fp).write_bytes(body.encode("cp1250"))
+        try:
+            self.assertIn("Za\u017c\u00f3\u0142\u0107 g\u0119\u015bl\u0105 ja\u017a\u0144", read_subtitle_text(fp))
+        finally:
+            os.unlink(fp)
+
 
 class ParseSubtitleEncodingTest(unittest.TestCase):
     def test_parse_srt_cp1254(self):
