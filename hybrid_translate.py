@@ -986,12 +986,17 @@ def _hybrid_batch_intent_path(token: str) -> Path:
 
 
 def _session_path(input_dir: str) -> Path:
-    try:
-        key = str(Path(input_dir).expanduser().resolve()).replace("\\", "/").casefold().rstrip("/")
-    except Exception:
-        key = str(input_dir).replace("\\", "/").casefold().rstrip("/")
+    key = _canonical_session_input(input_dir)
     h = hashlib.md5(key.encode("utf-8")).hexdigest()[:12]
     return _session_dir() / f"{h}_session.json"
+
+
+def _canonical_session_input(input_dir: str) -> str:
+    try:
+        return str(Path(input_dir).expanduser().resolve()).replace(
+            "\\", "/").casefold().rstrip("/")
+    except Exception:
+        return str(input_dir).replace("\\", "/").casefold().rstrip("/")
 
 
 def prune_batch_sessions(max_age_days: int = 90, now: float = None,
@@ -1001,6 +1006,7 @@ def prune_batch_sessions(max_age_days: int = 90, now: float = None,
         return 0
     cutoff = (time.time() if now is None else float(now)) - max_age_days * 86400
     removed = 0
+    archived = 0
     for path in root.glob("*_session.json"):
         try:
             if path.stat().st_mtime >= cutoff:
@@ -1011,8 +1017,11 @@ def prune_batch_sessions(max_age_days: int = 90, now: float = None,
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             try:
-                path.unlink()
-                removed += 1
+                archive = path.with_name(path.name + ".corrupt.bak")
+                if not archive.exists():
+                    path.replace(archive)
+                    removed += 1
+                    archived += 1
             except OSError:
                 pass
             continue
@@ -1038,7 +1047,10 @@ def prune_batch_sessions(max_age_days: int = 90, now: float = None,
         except OSError:
             continue
     if removed and log_fn:
-        log_fn(f"Eski batch session temizliği: {removed} güvenli kayıt silindi", "info")
+        detail = f"; {archived} bozuk kayıt arşivlendi" if archived else ""
+        log_fn(
+            f"Eski batch session temizliği: {removed - archived} güvenli "
+            f"kayıt silindi{detail}", "info")
     return removed
 
 
@@ -1063,7 +1075,8 @@ def load_batch_session(input_dir: str) -> dict | None:
         with open(p, encoding="utf-8") as f:
             data = json.load(f)
         # Guard against hash collisions
-        if data.get("input_dir") != str(input_dir):
+        if (_canonical_session_input(data.get("input_dir", ""))
+                != _canonical_session_input(input_dir)):
             return None
         return data
     except Exception:
@@ -1129,8 +1142,13 @@ def create_batch_session(input_dir: str, output_dir: str, filepaths: list,
 
     Returns the session dict (already persisted to disk).
     """
-    prune_batch_sessions()
     existing = load_batch_session(input_dir)
+    session_path = _session_path(input_dir)
+    if session_path.exists() and existing is None:
+        raise RuntimeError(
+            f"Batch oturum dosyası bozuk; veri kaybını önlemek için üzerine "
+            f"yazılmadı: {session_path}")
+    prune_batch_sessions()
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     forced = {
         os.path.normcase(os.path.abspath(str(path)))

@@ -9976,12 +9976,52 @@ def load_sync_ckpt_store(path: Path) -> dict:
     return store
 
 
+def _sync_ckpt_store_mutation_safe(path: Path) -> bool:
+    path = Path(path)
+    target = path
+    if not target.exists() and target.suffix == ".json":
+        legacy = target.with_suffix(".jsonl")
+        if legacy.exists():
+            target = legacy
+    if not target.exists():
+        return True
+    try:
+        content = target.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    if not content.strip():
+        return True
+    try:
+        data = json.loads(content)
+    except Exception:
+        data = None
+    if (isinstance(data, dict)
+            and data.get("version") == SYNC_CKPT_STORE_VER
+            and isinstance(data.get("entries"), dict)):
+        return True
+    valid_legacy = 0
+    for line in content.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict) and row.get("cid"):
+            valid_legacy += 1
+    return valid_legacy > 0
+
+
 def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str, log_fn=None) -> bool:
     """Süreçler arası kilit altında sync checkpoint deposuna tek kaydı atomik günceller/ekler."""
     path = Path(path)
     key = f"{cid}:{src_hash}"
     try:
         with _interprocess_lock(path):
+            if not _sync_ckpt_store_mutation_safe(path):
+                raise ValueError(
+                    "mevcut checkpoint deposu bozuk; veri kaybını önlemek için "
+                    "üzerine yazılmadı")
             store = load_sync_ckpt_store(path)
             entries = store.get("entries", {})
             entries[key] = {
@@ -10025,6 +10065,9 @@ def clear_sync_ckpt_entries_from_store(path: Path, keys_to_remove: set = None, l
                 if legacy_jsonl:
                     legacy_jsonl.unlink(missing_ok=True)
                 return True
+            if not _sync_ckpt_store_mutation_safe(path):
+                raise ValueError(
+                    "mevcut checkpoint deposu bozuk; kısmi temizlik yapılmadı")
             store = load_sync_ckpt_store(path)
             entries = store.get("entries", {})
             for k in set(keys_to_remove):
@@ -10056,6 +10099,22 @@ def load_sync_stage_store(path: Path) -> dict:
     return store
 
 
+def _sync_stage_store_mutation_safe(path: Path) -> bool:
+    path = Path(path)
+    if not path.exists():
+        return True
+    try:
+        content = path.read_text(encoding="utf-8")
+        if not content.strip():
+            return True
+        data = json.loads(content)
+    except Exception:
+        return False
+    return (isinstance(data, dict)
+            and data.get("version") == SYNC_STAGE_STORE_VER
+            and isinstance(data.get("entries"), dict))
+
+
 def matching_sync_stage_run_id(path: Path, source_path: str,
                                source_hash: str, fingerprint: str) -> str:
     entry = load_sync_stage_store(path).get("entries", {}).get(
@@ -10081,6 +10140,10 @@ def save_sync_stage_entry_to_store(path: Path, source_path: str,
                                    log_fn=None) -> bool:
     try:
         with _interprocess_lock(path):
+            if not _sync_stage_store_mutation_safe(path):
+                raise ValueError(
+                    "mevcut aşama checkpoint'i bozuk; veri kaybını önlemek için "
+                    "üzerine yazılmadı")
             store = load_sync_stage_store(path)
             store["entries"][_sync_stage_key(source_path)] = {
                 "source_path": os.path.abspath(str(source_path)),
@@ -10102,6 +10165,9 @@ def clear_sync_stage_entry_from_store(path: Path, source_path: str,
                                       log_fn=None) -> bool:
     try:
         with _interprocess_lock(path):
+            if not _sync_stage_store_mutation_safe(path):
+                raise ValueError(
+                    "mevcut aşama checkpoint'i bozuk; temizlenmedi")
             store = load_sync_stage_store(path)
             store["entries"].pop(_sync_stage_key(source_path), None)
             if store["entries"]:
@@ -10130,6 +10196,17 @@ def _sync_stage_is_complete(raw_map: dict, requests: list) -> bool:
 
 
 # ── Ana uygulama ──────────────────────────────────────────────────────────────
+def _json_glossary_store_is_valid(path) -> bool:
+    path = Path(path)
+    if path.suffix.casefold() != ".json" or not path.exists():
+        return True
+    try:
+        data = json.loads(read_subtitle_text(path))
+    except Exception:
+        return False
+    return isinstance(data, dict)
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -19344,8 +19421,7 @@ class App(ctk.CTk):
                     out.append(f"  çeviri     : {f['tr']}")
                     out.append(f"  geri çeviri: {f['back']}")
                     out.append("")
-                with open(rpath, "w", encoding="utf-8") as fh:
-                    fh.write("\n".join(out))
+                atomic_write_text(rpath, "\n".join(out), encoding="utf-8")
                 self._log(f"Geri çeviri raporu: {Path(rpath).name} ({len(flags)} satır)", "info")
             except Exception as _re:
                 self._log(f"Geri çeviri raporu yazılamadı: {_re}", "warn")
@@ -19489,8 +19565,7 @@ class App(ctk.CTk):
                             lines.append(f"       önce : {change.get('before', '')}")
                             lines.append(f"       sonra: {change.get('after', '')}")
                     rpath.parent.mkdir(parents=True, exist_ok=True)
-                    with open(rpath, "w", encoding="utf-8") as fh:
-                        fh.write("\n".join(lines))
+                    atomic_write_text(rpath, "\n".join(lines), encoding="utf-8")
                     if report_path and getattr(self, "_active_run_record", None):
                         with self._run_record_lock:
                             self._active_run_record.setdefault("reports", []).append(
@@ -20927,7 +21002,7 @@ class App(ctk.CTk):
                 lines.append(f"Önce   : {rec['before']}")
                 lines.append(f"Sonra  : {rec['after']}")
                 lines.append("")
-            report_path.write_text("\n".join(lines), encoding="utf-8")
+            atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
             self._log(f"QC değişiklik raporu: {report_path.name}  ({len(applied_records)} satır)", "ok")
         except Exception as e:
             self._log_exc("QC değişiklik raporu yazılamadı", e)
@@ -20954,7 +21029,7 @@ class App(ctk.CTk):
                 lines.append(f"Önce   : {rec['before']}")
                 lines.append(f"Sonra  : {rec['after']}")
                 lines.append("")
-            report_path.write_text("\n".join(lines), encoding="utf-8")
+            atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
             self._log(f"Critic değişiklik raporu: {report_path.name}  ({len(applied_records)} satır)", "ok")
         except Exception as e:
             self._log_exc("Critic değişiklik raporu yazılamadı", e)
@@ -21119,7 +21194,30 @@ class App(ctk.CTk):
         glossary_path = str(App._run_setting(
             self,
             "global_glossary_path", "glossary_var", "") or "").strip()
-        existing = ht.load_glossary(glossary_path) if glossary_path else {}
+        if not glossary_path:
+            run_status.clear()
+            run_status.update({
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+                "error": "missing_glossary_path",
+            })
+            self._log(
+                "Auto-Glossary: hedef sözlük yolu seçilmedi; API çağrılmadı",
+                "warn")
+            return
+        glossary_store = Path(glossary_path)
+        if not _json_glossary_store_is_valid(glossary_store):
+            run_status.clear()
+            run_status.update({
+                "status": "failed", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+                "error": "corrupt_glossary_store",
+            })
+            self._log(
+                "Auto-Glossary: mevcut JSON sözlük bozuk; veri kaybını "
+                "önlemek için API çağrılmadı ve dosya değiştirilmedi", "err")
+            return
+        existing = ht.load_glossary(glossary_path)
         token_callback_factory = getattr(
             self, "_token_callback_for_model", None)
         token_callback = (
@@ -21175,7 +21273,7 @@ class App(ctk.CTk):
                     merged.update(approved)
                     atomic_write_json(gp, merged)
                 else:
-                    existing_text = gp.read_text(encoding="utf-8") if gp.exists() else ""
+                    existing_text = read_subtitle_text(gp) if gp.exists() else ""
                     rows = [existing_text.rstrip(), "",
                             f"# Auto-Glossary — {Path(filepath).name}"]
                     rows.extend(f"{src_term} = {tgt_term}"

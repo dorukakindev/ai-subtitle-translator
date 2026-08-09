@@ -107,7 +107,15 @@ def _cached_chat_response(entry: dict):
         message=message,
         finish_reason=entry.get("finish_reason"),
     )
-    return SimpleNamespace(choices=[choice], usage=None)
+    usage = SimpleNamespace(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+    )
+    return SimpleNamespace(
+        choices=[choice], usage=usage, usage_available=True,
+        response_checkpoint_hit=True)
 
 
 def _response_checkpoint_lookup(client, model: str, kwargs: dict,

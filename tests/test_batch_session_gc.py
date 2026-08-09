@@ -77,6 +77,8 @@ class BatchSessionGarbageCollectionTest(unittest.TestCase):
 
         self.assertEqual(removed, 1)
         self.assertFalse(corrupt.exists())
+        self.assertTrue(
+            corrupt.with_name(corrupt.name + ".corrupt.bak").exists())
         self.assertTrue(live.exists())
 
 
