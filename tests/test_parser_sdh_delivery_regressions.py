@@ -60,6 +60,13 @@ class AssMeaningRegressionTest(unittest.TestCase):
                           "Dialogue: 0,0:00:01.00,0:00:02.00,FX,,0,0,0,,EMERGENCY EXIT\n")
             self.assertEqual(sf.parse_ass(path)[0][2], "EMERGENCY EXIT")
 
+    def test_fx_style_drops_only_known_override_driven_decorative_word(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = _write(directory, "fx-decorative.ass", self.ASS_HEADER +
+                          "Dialogue: 0,0:00:01.00,0:00:02.00,FX,,0,0,0,,{\\blur5}spark\n"
+                          "Dialogue: 0,0:00:03.00,0:00:04.00,FX,,0,0,0,,EXIT\n")
+            self.assertEqual([cue[2] for cue in sf.parse_ass(path)], ["EXIT"])
+
     def test_ass_name_is_preserved_for_context(self):
         with tempfile.TemporaryDirectory() as directory:
             path = _write(directory, "name.ass", self.ASS_HEADER +

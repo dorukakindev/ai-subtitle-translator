@@ -424,6 +424,21 @@ def _ass_is_drawing_only(text: str) -> bool:
     return bool(visible and _ASS_DRAWING_DATA.fullmatch(visible))
 
 
+_PURE_DECORATIVE_FX_WORDS = {
+    "spark", "sparks", "glow", "glowing", "flash", "flare", "shimmer",
+}
+
+
+def _ass_is_pure_decorative_fx(style: str, raw_text: str) -> bool:
+    """Yalnız görünür bir ekran sözü taşımayan dar FX süslerini ayıklar."""
+    if str(style or "").strip().casefold() != "fx":
+        return False
+    if not _ASS_OVERRIDE.search(str(raw_text or "")):
+        return False
+    visible = _clean_ass_text(raw_text).casefold()
+    return visible in _PURE_DECORATIVE_FX_WORDS
+
+
 
 # ── VTT tag temizleme ─────────────────────────────────────────────────────────
 
@@ -593,6 +608,8 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
         timestamp = f'{start_ts} --> {end_ts}'
         raw_text = parts[text_i]
         if _ass_is_drawing_only(raw_text):
+            continue
+        if _ass_is_pure_decorative_fx(style, raw_text):
             continue
         text = _format_ass_text(raw_text)
         if not _clean_ass_text(text).strip():
