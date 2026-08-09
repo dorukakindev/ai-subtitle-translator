@@ -16423,7 +16423,7 @@ class App(ctk.CTk):
                 return
             files, memory, stats = result
             if (self.input_var.get() != path
-                    or not getattr(self, "_input_folder_explicitly_selected", False)
+                    or not getattr(self, "_input_folder_explicitly_selected", True)
                     or getattr(self, "_selected_files", None)):
                 return
             current_target = _lang_iso639_1(self.tgt_var.get())
