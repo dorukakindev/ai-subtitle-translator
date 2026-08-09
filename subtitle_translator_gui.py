@@ -27410,6 +27410,7 @@ class App(ctk.CTk):
 
         n_files   = len(srt_files)
         input_dir = self.input_var.get()
+        report_dir = _resolve_report_dir(input_dir, output_dir)
         source_languages = {
             fp: self._effective_file_source_language(fp, src) for fp in srt_files
         }
@@ -27516,6 +27517,45 @@ class App(ctk.CTk):
                         filepath, "Geçerli cue yok", "skip")
                     continue
                 self._set_stat(self.stat_blocks_var, str(len(cues)))
+
+                existing_output = _resolve_output_path(
+                    input_dir, output_dir, filepath,
+                    same_folder=self.same_folder_var.get(),
+                    selected_roots=self._output_selection_roots())
+                if existing_output.exists():
+                    try:
+                        existing_blocks = list(parse_subtitle(str(existing_output)))
+                        if (_should_skip_existing_output(
+                                filepath, existing_blocks, cues,
+                                getattr(self, "_force_retranslate_paths", set()))
+                                and _output_matches_source_fingerprint(
+                                    report_dir, existing_output, filepath)):
+                            existing_audit = _subtitle_delivery_audit(
+                                filepath, str(existing_output), tgt, file_src)
+                            if not _delivery_audit_has_hard_error(existing_audit):
+                                ht.update_batch_session(
+                                    session, filepath, "completed",
+                                    out_path=str(existing_output),
+                                    source_hash=_stable_source_hash,
+                                    output_state=ht._file_state_signature(
+                                        existing_output))
+                                self._record_file_status(
+                                    filepath, "Tamamlanmış (atlandı)", "done")
+                                self._log(
+                                    f"[{fi+1}/{n_files}] {fname} — ✓ mevcut "
+                                    "kaynakla doğrulandı, batch gönderilmedi", "ok")
+                                self._set_progress(int((fi + 1) / n_files * 40))
+                                continue
+                            quarantined = _quarantine_incomplete_final(
+                                existing_output)
+                            self._log(
+                                f"{fname}: mevcut çıktı teslim denetiminden geçmedi; "
+                                f"yeniden üretilecek ({Path(quarantined).name if quarantined else 'karantina başarısız'}).",
+                                "warn")
+                    except Exception as existing_error:
+                        self._log(
+                            f"{fname}: mevcut çıktı doğrulanamadı; yeniden "
+                            f"üretilecek ({existing_error})", "warn")
 
                 sess_entry = session["files"].get(str(filepath), {})
                 stored_schema_name = (
@@ -28374,6 +28414,12 @@ class App(ctk.CTk):
                     source_cues=cues)
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)
+                _fingerprint_ok = _write_output_source_fingerprint(
+                    report_dir, _write_path, expected_source_hash)
+                if not _fingerprint_ok:
+                    self._log(
+                        f"{fname}: kaynak-çıktı parmak izi yazılamadı; "
+                        "dosya tamamlandı sayılmayacak.", "err")
                 _quarantined = (
                     _quarantine_incomplete_final(out_path) if _has_missing else None)
                 self._save_raw_backup(_write_path, _raw_backup_blocks, _raw_map, tgt)
@@ -28394,7 +28440,7 @@ class App(ctk.CTk):
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
                 _w = 0
-                _delivery_scan_failed = False
+                _delivery_scan_failed = not _fingerprint_ok
                 try:
                     self._record_file_status(
                         filepath, "Nihai Teslim Denetimi", "running")

@@ -274,6 +274,18 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertTrue(0 <= success_pos < pm_pos < complete_pos)
         self.assertEqual(src.count("_file_pm.merge_glossary_from_analysis("), 1)
 
+    def test_hybrid_batch_reuses_only_source_bound_delivery_and_writes_binding(self):
+        src = inspect.getsource(gui.App._run_hybrid)
+        existing_pos = src.find("_output_matches_source_fingerprint(")
+        analysis_pos = src.find("ht.analyze_with_helper(")
+        write_pos = src.find("write_srt(_write_path")
+        fingerprint_pos = src.find(
+            "_write_output_source_fingerprint(", write_pos)
+        delivery_pos = src.find("_delivery_scan_failed = not _fingerprint_ok")
+
+        self.assertTrue(0 <= existing_pos < analysis_pos)
+        self.assertTrue(0 <= write_pos < fingerprint_pos < delivery_pos)
+
     def test_chain_retries_invalid_chunk_before_building_next_context(self):
         for flow in (gui.App._run_sync, gui.App._run_sync_hybrid):
             with self.subTest(flow=flow.__name__):
