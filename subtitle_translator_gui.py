@@ -1974,9 +1974,16 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
             # Birleşik blok okunabilir hızda mı? (toplam görünür karakter / toplam süre)
             span_sec = (ce - g["start_sec"]) if (ce is not None and g["start_sec"] is not None) else 0
             cps_ok   = span_sec <= 0 or (combined / span_sec) <= CPS_WARN_LIMIT
+            # An unresolved cue is a recovery boundary.  Joining it to its
+            # neighbours destroys the one-to-one id that recovery needs and
+            # turns one failed request into several apparent failures.
+            unresolved_boundary = _blocks_have_translation_failures([
+                (g.get("id", ""), g["ts"], g["text"]), (idx, ts, text)
+            ])
             if (0 <= gap_ms <= max_gap_ms
                     and combined <= max_chars
                     and cps_ok
+                    and not unresolved_boundary
                     and (not only_continuation or not _ends_sentence_gui(_clean_src(g["text"])))
                     and not _is_dialogue_cue(g["text"]) and not _is_dialogue_cue(text)
                     and not _is_sdh_only(g["text"]) and not _is_sdh_only(text)):
@@ -1989,7 +1996,7 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                 g["text"], g["end"], g["end_sec"] = joined.strip(), end_str, ce
                 g["count"] += 1
                 continue
-        groups.append({"start": start_str, "end": end_str, "start_sec": cs,
+        groups.append({"id": idx, "start": start_str, "end": end_str, "start_sec": cs,
                        "end_sec": ce, "text": text, "count": 1, "ts": ts})
     out = []
     for i, g in enumerate(groups, 1):
@@ -2328,13 +2335,15 @@ def parse_srt(filepath):
         return [(idx, ts, text) for idx, ts, text in parsed]
     return [(str(i), ts, text) for i, (_idx, ts, text) in enumerate(parsed, 1)]
 
-def parse_subtitle(filepath: str) -> list:
+def parse_subtitle(filepath: str, source_language: str | None = None) -> list:
     """Uzantıya göre uygun parser'ı seçer: .srt, .vtt, .ass, .ssa"""
     ext = Path(filepath).suffix.lower()
     if ext == '.vtt':
         return parse_vtt(filepath)
     if ext in ('.ass', '.ssa'):
-        return parse_ass(filepath)
+        # ASS files can carry parallel OP/ED tracks. Prefer the track matching
+        # the source language selected for this individual file.
+        return parse_ass(filepath, lyric_language=_lang_iso639_1(source_language))
     result = parse_srt(filepath)
     # .srt uzantili ama icerigi VTT olan dosyalar: SRT parse bos donerse VTT dene
     if not result:
@@ -2482,8 +2491,10 @@ def write_srt(filepath, blocks, target_language="Turkish"):
             ) == "Turkish"
             try:
                 import hybrid_translate as ht
-                text = ht.normalize_latin_homoglyphs(str(text))
                 if is_turkish:
+                    # A Russian/Cyrillic target may legitimately contain the
+                    # same-shaped letters.  Homoglyph repair is Turkish-only.
+                    text = ht.normalize_latin_homoglyphs(str(text))
                     text = ht._apply_local_fixes(
                         str(text), allow_context_sensitive=False)[0]
             except Exception:
@@ -2588,6 +2599,8 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     r"^(?:(?:petit|leger)\s+)?gemissement\s+de\s+(?:douleur|plaisir)[.!…]?\s*$",
     re.IGNORECASE,
 )
+_LEADING_APOSTROPHE_CONTRACTION_RE = re.compile(
+    r"^\s*'(?:cause|em|tis|twas|round|til|bout)\b", re.IGNORECASE)
 
 
 def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
@@ -2665,6 +2678,13 @@ def _is_delivery_sdh_only(text: str) -> bool:
     value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
     if not value:
         return False
+    # Bare English sound descriptions are still non-dialogue, even when they
+    # arrive without brackets and bypass the bracket-token parser below.
+    bare_english_sdh = value.strip().strip("[](){} ")
+    if re.fullmatch(
+            r"(?:muffled\s+(?:speaking|voice)|speaking\s+(?:native|foreign)\s+"
+            r"language|frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
+        return True
     if re.fullmatch(r"[\s*♪♫_]+", value) and re.search(r"[*♪♫_]", value):
         return True
     tokens = list(_DELIVERY_SDH_TOKEN_RE.finditer(value))
@@ -2838,9 +2858,13 @@ def _normalize_delivery_ocr_quote_markers(blocks: list, src_map: dict) -> tuple[
                 changed += updated_line != value_line
                 value_lines[line_no] = updated_line
             value = "\n".join(value_lines)
-        starts_quote = bool(re.match(r"^\s*'", source))
+        starts_quote = bool(re.match(r"^\s*'", source)) and not bool(
+            _LEADING_APOSTROPHE_CONTRACTION_RE.match(source))
         ends_quote = bool(re.search(r"'{2}[.!?]?\s*$", source))
-        ends_marker = bool(re.search(r"#\s*$", source))
+        # OCR sometimes uses a trailing # as a quote marker, but C# is a
+        # real dialogue/programming token and must survive delivery cleanup.
+        ends_marker = bool(re.search(r"#\s*$", source)) and not bool(
+            re.search(r"\bC#\s*$", source, re.IGNORECASE))
         if starts_quote:
             updated = re.sub(r'^\s*(?:[\'"“”]+\s*)?', '"', value, count=1)
             changed += updated != value
@@ -4379,6 +4403,7 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
                 idx for idx in expected_ids
                 if _has_wordlike_text(_align_visible(chunk_src_map.get(idx, "")))
                 and not _align_is_sfx_only(chunk_src_map.get(idx, ""))
+                and not _source_cue_is_delivery_removable(chunk_src_map.get(idx, ""))
             ]
             required_set = set(required_ids)
             if (len(actual_ids) != len(set(actual_ids))
@@ -5621,7 +5646,14 @@ def _missing_block_items(all_items: list, current_raw: str) -> list:
         cue_id for cue_id, text in parsed.translations.items()
         if str(text).strip() and not str(text).strip().startswith("[HATA")
     }
-    return [it for it in all_items if str(it.get("i")) not in ok]
+    return [
+        it for it in all_items
+        if str(it.get("i")) not in ok
+        # Credits and pure SDH are deliberately removed at delivery.  Asking
+        # the model to recover them wastes a request and can turn a credit
+        # into dialogue before final cleanup removes it again.
+        and not _source_cue_is_delivery_removable(str(it.get("t", "") or ""))
+    ]
 
 
 def _is_upstream_provider_error(exc) -> bool:
@@ -6908,11 +6940,12 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             data = json.loads(raw)
             if not isinstance(data, list):
                 raise ValueError("response_not_array")
-            successful_chunks += 1
         except RequestCancelled:
             cancelled = True
             break
-        except Exception:
+        except Exception as chunk_error:
+            if log_fn:
+                log_fn(f"Terim normalizasyonu paketi atlandı: {chunk_error}", "warn")
             continue
         chunk_results = {}
         conflicting_ids = set()
@@ -6929,6 +6962,15 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             chunk_results.setdefault(rid, new_text)
         for rid in conflicting_ids:
             chunk_results.pop(rid, None)
+        complete_response = not conflicting_ids and set(chunk_results) == chunk_ids
+        if not complete_response and log_fn:
+            missing_ids = sorted(chunk_ids - set(chunk_results))
+            detail = ", ".join(missing_ids[:8]) or "çelişkili kimlik"
+            log_fn(
+                f"Terim normalizasyonu paketi eksik/çelişkili JSON döndürdü; "
+                f"yalnız güvenli dönen cue'lar uygulanacak ({detail})", "warn")
+        if complete_response:
+            successful_chunks += 1
         result_map.update(chunk_results)
 
     fixes_by_idx = {it["id"]: [(f["wrong"], f["correct"]) for f in it["fixes"]] for it in items}
@@ -8099,6 +8141,27 @@ def _blocks_have_translation_failures(blocks) -> bool:
     )
 
 
+_UNTRANSLATED_ENGLISH_SIGNAL_RE = re.compile(
+    r"\b(?:the|and|are|is|was|were|this|that|these|those|with|from|"
+    r"what|where|when|why|how|you|your|have|has|not|don't|can't)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_untranslated_output(source_text: str, output_text: str) -> bool:
+    """Only reject an exact source echo when it is clearly English dialogue.
+
+    Proper names, formulae and screen labels can legitimately remain identical;
+    a structural-completeness check must not turn those into retranslation
+    loops.  Function-word evidence makes this a deliberately narrow guard.
+    """
+    source = _align_visible(str(source_text or "")).strip()
+    output = _align_visible(str(output_text or "")).strip()
+    if len(source) < 8 or source.casefold() != output.casefold():
+        return False
+    return bool(_UNTRANSLATED_ENGLISH_SIGNAL_RE.search(source))
+
+
 def _partial_missing_translation_ids(blocks, raw_src_map, source_cues=(), *,
                                      locked_terms=None,
                                      source_language: str | None = None) -> list[str]:
@@ -8223,7 +8286,7 @@ def _partial_retry_raw_map(partial_blocks, file_map: dict, source_cues) -> tuple
 
 def _quarantine_incomplete_final(out_path) -> Path | None:
     path = Path(out_path)
-    if not path.exists():
+    if not path.is_file():
         return None
     target = path.with_name(f"{path.stem}.incomplete.bak")
     serial = 2
@@ -8266,6 +8329,7 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
     if not required_positions:
         return False
     used = set()
+    untranslated_echo = False
     for out_idx, ts, text in out_blocks:
         if (not str(text or "").strip()
                 or _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())):
@@ -8279,6 +8343,9 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
             if bounds else [])
         if positions:
             used.update(positions)
+            if any(_looks_like_untranslated_output(
+                    source_rows[pos][2], text) for pos in positions):
+                untranslated_echo = True
             continue
         id_pos = next((
             pos for pos, (source_idx, _source_ts, _source_text, source_bounds)
@@ -8288,7 +8355,9 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
         ), None)
         if id_pos is not None:
             used.add(id_pos)
-    return required_positions <= used
+            if _looks_like_untranslated_output(source_rows[id_pos][2], text):
+                untranslated_echo = True
+    return required_positions <= used and not untranslated_echo
 
 
 def _should_skip_existing_output(filepath, out_blocks, source_cues,
@@ -8660,14 +8729,14 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
 
 
 def _subtitle_delivery_audit(source_path: str, output_path: str,
-                             target_language="Turkish") -> dict:
+                             target_language="Turkish", source_language=None) -> dict:
     audit = {
         "source_path": str(source_path or ""),
         "output_path": str(output_path or ""),
         "status": "unavailable",
     }
     try:
-        source = list(parse_subtitle(str(source_path)))
+        source = list(parse_subtitle(str(source_path), source_language))
         output = list(parse_subtitle(str(output_path)))
     except Exception as exc:
         audit["error"] = str(exc)
@@ -8678,6 +8747,37 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         (str(idx), str(ts), str(text or "")) for idx, ts, text in output
         if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
     ]
+    invalid_timestamp_ids = []
+    reversed_timestamp_ids = []
+    signature_overlap_ids = []
+    timed_output = []
+    for output_idx, output_ts, output_text in output:
+        try:
+            start, end = _srt_timestamp_bounds(output_ts)
+        except ValueError:
+            invalid_timestamp_ids.append(str(output_idx))
+            continue
+        if end <= start:
+            reversed_timestamp_ids.append(str(output_idx))
+            continue
+        timed_output.append((str(output_idx), start, end, str(output_text or "")))
+    for output_idx, start, end, output_text in timed_output:
+        if not _DELIVERY_SIGNATURE_RE.fullmatch(output_text.strip()):
+            continue
+        # Legacy zero-start files cannot receive a pre-roll signature without
+        # moving real dialogue.  Keep the existing 1 ms marker compatible,
+        # while every other signature/dialogue overlap remains a hard error.
+        if start == 0 and end == 1 and any(
+                not _DELIVERY_SIGNATURE_RE.fullmatch(other_text.strip())
+                and other_start == 0
+                for _other_idx, other_start, _other_end, other_text in timed_output):
+            continue
+        if any(
+                other_idx != output_idx
+                and not _DELIVERY_SIGNATURE_RE.fullmatch(other_text.strip())
+                and start < other_end and other_start < end
+                for other_idx, other_start, other_end, other_text in timed_output):
+            signature_overlap_ids.append(output_idx)
     source_with_bounds = []
     for source_idx, source_ts, source_text in source_rows:
         try:
@@ -8743,7 +8843,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
-        hatted_letters, signature_mismatch,
+        hatted_letters, signature_mismatch, invalid_timestamp_ids,
+        reversed_timestamp_ids, signature_overlap_ids,
     ))
     audit.update({
         "status": "review" if needs_review else "ok",
@@ -8762,10 +8863,33 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "delivery_signatures": delivery_signatures,
         "expected_delivery_signatures": expected_signatures,
         "signature_mismatch": signature_mismatch,
+        "invalid_timestamp_ids": invalid_timestamp_ids,
+        "reversed_timestamp_ids": reversed_timestamp_ids,
+        "signature_overlap_ids": signature_overlap_ids,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
     })
     return audit
+
+
+def _delivery_audit_has_hard_error(audit: dict) -> bool:
+    """Return whether the final file is unsafe to call upload-ready.
+
+    Cosmetic report warnings may remain review-only; a missing dialogue,
+    unresolved marker, invalid interval, or an injected signature covering a
+    dialogue must never receive a completion marker or be skipped next run.
+    """
+    if not isinstance(audit, dict):
+        return True
+    if audit.get("status") == "unavailable":
+        return True
+    return any((
+        audit.get("missing_dialogue_ids"),
+        audit.get("unresolved_markers"),
+        audit.get("invalid_timestamp_ids"),
+        audit.get("reversed_timestamp_ids"),
+        audit.get("signature_overlap_ids"),
+    ))
 
 
 def _file_process_report_text(row: dict, run_id: str = "") -> str:
@@ -8823,6 +8947,9 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("delivery_signatures", "discord: ceviri2 imzaları"),
         ("expected_delivery_signatures", "Beklenen discord imzası"),
         ("signature_mismatch", "discord imza sayısı hatası"),
+        ("invalid_timestamp_ids", "Geçersiz zaman damgası kimlikleri"),
+        ("reversed_timestamp_ids", "Ters/geçersiz zaman aralığı kimlikleri"),
+        ("signature_overlap_ids", "Diyalogla çakışan discord imzaları"),
         ("source_sha256", "Kaynak SHA-256"),
         ("output_sha256", "Çıktı SHA-256"),
     ):
@@ -15113,8 +15240,13 @@ class App(ctk.CTk):
                     f"  🔧 {cid}: JSON onarımı birleştirildi "
                     f"({len(parsed_repair.translations)} yeni, "
                     f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
-            except Exception:
-                pass  # repair failed — retry_hata will handle it
+            except Exception as repair_error:
+                # Recovery remains non-fatal, but it must be diagnosable.
+                self._log(
+                    f"  ↳ {cid}: JSON onarımı çalışmadı ({repair_error}); "
+                    "yalnız eksik cue kurtarması denenecek",
+                    "warn",
+                )
         if repaired:
             self._log(f"JSON onarımı: {repaired} chunk kurtarıldı", "ok")
 
@@ -15128,6 +15260,41 @@ class App(ctk.CTk):
         # Step 0: try cheap JSON repair before full re-translation
         self._json_repair_pass(client, raw_map, requests_list)
         req_by_id = {r["custom_id"]: r for r in requests_list}
+
+        # A valid but partial JSON array is the usual provider-truncation
+        # case.  Salvage it before the strict whole-chunk retry so the
+        # translations that did arrive can never be replaced by [HATA].
+        for cid, req in req_by_id.items():
+            raw = raw_map.get(cid)
+            if raw is None:
+                continue
+            try:
+                user_message = next(
+                    msg["content"] for msg in req.get("body", {}).get("messages", [])
+                    if msg.get("role") == "user")
+                payload = json.loads(user_message)
+                all_items = [it for it in payload.get("tr", []) if isinstance(it, dict)]
+                missing = _missing_block_items(all_items, raw)
+                from response_integrity import parse_translation_payload
+                parsed = parse_translation_payload(
+                    raw, {str(it.get("i")) for it in all_items if "i" in it})
+                recovered = sum(
+                    1 for value in parsed.translations.values()
+                    if str(value).strip() and not str(value).strip().startswith("[HATA"))
+                if missing and recovered and len(missing) < len(all_items):
+                    merged = self._resend_missing_blocks(client, req, raw)
+                    if merged is not None:
+                        raw_map[cid] = merged
+                        self._log(
+                            f"  ↳ {cid}: {len(missing)} eksik cue önce alt-grupta onarıldı; "
+                            "sağlam cue'lar korunuyor",
+                            "ok",
+                        )
+            except Exception as salvage_error:
+                self._log(
+                    f"  ↳ {cid}: erken alt-grup kurtarması çalışmadı ({salvage_error})",
+                    "warn",
+                )
         upstream_failed = set()
         permanent_failure = False
 
@@ -18577,7 +18744,10 @@ class App(ctk.CTk):
             ).hexdigest()[:10]
             stem = out_obj.stem[:-8] if out_obj.stem.endswith(".partial") else out_obj.stem
             bpath = str(report_dir / f"{stem}.{digest}.ham.srt")
-            write_srt(bpath, blk, target_language)
+            # A ham backup is evidence, not a second delivery pass.  In
+            # particular do not apply corpus local-fixes, SDH normalization or
+            # Turkish-only homoglyph rewriting while preserving it.
+            _write_srt_preserving_text(bpath, blk)
             self._log(f"Ham çeviri yedeği: {Path(bpath).name}", "info")
         except Exception as e:
             self._log(f"Ham yedek yazılamadı: {e}", "warn")
@@ -19499,6 +19669,22 @@ class App(ctk.CTk):
                     polished = json.loads(raw)
                     if not isinstance(polished, list):
                         raise RuntimeError("Polish: expected JSON array")
+                    returned_ids = []
+                    malformed_items = False
+                    for candidate in polished:
+                        if not isinstance(candidate, dict) or "id" not in candidate or not isinstance(candidate.get("tr"), str):
+                            malformed_items = True
+                            continue
+                        returned_ids.append(str(candidate["id"]))
+                    expected_ids = set(original_by_id)
+                    if (malformed_items or len(returned_ids) != len(set(returned_ids))
+                            or set(returned_ids) != expected_ids):
+                        missing = sorted(expected_ids - set(returned_ids))
+                        extra = sorted(set(returned_ids) - expected_ids)
+                        raise RuntimeError(
+                            "Polish: incomplete/invalid JSON ids "
+                            f"(missing={','.join(missing[:8]) or '-'}, "
+                            f"extra={','.join(extra[:8]) or '-'})")
                     chunk_proposals = {}
                     for item in polished:
                         if isinstance(item, dict) and "id" in item and "tr" in item:
@@ -20482,6 +20668,19 @@ class App(ctk.CTk):
             for source_row in rows:
                 row = dict(source_row)
                 source_path = str(row.get("source_path") or "")
+                row["delivery_audit"] = _subtitle_delivery_audit(
+                    row.get("source_path", ""), row.get("output_path", ""),
+                    self.tgt_var.get(), self._effective_file_source_language(
+                        source_path, self.src_var.get()))
+                if _delivery_audit_has_hard_error(row["delivery_audit"]):
+                    quarantined = _quarantine_incomplete_final(row.get("output_path", ""))
+                    row["run_status"] = "error"
+                    row["delivery_quarantined_path"] = str(quarantined or "")
+                    self._log(
+                        f"Teslim koruması: {row.get('name', 'altyazı')} yüklemeye hazır değil; "
+                        f"{Path(quarantined).name if quarantined else 'çıktı karantinaya alınamadı'}",
+                        "err",
+                    )
                 if source_path:
                     terminal_status = (
                         "error" if row.get("run_status") == "error" else "done")
@@ -20491,9 +20690,6 @@ class App(ctk.CTk):
                         source_path, terminal_phase, terminal_status)
                     row["timing"] = self._file_timing_snapshot(source_path)
                 row["feature_audit"] = _quality_feature_audit(row, snapshot)
-                row["delivery_audit"] = _subtitle_delivery_audit(
-                    row.get("source_path", ""), row.get("output_path", ""),
-                    self.tgt_var.get())
                 report_rows.append(row)
             with self._token_lock:
                 tok = self._token_total
@@ -20572,7 +20768,8 @@ class App(ctk.CTk):
             self._record_quality_report(report_rows, report_paths)
             self._log(f"Kalite raporu: {p}", "ok")
             return p
-        except Exception:
+        except Exception as report_error:
+            self._log(f"Kalite raporu yazılamadı: {report_error}", "err")
             return None
 
     def _open_quality_report(self):
@@ -21995,7 +22192,8 @@ class App(ctk.CTk):
             if self._is_queued_file_removed(fp):
                 continue
             before_hash = _file_content_sha256(fp)
-            blocks = list(parse_subtitle(fp))
+            blocks = list(parse_subtitle(
+                fp, self._effective_file_source_language(fp, src)))
             after_hash = _file_content_sha256(fp)
             if not before_hash or before_hash != after_hash:
                 self._log(
@@ -23105,8 +23303,7 @@ class App(ctk.CTk):
                 _pass_status["Critic"] = dict(_critic_status)
                 if self._stop_flag:
                     break
-                if _critic_status.get("status") == "completed":
-                    _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
+                _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                 self._write_critic_change_report(out_path, _critic_change_log)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
@@ -23129,8 +23326,8 @@ class App(ctk.CTk):
                 _pass_status["Polish"] = dict(_polish_status)
                 if self._stop_flag:
                     break
+                _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                 if _polish_status.get("status") == "completed":
-                    _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
                     self._log("Polish Pass tamamlandı", "ok")
 
             # ── Native Okuyucu Pass ───────────────────────────────────────────
@@ -23161,8 +23358,7 @@ class App(ctk.CTk):
                 _pass_status["Native"] = dict(_native_status)
                 if self._stop_flag:
                     break
-                if _native_status.get("status") == "completed":
-                    _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
+                _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
 
             if (sorted_blocks and _quality_api_allowed
                     and (self.critic_var.get() or self.polish_var.get()
@@ -23566,7 +23762,8 @@ class App(ctk.CTk):
             if self._is_queued_file_removed(fp):
                 continue
             before_hash = _file_content_sha256(fp)
-            blocks = list(parse_subtitle(fp))
+            blocks = list(parse_subtitle(
+                fp, self._effective_file_source_language(fp, src)))
             after_hash = _file_content_sha256(fp)
             if not before_hash or before_hash != after_hash:
                 self._log(
@@ -25160,7 +25357,9 @@ class App(ctk.CTk):
             _pass_history = {}
             # Kaynağı DOSYA BAŞINA BİR KEZ parse et; tüm adımlar bunu paylaşır
             try:
-                _src_cues = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
+                _src_cues = self._cached_blocks_for(fp) or list(parse_subtitle(
+                    fp, (source_languages or {}).get(fp) or
+                    self._effective_file_source_language(fp, src or "English")))
             except Exception:
                 _src_cues = []
             _last_src_cues = _src_cues
