@@ -19263,6 +19263,24 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+    def _record_batch_terminal_state(self, ht, session, filepath, status: str) -> bool:
+        if status not in {"failed", "removed"}:
+            raise ValueError("terminal batch status required")
+        try:
+            ht.update_batch_session(session, filepath, status)
+            return True
+        except Exception as exc:
+            entry = session.setdefault("files", {}).setdefault(str(filepath), {})
+            entry["status"] = status
+            entry["state_persist_error"] = type(exc).__name__
+            self._log(
+                f"{Path(filepath).name}: batch kurtarma durumu diske "
+                f"yazılamadı ({type(exc).__name__}); diğer dosyalar işlenmeye "
+                "devam edecek, bu dosya tamamlandı sayılmayacak.",
+                "err",
+            )
+            return False
+
     def _cancel_active_batches(self):
         """Açık OpenAI batch'lerini iptal eder + kurtarma dosyalarını temizler.
         UI'ı bloklamamak için arka plan thread'inde çağrılmalı."""
@@ -27813,13 +27831,15 @@ class App(ctk.CTk):
                     self._set_progress(int((fi + 1) / n_files * 40))
                 else:
                     self._log(f"[{fname}] Batch gönderilemedi, atlanıyor", "err")
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     self._record_file_status(
                         filepath, "Batch gönderilemedi", "error")
 
             except Exception as e:
                 self._log(f"[{fname}] Faz-1 hatası: {e} — atlanıyor", "err")
-                ht.update_batch_session(session, filepath, "failed")
+                self._record_batch_terminal_state(
+                    ht, session, filepath, "failed")
                 self._record_file_status(filepath, "Faz-1 hatası", "error")
                 continue
 
@@ -27858,7 +27878,8 @@ class App(ctk.CTk):
                     if _cancelled:
                         self._unregister_batch(batch_id)
                         self._clear_batch_recovery([batch_id])
-                        ht.update_batch_session(session, filepath, "removed")
+                        self._record_batch_terminal_state(
+                            ht, session, filepath, "removed")
                     else:
                         _removal_completed = False
                         self._log(
@@ -27866,7 +27887,8 @@ class App(ctk.CTk):
                             "kurtarma kaydı korunuyor.", "err")
                 else:
                     self._twowave_pending.pop(str(filepath), None)
-                    ht.update_batch_session(session, filepath, "removed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "removed")
                 if _removal_completed:
                     self._record_file_status(filepath, "Sıradan kaldırıldı", "skip")
                     self._log(
@@ -27907,7 +27929,8 @@ class App(ctk.CTk):
                     if not _tw_result or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
-                            ht.update_batch_session(session, filepath, "failed")
+                            self._record_batch_terminal_state(
+                                ht, session, filepath, "failed")
                             self._record_file_status(
                                 filepath, "İki-dalgalı batch hatası", "error")
                         continue
@@ -27928,7 +27951,8 @@ class App(ctk.CTk):
                                 "Oturum submitted bırakıldı.", "warn")
                         else:
                             self._log(f"[{fname}] Batch çıktısı alınamadı ({wait_result['status']}).", "err")
-                            ht.update_batch_session(session, filepath, "failed")
+                            self._record_batch_terminal_state(
+                                ht, session, filepath, "failed")
                             self._record_file_status(
                                 filepath, "Batch sonucu alınamadı", "error")
                         continue
@@ -27949,7 +27973,8 @@ class App(ctk.CTk):
                 _final_blocks = list(parse_srt(_parse_path))
                 if cues and not _final_blocks:
                     self._log(f"{fname}: kaynak dolu ama batch çıktısı boş; tamamlandı sayılmayacak.", "err")
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     self._record_file_status(
                         filepath, "Batch çıktısı boş", "error")
                     continue
@@ -28009,7 +28034,8 @@ class App(ctk.CTk):
                         self._log_exc(
                             f"[{fname}] kısmi çıktı yazılamadı",
                             partial_error)
-                        ht.update_batch_session(session, filepath, "failed")
+                        self._record_batch_terminal_state(
+                            ht, session, filepath, "failed")
                         self._record_file_status(
                             filepath, "Kısmi çıktı yazılamadı", "error")
                         continue
@@ -28033,7 +28059,8 @@ class App(ctk.CTk):
                         "run_status": "error",
                         "tm_hits": self._tm.hit_count_session(),
                     })
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     self._record_file_status(
                         filepath, f"Eksik çeviri: {_unresolved_missing}", "error")
                     continue
@@ -28392,7 +28419,8 @@ class App(ctk.CTk):
                     self._log_exc(
                         f"[{fname}] nihai yapı/etiket koruması başarısız",
                         finalize_error)
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     self._record_file_status(
                         filepath, "Nihai yapı koruması başarısız", "error")
                     continue
@@ -28404,7 +28432,8 @@ class App(ctk.CTk):
                     self._log(
                         f"{fname}: çıktı yazılmadı ({_guard_reason}); kaynak veya mevcut "
                         "çıktı batch gönderiminden sonra değişti.", "err")
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     self._record_file_status(
                         filepath, "Kaynak/hedef değişti", "error")
                     continue
@@ -28435,7 +28464,8 @@ class App(ctk.CTk):
                             f"{Path(_quarantined).name}",
                             "warn",
                         )
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     continue
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
@@ -28578,7 +28608,8 @@ class App(ctk.CTk):
 
                 if _delivery_scan_failed or _quality_pass_has_hard_failure(
                         _pass_status):
-                    ht.update_batch_session(session, filepath, "failed")
+                    self._record_batch_terminal_state(
+                        ht, session, filepath, "failed")
                     self._record_file_status(
                         filepath, "Kalite/teslim denetimi başarısız", "error")
                     continue
@@ -28593,7 +28624,8 @@ class App(ctk.CTk):
 
             except Exception as e:
                 self._log(f"[{fname}] Faz-2 hatası: {e} — atlanıyor", "err")
-                ht.update_batch_session(session, filepath, "failed")
+                self._record_batch_terminal_state(
+                    ht, session, filepath, "failed")
                 self._record_file_status(filepath, "Faz-2 hatası", "error")
                 continue
             finally:
@@ -28608,8 +28640,8 @@ class App(ctk.CTk):
         self._save_quality_report(report_rows, output_dir)
         for _row in report_rows:
             if _row.get("run_status") == "error" and _row.get("source_path"):
-                ht.update_batch_session(
-                    session, str(_row["source_path"]), "failed")
+                self._record_batch_terminal_state(
+                    ht, session, str(_row["source_path"]), "failed")
                 self._record_file_status(
                     str(_row["source_path"]), "Teslim denetimi başarısız", "error")
         self._set_running(False)

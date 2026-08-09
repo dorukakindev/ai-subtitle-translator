@@ -13,6 +13,30 @@ from app_state import mutate_batch_ids
 
 
 class BatchSessionFailClosedTest(unittest.TestCase):
+    def test_terminal_state_write_failure_does_not_abort_other_results(self):
+        backend = SimpleNamespace(
+            update_batch_session=MagicMock(side_effect=OSError("disk full")))
+        session = {"files": {"film.srt": {"status": "submitted"}}}
+        app = SimpleNamespace(_log=MagicMock())
+
+        saved = gui.App._record_batch_terminal_state(
+            app, backend, session, "film.srt", "failed")
+
+        self.assertFalse(saved)
+        self.assertEqual(session["files"]["film.srt"]["status"], "failed")
+        self.assertEqual(
+            session["files"]["film.srt"]["state_persist_error"], "OSError")
+        self.assertIn(
+            "diğer dosyalar işlenmeye devam edecek",
+            " ".join(str(call.args[0]) for call in app._log.call_args_list),
+        )
+
+    def test_non_terminal_state_cannot_use_best_effort_writer(self):
+        app = SimpleNamespace(_log=MagicMock())
+        with self.assertRaises(ValueError):
+            gui.App._record_batch_terminal_state(
+                app, SimpleNamespace(), {"files": {}}, "film.srt", "completed")
+
     def test_same_input_with_trailing_separator_loads_existing_session(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
