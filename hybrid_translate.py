@@ -5571,6 +5571,8 @@ _TRANSLATABLE_EN_RESIDUE_PATTERNS = (
     re.compile(r"\bentourage\s+effect\b", re.IGNORECASE),
     re.compile(r"\bbatch\s+reactor\b", re.IGNORECASE),
     re.compile(r"\b(?:God|Jesus|Christ)\b", re.IGNORECASE),
+    re.compile(r"\bChristianity\b", re.IGNORECASE),
+    re.compile(r"\bFrench\s+colonists\b", re.IGNORECASE),
 )
 
 
@@ -5604,7 +5606,7 @@ def _garble_last_vowel(word: str) -> str:
     return ""
 
 
-def find_garble_tokens(text) -> list:
+def find_garble_tokens(text, source_text: str = "") -> list:
     """Bozuk/yabancı token'ları deterministik kurallarla yakalar (API yok, ~sıfır
     yanlış-pozitif hedefli). Döner: [(token, kural_adı), ...].
 
@@ -5638,7 +5640,14 @@ def find_garble_tokens(text) -> list:
         # Tek harfli "x"/"w"/"q" matematik sembolü/değişken/kısaltma olabilir
         # (gerçek garble değil) — yalnızca 2+ harfli token'lar (ör. "simwolika",
         # "wedges") sayılır.
-        if len(tok) < 2 or tok.lower() in _GARBLE_WQX_ALLOWLIST or tok[:1].isupper():
+        if (len(tok) < 2 or tok.lower() in _GARBLE_WQX_ALLOWLIST
+                or tok[:1].isupper()
+                # Scientific/local terms such as coquiando or bratwurst can
+                # legitimately be preserved from the source.  This exemption
+                # is deliberately source-bound; an invented q/w/x word still
+                # remains a garble signal.
+                or re.search(rf"(?<![A-Za-z]){re.escape(tok)}(?![A-Za-z])",
+                             str(source_text or ""), re.IGNORECASE)):
             continue
         found.append((tok, "R2_wqx_token"))
 
@@ -5687,8 +5696,18 @@ def find_translatable_english_residue(source_text, target_text,
         return []
     protected = set()
     for src, tgt in dict(locked_terms or {}).items():
-        if str(src).strip().casefold() == str(tgt).strip().casefold():
-            protected.add(str(src).strip().casefold())
+        src_value = str(src).strip()
+        tgt_value = str(tgt).strip()
+        if src_value.casefold() == tgt_value.casefold():
+            protected.add(src_value.casefold())
+            # A locked multi-word name (Jesus Christ, Penicillium camemberti)
+            # also protects its meaningful components.  The previous whole
+            # phrase-only check falsely sent the component Jesus back to the
+            # API even when the exact locked name was correctly preserved.
+            protected.update(
+                token.casefold() for token in re.findall(
+                    r"[A-Za-zÀ-ÖØ-öø-ÿ]+", src_value)
+                if len(token) >= 3)
     found = []
     for pattern in _TRANSLATABLE_EN_RESIDUE_PATTERNS:
         source_hits = {match.group(0).casefold() for match in pattern.finditer(source)}
@@ -7207,7 +7226,8 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
         if _has_bad_turkish_case_flow(text):
             reasons.append("BAD_TURKISH_CASE_FLOW")
 
-        garble_hits = find_garble_tokens(text)
+        garble_hits = find_garble_tokens(
+            text, source_text=orig_clean_dict.get(str(idx), ""))
         if garble_hits:
             tokens = ",".join(dict.fromkeys(tok for tok, _rule in garble_hits))
             reasons.append(f"GARBLE_TOKEN({tokens})")
@@ -7324,7 +7344,8 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             reasons.append("WEIRD_TURKISH_PHRASE:derece_köylerine")
 
         # NEIGHBOR_ECHO: checked against the NEXT block (add for non-last items)
-        if pos < len(tr_blocks) - 1 and _has_consecutive_echo(tr_blocks, pos):
+        if pos < len(tr_blocks) - 1 and _has_consecutive_echo(
+                tr_blocks, pos, orig_clean_dict):
             reasons.append("NEIGHBOR_ECHO")
         if pos < len(tr_blocks) - 1 and _has_neighbor_prefix_echo(tr_blocks, pos):
             reasons.append("NEIGHBOR_PREFIX_ECHO")
@@ -8865,7 +8886,8 @@ def _has_orphan_fragment(source_text: str, candidate_text: str) -> bool:
     return len(non_filler) == 0 or (len(tr_stripped) <= 4 and len(tr_tokens) <= 2)
 
 
-def _has_consecutive_echo(tr_blocks: list, pos: int) -> bool:
+def _has_consecutive_echo(tr_blocks: list, pos: int,
+                          source_by_id: dict | None = None) -> bool:
     """Flag when two consecutive target lines are identical short phrases."""
     if pos < 0 or pos + 1 >= len(tr_blocks):
         return False
@@ -8877,6 +8899,15 @@ def _has_consecutive_echo(tr_blocks: list, pos: int) -> bool:
     t2 = text2.strip().strip(".,;:!?").lower()
     if t1 != t2 or len(t1) < 3:
         return False
+    if source_by_id:
+        src1 = str(source_by_id.get(str(_idx1), "")).casefold()
+        src2 = str(source_by_id.get(str(_idx2), "")).casefold()
+        # "Oh, God" / "Oh, my God" may correctly share a Turkish reaction;
+        # different source wording here is not a cue shift.
+        god_reaction = re.compile(
+            r"^\s*oh[,.! ]+(?:my\s+)?(?:god|lord|jesus)\b", re.IGNORECASE)
+        if src1 != src2 and god_reaction.search(src1) and god_reaction.search(src2):
+            return False
     return True
 
 
@@ -10522,15 +10553,48 @@ _CONTEXT_SENSITIVE_LOCAL_FIX_PATTERNS = frozenset({
     r"\bscrew you\b", r"\bscrew it\b",
 })
 
+# These are spelling/spacing repairs.  Every other historical corpus rule can
+# alter a valid word, title or term and must see the matching source before it
+# is allowed to touch a real subtitle line.
+_LOCAL_FIX_SAFE_WITHOUT_SOURCE_PATTERNS = frozenset({
+    r'\bevett\b', r'\bttek\b', r'\bmikrofom\b', r'\bona\s+de\b',
+    r'\byasadÄ±klarÄ±\b', r'\byasadÄ±ÄŸÄ±\b', r'\bmetafoor\b',
+})
 
-def _apply_local_fixes(text: str, allow_context_sensitive: bool = True) -> tuple[str, int]:
-    """Apply instant regex-based fixes. Returns (fixed_text, n_fixes)."""
+
+def _local_fix_source_evidence(pattern, source_text: str) -> bool:
+    """True only when a semantic legacy fix visibly belongs to this source cue."""
+    source = str(source_text or "")
+    if not source:
+        return False
+    try:
+        return bool(pattern.search(source))
+    except Exception:
+        return False
+
+
+def _apply_local_fixes(text: str, allow_context_sensitive: bool = True,
+                       source_text: str | None = None,
+                       locked_terms: dict | None = None) -> tuple[str, int]:
+    """Apply instant fixes, source-gating semantic legacy replacements when asked.
+
+    Legacy callers retain their diagnostic/test behavior without ``source_text``.
+    Real write paths pass it, so a post-pass cannot silently rewrite a valid
+    title or locked term using a rule learned from an unrelated episode.
+    """
     count = 0
     for pattern, replacement in _LOCAL_FIXES:
         if (not allow_context_sensitive
                 and pattern.pattern in _CONTEXT_SENSITIVE_LOCAL_FIX_PATTERNS):
             continue
+        if (source_text is not None
+                and pattern.pattern not in _LOCAL_FIX_SAFE_WITHOUT_SOURCE_PATTERNS
+                and not _local_fix_source_evidence(pattern, source_text)):
+            continue
         new = pattern.sub(replacement, text)
+        if (new != text and source_text is not None
+                and locked_term_violation(source_text, new, locked_terms)):
+            continue
         if new != text:
             count += 1
             text = new
@@ -11146,7 +11210,9 @@ def critic_pass_with_helper(
     for i, (idx, ts, text) in enumerate(result):
         if not text or text == "[HATA]":
             continue
-        fixed, n = _apply_local_fixes(text, allow_context_sensitive=False)
+        fixed, n = _apply_local_fixes(
+            text, allow_context_sensitive=False,
+            source_text=orig_dict.get(str(idx), ""), locked_terms=glossary)
         if n and not locked_term_violation(
                 orig_dict.get(str(idx), ""), fixed, glossary):
             result[i] = (idx, ts, fixed)
@@ -12232,7 +12298,9 @@ def submit_and_wait(
 
 # ── Sonuçları kaydet ──────────────────────────────────────────────────────────
 
-def _normalize_output_text(text: str, target_language: str = "Turkish") -> str:
+def _normalize_output_text(text: str, target_language: str = "Turkish",
+                           source_text: str | None = None,
+                           locked_terms: dict | None = None) -> str:
     """Final SRT write-time cleanup shared by hybrid/batch output paths."""
     is_turkish = str(target_language or "").strip().lower() in (
         _GLOSSARY_GUARD_TURKISH_TARGETS)
@@ -12241,14 +12309,21 @@ def _normalize_output_text(text: str, target_language: str = "Turkish") -> str:
     text = re.sub(r"\n{2,}", "\n", text)
     if not is_turkish:
         return text
-    text, _ = _apply_local_fixes(text, allow_context_sensitive=False)
+    text, _ = _apply_local_fixes(
+        text, allow_context_sensitive=False,
+        source_text=source_text, locked_terms=locked_terms)
     try:
         import sdh_cleaner
     except Exception:
         return text
     text = sdh_cleaner.normalize_sdh_descriptors(text)
     text = sdh_cleaner.normalize_speaker_labels(text)
-    text = sdh_cleaner.normalize_turkish_artifacts(text)
+    # That normalizer contains historical corpus substitutions (rat/client/
+    # macabre/collection etc.).  It has no source input, so only retain it for
+    # legacy direct callers; real output paths supply source_text and must not
+    # make an unreported post-QA semantic rewrite.
+    if source_text is None:
+        text = sdh_cleaner.normalize_turkish_artifacts(text)
     return text
 
 
@@ -12448,8 +12523,9 @@ def save_results(
     rows = []
     for key in sorted(srt_blocks, key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))):
         idx, ts, text = srt_blocks[key]
-        rows.append(
-            f"{idx}\n{ts}\n{_normalize_output_text(text, target_language)}\n\n")
+        normalized = _normalize_output_text(
+            text, target_language, source_by_id.get(str(idx), ""))
+        rows.append(f"{idx}\n{ts}\n{normalized}\n\n")
     atomic_write_text(_out, "".join(rows))
 
     count = len(srt_blocks)
