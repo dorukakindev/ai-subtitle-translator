@@ -251,6 +251,11 @@ def _header_value(headers, name: str):
             value = headers.get(name.lower())
         if value is None:
             value = headers.get(name.upper())
+        if value is None:
+            wanted = str(name).casefold()
+            for key, item in headers.items():
+                if str(key).casefold() == wanted:
+                    return item
         return value
     except Exception:
         return None
@@ -972,11 +977,10 @@ def _structured_unsupported(exc) -> bool:
     return parameter and unsupported
 
 
-def _chat_create_once(client, kwargs: dict, request_context=None):
+def _provider_call_once(call, client, model: str, request_context=None):
     total = len(TRANSIENT_RETRY_DELAYS)
-    model = str(kwargs.get("model", "") or "")
+    model = str(model or "")
     base_context = dict(request_context or {})
-    request_client = _without_sdk_retries(client)
     for attempt in range(total + 1):
         details = dict(base_context)
         details.update({"attempt": attempt + 1, "max_attempts": total + 1})
@@ -984,7 +988,7 @@ def _chat_create_once(client, kwargs: dict, request_context=None):
         started = time.monotonic()
         request_id = _REGISTRY.request_started(details)
         try:
-            result = request_client.chat.completions.create(**kwargs)
+            result = call()
             upstream_request_id = _upstream_request_id(result)
             if upstream_request_id:
                 details["request_id"] = upstream_request_id
@@ -1027,6 +1031,20 @@ def _chat_create_once(client, kwargs: dict, request_context=None):
                         pass
                 else:
                     _REQUEST_CONTEXT.value = previous_context
+
+
+def provider_call_with_retry(call, client, model: str, request_context=None):
+    return _provider_call_once(call, client, model, request_context)
+
+
+def _chat_create_once(client, kwargs: dict, request_context=None):
+    request_client = _without_sdk_retries(client)
+    return _provider_call_once(
+        lambda: request_client.chat.completions.create(**kwargs),
+        client,
+        kwargs.get("model", ""),
+        request_context,
+    )
 
 
 def _without_sdk_retries(client):

@@ -4,6 +4,46 @@ from dataclasses import dataclass
 DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS = 300
 
 
+class ProviderAdapterError(RuntimeError):
+    def __init__(self, message, status_code=None, headers=None, body=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.body = body
+
+
+def _redact_provider_secret(value, api_key_str) -> str:
+    text = str(value or "")
+    raw = str(api_key_str or "")
+    candidates = [raw]
+    if ":" in raw:
+        candidates.extend(raw.split(":", 2)[:2])
+    for secret in candidates:
+        secret = secret.strip()
+        if len(secret) >= 6:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def _provider_adapter_error(provider, exc, api_key_str=None, body=None,
+                            status_code=None, headers=None):
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        metadata = response.get("ResponseMetadata") or {}
+        status_code = status_code or metadata.get("HTTPStatusCode")
+        headers = headers or metadata.get("HTTPHeaders")
+        body = body if body is not None else response.get("Error")
+    status_code = status_code or getattr(exc, "code", None)
+    headers = headers or getattr(exc, "headers", None) or {}
+    safe_error = _redact_provider_secret(exc, api_key_str)
+    safe_body = _redact_provider_secret(body, api_key_str) if body is not None else ""
+    message = f"{provider} çağrısı başarısız oldu: {safe_error}"
+    if safe_body:
+        message += f"\nYanıt: {safe_body[:2000]}"
+    return ProviderAdapterError(
+        message, status_code=status_code, headers=headers, body=safe_body or None)
+
+
 def _raise_if_cancelled(cancel_context) -> None:
     if cancel_context is not None:
         cancel_context.raise_if_cancelled()
@@ -436,7 +476,8 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     try:
         response = client.converse(**converse_args)
     except Exception as e:
-        raise RuntimeError(f"AWS Bedrock çağrısı başarısız oldu: {e}")
+        raise _provider_adapter_error(
+            "AWS Bedrock", e, api_key_str=api_key_str) from e
     finally:
         if registered_client:
             cancel_context.unregister(client)
@@ -567,9 +608,15 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
                 response = connection.getresponse()
                 body = response.read()
                 if response.status >= 400:
-                    raise RuntimeError(
-                        f"HTTP {response.status}: "
-                        f"{body.decode('utf-8', errors='replace')[:2000]}")
+                    decoded = body.decode("utf-8", errors="replace")[:2000]
+                    safe_body = _redact_provider_secret(decoded, api_key_str)
+                    raise ProviderAdapterError(
+                        f"Anthropic API çağrısı başarısız oldu: HTTP {response.status}\n"
+                        f"Yanıt: {safe_body}",
+                        status_code=response.status,
+                        headers=dict(response.getheaders()),
+                        body=safe_body,
+                    )
                 res = json.loads(body.decode("utf-8"))
             finally:
                 cancel_context.unregister(connection)
@@ -584,9 +631,13 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
             body = e.read().decode("utf-8", errors="replace")[:2000]
         except Exception:
             body = "(okunamadı)"
-        raise RuntimeError(f"Anthropic API çağrısı başarısız oldu: {e}\nYanıt: {body}")
+        raise _provider_adapter_error(
+            "Anthropic API", e, api_key_str=api_key_str, body=body) from e
+    except ProviderAdapterError:
+        raise
     except Exception as e:
-        raise RuntimeError(f"Anthropic API çağrısı başarısız oldu: {e}")
+        raise _provider_adapter_error(
+            "Anthropic API", e, api_key_str=api_key_str) from e
 
     _raise_if_cancelled(cancel_context)
     output_text = ""

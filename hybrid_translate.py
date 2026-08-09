@@ -2368,37 +2368,47 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     if is_bedrock:
         api_key = getattr(client, "api_key", None)
         from helper_models import call_bedrock_converse
+        from provider_retry import provider_call_with_retry
         from request_cancellation import run_cancellable_call
-        return run_cancellable_call(
-            lambda: call_bedrock_converse(
-                model_id=model,
-                messages=kwargs.get("messages", []),
-                temperature=kwargs.get("temperature"),
-                max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
-                api_key_str=api_key,
-                base_url=base_url,
-                cancel_context=cancel_context,
-                timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+        return provider_call_with_retry(
+            lambda: run_cancellable_call(
+                lambda: call_bedrock_converse(
+                    model_id=model,
+                    messages=kwargs.get("messages", []),
+                    temperature=kwargs.get("temperature"),
+                    max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
+                    api_key_str=api_key,
+                    base_url=base_url,
+                    cancel_context=cancel_context,
+                    timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+                ),
+                cancel_context,
             ),
-            cancel_context,
+            client, model,
+            {"operation": checkpoint_label or "bedrock_direct"},
         )
 
     if is_anthropic:
         api_key = getattr(client, "api_key", None)
         from helper_models import call_anthropic_messages
+        from provider_retry import provider_call_with_retry
         from request_cancellation import run_cancellable_call
-        return run_cancellable_call(
-            lambda: call_anthropic_messages(
-                model_id=model,
-                messages=kwargs.get("messages", []),
-                temperature=kwargs.get("temperature"),
-                max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
-                api_key_str=api_key,
-                base_url=base_url,
-                cancel_context=cancel_context,
-                timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+        return provider_call_with_retry(
+            lambda: run_cancellable_call(
+                lambda: call_anthropic_messages(
+                    model_id=model,
+                    messages=kwargs.get("messages", []),
+                    temperature=kwargs.get("temperature"),
+                    max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
+                    api_key_str=api_key,
+                    base_url=base_url,
+                    cancel_context=cancel_context,
+                    timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+                ),
+                cancel_context,
             ),
-            cancel_context,
+            client, model,
+            {"operation": checkpoint_label or "anthropic_direct"},
         )
 
     kwargs = _normalize_chat_create_kwargs(model, kwargs)

@@ -223,7 +223,7 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     try:
         from helper_models import normalize_helper_model_label, resolve_helper_model, _CONFIGS, _ALIASES
         norm_label = normalize_helper_model_label(model)
-        is_known_model = (model in _CONFIGS) or (model.lower() in _ALIASES) or (norm_label in _CONFIGS and norm_label != "gpt-5.4-mini")
+        is_known_model = (model in _CONFIGS) or (model.lower() in _ALIASES)
         cfg = resolve_helper_model(norm_label)
         if cfg.provider == "bedrock":
             is_bedrock = True
@@ -246,37 +246,47 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     if is_bedrock:
         api_key = getattr(client, "api_key", None)
         from helper_models import call_bedrock_converse
+        from provider_retry import provider_call_with_retry
         from request_cancellation import run_cancellable_call
-        return run_cancellable_call(
-            lambda: call_bedrock_converse(
-                model_id=model,
-                messages=kwargs.get("messages", []),
-                temperature=kwargs.get("temperature"),
-                max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
-                api_key_str=api_key,
-                base_url=base_url,
-                cancel_context=cancel_context,
-                timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+        return provider_call_with_retry(
+            lambda: run_cancellable_call(
+                lambda: call_bedrock_converse(
+                    model_id=model,
+                    messages=kwargs.get("messages", []),
+                    temperature=kwargs.get("temperature"),
+                    max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
+                    api_key_str=api_key,
+                    base_url=base_url,
+                    cancel_context=cancel_context,
+                    timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+                ),
+                cancel_context,
             ),
-            cancel_context,
+            client, model,
+            {"operation": checkpoint_label or "bedrock_direct"},
         )
 
     if is_anthropic:
         api_key = getattr(client, "api_key", None)
         from helper_models import call_anthropic_messages
+        from provider_retry import provider_call_with_retry
         from request_cancellation import run_cancellable_call
-        return run_cancellable_call(
-            lambda: call_anthropic_messages(
-                model_id=model,
-                messages=kwargs.get("messages", []),
-                temperature=kwargs.get("temperature"),
-                max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
-                api_key_str=api_key,
-                base_url=base_url,
-                cancel_context=cancel_context,
-                timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+        return provider_call_with_retry(
+            lambda: run_cancellable_call(
+                lambda: call_anthropic_messages(
+                    model_id=model,
+                    messages=kwargs.get("messages", []),
+                    temperature=kwargs.get("temperature"),
+                    max_tokens=kwargs.get("max_tokens") or kwargs.get("max_completion_tokens"),
+                    api_key_str=api_key,
+                    base_url=base_url,
+                    cancel_context=cancel_context,
+                    timeout_seconds=kwargs.get("timeout") or API_REQUEST_TIMEOUT_SECONDS,
+                ),
+                cancel_context,
             ),
-            cancel_context,
+            client, model,
+            {"operation": checkpoint_label or "anthropic_direct"},
         )
 
     try:
@@ -404,10 +414,11 @@ def _get_usage_details(usage):
 def _report_response_usage(token_callback, response, *, log_fn=None,
                            pass_name: str = "", filepath: str = "") -> bool:
     """Forward real usage, or explicitly record when a provider omitted it."""
-    if not token_callback:
-        return bool(getattr(response, "usage", None))
     usage = getattr(response, "usage", None)
-    if usage:
+    usage_available = getattr(response, "usage_available", None) is not False
+    if not token_callback:
+        return bool(usage) and usage_available
+    if usage and usage_available:
         total, cached = _get_usage_details(usage)
         try:
             token_callback(total, cached=cached)
