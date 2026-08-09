@@ -1,6 +1,7 @@
 import datetime
 import inspect
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -583,7 +584,8 @@ class RunTraceabilityTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            (root / "active_run.json").write_text("{}", encoding="utf-8")
+            active_path = root / f"active_run.{os.getpid()}.json"
+            active_path.write_text("{}", encoding="utf-8")
             with patch.object(gui, "_resolve_report_dir", return_value=root), \
                     patch.object(
                         gui, "state_path",
@@ -595,7 +597,7 @@ class RunTraceabilityTest(unittest.TestCase):
             self.assertTrue(txt_path.exists())
             self.assertTrue(json_path.exists())
             self.assertTrue(last_path.exists())
-            self.assertFalse((root / "active_run.json").exists())
+            self.assertFalse(active_path.exists())
             self.assertEqual(
                 json.loads(last_path.read_text(encoding="utf-8"))["run_id"],
                 result["run_id"])
@@ -657,7 +659,8 @@ class RunTraceabilityTest(unittest.TestCase):
                 result = gui.App._finalize_run_record(stub)
 
             active = json.loads(
-                (root / "active_run.json").read_text(encoding="utf-8"))
+                (root / f"active_run.{os.getpid()}.json").read_text(
+                    encoding="utf-8"))
             self.assertEqual(result["status"], "durduruldu")
             self.assertEqual(result["resume_pending"], [str(pending)])
             self.assertEqual(active["resume_pending"], [str(pending)])

@@ -7688,8 +7688,27 @@ def _load_last_run_record() -> dict | None:
         return None
 
 
-def _active_run_state_path() -> Path:
-    return state_path(__file__, "active_run.json")
+def _active_run_state_path(pid: int | None = None) -> Path:
+    owner_pid = int(pid or os.getpid())
+    return state_path(__file__, f"active_run.{owner_pid}.json")
+
+
+def _active_run_state_candidates() -> list[Path]:
+    own = _active_run_state_path()
+    candidates = [own]
+    try:
+        candidates.extend(own.parent.glob("active_run.*.json"))
+    except OSError:
+        pass
+    candidates.append(state_path(__file__, "active_run.json"))
+    result = []
+    seen = set()
+    for path in candidates:
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key not in seen:
+            seen.add(key)
+            result.append(Path(path))
+    return result
 
 
 def _file_content_sha256(path) -> str:
@@ -7748,19 +7767,30 @@ def _interrupted_run_pending_files(record: dict) -> list[str]:
 
 
 def _load_interrupted_run_record() -> dict | None:
-    try:
-        data = json.loads(_active_run_state_path().read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return None
-        pid = int(data.get("pid") or 0)
-        if pid and _pid_alive(pid):
-            saved_marker = str(data.get("process_start") or "")
-            current_marker = _process_start_marker(pid) if saved_marker else ""
-            if not (saved_marker and current_marker and saved_marker != current_marker):
-                return None
-        return data
-    except Exception:
-        return None
+    interrupted = []
+    for path in _active_run_state_candidates():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                continue
+            pid = int(data.get("pid") or 0)
+            if pid and _pid_alive(pid):
+                saved_marker = str(data.get("process_start") or "")
+                current_marker = _process_start_marker(pid) if saved_marker else ""
+                if not (saved_marker and current_marker
+                        and saved_marker != current_marker):
+                    continue
+            data = dict(data)
+            data["_state_path"] = str(path)
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                modified = 0.0
+            interrupted.append((
+                float(data.get("started_epoch") or modified), data))
+        except Exception:
+            continue
+    return max(interrupted, key=lambda item: item[0])[1] if interrupted else None
 
 
 def _timing_iso(epoch: float) -> str:
@@ -10297,6 +10327,7 @@ class App(ctk.CTk):
         self._crash_resume_dialog = None
         self._crash_resume_after_id = None
         self._crash_resume_source_paths = set()
+        self._crash_resume_record_path = ""
 
         # ── Statistics animation ──────────────────────────────────────────────
         self._token_sparkline_points = []
@@ -10374,9 +10405,12 @@ class App(ctk.CTk):
             pass
         if forget:
             try:
-                _active_run_state_path().unlink(missing_ok=True)
+                record_path = str(
+                    getattr(self, "_crash_resume_record_path", "") or "")
+                Path(record_path or _active_run_state_path()).unlink(missing_ok=True)
             except Exception:
                 pass
+            self._crash_resume_record_path = ""
             self._log("Çökme sonrası otomatik devam iptal edildi.", "warn")
 
     def _restore_interrupted_run(self, record: dict):
@@ -10385,7 +10419,8 @@ class App(ctk.CTk):
         files = _interrupted_run_pending_files(record)
         if not files:
             try:
-                _active_run_state_path().unlink(missing_ok=True)
+                Path(str(record.get("_state_path") or
+                         _active_run_state_path())).unlink(missing_ok=True)
             except Exception:
                 pass
             return
@@ -10458,6 +10493,7 @@ class App(ctk.CTk):
         settings["crash_resume"] = True
         settings["resume_origin_run_id"] = str(
             settings.get("resume_origin_run_id") or record.get("run_id") or "")
+        settings["resume_state_path"] = str(record.get("_state_path") or "")
         self._resume_snapshot_override = settings
         self._toggle_hybrid()
         for filepath, language in dict(
@@ -10487,15 +10523,18 @@ class App(ctk.CTk):
         record = _load_interrupted_run_record()
         if not record:
             return
+        self._crash_resume_record_path = str(record.get("_state_path") or "")
         settings = dict(record.get("settings") or {})
         if settings.get("mode") != "sync":
             return
         pending = _interrupted_run_pending_files(record)
         if not pending:
             try:
-                _active_run_state_path().unlink(missing_ok=True)
+                Path(str(record.get("_state_path") or
+                         _active_run_state_path())).unlink(missing_ok=True)
             except Exception:
                 pass
+            self._crash_resume_record_path = ""
             return
         dlg = ctk.CTkToplevel(self)
         self._crash_resume_dialog = dlg
@@ -13084,6 +13123,7 @@ class App(ctk.CTk):
             "chunk_size", "context_lines", "lookahead_lines", "max_workers",
             "temperature", "max_retry", "scene_gap_seconds",
             "crash_resume", "resume_origin_run_id", "auto_retry_repair_only",
+            "resume_state_path",
         )
         result = {key: snapshot.get(key) for key in scalar_keys if key in snapshot}
         result["helper_models"] = dict(snapshot.get("helper_models") or {})
@@ -13189,6 +13229,20 @@ class App(ctk.CTk):
             atomic_write_json(_active_run_state_path(), record)
         except Exception as exc:
             self._log(f"Çökme kurtarma kaydı yazılamadı: {exc}", "warn")
+        else:
+            resumed_path = str(snapshot.get("resume_state_path") or "").strip()
+            if resumed_path:
+                try:
+                    previous = Path(resumed_path)
+                    if (os.path.normcase(os.path.abspath(str(previous)))
+                            != os.path.normcase(os.path.abspath(
+                                str(_active_run_state_path())))):
+                        previous.unlink(missing_ok=True)
+                except Exception as exc:
+                    self._log(
+                        f"Eski çökme kurtarma kaydı temizlenemedi: {exc}",
+                        "warn")
+            self._crash_resume_record_path = ""
         try:
             from provider_retry import configure_response_checkpoint
             configure_response_checkpoint(

@@ -201,5 +201,32 @@ class MainGlossaryFailClosedTest(unittest.TestCase):
         self.assertEqual(ht.load_glossary("", strict=True), {})
 
 
+class MultiInstanceCrashRecoveryTest(unittest.TestCase):
+    def test_live_instance_record_does_not_hide_dead_instance_recovery(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            own = root / "active_run.100.json"
+            live = root / "active_run.200.json"
+            dead = root / "active_run.300.json"
+            live.write_text(json.dumps({
+                "pid": 200, "process_start": "live", "started_epoch": 20,
+                "files": {str(root / "live.srt"): {"status": "running"}},
+            }), encoding="utf-8")
+            dead.write_text(json.dumps({
+                "pid": 300, "process_start": "dead", "started_epoch": 30,
+                "run_id": "dead-run",
+                "files": {str(root / "dead.srt"): {"status": "running"}},
+            }), encoding="utf-8")
+
+            with patch.object(gui, "_active_run_state_path", return_value=own), \
+                 patch.object(gui, "_pid_alive", side_effect=lambda pid: pid == 200), \
+                 patch.object(gui, "_process_start_marker", return_value="live"):
+                recovered = gui._load_interrupted_run_record()
+
+            self.assertEqual(recovered["run_id"], "dead-run")
+            self.assertEqual(recovered["_state_path"], str(dead))
+            self.assertTrue(live.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
