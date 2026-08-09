@@ -427,8 +427,22 @@ class PermanentQuotaFailureTest(unittest.TestCase):
     def test_partial_output_path_never_overwrites_final(self):
         self.assertEqual(
             gui._partial_output_path(r"C:\out\episode.srt"),
-            gui.Path(r"C:\out\episode.partial.srt"),
+            gui.Path(r"C:\out\Raporlar\Kurtarma\episode.partial.srt"),
         )
+
+    def test_stage_move_creates_nested_recovery_directory(self):
+        with TemporaryDirectory() as tmp:
+            root = gui.Path(tmp)
+            stage = root / ".episode.stage.srt"
+            final = root / "episode.srt"
+            stage.write_text("partial", encoding="utf-8")
+
+            partial = gui._move_stage_to_partial(stage, final)
+
+            self.assertEqual(
+                partial, root / "Raporlar" / "Kurtarma" / "episode.partial.srt")
+            self.assertEqual(partial.read_text(encoding="utf-8"), "partial")
+            self.assertFalse(stage.exists())
 
     def test_incomplete_existing_final_is_quarantined_outside_srt_set(self):
         with TemporaryDirectory() as root:
@@ -439,6 +453,8 @@ class PermanentQuotaFailureTest(unittest.TestCase):
 
             self.assertFalse(final.exists())
             self.assertEqual(quarantined.suffix, ".bak")
+            self.assertEqual(quarantined.parent.name, "Kurtarma")
+            self.assertEqual(quarantined.parent.parent.name, "Raporlar")
             self.assertEqual(
                 quarantined.read_text(encoding="utf-8"),
                 "[ÇEVİRİ EKSİK]",

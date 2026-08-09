@@ -3175,6 +3175,33 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
     return Path(out_dir) / source_key / output_name
 
 
+_UPLOAD_SEASON_PARENT_RE = re.compile(
+    r"(?i)(?:^|[ ._\-])s(?P<season>\d{1,2})(?=$|[ ._\-])")
+_UPLOAD_DOS_SHORT_STEM_RE = re.compile(r"(?i)^[a-z0-9]{1,6}~\d+$")
+
+
+def _upload_filename_issue(path) -> str:
+    source = Path(path)
+    season = None
+    for parent in source.parents:
+        match = _UPLOAD_SEASON_PARENT_RE.search(parent.name)
+        if match:
+            season = int(match.group("season"))
+            break
+    if season is None:
+        return ""
+    stem = source.stem
+    if stem.isdigit():
+        return (
+            f"Dosya adı yalnız bölüm numarası içeriyor; yüklemeden önce "
+            f"S{season:02d}E{int(stem):02d} ve dizi adıyla yeniden adlandırılmalı.")
+    if _UPLOAD_DOS_SHORT_STEM_RE.fullmatch(stem):
+        return (
+            "Dosya adı DOS 8.3 biçiminde kısalmış; gerçek dizi adı ile "
+            "sezon/bölüm numarası yüklemeden önce doğrulanmalı.")
+    return ""
+
+
 def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                             same_folder=False, selected_roots=(),
                             expected_source_language=AUTO_LANGUAGE,
@@ -3215,6 +3242,12 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "path": str(path), "message": "Dosya bulunamadı veya okunamıyor.",
             })
             continue
+        upload_name_issue = _upload_filename_issue(path)
+        if upload_name_issue:
+            issues.append({
+                "severity": "warning", "code": "upload_name",
+                "path": str(path), "message": upload_name_issue,
+            })
         try:
             if path.stat().st_size == 0:
                 raise ValueError("Dosya boş.")
@@ -8331,7 +8364,28 @@ def _polish_chunk_ranges(blocks, fragment_group_ids, chunk_size):
 
 def _partial_output_path(out_path) -> Path:
     path = Path(out_path)
+    return (
+        path.parent / "Raporlar" / "Kurtarma"
+        / f"{path.stem}.partial{path.suffix}"
+    )
+
+
+def _legacy_partial_output_path(out_path) -> Path:
+    path = Path(out_path)
     return path.with_name(f"{path.stem}.partial{path.suffix}")
+
+
+def _partial_output_candidates(out_path) -> tuple[Path, ...]:
+    current = _partial_output_path(out_path)
+    legacy = _legacy_partial_output_path(out_path)
+    return (current, legacy) if current != legacy else (current,)
+
+
+def _move_stage_to_partial(stage_path, out_path) -> Path:
+    partial = _partial_output_path(out_path)
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    Path(stage_path).replace(partial)
+    return partial
 
 
 def _archive_completed_partial_output(partial_path, out_path) -> Path | None:
@@ -8402,10 +8456,12 @@ def _quarantine_incomplete_final(out_path) -> Path | None:
     path = Path(out_path)
     if not path.is_file():
         return None
-    target = path.with_name(f"{path.stem}.incomplete.bak")
+    archive_dir = path.parent / "Raporlar" / "Kurtarma"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / f"{path.stem}.incomplete.bak"
     serial = 2
     while target.exists():
-        target = path.with_name(f"{path.stem}.incomplete.{serial}.bak")
+        target = archive_dir / f"{path.stem}.incomplete.{serial}.bak"
         serial += 1
     path.replace(target)
     return target
@@ -8525,6 +8581,15 @@ def _partial_output_recovery_allowed(report_dir, partial_path, source_path,
         and _output_matches_source_fingerprint(
             report_dir, partial_path, source_path)
     )
+
+
+def _recoverable_partial_output_path(report_dir, out_path, source_path,
+                                     force_retranslate_paths=()) -> Path | None:
+    for candidate in _partial_output_candidates(out_path):
+        if _partial_output_recovery_allowed(
+                report_dir, candidate, source_path, force_retranslate_paths):
+            return candidate
+    return None
 
 
 def _cps_stats(blocks) -> tuple:
@@ -18968,7 +19033,11 @@ class App(ctk.CTk):
                 except Exception:
                     pass
             out_obj = Path(out_path)
-            report_dir = out_obj.parent / "Raporlar" / "Ham"
+            delivery_parent = out_obj.parent
+            if (delivery_parent.name.casefold() == "kurtarma"
+                    and delivery_parent.parent.name.casefold() == "raporlar"):
+                delivery_parent = delivery_parent.parent.parent
+            report_dir = delivery_parent / "Raporlar" / "Ham"
             report_dir.mkdir(parents=True, exist_ok=True)
             digest = hashlib.sha256(
                 os.path.normcase(os.path.abspath(str(out_obj))).encode("utf-8")
@@ -22858,9 +22927,9 @@ class App(ctk.CTk):
             os.path.normcase(os.path.abspath(str(path)))
             for path in getattr(self, "_force_retranslate_paths", set())
         }
-        partial_path = _partial_output_path(out_path)
-        if not _partial_output_recovery_allowed(
-                report_dir, partial_path, filepath, force_retranslate):
+        partial_path = _recoverable_partial_output_path(
+            report_dir, out_path, filepath, force_retranslate)
+        if partial_path is None:
             return None
         try:
             partial_blocks = list(parse_subtitle(str(partial_path)))
@@ -23065,7 +23134,12 @@ class App(ctk.CTk):
                         pass  # parse edilemediyse yeniden çevir
                 _expected_source_hash = _after_source_hash
                 _output_baseline = _file_state_signature(out_path)
-                _partial_candidate = _partial_output_path(out_path)
+                _partial_candidate = (
+                    _recoverable_partial_output_path(
+                        report_dir, out_path, filepath,
+                        getattr(self, "_force_retranslate_paths", set()))
+                    or _partial_output_path(out_path)
+                )
                 _repair_only_result = self._run_partial_repair_only_file(
                     filepath, cues, out_path, report_dir,
                     _expected_source_hash, _output_baseline,
@@ -23302,7 +23376,7 @@ class App(ctk.CTk):
                 allow_incomplete_resume=_allow_partial_resume)
             _partial_repair_only = False
             if _allow_partial_resume:
-                _partial_path = _partial_output_path(out_path)
+                _partial_path = _partial_candidate
                 try:
                     _partial_raw, _partial_recovered, _partial_missing = (
                         _partial_retry_raw_map(
@@ -25049,10 +25123,9 @@ class App(ctk.CTk):
                                 if str(text or "").startswith("[HATA")
                                 or "[ÇEVİRİ EKSİK]" in str(text or ""))
                             if _missing_count:
-                                _partial_path = _out_obj.with_name(
-                                    f"{_out_obj.stem}.partial.srt")
                                 write_srt(_stage_path, pp, tgt)
-                                _stage_path.replace(_partial_path)
+                                _partial_path = _move_stage_to_partial(
+                                    _stage_path, _out_obj)
                                 self._log(
                                     f"Resume: {_missing_count} eksik çeviri kaldı; "
                                     f"nihai çıktı korunup {_partial_path.name} yazıldı.",

@@ -38,6 +38,17 @@ class RawBackupTest(unittest.TestCase):
             self.app, out, [("1", _TS, "Merhaba")], {"1": "Hello"})
         self.assertEqual(len(list(Path(d, "Raporlar", "Ham").glob("movie.*.ham.srt"))), 1)
 
+    def test_partial_path_still_uses_single_top_level_report_tree(self):
+        d = Path(tempfile.mkdtemp())
+        partial = d / "Raporlar" / "Kurtarma" / "movie.partial.srt"
+        self.app.backup_raw_var = SimpleNamespace(get=lambda: True)
+        gui.App._save_raw_backup(
+            self.app, partial, [("1", _TS, "Merhaba")], {"1": "Hello"})
+
+        self.assertEqual(
+            len(list((d / "Raporlar" / "Ham").glob("movie.*.ham.srt"))), 1)
+        self.assertFalse((partial.parent / "Raporlar").exists())
+
     def test_skips_when_off(self):
         d = tempfile.mkdtemp()
         out = os.path.join(d, "movie.srt")

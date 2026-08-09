@@ -102,6 +102,38 @@ class SubtitlePreflightTest(unittest.TestCase):
             )
             self.assertIn("wrong_language", {issue["code"] for issue in issues})
 
+    def test_numeric_episode_name_in_season_folder_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Hamiltons.Pharmacopeia.2016.S02.REPACK"
+            root.mkdir()
+            source = root / "3.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nHello.\n",
+                encoding="utf-8",
+            )
+            issues = gui.scan_subtitle_preflight(
+                [str(source)], str(root), str(root / "out"))
+
+            upload = [issue for issue in issues if issue["code"] == "upload_name"]
+            self.assertEqual(len(upload), 1)
+            self.assertIn("S02E03", upload[0]["message"])
+
+    def test_dos_short_episode_name_in_season_folder_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "Hamiltons.Pharmacopeia.2016.S02.REPACK"
+            root.mkdir()
+            source = root / "HA42BA~1.vtt"
+            source.write_text(
+                "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello.\n",
+                encoding="utf-8",
+            )
+            issues = gui.scan_subtitle_preflight(
+                [str(source)], str(root), str(root / "out"))
+
+            upload = [issue for issue in issues if issue["code"] == "upload_name"]
+            self.assertEqual(len(upload), 1)
+            self.assertIn("DOS 8.3", upload[0]["message"])
+
     def test_existing_resolved_output_is_reported_with_target_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
