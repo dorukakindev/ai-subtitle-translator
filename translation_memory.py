@@ -83,7 +83,7 @@ def _is_missing_translation(target: str) -> bool:
     return text.startswith("[HATA") or text == "[ÇEVİRİ EKSİK]"
 
 
-def _is_safe_target(target: str) -> bool:
+def _is_safe_target(target: str, source_text: str = "") -> bool:
     """Hedef metin sızıntı/bozuk-token içeriyorsa False — TM'ye KAYDETME (bkz.
     plans/future-quality-guards-brief.md Görev 2: geçmişte DB'ye giren hatalı bir
     çeviri, fuzzy/exact eşleşmeyle GELECEK bölümlere geri taşınır — guard'ları
@@ -95,9 +95,11 @@ def _is_safe_target(target: str) -> bool:
         return False
     try:
         import hybrid_translate as ht
-        if ht.has_non_turkish_target_leak(target):
+        if ht.has_non_turkish_target_leak(target, source_text=source_text):
             return False
-        if ht.find_garble_tokens(target):
+        if ht.find_garble_tokens(target, source_text=source_text):
+            return False
+        if ht.find_translatable_english_residue(source_text, target):
             return False
     except Exception as exc:
         with _TM_GUARD_LOCK:
@@ -414,7 +416,7 @@ class TranslationMemory:
             return False
         if _s.lower() == _t.lower():
             return False
-        if not _is_safe_target(_t):
+        if not _is_safe_target(_t, _s):
             return False
         fingerprint = self._settings_fingerprint(
             model, profanity, schema_name, source_language, context_fingerprint)
@@ -450,7 +452,7 @@ class TranslationMemory:
                 continue
             if source.strip().lower() == target.strip().lower():
                 continue
-            if not _is_safe_target(target.strip()):
+            if not _is_safe_target(target.strip(), source.strip()):
                 continue
             rows.append((
                 self._hash(source, tgt_lang, fingerprint),
