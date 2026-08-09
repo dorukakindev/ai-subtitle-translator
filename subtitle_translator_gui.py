@@ -14886,8 +14886,11 @@ class App(ctk.CTk):
                             log_fn=self._log, locked_terms=locked_terms,
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
-                            token_callback=self._token_callback_for_model(
-                                self._helper_api_model("polish")),
+                            token_callback=App._token_callback_for_pass(
+                                self, self._helper_api_model("polish"),
+                                "Terim Normalizasyonu",
+                                base_url=self._helper_api_base_url("polish"),
+                                file_path=source_path),
                             status_out=term_status)
                         if term_status.get("status") not in {"completed", "skipped"}:
                             raise RuntimeError(
@@ -19278,9 +19281,9 @@ class App(ctk.CTk):
                 tgt_lang=run_tgt_lang or "Turkish",
                 log_fn=self._log,
                 token_callback=App._token_callback_for_pass(
-                    self,
-                    self._helper_api_model("qc"),
-                    "Geri Çeviri"),
+                    self, self._helper_api_model("qc"), "Geri Çeviri",
+                    base_url=self._helper_api_base_url("qc"),
+                    file_path=str(source_path or "")),
                 cancel_context=self.__dict__.get("_helper_request_canceller"),
                 status_out=status_out)
             if self.__dict__.get("_stop_flag", False):
@@ -19405,9 +19408,10 @@ class App(ctk.CTk):
                 scene_gap_sec=self._run_scene_gap(),
                 log_fn=self._log,
                 token_callback=App._token_callback_for_pass(
-                    self,
-                    self._helper_api_model("critic"),
-                    "Nihai Anlam Mutabakatı"),
+                    self, self._helper_api_model("critic"),
+                    "Nihai Anlam Mutabakatı",
+                    base_url=self._helper_api_base_url("critic"),
+                    file_path=str(source_path or "")),
                 progress_callback=semantic_progress,
                 status_out=status_out,
                 **cancel_kwargs,
@@ -20513,8 +20517,12 @@ class App(ctk.CTk):
                             change_log=_critic_change_log,
                             scene_gap_sec=float(self._snap_get(
                                 "scene_gap_seconds", self._scene_gap_seconds)),
-                            token_callback=self._token_callback_for_model(
-                                helper_models.get("critic", "gpt-5.4-mini")),
+                            token_callback=App._token_callback_for_pass(
+                                self,
+                                helper_models.get("critic", "gpt-5.4-mini"),
+                                "Critic Pass",
+                                base_url=helper_urls.get("critic", ""),
+                                file_path=fp),
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
                             status_out=_critic_status)
@@ -20565,8 +20573,12 @@ class App(ctk.CTk):
                             log_fn=self._log, analysis_result=analysis_result,
                             scene_gap_sec=float(self._snap_get(
                                 "scene_gap_seconds", self._scene_gap_seconds)),
-                            token_callback=self._token_callback_for_model(
-                                helper_models.get("critic", "gpt-5.4-mini")),
+                            token_callback=App._token_callback_for_pass(
+                                self,
+                                helper_models.get("critic", "gpt-5.4-mini"),
+                                "Native Okuyucu",
+                                base_url=helper_urls.get("critic", ""),
+                                file_path=fp),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
                             progress_callback=App._pass_progress_callback(
                             self, fp, "Native Okuyucu", 65.0, 82.0),
@@ -20750,7 +20762,8 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 analysis_result=analysis_result,
                 cancel_context=cancel_context,
-                token_callback=self._token_callback_for_model(qc_model),
+                token_callback=App._token_callback_for_pass(
+                    self, qc_model, "QC", base_url=qc_url, file_path=fp),
                 status_out=status_out,
             )
         except Exception as e:
@@ -20795,7 +20808,8 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 locked_terms=locked_terms,
                 cancel_context=cancel_context,
-                token_callback=self._token_callback_for_model(qc_model),
+                token_callback=App._token_callback_for_pass(
+                    self, qc_model, "QC", base_url=qc_url, file_path=fp),
             )
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
@@ -20836,7 +20850,8 @@ class App(ctk.CTk):
                 log_fn=self._log,
                 locked_terms=locked_terms,
                 cancel_context=cancel_context,
-                token_callback=self._token_callback_for_model(qc_model),
+                token_callback=App._token_callback_for_pass(
+                    self, qc_model, "QC", base_url=qc_url, file_path=fp),
             )
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
@@ -23950,8 +23965,10 @@ class App(ctk.CTk):
                     change_log=_critic_change_log,
                     scene_gap_sec=float(self._snap_get(
                         "scene_gap_seconds", self._scene_gap_seconds)),
-                    token_callback=self._token_callback_for_model(
-                        self._helper_api_model("critic")),
+                    token_callback=App._token_callback_for_pass(
+                        self, self._helper_api_model("critic"), "Critic Pass",
+                        base_url=self._helper_api_base_url("critic"),
+                        file_path=filepath),
                     cancel_context=self.__dict__.get(
                         "_helper_request_canceller"),
                     status_out=_critic_status,
@@ -24000,8 +24017,11 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions, idiom_map, cultural_refs),
-                    token_callback=self._token_callback_for_model(
-                        self._helper_api_model("critic")),
+                    token_callback=App._token_callback_for_pass(
+                        self, self._helper_api_model("critic"),
+                        "Native Okuyucu",
+                        base_url=self._helper_api_base_url("critic"),
+                        file_path=filepath),
                     src_map=_src_map_from_cues(cues),
                     locked_terms=_locked_terms,
                     progress_callback=App._pass_progress_callback(
@@ -24081,8 +24101,10 @@ class App(ctk.CTk):
                     log_fn=self._log,
                     analysis_result=(context, char_examples, pronoun_map),
                     cancel_context=self.__dict__.get("_helper_request_canceller"),
-                    token_callback=self._token_callback_for_model(
-                        self._helper_api_model("qc")),
+                    token_callback=App._token_callback_for_pass(
+                        self, self._helper_api_model("qc"), "QC",
+                        base_url=self._helper_api_base_url("qc"),
+                        file_path=filepath),
                     status_out=_qc_status,
                 )
                 _pass_status["QC"] = dict(_qc_status)
@@ -24101,8 +24123,10 @@ class App(ctk.CTk):
                             log_fn=self._log,
                             locked_terms=_locked_terms,
                             cancel_context=self.__dict__.get("_helper_request_canceller"),
-                            token_callback=self._token_callback_for_model(
-                                self._helper_api_model("qc")),
+                            token_callback=App._token_callback_for_pass(
+                                self, self._helper_api_model("qc"), "QC",
+                                base_url=self._helper_api_base_url("qc"),
+                                file_path=filepath),
                         )
                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_auto
@@ -24129,8 +24153,10 @@ class App(ctk.CTk):
                             log_fn=self._log,
                             locked_terms=_locked_terms,
                             cancel_context=self.__dict__.get("_helper_request_canceller"),
-                            token_callback=self._token_callback_for_model(
-                                self._helper_api_model("qc")),
+                            token_callback=App._token_callback_for_pass(
+                                self, self._helper_api_model("qc"), "QC",
+                                base_url=self._helper_api_base_url("qc"),
+                                file_path=filepath),
                         )
                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, sorted_blocks, _pass_history)
                         _qc_fixes += _n_approved
@@ -24169,8 +24195,11 @@ class App(ctk.CTk):
                         locked_terms=_locked_terms,
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
-                        token_callback=self._token_callback_for_model(
-                            self._helper_api_model("polish")),
+                        token_callback=App._token_callback_for_pass(
+                            self, self._helper_api_model("polish"),
+                            "Terim Normalizasyonu",
+                            base_url=self._helper_api_base_url("polish"),
+                            file_path=filepath),
                         status_out=_term_status)
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
@@ -25566,8 +25595,11 @@ class App(ctk.CTk):
                                     change_log=_critic_change_log,
                                     scene_gap_sec=float(self._snap_get(
                                         "scene_gap_seconds", self._scene_gap_seconds)),
-                                    token_callback=self._token_callback_for_model(
-                                        self._helper_api_model("critic")),
+                                    token_callback=App._token_callback_for_pass(
+                                        self, self._helper_api_model("critic"),
+                                        "Critic Pass",
+                                        base_url=self._helper_api_base_url("critic"),
+                                        file_path=str(_src_path)),
                                     cancel_context=self.__dict__.get(
                                         "_helper_request_canceller"),
                                     status_out=_critic_status)
@@ -25604,8 +25636,11 @@ class App(ctk.CTk):
                                 pp = ht.native_reader_pass(
                                     tr_blocks=pp, helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
-                                    token_callback=self._token_callback_for_model(
-                                        self._helper_api_model("critic")),
+                                    token_callback=App._token_callback_for_pass(
+                                        self, self._helper_api_model("critic"),
+                                        "Native Okuyucu",
+                                        base_url=self._helper_api_base_url("critic"),
+                                        file_path=str(_src_path)),
                                     src_map=_src_map_from_cues(_orig_cues),
                                     locked_terms=_locked_terms,
                                     progress_callback=App._pass_progress_callback(
@@ -25661,8 +25696,10 @@ class App(ctk.CTk):
                                     helper_api_key=self._helper_api_key("qc"), helper_url=self._helper_api_base_url("qc"), helper_model=self._helper_api_model("qc"), tgt_lang=tgt, log_fn=self._log,
                                     analysis_result=_analysis_result,
                                     cancel_context=self.__dict__.get("_helper_request_canceller"),
-                                    token_callback=self._token_callback_for_model(
-                                        self._helper_api_model("qc")),
+                                    token_callback=App._token_callback_for_pass(
+                                        self, self._helper_api_model("qc"), "QC",
+                                        base_url=self._helper_api_base_url("qc"),
+                                        file_path=str(_src_path)),
                                     status_out=_qc_status)
                                 _pass_status["QC"] = dict(_qc_status)
                                 if _issues:
@@ -25678,8 +25715,11 @@ class App(ctk.CTk):
                                             log_fn=self._log,
                                             locked_terms=_locked_terms,
                                             cancel_context=self.__dict__.get("_helper_request_canceller"),
-                                            token_callback=self._token_callback_for_model(
-                                                self._helper_api_model("qc")))
+                                            token_callback=App._token_callback_for_pass(
+                                                self, self._helper_api_model("qc"),
+                                                "QC",
+                                                base_url=self._helper_api_base_url("qc"),
+                                                file_path=str(_src_path)))
                                         _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_auto
                                         _qc_auto_fixes += _n_auto
@@ -25703,8 +25743,11 @@ class App(ctk.CTk):
                                             log_fn=self._log,
                                             locked_terms=_locked_terms,
                                             cancel_context=self.__dict__.get("_helper_request_canceller"),
-                                            token_callback=self._token_callback_for_model(
-                                                self._helper_api_model("qc")))
+                                            token_callback=App._token_callback_for_pass(
+                                                self, self._helper_api_model("qc"),
+                                                "QC",
+                                                base_url=self._helper_api_base_url("qc"),
+                                                file_path=str(_src_path)))
                                         _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp, _pass_history)
                                         _qc_fixes += _n_approved
                             if self._stop_flag:
@@ -25728,8 +25771,13 @@ class App(ctk.CTk):
                                              locked_terms=_locked_terms,
                                              cancel_context=self.__dict__.get(
                                                  "_helper_request_canceller"),
-                                             token_callback=self._token_callback_for_model(
-                                                 self._helper_api_model("polish")),
+                                             token_callback=App._token_callback_for_pass(
+                                                 self,
+                                                 self._helper_api_model("polish"),
+                                                 "Terim Normalizasyonu",
+                                                 base_url=self._helper_api_base_url(
+                                                     "polish"),
+                                                 file_path=str(_src_path)),
                                              status_out=_term_status)
                                         _pass_status["Term-Normalize"] = dict(_term_status)
                                         if self._stop_flag:
@@ -26273,8 +26321,11 @@ class App(ctk.CTk):
                         change_log=_critic_change_log,
                         scene_gap_sec=float(self._snap_get(
                             "scene_gap_seconds", self._scene_gap_seconds)),
-                        token_callback=self._token_callback_for_model(
-                            self._helper_api_model("critic")),
+                        token_callback=App._token_callback_for_pass(
+                            self, self._helper_api_model("critic"),
+                            "Critic Pass",
+                            base_url=self._helper_api_base_url("critic"),
+                            file_path=fp),
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
                         status_out=_critic_status)
@@ -26329,8 +26380,11 @@ class App(ctk.CTk):
                         helper_model=self._helper_api_model("critic"),
                         tgt_lang=_tgt_lang, log_fn=self._log,
                         analysis_result=_analysis_result,
-                        token_callback=self._token_callback_for_model(
-                            self._helper_api_model("critic")),
+                        token_callback=App._token_callback_for_pass(
+                            self, self._helper_api_model("critic"),
+                            "Native Okuyucu",
+                            base_url=self._helper_api_base_url("critic"),
+                            file_path=fp),
                         src_map=src_blocks,
                         locked_terms=_locked_terms_for(fp),
                         progress_callback=App._pass_progress_callback(
@@ -26439,8 +26493,11 @@ class App(ctk.CTk):
                         locked_terms=_locked_terms_for(fp),
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
-                        token_callback=self._token_callback_for_model(
-                            self._helper_api_model("polish")),
+                        token_callback=App._token_callback_for_pass(
+                            self, self._helper_api_model("polish"),
+                            "Terim Normalizasyonu",
+                            base_url=self._helper_api_base_url("polish"),
+                            file_path=fp),
                         status_out=_term_status)
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
@@ -27568,8 +27625,11 @@ class App(ctk.CTk):
                                 change_log=_critic_change_log,
                                 scene_gap_sec=float(self._snap_get(
                                     "scene_gap_seconds", self._scene_gap_seconds)),
-                                token_callback=self._token_callback_for_model(
-                                    self._helper_api_model("critic")),
+                                token_callback=App._token_callback_for_pass(
+                                    self, self._helper_api_model("critic"),
+                                    "Critic Pass",
+                                    base_url=self._helper_api_base_url("critic"),
+                                    file_path=filepath),
                                 cancel_context=self.__dict__.get(
                                     "_helper_request_canceller"),
                                 status_out=_critic_status)
@@ -27614,8 +27674,11 @@ class App(ctk.CTk):
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                                 log_fn=self._log,
                                 analysis_result=_full_analysis,
-                                token_callback=self._token_callback_for_model(
-                                    self._helper_api_model("critic")),
+                                token_callback=App._token_callback_for_pass(
+                                    self, self._helper_api_model("critic"),
+                                    "Native Okuyucu",
+                                    base_url=self._helper_api_base_url("critic"),
+                                    file_path=filepath),
                                 src_map=_src_map_from_cues(cues),
                                 locked_terms=self._get_locked_terms_dict(filepath, tgt),
                                 progress_callback=App._pass_progress_callback(
@@ -27680,8 +27743,10 @@ class App(ctk.CTk):
                                 log_fn=self._log,
                                 analysis_result=_full_analysis,
                                 cancel_context=self.__dict__.get("_helper_request_canceller"),
-                                token_callback=self._token_callback_for_model(
-                                    self._helper_api_model("qc")),
+                                token_callback=App._token_callback_for_pass(
+                                    self, self._helper_api_model("qc"), "QC",
+                                    base_url=self._helper_api_base_url("qc"),
+                                    file_path=filepath),
                                 status_out=_qc_status)
                             _pass_status["QC"] = dict(_qc_status)
                             if issues:
@@ -27700,8 +27765,11 @@ class App(ctk.CTk):
                                         locked_terms=self._get_locked_terms_dict(
                                             filepath, tgt),
                                         cancel_context=self.__dict__.get("_helper_request_canceller"),
-                                        token_callback=self._token_callback_for_model(
-                                            self._helper_api_model("qc")),
+                                        token_callback=App._token_callback_for_pass(
+                                            self, self._helper_api_model("qc"),
+                                            "QC",
+                                            base_url=self._helper_api_base_url("qc"),
+                                            file_path=filepath),
                                     )
                                     _n_auto = _record_pass_change(_pass_trace, "QC auto", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_auto
@@ -27729,8 +27797,11 @@ class App(ctk.CTk):
                                         locked_terms=self._get_locked_terms_dict(
                                             filepath, tgt),
                                         cancel_context=self.__dict__.get("_helper_request_canceller"),
-                                        token_callback=self._token_callback_for_model(
-                                            self._helper_api_model("qc")),
+                                        token_callback=App._token_callback_for_pass(
+                                            self, self._helper_api_model("qc"),
+                                            "QC",
+                                            base_url=self._helper_api_base_url("qc"),
+                                            file_path=filepath),
                                     )
                                     _n_approved = _record_pass_change(_pass_trace, "QC", _before_pass, pp_blocks, _pass_history)
                                     _qc_fixes += _n_approved
@@ -27770,8 +27841,11 @@ class App(ctk.CTk):
                             locked_terms=_locked_terms,
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
-                            token_callback=self._token_callback_for_model(
-                                self._helper_api_model("polish")),
+                            token_callback=App._token_callback_for_pass(
+                                self, self._helper_api_model("polish"),
+                                "Terim Normalizasyonu",
+                                base_url=self._helper_api_base_url("polish"),
+                                file_path=filepath),
                             status_out=_term_status)
                         _pass_status["Term-Normalize"] = dict(_term_status)
                         _record_pass_change(

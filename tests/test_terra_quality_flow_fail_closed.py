@@ -1,5 +1,7 @@
 import inspect
+import re
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -103,6 +105,56 @@ class QualityFlowFailClosedTests(unittest.TestCase):
                 recompute = source.rfind("_pass_fix = sum(", 0, report)
                 semantic = source.rfind("_run_final_semantic_checks(", 0, report)
                 self.assertGreater(recompute, semantic)
+
+    def test_quality_callbacks_use_explicit_pass_and_file_attribution(self):
+        methods = (
+            gui.App._run_post_process,
+            gui.App._run_quality_check_inline,
+            gui.App._run_sync_hybrid,
+            gui.App._wait_batch_hybrid,
+            gui.App._write_results,
+            gui.App._run_hybrid,
+        )
+        unsafe = re.compile(
+            r'_token_callback_for_model\(\s*self\._helper_api_model\('
+            r'"(?:critic|qc|polish)"\)')
+        for method in methods:
+            with self.subTest(method=method.__name__):
+                source = inspect.getsource(method)
+                self.assertIsNone(unsafe.search(source))
+                self.assertIn("_token_callback_for_pass", source)
+                self.assertIn("file_path=", source)
+        for method in (
+                gui.App._maybe_backtranslation_check,
+                gui.App._maybe_semantic_reconciliation):
+            with self.subTest(method=method.__name__):
+                source = inspect.getsource(method)
+                self.assertIn("base_url=", source)
+                self.assertIn("file_path=", source)
+
+    def test_multi_file_usage_is_recorded_only_on_explicit_target(self):
+        class Owner:
+            pass
+
+        owner = Owner()
+        owner._run_record_lock = threading.RLock()
+        owner._active_run_record = {
+            "api": {},
+            "files": {
+                "first.srt": {"active_stage": "Critic Pass"},
+                "second.srt": {"active_stage": "Native Okuyucu"},
+            },
+        }
+        gui.App._record_api_usage(
+            owner, 125, 10, 0.0, 125, "gpt-test",
+            100, 25, "Native Okuyucu", "second.srt", True)
+        files = owner._active_run_record["files"]
+        self.assertNotIn("api_usage", files["first.srt"])
+        usage = files["second.srt"]["api_usage"]["Native Okuyucu"]
+        self.assertEqual(usage["total_tokens"], 125)
+        self.assertEqual(usage["cached_tokens"], 10)
+        global_usage = owner._active_run_record["api"]["usage_by_pass"]
+        self.assertIn("Native Okuyucu", global_usage)
 
 
 if __name__ == "__main__":

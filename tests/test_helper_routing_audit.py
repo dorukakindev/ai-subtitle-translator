@@ -175,8 +175,10 @@ class HelperRoutingAuditTests(unittest.TestCase):
         src = inspect.getsource(gui.App._write_results)
         native_at = src.index("sorted_blocks = ht.native_reader_pass(")
         native_call = src[native_at:src.index("_record_pass_change", native_at)]
-        self.assertIn('token_callback=self._token_callback_for_model(', native_call)
+        self.assertIn('token_callback=App._token_callback_for_pass(', native_call)
         self.assertIn('self._helper_api_model("critic")', native_call)
+        self.assertIn('"Native Okuyucu"', native_call)
+        self.assertIn('file_path=fp', native_call)
 
         condense_at = src.index("sorted_blocks = self._maybe_condense(")
         condense_call = src[condense_at:src.index("if self.clean_sdh_var.get()", condense_at)]
