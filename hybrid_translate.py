@@ -3823,6 +3823,7 @@ def native_reader_pass(
     )
     total_chunks = len(native_chunks)
     successful_chunks = 0
+    partial_chunks = 0
     cancelled = False
 
     for chunk_num, chunk in enumerate(native_chunks, 1):
@@ -3927,13 +3928,34 @@ def native_reader_pass(
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 continue
-            content = _extract_json_array(content, salvage_truncated=True)
-            if not content:
+            def _retry_partial(remaining_items):
+                retry_prompt = (
+                    prompt
+                    + "\n\nPrevious JSON was truncated. Review ONLY these remaining lines and return a complete JSON array, including [] when no fix is needed:\n"
+                    + json.dumps({"tr": remaining_items}, ensure_ascii=False)
+                )
+                retry_resp = _safe_chat_create(
+                    client,
+                    cancel_context=cancel_context,
+                    _checkpoint_label="native_reader_missing",
+                    model=helper_model,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    max_tokens=max(120, len(remaining_items) * 80),
+                    temperature=0.2,
+                )
+                _report_helper_usage(retry_resp, token_callback)
+                return (retry_resp.choices[0].message.content or "").strip() if retry_resp.choices else ""
+
+            fixes, response_complete = _recover_truncated_quality_array(
+                content, items, _retry_partial)
+            if fixes is None:
                 continue
-            fixes = json.loads(content)
-            if not isinstance(fixes, list):
-                continue
-            successful_chunks += 1
+            if response_complete:
+                successful_chunks += 1
+            else:
+                partial_chunks += 1
+                if log_fn:
+                    log_fn(f"Native Pass {chunk_num}: kesik JSON'un kalan satırları alınamadı", "warn")
             chunk_pos_by_id = {str(idx): pos for pos, (idx, _ts, _text) in enumerate(chunk)}
             fix_by_id = {}
             conflicting_fix_ids = set()
@@ -4110,8 +4132,8 @@ def native_reader_pass(
 
     failed_chunks = max(0, total_chunks - successful_chunks)
     pass_status = (
-        "completed" if successful_chunks == total_chunks
-        else "partial" if successful_chunks
+        "completed" if successful_chunks == total_chunks and not partial_chunks
+        else "partial" if successful_chunks or partial_chunks
         else "failed"
     )
     if status_out is not None:
@@ -4227,6 +4249,7 @@ def condense_fast_lines(
     reject_counts = {}
     total_chunks = (len(fast) + CHUNK_SIZE - 1) // CHUNK_SIZE
     successful_chunks = 0
+    partial_chunks = 0
     cancelled = False
     if status_out is not None:
         status_out["total_chunks"] = total_chunks
@@ -4236,6 +4259,7 @@ def condense_fast_lines(
             cancelled = True
             break
         chunk = fast[chunk_i:chunk_i + CHUNK_SIZE]
+        chunk_ids = {str(fid) for fid, _text, _budget in chunk}
         items = [{"id": fid, "text": txt, "max_chars": budget}
                  for fid, txt, budget in chunk]
         if src_map:
@@ -4270,20 +4294,56 @@ def condense_fast_lines(
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             if not content:
                 raise ValueError("empty_response")
-            content = _extract_json_array(content, salvage_truncated=True)
-            if not content:
+            def _retry_partial(remaining_items):
+                retry_prompt = (
+                    prompt
+                    + "\n\nPrevious JSON was truncated. Condense ONLY these remaining lines and return a complete JSON array, including [] when none can be safely shortened:\n"
+                    + json.dumps(remaining_items, ensure_ascii=False)
+                )
+                retry_resp = _safe_chat_create(
+                    client,
+                    cancel_context=cancel_context,
+                    _checkpoint_label="condense_missing",
+                    model=helper_model,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    max_tokens=max(120, len(remaining_items) * 60),
+                    temperature=0.2,
+                )
+                _report_helper_usage(retry_resp, token_callback)
+                return (retry_resp.choices[0].message.content or "").strip() if retry_resp.choices else ""
+
+            fixes, response_complete = _recover_truncated_quality_array(
+                content, items, _retry_partial)
+            if fixes is None:
                 raise ValueError("response_not_array")
-            fixes = json.loads(content)
-            if not isinstance(fixes, list):
-                raise ValueError("response_not_array")
-            successful_chunks += 1
+            if response_complete:
+                successful_chunks += 1
+            else:
+                partial_chunks += 1
+                if log_fn:
+                    log_fn("Kısaltma chunk kesik JSON'un kalan satırları alınamadı", "warn")
+
+            fix_by_id = {}
+            conflicting_ids = set()
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
                 fid   = str(fix.get("id", ""))
                 short = (fix.get("short") or "").strip()
-                if not fid or not short or fid not in idx_to_pos:
+                if not fid or not short:
                     continue
+                if fid not in chunk_ids:
+                    reject_counts["id_outside_chunk"] = reject_counts.get("id_outside_chunk", 0) + 1
+                    continue
+                if fid in fix_by_id and fix_by_id[fid] != short:
+                    conflicting_ids.add(fid)
+                    continue
+                fix_by_id.setdefault(fid, short)
+            for fid in conflicting_ids:
+                fix_by_id.pop(fid, None)
+                reject_counts["duplicate_fix_conflict"] = (
+                    reject_counts.get("duplicate_fix_conflict", 0) + 1)
+            for fid, short in fix_by_id.items():
                 pos = idx_to_pos[fid]
                 old_idx, old_ts, old_text = result[pos]
                 # Yalnızca gerçekten kısaldıysa uygula — uzatma/aynı kalma engellenir
@@ -4311,8 +4371,8 @@ def condense_fast_lines(
     failed_chunks = max(0, total_chunks - successful_chunks)
     pass_status = (
         "cancelled" if cancelled
-        else "completed" if successful_chunks == total_chunks
-        else "partial" if successful_chunks
+        else "completed" if successful_chunks == total_chunks and not partial_chunks
+        else "partial" if successful_chunks or partial_chunks
         else "failed"
     )
     if status_out is not None:
@@ -7520,6 +7580,51 @@ def _extract_json_array(raw: str, *, salvage_truncated: bool = False) -> str:
         if salvaged:
             return json.dumps(salvaged, ensure_ascii=False)
     return ""  # Return empty string instead of raw, so caller knows parse failed
+
+
+def _recover_truncated_quality_array(raw: str, requested_items: list,
+                                     retry_call, max_retries: int = 2) -> tuple:
+    """Keep complete objects from a cut-off quality response and retry only its tail."""
+    def _parse(value):
+        complete = _extract_json_array(value)
+        if complete:
+            try:
+                parsed = json.loads(complete)
+            except Exception:
+                return None, False
+            return (parsed, False) if isinstance(parsed, list) else (None, False)
+        salvaged = _extract_json_array(value, salvage_truncated=True)
+        if not salvaged:
+            if "[" in _strip_code_fence(value):
+                return [], True
+            return None, False
+        try:
+            parsed = json.loads(salvaged)
+        except Exception:
+            return None, False
+        return (parsed, True) if isinstance(parsed, list) else (None, False)
+
+    rows, partial = _parse(raw)
+    if rows is None:
+        return None, False
+    remaining = {str(item.get("id", "")) for item in requested_items}
+    remaining.discard("")
+    remaining.difference_update(
+        str(row.get("id", "")) for row in rows if isinstance(row, dict))
+    attempts = 0
+    while partial and remaining and attempts < max_retries:
+        attempts += 1
+        retry_rows, retry_partial = _parse(retry_call(
+            [item for item in requested_items
+             if str(item.get("id", "")) in remaining]))
+        if retry_rows is None:
+            return rows, False
+        rows.extend(retry_rows)
+        remaining.difference_update(
+            str(row.get("id", "")) for row in retry_rows
+            if isinstance(row, dict))
+        partial = retry_partial
+    return rows, not partial or not remaining
 
 
 _SEMANTIC_RECONCILIATION_REASONS = (
@@ -11519,6 +11624,7 @@ def critic_pass_with_helper(
         suspicious, frag_group_by_id, MINIMAX_CHUNK)
     total_chunks = len(critic_chunks)
     cancelled = False
+    partial_chunks = 0
 
     def _reason_tokens(reason_str: str) -> list[str]:
         if not reason_str:
@@ -11657,17 +11763,36 @@ def critic_pass_with_helper(
                 if log_fn:
                     log_fn(f"Critic Helper chunk boş yanıt döndü — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
-            content = _extract_json_array(content, salvage_truncated=True)
-            if not content:
+            def _retry_partial(remaining_items):
+                retry_prompt = (
+                    prompt
+                    + "\n\nPrevious JSON was truncated. Review ONLY these remaining lines and return a complete JSON array, including [] when no fix is needed:\n"
+                    + json.dumps(remaining_items, ensure_ascii=False)
+                )
+                retry_resp = _safe_chat_create(
+                    client,
+                    cancel_context=cancel_context,
+                    _checkpoint_label="critic_missing",
+                    model=helper_model,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    max_tokens=max(120, len(remaining_items) * 60),
+                    temperature=0.1,
+                )
+                _report_helper_usage(retry_resp, token_callback)
+                return (retry_resp.choices[0].message.content or "").strip() if retry_resp.choices else ""
+
+            fixes, response_complete = _recover_truncated_quality_array(
+                content, pairs, _retry_partial)
+            if fixes is None:
                 if log_fn:
                     log_fn(f"Critic Helper chunk JSON çıkarılamadı — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
-            fixes = json.loads(content)
-            if not isinstance(fixes, list):
+            if response_complete:
+                successful_chunks += 1
+            else:
+                partial_chunks += 1
                 if log_fn:
-                    log_fn(f"Critic Helper chunk beklenmeyen format — {len(chunk)} satır bu turda atlandı", "warn")
-                continue
-            successful_chunks += 1
+                    log_fn(f"Critic Helper chunk kesik JSON'un kalan satırları alınamadı", "warn")
             fix_by_id = {}
             conflicting_ids = set()
             for fix in fixes:
@@ -11931,8 +12056,8 @@ def critic_pass_with_helper(
 
     failed_chunks = max(0, total_chunks - successful_chunks)
     pass_status = (
-        "completed" if successful_chunks == total_chunks
-        else "partial" if successful_chunks
+        "completed" if successful_chunks == total_chunks and not partial_chunks
+        else "partial" if successful_chunks or partial_chunks
         else "failed"
     )
     if status_out is not None:
@@ -11984,13 +12109,14 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
                          tm=None,
                          tgt_lang: str = "",
                          profanity: str = "",
-                         schema_name: str = "",
-                         source_language: str = "",
-                         context_lines: int = None,
+                          schema_name: str = "",
+                          source_language: str = "",
+                          context_lines: int = None,
                          lookahead_lines: int = None,
                          scene_gap_sec: float = None,
                          temperature: float = None,
-                         use_tm_context: bool = True) -> tuple[list, dict]:
+                         use_tm_context: bool = True,
+                         context_fingerprint: str = "") -> tuple[list, dict]:
     if context_lines is None:
         context_lines = CONTEXT_LINES
     if lookahead_lines is None:
@@ -12111,18 +12237,20 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
         prev_ctx = []
         for c in chunk[-context_lines:]:
             item = {"i": c.index, "t": _clean_source_text(c.text)}
-            if tm is not None and use_tm_context:
+            if tm is not None and use_tm_context and context_fingerprint:
                 clean_source = _clean_source_text(c.text)
                 cached = tm.lookup(
                     clean_source, tgt_lang=tgt_lang, model=model,
                     profanity=profanity, schema_name=schema_name,
-                    source_language=source_language)
+                    source_language=source_language,
+                    context_fingerprint=context_fingerprint)
                 if cached is None:
                     fuzzy = tm.fuzzy_lookup(
                         clean_source, threshold=0.95,
                         tgt_lang=tgt_lang, model=model,
                         profanity=profanity, schema_name=schema_name,
                         source_language=source_language,
+                        context_fingerprint=context_fingerprint,
                         allow_contextless_final=False)
                     cached = fuzzy[0] if fuzzy else None
                 if cached:

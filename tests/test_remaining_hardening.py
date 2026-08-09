@@ -261,18 +261,20 @@ class MemoryIsolationTest(unittest.TestCase):
         ht.build_batch_requests(
             [cue], "system", "model-a", tm=tm, tgt_lang="tr",
             profanity="Sert", schema_name="Anime",
-            source_language="Spanish",
+            source_language="Spanish", context_fingerprint="source-sha",
         )
 
         tm.lookup.assert_called_once_with(
             "A source line.", tgt_lang="tr", model="model-a",
             profanity="Sert", schema_name="Anime",
             source_language="Spanish",
+            context_fingerprint="source-sha",
         )
         tm.fuzzy_lookup.assert_called_once_with(
             "A source line.", threshold=0.95, tgt_lang="tr",
             model="model-a", profanity="Sert", schema_name="Anime",
             source_language="Spanish",
+            context_fingerprint="source-sha",
             allow_contextless_final=False,
         )
 
