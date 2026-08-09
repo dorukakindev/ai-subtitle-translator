@@ -2673,6 +2673,7 @@ def _delivery_source_is_all_credit(text: str) -> bool:
 
 def _is_delivery_sdh_only(text: str) -> bool:
     value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
+    value = re.sub(r"^\s*[-–—]\s*(?=[\[(])", "", value)
     if not value:
         return False
     # Bare English sound descriptions are still non-dialogue, even when they
@@ -2680,7 +2681,8 @@ def _is_delivery_sdh_only(text: str) -> bool:
     bare_english_sdh = value.strip().strip("[](){} ")
     if re.fullmatch(
             r"(?:muffled\s+(?:speaking|voice)|speaking\s+(?:native|foreign)\s+"
-            r"language|frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
+            r"language|conversing\s+in\s+(?:a\s+)?(?:native|foreign)\s+language|"
+            r"frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
         return True
     if re.fullmatch(r"[\s*♪♫_]+", value) and re.search(r"[*♪♫_]", value):
         return True
