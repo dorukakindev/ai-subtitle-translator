@@ -260,7 +260,27 @@ def read_subtitle_text(filepath) -> str:
     raw = Path(filepath).read_bytes()
     text = None
     sample = raw[:4096]
-    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+    if raw[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"):
+        try:
+            text = raw.decode("utf-32")
+        except UnicodeDecodeError:
+            text = None
+    if text is None and sample and sample.count(b"\x00") / len(sample) >= 0.5:
+        lane_ratios = [
+            sample[offset::4].count(0) / max(1, len(sample[offset::4]))
+            for offset in range(4)
+        ]
+        enc = None
+        if all(lane_ratios[offset] >= 0.6 for offset in (1, 2, 3)):
+            enc = "utf-32-le"
+        elif all(lane_ratios[offset] >= 0.6 for offset in (0, 1, 2)):
+            enc = "utf-32-be"
+        if enc:
+            try:
+                text = raw.decode(enc)
+            except UnicodeDecodeError:
+                text = None
+    if text is None and raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         try:
             text = raw.decode("utf-16")
         except UnicodeDecodeError:

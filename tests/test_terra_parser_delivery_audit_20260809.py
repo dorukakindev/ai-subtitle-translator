@@ -42,6 +42,16 @@ class LegacyEncodingSelectionTests(unittest.TestCase):
         )
         self._assert_round_trip("cp1252", unit, repetitions=1)
 
+    def test_utf32_bom_is_not_misread_as_utf16(self):
+        unit = "1\n00:00:00,000 --> 00:00:03,000\nHello Ω\n\n"
+        self._assert_round_trip("utf-32", unit, repetitions=1)
+
+    def test_bomless_utf32_endianness_is_detected_before_utf16(self):
+        unit = "1\n00:00:00,000 --> 00:00:03,000\nHello Ω\n\n"
+        for encoding in ("utf-32-le", "utf-32-be"):
+            with self.subTest(encoding=encoding):
+                self._assert_round_trip(encoding, unit, repetitions=1)
+
 
 class AssMetadataSafetyTests(unittest.TestCase):
     def _parse(self, dialogue, language=None):
