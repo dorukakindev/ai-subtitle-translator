@@ -24,29 +24,25 @@ class WriteSrtIntegrationTest(unittest.TestCase):
             __import__("subtitle_translator_gui", fromlist=["write_srt"]).write_srt(p, blocks)
             return p.read_text(encoding="utf-8")
 
-    def test_turkic_residue_cleaned_in_write(self):
+    def test_turkic_residue_is_not_rewritten_without_source(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Bu bir vaxt mashinasi.")]
         raw = self._write_and_read(blocks)
-        self.assertIn("zaman makinesi", raw)
-        self.assertNotIn("vaxt mashinasi", raw)
+        self.assertIn("vaxt mashinasi", raw)
 
-    def test_detonatoer_cleaned_in_write(self):
+    def test_detonatoer_is_not_rewritten_without_source(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Bu bir detonatör.")]
         raw = self._write_and_read(blocks)
-        self.assertIn("patlatıcı", raw)
-        self.assertNotIn("detonatör", raw)
+        self.assertIn("detonatör", raw)
 
-    def test_kulak_kapaklarimi_cleaned_in_write(self):
+    def test_kulak_kapaklarimi_is_not_rewritten_without_source(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Kulak kapaklarımı indireyim.")]
         raw = self._write_and_read(blocks)
-        self.assertIn("Kulaklıklarımı", raw)
-        self.assertNotIn("kapaklarımı", raw)
+        self.assertIn("Kulak kapaklarımı", raw)
 
-    def test_medisina_nusgasy_cleaned_in_write(self):
+    def test_medisina_nusgasy_is_not_rewritten_without_source(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Bu bir medisina nusgasy.")]
         raw = self._write_and_read(blocks)
-        self.assertIn("tıbbi örnek", raw)
-        self.assertNotIn("medisina nusgasy", raw)
+        self.assertIn("medisina nusgasy", raw)
 
     def test_hata_lines_not_corrupted_by_local_fixes(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
@@ -312,7 +308,7 @@ class OdditiesTitleCleanupTest(unittest.TestCase):
         self.assertIn("ODDITIES", result)
         self.assertIn("sıra dışı dünyasına", result)
 
-    def test_title_cleaned_in_write(self):
+    def test_title_is_not_rewritten_without_source(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000",
                    'SIRA DIŞI DÜNYAYA HOŞ GELDİNİZ\n"ODDITIES"\u2019İN')]
         with tempfile.TemporaryDirectory() as td:
@@ -320,8 +316,7 @@ class OdditiesTitleCleanupTest(unittest.TestCase):
             __import__("subtitle_translator_gui", fromlist=["write_srt"]).write_srt(p, blocks)
             raw = p.read_text(encoding="utf-8")
         self.assertIn("ODDITIES", raw)
-        self.assertIn("sıra dışı dünyasına", raw)
-        self.assertNotIn("SIRA DIŞI DÜNYAYA", raw)
+        self.assertIn("SIRA DIŞI DÜNYAYA", raw)
 
 
 class OdditiesTitleVariantTest(unittest.TestCase):
@@ -338,17 +333,16 @@ class ObscuraGrandmaLineTest(unittest.TestCase):
         result = _APPLY('OBSCURA annenizin antika dükkânı değil')
         self.assertEqual(result, 'Obscura, anneannenizin antikacısı değil')
 
-    def test_obscura_grandma_cleaned_in_write(self):
+    def test_obscura_grandma_is_not_rewritten_without_source(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000",
                    'OBSCURA annenizin antika dükkânı değil')]
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "test.srt"
             __import__("subtitle_translator_gui", fromlist=["write_srt"]).write_srt(p, blocks)
             raw = p.read_text(encoding="utf-8")
-        self.assertIn("Obscura", raw)
-        self.assertNotIn("OBSCURA", raw)
-        self.assertIn("anneannenizin", raw)
-        self.assertIn("antikacısı", raw)
+        self.assertIn("OBSCURA", raw)
+        self.assertIn("annenizin", raw)
+        self.assertIn("antika dükkanı", raw)
 
 
 class GrandmaToMotherRegressionTest(unittest.TestCase):

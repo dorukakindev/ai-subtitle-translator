@@ -300,7 +300,7 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", fake_chat_create):
             app._retry_hata(object(), raw_map, requests, max_rounds=1)
 
-    def test_empty_dialogue_retries_whole_chunk_in_strict_id_mode(self):
+    def test_empty_dialogue_retries_only_missing_cue(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._log = lambda *args, **kwargs: None
@@ -335,11 +335,11 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
         guard_messages = [m["content"] for m in calls[0]["messages"]]
-        self.assertTrue(any("STRICT ID RETRY" in msg for msg in guard_messages))
         retry_payload = json.loads(next(
             m["content"] for m in calls[0]["messages"] if m.get("role") == "user"
         ))
         self.assertNotIn("sentence_groups", retry_payload)
+        self.assertEqual([item["i"] for item in retry_payload["tr"]], [2])
         self.assertTrue(all("frag" not in it and "frag_group" not in it
                             for it in retry_payload["tr"]))
 
