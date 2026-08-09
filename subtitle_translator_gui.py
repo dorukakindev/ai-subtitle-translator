@@ -2495,8 +2495,6 @@ def write_srt(filepath, blocks, target_language="Turkish"):
                     # A Russian/Cyrillic target may legitimately contain the
                     # same-shaped letters.  Homoglyph repair is Turkish-only.
                     text = ht.normalize_latin_homoglyphs(str(text))
-                    text = ht._apply_local_fixes(
-                        str(text), allow_context_sensitive=False)[0]
             except Exception:
                 text = str(text)
             text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
@@ -2504,7 +2502,6 @@ def write_srt(filepath, blocks, target_language="Turkish"):
             if is_turkish:
                 text = sdh_cleaner.normalize_sdh_descriptors(text)
                 text = sdh_cleaner.normalize_speaker_labels(text)
-                text = sdh_cleaner.normalize_turkish_artifacts(text)
                 text = _translate_speaker_labels(text)
                 text = text.translate(_DELIVERY_HAT_MAP)
             if not text.strip():
