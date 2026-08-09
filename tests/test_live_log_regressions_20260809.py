@@ -11,6 +11,10 @@ import subtitle_translator_gui as gui
 
 
 class DeliveryLiteralLinebreakTest(unittest.TestCase):
+    def test_meditation_bowl_gong_is_removable_sdh(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            "[ Meditation bowl gongs ]"))
+
     def test_speaker_plus_language_sdh_is_removable(self):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             "Garcia:\n[ Speaking Spanish ]"))
@@ -177,6 +181,36 @@ class FragmentProperNameRetryTest(unittest.TestCase):
                 raw, self._request(group_second=False)),
             "non_turkish_target",
         )
+
+
+class HamiltonDeliveryRegressionTest(unittest.TestCase):
+    def test_quality_scan_reports_stray_article_even_if_source_contains_a(self):
+        logs = []
+        warnings = gui.scan_translation_quality(
+            "missing.srt",
+            [("357", "00:19:00,574 --> 00:19:04,186",
+              "Ken adlı, kurbağa takıntılı\na arkadaşına.")],
+            src_clean_map={"357": "to a toad-obsessed friend named Ken."},
+            log_fn=lambda message, *_args, **_kwargs: logs.append(message),
+            source_language="English",
+        )
+        self.assertGreaterEqual(warnings, 1)
+        self.assertTrue(any("#357 'a'" in message for message in logs))
+
+    def test_sdh_prefixed_reaction_repeat_is_not_alignment_shift(self):
+        blocks = [
+            ("109", "00:08:43,610 --> 00:08:45,002", "Aman Tanrım."),
+            ("110", "00:08:45,046 --> 00:08:46,526", "Hemen ona bakar mısın?"),
+            ("111", "00:08:49,616 --> 00:08:51,139", "Aman Tanrım."),
+        ]
+        source = {
+            "109": "[ Doorbell rings ]\nOh, God.",
+            "110": "Want to check on that real quick?",
+            "111": "Oh, my God.",
+        }
+        findings = gui.detect_alignment_issues(blocks, source)
+        self.assertFalse(any(
+            finding["type"] == "adjacent_duplicate" for finding in findings))
 
 
 if __name__ == "__main__":

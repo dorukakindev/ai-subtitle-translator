@@ -270,6 +270,7 @@ _SDH_SOUND_NOUNS = {
     "crash", "slam", "bang", "boom", "thud", "click", "beep", "buzz",
     "rumble", "scream", "shout", "whisper", "knock", "ring", "grunt",
     "zip", "siren", "sirens", "thud", "feedback", "ringtone", "yelp",
+    "gong", "gongs",
 }
 
 _KNOWN_LANGUAGES = {

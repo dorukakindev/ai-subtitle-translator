@@ -6080,6 +6080,14 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
     önler). Hem tam-dosya taraması (detect_alignment_issues) hem chunk-içi
     onarım tetikleyicisi (_retry_hata) TEK bu fonksiyonu paylaşır."""
     dup_ids = []
+
+    def _source_dialogue(value):
+        cleaned = [
+            sdh_cleaner.strip_sdh_line(line)
+            for line in str(value or "").splitlines()
+        ]
+        return _align_visible(" ".join(line for line in cleaned if line))
+
     for a in range(len(seq)):
         ta = seq[a][1]
         if len(ta) < 12:
@@ -6090,8 +6098,8 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                 continue
             if _align_ratio(ta.lower(), tb.lower()) < tr_thresh:
                 continue
-            sa = _align_visible(src_map.get(seq[a][0], "")).lower()
-            sb = _align_visible(src_map.get(seq[b][0], "")).lower()
+            sa = _source_dialogue(src_map.get(seq[a][0], "")).lower()
+            sb = _source_dialogue(src_map.get(seq[b][0], "")).lower()
             if sa and sb and _align_ratio(sa, sb) >= src_thresh:
                 continue  # kaynak da tekrar → meşru
             if _align_lcs_len(sa, sb) >= lcs_thresh:
@@ -7332,20 +7340,21 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 continue
             if str(idx) in _untranslated_ids:
                 continue  # zaten 'çevrilmemiş' işaretli — ayrıca token-token garble sayma
-            hits = ht.find_garble_tokens(tr_text)
             source_text = str(
                 orig_by_timestamp.get(str(ts), orig.get(str(idx), "")) or "")
+            hits = ht.find_garble_tokens(tr_text, source_text)
             source_words = {
                 word.casefold() for word in re.findall(
                     r"[^\W\d_]+", source_text, re.UNICODE)
             }
             hits = [
                 hit for hit in hits
-                if (
-                    str(hit[0]).casefold().strip("'’") not in source_words
-                    and str(hit[0]).split("'", 1)[0].split("’", 1)[0].casefold()
-                    not in source_words
-                )
+                if (str(hit[1]) == "R1_stray_letter"
+                    or (
+                        str(hit[0]).casefold().strip("'’") not in source_words
+                        and str(hit[0]).split("'", 1)[0].split("’", 1)[0].casefold()
+                        not in source_words
+                    ))
             ]
             if hits:
                 garble_lines.append((str(idx), hits[0][0]))
