@@ -13789,12 +13789,26 @@ class App(ctk.CTk):
         line = f"{icon}  {ui_msg}\n"
 
         # Log dosyasına yaz (zaman damgası ile) — lock: concurrent worker thread'ler
+        disk_warning = ""
         try:
             with self._log_lock:
                 self._log_file.write(f"[{ts}] {icon}  {disk_msg}\n")
                 self._log_file.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            if not self.__dict__.get("_disk_log_failure_reported", False):
+                self._disk_log_failure_reported = True
+                disk_warning = (
+                    f"⚠  Oturum logu dosyasına yazılamıyor "
+                    f"({type(exc).__name__}); arayüz logu devam ediyor.\n")
+                if callable(recorder):
+                    try:
+                        recorder(
+                            "Oturum logu dosyasına yazılamıyor; arayüz logu "
+                            "devam ediyor.", "warn")
+                    except Exception:
+                        pass
+        if disk_warning:
+            line = disk_warning + line
 
         def _write():
             try:
