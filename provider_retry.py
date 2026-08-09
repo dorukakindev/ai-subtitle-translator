@@ -317,6 +317,11 @@ def _structured_retry_after_seconds(exc, maximum: float = 600.0) -> float | None
         return None
 
     body = getattr(exc, "body", None)
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except (TypeError, ValueError):
+            pass
     parsed = _walk(body)
     if parsed is not None:
         return parsed

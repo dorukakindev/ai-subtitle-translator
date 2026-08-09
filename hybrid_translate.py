@@ -2334,7 +2334,8 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     model = kwargs.get("model", "")
     requested_format = kwargs.get("response_format")
     model_lower = (model or "").lower()
-    base_url = str(getattr(client, "base_url", "")).lower().rstrip("/")
+    base_url = str(getattr(client, "base_url", "")).rstrip("/")
+    base_url_lower = base_url.lower()
     if cancel_context is not None:
         cancel_context.raise_if_cancelled()
 
@@ -2358,11 +2359,11 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
 
     # Fallback/dynamic detection based on URL or model name
     if not is_bedrock and not is_anthropic and not explicit_openai:
-        if "bedrock" in base_url or "bedrock" in model_lower:
+        if "bedrock" in base_url_lower or "bedrock" in model_lower:
             is_bedrock = True
-        elif ("anthropic" in base_url or base_url.endswith("/messages")
-              or ("claude" in model_lower and "/messages" in base_url)):
-            if "bedrock" not in base_url and "bedrock" not in model_lower:
+        elif ("anthropic" in base_url_lower or base_url_lower.endswith("/messages")
+              or ("claude" in model_lower and "/messages" in base_url_lower)):
+            if "bedrock" not in base_url_lower and "bedrock" not in model_lower:
                 is_anthropic = True
 
     if is_bedrock:

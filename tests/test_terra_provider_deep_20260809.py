@@ -37,6 +37,18 @@ class DirectProviderRetryRegressionTest(unittest.TestCase):
     def test_gui_direct_anthropic_retries_transient_failure(self):
         self._assert_direct_retry(subtitle_translator_gui._safe_chat_create)
 
+    def test_direct_provider_routing_preserves_case_sensitive_base_url(self):
+        base_url = "https://Proxy.Example/CaseSensitive/messages"
+        for wrapper in (hybrid_translate._safe_chat_create,
+                        subtitle_translator_gui._safe_chat_create):
+            client = SimpleNamespace(base_url=base_url, api_key="test-key")
+            with self.subTest(wrapper=wrapper.__module__), mock.patch(
+                    "helper_models.call_anthropic_messages",
+                    return_value="ok") as call:
+                self.assertEqual(wrapper(
+                    client, model="custom-claude", messages=[]), "ok")
+                self.assertEqual(call.call_args.kwargs["base_url"], base_url)
+
 
 class ProviderAdapterErrorRegressionTest(unittest.TestCase):
     def test_anthropic_http_error_preserves_retry_after_and_redacts_key(self):
@@ -82,6 +94,17 @@ class ProviderAdapterErrorRegressionTest(unittest.TestCase):
         self.assertNotIn(access, str(exc))
         self.assertNotIn(secret, str(exc))
         self.assertTrue(provider_retry._is_transient_provider_error(exc))
+
+    def test_json_error_body_retry_after_is_used_by_direct_provider_retry(self):
+        error = helper_models.ProviderAdapterError(
+            "rate limited", status_code=429, body='{"retry_after": 45}')
+        waits = []
+        with mock.patch.object(
+                provider_retry._REGISTRY, "wait_for_retry",
+                side_effect=lambda delay, attempt, total: waits.append(
+                    (delay, attempt, total)) or delay):
+            provider_retry._wait_for_transient_retry(error, 1, 3)
+        self.assertEqual(waits, [(45.0, 1, 3)])
 
 
 class MissingUsageRegressionTest(unittest.TestCase):
