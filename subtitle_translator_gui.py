@@ -4449,9 +4449,32 @@ def _chunk_src_map_from_request(req: dict) -> dict:
         return {}
 
 
+def _chunk_leak_src_map_from_request(req: dict) -> dict:
+    try:
+        messages = req.get("body", {}).get("messages", [])
+        user_msg = next((m for m in messages if m.get("role") == "user"), None)
+        payload = json.loads(user_msg.get("content", "")) if user_msg else {}
+        items = [it for it in payload.get("tr", [])
+                 if isinstance(it, dict) and "i" in it]
+        groups = {}
+        for item in items:
+            group_id = item.get("frag_group")
+            if group_id is not None:
+                groups.setdefault(str(group_id), []).append(str(item.get("t", "")))
+        result = {}
+        for item in items:
+            cue_id = str(item["i"])
+            group_id = item.get("frag_group")
+            result[cue_id] = (
+                " ".join(groups.get(str(group_id), []))
+                if group_id is not None else str(item.get("t", "")))
+        return result
+    except Exception:
+        return {}
+
+
 def _chunk_leak_source_text(chunk_src_map: dict, item_id) -> str:
-    # Yabancı token yalnız kendi cue kaynağında geçiyorsa lisanslıdır. Komşu
-    # cue'daki özel ad, yanlış cue'ya sızan aynı tokenı meşrulaştıramaz.
+    # Yabancı token yalnız kendi cue veya aynı cümle-fragmanı kaynağında lisanslıdır.
     return str(chunk_src_map.get(str(item_id), "") or "")
 
 
@@ -4470,11 +4493,13 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
         if any(it.get("t", "").strip().startswith("[HATA") for it in items):
             return "hata_line"
         chunk_src_map = _chunk_src_map_from_request(req) if req else {}
+        chunk_leak_src_map = (
+            _chunk_leak_src_map_from_request(req) if req else {}) or chunk_src_map
         if any(
             ht.has_non_turkish_target_leak(
                 it.get("t", ""),
                 source_text=_chunk_leak_source_text(
-                    chunk_src_map, it.get("i")),
+                    chunk_leak_src_map, it.get("i")),
             )
             for it in items
         ):

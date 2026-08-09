@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -143,6 +144,39 @@ class PolishUsageRouteTest(unittest.TestCase):
         self.assertIsNone(kwargs["price"])
         self.assertEqual(kwargs["pass_name"], "Polish Pass")
         self.assertEqual(kwargs["base_url"], "https://api.shuaiapi.com/v1")
+
+
+class FragmentProperNameRetryTest(unittest.TestCase):
+    @staticmethod
+    def _request(group_second=True):
+        return {"body": {"messages": [{
+            "role": "user",
+            "content": json.dumps({"tr": [
+                {"i": 132, "t": "Janis Joplin and Pelé",
+                 "frag": "mid", "frag_group": 7},
+                {"i": 133, "t": "are reported to have made pilgrimages",
+                 "frag": "mid", "frag_group": 7 if group_second else 8},
+            ]}, ensure_ascii=False),
+        }]}}
+
+    def test_source_backed_name_can_move_inside_fragment_group(self):
+        raw = json.dumps([
+            {"i": 132, "t": "Janis Joplin'in"},
+            {"i": 133, "t": "ve Pelé'nin hac yolculuğu yaptığı söylenir"},
+        ], ensure_ascii=False)
+        self.assertEqual(
+            gui._chunk_response_retry_reason(raw, self._request()), "")
+
+    def test_neighbor_outside_fragment_group_still_retries(self):
+        raw = json.dumps([
+            {"i": 132, "t": "Janis Joplin'in"},
+            {"i": 133, "t": "ve Pelé'nin hac yolculuğu yaptığı söylenir"},
+        ], ensure_ascii=False)
+        self.assertEqual(
+            gui._chunk_response_retry_reason(
+                raw, self._request(group_second=False)),
+            "non_turkish_target",
+        )
 
 
 if __name__ == "__main__":
