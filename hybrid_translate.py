@@ -4415,8 +4415,23 @@ def back_translation_check(
             continue
 
         # ── Stage 2: kaynak vs geri-çeviri sapma yargısı (muhafazakâr) ──
-        cmp_payload = [{"id": it["idx"], "src": it["src"], "back": back_map.get(it["idx"], "")}
-                       for it in chunk if back_map.get(it["idx"])]
+        # Adjacent cues can share one natural sentence.  Keep their immediate
+        # evidence together so a harmless Turkish redistribution is not read
+        # as a per-cue omission.
+        cmp_payload = []
+        for pos, it in enumerate(chunk):
+            if not back_map.get(it["idx"]):
+                continue
+            row = {"id": it["idx"], "src": it["src"], "back": back_map[it["idx"]]}
+            if pos:
+                previous = chunk[pos - 1]
+                if back_map.get(previous["idx"]):
+                    row["prev"] = {"src": previous["src"], "back": back_map[previous["idx"]]}
+            if pos + 1 < len(chunk):
+                following = chunk[pos + 1]
+                if back_map.get(following["idx"]):
+                    row["next"] = {"src": following["src"], "back": back_map[following["idx"]]}
+            cmp_payload.append(row)
         if not cmp_payload:
             partial_chunks += 1
             missing_items += len(missing_ids)
@@ -4426,7 +4441,9 @@ def back_translation_check(
             f"back-translation ('back') of its {tgt_lang} translation. Flag a line ONLY when "
             f"'back' reveals a HARD meaning error in the translation: negation flipped, wrong "
             f"subject/object/person, wrong number/quantity, a changed fact, or clearly "
-            f"omitted/added meaning. Do NOT flag style, synonyms, word order, register, tense "
+            f"omitted/added meaning. `prev`/`next` are neighboring cue context; do NOT flag "
+            f"meaning naturally distributed across them, unless their combined back text still "
+            f"loses or changes it. Do NOT flag style, synonyms, word order, register, tense "
             f"nuance, or minor paraphrase. Be conservative — when unsure, do NOT flag.\n"
             f"Return ONLY a JSON array of flagged items [{{\"id\":\"N\",\"reason\":\"short reason\"}}]; "
             f"return [] if none.\n\n{json.dumps(cmp_payload, ensure_ascii=False)}"
@@ -7960,6 +7977,7 @@ def semantic_reconciliation_pass(
             cancelled = True
             break
         batch_cluster_by_id = {cluster["cluster"]: cluster for cluster in batch}
+        reviewed_cluster_ids = set(batch_cluster_by_id)
         payload = {"clusters": batch}
         if progress_callback:
             try:
@@ -7982,6 +8000,7 @@ def semantic_reconciliation_pass(
             _report_helper_usage(resp, token_callback)
             raw = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             payload = _extract_json_array(raw)
+            partial_response = False
             if payload:
                 parsed = json.loads(payload)
             else:
@@ -7991,6 +8010,7 @@ def semantic_reconciliation_pass(
                 parsed = _salvage_json_objects(raw)
                 if not parsed:
                     raise ValueError("response_not_array")
+                partial_response = True
                 partial_batches += 1
                 stats["details"].append({
                     "clusters": [c["cluster"] for c in batch],
@@ -8003,6 +8023,96 @@ def semantic_reconciliation_pass(
                         f"{len(parsed)} tamamlanmış küme doğrulanacak.", "warn")
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
+
+            # A cut-off array has no way to represent the clusters after its
+            # last complete object.  Do not count those as reviewed: ask only
+            # for the omitted clusters, then merge the independently-safe
+            # responses.  A normal *valid* array may omit no-change clusters,
+            # so this retry is deliberately limited to salvaged/truncated JSON.
+            if partial_response:
+                returned_cluster_ids = {
+                    str(row.get("cluster", "")) for row in parsed
+                    if isinstance(row, dict) and str(row.get("cluster", ""))
+                    in batch_cluster_by_id
+                }
+                reviewed_cluster_ids = set(returned_cluster_ids)
+                missing_clusters = [
+                    cluster for cluster in batch
+                    if cluster["cluster"] not in returned_cluster_ids
+                ]
+                retry_count = 0
+                while missing_clusters and retry_count < 3:
+                    retry_count += 1
+                    retry_payload = {"clusters": missing_clusters}
+                    retry_prompt = (
+                        "The previous JSON response was truncated. Inspect ONLY these remaining "
+                        "clusters under the same rules. Return a complete JSON array in the exact "
+                        "requested schema, including [] when none need a fix.\n\n"
+                        + json.dumps(retry_payload, ensure_ascii=False)
+                    )
+                    try:
+                        stats["api_requests"] += 1
+                        retry_resp = _safe_chat_create(
+                            client,
+                            cancel_context=cancel_context,
+                            _checkpoint_label="semantic_reconciliation_missing",
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": retry_prompt},
+                            ],
+                            max_tokens=max(800, sum(len(c["items"]) for c in missing_clusters) * 90),
+                            temperature=0.0,
+                        )
+                        _report_helper_usage(retry_resp, token_callback)
+                        retry_raw = (
+                            (retry_resp.choices[0].message.content or "").strip()
+                            if retry_resp.choices else ""
+                        )
+                        retry_json = _extract_json_array(retry_raw)
+                        if not retry_json:
+                            raise ValueError("missing_cluster_response_not_array")
+                        retry_rows = json.loads(retry_json)
+                        if not isinstance(retry_rows, list):
+                            raise ValueError("missing_cluster_response_not_array")
+                    except RequestCancelled:
+                        raise
+                    except Exception as retry_exc:
+                        stats["details"].append({
+                            "clusters": [c["cluster"] for c in missing_clusters],
+                            "status": "partial_retry_error",
+                            "reason": str(retry_exc),
+                            "attempt": retry_count,
+                        })
+                        if log_fn:
+                            log_fn(
+                                f"Nihai anlam mutabakatı kesik JSON: kalan "
+                                f"{len(missing_clusters)} küme yeniden alınamadı ({retry_count}/3): "
+                                f"{retry_exc}", "warn")
+                        continue
+                    valid_rows = []
+                    retry_ids = set()
+                    for row in retry_rows:
+                        if not isinstance(row, dict):
+                            continue
+                        cluster_id = str(row.get("cluster", ""))
+                        if cluster_id not in {c["cluster"] for c in missing_clusters}:
+                            continue
+                        valid_rows.append(row)
+                        retry_ids.add(cluster_id)
+                    # A valid response can omit clusters that need no changes;
+                    # it nevertheless completed their review.  Mark every
+                    # requested cluster done after a valid complete response.
+                    parsed.extend(valid_rows)
+                    reviewed_cluster_ids.update(
+                        cluster["cluster"] for cluster in retry_payload["clusters"])
+                    missing_clusters = []
+                    stats["details"].append({
+                        "clusters": [c["cluster"] for c in retry_payload["clusters"]],
+                        "status": "partial_retry_completed",
+                        "attempt": retry_count,
+                        "returned_clusters": len(retry_ids),
+                    })
             successful_batches += 1
         except RequestCancelled:
             cancelled = True
@@ -8041,6 +8151,7 @@ def semantic_reconciliation_pass(
         processed_covered_ids.update({
             str(item.get("id", ""))
             for cluster in batch
+            if cluster["cluster"] in reviewed_cluster_ids
             for item in cluster.get("items", [])
             if item.get("id") is not None
         })
@@ -9937,6 +10048,71 @@ def _has_because_negation_scope_reversal(source_text: str, original_text: str,
     return positive_before and bool(re.search(neg_word, after))
 
 
+_CRITICAL_REFERENCE_FORMS = {
+    "first": frozenset(("ben", "beni", "bana", "bende", "benden", "benim", "biz", "bizi", "bize", "bizde", "bizden", "bizim")),
+    "second": frozenset(("sen", "seni", "sana", "sende", "senden", "senin", "siz", "sizi", "size", "sizde", "sizden", "sizin")),
+    "third": frozenset(("o", "onu", "ona", "onda", "ondan", "onun", "onlar", "onları", "onlara", "onlarda", "onlardan", "onların")),
+}
+_CRITICAL_FACT_GROUPS = (
+    frozenset(("şimdi", "sonra", "bugün", "yarın", "dün", "önce", "sonra")),
+    frozenset(("kırmızı", "mavi", "yeşil", "sarı", "siyah", "beyaz", "mor", "turuncu", "pembe", "gri")),
+    frozenset(("sol", "sağ", "yukarı", "aşağı", "içeri", "dışarı", "ileri", "geri")),
+)
+
+
+def _has_critical_fact_swap(old: str, new: str, source_text: str = "") -> bool:
+    """Reject exact referent/fact substitutions which a surface pass never needs.
+
+    This is intentionally narrow: it only sees an old protected token replaced
+    by a different member of the same semantic slot, not ordinary rewording.
+    """
+    old_words = set(re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ]+", _polish_norm(old)))
+    new_words = set(re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ]+", _polish_norm(new)))
+    for forms in _CRITICAL_REFERENCE_FORMS.values():
+        if old_words & forms and not (new_words & forms):
+            # Only call it a swap when the replacement clearly belongs to a
+            # different grammatical person; a legitimate Turkish inflection
+            # within the same slot is not rejected.
+            if any(new_words & other for other in _CRITICAL_REFERENCE_FORMS.values()
+                   if other is not forms):
+                return True
+    for group in _CRITICAL_FACT_GROUPS:
+        # Turkish case suffixes are expected on colours/directions (sola,
+        # sağa, kırmızıyı), so compare a compact known stem as well as exact
+        # token forms.
+        old_group = {
+            member for member in group
+            if any(_ascii_fold(word).startswith(_ascii_fold(member)) for word in old_words)
+        }
+        new_group = {
+            member for member in group
+            if any(_ascii_fold(word).startswith(_ascii_fold(member)) for word in new_words)
+        }
+        if old_group and new_group and old_group != new_group:
+            return True
+    # Same lexical stem but definite/past vs future is a fact change, not a
+    # polish operation (geldi -> gelecek, baktı -> bakacak).
+    past_stems = set(re.findall(
+        r"\b([a-zçğıöşü]{3,}?)(?:dı|di|du|dü|tı|ti|tu|tü)\b",
+        _polish_norm(old)))
+    future_stems = set(re.findall(
+        r"\b([a-zçğıöşü]{3,}?)(?:acak|ecek)(?:[a-zçğıöşü]+)?\b",
+        _polish_norm(new)))
+    if past_stems & future_stems:
+        return True
+    # If a source-proven proper name already exists in the accepted line, a
+    # surface pass may fix punctuation but must not exchange it for another
+    # name.  Source confirmation avoids treating sentence-initial common words
+    # as names.
+    source_fold = str(source_text or "").casefold()
+    old_names = set(re.findall(r"\b[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]{2,}\b", old))
+    new_names = set(re.findall(r"\b[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]{2,}\b", new))
+    protected_names = {name for name in old_names if name.casefold() in source_fold}
+    if protected_names and not (protected_names & new_names):
+        return True
+    return False
+
+
 def validate_polish_candidate(
     original_text: str,
     candidate_text: str,
@@ -10012,6 +10188,8 @@ def validate_polish_candidate(
         return False, "source_numbers"
     if _has_turkish_person_drift(old, new):
         return False, "person_drift"
+    if _has_critical_fact_swap(old, new, src):
+        return False, "critical_fact_swap"
     if src and _has_source_backed_plural_loss(src, old, new):
         return False, "plural_drift"
     if src and _has_source_backed_possessive_drift(src, old, new):
@@ -10105,6 +10283,37 @@ _SEMANTIC_REWRITE_REJECTIONS = {
 }
 
 
+def _source_backed_semantic_rewrite_resolves_validator_issue(
+        old: str, new: str, source_text: str) -> bool:
+    """Permit a real retranslation only when it resolves a concrete source check.
+
+    The semantic pass is allowed to replace a bad Turkish rendering wholesale,
+    unlike Polish.  Do not trust a fluent rewrite merely because it differs:
+    require an existing deterministic source/target issue to disappear in the
+    candidate.  This keeps the old fail-closed behavior for speculative style
+    rewrites while no longer rejecting source-backed repairs for superficial
+    Turkish token drift.
+    """
+    source = str(source_text or "").strip()
+    if not source:
+        return False
+    probe_id = "__semantic_probe__"
+    ts = "00:00:00,000 --> 00:00:01,000"
+    cues = _semantic_validator_cues(
+        {probe_id: source}, [(probe_id, ts, old)])
+    old_reasons = _semantic_reason_map(
+        [(probe_id, ts, old)], cues).get(probe_id, set())
+    old_reasons = {
+        reason for reason in old_reasons
+        if _is_semantic_reconciliation_reason(reason)
+    }
+    if not old_reasons:
+        return False
+    new_reasons = _semantic_reason_map(
+        [(probe_id, ts, new)], cues).get(probe_id, set())
+    return bool(old_reasons - set(new_reasons))
+
+
 def validate_semantic_reconciliation_candidate(
     original_text: str,
     candidate_text: str,
@@ -10149,6 +10358,8 @@ def validate_semantic_reconciliation_candidate(
     # A candidate that failed only because it rewrites content cannot safely be
     # revalidated against itself. That used to discard the before→after semantic
     # comparison and allowed a fluent but unrelated source claim through.
+    if _source_backed_semantic_rewrite_resolves_validator_issue(old, new, src):
+        return True, ""
     return False, "semantic_rewrite_unverified"
 
 
@@ -10331,8 +10542,21 @@ def _turkish_second_person_register(text: str) -> str:
     if re.search(r"\bsiz(?:ler)?\b", value) or re.search(
             r"\b[\wçğıöşü]+(?:sınız|siniz|sunuz|sünüz)\b", value):
         return "formal"
+    # Bare imperatives have no pronoun/suffix, yet "gel" and "gelin" are a
+    # meaningful sen/siz distinction.  Limit this to common directive verbs;
+    # a generic -in ending would incorrectly classify ordinary nouns.
+    if re.search(
+            r"\b(?:gelin|bakın|edin|yapın|olun|verin|alın|söyleyin|dinleyin|"
+            r"bekleyin|gidin|durun|oturun|başlayın|bırakın|izleyin|düşünün)\b",
+            value):
+        return "formal"
     if re.search(r"\bsen\b", value) or re.search(
             r"\b[\wçğıöşü]+(?:sın|sin|sun|sün)\b", value):
+        return "informal"
+    if re.search(
+            r"\b(?:gel|bak|et|yap|ol|ver|al|söyle|dinle|bekle|git|dur|otur|"
+            r"başla|bırak|izle|düşün)\b",
+            value):
         return "informal"
     return ""
 
