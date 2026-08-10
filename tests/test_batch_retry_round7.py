@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,6 +51,33 @@ class BatchRetryCancellationTest(unittest.TestCase):
 
 
 class BatchUploadReplayTest(unittest.TestCase):
+    def test_cancelled_create_persists_hybrid_cancel_intent(self):
+        client = SimpleNamespace(
+            files=SimpleNamespace(create=mock.Mock(
+                return_value=SimpleNamespace(id="file-1"))),
+            batches=SimpleNamespace(create=mock.Mock()),
+        )
+
+        def _retry(_client, call, operation, cancel_check=None):
+            if operation == "batch_create":
+                raise provider_retry.ProviderWaitCancelled("stopped")
+            return call()
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch("openai.OpenAI", return_value=client), \
+                mock.patch.object(ht, "state_dir", return_value=Path(tmp)), \
+                mock.patch.object(ht, "_batch_id_path", return_value=Path(tmp) / "batch_id.txt"), \
+                mock.patch.object(ht, "_hybrid_batch_intent_path",
+                                  return_value=Path(tmp) / "intent.json"), \
+                mock.patch.object(ht, "batch_api_call_with_retry", side_effect=_retry):
+            with self.assertRaises(provider_retry.ProviderWaitCancelled):
+                ht.submit_batch(
+                    "key", [{"custom_id": "c1"}], file_map={"c1": []},
+                    run_context={"api_key_fingerprint": "test"})
+            intent = json.loads((Path(tmp) / "intent.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(intent["cancel_requested"])
+
     def test_retried_upload_rewinds_stream_and_reuses_idempotency_key(self):
         payloads = []
         upload_headers = []

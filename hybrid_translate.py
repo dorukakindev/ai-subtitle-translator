@@ -19,6 +19,7 @@ from app_state import (_interprocess_lock, atomic_write_json, atomic_write_text,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
 from subtitle_formats import clean_translation_source_text
 from request_cancellation import RequestCancelled
+from provider_retry import ProviderWaitCancelled
 
 _SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -12400,16 +12401,27 @@ def submit_batch(
             "fmap_data": fmap_data,
             "idempotency_key": intent_token,
         })
-    batch = batch_api_call_with_retry(
-        client,
-        lambda: client.batches.create(
-            input_file_id=uploaded.id,
-            endpoint="/v1/chat/completions",
-            completion_window="24h",
-            metadata={"recovery_intent": intent_token},
-            extra_headers={"Idempotency-Key": intent_token},
-        ),
-        "batch_create", cancel_check=cancel_check)
+    try:
+        batch = batch_api_call_with_retry(
+            client,
+            lambda: client.batches.create(
+                input_file_id=uploaded.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                metadata={"recovery_intent": intent_token},
+                extra_headers={"Idempotency-Key": intent_token},
+            ),
+            "batch_create", cancel_check=cancel_check)
+    except ProviderWaitCancelled:
+        if intent_path is not None:
+            try:
+                intent = json.loads(intent_path.read_text(encoding="utf-8"))
+                if isinstance(intent, dict):
+                    intent["cancel_requested"] = True
+                    atomic_write_json(intent_path, intent)
+            except Exception:
+                pass
+        raise
 
     try:
         mutate_batch_ids(_batch_id_path(), add=[batch.id])

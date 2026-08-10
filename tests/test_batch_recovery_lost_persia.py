@@ -264,6 +264,99 @@ class BatchRecoveryLostPersiaTests(unittest.TestCase):
             client.batches.create.assert_not_called()
             update.assert_called_once()
 
+    def test_cancel_requested_regular_intent_cancels_remote_without_recovery(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.dict(os.environ, {STATE_DIR_ENV: tmpdir}):
+            source = Path(tmpdir) / "source.srt"
+            source.write_text("source", encoding="utf-8")
+            run_id, token = "cancel-safe", "cancel-safe-0"
+            manifest = {
+                "type": "regular_run", "run_id": run_id, "part_count": 1,
+                "run_context": {"api_key_fingerprint": hashlib.sha256(b"key").hexdigest()},
+                "parts": [{"part_index": 0, "requests": [{"custom_id": "c0"}],
+                           "fmap": {"c0": [[1, "ts", str(source)]]}}],
+            }
+            gui._regular_batch_manifest_path(run_id).write_text(
+                json.dumps(manifest), encoding="utf-8")
+            intent = gui._regular_batch_intent_path(run_id, 0)
+            intent.write_text(json.dumps({
+                "run_id": run_id, "part_index": 0, "input_file_id": "input-file",
+                "recovery_intent": token, "cancel_requested": True,
+            }), encoding="utf-8")
+            remote = SimpleNamespace(id="batch_cancel", input_file_id="input-file",
+                                     metadata={"recovery_intent": token})
+            client = mock.MagicMock()
+            client.batches.list.return_value = [remote]
+            app = object.__new__(gui.App)
+            app._log = mock.MagicMock()
+            app._register_batch = mock.MagicMock()
+            with mock.patch("openai.OpenAI", return_value=client):
+                recovered = app._reconcile_regular_batch_intents("key")
+
+            self.assertEqual(recovered, [])
+            client.batches.cancel.assert_called_once_with("batch_cancel")
+            self.assertFalse(intent.exists())
+            app._register_batch.assert_not_called()
+
+    def test_cancel_requested_hybrid_intent_cancels_remote_without_recovery(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.dict(os.environ, {STATE_DIR_ENV: tmpdir}):
+            token = "hybrid-cancel"
+            fmap_data = {
+                "type": "hybrid", "source_path": str(Path(tmpdir) / "source.srt"),
+                "output_path": str(Path(tmpdir) / "out.srt"),
+                "run_context": {"api_key_fingerprint": hashlib.sha256(b"key").hexdigest()},
+                "fmap": {"c0": [[1, "ts", "source"]]},
+            }
+            intent = ht._hybrid_batch_intent_path(token)
+            intent.write_text(json.dumps({
+                "recovery_intent": token, "input_file_id": "input-hybrid",
+                "base_url": "", "fmap_data": fmap_data, "cancel_requested": True,
+            }), encoding="utf-8")
+            remote = SimpleNamespace(id="batch_hybrid_cancel", input_file_id="input-hybrid",
+                                     metadata={"recovery_intent": token})
+            client = mock.MagicMock()
+            client.batches.list.return_value = [remote]
+            app = object.__new__(gui.App)
+            app._log = mock.MagicMock()
+            app._register_batch = mock.MagicMock()
+            with mock.patch("openai.OpenAI", return_value=client):
+                recovered = app._reconcile_hybrid_batch_intents("key")
+
+            self.assertEqual(recovered, [])
+            client.batches.cancel.assert_called_once_with("batch_hybrid_cancel")
+            self.assertFalse(intent.exists())
+            app._register_batch.assert_not_called()
+
+    def test_cancel_requested_intent_never_resubmits_when_remote_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             mock.patch.dict(os.environ, {STATE_DIR_ENV: tmpdir}):
+            run_id, token = "cancel-missing", "cancel-missing-0"
+            manifest = {
+                "type": "regular_run", "run_id": run_id, "part_count": 1,
+                "run_context": {"api_key_fingerprint": hashlib.sha256(b"key").hexdigest()},
+                "parts": [{"part_index": 0, "requests": [{"custom_id": "c0"}],
+                           "fmap": {"c0": [[1, "ts", "source"]]}}],
+            }
+            gui._regular_batch_manifest_path(run_id).write_text(
+                json.dumps(manifest), encoding="utf-8")
+            intent = gui._regular_batch_intent_path(run_id, 0)
+            intent.write_text(json.dumps({
+                "run_id": run_id, "part_index": 0, "input_file_id": "input-file",
+                "recovery_intent": token, "cancel_requested": True,
+            }), encoding="utf-8")
+            client = mock.MagicMock()
+            client.batches.list.return_value = []
+            app = object.__new__(gui.App)
+            app._log = mock.MagicMock()
+            app._register_batch = mock.MagicMock()
+            with mock.patch("openai.OpenAI", return_value=client):
+                recovered = app._reconcile_regular_batch_intents("key")
+
+            self.assertEqual(recovered, [])
+            client.batches.create.assert_not_called()
+            self.assertTrue(intent.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

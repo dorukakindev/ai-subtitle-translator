@@ -36,6 +36,7 @@ from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
                                transliteration_guard_rule)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
+from provider_retry import ProviderWaitCancelled
 import video_subtitles as video_tracks
 
 # Tahmini 1M Token fiyatları (Input/Output $)
@@ -6249,6 +6250,19 @@ def _unlink_batch_intent_nonfatal(intent_path, log_fn=None) -> bool:
                 f"izlenmeye devam edecek ({exc})",
                 "warn",
             )
+        return False
+
+
+def _mark_batch_intent_cancel_requested(intent_path) -> bool:
+    try:
+        path = Path(intent_path)
+        intent = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(intent, dict):
+            return False
+        intent["cancel_requested"] = True
+        atomic_write_json(path, intent)
+        return True
+    except Exception:
         return False
 
 
@@ -25715,6 +25729,8 @@ class App(ctk.CTk):
                 self._log(f"Batch oluşturuldu: {batch.id}", "ok")
             except Exception as e:
                 self._log_exc("Hata", e)
+                if isinstance(e, ProviderWaitCancelled) and _intent_path is not None:
+                    _mark_batch_intent_cancel_requested(_intent_path)
                 if _created_batch_id and not _metadata_ready:
                     _metadata_cancelled = best_effort_cancel_remote_batch(
                         client, _created_batch_id, self._log)
@@ -25856,6 +25872,11 @@ class App(ctk.CTk):
                             match = remote
                             break
                     if match is None:
+                        if intent.get("cancel_requested"):
+                            self._log(
+                                f"Durdurulmuş yetim batch niyeti uzakta bulunamadı "
+                                f"({intent_path.name}); kayıt korundu.", "warn")
+                            continue
                         match = _batch_api_call_with_retry(
                             client,
                             lambda: client.batches.create(
@@ -25869,6 +25890,15 @@ class App(ctk.CTk):
                             cancel_check=lambda: bool(
                                 self.__dict__.get("_stop_flag", False)))
                     batch_id = str(match.id)
+                    if intent.get("cancel_requested"):
+                        if best_effort_cancel_remote_batch(client, batch_id, self._log):
+                            intent_path.unlink(missing_ok=True)
+                            self._log(f"Durdurulmuş yetim batch iptal edildi: {batch_id}", "ok")
+                        else:
+                            self._log(
+                                f"Durdurulmuş yetim batch iptal edilemedi ({batch_id}); "
+                                "niyet kaydı korundu.", "err")
+                        continue
                     atomic_write_json(
                         state_path(__file__, f"batch_fmap_{batch_id}.json"),
                         _regular_fmap_from_manifest(manifest, part, manifest_path))
@@ -25926,6 +25956,11 @@ class App(ctk.CTk):
                             match = remote
                             break
                     if match is None:
+                        if intent.get("cancel_requested"):
+                            self._log(
+                                f"Durdurulmuş yetim hybrid batch niyeti uzakta bulunamadı "
+                                f"({intent_path.name}); kayıt korundu.", "warn")
+                            continue
                         match = _batch_api_call_with_retry(
                             client,
                             lambda: client.batches.create(
@@ -25939,6 +25974,15 @@ class App(ctk.CTk):
                             cancel_check=lambda: bool(
                                 self.__dict__.get("_stop_flag", False)))
                     batch_id = str(match.id)
+                    if intent.get("cancel_requested"):
+                        if best_effort_cancel_remote_batch(client, batch_id, self._log):
+                            intent_path.unlink(missing_ok=True)
+                            self._log(f"Durdurulmuş yetim hybrid batch iptal edildi: {batch_id}", "ok")
+                        else:
+                            self._log(
+                                f"Durdurulmuş yetim hybrid batch iptal edilemedi ({batch_id}); "
+                                "niyet kaydı korundu.", "err")
+                        continue
                     atomic_write_json(ht._batch_fmap_path(batch_id), fmap_data)
                     mutate_batch_ids(_batch_id_path(), add=[batch_id])
                     self._register_batch(
@@ -26101,6 +26145,8 @@ class App(ctk.CTk):
                     self._log(
                         f"Eksik batch parçası gönderilemedi "
                         f"({part_index + 1}/{manifest.get('part_count')}): {exc}", "err")
+                    if isinstance(exc, ProviderWaitCancelled) and intent_path is not None:
+                        _mark_batch_intent_cancel_requested(intent_path)
                     if created_id and not metadata_ready:
                         cancelled = best_effort_cancel_remote_batch(
                             client, created_id, self._log)
