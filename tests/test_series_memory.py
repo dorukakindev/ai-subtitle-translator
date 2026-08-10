@@ -175,6 +175,20 @@ class BuildHintTest(unittest.TestCase):
         self.assertIn("- Sam: blunt", h)
         self.assertIn("- Sam → Chief: 'siz'", h)
 
+    def test_term_filter_removes_stale_explanatory_decisions(self):
+        m = sm.SeriesMemory(Path("x.json"), {
+            "terms": {
+                "psychedelic": "psikedelik; bağlama göre ayrıştırılmalı",
+                "history": "tarih",
+            },
+            "characters": {}, "address_map": [],
+        })
+        h = m.build_hint(term_filter=lambda terms: {
+            key: value for key, value in terms.items() if key == "history"
+        })
+        self.assertNotIn("psychedelic", h)
+        self.assertIn("'history'", h)
+
     def test_term_cap(self):
         terms = {f"t{i}": f"v{i}" for i in range(100)}
         m = sm.SeriesMemory(Path("x.json"), {
@@ -411,6 +425,24 @@ class RunOverlayTest(unittest.TestCase):
 
             self.assertIn("'Hive' → 'Kovan'", app._series_hint_for(e2))
             self.assertFalse((Path(td) / ".series_memory" / "show.json").exists())
+
+    def test_existing_ambiguous_term_is_not_injected_as_fixed_decision(self):
+        with tempfile.TemporaryDirectory() as td:
+            e1 = str(Path(td) / "Show.S01E01.srt")
+            e2 = str(Path(td) / "Show.S01E02.srt")
+            memory = sm.SeriesMemory.load(td, "show")
+            memory.merge_terms({
+                "psychedelic": (
+                    "“psikedelik”; “halüsinojenik” ile bağlama göre "
+                    "ayrıştırılmalı."
+                ),
+                "history": "tarih",
+            }, season=1, ep=1)
+            self.assertTrue(memory.save())
+
+            hint = self._app([e1, e2])._series_hint_for(e2)
+            self.assertNotIn("psychedelic", hint)
+            self.assertIn("'history'", hint)
 
     def test_run_overlay_is_scoped_by_target_language(self):
         with tempfile.TemporaryDirectory() as td:

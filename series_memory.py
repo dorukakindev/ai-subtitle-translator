@@ -425,7 +425,7 @@ class SeriesMemory:
         core_count = limit // 2
         return items[:core_count] + items[-(limit - core_count):]
 
-    def build_hint(self, before_episode=None) -> str:
+    def build_hint(self, before_episode=None, term_filter=None) -> str:
         terms = self._data.get("terms") or {}
         chars = self._data.get("characters") or {}
         addr  = self._data.get("address_map") or []
@@ -455,6 +455,12 @@ class SeriesMemory:
             source: target for source, target in terms.items()
             if allowed(term_origins.get(_term_origin_key(source)))
         }
+        if callable(term_filter):
+            try:
+                filtered = term_filter(dict(terms))
+                terms = dict(filtered) if isinstance(filtered, dict) else {}
+            except Exception:
+                terms = {}
         chars = {
             name: meta for name, meta in chars.items()
             if allowed(char_origins.get(str(name).strip().casefold()))

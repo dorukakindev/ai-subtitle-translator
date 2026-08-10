@@ -20,6 +20,12 @@ def _response(items):
     )
 
 
+def _checkpoint_response(items):
+    response = _response(items)
+    response.response_checkpoint_hit = True
+    return response
+
+
 class LicensedIdentityRepairTest(unittest.TestCase):
     def test_locked_latin_identity_is_not_missing(self):
         locked = {"coitus interruptus": "coitus interruptus"}
@@ -110,6 +116,63 @@ class LicensedIdentityRepairTest(unittest.TestCase):
 
 
 class PersistentRepairRetryTest(unittest.TestCase):
+    def test_ambiguous_memory_lock_is_removed_inside_repair(self):
+        source = "It's a different part of psychedelic history."
+        candidate = "Bu, psikedelik tarihinin farklı bir bölümü."
+        ambiguous = {
+            "psychedelic": (
+                "“psikedelik”; “halüsinojenik” ile bağlama göre "
+                "ayrıştırılmalı."
+            ),
+            "history": "tarih",
+            "unrelated": "ilgisiz",
+        }
+
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=_response([{"i": "101", "t": candidate}])) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                [("101", _TS, "[HATA]")], {"101": source}, object(),
+                "English", "Turkish", locked_terms=ambiguous,
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"))
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], candidate)
+        system_prompt = create.call_args.kwargs["messages"][0]["content"]
+        payload = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        self.assertNotIn("ayrıştırılmalı", system_prompt)
+        self.assertEqual(payload["glossary"], {"history": "tarih"})
+
+    def test_checkpoint_repair_retries_do_not_repeat_long_waits(self):
+        waits = []
+        responses = [
+            _checkpoint_response([{"i": "8", "t": "Please come here."}])
+            for _ in range(4)
+        ]
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   side_effect=responses) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                [("8", _TS, "[HATA]")], {"8": "Please come here."},
+                object(), "English", "Turkish",
+                retry_wait_fn=lambda delay, _cancelled: waits.append(delay) or True)
+
+        self.assertEqual(create.call_count, 4)
+        self.assertEqual(waits, [])
+        self.assertEqual(repaired, 0)
+        self.assertEqual(result[0][2], "[HATA]")
+
+    def test_locked_term_rejection_log_names_the_exact_lock(self):
+        log = MagicMock()
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=_response([{"i": "4", "t": "Mary geldi."}])):
+            gui._repair_untranslated_sync(
+                [("4", _TS, "[HATA]")], {"4": "John arrived."}, object(),
+                "English", "Turkish", locked_terms={"John": "John"},
+                log_fn=log, retry_delays=())
+
+        log_text = " ".join(str(call.args[0]) for call in log.call_args_list)
+        self.assertIn("locked_term_violation", log_text)
+        self.assertIn("kilit='John->John'", log_text)
+
     def test_quoted_song_title_translation_is_accepted_without_retry(self):
         source = (
             'One seven-inch single - "I\'m the Leader of the Gang," brackets, '

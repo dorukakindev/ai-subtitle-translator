@@ -4813,6 +4813,32 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
 _REPAIR_RETRY_DELAYS = (30, 60, 120)
 
 
+def _repair_relevant_locked_terms(locked_terms, source_texts) -> dict:
+    """Yalnız onarılan cue grubunda gerçekten geçen sabit terimleri döndür."""
+    import hybrid_translate as ht
+
+    sources = [str(text or "") for text in source_texts if str(text or "").strip()]
+    if not sources:
+        return {}
+    return {
+        str(source): str(target)
+        for source, target in (locked_terms or {}).items()
+        if any(ht._locked_source_term_present(str(source), text) for text in sources)
+    }
+
+
+def _repair_locked_term_violation_detail(src: str, candidate: str,
+                                         locked_terms) -> str:
+    import hybrid_translate as ht
+
+    for source, target in (locked_terms or {}).items():
+        if ht.locked_term_violation(src, candidate, {source: target}):
+            source_preview = re.sub(r"\s+", " ", str(source)).strip()[:80]
+            target_preview = re.sub(r"\s+", " ", str(target)).strip()[:80]
+            return f"{source_preview}->{target_preview}"
+    return ""
+
+
 def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: str,
                                        tgt_lang: str, locked_terms=None) -> str:
     import hybrid_translate as ht
@@ -4886,11 +4912,14 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     # [HATA] ve çevrilmemiş satırları topla; kaynağı SFX/müzik-only olanları
     # onarım kuyruğuna ALMA — düşürülecekler listesine ekle.
     out = list(blocks)
-    locked_terms = {
+    raw_locked_terms = {
         str(source).strip(): str(target).strip()
         for source, target in (locked_terms or {}).items()
         if str(source).strip() and str(target).strip()
     }
+    import hybrid_translate as ht
+    locked_terms = ht.sanitize_glossary_for_turkish(
+        raw_locked_terms, target_language=tgt_lang, log_fn=log_fn) or {}
     retry_delays = tuple(
         _REPAIR_RETRY_DELAYS if retry_delays is None else retry_delays)
     if source_cues:
@@ -4947,19 +4976,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     repaired = 0
 
     if hata_indices and client:
-        import hybrid_translate as ht
         if log_fn:
             log_fn(f"🔧  {len(hata_indices)} çevrilmemiş satır sync ile onarılıyor...", "info")
 
-        sys_prompt = system_prompt or _build_sync_system_prompt(
+        base_sys_prompt = system_prompt or _build_sync_system_prompt(
             src_lang, tgt_lang, schema, profanity)
-        if locked_terms:
-            rows = "; ".join(
-                f"{source} -> {target}"
-                for source, target in list(locked_terms.items())[:120])
-            sys_prompt += (
-                f"\nLOCKED TERMS (use the required {tgt_lang} rendering exactly "
-                f"when its source occurs):\n{rows}")
         source_order = [
             (str(idx), _clean_src(text))
             for idx, text in raw_src_map.items()
@@ -4979,6 +5000,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 break
             pending = list(hata_indices[batch_start:batch_start + max_per_call])
             prior_rejections = {}
+            previous_response_checkpoint_hit = False
             for attempt_index in range(total_attempts):
                 if not pending:
                     break
@@ -4988,20 +5010,40 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     break
                 if attempt_index:
                     delay = max(0.0, float(retry_delays[attempt_index - 1]))
-                    if log_fn:
+                    if previous_response_checkpoint_hit:
+                        if log_fn:
+                            log_fn(
+                                "  ↻ Önceki onarım yanıtı yerel checkpoint'ten "
+                                "geldi; yeniden deneme beklemesi atlandı",
+                                "info",
+                            )
+                    elif log_fn:
                         ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in pending)
                         log_fn(
                             f"  ↻ Eksik cue onarımı {int(delay)} sn sonra yeniden "
                             f"denenecek ({attempt_index + 1}/{total_attempts}): {ids}",
                             "warn",
                         )
-                    if not _wait_or_cancel(delay):
+                    if (not previous_response_checkpoint_hit
+                            and not _wait_or_cancel(delay)):
                         break
 
                 tr_items = [
                     {"i": idx, "t": _clean_src(src)}
                     for _pos, idx, _ts, src in pending
                 ]
+                attempt_locked_terms = _repair_relevant_locked_terms(
+                    locked_terms,
+                    [src for _pos, _idx, _ts, src in pending],
+                )
+                request_system_prompt = base_sys_prompt
+                if attempt_locked_terms:
+                    rows = "; ".join(
+                        f"{source} -> {target}"
+                        for source, target in list(attempt_locked_terms.items())[:120])
+                    request_system_prompt += (
+                        f"\nLOCKED TERMS (use the required {tgt_lang} rendering exactly "
+                        f"when its source occurs):\n{rows}")
                 payload_data = {
                     "tr": tr_items,
                     "repair_attempt": attempt_index + 1,
@@ -5024,8 +5066,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         })
                 if retry_rows:
                     payload_data["repair_retry"] = retry_rows
-                if locked_terms:
-                    payload_data["glossary"] = locked_terms
+                if attempt_locked_terms:
+                    payload_data["glossary"] = attempt_locked_terms
                 positions = [
                     source_positions[str(idx)] for _pos, idx, _ts, _src in pending
                     if str(idx) in source_positions
@@ -5054,6 +5096,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
 
                 rejection_reasons = {}
                 rejection_candidates = {}
+                previous_response_checkpoint_hit = False
                 try:
                     resp = _safe_chat_create(
                         client,
@@ -5061,11 +5104,13 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         _checkpoint_label="translation_repair",
                         model=model,
                         messages=[
-                            {"role": "system", "content": sys_prompt},
+                            {"role": "system", "content": request_system_prompt},
                             {"role": "user", "content": payload},
                         ],
                         temperature=0.3,
                     )
+                    previous_response_checkpoint_hit = bool(
+                        getattr(resp, "response_checkpoint_hit", False))
                     if not getattr(resp, "choices", None):
                         raise ValueError("response_has_no_choices")
                     raw_text = (resp.choices[0].message.content or "").strip()
@@ -5127,7 +5172,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                                 line for line in cleaned_lines if line)
                             reason = _repair_candidate_rejection_reason(
                                 src_text, translated, src_lang=src_lang,
-                                tgt_lang=tgt_lang, locked_terms=locked_terms)
+                                tgt_lang=tgt_lang,
+                                locked_terms=_repair_relevant_locked_terms(
+                                    attempt_locked_terms, [src_text]))
                         if reason:
                             rejection_reasons[rid] = reason
                             rejection_candidates[rid] = str(translated or "")
@@ -5153,11 +5200,20 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             candidate_preview = re.sub(
                                 r"\s+", " ", rejection_candidates.get(rid, "")
                             ).strip()[:120]
+                            lock_detail = ""
+                            if rejection_reasons.get(rid) == "locked_term_violation":
+                                violated = _repair_locked_term_violation_detail(
+                                    src_text, rejection_candidates.get(rid, ""),
+                                    _repair_relevant_locked_terms(
+                                        attempt_locked_terms, [src_text]))
+                                if violated:
+                                    lock_detail = f" | kilit={violated!r}"
                             log_fn(
                                 f"  Onarım reddi #{rid} "
                                 f"(deneme {attempt_index + 1}/{total_attempts}): "
                                 f"{rejection_reasons.get(rid, 'unknown')} | "
-                                f"kaynak={source_preview!r} | aday={candidate_preview!r}",
+                                f"kaynak={source_preview!r} | aday={candidate_preview!r}"
+                                f"{lock_detail}",
                                 "warn",
                             )
                         if not pending:
@@ -19879,7 +19935,24 @@ class App(ctk.CTk):
 
     def _series_hint_for(self, fp: str) -> str:
         sm_obj, season, ep = self._series_mem_for(fp)
-        return sm_obj.build_hint(before_episode=(season, ep)) if sm_obj else ""
+        if not sm_obj:
+            return ""
+        import hybrid_translate as ht
+        snap_get = getattr(self, "_snap_get", None)
+        if callable(snap_get):
+            target_language = snap_get("tgt_lang", "Turkish")
+        else:
+            target_language = (
+                getattr(self, "_active_snapshot", {}) or {}
+            ).get("tgt_lang", "Turkish")
+        return sm_obj.build_hint(
+            before_episode=(season, ep),
+            term_filter=lambda terms: ht.sanitize_glossary_for_turkish(
+                terms,
+                target_language=target_language,
+                log_fn=getattr(self, "_log", None),
+            ),
+        )
 
     def _estimate_async(self, files, label_fn):
         """estimate_tokens'i arka planda çalıştırır — klasör/dosya seçince UI donmaz.
