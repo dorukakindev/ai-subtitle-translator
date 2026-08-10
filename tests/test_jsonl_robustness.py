@@ -234,9 +234,13 @@ class TestJsonlRobustness(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out_file = Path(tmpdir) / "out.srt"
+            source_file = Path(tmpdir) / "source.srt"
+            source_file.write_text("source", encoding="utf-8")
             fmap_file = Path(tmpdir) / "batch_fmap_b123.json"
 
             fmap_data = {
+                "source_path": str(source_file),
+                "source_hash": __import__("subtitle_batch_translate")._source_file_sha256(str(source_file)),
                 "output_path": str(out_file),
                 "fmap": {
                     "cid1": [[1, "00:00:00,000", "00:00:02,000"]],
@@ -251,7 +255,7 @@ class TestJsonlRobustness(unittest.TestCase):
             mock_client.batches.retrieve.return_value = mock_batch
 
             jsonl_content = (
-                '{"custom_id": "cid1"}\n'
+                '{"custom_id": "cid1", "response": {"body": {"choices": [{"message": {"content": "[{\\"i\\": 1, \\"t\\": \\"Satir 1\\"}]"}}]}}}\n'
                 '{"custom_id": "unknown", "response": {"body": {"choices": [{"message": {"content": "ignored"}}]}}}\n'
                 '{"custom_id": "cid2", "response": {"body": {"choices": [{"message": {"content": "[{\\"i\\": 2, \\"t\\": \\"Satir 2\\"}]"}}]}}}\n'
             )
@@ -268,8 +272,8 @@ class TestJsonlRobustness(unittest.TestCase):
             self.assertIn("\n", written_text)
             # 2. Must NOT contain literal "\\n" string
             self.assertNotIn("\\n", written_text)
-            # 3. Missing record yielded [HATA], valid record processed successfully
-            self.assertIn("[HATA]", written_text)
+            # 3. Both complete records were processed successfully
+            self.assertIn("Satir 1", written_text)
             self.assertIn("Satir 2", written_text)
             printed = "\n".join(str(call.args[0]) for call in mock_print.call_args_list
                                 if call.args)
@@ -283,8 +287,13 @@ class TestJsonlRobustness(unittest.TestCase):
         mock_get_client.return_value = mock_client
         with tempfile.TemporaryDirectory() as tmpdir:
             out_file = Path(tmpdir) / "out.srt"
+            out_file.write_text("existing final", encoding="utf-8")
+            source_file = Path(tmpdir) / "source.srt"
+            source_file.write_text("source", encoding="utf-8")
             fmap_file = Path(tmpdir) / "batch_fmap_b123.json"
             fmap_file.write_text(json.dumps({
+                "source_path": str(source_file),
+                "source_hash": __import__("subtitle_batch_translate")._source_file_sha256(str(source_file)),
                 "output_path": str(out_file),
                 "fmap": {
                     "seen": [[1, "00:00:00,000", "00:00:01,000"]],
@@ -300,9 +309,7 @@ class TestJsonlRobustness(unittest.TestCase):
             with patch("repair_batches.FMAP_FILES", [str(fmap_file)]):
                 repair_batches.main()
 
-            written = out_file.read_text(encoding="utf-8")
-            self.assertIn("1\n00:00:00,000 --> 00:00:01,000\nTamam", written)
-            self.assertIn("2\n00:00:01,000 --> 00:00:02,000\n[HATA]", written)
+            self.assertEqual(out_file.read_text(encoding="utf-8"), "existing final")
 
     def test_smoke_script_uses_source_driven_sdh_cleanup(self):
         smoke = (Path(__file__).parents[1] / "_smoke_test.py").read_text(encoding="utf-8")
