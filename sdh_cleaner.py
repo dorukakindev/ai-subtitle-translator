@@ -821,6 +821,8 @@ _TR_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?:[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*(?=\S)|"
     r"[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'\-]{1,30}:\s*$)"
 )
+_TR_LABEL_ONLY_RE = re.compile(
+    r"^\s*(?:-\s*)?[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*$")
 _SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
     r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
 )
@@ -854,6 +856,9 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     if (_src_has_plain_speaker_label(src_line)
             or _SRC_BRACKET_SPEAKER_PREFIX_RE.search(src_line)
             or _SRC_QUOTED_SPEAKER_PREFIX_RE.search(src_line)):
+        if (_src_has_plain_speaker_label(src_line)
+                and _TR_LABEL_ONLY_RE.fullmatch(tr_line)):
+            return ""
         tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""

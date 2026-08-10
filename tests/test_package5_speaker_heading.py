@@ -33,6 +33,13 @@ class TestPackage5SpeakerHeading(unittest.TestCase):
         res2 = sdh.strip_labels_by_source(tr2, src2)
         self.assertEqual(res2, "Nasılsınız?")
 
+        src3 = "Morris:\nLand counts for little more"
+        tr3 = "Morris:\nKaralar, Dünya yüzeyinin"
+        res3 = sdh.clean_sdh_blocks(
+            [("1", "00:01 -> 00:03", tr3)],
+            src_map={"1": src3}, source_driven=True)
+        self.assertEqual(res3[0][2], "Karalar, Dünya yüzeyinin")
+
     def test_clean_sdh_blocks_preserves_headings(self):
         """clean_sdh_blocks preserves heading lines while cleaning speaker labels."""
         blocks = [
