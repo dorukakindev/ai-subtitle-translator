@@ -2755,6 +2755,13 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
+
+
+def _delivery_ass_command_count(text):
+    return sum(
+        len(_DELIVERY_ASS_COMMAND_RE.findall(match.group(1)))
+        for match in _DELIVERY_ASS_BLOCK_RE.finditer(str(text or ""))
+    )
 _LEADING_APOSTROPHE_CONTRACTION_RE = re.compile(
     r"^\s*'(?:cause|em|tis|twas|round|til|bout)\b", re.IGNORECASE)
 
@@ -9556,7 +9563,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     residual_position_tags = sum(
         len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
     residual_format_tags = sum(
-        len(_DELIVERY_ASS_COMMAND_RE.findall(text)) for text in output_texts)
+        _delivery_ass_command_count(text) for text in output_texts)
     hatted_letters = sum(
         sum(text.count(char) for char in "âîûÂÎÛ") for text in output_texts)
     delivery_signatures = sum(
