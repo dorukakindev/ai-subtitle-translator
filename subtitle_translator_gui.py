@@ -6677,7 +6677,8 @@ _MIXED_TERM_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 # terimin (ör. Gobekli) karşılığını gölgeliyor (cand_words[0] yanlış seçilir).
 _MIXED_TERM_SPEAKER_RE = re.compile(
     r'^\s*(?:\{\\[^}]*\}\s*)?(?:-\s*)?'
-    r'(?:(?:>{1,2}\s*)?[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ\s]*:\s*'
+    r'(?:(?:>{1,2}\s*)?'
+    r'[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü .\'-]{0,39}:\s*'
     r'|\[[^\]\n]{1,40}\]\s*)',
     re.MULTILINE,
 )
@@ -7489,12 +7490,22 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         except Exception:
             return 0
     orig_by_timestamp = {}
+    source_rows = []
     try:
-        for _src_idx, src_ts, src_text in parse_subtitle(fp):
+        for src_idx, src_ts, src_text in parse_subtitle(fp):
+            source_rows.append((str(src_idx), str(src_ts), str(src_text or "")))
             orig_by_timestamp[str(src_ts)] = re.sub(
                 r'</?[a-zA-Z][^>]*>', '', str(src_text or '')).strip()
     except Exception:
         pass
+    aligned_orig = orig
+    if source_rows:
+        mapped = _delivery_source_map(blocks, source_rows)
+        aligned_orig = {
+            str(idx): str(
+                mapped.get(str(idx), orig_by_timestamp.get(str(ts), "")) or "")
+            for idx, ts, _text in blocks
+        }
 
     # Common short loanwords that look "same" but are valid translations
     _LOANWORDS = frozenset([
@@ -7518,7 +7529,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 "items": [
                     {
                         "id": idx,
-                        "source": str(orig.get(idx, "")),
+                        "source": str(aligned_orig.get(idx, "")),
                         "translation": str(target_map.get(idx, "")),
                     }
                     for idx in clean_ids
@@ -7537,7 +7548,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 log_fn(message, tag)
 
     ratio_rows = [
-        (str(idx), str(orig.get(str(idx), "") or ""), str(tr or ""))
+        (str(idx), str(aligned_orig.get(str(idx), "") or ""), str(tr or ""))
         for idx, _ts, tr in blocks
     ]
 
@@ -7572,7 +7583,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     for pos, (idx, ts, tr_text) in enumerate(blocks):
         if tr_text == "[HATA]":
             continue
-        src_text = orig.get(str(idx), "")
+        src_text = aligned_orig.get(str(idx), "")
         if not src_text:
             continue
         if _source_cue_is_delivery_removable(src_text):
@@ -7642,7 +7653,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     # kaymış olabileceği bölümleri işaretler (id<->içerik uyuşmazlığı). Ayrı tutulur
     # çünkü satırlar tek tek geçerli/akıcı olabilir; sorun BAĞLAM değil KONUMdur.
     try:
-        align_findings = detect_alignment_issues(blocks, orig)
+        align_findings = detect_alignment_issues(blocks, aligned_orig)
     except Exception:
         align_findings = []
     if align_findings:
@@ -7674,8 +7685,7 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 continue
             if str(idx) in _untranslated_ids:
                 continue  # zaten 'çevrilmemiş' işaretli — ayrıca token-token garble sayma
-            source_text = str(
-                orig_by_timestamp.get(str(ts), orig.get(str(idx), "")) or "")
+            source_text = str(aligned_orig.get(str(idx), "") or "")
             hits = ht.find_garble_tokens(tr_text, source_text)
             source_words = {
                 word.casefold() for word in re.findall(
@@ -7713,11 +7723,11 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     # biçimlerde çevrildiğini işaretler; helper-model consistency sweep'in
     # kaçırdığı aynı-model kör noktasına protez. Otomatik düzeltme YOK.
     try:
-        mixed_terms = detect_mixed_term_renderings(blocks, orig)
+        mixed_terms = detect_mixed_term_renderings(blocks, aligned_orig)
     except Exception:
         mixed_terms = []
     if log_fn and mixed_terms:
-        mixed_clusters = _mixed_term_clusters(blocks, orig)
+        mixed_clusters = _mixed_term_clusters(blocks, aligned_orig)
         for mt in mixed_terms:
             mixed_ids = sorted(
                 {

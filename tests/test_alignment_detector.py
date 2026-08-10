@@ -5,6 +5,8 @@ Dört sinyal, her biri hatanın farklı tezahürünü kapsar; ve meşru çok-cue
 yeniden dağıtımını (S04E07 gibi — Türkçe SOV söz dizimi) KAYMA sanmamalı.
 """
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import subtitle_translator_gui as gui
 
@@ -283,6 +285,29 @@ class ScanIntegrationTest(unittest.TestCase):
                                          src_clean_map=src)
         self.assertGreaterEqual(w, 1)
         self.assertTrue(any("HİZALAMA" in m for m, _ in logs))
+
+
+class TimestampMappedScanTest(unittest.TestCase):
+    def test_scan_uses_timestamps_after_removed_cues_are_renumbered(self):
+        with TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.srt"
+            source.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\n[MUSIC]\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nYeah.\n\n"
+                "3\n00:00:02,000 --> 00:00:05,000\n"
+                "This is a substantially longer sentence about the reef habitat.\n",
+                encoding="utf-8")
+            blocks = [
+                ("1", "00:00:01,000 --> 00:00:02,000", "Evet."),
+                ("2", "00:00:02,000 --> 00:00:05,000",
+                 "Bu, resif yaşam alanını anlatan oldukça uzun bir cümledir."),
+            ]
+            logs = []
+            warnings = gui.scan_translation_quality(
+                str(source), blocks,
+                log_fn=lambda message, *_args, **_kwargs: logs.append(message),
+                source_language="English")
+        self.assertEqual(warnings, 0, logs)
 
 
 class RangeFormatTest(unittest.TestCase):

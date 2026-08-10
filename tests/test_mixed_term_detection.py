@@ -323,6 +323,23 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_title_case_speaker_is_not_an_alternate_person_rendering(self):
+        blocks = _b(
+            (1, "Casey Hardison geldi."),
+            (2, "Casey Hardison konuştu."),
+            (3, "Casey Hardison ayrıldı."),
+            (4, "Darrell burada."),
+            (5, "Darrell bekliyor."),
+        )
+        src = _s(**{
+            "1": "This is Casey Hardison.",
+            "2": "I spoke with Casey Hardison.",
+            "3": "We followed Casey Hardison.",
+            "4": "Hardison: Darrell is here.",
+            "5": "Hardison: Darrell is waiting.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_kinship_address_is_not_treated_as_proper_term(self):
         blocks = _b(
             (1, "- Timmy!\n- Baba!"),
