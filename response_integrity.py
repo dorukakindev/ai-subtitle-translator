@@ -139,7 +139,7 @@ def parse_translation_payload(raw: str, expected_ids) -> TranslationParseResult:
         if expected and cue_id not in expected:
             result.unexpected_ids.add(cue_id)
             continue
-        if not isinstance(item["t"], str):
+        if not isinstance(item["t"], str) or not item["t"].strip():
             result.invalid_text_ids.add(cue_id)
             continue
         result.translations[cue_id] = item["t"]

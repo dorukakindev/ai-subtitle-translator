@@ -78,6 +78,15 @@ class VttRobustnessTest(unittest.TestCase):
         b = parse_vtt(_w(self.d, "caption-text.vtt", vtt))
         self.assertEqual([x[2] for x in b], ["Caption1", "Done"])
 
+    def test_hyphenated_number_text_survives_without_separator(self):
+        vtt = (
+            "WEBVTT\n\n"
+            "00:00:01.000 --> 00:00:02.000\nline-0-797\n"
+            "00:00:02.000 --> 00:00:03.000\nDone\n"
+        )
+        b = parse_vtt(_w(self.d, "hyphenated-text.vtt", vtt))
+        self.assertEqual([x[2] for x in b], ["line-0-797", "Done"])
+
     def test_note_metadata_is_skipped_but_note_prefixed_id_is_kept(self):
         vtt = ("WEBVTT\n\nNOTE ignored metadata\nline\n\n"
                "NOTE-1\n00:00:01.000 --> 00:00:02.000\nGercek cue\n")

@@ -58,6 +58,14 @@ class ParseTranslationPayloadTest(unittest.TestCase):
         self.assertEqual(parsed.invalid_text_ids, {"1"})
         self.assertEqual(parsed.missing_ids, {"1"})
 
+    def test_blank_translation_is_rejected_before_it_can_drop_a_cue(self):
+        parsed = parse_translation_payload(
+            '[{"i": 1, "t": "   "}]', {"1"})
+        self.assertEqual(parsed.translations, {})
+        self.assertEqual(parsed.invalid_text_ids, {"1"})
+        self.assertEqual(parsed.missing_ids, {"1"})
+        self.assertEqual(parsed.fatal_reason, "invalid_text_type")
+
     def test_missing_ids_are_explicit(self):
         parsed = parse_translation_payload('[{"i":1,"t":"A"}]', {"1", "2"})
         self.assertEqual(parsed.translations, {"1": "A"})

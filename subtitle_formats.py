@@ -520,8 +520,7 @@ def _adjacent_vtt_cue_id(value: str, expected_index: int,
     if value.isdigit():
         return value == str(expected_index) or str(previous_id).strip().isdigit()
     if re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value):
-        return bool(re.search(r"[-_.:]", value) or re.match(
-            r"(?i)cue\d", value))
+        return bool(re.match(r"(?i)(?:cue|note)[-_.:]?\d", value))
     previous = str(previous_id or "").strip()
     if not previous:
         return False
