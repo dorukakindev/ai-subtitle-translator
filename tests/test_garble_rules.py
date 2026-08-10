@@ -110,6 +110,9 @@ class StraySuffixR3Test(unittest.TestCase):
         self.assertEqual(ht.find_garble_tokens("Ayyaşın teki."), [])
         self.assertEqual(ht.find_garble_tokens("Beyinsizin teki."), [])
 
+    def test_valid_word_taki_is_not_casefolded_into_suffix(self):
+        self.assertEqual(ht.find_garble_tokens("Zafer Takı'nın altında."), [])
+
 
 class ImpossibleSuffixR4Test(unittest.TestCase):
     def test_toplumlarde_flagged(self):
@@ -138,6 +141,12 @@ class VowelHarmonyR5Test(unittest.TestCase):
         # "York" tamamen ASCII — yabancı özel isimde yazım/telaffuz uyumu farklı
         # kurallara tabi; R5 bu gövdeleri kasıtlı atlıyor.
         self.assertEqual(ht.find_garble_tokens("New York'ta yaşıyorum."), [])
+
+    def test_source_bound_non_ascii_foreign_name_skipped(self):
+        self.assertEqual(
+            ht.find_garble_tokens("François'nın gözleri açık maviydi.",
+                                  source_text="François' were light blue."),
+            [])
 
 
 class EnglishOrdinalR6Test(unittest.TestCase):

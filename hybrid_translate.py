@@ -5830,6 +5830,8 @@ def find_garble_tokens(text, source_text: str = "") -> list:
         found.append((tok, "R2_wqx_token"))
 
     for m in _GARBLE_STRAY_SUFFIX_RE.finditer(s):
+        if m.group(0).casefold() not in {"deki", "daki", "teki", "taki"}:
+            continue
         if (m.start() >= 2 and s[m.start() - 1] in "\"”’"
                 and s[m.start() - 2].isalpha()):
             continue
@@ -5847,6 +5849,11 @@ def find_garble_tokens(text, source_text: str = "") -> list:
         stem, suffix = m.group(1), m.group(2)
         if not any(c in _GARBLE_TR_SPECIAL_CHARS for c in stem):
             continue  # ASCII gövde (yabancı özel isim) — atla
+        if (stem[:1].isupper()
+                and re.search(rf"(?<![A-Za-zÇĞİÖŞÜçğıöşü]){re.escape(stem)}"
+                              rf"(?![A-Za-zÇĞİÖŞÜçğıöşü])",
+                              str(source_text or ""))):
+            continue
         stem_vowel = _garble_last_vowel(stem)
         suffix_vowel = _garble_first_vowel(suffix)
         if not stem_vowel or not suffix_vowel:
