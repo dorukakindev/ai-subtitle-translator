@@ -51,6 +51,23 @@ class MajorityStillNormalizesTest(unittest.TestCase):
         self.assertEqual(swept[3][2], "Bu bir test satırı.")
         self.assertGreaterEqual(fixes, 1)
 
+    def test_majority_name_error_does_not_overwrite_source_correct_minority(self):
+        cues = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Mary arrived."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "Mary arrived."),
+            ("3", "00:00:03,000 --> 00:00:04,000", "Mary arrived."),
+        ]
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "John geldi."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "John geldi."),
+            ("3", "00:00:03,000 --> 00:00:04,000", "Mary geldi."),
+        ]
+
+        swept, fixes = ht.consistency_sweep(cues, blocks)
+
+        self.assertEqual(swept, blocks)
+        self.assertEqual(fixes, 0)
+
 
 class ShortSourceNeverTouchedTest(unittest.TestCase):
     def test_below_min_words_untouched_even_with_repeats(self):

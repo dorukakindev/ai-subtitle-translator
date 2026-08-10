@@ -10939,16 +10939,14 @@ def consistency_sweep(
             for pos, tr in positions:
                 if tr != best_tr:
                     old_idx, old_ts, _ = result[pos]
-                    if locked_terms:
-                        ok, _reason = validate_polish_candidate(
-                            tr,
-                            best_tr,
-                            source_text=orig_text_dict.get(
-                                str(old_idx), ""),
-                            locked_terms=locked_terms,
-                        )
-                        if not ok:
-                            continue
+                    ok, _reason = validate_polish_candidate(
+                        tr,
+                        best_tr,
+                        source_text=orig_text_dict.get(str(old_idx), ""),
+                        locked_terms=locked_terms,
+                    )
+                    if not ok:
+                        continue
                     result[pos] = (old_idx, old_ts, best_tr)
                     fixes += 1
 
