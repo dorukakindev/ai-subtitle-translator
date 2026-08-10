@@ -238,7 +238,7 @@ class SrcMapFromCuesTest(unittest.TestCase):
 
 
 class ConsistencySweepTupleTest(unittest.TestCase):
-    def test_accepts_tuple_cues_and_normalizes_majority(self):
+    def test_accepts_tuple_cues_and_preserves_unverified_paraphrase(self):
         ts = "00:00:01,000 --> 00:00:02,000"
         cues = [
             ("1", ts, "I will be back soon."),
@@ -250,11 +250,11 @@ class ConsistencySweepTupleTest(unittest.TestCase):
             ("1", ts, "Yakında dönerim."),
             ("2", ts, "Tamamen başka bir şey."),
             ("3", ts, "Yakında dönerim."),
-            ("4", ts, "Birazdan geri geleceğim."),  # azınlık — normalize edilmeli
+            ("4", ts, "Birazdan geri geleceğim."),
         ]
         fixed, n = ht.consistency_sweep(cues, tr_blocks)
-        self.assertEqual(n, 1)
-        self.assertEqual(fixed[3][2], "Yakında dönerim.")
+        self.assertEqual(n, 0)
+        self.assertEqual(fixed[3][2], "Birazdan geri geleceğim.")
 
     def test_no_majority_no_change(self):
         ts = "00:00:01,000 --> 00:00:02,000"
