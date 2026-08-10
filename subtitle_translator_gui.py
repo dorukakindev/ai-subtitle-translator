@@ -4859,6 +4859,30 @@ def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: st
     return ""
 
 
+def _repair_validation_source_map(raw_src_map: dict, source_cues) -> dict:
+    result = {str(idx): str(text or "") for idx, text in (raw_src_map or {}).items()}
+    normalized = []
+    for cue in source_cues or []:
+        if hasattr(cue, "index") and not callable(getattr(cue, "index")):
+            normalized.append((cue.index, f"{cue.start} --> {cue.end}", str(cue.text or "")))
+        else:
+            try:
+                idx, ts, text = cue
+            except (TypeError, ValueError):
+                continue
+            normalized.append((idx, ts, str(text or "")))
+    if not normalized:
+        return result
+    _by_idx, groups = _fragment_groups_gui(normalized)
+    for group in groups:
+        ids = [str(idx) for idx in group.get("items", [])]
+        joined = " ".join(result.get(idx, "").strip() for idx in ids).strip()
+        if joined:
+            for idx in ids:
+                result[idx] = joined
+    return result
+
+
 def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=15,
@@ -4989,6 +5013,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         source_positions = {
             idx: pos for pos, (idx, _text) in enumerate(source_order)
         }
+        validation_source_map = _repair_validation_source_map(
+            raw_src_map, source_cues)
 
         # Küçük gruplar halinde çevir; sonraki denemeye yalnız çözülemeyen cue'lar gider.
         permanent_failure = False
@@ -5170,11 +5196,12 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             ]
                             translated = "\n".join(
                                 line for line in cleaned_lines if line)
+                            validation_src = validation_source_map.get(rid, src_text)
                             reason = _repair_candidate_rejection_reason(
-                                src_text, translated, src_lang=src_lang,
+                                validation_src, translated, src_lang=src_lang,
                                 tgt_lang=tgt_lang,
                                 locked_terms=_repair_relevant_locked_terms(
-                                    attempt_locked_terms, [src_text]))
+                                    attempt_locked_terms, [validation_src]))
                         if reason:
                             rejection_reasons[rid] = reason
                             rejection_candidates[rid] = str(translated or "")
@@ -5203,9 +5230,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             lock_detail = ""
                             if rejection_reasons.get(rid) == "locked_term_violation":
                                 violated = _repair_locked_term_violation_detail(
-                                    src_text, rejection_candidates.get(rid, ""),
+                                    validation_source_map.get(rid, src_text),
+                                    rejection_candidates.get(rid, ""),
                                     _repair_relevant_locked_terms(
-                                        attempt_locked_terms, [src_text]))
+                                        attempt_locked_terms, [
+                                            validation_source_map.get(rid, src_text)]))
                                 if violated:
                                     lock_detail = f" | kilit={violated!r}"
                             log_fn(

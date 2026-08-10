@@ -10076,13 +10076,13 @@ def locked_term_violation(
     locked_terms: dict | None,
 ) -> bool:
     source_value = str(source_text or "")
-    source_lower = source_value.casefold()
-    candidate_lower = str(candidate_text or "").casefold()
+    source_lower = _polish_norm(source_value)
+    candidate_lower = _polish_norm(str(candidate_text or ""))
     if not source_lower or not candidate_lower:
         return False
 
     def _target_present(target: str) -> bool:
-        target_lower = target.casefold()
+        target_lower = _polish_norm(target)
         if target_lower in candidate_lower:
             return True
         target_words = re.findall(r"\w+", target_lower, re.UNICODE)

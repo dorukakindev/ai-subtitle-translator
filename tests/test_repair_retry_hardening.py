@@ -116,6 +116,40 @@ class LicensedIdentityRepairTest(unittest.TestCase):
 
 
 class PersistentRepairRetryTest(unittest.TestCase):
+    def test_turkish_capital_i_does_not_break_locked_term_match(self):
+        self.assertFalse(ht.locked_term_violation(
+            "The invaders have installed a transmitter.",
+            "İstilacılar bir verici yerleştirdi.",
+            {"invaders": "istilacılar"},
+        ))
+
+    def test_fragment_neighbor_proper_name_is_licensed_during_repair(self):
+        source_cues = [
+            ("4", "00:00:01,000 --> 00:00:02,000",
+             "After twenty one years of blockade, the effort and kindness"),
+            ("5", "00:00:02,001 --> 00:00:03,000",
+             "of Pierre-André Boutang and other friends,"),
+            ("6", "00:00:03,001 --> 00:00:04,000",
+             "allowed composing a new complete negative print."),
+        ]
+        raw = {str(idx): text for idx, _ts, text in source_cues}
+        candidate = "Yirmi bir yılın ardından Pierre-André Boutang'ın çabası"
+        blocks = [
+            ("4", source_cues[0][1], "[HATA]"),
+            ("5", source_cues[1][1], "diğer dostların desteği"),
+            ("6", source_cues[2][1], "yeni bir kopya hazırlanmasını sağladı."),
+        ]
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=_response([{"i": "4", "t": candidate}])) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, object(), "English", "Turkish",
+                source_cues=source_cues,
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"))
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], candidate)
+        self.assertEqual(create.call_count, 1)
+
     def test_ambiguous_memory_lock_is_removed_inside_repair(self):
         source = "It's a different part of psychedelic history."
         candidate = "Bu, psikedelik tarihinin farklı bir bölümü."
