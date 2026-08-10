@@ -806,6 +806,8 @@ def _src_has_plain_speaker_label(src_line: str) -> bool:
         return False
     matched_text = m.group(0).rstrip(":\n\r\t ")
     label = re.sub(r"^\s*-\s*", "", matched_text).strip()
+    if label.casefold() in {"translation", "translator"}:
+        return False
     return not _is_heading_label(label)
 
 

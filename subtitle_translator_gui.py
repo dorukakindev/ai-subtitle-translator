@@ -15,7 +15,7 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -32,7 +32,8 @@ from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json
                        best_effort_cancel_remote_batch, is_safe_batch_id, mutate_batch_ids,
                        state_dir, state_path)
 from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
-                              UNTRUSTED_REFERENCE_RULE, meaning_readability_rule)
+                               UNTRUSTED_REFERENCE_RULE, meaning_readability_rule,
+                               transliteration_guard_rule)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
 import video_subtitles as video_tracks
@@ -129,6 +130,23 @@ def _visible_model_ids(response) -> set:
     return result
 
 
+_SENSITIVE_URL_QUERY_KEY_RE = re.compile(
+    r"(?:api[_-]?key|access[_-]?token|auth(?:orization)?|secret|token|"
+    r"credential|subscription[_-]?key|sig|key)\Z", re.I)
+
+
+def _api_base_url_has_embedded_secret(value: str) -> bool:
+    try:
+        parsed = urlparse(str(value or "").strip())
+        if parsed.username is not None or parsed.password is not None:
+            return True
+        return any(_SENSITIVE_URL_QUERY_KEY_RE.fullmatch(str(key or ""))
+                   for key, _value in parse_qsl(parsed.query,
+                                                keep_blank_values=True))
+    except Exception:
+        return False
+
+
 def _sanitize_api_key_profiles(value) -> dict:
     profiles = {}
     if not isinstance(value, dict):
@@ -140,6 +158,8 @@ def _sanitize_api_key_profiles(value) -> dict:
         name = str(raw.get("name") or "").strip()[:80]
         model = str(raw.get("model") or "").strip()[:160]
         base_url = str(raw.get("base_url") or "").strip()[:500]
+        if _api_base_url_has_embedded_secret(base_url):
+            base_url = ""
         if provider not in API_PROFILE_PROVIDERS or not name or not model:
             continue
         profiles[str(profile_id)] = {
@@ -369,12 +389,23 @@ _SETTINGS_SECRET_KEY_RE = re.compile(
 )
 _SETTINGS_TOKEN_RE = re.compile(
     r"\b(?:(?:sk|mk)-[A-Za-z0-9._\-]+|AIza[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16})\b")
+_URL_EMBEDDED_SECRET_RE = re.compile(
+    r"(?i)(\b[a-z][a-z0-9+.-]*://)(?:[^/\s:@]+(?::[^@/\s]+)?@|"
+    r"[^/\s:@]*:[^@/\s]+@)")
+_URL_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&](?:api[_-]?key|access[_-]?token|auth(?:orization)?|secret|"
+    r"token|credential|subscription[_-]?key|sig|key)=)([^&#\s\"\\]+)")
+_SECRET_HEADER_RE = re.compile(
+    r"(?i)(\b(?:authorization|x-api-key)\s*[:=]\s*(?:bearer\s+)?)([^\s,;]+)")
 
 
 def _sanitize_settings_backup_text(text: str) -> str:
     text = str(text or "")
     text = _SETTINGS_SECRET_KEY_RE.sub(r"\1[REDACTED]\3", text)
     text = _SETTINGS_TOKEN_RE.sub("[REDACTED]", text)
+    text = _URL_EMBEDDED_SECRET_RE.sub(r"\1[REDACTED]@", text)
+    text = _URL_QUERY_SECRET_RE.sub(r"\1[REDACTED]", text)
+    text = _SECRET_HEADER_RE.sub(r"\1[REDACTED]", text)
     return text
 
 
@@ -411,6 +442,8 @@ def _normalize_api_base_url(value: str) -> str:
     """Normalize the optional main API base URL field."""
     url = (value or "").strip().rstrip("/")
     if url.lower() in {"", "none", "null", "default", "openai"}:
+        return ""
+    if _api_base_url_has_embedded_secret(url):
         return ""
     return url
 
@@ -2426,6 +2459,36 @@ def parse_srt(filepath):
         return [(idx, ts, text) for idx, ts, text in parsed]
     return [(str(i), ts, text) for i, (_idx, ts, text) in enumerate(parsed, 1)]
 
+
+def _srt_raw_cue_id_issues(filepath) -> tuple[list, list]:
+    """SRT ayrıştırıcısının geriye-dönük yeniden numaralandırmasından önceki ID sorunları."""
+    try:
+        lines = read_subtitle_text(filepath).splitlines()
+    except Exception:
+        return [], []
+    raw_ids = []
+    unnumbered_lines = []
+    pos = 0
+    while pos < len(lines):
+        line = lines[pos]
+        current = line.strip()
+        if (re.fullmatch(r"\d+", current) and pos + 1 < len(lines)
+              and _TS_LINE_RE.match(lines[pos + 1].strip())):
+            raw_ids.append(current)
+            pos += 2
+            continue
+        if _TS_LINE_RE.match(current):
+            unnumbered_lines.append(str(pos + 1))
+        pos += 1
+    seen = set()
+    duplicate_ids = []
+    for idx in raw_ids:
+        if idx in seen and idx not in duplicate_ids:
+            duplicate_ids.append(idx)
+        seen.add(idx)
+    return duplicate_ids, unnumbered_lines
+
+
 def parse_subtitle(filepath: str, source_language: str | None = None) -> list:
     """Uzantıya göre uygun parser'ı seçer: .srt, .vtt, .ass, .ssa"""
     ext = Path(filepath).suffix.lower()
@@ -2643,12 +2706,12 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
     r"\bocr\s+(?:by|:)\s*\S|\bsubti(?:tl|fl)ing\s*:\s*\S|"
-    r"\b(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|"
+    r"\b(?:subtitles?|subs?|translation|translator|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
     r"\bripped\s+and\s+(?:spread|shared)\s+by\b|\bprocessed\s+by\b|"
-    r"\bçevir(?:i|en)\s*:\s*\S|"
+    r"\b(?:çevir(?:i|en|men))\s*:\s*\S|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
     r"film\s+ve\s+video\s+altyazılama|"
     r"gerhard\s+lehmann\s+ag)",
@@ -2664,7 +2727,7 @@ _DELIVERY_CREDIT_LINE_CONTINUATION_RE = re.compile(
     r"^\s*[^\s@]+@[^\s@]+(?:\s*[;:]-?[)D])?\s*$", re.IGNORECASE)
 _DELIVERY_CREDIT_LABEL_RE = re.compile(
     r"^\s*(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|"
-    r"encod(?:ed|er)?|script|metni|çevir(?:i|en))\s*:\s*(.+?)\s*$",
+    r"encod(?:ed|er)?|script|metni|translator|çevir(?:i|en|men))\s*:\s*(.+?)\s*$",
     re.IGNORECASE | re.DOTALL)
 _DELIVERY_SDH_TOKEN_RE = re.compile(
     r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
@@ -2691,6 +2754,7 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     r"^(?:(?:petit|leger)\s+)?gemissement\s+de\s+(?:douleur|plaisir)[.!…]?\s*$",
     re.IGNORECASE,
 )
+_DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
 _LEADING_APOSTROPHE_CONTRACTION_RE = re.compile(
     r"^\s*'(?:cause|em|tis|twas|round|til|bout)\b", re.IGNORECASE)
 
@@ -2710,9 +2774,10 @@ def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
 
 def _normalize_delivery_ass_style_tags(text: str) -> str:
     def _convert(match):
-        commands = _DELIVERY_ASS_STYLE_RE.findall(match.group(1))
+        body = match.group(1)
+        commands = _DELIVERY_ASS_STYLE_RE.findall(body)
         if not commands:
-            return match.group(0)
+            return "" if _DELIVERY_ASS_COMMAND_RE.search(body) else match.group(0)
         return "".join(
             f"<{tag.lower()}>" if state == "1" else f"</{tag.lower()}>"
             for tag, state in commands
@@ -2736,6 +2801,9 @@ def _is_delivery_credit(text: str) -> bool:
     label_match = _DELIVERY_CREDIT_LABEL_RE.fullmatch(value)
     if label_match:
         payload = label_match.group(1).strip()
+        if (re.match(r"^\s*(?:translation|çeviri)\s*:", value, re.IGNORECASE)
+                and re.search(r"[.!?…]\s*$", payload)):
+            return False
         if (payload.endswith((".", "!", "?", "…"))
                 and not re.search(r"(?:https?://|www\.|@|[_\d])", payload)
                 and payload[:1].islower()):
@@ -3650,18 +3718,7 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         "'Ben gidiyorum') unless the pronoun is contrastive/emphatic.\n"
         "- Dummy 'it' (weather/time/existential) has NO Turkish subject: 'It's raining'→'Yağmur yağıyor', "
         "'It's three o'clock'→'Saat üç' — never 'O yağıyor'.\n"
-        + "## TRANSLITERATION GUARD — CRITICAL\n"
-        f"NEVER leave English slang/profanity untranslated in {tgt}:\n"
-        "  ass / ass- → göt, kıç  (NEVER write 'ass' or 'assını')\n"
-        "  shit / shitting → bok, sıçmak  (NEVER write 'shit')\n"
-        "  fuck / fucking → sik-, orospu çocuğu  (NEVER write 'fuck')\n"
-        "  damn → kahretsin, lanet  (NEVER write 'damn')\n"
-        "  hell → cehennem, kahretsin  (NEVER write 'hell')\n"
-        "  bitch → orospu, kaltak, it  (NEVER write 'bitch')\n"
-        "  crap → bok, saçmalık  (NEVER write 'crap')\n"
-        f"Scan your output: an untranslated English SLANG word, profanity, or everyday word is an error. "
-        f"(Proper nouns, brand/character names, and accepted loanwords/technical terms — 'detonatör', 'robot', "
-        f"'laser', 'online' — are NOT errors.)"
+        + "\n".join(transliteration_guard_rule(tgt))
         + JSON_INSTRUCTION
     )
 
@@ -9418,6 +9475,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     invalid_timestamp_ids = []
     reversed_timestamp_ids = []
     signature_overlap_ids = []
+    duplicate_cue_ids, unnumbered_cue_lines = _srt_raw_cue_id_issues(output_path)
     timed_output = []
     for output_idx, output_ts, output_text in output:
         try:
@@ -9497,6 +9555,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         for idx, _ts, text in output_dialogue)
     residual_position_tags = sum(
         len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
+    residual_format_tags = sum(
+        len(_DELIVERY_ASS_COMMAND_RE.findall(text)) for text in output_texts)
     hatted_letters = sum(
         sum(text.count(char) for char in "âîûÂÎÛ") for text in output_texts)
     delivery_signatures = sum(
@@ -9516,7 +9576,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
-        residual_literal_newline_cues, hatted_letters, signature_mismatch,
+        residual_format_tags, residual_literal_newline_cues, hatted_letters,
+        signature_mismatch, duplicate_cue_ids, unnumbered_cue_lines,
         invalid_timestamp_ids,
         reversed_timestamp_ids, signature_overlap_ids,
     ))
@@ -9535,6 +9596,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "residual_sdh_cues": residual_sdh_cues,
         "residual_literal_newline_cues": residual_literal_newline_cues,
         "residual_position_tags": residual_position_tags,
+        "residual_format_tags": residual_format_tags,
         "hatted_letters": hatted_letters,
         "delivery_signatures": delivery_signatures,
         "expected_delivery_signatures": expected_signatures,
@@ -9542,6 +9604,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "invalid_timestamp_ids": invalid_timestamp_ids,
         "reversed_timestamp_ids": reversed_timestamp_ids,
         "signature_overlap_ids": signature_overlap_ids,
+        "duplicate_cue_ids": duplicate_cue_ids,
+        "unnumbered_cue_lines": unnumbered_cue_lines,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
     })
@@ -9568,11 +9632,14 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("residual_sdh_cues"),
         audit.get("residual_literal_newline_cues"),
         audit.get("residual_position_tags"),
+        audit.get("residual_format_tags"),
         audit.get("hatted_letters"),
         audit.get("signature_mismatch"),
         audit.get("invalid_timestamp_ids"),
         audit.get("reversed_timestamp_ids"),
         audit.get("signature_overlap_ids"),
+        audit.get("duplicate_cue_ids"),
+        audit.get("unnumbered_cue_lines"),
     ))
 
 

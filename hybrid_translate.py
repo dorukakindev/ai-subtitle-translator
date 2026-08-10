@@ -3361,7 +3361,7 @@ def _infer_register(tone: str, schema: dict | None = None) -> str:
 from prompt_constants import (PROFANITY_RULES as _PROFANITY_RULES,
                               REGISTER_GUIDANCE as _REGISTER_GUIDANCE,
                               JSON_INSTRUCTION, UNTRUSTED_REFERENCE_RULE,
-                              meaning_readability_rule)
+                              meaning_readability_rule, transliteration_guard_rule)
 
 
 def build_system_prompt(
@@ -3588,22 +3588,7 @@ def build_system_prompt(
     parts.append("")
     parts.extend(_PROFANITY_RULES.get(profanity, _PROFANITY_RULES["Orta"]))
 
-    # ── Transliteration guard (critical) ─────────────────────────────────────
-    parts += [
-        "",
-        "## TRANSLITERATION GUARD — CRITICAL",
-        f"NEVER leave English slang/profanity untranslated in {tgt_lang}:",
-        "  ass / ass- → göt, kıç  (NEVER write 'ass' or 'assını')",
-        "  shit / shitting → bok, sıçmak  (NEVER write 'shit')",
-        "  fuck / fucking → sik-, orospu çocuğu  (NEVER write 'fuck')",
-        "  damn → kahretsin, lanet  (NEVER write 'damn')",
-        "  hell → cehennem, kahretsin  (NEVER write 'hell')",
-        "  bitch → orospu, kaltak, it  (NEVER write 'bitch')",
-        "  crap → bok, saçmalık  (NEVER write 'crap')",
-        "Scan your output: an untranslated English SLANG word, profanity, or everyday word is an error. "
-        "(Proper nouns, brand/character names, and accepted loanwords/technical terms — 'detonatör', 'robot', "
-        "'laser', 'online' — are NOT errors.)",
-    ]
+    parts += [""] + transliteration_guard_rule(tgt_lang)
 
     # ── Pronoun/address map (Turkish sen/siz) ────────────────────────────────
     if isinstance(pronoun_map, dict) and pronoun_map:

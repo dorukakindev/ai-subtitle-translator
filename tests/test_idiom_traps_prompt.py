@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import hybrid_translate as ht
-from prompt_constants import meaning_readability_rule
+from prompt_constants import meaning_readability_rule, transliteration_guard_rule
 import subtitle_translator_gui as gui
 
 # Denetimde gözlemlenen birebir hata→düzeltme çiftleri
@@ -66,6 +66,19 @@ class SharedMeaningReadabilityRuleTest(unittest.TestCase):
         self.assertIn(expected, sync_prompt)
         self.assertIn(expected, hybrid_prompt)
         self.assertIn("<=42 visible characters per line", expected)
+
+
+class SharedTransliterationGuardTest(unittest.TestCase):
+    def test_sync_and_hybrid_render_the_same_guard(self):
+        expected = "\n".join(transliteration_guard_rule("Turkish"))
+        context = SimpleNamespace(
+            tone="", summary="", setting="", characters=[],
+            recurring_terms={}, scene_notes=[],
+        )
+        self.assertIn(expected, gui._build_sync_system_prompt(
+            "English", "Turkish", None, "Orta"))
+        self.assertIn(expected, ht.build_system_prompt(
+            context, "English", "Turkish"))
 
 
 class MeaningFirstInGuiReviewPromptsTest(unittest.TestCase):

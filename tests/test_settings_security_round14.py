@@ -123,6 +123,29 @@ class SettingsBackupSecurityTest(unittest.TestCase):
         self.assertNotIn("plain-provider-token", cleaned)
         self.assertNotIn("aws-value", cleaned)
 
+    def test_sanitizer_redacts_embedded_url_and_header_secrets(self):
+        raw = (
+            "https://user:url-password@example.test/v1?api_key=query-secret"
+            "&api-version=2026-01-01 Authorization: Bearer header-secret")
+        cleaned = gui._sanitize_settings_backup_text(raw)
+        for secret in ("url-password", "query-secret", "header-secret"):
+            self.assertNotIn(secret, cleaned)
+        self.assertIn("api-version=2026-01-01", cleaned)
+
+    def test_profiles_and_main_url_do_not_persist_embedded_secrets(self):
+        pid = "a" * 32
+        profiles = gui._sanitize_api_key_profiles({
+            pid: {
+                "name": "Unsafe route", "provider": "openai_compatible",
+                "model": "model", "base_url": (
+                    "https://user:password@example.test/v1?api_key=secret"),
+            },
+        })
+        self.assertEqual(profiles[pid]["base_url"], "")
+        self.assertEqual(
+            gui._normalize_api_base_url(
+                "https://example.test/v1?access_token=secret"), "")
+
     def test_broken_settings_backup_redacts_keys_and_keeps_last_three(self):
         with tempfile.TemporaryDirectory() as td:
             settings_path = Path(td) / ".gui_settings.json"

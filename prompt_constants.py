@@ -66,6 +66,24 @@ def meaning_readability_rule(target_language: str) -> str:
     )
 
 
+def transliteration_guard_rule(target_language: str) -> list[str]:
+    target = str(target_language or "").strip() or "the target language"
+    return [
+        "## TRANSLITERATION GUARD — CRITICAL",
+        f"NEVER leave English slang/profanity untranslated in {target}:",
+        "  ass / ass- → göt, kıç  (NEVER write 'ass' or 'assını')",
+        "  shit / shitting → bok, sıçmak  (NEVER write 'shit')",
+        "  fuck / fucking → sik-, orospu çocuğu  (NEVER write 'fuck')",
+        "  damn → kahretsin, lanet  (NEVER write 'damn')",
+        "  hell → cehennem, kahretsin  (NEVER write 'hell')",
+        "  bitch → orospu, kaltak, it  (NEVER write 'bitch')",
+        "  crap → bok, saçmalık  (NEVER write 'crap')",
+        "Scan your output: an untranslated English SLANG word, profanity, or everyday word is an error. "
+        "(Proper nouns, brand/character names, and accepted loanwords/technical terms — 'detonatör', 'robot', "
+        "'laser', 'online' — are NOT errors.)",
+    ]
+
+
 JSON_INSTRUCTION = (
     "\n\n" + UNTRUSTED_REFERENCE_RULE + "\n"
     "Input JSON keys:\n"

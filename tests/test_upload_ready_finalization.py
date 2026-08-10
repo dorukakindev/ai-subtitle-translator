@@ -222,6 +222,34 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("Some_User", joined)
         self.assertIn("Gerçek diyalog.", joined)
 
+    def test_translator_credit_is_removed_but_translation_dialogue_is_kept(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Translator: John Doe"),
+            ("2", "00:00:04,000 --> 00:00:05,000",
+             "Translation: What does that mean?"),
+        ]
+        blocks = [
+            ("1", source[0][1], "Çevirmen: John Doe"),
+            ("2", source[1][1], "Tercüme: Bunun anlamı ne?"),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = [text for _idx, _ts, text in result
+                    if text != "discord: ceviri2"]
+
+        self.assertEqual(dialogue, ["Tercüme: Bunun anlamı ne?"])
+
+    def test_unknown_ass_commands_are_removed_without_losing_dialogue(self):
+        result = gui._prepare_upload_ready_blocks([
+            ("1", "00:00:02,000 --> 00:00:04,000",
+             r"{\pos(1,2)\fs30}Merhaba{\fad(1,1)}"),
+        ], "Turkish")
+        dialogue = [text for _idx, _ts, text in result
+                    if text != "discord: ceviri2"]
+
+        self.assertEqual(dialogue, ["Merhaba"])
+
     def test_position_only_cue_is_dropped_instead_of_becoming_missing(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", r"{\pos(357,422)}"),
@@ -590,6 +618,28 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertTrue(audit["signature_mismatch"])
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["extra_dialogue_ids"], [])
+
+    def test_delivery_audit_rejects_signature_id_collision(self):
+        source_blocks = [
+            ("1", "00:00:10,000 --> 00:00:12,000", "One."),
+            ("2", "00:00:18,000 --> 00:00:20,000", "Two."),
+        ]
+        delivered = gui._prepare_upload_ready_blocks([
+            ("1", source_blocks[0][1], "Bir."),
+            ("2", source_blocks[1][1], "İki."),
+        ], "Turkish")
+        delivered[0] = ("1", delivered[0][1], delivered[0][2])
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source_blocks, "English")
+            gui.write_srt(output_path, delivered, "English")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "review")
+        self.assertEqual(audit["duplicate_cue_ids"], ["1"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
 
     def test_all_final_write_flows_use_shared_delivery_guard(self):
         source = Path(gui.__file__).read_text(encoding="utf-8")
