@@ -264,6 +264,34 @@ def write_srt(filepath, blocks, target_language: str = TARGET_LANG):
     atomic_write_text(filepath, "".join(lines), encoding="utf-8")
 
 
+def discover_source_srt_files(input_folder: str = INPUT_FOLDER,
+                              output_folder: str = OUTPUT_FOLDER) -> list[str]:
+    input_root = Path(input_folder).resolve()
+    output_root = Path(output_folder).resolve()
+    excluded_root = None
+    try:
+        output_root.relative_to(input_root)
+        excluded_root = output_root
+    except ValueError:
+        pass
+    found = set(glob.glob(str(input_root / "**" / "*.srt"), recursive=True))
+    files = []
+    for filepath in found:
+        path = Path(filepath)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if excluded_root is not None:
+            try:
+                resolved.relative_to(excluded_root)
+                continue
+            except ValueError:
+                pass
+        files.append(str(path))
+    return sorted(files)
+
+
 def create_batch_requests(srt_files):
     """Tüm SRT dosyalarından JSONL batch request dosyası oluşturur."""
     requests = []
@@ -451,6 +479,14 @@ def process_results(output_file_id, file_map, srt_files, *,
             skipped_files += 1
             print(f"[!] Güvenli çıktı yolu çözümlenemedi; çıktı yazılmadı: {filepath}")
             continue
+        file_failed = any(
+            cid in duplicate_ids or cid not in translations or translations.get(cid) is None
+            for cid, entry in file_map.items() if entry[0] == filepath
+        )
+        if file_failed and out_path.exists():
+            skipped_files += 1
+            print(f"[!] Kısmi batch sonucu mevcut finali ezmedi: {out_path}")
+            continue
         ordered = [blocks_dict[k] for k in sorted(blocks_dict)]
         write_srt(out_path, ordered, TARGET_LANG)
         print(f"[+] Kaydedildi: {out_path}")
@@ -467,9 +503,7 @@ def process_results(output_file_id, file_map, srt_files, *,
 
 
 def main():
-    srt_files = glob.glob(f"{INPUT_FOLDER}/**/*.srt", recursive=True) + \
-                glob.glob(f"{INPUT_FOLDER}/*.srt")
-    srt_files = list(set(srt_files))
+    srt_files = discover_source_srt_files(INPUT_FOLDER, OUTPUT_FOLDER)
 
     if not srt_files:
         print(f"[!] '{INPUT_FOLDER}' klasöründe .srt dosyası bulunamadı!")

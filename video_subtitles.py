@@ -133,8 +133,17 @@ def probe_subtitle_streams(video_path, runner=subprocess.run, which=shutil.which
 
 def _source_fingerprint(video: Path) -> str:
     stat = video.stat()
+    sample_size = 65536
+    with video.open("rb") as handle:
+        head = handle.read(sample_size)
+        if stat.st_size > sample_size:
+            handle.seek(max(stat.st_size - sample_size, 0))
+            tail = handle.read(sample_size)
+        else:
+            tail = b""
+    sample_digest = hashlib.sha256(head + b"\0" + tail).hexdigest()
     identity = (
-        f"{video.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}"
+        f"{video.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}\0{sample_digest}"
     ).encode("utf-8", errors="surrogatepass")
     return hashlib.sha256(identity).hexdigest()[:20]
 

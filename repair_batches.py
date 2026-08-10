@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from subtitle_batch_translate import _get_client
+from subtitle_batch_translate import _get_client, _source_file_sha256
 from app_state import atomic_write_text
 
 # Bilerek boş: kullanıcı açıp çalıştırdığında başka bir makinenin eski batch
@@ -52,14 +52,19 @@ def parse_chunk(raw: str, info: list, cid: str) -> dict:
     if items and isinstance(items, list):
         expected_ids = {str(entry[0]) for entry in info if isinstance(entry, (list, tuple)) and entry}
         for item in items:
-            if isinstance(item, dict) and "i" in item and isinstance(item.get("t"), str):
-                item_id = str(item["i"])
-                if item_id not in expected_ids or item_id in trans_map:
-                    print(f"  [UYARI] {cid}: geÃ§ersiz/yinelenen cue kimliÄŸi ({item_id}) reddedildi")
-                    return {}
-                trans_map[item_id] = item["t"]
-        if trans_map:
+            if not (isinstance(item, dict) and "i" in item
+                    and isinstance(item.get("t"), str) and item["t"].strip()):
+                print(f"  [UYARI] {cid}: geÃ§ersiz veya boÅŸ cue yanÄ±tÄ± reddedildi")
+                return {}
+            item_id = str(item["i"])
+            if item_id not in expected_ids or item_id in trans_map:
+                print(f"  [UYARI] {cid}: geÃ§ersiz/yinelenen cue kimliÄŸi ({item_id}) reddedildi")
+                return {}
+            trans_map[item_id] = item["t"]
+        if trans_map and set(trans_map) == expected_ids:
             return trans_map
+        if trans_map:
+            print(f"  [UYARI] {cid}: eksik cue kimliği bulunan yanıt reddedildi")
     print(f"  [UYARI] {cid}: JSON parse başarısız — ham: {raw[:80]!r}")
     return {}
 
@@ -71,6 +76,17 @@ def _valid_repair_entries(info) -> bool:
             str(entry[0]).strip() and str(entry[1]).strip() and str(entry[2]).strip()
             for entry in info)
     )
+
+
+def _repair_map_has_unique_cue_ids(raw_fmap: dict) -> bool:
+    cue_ids = set()
+    for info in raw_fmap.values():
+        for entry in info:
+            cue_id = str(entry[0])
+            if cue_id in cue_ids:
+                return False
+            cue_ids.add(cue_id)
+    return True
 
 
 def _backup_before_repair(output_path: Path) -> Path | None:
@@ -108,8 +124,16 @@ def main(fmap_files=None):
 
         output_path = fmap_data.get("output_path") or ""
         raw_fmap    = fmap_data.get("fmap", {})
+        source_path = fmap_data.get("source_path") or ""
+        source_hash = fmap_data.get("source_hash") or ""
         if not output_path or not isinstance(raw_fmap, dict) or not raw_fmap:
             print(f"  ! {fname}: output yolu/fmap eksik — atlanıyor")
+            continue
+
+        source = Path(str(source_path))
+        if (not isinstance(source_hash, str) or len(source_hash) != 64
+                or not source.is_absolute() or _source_file_sha256(str(source)) != source_hash):
+            print(f"  ! {fname}: kaynak imzası doğrulanamadı; dosyaya dokunulmadı")
             continue
 
         invalid_cids = [cid for cid, info in raw_fmap.items()
@@ -118,7 +142,12 @@ def main(fmap_files=None):
             print(f"  [HATA] {fname}: {len(invalid_cids)} geçersiz fmap kaydı var; dosyaya dokunulmadı")
             continue
 
-        if Path(output_path).is_dir():
+        if not _repair_map_has_unique_cue_ids(raw_fmap):
+            print(f"  [HATA] {fname}: fmap cue kimlikleri yineleniyor; dosyaya dokunulmadÄ±")
+            continue
+
+        output = Path(output_path)
+        if output.is_dir() or output.resolve() == source.resolve():
             print(f"  ! {fname}: output_path dosya değil; güvenlik için atlanıyor")
             continue
 
@@ -174,7 +203,6 @@ def main(fmap_files=None):
 
             if not info:
                 print(f"  [UYARI] {cid}: fmap eşleşmesi yok; sonuç hiçbir cue'ya yazılmadı")
-                chunk_fail += 1
                 continue
 
             if cid in seen_cids:
@@ -245,6 +273,10 @@ def main(fmap_files=None):
                 total_hata += 1
             chunk_fail += 1
 
+        if chunk_fail or chunk_ok != len(raw_fmap):
+            print(f"  [ATLA] {chunk_fail} chunk eksik veya bozuk; mevcut teslim korunuyor")
+            continue
+
         if not srt_blocks:
             print(f"  [ATLA] Hiç blok yok.")
             continue
@@ -254,8 +286,8 @@ def main(fmap_files=None):
             idx, ts, text = srt_blocks[key]
             lines.append(f"{idx}\n{ts}\n{text}\n\n")
         try:
-            backup = _backup_before_repair(Path(output_path))
-            atomic_write_text(output_path, "".join(lines), encoding="utf-8")
+            backup = _backup_before_repair(output)
+            atomic_write_text(output, "".join(lines), encoding="utf-8")
         except Exception as exc:
             print(f"  [HATA] Ã‡Ä±ktÄ± yazÄ±lamadÄ±; eski teslim korunuyor: {exc}")
             continue
