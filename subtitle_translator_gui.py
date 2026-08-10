@@ -6202,6 +6202,27 @@ def _regular_batch_intent_path(run_id: str, part_index: int) -> Path:
     return state_path(__file__, f"batch_intent_{safe_run_id}_{int(part_index)}.json")
 
 
+def _write_batch_jsonl_temp(requests: list, prefix: str) -> Path:
+    import tempfile
+
+    state_dir(__file__).mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".jsonl", prefix=prefix,
+        dir=state_dir(__file__), delete=False)
+    path = Path(tmp.name)
+    try:
+        with tmp as handle:
+            for request in requests:
+                handle.write(json.dumps(request, ensure_ascii=False) + "\n")
+    except BaseException:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return path
+
+
 def _pending_regular_batch_intents() -> list[Path]:
     return sorted(state_dir(__file__).glob("batch_intent_*.json"))
 
@@ -25562,7 +25583,6 @@ class App(ctk.CTk):
         if len(chunks) > 1:
             self._log(f"50.000 limit — {len(chunks)} batch'e bölünüyor.", "warn")
 
-        import tempfile
         import uuid
         run_id = uuid.uuid4().hex
         input_dir = self.input_var.get()
@@ -25613,14 +25633,7 @@ class App(ctk.CTk):
         for ci, chunk in enumerate(chunks):
             if self._stop_flag:
                 break
-            state_dir(__file__).mkdir(parents=True, exist_ok=True)
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", suffix=".jsonl", prefix="batch_input_",
-                dir=state_dir(__file__), delete=False)
-            jpath = Path(tmp.name)
-            with tmp as f:
-                for req in chunk:
-                    f.write(json.dumps(req, ensure_ascii=False) + "\n")
+            jpath = _write_batch_jsonl_temp(chunk, "batch_input_")
             _upload_failed = False
             _created_batch_id = ""
             _metadata_ready = False
@@ -25903,8 +25916,6 @@ class App(ctk.CTk):
 
     def _submit_missing_regular_batch_parts(self, api_key, batch_ids):
         from openai import OpenAI
-        import tempfile
-
         expanded = list(dict.fromkeys(batch_ids))
         runs = {}
         unsafe_metadata = False
@@ -25988,18 +25999,12 @@ class App(ctk.CTk):
                         f"[HATA] {run_id}: parça {part_index + 1} kurtarma verisi "
                         "eksik; gönderilmedi.", "err")
                     break
-                state_dir(__file__).mkdir(parents=True, exist_ok=True)
-                tmp = tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", suffix=".jsonl",
-                    prefix="batch_resume_input_", dir=state_dir(__file__), delete=False)
-                jpath = Path(tmp.name)
+                jpath = _write_batch_jsonl_temp(
+                    requests, "batch_resume_input_")
                 created_id = ""
                 metadata_ready = False
                 intent_path = None
                 try:
-                    with tmp as handle:
-                        for request in requests:
-                            handle.write(json.dumps(request, ensure_ascii=False) + "\n")
                     with open(jpath, "rb") as handle:
                         uploaded = client.files.create(file=handle, purpose="batch")
                     intent_path = _regular_batch_intent_path(run_id, part_index)
