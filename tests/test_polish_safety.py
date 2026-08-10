@@ -658,6 +658,22 @@ class QcSeveritySplitTest(unittest.TestCase):
         self.assertEqual(auto_issues, [])
         self.assertEqual(len(review_issues), 1)
 
+    def test_low_severity_name_swap_is_not_auto_applied_when_source_is_known(self):
+        issues = [
+            {
+                "id": "1",
+                "original": "Mary arrived.",
+                "current": "Mary geldi.",
+                "suggestion": "John geldi.",
+                "severity": "med",
+            }
+        ]
+
+        auto_issues, review_issues = ht.split_qc_issues_for_review(issues)
+
+        self.assertEqual(auto_issues, [])
+        self.assertEqual(len(review_issues), 1)
+
 
 class NativeReaderPassSourceAwareTest(unittest.TestCase):
     def _fake_openai_module(self, fixes, prompts=None):

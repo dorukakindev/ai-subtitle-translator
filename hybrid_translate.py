@@ -4966,7 +4966,9 @@ def split_qc_issues_for_review(issues: list) -> tuple[list, list]:
         severity = normalize_qc_severity(issue.get("severity"))
         issue["severity"] = severity
         if severity in {"med", "low"}:
-            ok, _reason = validate_polish_candidate(issue.get("current", ""), issue.get("suggestion", ""))
+            ok, _reason = validate_polish_candidate(
+                issue.get("current", ""), issue.get("suggestion", ""),
+                source_text=issue.get("original", ""))
             if ok:
                 auto_issues.append(issue)
                 continue
