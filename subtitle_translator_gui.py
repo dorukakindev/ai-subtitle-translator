@@ -2858,7 +2858,7 @@ def _is_delivery_sdh_only(text: str) -> bool:
     # arrive without brackets and bypass the bracket-token parser below.
     bare_english_sdh = value.strip().strip("[](){} ")
     if re.fullmatch(
-            r"(?:muffled\s+(?:speaking|voice)|speaking\s+(?:native|foreign)\s+"
+            r"(?:muffled\s+(?:speaking|voice)|(?:speaking|speaks)\s+(?:native|foreign)\s+"
             r"language|conversing\s+in\s+(?:a\s+)?(?:native|foreign)\s+language|"
             r"frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
         return True

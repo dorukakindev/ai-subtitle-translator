@@ -668,6 +668,10 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_speaks_native_language_is_expected_sdh_removal(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            "[ Speaks native language ]"))
+
     def test_embedded_source_credit_lines_do_not_remove_real_title(self):
         source = [("26", "00:00:02,000 --> 00:00:05,000",
                    "~ RUN MELOS! ~\nSubtitles by Odyssey\nOCR by Inactive (Subs.com.ru)")]
