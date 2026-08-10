@@ -570,7 +570,11 @@ class ProviderCooldownRegistry:
                 pass
 
     def _cancelled(self):
-        return bool(self._cancel_check and self._cancel_check())
+        local_cancel = getattr(_REQUEST_CONTEXT, "cancel_check", None)
+        return bool(
+            (local_cancel and local_cancel())
+            or (self._cancel_check and self._cancel_check())
+        )
 
     def _wait_until(self, deadline: float, event_prefix: str, details=None) -> float:
         waited = max(0.0, deadline - self._clock())
@@ -643,7 +647,7 @@ class ProviderCooldownRegistry:
             last_second = None
             try:
                 while True:
-                    if self._cancel_check and self._cancel_check():
+                    if self._cancelled():
                         raise ProviderWaitCancelled("API kota beklemesi kullanıcı tarafından durduruldu")
                     remaining = deadline - self._clock()
                     if remaining <= 0:
@@ -797,7 +801,7 @@ class ProviderCooldownRegistry:
         last_second = None
         try:
             while True:
-                if self._cancel_check and self._cancel_check():
+                if self._cancelled():
                     raise ProviderWaitCancelled(
                         "API yeniden deneme beklemesi kullanıcı tarafından durduruldu")
                 remaining = deadline - self._clock()
@@ -1023,64 +1027,81 @@ def _structured_unsupported(exc) -> bool:
     return parameter and unsupported
 
 
-def _provider_call_once(call, client, model: str, request_context=None):
+def _provider_call_once(call, client, model: str, request_context=None,
+                        cancel_check=None):
     total = len(TRANSIENT_RETRY_DELAYS)
     model = str(model or "")
     base_context = dict(request_context or {})
-    for attempt in range(total + 1):
-        details = dict(base_context)
-        details.update({"attempt": attempt + 1, "max_attempts": total + 1})
-        before_provider_request(client, model, details)
-        started = time.monotonic()
-        request_id = _REGISTRY.request_started(details)
-        try:
-            result = call()
-            upstream_request_id = _upstream_request_id(result)
-            if upstream_request_id:
-                details["request_id"] = upstream_request_id
-            details["duration_seconds"] = round(time.monotonic() - started, 3)
-            _REGISTRY.request_finished(
-                client, True, model, details, request_id=request_id)
-            if attempt:
-                previous_details = getattr(_REQUEST_CONTEXT, "success_details", None)
-                _REQUEST_CONTEXT.success_details = details
+    previous_cancel = getattr(_REQUEST_CONTEXT, "cancel_check", None)
+    _REQUEST_CONTEXT.cancel_check = cancel_check
+    try:
+        for attempt in range(total + 1):
+            if cancel_check and cancel_check():
+                raise ProviderWaitCancelled(
+                    "API isteği kullanıcı tarafından durduruldu")
+            details = dict(base_context)
+            details.update({"attempt": attempt + 1, "max_attempts": total + 1})
+            before_provider_request(client, model, details)
+            started = time.monotonic()
+            request_id = _REGISTRY.request_started(details)
+            try:
+                result = call()
+                upstream_request_id = _upstream_request_id(result)
+                if upstream_request_id:
+                    details["request_id"] = upstream_request_id
+                details["duration_seconds"] = round(time.monotonic() - started, 3)
+                _REGISTRY.request_finished(
+                    client, True, model, details, request_id=request_id)
+                if attempt:
+                    previous_details = getattr(_REQUEST_CONTEXT, "success_details", None)
+                    _REQUEST_CONTEXT.success_details = details
+                    try:
+                        _REGISTRY.notify_retry_success(attempt, total)
+                    finally:
+                        if previous_details is None:
+                            try:
+                                del _REQUEST_CONTEXT.success_details
+                            except AttributeError:
+                                pass
+                        else:
+                            _REQUEST_CONTEXT.success_details = previous_details
+                return result
+            except Exception as exc:
+                retryable = attempt < total and _is_transient_provider_error(exc)
+                details.update(_provider_error_context(exc))
+                details["duration_seconds"] = round(time.monotonic() - started, 3)
+                details["will_retry"] = bool(retryable)
+                _REGISTRY.request_finished(
+                    client, False, model, details, request_id=request_id)
+                record_provider_failure(client, exc, model, details)
+                if not retryable:
+                    raise
+                previous_context = getattr(_REQUEST_CONTEXT, "value", None)
+                _REQUEST_CONTEXT.value = base_context
                 try:
-                    _REGISTRY.notify_retry_success(attempt, total)
+                    _wait_for_transient_retry(exc, attempt + 1, total)
                 finally:
-                    if previous_details is None:
+                    if previous_context is None:
                         try:
-                            del _REQUEST_CONTEXT.success_details
+                            del _REQUEST_CONTEXT.value
                         except AttributeError:
                             pass
                     else:
-                        _REQUEST_CONTEXT.success_details = previous_details
-            return result
-        except Exception as exc:
-            retryable = attempt < total and _is_transient_provider_error(exc)
-            details.update(_provider_error_context(exc))
-            details["duration_seconds"] = round(time.monotonic() - started, 3)
-            details["will_retry"] = bool(retryable)
-            _REGISTRY.request_finished(
-                client, False, model, details, request_id=request_id)
-            record_provider_failure(client, exc, model, details)
-            if not retryable:
-                raise
-            previous_context = getattr(_REQUEST_CONTEXT, "value", None)
-            _REQUEST_CONTEXT.value = base_context
+                        _REQUEST_CONTEXT.value = previous_context
+    finally:
+        if previous_cancel is None:
             try:
-                _wait_for_transient_retry(exc, attempt + 1, total)
-            finally:
-                if previous_context is None:
-                    try:
-                        del _REQUEST_CONTEXT.value
-                    except AttributeError:
-                        pass
-                else:
-                    _REQUEST_CONTEXT.value = previous_context
+                del _REQUEST_CONTEXT.cancel_check
+            except AttributeError:
+                pass
+        else:
+            _REQUEST_CONTEXT.cancel_check = previous_cancel
 
 
-def provider_call_with_retry(call, client, model: str, request_context=None):
-    return _provider_call_once(call, client, model, request_context)
+def provider_call_with_retry(call, client, model: str, request_context=None,
+                             cancel_check=None):
+    return _provider_call_once(
+        call, client, model, request_context, cancel_check=cancel_check)
 
 
 def _chat_create_once(client, kwargs: dict, request_context=None):

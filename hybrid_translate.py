@@ -12291,6 +12291,13 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
 
 # ── OpenAI Batch gönder & bekle ───────────────────────────────────────────────
 
+def batch_api_call_with_retry(client, call, operation: str, cancel_check=None):
+    from provider_retry import provider_call_with_retry
+    return provider_call_with_retry(
+        call, client, "batch-api", {"operation": operation},
+        cancel_check=cancel_check)
+
+
 def submit_batch(
     openai_api_key: str,
     requests: list,
@@ -12306,6 +12313,7 @@ def submit_batch(
     session_fingerprint: str = "",
     run_context: dict = None,
     locked_terms: dict = None,
+    cancel_check=None,
     expected_source_hash: str = "",
 ) -> str | None:
     """Submit batch to OpenAI and return batch_id. Does NOT wait.
@@ -12345,6 +12353,9 @@ def submit_batch(
 
     import tempfile
     state_dir(__file__).mkdir(parents=True, exist_ok=True)
+    intent_token = hashlib.sha256(
+        f"{source_path}|{time.time_ns()}|{os.getpid()}".encode("utf-8")
+    ).hexdigest()[:24]
     tmp = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", suffix=".jsonl", prefix="_batch_upload_",
         dir=state_dir(__file__), delete=False)
@@ -12358,7 +12369,21 @@ def submit_batch(
             log_fn(f"{len(requests)} istek OpenAI'a yükleniyor...", "info")
 
         with open(jsonl_path, "rb") as f:
-            uploaded = client.files.create(file=f, purpose="batch")
+            def _upload_batch_file():
+                f.seek(0)
+                try:
+                    return client.files.create(
+                        file=f, purpose="batch",
+                        extra_headers={"Idempotency-Key": f"{intent_token}-upload"})
+                except TypeError as exc:
+                    if "extra_headers" not in str(exc):
+                        raise
+                    f.seek(0)
+                    return client.files.create(file=f, purpose="batch")
+
+            uploaded = batch_api_call_with_retry(
+                client, _upload_batch_file,
+                "batch_upload", cancel_check=cancel_check)
     finally:
         try:
             jsonl_path.unlink(missing_ok=True)
@@ -12366,9 +12391,6 @@ def submit_batch(
             pass
 
     intent_path = None
-    intent_token = hashlib.sha256(
-        f"{source_path}|{time.time_ns()}|{os.getpid()}".encode("utf-8")
-    ).hexdigest()[:24]
     if fmap_data is not None:
         intent_path = _hybrid_batch_intent_path(intent_token)
         atomic_write_json(intent_path, {
@@ -12378,13 +12400,16 @@ def submit_batch(
             "fmap_data": fmap_data,
             "idempotency_key": intent_token,
         })
-    batch = client.batches.create(
-        input_file_id=uploaded.id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={"recovery_intent": intent_token},
-        extra_headers={"Idempotency-Key": intent_token},
-    )
+    batch = batch_api_call_with_retry(
+        client,
+        lambda: client.batches.create(
+            input_file_id=uploaded.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+            metadata={"recovery_intent": intent_token},
+            extra_headers={"Idempotency-Key": intent_token},
+        ),
+        "batch_create", cancel_check=cancel_check)
 
     try:
         mutate_batch_ids(_batch_id_path(), add=[batch.id])
@@ -12435,7 +12460,9 @@ def wait_for_batch(
                     if detailed else None)
 
         try:
-            batch     = client.batches.retrieve(batch_id)
+            batch = batch_api_call_with_retry(
+                client, lambda: client.batches.retrieve(batch_id),
+                "batch_retrieve", cancel_check=stop_flag_fn)
             counts    = batch.request_counts
             total     = counts.total     or 1
             completed = counts.completed or 0
@@ -12467,7 +12494,9 @@ def wait_for_batch(
                 log_fn("Batch tamamlandı, indiriliyor...", "ok")
             if failed > 0 and batch.error_file_id:
                 try:
-                    err_content = client.files.content(batch.error_file_id).text
+                    err_content = batch_api_call_with_retry(
+                        client, lambda: client.files.content(batch.error_file_id),
+                        "batch_error_download", cancel_check=stop_flag_fn).text
                     err_lines = err_content.strip().splitlines()
                     logged_errors = set()
                     for line in err_lines[:5]:
@@ -12498,7 +12527,9 @@ def wait_for_batch(
                 log_fn(f"Batch başarısız: {batch.status}", "err")
             if batch.error_file_id:
                 try:
-                    err_content = client.files.content(batch.error_file_id).text
+                    err_content = batch_api_call_with_retry(
+                        client, lambda: client.files.content(batch.error_file_id),
+                        "batch_error_download", cancel_check=stop_flag_fn).text
                     err_lines = err_content.strip().splitlines()
                     logged_errors = set()
                     for line in err_lines[:5]:
@@ -12542,7 +12573,7 @@ def submit_and_wait(
 ) -> str | None:
     """Legacy wrapper: submit then wait. Use submit_batch+wait_for_batch for multi-file."""
     batch_id = submit_batch(openai_api_key, requests, log_fn, file_map, output_path,
-                            base_url=base_url)
+                            base_url=base_url, cancel_check=stop_flag_fn)
     if batch_id is None:
         return None
     return wait_for_batch(openai_api_key, batch_id, log_fn, stop_flag_fn, progress_fn,
@@ -12590,6 +12621,7 @@ def save_results(
     src_cues: list = None,
     base_url: str = "",
     target_language: str = "Turkish",
+    cancel_check=None,
 ) -> tuple:
     """Returns (yazılan_satır_sayısı, eksik-çeviri işaretleme_sayısı).
 
@@ -12599,7 +12631,11 @@ def save_results(
     from openai import OpenAI
     client  = OpenAI(api_key=openai_api_key, base_url=base_url or None)
     _ids = output_file_id if isinstance(output_file_id, (list, tuple)) else [output_file_id]
-    content = "\n".join(client.files.content(_id).text for _id in _ids if _id)
+    content = "\n".join(
+        batch_api_call_with_retry(
+            client, lambda _id=_id: client.files.content(_id),
+            "batch_output_download", cancel_check=cancel_check).text
+        for _id in _ids if _id)
 
     srt_blocks = {}
     token_sum  = 0

@@ -6202,6 +6202,13 @@ def _regular_batch_intent_path(run_id: str, part_index: int) -> Path:
     return state_path(__file__, f"batch_intent_{safe_run_id}_{int(part_index)}.json")
 
 
+def _batch_api_call_with_retry(client, call, operation: str, cancel_check=None):
+    from provider_retry import provider_call_with_retry
+    return provider_call_with_retry(
+        call, client, "batch-api", {"operation": operation},
+        cancel_check=cancel_check)
+
+
 def _write_batch_jsonl_temp(requests: list, prefix: str) -> Path:
     import tempfile
 
@@ -10281,7 +10288,8 @@ def _fetch_batch_statuses(api_key: str, batch_ids: list, log_fn=None, base_url: 
         return result
     for bid in batch_ids:
         try:
-            b = client.batches.retrieve(bid)
+            b = _batch_api_call_with_retry(
+                client, lambda: client.batches.retrieve(bid), "batch_retrieve")
             result[bid] = getattr(b, "status", "unknown") or "unknown"
         except Exception:
             result[bid] = "unknown"
@@ -25639,12 +25647,27 @@ class App(ctk.CTk):
             _metadata_ready = False
             _metadata_cancelled = False
             _intent_path = None
+            _intent_token = f"{run_id}-{ci}"
             try:
                 self._log(f"Yükleniyor ({ci+1}/{len(chunks)})...", "info")
                 with open(jpath, "rb") as f:
-                    up = client.files.create(file=f, purpose="batch")
+                    def _upload_batch_file():
+                        f.seek(0)
+                        try:
+                            return client.files.create(
+                                file=f, purpose="batch",
+                                extra_headers={"Idempotency-Key": f"{_intent_token}-upload"})
+                        except TypeError as exc:
+                            if "extra_headers" not in str(exc):
+                                raise
+                            f.seek(0)
+                            return client.files.create(file=f, purpose="batch")
+
+                    up = _batch_api_call_with_retry(
+                        client, _upload_batch_file, "batch_upload",
+                        cancel_check=lambda: bool(
+                            self.__dict__.get("_stop_flag", False)))
                 _intent_path = _regular_batch_intent_path(run_id, ci)
-                _intent_token = f"{run_id}-{ci}"
                 atomic_write_json(_intent_path, {
                     "run_id": run_id,
                     "part_index": ci,
@@ -25652,12 +25675,16 @@ class App(ctk.CTk):
                     "recovery_intent": _intent_token,
                     "idempotency_key": _intent_token,
                 })
-                batch = client.batches.create(
-                    input_file_id=up.id,
-                    endpoint="/v1/chat/completions",
-                    completion_window="24h",
-                    metadata={"recovery_intent": _intent_token},
-                    extra_headers={"Idempotency-Key": _intent_token})
+                batch = _batch_api_call_with_retry(
+                    client,
+                    lambda: client.batches.create(
+                        input_file_id=up.id,
+                        endpoint="/v1/chat/completions",
+                        completion_window="24h",
+                        metadata={"recovery_intent": _intent_token},
+                        extra_headers={"Idempotency-Key": _intent_token}),
+                    "batch_create", cancel_check=lambda: bool(
+                        self.__dict__.get("_stop_flag", False)))
                 _created_batch_id = batch.id
                 batch_ids.append(batch.id)
                 mutate_batch_ids(_batch_id_path(), add=[batch.id])
@@ -25816,7 +25843,11 @@ class App(ctk.CTk):
                         api_key=api_key,
                         base_url=str(context.get("main_api_base_url") or "") or None)
                     match = None
-                    for remote in client.batches.list(limit=100):
+                    remotes = _batch_api_call_with_retry(
+                        client, lambda: client.batches.list(limit=100),
+                        "batch_list", cancel_check=lambda: bool(
+                            self.__dict__.get("_stop_flag", False)))
+                    for remote in remotes:
                         metadata = getattr(remote, "metadata", None) or {}
                         if not isinstance(metadata, dict) and hasattr(metadata, "model_dump"):
                             metadata = metadata.model_dump()
@@ -25825,15 +25856,18 @@ class App(ctk.CTk):
                             match = remote
                             break
                     if match is None:
-                        match = client.batches.create(
-                            input_file_id=input_file_id,
-                            endpoint="/v1/chat/completions",
-                            completion_window="24h",
-                            metadata={"recovery_intent": intent_token},
-                            extra_headers={
-                                "Idempotency-Key": str(
-                                    intent.get("idempotency_key") or intent_token)},
-                        )
+                        match = _batch_api_call_with_retry(
+                            client,
+                            lambda: client.batches.create(
+                                input_file_id=input_file_id,
+                                endpoint="/v1/chat/completions",
+                                completion_window="24h",
+                                metadata={"recovery_intent": intent_token},
+                                extra_headers={"Idempotency-Key": str(
+                                    intent.get("idempotency_key") or intent_token)}),
+                            "batch_create",
+                            cancel_check=lambda: bool(
+                                self.__dict__.get("_stop_flag", False)))
                     batch_id = str(match.id)
                     atomic_write_json(
                         state_path(__file__, f"batch_fmap_{batch_id}.json"),
@@ -25879,7 +25913,11 @@ class App(ctk.CTk):
                     token = str(intent["recovery_intent"])
                     input_file_id = str(intent["input_file_id"])
                     match = None
-                    for remote in client.batches.list(limit=100):
+                    remotes = _batch_api_call_with_retry(
+                        client, lambda: client.batches.list(limit=100),
+                        "batch_list", cancel_check=lambda: bool(
+                            self.__dict__.get("_stop_flag", False)))
+                    for remote in remotes:
                         metadata = getattr(remote, "metadata", None) or {}
                         if not isinstance(metadata, dict) and hasattr(metadata, "model_dump"):
                             metadata = metadata.model_dump()
@@ -25888,15 +25926,18 @@ class App(ctk.CTk):
                             match = remote
                             break
                     if match is None:
-                        match = client.batches.create(
-                            input_file_id=input_file_id,
-                            endpoint="/v1/chat/completions",
-                            completion_window="24h",
-                            metadata={"recovery_intent": token},
-                            extra_headers={
-                                "Idempotency-Key": str(
-                                    intent.get("idempotency_key") or token)},
-                        )
+                        match = _batch_api_call_with_retry(
+                            client,
+                            lambda: client.batches.create(
+                                input_file_id=input_file_id,
+                                endpoint="/v1/chat/completions",
+                                completion_window="24h",
+                                metadata={"recovery_intent": token},
+                                extra_headers={"Idempotency-Key": str(
+                                    intent.get("idempotency_key") or token)}),
+                            "batch_create",
+                            cancel_check=lambda: bool(
+                                self.__dict__.get("_stop_flag", False)))
                     batch_id = str(match.id)
                     atomic_write_json(ht._batch_fmap_path(batch_id), fmap_data)
                     mutate_batch_ids(_batch_id_path(), add=[batch_id])
@@ -26004,11 +26045,26 @@ class App(ctk.CTk):
                 created_id = ""
                 metadata_ready = False
                 intent_path = None
+                intent_token = f"{run_id}-{part_index}"
                 try:
                     with open(jpath, "rb") as handle:
-                        uploaded = client.files.create(file=handle, purpose="batch")
+                        def _upload_batch_file():
+                            handle.seek(0)
+                            try:
+                                return client.files.create(
+                                    file=handle, purpose="batch",
+                                    extra_headers={"Idempotency-Key": f"{intent_token}-upload"})
+                            except TypeError as exc:
+                                if "extra_headers" not in str(exc):
+                                    raise
+                                handle.seek(0)
+                                return client.files.create(file=handle, purpose="batch")
+
+                        uploaded = _batch_api_call_with_retry(
+                            client, _upload_batch_file, "batch_upload",
+                            cancel_check=lambda: bool(
+                                self.__dict__.get("_stop_flag", False)))
                     intent_path = _regular_batch_intent_path(run_id, part_index)
-                    intent_token = f"{run_id}-{part_index}"
                     atomic_write_json(intent_path, {
                         "run_id": run_id,
                         "part_index": part_index,
@@ -26016,12 +26072,16 @@ class App(ctk.CTk):
                         "recovery_intent": intent_token,
                         "idempotency_key": intent_token,
                     })
-                    batch = client.batches.create(
-                        input_file_id=uploaded.id,
-                        endpoint="/v1/chat/completions",
-                        completion_window="24h",
-                        metadata={"recovery_intent": intent_token},
-                        extra_headers={"Idempotency-Key": intent_token})
+                    batch = _batch_api_call_with_retry(
+                        client,
+                        lambda: client.batches.create(
+                            input_file_id=uploaded.id,
+                            endpoint="/v1/chat/completions",
+                            completion_window="24h",
+                            metadata={"recovery_intent": intent_token},
+                            extra_headers={"Idempotency-Key": intent_token}),
+                        "batch_create", cancel_check=lambda: bool(
+                            self.__dict__.get("_stop_flag", False)))
                     created_id = batch.id
                     mutate_batch_ids(_batch_id_path(), add=[created_id])
                     self._register_batch(
@@ -26350,7 +26410,9 @@ class App(ctk.CTk):
             result_out["status"] = "submitted"
         while not self._stop_flag:
             try:
-                b         = client.batches.retrieve(batch_id)
+                b = _batch_api_call_with_retry(
+                    client, lambda: client.batches.retrieve(batch_id),
+                    "batch_retrieve", cancel_check=lambda: self._stop_flag)
                 counts    = b.request_counts
                 total     = counts.total     or 1
                 completed = counts.completed or 0
@@ -26377,7 +26439,8 @@ class App(ctk.CTk):
                                             str(_stage_path), self._log,
                                             token_callback=self._update_batch_tokens,
                                             base_url=str(getattr(client, "base_url", "")),
-                                            target_language=target_language)
+                                            target_language=target_language,
+                                            cancel_check=lambda: self._stop_flag)
                             _saved_ok = True
                         except Exception as e:
                             self._log(f"Sonuçlar kaydedilemedi: {e}", "err")
@@ -27010,7 +27073,9 @@ class App(ctk.CTk):
 
         while not self._stop_flag:
             try:
-                b         = client.batches.retrieve(batch_id)
+                b = _batch_api_call_with_retry(
+                    client, lambda: client.batches.retrieve(batch_id),
+                    "batch_retrieve", cancel_check=lambda: self._stop_flag)
                 counts    = b.request_counts
                 total     = counts.total     or 1
                 completed = counts.completed or 0
@@ -27073,7 +27138,10 @@ class App(ctk.CTk):
 
     def _save_batch_results(self, client, output_file_id, expected_ids=None,
                             file_map=None):
-        content   = client.files.content(output_file_id).text
+        content = _batch_api_call_with_retry(
+            client, lambda: client.files.content(output_file_id),
+            "batch_output_download",
+            cancel_check=lambda: bool(getattr(self, "_stop_flag", False))).text
         raw_map   = {}
         duplicate_ids = set()
         expected_ids = set(expected_ids or [])
@@ -27830,7 +27898,11 @@ class App(ctk.CTk):
 
     def _show_errors(self, client, error_file_id):
         try:
-            for line in client.files.content(error_file_id).text.strip().splitlines()[:5]:
+            content = _batch_api_call_with_retry(
+                client, lambda: client.files.content(error_file_id),
+                "batch_error_download",
+                cancel_check=lambda: self._stop_flag).text
+            for line in content.strip().splitlines()[:5]:
                 r = json.loads(line)
                 self._log(f"{r.get('custom_id','?')}: {r.get('error',{}).get('message','')}", "err")
         except Exception:
@@ -27873,6 +27945,7 @@ class App(ctk.CTk):
                                       getattr(self, "_active_snapshot", None) or {},
                                       api_key=openai_key),
                                   locked_terms=frozen_locked_terms,
+                                  cancel_check=lambda: self._stop_flag,
                                   expected_source_hash=expected_source_hash)
             if not bid:
                 return None, None
@@ -27892,7 +27965,8 @@ class App(ctk.CTk):
                 return None
             ht.save_results(openai_key, oid, fmap, combined_stage, self._log,
                             token_callback=self._update_batch_tokens, src_cues=None,
-                            base_url=b_url, target_language=target_language)
+                            base_url=b_url, target_language=target_language,
+                            cancel_check=lambda: self._stop_flag)
             return combined_stage, [bid]
 
         cids_a = {r.get("custom_id") for r in wave_a}
@@ -27910,7 +27984,11 @@ class App(ctk.CTk):
         # A'nın ham çevirisini al → B'ye zincir enjekte et (başarısızsa zincirsiz devam)
         try:
             client = _OAI(api_key=openai_key, base_url=b_url or None)
-            raw_a = _raw_map_from_batch_content(client.files.content(oid_a).text)
+            raw_a = _raw_map_from_batch_content(
+                _batch_api_call_with_retry(
+                    client, lambda: client.files.content(oid_a),
+                    "batch_output_download",
+                    cancel_check=lambda: self._stop_flag).text)
             wave_b = _chain_waves(wave_a, wave_b, raw_a, fmap_a, max_pairs=self._context_lines)
             self._log(f"{fname}: A tamamlandı → B'ye zincir bağlamı enjekte edildi", "ok")
         except Exception as e:
@@ -27926,7 +28004,8 @@ class App(ctk.CTk):
         # ── Birleşik yazım + recovery temizliği ───────────────────────────────
         ht.save_results(openai_key, [oid_a, oid_b], {**fmap_a, **fmap_b}, combined_stage,
                         self._log, token_callback=self._update_batch_tokens, src_cues=None,
-                        base_url=b_url, target_language=target_language)
+                        base_url=b_url, target_language=target_language,
+                        cancel_check=lambda: self._stop_flag)
         return combined_stage, [bid_a, bid_b]
 
     # ── Hybrid mod (Batch + yardımcı model analizi) ───────────────────────────
@@ -28344,6 +28423,7 @@ class App(ctk.CTk):
                         getattr(self, "_active_snapshot", None) or {},
                         api_key=openai_key),
                     locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                    cancel_check=lambda: self._stop_flag,
                     expected_source_hash=_expected_source_hash)
                 if batch_id:
                     self._register_batch(batch_id, openai_key, b_url)
@@ -28498,7 +28578,8 @@ class App(ctk.CTk):
                     _save_ret = ht.save_results(openai_key, out_id, fmap, str(_stage_path), self._log,
                                                 token_callback=self._update_batch_tokens,
                                                 src_cues=None, base_url=b_url,
-                                                target_language=tgt)
+                                                target_language=tgt,
+                                                cancel_check=lambda: self._stop_flag)
                 _parse_path = str(_stage_path) if _stage_path else out_path
                 self._record_file_status(
                     filepath, "Sonuçları Hazırlama", "running")
