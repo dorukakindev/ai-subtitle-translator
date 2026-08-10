@@ -208,6 +208,20 @@ class AdjacentDuplicateTest(unittest.TestCase):
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "adjacent_duplicate" for f in findings))
 
+    def test_same_source_words_in_different_order_are_benign(self):
+        blocks = _b(
+            (67, "Aziz Anthony'nin Baştan Çıkarılışı."),
+            (68, "Aziz Anthony. Baştan Çıkarılış."),
+        )
+        src = _s(**{
+            "67": "The temptation of St Anthony.",
+            "68": "St Anthony. Temptation.",
+        })
+
+        findings = gui.detect_alignment_issues(blocks, src)
+
+        self.assertFalse(any(f["type"] == "adjacent_duplicate" for f in findings))
+
     def test_source_shares_long_common_phrase_is_benign(self):
         # Kaynaklar genel olarak farklı ama uzun bir ortak ifade paylaşıyor
         # ('within sight of gobekli tepe') — Göbekli 2 #308/#313 gerçek yanlış-pozitifi.

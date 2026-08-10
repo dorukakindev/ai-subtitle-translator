@@ -150,6 +150,27 @@ class PersistentRepairRetryTest(unittest.TestCase):
         self.assertEqual(result[0][2], candidate)
         self.assertEqual(create.call_count, 1)
 
+    def test_fragment_neighbor_locked_term_is_not_required_in_each_cue(self):
+        source_cues = [
+            ("4", "00:00:01,000 --> 00:00:02,000", "Gerrit Dou painted"),
+            ("5", "00:00:02,001 --> 00:00:03,000", "while Rembrandt watched."),
+        ]
+        raw = {str(idx): text for idx, _ts, text in source_cues}
+        advisories = []
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=_response([{"i": "4", "t": "Gerrit Dou resim yaptı"}])):
+            result, repaired = gui._repair_untranslated_sync(
+                [("4", source_cues[0][1], "[HATA]"),
+                 ("5", source_cues[1][1], "Rembrandt izledi.")],
+                raw, object(), "English", "Turkish", source_cues=source_cues,
+                locked_terms={"Gerrit Dou": "Gerrit Dou", "Rembrandt": "Rembrandt"},
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"),
+                advisory_reviews_out=advisories)
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], "Gerrit Dou resim yaptı")
+        self.assertEqual(advisories, [])
+
     def test_ambiguous_memory_lock_is_removed_inside_repair(self):
         source = "It's a different part of psychedelic history."
         candidate = "Bu, psikedelik tarihinin farklı bir bölümü."

@@ -132,12 +132,12 @@ class MediaModeTest(unittest.TestCase):
             _sync_media_mode_controls=lambda: None,
         )
 
-    def test_series_mode_enables_series_features(self):
+    def test_series_mode_enables_memory_without_costly_season_canon(self):
         app = self._app()
         gui.App._apply_media_mode(app, "Dizi")
         self.assertEqual(app.content_type_var.get(), "Otomatik")
         self.assertTrue(app.series_memory_var.get())
-        self.assertTrue(app.season_canon_var.get())
+        self.assertFalse(app.season_canon_var.get())
 
     def test_film_mode_disables_series_features_without_changing_content(self):
         app = self._app()

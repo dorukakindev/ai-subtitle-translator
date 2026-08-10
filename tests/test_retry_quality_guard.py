@@ -159,6 +159,18 @@ class RetryQualityGuardTest(unittest.TestCase):
             "non_turkish_target",
         )
 
+    def test_named_content_can_redistribute_inside_same_fragment_group(self):
+        request = UpstreamProviderRecoveryTest._req([
+            {"i": 1, "t": "John met", "frag": "start", "frag_group": 7},
+            {"i": 2, "t": "Mary yesterday.", "frag": "end", "frag_group": 7},
+        ])
+        raw = json.dumps([
+            {"i": 1, "t": "Mary ile"},
+            {"i": 2, "t": "John dün buluştu."},
+        ], ensure_ascii=False)
+
+        self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
+
     def test_corrected_dvorak_spelling_does_not_retry_chunk(self):
         request = UpstreamProviderRecoveryTest._req([
             {"i": 409, "t": "We tackled Dvorjak, Franck,"},

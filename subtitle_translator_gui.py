@@ -4799,7 +4799,8 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
                 "what", "when", "where", "who", "why", "will", "would", "yes",
                 "you",
             }
-            for idx, source_text in chunk_src_map.items():
+            owner_src_map = chunk_leak_src_map or chunk_src_map
+            for idx, source_text in owner_src_map.items():
                 tokens = set(re.findall(
                     r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
                     str(source_text or "")))
@@ -4868,7 +4869,8 @@ def _repair_locked_term_violation_detail(src: str, candidate: str,
 
 
 def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: str,
-                                       tgt_lang: str, locked_terms=None) -> str:
+                                       tgt_lang: str, locked_terms=None,
+                                       leak_source: str | None = None) -> str:
     import hybrid_translate as ht
 
     value = str(candidate or "").strip()
@@ -4879,7 +4881,8 @@ def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: st
     if untranslated:
         return untranslated
     if (_lang_iso639_1(tgt_lang) == "tr"):
-        token = ht.non_turkish_leak_token(value, source_text=src)
+        token = ht.non_turkish_leak_token(
+            value, source_text=leak_source if leak_source is not None else src)
         if token:
             return f"non_turkish_target:{token}"
     if ht.locked_term_violation(src, value, locked_terms or {}):
@@ -5232,12 +5235,13 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             ]
                             translated = "\n".join(
                                 line for line in cleaned_lines if line)
-                            validation_src = validation_source_map.get(rid, src_text)
+                            leak_src = validation_source_map.get(rid, src_text)
                             reason = _repair_candidate_rejection_reason(
-                                validation_src, translated, src_lang=src_lang,
+                                src_text, translated, src_lang=src_lang,
                                 tgt_lang=tgt_lang,
                                 locked_terms=_repair_relevant_locked_terms(
-                                    attempt_locked_terms, [validation_src]))
+                                    attempt_locked_terms, [src_text]),
+                                leak_source=leak_src)
                             if _repair_reason_is_advisory(reason):
                                 advisory_reviews.append({
                                     "id": rid,
@@ -5275,11 +5279,10 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                             lock_detail = ""
                             if rejection_reasons.get(rid) == "locked_term_violation":
                                 violated = _repair_locked_term_violation_detail(
-                                    validation_source_map.get(rid, src_text),
+                                    src_text,
                                     rejection_candidates.get(rid, ""),
                                     _repair_relevant_locked_terms(
-                                        attempt_locked_terms, [
-                                            validation_source_map.get(rid, src_text)]))
+                                        attempt_locked_terms, [src_text]))
                                 if violated:
                                     lock_detail = f" | kilit={violated!r}"
                             log_fn(
@@ -6574,6 +6577,13 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
         ]
         return _align_visible(" ".join(line for line in cleaned if line))
 
+    def _source_word_set(value):
+        stop = {"a", "an", "of", "the"}
+        return {
+            word for word in re.findall(r"\w+", value, re.UNICODE)
+            if word not in stop
+        }
+
     for a in range(len(seq)):
         ta = seq[a][1]
         if len(ta) < 12:
@@ -6588,6 +6598,9 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
             sb = _source_dialogue(src_map.get(seq[b][0], "")).lower()
             if sa and sb and _align_ratio(sa, sb) >= src_thresh:
                 continue  # kaynak da tekrar → meşru
+            wa, wb = _source_word_set(sa), _source_word_set(sb)
+            if wa and wb and wa == wb:
+                continue  # aynı kaynak sözcükleri farklı sırada → meşru
             if _align_lcs_len(sa, sb) >= lcs_thresh:
                 continue  # kaynaklar uzun ortak ifade paylaşıyor → meşru
             dup_ids.append(seq[a][0])
@@ -16834,7 +16847,8 @@ class App(ctk.CTk):
                 )
                 strict_fallback.add(cid)
                 self._log(
-                    f"  ↪ {cid}: katı ID denemesi başarısız; tüm chunk satır bazlı onarıma bırakıldı",
+                    f"  ↪ {cid}: katı ID denemesi başarısız "
+                    f"({reason}); tüm chunk satır bazlı onarıma bırakıldı",
                     "warn",
                 )
             except Exception:
