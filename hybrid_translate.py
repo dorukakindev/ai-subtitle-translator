@@ -5740,6 +5740,7 @@ _KNOWN_MODEL_CORRUPTION_RE = re.compile(
     r"\b(?:thek|iyeleri|mekişi|gerten|ekaranlıkta|balonjoje|ezehri)\b",
     re.IGNORECASE,
 )
+_SERIALIZED_JSON_RESIDUE_RE = re.compile(r"\}\s*,\s*\{")
 _TRANSLATABLE_EN_RESIDUE_PATTERNS = (
     re.compile(r"\bpsychedel(?:ic|ik)s?\b", re.IGNORECASE),
     re.compile(r"\baqueous\b", re.IGNORECASE),
@@ -5860,6 +5861,9 @@ def find_garble_tokens(text, source_text: str = "") -> list:
 
     for match in _KNOWN_MODEL_CORRUPTION_RE.finditer(s):
         found.append((match.group(0), "R7_model_corruption"))
+
+    for match in _SERIALIZED_JSON_RESIDUE_RE.finditer(s):
+        found.append((match.group(0), "R8_serialized_json_residue"))
 
     return found
 
@@ -6332,6 +6336,13 @@ _GLOSSARY_META_CLAUSE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_GLOSSARY_ALTERNATIVE_OR_CONTEXT_RE = re.compile(
+    r"(?:\b(?:veya|ya\s+da)\b|;[^;]{0,100}\b(?:"
+    r"bağlama\s+göre|teknik\s+bağlamda|kullanılmamalı|"
+    r"açıklamayla\s+kullanılmalı|ayrıştırılmalı"
+    r")\b)",
+    re.IGNORECASE,
+)
 
 
 def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
@@ -6355,6 +6366,8 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
         return "bitişik eğik çizgili seçenek"
     if _GLOSSARY_META_CLAUSE_RE.search(value_s):
         return "noktalı virgüllü talimat"
+    if _GLOSSARY_ALTERNATIVE_OR_CONTEXT_RE.search(value_s):
+        return "açıklama/alternatif içeren hedef"
     return None
 
 
@@ -10094,6 +10107,8 @@ def locked_term_violation(
     for source_term, target_term in (locked_terms or {}).items():
         source_term = str(source_term or "").strip()
         target_term = str(target_term or "").strip()
+        if _glossary_gloss_or_instruction_marker(target_term):
+            continue
         taxon = re.fullmatch(r"([A-Z][a-z]{3,})\s+[a-z][a-z-]{2,}", target_term)
         if (taxon and source_term.casefold() == target_term.casefold()
                 and re.search(rf"\b{re.escape(taxon.group(1))}\b",
@@ -10105,6 +10120,8 @@ def locked_term_violation(
     for source_term, target_term in (locked_terms or {}).items():
         source_term = str(source_term or "").strip()
         target_term = str(target_term or "").strip()
+        if _glossary_gloss_or_instruction_marker(target_term):
+            continue
         if (len(source_term) > 1 and target_term
                 and _locked_source_term_present(source_term, source_value)):
             if _locked_target_has_derivational_suffix(target_term, candidate_text):

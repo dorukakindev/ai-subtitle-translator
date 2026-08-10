@@ -9606,6 +9606,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
     residual_format_tags = sum(
         _delivery_ass_command_count(text) for text in output_texts)
+    serialized_json_residue_ids = [
+        str(idx) for idx, _ts, text in output_dialogue
+        if re.search(r"\}\s*,\s*\{", str(text or ""))
+    ]
     hatted_letters = sum(
         sum(text.count(char) for char in "âîûÂÎÛ") for text in output_texts)
     delivery_signatures = sum(
@@ -9626,6 +9630,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
         residual_format_tags, residual_literal_newline_cues, hatted_letters,
+        serialized_json_residue_ids,
         signature_mismatch, duplicate_cue_ids, unnumbered_cue_lines,
         invalid_timestamp_ids,
         reversed_timestamp_ids, signature_overlap_ids,
@@ -9646,6 +9651,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "residual_literal_newline_cues": residual_literal_newline_cues,
         "residual_position_tags": residual_position_tags,
         "residual_format_tags": residual_format_tags,
+        "serialized_json_residue_ids": serialized_json_residue_ids,
         "hatted_letters": hatted_letters,
         "delivery_signatures": delivery_signatures,
         "expected_delivery_signatures": expected_signatures,
@@ -9682,6 +9688,7 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("residual_literal_newline_cues"),
         audit.get("residual_position_tags"),
         audit.get("residual_format_tags"),
+        audit.get("serialized_json_residue_ids"),
         audit.get("hatted_letters"),
         audit.get("signature_mismatch"),
         audit.get("invalid_timestamp_ids"),

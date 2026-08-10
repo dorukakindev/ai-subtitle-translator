@@ -287,6 +287,23 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"DMT": "DMT"})
 
+    def test_live_psychedelic_alternatives_are_not_locked(self):
+        glossary = {
+            "psychedelic": "“psikedelik”; “halüsinojenik” ile bağlama göre ayrıştırılmalı.",
+            "get high": "Uyuşturucu etkisi için “kafa bulmak” veya nötr bağlamda “kafayı bulmak”.",
+            "goatfish": "“tekir balığı” veya teknik bağlamda “goatfish”.",
+            "ciguatoxin": "siguatoksin",
+        }
+        self.assertEqual(
+            ht.sanitize_glossary_for_turkish(glossary),
+            {"ciguatoxin": "siguatoksin"},
+        )
+        self.assertFalse(ht.locked_term_violation(
+            "it's a different part of psychedelic history.",
+            "Bu, psikedelik tarihinin farklı bir bölümü.",
+            {"psychedelic": glossary["psychedelic"]},
+        ))
+
     def test_short_semicolon_meta_instructions_are_dropped(self):
         cleaned = ht.sanitize_glossary_for_turkish({
             "TA": "TA; Türkçede teknik terim olarak aynen korunacak",

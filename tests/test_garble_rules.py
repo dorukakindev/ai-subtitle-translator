@@ -224,6 +224,12 @@ class TranslatableEnglishResidueTest(unittest.TestCase):
 
 
 class KnownModelCorruptionTest(unittest.TestCase):
+    def test_serialized_json_separator_is_garble(self):
+        self.assertEqual(
+            ht.find_garble_tokens("halüsinasyon yapan?},{"),
+            [("},{", "R8_serialized_json_residue")],
+        )
+
     def test_delivered_hamilton_corruptions_are_flagged(self):
         for token in ("gerten", "ekaranlıkta", "balonjoje", "ezehri"):
             with self.subTest(token=token):

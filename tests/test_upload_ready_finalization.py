@@ -619,6 +619,24 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["extra_dialogue_ids"], [])
 
+    def test_delivery_audit_rejects_serialized_json_residue(self):
+        source_blocks = [
+            ("1", "00:00:10,000 --> 00:00:12,000", "Does it cause hallucinations?"),
+        ]
+        delivered = gui._prepare_upload_ready_blocks([
+            ("1", source_blocks[0][1], "Halüsinasyon yapar mı?},{"),
+        ], "Turkish")
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source_blocks, "English")
+            gui.write_srt(output_path, delivered, "English")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["serialized_json_residue_ids"], ["1"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
+
     def test_delivery_audit_rejects_signature_id_collision(self):
         source_blocks = [
             ("1", "00:00:10,000 --> 00:00:12,000", "One."),
