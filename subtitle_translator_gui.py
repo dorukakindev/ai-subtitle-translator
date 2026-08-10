@@ -830,7 +830,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 6
+QUALITY_PROFILE_VERSION = 7
 RESELLER_ROUTING_DEFAULTS = {
     "main_custom": True,
     "main_custom_model": "gpt-5.4",
@@ -844,7 +844,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "model": "gpt-5.4",
     "mode": "sync",
     "hybrid": True,
-    "analysis_depth": "Maksimum",
+    "analysis_depth": "Gelişmiş",
     "chunk_size": 25,
     "context_lines": 30,
     "lookahead_lines": 15,
@@ -852,21 +852,26 @@ QUALITY_PROFILE_DEFAULTS = {
     "temperature": 0.2,
     "critic": True,
     **RESELLER_ROUTING_DEFAULTS,
-    "native": True,
-    "semantic_reconcile": True,
+    "polish": False,
+    "native": False,
+    "qc": False,
+    "backtrans": False,
+    "semantic_reconcile": False,
+    "review_pass": False,
+    "chain_ctx": True,
     "clean_sdh": True,
     "backup_raw": True,
     "term_normalize": True,
     "media_mode": "Dizi",
     "content_type": "Otomatik",
     "series_memory": True,
-    "season_canon": True,
+    "season_canon": False,
     "linebreak": False,
 }
 MEDIA_MODE_DEFAULTS = {
     "Dizi": {
         "series_memory": True,
-        "season_canon": True,
+        "season_canon": False,
     },
     "Film": {
         "series_memory": False,
@@ -896,16 +901,16 @@ WORKFLOW_PROFILES = {
         "hybrid_var": True,
         "analysis_depth_var": "Gelişmiş",
         "critic_var": True,
-        "polish_var": True,
-        "native_var": True,
+        "polish_var": False,
+        "native_var": False,
         "backtrans_var": False,
-        "semantic_reconcile_var": True,
-        "review_pass_var": True,
+        "semantic_reconcile_var": False,
+        "review_pass_var": False,
         "term_normalize_var": True,
         "chain_ctx_var": True,
         "precontext_var": False,
         "series_memory_var": True,
-        "season_canon_var": True,
+        "season_canon_var": False,
         "clean_sdh_var": True,
         "linebreak_var": False,
         "qc_var": False,
@@ -993,8 +998,27 @@ def _set_windows_sleep_prevention(enabled: bool) -> bool:
 def _apply_quality_profile_defaults(settings: dict) -> bool:
     if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
         return False
-    if settings.get("quality_profile_version") == 5:
+    previous_version = settings.get("quality_profile_version")
+    if previous_version == 5:
         settings.update(RESELLER_ROUTING_DEFAULTS)
+    if previous_version in {5, 6}:
+        settings.update({
+            "hybrid": True,
+            "analysis_depth": "Gelişmiş",
+            "critic": True,
+            "polish": False,
+            "native": False,
+            "qc": False,
+            "backtrans": False,
+            "semantic_reconcile": False,
+            "review_pass": False,
+            "term_normalize": True,
+            "chain_ctx": True,
+            "clean_sdh": True,
+            "backup_raw": True,
+            "season_canon": False,
+        })
+        settings["series_memory"] = settings.get("media_mode", "Dizi") == "Dizi"
         settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
         return True
     if "analysis_depth" not in settings or "chunk_size" not in settings:
@@ -12136,7 +12160,7 @@ class App(ctk.CTk):
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
-        self.season_canon_var = ctk.BooleanVar(value=True)
+        self.season_canon_var = ctk.BooleanVar(value=False)
         canon_fr = ctk.CTkFrame(sb, fg_color="transparent")
         canon_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         canon_fr.grid_columnconfigure(1, weight=1)
@@ -12157,7 +12181,7 @@ class App(ctk.CTk):
                 row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Bağlam İncelemesi (Batch sonrası ikinci geçiş)
-        self.review_pass_var = ctk.BooleanVar(value=True)
+        self.review_pass_var = ctk.BooleanVar(value=False)
         rev_fr = ctk.CTkFrame(sb, fg_color="transparent")
         rev_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         rev_fr.grid_columnconfigure(1, weight=1)
@@ -12256,7 +12280,7 @@ class App(ctk.CTk):
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Native Okuyucu Pass
-        self.native_var = ctk.BooleanVar(value=True)
+        self.native_var = ctk.BooleanVar(value=False)
         native_fr = ctk.CTkFrame(sb, fg_color="transparent")
         native_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         native_fr.grid_columnconfigure(1, weight=1)
@@ -12287,7 +12311,7 @@ class App(ctk.CTk):
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
-        self.semantic_reconcile_var = ctk.BooleanVar(value=True)
+        self.semantic_reconcile_var = ctk.BooleanVar(value=False)
         sr_fr = ctk.CTkFrame(sb, fg_color="transparent")
         sr_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         sr_fr.grid_columnconfigure(1, weight=1)
@@ -12546,7 +12570,7 @@ class App(ctk.CTk):
                          fg_color=CARD, border_color=BORDER, text_color=FG).pack(fill="x", padx=4, pady=(0,2))
         self._sync_helper_role_controls()
         hf_lbl("Analiz derinligi")
-        self.analysis_depth_var = ctk.StringVar(value="Maksimum")
+        self.analysis_depth_var = ctk.StringVar(value="Gelişmiş")
         ctk.CTkComboBox(hfr, variable=self.analysis_depth_var,
                         values=["Standart", "Gelismis", "Maksimum"],
                         height=36, font=ctk.CTkFont("Segoe UI", 12),
@@ -17007,7 +17031,7 @@ class App(ctk.CTk):
         if notify:
             self._log(
                 f"İçerik modu: {media_mode} — "
-                + ("dizi hafızası ve sezon kanonu açık"
+                + ("dizi hafızası açık, sezon kanonu kapalı"
                    if media_mode == "Dizi" else "dizi özellikleri kapalı"),
                 "info",
             )
