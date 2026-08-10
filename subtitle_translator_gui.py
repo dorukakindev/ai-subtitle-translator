@@ -10565,6 +10565,7 @@ class App(ctk.CTk):
         self._file_integrity_preflight_done = False
         self._force_retranslate_paths = set()
         self._file_integrity_preflight_signature = None
+        self._turkish_source_preflight_signature = None
         self._active_batches = {}   # {batch_id: api_key} — durdururken iptal için
         self._batch_lock     = threading.RLock()   # _active_batches eşzamanlı erişimi
         self._ckpt_lock      = threading.Lock()   # sync checkpoint dosyasına eşzamanlı yazım
@@ -19058,26 +19059,9 @@ class App(ctk.CTk):
             return
         if srt_files and self._start_file_integrity_preflight(srt_files):
             return
-        if srt_files and _lang_iso639_1(self.tgt_var.get()) == "tr":
-            import hybrid_translate as ht
-            turkish_files = []
-            for fp in srt_files:
-                try:
-                    sample = read_subtitle_text(fp)[:3000]
-                except Exception:
-                    sample = ""
-                if ht.is_source_likely_turkish(filename=fp, text=sample):
-                    turkish_files.append(Path(fp).name)
-            if turkish_files:
-                msg = (
-                    "Bu dosya(lar) zaten Türkçe görünüyor:\n"
-                    + "\n".join(f"  • {f}" for f in turkish_files)
-                    + "\n\nİngilizce / orijinal altyazıyı seçin."
-                )
-                self._log(msg.replace("\n", " | "), tag="PREFLIGHT")
-                messagebox.showerror("Preflight — Türkçe Kaynak", msg)
-                self._set_running(False)
-                return
+        if (srt_files and _lang_iso639_1(self.tgt_var.get()) == "tr"
+                and self._start_turkish_source_preflight(srt_files)):
+            return
         if (
             srt_files
             and not self._language_preflight_done
@@ -22864,6 +22848,55 @@ class App(ctk.CTk):
                     self._set_running(False)
                     self._set_status("Kaynak dil seçimi bekleniyor.")
                     self._log("Kaynak dil ön analizi uygulandı; çeviri başlatılmadı.", "info")
+
+            _post_ui(self, _finish)
+
+        App._start_worker(self, _worker)
+        return True
+
+    def _start_turkish_source_preflight(self, files: list) -> bool:
+        signature = self._file_preflight_signature(files)
+        if signature == getattr(self, "_turkish_source_preflight_signature", None):
+            return False
+        self._set_phase("Türkçe Kaynak", f"{len(files)} dosya denetleniyor")
+        self._set_status("Kaynak altyazılar Türkçe içerik için denetleniyor")
+
+        def _worker():
+            import hybrid_translate as ht
+            turkish_files = []
+            for fp in files:
+                if self._stop_flag:
+                    break
+                try:
+                    sample = read_subtitle_text(fp)[:3000]
+                except Exception:
+                    sample = ""
+                if ht.is_source_likely_turkish(filename=fp, text=sample):
+                    turkish_files.append(Path(fp).name)
+
+            def _finish():
+                if getattr(self, "_is_shutting_down", False):
+                    return
+                if self._stop_flag:
+                    self._set_running(False)
+                    return
+                if signature != self._file_preflight_signature(self._get_srt_files()):
+                    self._set_running(False)
+                    self.after_idle(self._start)
+                    return
+                if turkish_files:
+                    msg = (
+                        "Bu dosya(lar) zaten Türkçe görünüyor:\n"
+                        + "\n".join(f"  • {f}" for f in turkish_files)
+                        + "\n\nİngilizce / orijinal altyazıyı seçin."
+                    )
+                    self._log(msg.replace("\n", " | "), tag="PREFLIGHT")
+                    messagebox.showerror("Preflight — Türkçe Kaynak", msg)
+                    self._set_running(False)
+                    return
+                self._turkish_source_preflight_signature = signature
+                self._set_running(False)
+                self.after_idle(self._start)
 
             _post_ui(self, _finish)
 

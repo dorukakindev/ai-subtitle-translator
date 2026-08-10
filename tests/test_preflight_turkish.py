@@ -1,7 +1,12 @@
 """Tests for is_source_likely_turkish preflight."""
+import queue
+import threading
 import unittest
+from types import SimpleNamespace
+from unittest import mock
+
 import hybrid_translate as ht
-from pathlib import Path
+import subtitle_translator_gui as gui
 
 _TR_TEXT = (
     "Burası New York'un en büyük mahallelerinden biri. Great Neck'te"
@@ -94,6 +99,81 @@ class PreflightTurkishTest(unittest.TestCase):
         self.assertFalse(
             ht.is_source_likely_turkish(text=mixed)
         )
+
+    def _preflight_stub(self, signature_fn):
+        resumed = []
+        states = []
+        return SimpleNamespace(
+            _turkish_source_preflight_signature=None,
+            _stop_flag=False,
+            _is_shutting_down=False,
+            _worker_lock=threading.Lock(),
+            _worker_threads=set(),
+            _ui_queue=queue.Queue(),
+            _file_preflight_signature=signature_fn,
+            _get_srt_files=lambda: ["episode.srt"],
+            _set_phase=lambda *_args: None,
+            _set_status=lambda *_args: None,
+            _set_running=lambda running: states.append(running),
+            _log=lambda *_args, **_kwargs: None,
+            _start=lambda: None,
+            after_idle=lambda fn: resumed.append(fn),
+            _preflight_resumed=resumed,
+            _running_states=states,
+        )
+
+    @staticmethod
+    def _drain_worker_ui(stub):
+        fn, args, kwargs = stub._ui_queue.get_nowait()
+        fn(*args, **kwargs)
+
+    def test_gui_turkish_preflight_reads_disk_on_worker_and_caches_clean_result(self):
+        signature = ("clean",)
+        stub = self._preflight_stub(lambda _files: signature)
+        started = threading.Event()
+        release = threading.Event()
+        read_threads = []
+
+        def slow_read(_path):
+            read_threads.append(threading.current_thread())
+            started.set()
+            release.wait(1)
+            return _EN_TEXT
+
+        with mock.patch("subtitle_translator_gui.read_subtitle_text", slow_read):
+            self.assertTrue(gui.App._start_turkish_source_preflight(
+                stub, ["episode.srt"]))
+            self.assertTrue(started.wait(1))
+            self.assertIsNot(read_threads[0], threading.main_thread())
+            release.set()
+            for worker in list(stub._worker_threads):
+                worker.join(1)
+
+        self._drain_worker_ui(stub)
+        self.assertEqual(stub._turkish_source_preflight_signature, signature)
+        self.assertEqual(stub._running_states, [False])
+        self.assertEqual(len(stub._preflight_resumed), 1)
+        self.assertFalse(gui.App._start_turkish_source_preflight(
+            stub, ["episode.srt"]))
+
+    def test_gui_turkish_preflight_drops_stale_worker_result(self):
+        current_signature = [("original",)]
+        stub = self._preflight_stub(lambda _files: current_signature[0])
+
+        with mock.patch("subtitle_translator_gui.read_subtitle_text", return_value=_TR_TEXT):
+            self.assertTrue(gui.App._start_turkish_source_preflight(
+                stub, ["episode.srt"]))
+            for worker in list(stub._worker_threads):
+                worker.join(1)
+
+        current_signature[0] = ("new-selection",)
+        with mock.patch("subtitle_translator_gui.messagebox.showerror") as show_error:
+            self._drain_worker_ui(stub)
+
+        show_error.assert_not_called()
+        self.assertIsNone(stub._turkish_source_preflight_signature)
+        self.assertEqual(stub._running_states, [False])
+        self.assertEqual(len(stub._preflight_resumed), 1)
 
 
 if __name__ == "__main__":
