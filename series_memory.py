@@ -159,6 +159,9 @@ class SeriesMemory:
     def load(cls, input_dir: str, show_slug: str,
              target_language: str = "tr",
              source_language: str = "en") -> "SeriesMemory":
+        show_slug = str(show_slug or "").strip()
+        if not re.fullmatch(r"[\w-]+", show_slug, re.UNICODE):
+            raise ValueError("gecersiz dizi hafizasi anahtari")
         target_key = _target_key(target_language)
         source_key = _source_key(source_language)
         base = Path(input_dir) / ".series_memory"

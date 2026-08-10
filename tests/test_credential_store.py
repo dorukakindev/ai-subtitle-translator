@@ -92,6 +92,15 @@ class FallbackRoundtripTest(unittest.TestCase):
         self.assertEqual(cs.load_key("openai"), "sk-legacy-openai-key")
         self.assertEqual(cs.load_key("minimax"), "sk-legacy-helper-key")
 
+    def test_migrate_short_secret_does_not_remain_plaintext(self):
+        settings = Path(self._tmp.name) / ".gui_settings.json"
+        settings.write_text(json.dumps({"api_key": "abcde"}), encoding="utf-8")
+
+        cs.migrate_from_settings(settings)
+
+        self.assertNotIn("api_key", json.loads(settings.read_text(encoding="utf-8")))
+        self.assertEqual(cs.load_key("openai"), "abcde")
+
     def test_migrate_idempotent_on_clean_file(self):
         settings = Path(self._tmp.name) / ".gui_settings.json"
         settings.write_text(json.dumps({"model": "gpt-5.4-mini"}), encoding="utf-8")

@@ -208,6 +208,12 @@ class SortTest(unittest.TestCase):
 
 
 class PersistenceTest(unittest.TestCase):
+    def test_rejects_path_traversal_show_slug(self):
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(ValueError):
+                sm.SeriesMemory.load(td, "../outside")
+            self.assertFalse((Path(td) / "outside.json").exists())
+
     def test_save_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as td:
             m = sm.SeriesMemory.load(td, "the-show")

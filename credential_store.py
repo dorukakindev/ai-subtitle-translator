@@ -285,7 +285,7 @@ def migrate_from_settings(settings_path: str | Path) -> None:
         # .strip() patlar — `or ""` ile None/yanlış-tip güvenli
         raw_value = data.get(key_name)
         val = raw_value.strip() if isinstance(raw_value, str) else ""
-        if not val or len(val) <= 5:
+        if not val:
             continue
 
         rk_match = role_key_pattern.match(key_name)
