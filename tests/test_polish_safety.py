@@ -22,6 +22,26 @@ class _CtkStub(SimpleNamespace):
 
 
 class PolishCandidateSafetyTest(unittest.TestCase):
+    def test_rejects_source_unsupported_repetition_added_to_take_idiom(self):
+        cases = (
+            ("Şuna iyi bak.", "Şuna iyi bak, tekrar.", "Take a good look at this one."),
+            ("Sakin ol.", "Sakin ol, tekrar.", "Take it easy."),
+            ("Bunu üstüne alınma.", "Bunu tekrar üstüne alınma.", "Don't take it personally."),
+        )
+        for old, candidate, source in cases:
+            with self.subTest(source=source):
+                ok, reason = ht.validate_polish_candidate(
+                    old, candidate, source_text=source)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "source_repetition_addition")
+
+    def test_allows_source_backed_repetition_marker(self):
+        for source in ("Look again.", "Take another look."):
+            with self.subTest(source=source):
+                ok, reason = ht.validate_polish_candidate(
+                    "Bir bak.", "Tekrar bak.", source_text=source)
+                self.assertTrue(ok, reason)
+
     def test_rejects_turkish_diacritic_regression_inside_larger_rewrite(self):
         ok, reason = ht.validate_polish_candidate(
             "Yeniden çarmıha dönmem gerekecek.",

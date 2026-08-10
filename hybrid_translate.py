@@ -6393,7 +6393,7 @@ _GLOSSARY_VERBOSE_WORD_THRESHOLD = 10
 _GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS = frozenset({
     "be", "can", "could", "do", "had", "has", "have", "is", "may",
     "might", "must", "shall", "should", "superior", "was", "were", "will",
-    "work", "works", "would",
+    "take", "work", "works", "would",
 })
 _ROMAN_NUMERAL_RE = re.compile(
     r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
@@ -10340,6 +10340,27 @@ _CRITICAL_FACT_GROUPS = (
     frozenset(("sol", "sağ", "yukarı", "aşağı", "içeri", "dışarı", "ileri", "geri")),
 )
 
+_TURKISH_REPETITION_MARKER_RE = re.compile(
+    r"\b(?:tekrar|yeniden|yine|gene)\b|\bbir\s+daha\b", re.IGNORECASE)
+_SOURCE_REPETITION_LICENSE_RE = re.compile(
+    r"\b(?:again|another|anew|back|once\s+more|repeat(?:ed|ing|s)?|"
+    r"redo(?:ne|ing|es)?|reopen(?:ed|ing|s)?|restart(?:ed|ing|s)?|"
+    r"resume(?:d|s)?|retry|retried|retrying|rewrite|rewrote|rewritten)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_unsupported_repetition_addition(
+        source_text: str, original_text: str, candidate_text: str) -> bool:
+    """Reject a new Turkish repetition claim which the source does not license."""
+    if not source_text:
+        return False
+    if _TURKISH_REPETITION_MARKER_RE.search(original_text or ""):
+        return False
+    if not _TURKISH_REPETITION_MARKER_RE.search(candidate_text or ""):
+        return False
+    return not bool(_SOURCE_REPETITION_LICENSE_RE.search(source_text))
+
 
 def _has_critical_fact_swap(old: str, new: str, source_text: str = "") -> bool:
     """Reject exact referent/fact substitutions which a surface pass never needs.
@@ -10459,6 +10480,8 @@ def validate_polish_candidate(
         return False, "source_polarity"
     if src and _has_unanchored_negation_addition(src, old, new):
         return False, "source_negation_addition"
+    if src and _has_unsupported_repetition_addition(src, old, new):
+        return False, "source_repetition_addition"
     if src and _question_mark_mismatch(src, new):
         return False, "source_question"
     if src and _has_question_main_content_drift(src, old, new):

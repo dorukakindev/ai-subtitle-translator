@@ -79,6 +79,50 @@ class GlossMissReasonTest(unittest.TestCase):
             "AGITATORS", "We send our agitators there."))
         self.assertTrue(ht._locked_source_term_present("AGITATORS", "AGITATORS"))
 
+    def test_auto_glossary_drops_polysemous_take_but_keeps_phrase_lock(self):
+        logs = []
+        gloss = ht.sanitize_glossary_for_turkish(
+            {"take": "tekrar", "Take one": "Birinci çekim", "King": "Kral"},
+            target_language="tr",
+            log_fn=lambda message, *_: logs.append(message),
+        )
+        self.assertNotIn("take", gloss)
+        self.assertEqual(gloss["Take one"], "Birinci çekim")
+        self.assertEqual(gloss["King"], "Kral")
+        self.assertTrue(any("take->tekrar" in message for message in logs))
+
+    def test_polysemous_take_does_not_force_tekrar_in_critic_validator(self):
+        gloss = ht.sanitize_glossary_for_turkish(
+            {"take": "tekrar"}, target_language="tr")
+        cases = (
+            ("Take a good look at this one.", "Şuna iyi bak."),
+            ("I can't take it out. It's fake, it's a prop.", "Sahte, dekor."),
+            ("Let De Filippis take care of that.", "Onu De Filippis düşünsün."),
+            ("Where did I take the photos?", "Fotoğrafları nerede çektim?"),
+            ("Take off your glasses.", "Gözlüklerini çıkar."),
+            ("Don't take it personally.", "Bunu üstüne alınma."),
+            ("I'll take care of horses.", "Atlarla ben ilgilenirim."),
+            ("They'll take you to the station.", "Seni istasyona götürecekler."),
+            ("They don't take you seriously.", "Seni ciddiye almıyorlar."),
+            ("Take it easy.", "Sakin ol."),
+            ("Take the first train home.", "İlk trenle eve git."),
+        )
+        for idx, (source, translation) in enumerate(cases, 1):
+            with self.subTest(source=source):
+                cues = [self._cue(idx, source)]
+                translated = [(idx, "00:00:01,000 --> 00:00:02,000", translation)]
+                hits = ht.run_validators(translated, cues, gloss)
+                self.assertFalse(any("GLOSS_MISS:take=>tekrar" in hit[3] for hit in hits))
+
+    def test_specific_take_phrase_remains_enforceable(self):
+        gloss = ht.sanitize_glossary_for_turkish(
+            {"Take one": "Birinci çekim"}, target_language="tr")
+        cues = [self._cue(1, "Take one.")]
+        translated = [(1, "00:00:01,000 --> 00:00:02,000", "Hazır.")]
+        hits = ht.run_validators(translated, cues, gloss)
+        self.assertTrue(any(
+            "GLOSS_MISS:Take one=>Birinci çekim" in hit[3] for hit in hits))
+
 
 class SchemaGlossaryInjectionTest(unittest.TestCase):
     """Şema gömülü sözlüğü (Warhammer) build_requests'e enjekte oluyor mu +
