@@ -452,6 +452,13 @@ class GlossaryVerboseMetaCommentaryGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"Danube": "Tuna"})
 
+    def test_verified_bad_confessor_mapping_is_not_locked(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "confessor": "günah çıkardığı rahip",
+            "Virgin": "Bakire",
+        })
+        self.assertEqual(cleaned, {"Virgin": "Bakire"})
+
     def test_single_wqx_leak_does_not_drop_clean_sibling(self):
         cleaned = ht.sanitize_glossary_for_turkish({
             "maggot": self.MAGGOT_NOTE,

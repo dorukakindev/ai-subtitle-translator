@@ -53,6 +53,35 @@ class UpstreamProviderRecoveryTest(unittest.TestCase):
         self.assertEqual(json.loads(raw_map["chunk_1"])[0]["t"], "Merhaba.")
         self.assertTrue(any("küçük isteklerle kurtarmaya" in msg for msg, _ in logs))
 
+    def test_deterministic_strict_failure_retries_whole_chunk_only_once(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._json_repair_pass = lambda *_args, **_kwargs: None
+        app._log = lambda *_args, **_kwargs: None
+        app._update_tokens = lambda *_args, **_kwargs: None
+        app._resend_missing_blocks = lambda *_args, **_kwargs: self.fail(
+            "strict ID failure must not enter partial merge")
+        req = self._req([
+            {"i": 1, "t": "John arrived."},
+            {"i": 2, "t": "Mary left."},
+        ])
+        bad = json.dumps([
+            {"i": 1, "t": "Mary ayrildi."},
+            {"i": 2, "t": "John geldi."},
+        ], ensure_ascii=False)
+        raw_map = {"chunk_1": bad}
+        response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=bad))],
+        )
+
+        with patch.object(gui, "_safe_chat_create", return_value=response) as retry:
+            app._retry_hata(object(), raw_map, [req], max_rounds=3)
+
+        self.assertEqual(retry.call_count, 1)
+        self.assertTrue(all(
+            item["t"] == "[HATA]" for item in json.loads(raw_map["chunk_1"])))
+
     def test_all_missing_chunk_is_recovered_in_small_groups(self):
         items = [{"i": i, "t": f"Source {i}"} for i in range(1, 6)]
         req = self._req(items)

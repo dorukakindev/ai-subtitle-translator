@@ -2878,6 +2878,10 @@ def _is_delivery_sdh_only(text: str) -> bool:
 
 def _source_cue_is_delivery_removable(text: str) -> bool:
     value = str(text or "")
+    if re.fullmatch(
+            r"\s*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|"
+            r"ninth|tenth)\s*:\s*", value, re.IGNORECASE):
+        return False
     if (_is_delivery_sdh_only(value)
             or _src_is_sdh_only(value)
             or _delivery_source_is_all_credit(value)
@@ -16691,6 +16695,9 @@ class App(ctk.CTk):
                 body["temperature"] = min(float(body.get("temperature") or 0.2), 0.2)
             return body
 
+        strict_retried = set()
+        strict_reasons = {"adjacent_duplicate", "id_integrity", "empty_dialogue",
+                          "cue_content_owner_mismatch"}
         for round_idx in range(max_rounds):
             if self._stop_flag:
                 break
@@ -16701,6 +16708,8 @@ class App(ctk.CTk):
             to_retry = [
                 cid for cid in pending
                 if cid not in upstream_failed and cid not in partial_only_cids
+                and not (retry_reasons.get(cid) in strict_reasons
+                         and cid in strict_retried)
             ]
             if not to_retry:
                 break
@@ -16721,6 +16730,8 @@ class App(ctk.CTk):
                 req = req_by_id.get(cid)
                 if not req:
                     continue
+                if retry_reasons.get(cid) in strict_reasons:
+                    strict_retried.add(cid)
                 for attempt in range(3):  # up to 3 attempts per round for transient errors
                     try:
                         resp = _safe_chat_create(

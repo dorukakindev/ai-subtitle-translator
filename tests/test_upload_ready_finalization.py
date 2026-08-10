@@ -668,6 +668,15 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_ordinal_list_heading_is_not_removed_as_speaker_label(self):
+        self.assertFalse(gui._source_cue_is_delivery_removable("Second:"))
+        result = gui._prepare_upload_ready_blocks(
+            [("604", "00:10:00,000 --> 00:10:01,000", "Ikincisi:")],
+            "Turkish",
+            source_cues=[("604", "00:10:00,000 --> 00:10:01,000", "Second:")],
+        )
+        self.assertIn("Ikincisi:", [text for _idx, _ts, text in result])
+
     def test_speaks_native_language_is_expected_sdh_removal(self):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             "[ Speaks native language ]"))

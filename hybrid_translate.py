@@ -6399,6 +6399,7 @@ _ROMAN_NUMERAL_RE = re.compile(
     r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
 )
 _GLOSSARY_KNOWN_BAD_PAIRS = {
+    ("confessor", "günah çıkardığı rahip"),
     ("pontoon", "sallay"),
 }
 
