@@ -3152,9 +3152,9 @@ def _resolve_postprocess_source(filepath) -> Path | None:
     output_key = os.path.normcase(str(output))
     report_files = []
     for parent in (output.parent, *output.parents):
-        report_dir = parent / "Raporlar"
-        if report_dir.is_dir():
-            report_files.extend(report_dir.glob("ceviri_raporu*.json"))
+        for report_dir in (parent / "Raporlar", parent / "ÇIKTI" / "Raporlar"):
+            if report_dir.is_dir():
+                report_files.extend(report_dir.glob("ceviri_raporu*.json"))
     for report_path in sorted(
             set(report_files), key=lambda path: path.stat().st_mtime, reverse=True):
         try:
@@ -3380,6 +3380,23 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "severity": "error", "code": "no_cues",
                 "path": str(path), "message": "Geçerli altyazı cue'su bulunamadı.",
             })
+        else:
+            for cue_id, timestamp, _text in cues:
+                try:
+                    start_ms, end_ms = _srt_timestamp_bounds(timestamp)
+                except (TypeError, ValueError):
+                    issues.append({
+                        "severity": "error", "code": "invalid_timestamp",
+                        "path": str(path),
+                        "message": f"Cue {cue_id}: geçersiz zaman damgası ({timestamp}).",
+                    })
+                    continue
+                if end_ms <= start_ms:
+                    issues.append({
+                        "severity": "error", "code": "reversed_timestamp",
+                        "path": str(path),
+                        "message": f"Cue {cue_id}: bitiş zamanı başlangıçtan sonra değil.",
+                    })
         output = _resolve_output_path(
             input_dir, output_dir, str(path),
             same_folder=same_folder, selected_roots=selected_roots)
@@ -3959,7 +3976,7 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
             scene_plan = ht._scene_context_for_chunk(scene_emotions, chunk[0][0], chunk[-1][0])
             if scene_plan:
                 payload["scene"] = scene_plan
-            chunk_ids = {idx for idx, _ts, _text in chunk}
+            chunk_ids = {str(idx) for idx, _ts, _text in chunk}
             chunk_groups = [
                 group for group in fragment_groups
                 if any(group_item in chunk_ids for group_item in group["items"])
@@ -8827,6 +8844,8 @@ def _quarantine_incomplete_final(out_path) -> Path | None:
     path = Path(out_path)
     if not path.is_file():
         return None
+    if path.parent.name == "Kurtarma" and path.parent.parent.name == "Raporlar":
+        return path
     archive_dir = path.parent / "Raporlar" / "Kurtarma"
     archive_dir.mkdir(parents=True, exist_ok=True)
     target = archive_dir / f"{path.stem}.incomplete.bak"
@@ -10335,14 +10354,45 @@ def _sync_stage_store_mutation_safe(path: Path) -> bool:
             and isinstance(data.get("entries"), dict))
 
 
+def _sync_stage_request_hash(requests) -> str:
+    normalized = []
+    for request in (requests or ()):
+        if not isinstance(request, dict):
+            continue
+        body = copy.deepcopy(request.get("body", {}))
+        if isinstance(body, dict):
+            for message in body.get("messages") or []:
+                if not isinstance(message, dict) or message.get("role") != "user":
+                    continue
+                try:
+                    payload = json.loads(message.get("content", ""))
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(payload, dict):
+                    payload.pop("prev_tr", None)
+                    message["content"] = json.dumps(
+                        payload, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"))
+        normalized.append({
+            "custom_id": str(request.get("custom_id", "")),
+            "body": body,
+        })
+    encoded = json.dumps(
+        normalized, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8", "replace")).hexdigest()
+
+
 def matching_sync_stage_run_id(path: Path, source_path: str,
-                               source_hash: str, fingerprint: str) -> str:
+                               source_hash: str, fingerprint: str,
+                               request_hash: str = "") -> str:
     entry = load_sync_stage_store(path).get("entries", {}).get(
         _sync_stage_key(source_path))
     if not isinstance(entry, dict):
         return ""
     if (entry.get("source_hash") != str(source_hash)
             or entry.get("fingerprint") != str(fingerprint)
+            or (request_hash and entry.get("request_hash") != str(request_hash))
             or not isinstance(entry.get("raw_map"), dict)
             or not entry.get("raw_map")):
         return ""
@@ -10357,6 +10407,7 @@ def _sync_stage_key(source_path: str) -> str:
 def save_sync_stage_entry_to_store(path: Path, source_path: str,
                                    source_hash: str, fingerprint: str,
                                    run_id: str, raw_map: dict,
+                                   request_hash: str = "",
                                    log_fn=None) -> bool:
     try:
         with _interprocess_lock(path):
@@ -10369,6 +10420,7 @@ def save_sync_stage_entry_to_store(path: Path, source_path: str,
                 "source_path": os.path.abspath(str(source_path)),
                 "source_hash": str(source_hash),
                 "fingerprint": str(fingerprint),
+                "request_hash": str(request_hash),
                 "run_id": str(run_id),
                 "raw_map": {str(k): str(v) for k, v in raw_map.items()},
                 "updated_at": time.time(),
@@ -13636,18 +13688,10 @@ class App(ctk.CTk):
                 record["reports"].append(report.group(1).strip())
 
     def _record_quality_report(self, rows: list, report_paths: list):
-        fix_keys = ("cons", "rev", "pass_fix", "qc_auto", "qc")
-        trace_only_passes = {
-            "Repair", "Condense", "SDH", "Line-break", "Final-SDH",
-            "Term-Normalize", "Final-Semantic", "Season-Canon",
-        }
+        fix_keys = ("cons", "rev", "pass_fix")
         fixes = 0
         for row in rows or []:
             fixes += sum(int(row.get(key, 0) or 0) for key in fix_keys)
-            fixes += sum(
-                int(count or 0)
-                for name, count in (row.get("pass_trace") or {}).items()
-                if name in trace_only_passes)
         rows_by_name = {
             str(row.get("name", "")): row
             for row in (rows or []) if row.get("name")
@@ -15238,6 +15282,7 @@ class App(ctk.CTk):
         for (_memory_root, slug, season, source_key), items in groups.items():
             report_lines.append(f"## {slug} S{season:02d}")
             for episode, source_path, output_path in items:
+                failure_output_path = ""
                 try:
                     expected_source_hash = _file_content_sha256(source_path)
                     output_baseline = _file_state_signature(output_path)
@@ -15339,12 +15384,15 @@ class App(ctk.CTk):
                         source_path, output_path, tgt, source_language)
                     if _delivery_audit_has_hard_error(delivery_audit):
                         quarantined = _quarantine_incomplete_final(output_path)
+                        failure_output_path = str(quarantined or output_path)
                         raise RuntimeError(
                             "sezon denetimi yazımı sonrası teslim denetimi "
                             f"başarısız ({quarantined or output_path})")
                     report_dir.mkdir(parents=True, exist_ok=True)
                     if not _write_output_source_fingerprint(
                             report_dir, output_path, expected_source_hash):
+                        quarantined = _quarantine_incomplete_final(output_path)
+                        failure_output_path = str(quarantined or output_path)
                         raise RuntimeError(
                             "sezon denetimi kaynak-çıktı parmak izi yazılamadı")
                     season_report_updates[str(source_path)] = {
@@ -15372,6 +15420,13 @@ class App(ctk.CTk):
                     raise
                 except Exception as exc:
                     total_errors += 1
+                    season_report_updates[str(source_path)] = {
+                        "output_path": failure_output_path or str(output_path),
+                        "run_status": "error",
+                        "season_canon_status": {
+                            "status": "failed", "error": str(exc),
+                        },
+                    }
                     report_lines.append(f"- E{episode:02d}: hata — {exc}")
                     recorder = getattr(self, "_record_file_status", None)
                     if callable(recorder):
@@ -20924,7 +20979,12 @@ class App(ctk.CTk):
         job["ext_project_path"] = self.ext_project_path_var.get().strip()
         job["merge_max_chars"] = self._merge_max_chars
         job["merge_max_gap_ms"] = self._merge_max_gap_ms
+        self._active_snapshot = _refresh_start_snapshot(
+            getattr(self, "_active_snapshot", None), job)
         self._set_running(True)
+        begin_run = getattr(self, "_begin_run_record", None)
+        if callable(begin_run):
+            begin_run(list(paths))
         self._set_phase("Post-işlem", f"{len(paths)} dosya seçildi")
         App._start_worker(self,
             self._run_post_process, (list(paths), selected_passes, job))
@@ -20945,6 +21005,27 @@ class App(ctk.CTk):
             self._set_eta("")
             return
         n        = len(paths)
+        report_rows = []
+        completed_files = []
+        failed_files = []
+        skipped_files = []
+
+        def _postprocess_report_row(filepath, output_path="", total=0,
+                                    *, error=False, audit_skip=False,
+                                    delivery_source_path=""):
+            return {
+                "name": Path(filepath).name,
+                "source_path": str(filepath),
+                "output_path": str(output_path),
+                "delivery_source_path": str(delivery_source_path),
+                "total": int(total or 0), "hata": int(bool(error)),
+                "cps": 0, "cps_avg": 0.0, "cps_max": 0.0,
+                "cons": 0, "pass_fix": 0, "qc_auto": 0, "qc": 0,
+                "warn": 0, "pass_trace": {}, "pass_status": {},
+                "pass_history": {}, "pass_coverage": "manuel post-işlem",
+                "run_status": "error" if error else "done",
+                "delivery_audit_skip": bool(audit_skip),
+            }
 
         do_critic   = "critic"        in selected_passes
         do_polish   = "polish"        in selected_passes
@@ -20966,6 +21047,7 @@ class App(ctk.CTk):
             if self._stop_flag:
                 break
             if self._is_queued_file_removed(fp):
+                skipped_files.append(fp)
                 continue
             fname = Path(fp).name
             self._log(f"\n── Post-işlem [{i+1}/{n}] {fname} ──", "info")
@@ -20981,11 +21063,15 @@ class App(ctk.CTk):
                         f"{fname}: geri alınabilir yedek oluşturulamadı; "
                         f"orijinal dosyaya dokunulmadı ({backup_error})", "err")
                     self._update_file_progress(fp, "Yedek hatası", 0, "error")
+                    report_rows.append(_postprocess_report_row(
+                        fp, error=True, audit_skip=True))
+                    failed_files.append(fp)
                     continue
                 blocks = list(parse_subtitle(fp))
                 if not blocks:
                     self._log(f"{fname}: geçerli blok yok, atlandı", "warn")
                     self._update_file_progress(fp, "Atlandı", 0, "skip")
+                    skipped_files.append(fp)
                     continue
                 postprocess_failed = False
 
@@ -21204,6 +21290,10 @@ class App(ctk.CTk):
                         "tamamlanamadı; orijinal dosya değiştirilmedi.", "err")
                     self._update_file_progress(
                         fp, "Post-işlem tamamlanamadı", 100, "error")
+                    report_rows.append(_postprocess_report_row(
+                        fp, fp, len(blocks), error=True, audit_skip=True,
+                        delivery_source_path=str(source_path or backup_path)))
+                    failed_files.append(fp)
                     continue
 
                 if orig_cues:
@@ -21225,22 +21315,42 @@ class App(ctk.CTk):
                         "err")
                     self._update_file_progress(
                         fp, "Teslim denetimi başarısız", 100, "error")
+                    report_rows.append(_postprocess_report_row(
+                        fp, quarantined or fp, len(_delivery_blocks), error=True,
+                        delivery_source_path=audit_source))
+                    failed_files.append(fp)
                     continue
                 self._log(f"Kaydedildi: {fp}  ({len(blocks)} satır)", "ok")
                 self._update_file_progress(fp,
                     f"Tamamlandı  {len(blocks)} satır", 100, "done")
+                report_rows.append(_postprocess_report_row(
+                    fp, fp, len(_delivery_blocks),
+                    delivery_source_path=audit_source))
+                completed_files.append(fp)
 
             except Exception as e:
                 self._log_exc(f"[{fname}] post-işlem hatası", e)
                 self._update_file_progress(fp, "Hata", 0, "error")
+                report_rows.append(_postprocess_report_row(
+                    fp, fp, error=True, audit_skip=True))
+                failed_files.append(fp)
 
+        self._save_quality_report(report_rows, self.output_var.get())
+        completed_files, failed_files = _reconcile_delivery_outcomes(
+            report_rows, completed_files, failed_files)
+        outcome = summarize_file_outcomes(
+            completed_files, failed_files, skipped_files,
+            total_files=n, stop_flag=self._stop_flag)
         self._set_running(False)
         self._set_eta("")
-        if not self._stop_flag:
-            self._set_phase("Tamamlandı", f"{n} dosya post-işlendi")
+        if outcome["is_full_success"]:
+            self._set_phase("Tamamlandı", outcome["summary_text"])
             self._set_progress(100)
+        elif self._stop_flag:
+            self._set_phase("Hazır", outcome["summary_text"])
         else:
-            self._set_phase("Hazır", "Durduruldu.")
+            self._set_phase("Kısmen tamamlandı" if outcome["is_partial_success"] else "Hata",
+                            outcome["summary_text"])
 
     def _run_quality_check_inline(self, fp, orig_cues, blocks, mm_key, mm_url,
                                    mm_model, tgt, analysis_result=None,
@@ -21832,12 +21942,21 @@ class App(ctk.CTk):
             for source_row in rows:
                 row = dict(source_row)
                 source_path = str(row.get("source_path") or "")
-                row["delivery_audit"] = _subtitle_delivery_audit(
-                    row.get("source_path", ""), row.get("output_path", ""),
-                    self.tgt_var.get(), self._effective_file_source_language(
-                        source_path, self.src_var.get()))
-                if (_delivery_audit_has_hard_error(row["delivery_audit"])
-                        or row.get("delivery_scan_failed")):
+                if row.get("delivery_audit_skip"):
+                    row["delivery_audit"] = {
+                        "status": "unavailable",
+                        "reason": "postprocess_not_written",
+                    }
+                else:
+                    delivery_source_path = str(
+                        row.get("delivery_source_path") or source_path)
+                    row["delivery_audit"] = _subtitle_delivery_audit(
+                        delivery_source_path, row.get("output_path", ""),
+                        self.tgt_var.get(), self._effective_file_source_language(
+                            delivery_source_path, self.src_var.get()))
+                if (not row.get("delivery_audit_skip") and (
+                        _delivery_audit_has_hard_error(row["delivery_audit"])
+                        or row.get("delivery_scan_failed"))):
                     quarantined = _quarantine_incomplete_final(row.get("output_path", ""))
                     row["run_status"] = "error"
                     row["delivery_quarantined_path"] = str(quarantined or "")
@@ -23207,18 +23326,20 @@ class App(ctk.CTk):
         return namespace
 
     def _save_sync_stage_ckpt(self, filepath: str, source_hash: str,
-                              raw_map: dict) -> bool:
+                              raw_map: dict, requests=None) -> bool:
         snapshot = getattr(self, "_active_snapshot", None) or {}
         run_id = str(snapshot.get("resume_origin_run_id") or "")
         if not run_id:
             return False
         return save_sync_stage_entry_to_store(
             self._sync_stage_ckpt_path(), filepath, source_hash,
-            self._ckpt_fingerprint(), run_id, raw_map, log_fn=self._log)
+            self._ckpt_fingerprint(), run_id, raw_map,
+            request_hash=_sync_stage_request_hash(requests), log_fn=self._log)
 
     def _load_sync_stage_ckpt(self, filepath: str, source_hash: str,
                               expected_ids: set,
-                              allow_incomplete_resume: bool = False) -> dict:
+                              allow_incomplete_resume: bool = False,
+                              requests=None) -> dict:
         snapshot = getattr(self, "_active_snapshot", None)
         crash_resume = bool(
             isinstance(snapshot, dict) and snapshot.get("crash_resume"))
@@ -23233,6 +23354,8 @@ class App(ctk.CTk):
             return {}
         if (entry.get("source_hash") != str(source_hash)
                 or entry.get("fingerprint") != self._ckpt_fingerprint()
+                or (requests is not None and entry.get("request_hash")
+                    != _sync_stage_request_hash(requests))
                 or (crash_resume and entry.get("run_id") != run_id)):
             return {}
         raw_map = entry.get("raw_map")
@@ -24278,7 +24401,8 @@ class App(ctk.CTk):
             raw_map = self._load_sync_stage_ckpt(
                 filepath, _expected_source_hash,
                 {req["custom_id"] for req in batch_reqs},
-                allow_incomplete_resume=_allow_partial_resume)
+                allow_incomplete_resume=_allow_partial_resume,
+                requests=batch_reqs)
             _partial_repair_only = False
             if _allow_partial_resume:
                 _partial_path = _partial_candidate
@@ -24454,7 +24578,7 @@ class App(ctk.CTk):
             _stage_saved = False
             if _sync_stage_is_complete(raw_map, batch_reqs):
                 _stage_saved = self._save_sync_stage_ckpt(
-                    filepath, _expected_source_hash, raw_map)
+                    filepath, _expected_source_hash, raw_map, batch_reqs)
             if self._stop_flag:
                 break
 
@@ -24472,7 +24596,7 @@ class App(ctk.CTk):
                     used_ckpt_keys.add(f"{cid}:{src_h}")
             if not _stage_saved and _sync_stage_is_complete(raw_map, batch_reqs):
                 self._save_sync_stage_ckpt(
-                    filepath, _expected_source_hash, raw_map)
+                    filepath, _expected_source_hash, raw_map, batch_reqs)
             srt_blocks = {}
             for cid, info in fmap.items():
                 raw = raw_map.get(cid)
