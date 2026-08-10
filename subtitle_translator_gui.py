@@ -3147,6 +3147,33 @@ def _create_postprocess_backup(filepath) -> Path:
     return candidate
 
 
+def _postprocess_write_guard_reason(filepath, backup_path) -> str:
+    """Manuel geçiş sürerken kullanıcı çıktıyı değiştirdiyse eski belleği yazma."""
+    current_hash = _file_content_sha256(filepath)
+    backup_hash = _file_content_sha256(backup_path)
+    if not current_hash or not backup_hash or current_hash != backup_hash:
+        return "output_changed"
+    return ""
+
+
+def _postprocess_source_drifted(filepath, source_path) -> bool:
+    """Bilinen kaynak-çıktı parmak izi artık eşleşmiyorsa manuel geçişi durdur."""
+    source = Path(source_path)
+    if not source.is_file():
+        return False
+    output = Path(filepath)
+    report_dirs = set()
+    for parent in (output.parent, *output.parents):
+        report_dirs.add(parent / "Raporlar")
+        report_dirs.add(parent / "ÇIKTI" / "Raporlar")
+    for report_dir in report_dirs:
+        sidecar = _output_source_fingerprint_path(report_dir, output)
+        if sidecar.is_file() and not _output_matches_source_fingerprint(
+                report_dir, output, source):
+            return True
+    return False
+
+
 def _resolve_postprocess_source(filepath) -> Path | None:
     output = Path(filepath).resolve()
     output_key = os.path.normcase(str(output))
@@ -8769,10 +8796,21 @@ def _partial_output_candidates(out_path) -> tuple[Path, ...]:
     return (current, legacy) if current != legacy else (current,)
 
 
-def _move_stage_to_partial(stage_path, out_path) -> Path:
+def _move_stage_to_partial(stage_path, out_path, report_dir=None,
+                           source_hash: str = "") -> Path:
     partial = _partial_output_path(out_path)
     partial.parent.mkdir(parents=True, exist_ok=True)
+    if partial.is_file():
+        archive = partial.with_name(f"{partial.stem}.superseded.bak{partial.suffix}")
+        serial = 2
+        while archive.exists():
+            archive = partial.with_name(
+                f"{partial.stem}.superseded.{serial}.bak{partial.suffix}")
+            serial += 1
+        atomic_write_bytes(archive, partial.read_bytes())
     Path(stage_path).replace(partial)
+    if report_dir is not None and source_hash:
+        _write_output_source_fingerprint(report_dir, partial, source_hash)
     return partial
 
 
@@ -21107,6 +21145,16 @@ class App(ctk.CTk):
                     ht.load_subtitle(str(source_path), source_language)
                     if source_path else None)
                 analysis_result = None
+                if source_path and _postprocess_source_drifted(fp, source_path):
+                    self._log(
+                        f"{fname}: kaynak dosya son teslimden sonra değişti; "
+                        "manuel post-işlem eski çeviriyi yazmayacak.", "err")
+                    self._update_file_progress(fp, "Kaynak değişti", 100, "error")
+                    report_rows.append(_postprocess_report_row(
+                        fp, error=True, audit_skip=True,
+                        delivery_source_path=str(source_path)))
+                    failed_files.append(fp)
+                    continue
                 if do_critic or do_polish or do_native or do_qc:
                     if orig_cues:
                         self._log(
@@ -21324,6 +21372,33 @@ class App(ctk.CTk):
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     blocks, tgt, self._log, source_cues=orig_cues)
+                if self._stop_flag:
+                    self._log(
+                        f"{fname}: durdurma istendi; post-işlem sonucu yazılmadı.",
+                        "warn")
+                    skipped_files.append(fp)
+                    break
+                ownership_guard = _postprocess_write_guard_reason(fp, backup_path)
+                if ownership_guard:
+                    self._log(
+                        f"{fname}: post-işlem sürerken hedef dosya değişti; "
+                        "kullanıcının daha yeni çıktısı korunuyor.", "err")
+                    self._update_file_progress(fp, "Hedef değişti", 100, "error")
+                    report_rows.append(_postprocess_report_row(
+                        fp, error=True, audit_skip=True,
+                        delivery_source_path=str(source_path or backup_path)))
+                    failed_files.append(fp)
+                    continue
+                if source_path and _postprocess_source_drifted(fp, source_path):
+                    self._log(
+                        f"{fname}: kalite geçişleri sırasında kaynak değişti; "
+                        "eski çeviri yazılmadı.", "err")
+                    self._update_file_progress(fp, "Kaynak değişti", 100, "error")
+                    report_rows.append(_postprocess_report_row(
+                        fp, error=True, audit_skip=True,
+                        delivery_source_path=str(source_path)))
+                    failed_files.append(fp)
+                    continue
                 write_srt(fp, _delivery_blocks, tgt)
                 audit_source = str(source_path or backup_path)
                 delivery_audit = _subtitle_delivery_audit(
@@ -26216,7 +26291,8 @@ class App(ctk.CTk):
                                 self._log("Resume: kaynak dosya bulunamadı — etiket geri yükleme / "
                                           "[HATA] işaretleme ve TM/QC bu dosyada atlanacak", "warn")
                                 _partial_path = _move_stage_to_partial(
-                                    _stage_path, _out_obj)
+                                    _stage_path, _out_obj, report_dir,
+                                    expected_source_hash)
                                 self._log(
                                     "Resume: gerçek kaynak olmadan kalite ve teslim "
                                     f"doğrulanamaz; sonuç {_partial_path.name} olarak "
@@ -26280,7 +26356,8 @@ class App(ctk.CTk):
                             if _missing_count:
                                 write_srt(_stage_path, pp, tgt)
                                 _partial_path = _move_stage_to_partial(
-                                    _stage_path, _out_obj)
+                                    _stage_path, _out_obj, report_dir,
+                                    expected_source_hash)
                                 self._log(
                                     f"Resume: {_missing_count} eksik çeviri kaldı; "
                                     f"nihai çıktı korunup {_partial_path.name} yazıldı.",
