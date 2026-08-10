@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from request_cancellation import RequestCancelled
+
 
 DEFAULT_HELPER_REQUEST_TIMEOUT_SECONDS = 300
 
@@ -502,7 +504,10 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
         cancel_context.register(client)
         registered_client = True
     try:
+        _raise_if_cancelled(cancel_context)
         response = client.converse(**converse_args)
+    except RequestCancelled:
+        raise
     except Exception as e:
         raise _provider_adapter_error(
             "AWS Bedrock", e, api_key_str=api_key_str) from e
@@ -656,7 +661,7 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
             body = "(okunamadı)"
         raise _provider_adapter_error(
             "Anthropic API", e, api_key_str=api_key_str, body=body) from e
-    except ProviderAdapterError:
+    except (ProviderAdapterError, RequestCancelled):
         raise
     except Exception as e:
         raise _provider_adapter_error(

@@ -155,6 +155,27 @@ class BedrockAdapterUsageGuardTest(unittest.TestCase):
         self.assertIsInstance(errors[0], RuntimeError)
         self.assertIn("closed", str(errors[0]))
 
+    def test_bedrock_cancel_between_registration_and_request_never_calls_provider(self):
+        from request_cancellation import RunRequestCanceller, RequestCancelled
+
+        class CancelOnRegister(RunRequestCanceller):
+            def register(self, live_client):
+                super().register(live_client)
+                self.cancel()
+
+        boto3 = MagicMock()
+        client = MagicMock()
+        boto3.Session.return_value.client.return_value = client
+
+        with patch.dict("sys.modules", {"boto3": boto3}), \
+             self.assertRaises(RequestCancelled):
+            helpers.call_bedrock_converse(
+                "model", [{"role": "user", "content": "x"}],
+                cancel_context=CancelOnRegister())
+
+        client.close.assert_called_once_with()
+        client.converse.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

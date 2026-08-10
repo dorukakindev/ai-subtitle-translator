@@ -9285,9 +9285,12 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
 
     chain_on = bool(row.get("chain_ctx", snapshot.get("chain_ctx")))
     chunk_count = int(row.get("translation_chunks", 0) or 0)
-    chain_detail = f", {chunk_count} chunk" if chunk_count else ""
-    lines.append(
-        f"Zincirleme Bağlam: {'çalıştı' if chain_on else 'kapalı'}{chain_detail}")
+    if chain_on and chunk_count:
+        lines.append(f"Zincirleme Bağlam: çalıştı, {chunk_count} chunk")
+    elif chain_on:
+        lines.append("Zincirleme Bağlam: açık, çalışma kaydı yok")
+    else:
+        lines.append("Zincirleme Bağlam: kapalı")
 
     auto_enabled = bool(snapshot.get("auto_glossary"))
     auto_status = pass_status.get("Auto-Glossary")
@@ -9785,7 +9788,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         ("qc",       "QC düzeltmesi"),
         ("warn",     "Kalite uyarısı (tarama)"),
     ]
-    price = MODEL_PRICE.get(model_name, 0.60)
+    price = MODEL_PRICE.get(model_name)
     lines = [
         "ÇEVİRİ KALİTE RAPORU",
         f"Çalışma kimliği: {run_id or '-'}",
@@ -9884,7 +9887,11 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         suffix = f"; {counts_txt}" if counts_txt else ""
         lines.append(f"Pass etkileşimleri: {total_overrides}{suffix} ({joined})")
     if actual_cost is None:
-        actual_cost = total_tokens / 1e6 * price
+        if price is None:
+            actual_cost = 0.0
+            unknown_cost_tokens = max(int(unknown_cost_tokens or 0), int(total_tokens or 0))
+        else:
+            actual_cost = total_tokens / 1e6 * price
     unknown_note = (f" + {unknown_cost_tokens:,} token maliyeti sağlayıcı panelinden doğrulanmalı"
                     if unknown_cost_tokens else "")
     lines.append(
@@ -13787,7 +13794,7 @@ class App(ctk.CTk):
                         "error", now=ended_epoch)
                     item["status"] = "running"
             states = [item.get("status", "pending") for item in record["files"].values()]
-            if self._stop_flag:
+            if getattr(self, "_stop_flag", False):
                 record["status"] = "durduruldu"
             elif states and all(state == "done" for state in states):
                 record["status"] = "tamamlandı"
@@ -16100,14 +16107,16 @@ class App(ctk.CTk):
             return App._token_callback_for_model(self, model)
 
     def _update_batch_tokens(self, added: int, cached: int = 0,
-                             prompt_tokens: int = 0,
-                             completion_tokens: int = 0):
+                              prompt_tokens: int = 0,
+                              completion_tokens: int = 0,
+                              file_path: str = ""):
         """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
         price = _model_token_price(self._main_model_name())
         self._update_tokens(
             added, price=None if price is None else price * 0.5, cached=cached,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-            model=self._main_model_name())
+            model=self._main_model_name(), pass_name="Ana Çeviri",
+            file_path=file_path)
 
     def _store_tm_pairs(self, blocks, src_clean_map, model, tgt, schema_name: str = "",
                         source_language: str = "", context_fingerprint: str = ""):
@@ -16156,6 +16165,8 @@ class App(ctk.CTk):
         """
         repaired = 0
         for req in requests_list:
+            if getattr(self, "_stop_flag", False):
+                break
             cid = req["custom_id"]
             raw = raw_map.get(cid)
             if raw is None:
@@ -16201,6 +16212,7 @@ class App(ctk.CTk):
             try:
                 resp = _safe_chat_create(
                     client,
+                    cancel_context=self.__dict__.get("_helper_request_canceller"),
                     _checkpoint_label="translation_json_repair",
                     model=req.get("body", {}).get("model") or self._main_model_name(),
                     messages=[
@@ -16242,6 +16254,8 @@ class App(ctk.CTk):
                     f"  🔧 {cid}: JSON onarımı birleştirildi "
                     f"({len(parsed_repair.translations)} yeni, "
                     f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
+            except RequestCancelled:
+                break
             except Exception as repair_error:
                 # Recovery remains non-fatal, but it must be diagnosable.
                 self._log(
@@ -16259,9 +16273,14 @@ class App(ctk.CTk):
         """
         import random
         import hybrid_translate as ht
+        if getattr(self, "_stop_flag", False):
+            return {req.get("custom_id", "") for req in requests_list}
         # Step 0: try cheap JSON repair before full re-translation
         self._json_repair_pass(client, raw_map, requests_list)
         req_by_id = {r["custom_id"]: r for r in requests_list}
+        if getattr(self, "_stop_flag", False):
+            return {cid for cid in req_by_id if _chunk_response_retry_reason(
+                raw_map.get(cid), req_by_id.get(cid))}
         partial_only_cids = set()
 
         # A valid but partial JSON array is the usual provider-truncation
@@ -16406,6 +16425,7 @@ class App(ctk.CTk):
                     try:
                         resp = _safe_chat_create(
                             client,
+                            cancel_context=self.__dict__.get("_helper_request_canceller"),
                             _checkpoint_label="main_translation_retry",
                             **_retry_body_for(req, retry_reasons.get(cid, "")),
                         )
@@ -16446,6 +16466,8 @@ class App(ctk.CTk):
                         if transient and attempt < 2:
                             wait = (2 ** attempt) + random.random()
                             time.sleep(wait)
+                            if getattr(self, "_stop_flag", False):
+                                break
                             continue
                         self._log(f"  ↺ {cid}: başarısız — {e}", "err")
                         break
@@ -16598,6 +16620,7 @@ class App(ctk.CTk):
             try:
                 resp = _safe_chat_create(
                     client,
+                    cancel_context=self.__dict__.get("_helper_request_canceller"),
                     _checkpoint_label="translation_subgroup_recovery",
                     **body,
                 )
@@ -16610,6 +16633,8 @@ class App(ctk.CTk):
                 for k, v in tmap.items():
                     if str(v).strip() and not str(v).strip().startswith("[HATA"):
                         recovered[k] = v
+            except RequestCancelled:
+                break
             except Exception as e:
                 self._log(f"  ↺ alt-grup hatası: {e}", "warn")
 
@@ -23833,6 +23858,7 @@ class App(ctk.CTk):
             body = {k: v for k, v in req["body"].items()}
             resp = _safe_chat_create(
                 client,
+                cancel_context=self.__dict__.get("_helper_request_canceller"),
                 _checkpoint_label="main_translation",
                 **body,
             )
@@ -26897,7 +26923,8 @@ class App(ctk.CTk):
                     if b.output_file_id:
                         self._log("Tamamlandı, indiriliyor...", "ok")
                         batch_raw_map = self._save_batch_results(
-                            client, b.output_file_id, expected_ids=set(file_map))
+                            client, b.output_file_id, expected_ids=set(file_map),
+                            file_map=file_map)
                     else:
                         self._log("Batch çıktısı boş (hiçbir istek başarılı olamadı).", "err")
                     if b.error_file_id:
@@ -26932,12 +26959,13 @@ class App(ctk.CTk):
 
         return batch_raw_map, terminal
 
-    def _save_batch_results(self, client, output_file_id, expected_ids=None):
+    def _save_batch_results(self, client, output_file_id, expected_ids=None,
+                            file_map=None):
         content   = client.files.content(output_file_id).text
         raw_map   = {}
         duplicate_ids = set()
         expected_ids = set(expected_ids or [])
-        token_sum = 0
+        usage_rows = []
         for line in content.strip().splitlines():
             line = line.strip()
             if not line:
@@ -26970,12 +26998,29 @@ class App(ctk.CTk):
                     self._log(f"{cid}: boş yanıt", "err")
                 else:
                     raw_map[cid] = raw
-                if body.get("usage"):
-                    token_sum += body["usage"].get("total_tokens", 0)
+                usage = body.get("usage")
+                if usage:
+                    total, cached = _get_usage_details(usage)
+                    if isinstance(usage, dict):
+                        prompt = usage.get("prompt_tokens", 0) or 0
+                        completion = usage.get("completion_tokens", 0) or 0
+                    else:
+                        prompt = getattr(usage, "prompt_tokens", 0) or 0
+                        completion = getattr(usage, "completion_tokens", 0) or 0
+                    usage_rows.append((cid, total, cached, prompt, completion))
             except Exception as e:
                 self._log(f"JSONL satırı atlanıyor (parse hatası): {e}", "warn")
                 continue
-        self._update_batch_tokens(token_sum)   # Batch API %50 indirimli
+        if file_map is None:
+            self._update_batch_tokens(
+                sum(int(total or 0) for _cid, total, _cached, _prompt, _completion in usage_rows))
+        else:
+            for cid, total, cached, prompt, completion in usage_rows:
+                chunk = (file_map or {}).get(cid) or []
+                file_path = str(chunk[0][2]) if chunk else ""
+                self._update_batch_tokens(
+                    total, cached=cached, prompt_tokens=prompt,
+                    completion_tokens=completion, file_path=file_path)
         return raw_map
 
     def _write_results(self, raw_map, file_map, output_dir, openai_key=None, src=None,

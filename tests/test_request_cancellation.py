@@ -1,3 +1,4 @@
+import json
 import threading
 import unittest
 from types import SimpleNamespace
@@ -353,6 +354,52 @@ class GuiCancellationWiringTest(unittest.TestCase):
 
         self.assertEqual(events, [("cancel", True)])
         app._drain_workers_for_close.assert_called_once_with()
+
+
+class SyncRetryCancellationTest(unittest.TestCase):
+    def test_stop_during_retry_backoff_never_starts_a_second_request(self):
+        class TransientError(RuntimeError):
+            status_code = 429
+
+        canceller = RunRequestCanceller()
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _helper_request_canceller=canceller,
+            _json_repair_pass=lambda *_args: None,
+            _log=lambda *_args, **_kwargs: None,
+            _update_tokens=lambda *_args, **_kwargs: None,
+            _block_automatic_recovery_for_permanent_provider=lambda: None,
+        )
+        req = {
+            "custom_id": "chunk-1",
+            "body": {
+                "model": "gpt-5.4-mini",
+                "messages": [
+                    {"role": "system", "content": "translate"},
+                    {"role": "user", "content": json.dumps({
+                        "tr": [{"i": 1, "t": "Source line"}],
+                    })},
+                ],
+            },
+        }
+        calls = []
+
+        def send(_client, **kwargs):
+            calls.append(kwargs)
+            raise TransientError("HTTP 429")
+
+        def stop_during_wait(_seconds):
+            app._stop_flag = True
+            canceller.cancel()
+
+        with patch.object(gui, "_safe_chat_create", side_effect=send), \
+             patch.object(gui.time, "sleep", side_effect=stop_during_wait):
+            unresolved = gui.App._retry_hata(
+                app, object(), {"chunk-1": "[HATA]"}, [req], max_rounds=1)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0]["cancel_context"], canceller)
+        self.assertEqual(unresolved, {"chunk-1"})
 
 
 if __name__ == "__main__":
