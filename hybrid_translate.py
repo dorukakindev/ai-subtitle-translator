@@ -469,7 +469,11 @@ def _make_smart_chunks(cues: list, chunk_size: int, frag_tags: dict = None,
 
 
 def _has_subtitle_localizer(path: Path) -> bool:
-    return (path / "subtitle_localizer").is_dir()
+    package = path / "subtitle_localizer"
+    return package.is_dir() and all(
+        (package / name).is_file()
+        for name in ("__init__.py", "models.py", "srt.py", "minimax_client.py")
+    )
 
 
 def resolve_subtitle_project_path(path: str = "") -> str:

@@ -86,6 +86,21 @@ def _normalized_usage(usage_data, input_key, output_key, total_key=None):
     return input_tokens, output_tokens, total_tokens, True
 
 
+def _extract_text_content(content) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
 @dataclass(frozen=True)
 class HelperModelConfig:
     label: str
@@ -469,7 +484,9 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
         role = msg.get("role")
         content = msg.get("content", "")
         if role in ("system", "developer"):
-            system_prompts.append({"text": content if isinstance(content, str) else str(content)})
+            text = _extract_text_content(content)
+            if text:
+                system_prompts.append({"text": text})
         elif role in ("user", "assistant"):
             bedrock_messages.append({
                 "role": role,
@@ -516,7 +533,10 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
             cancel_context.unregister(client)
 
     _raise_if_cancelled(cancel_context)
-    output_text = response["output"]["message"]["content"][0]["text"]
+    output_text = _extract_text_content(
+        ((response.get("output") or {}).get("message") or {}).get("content"))
+    if not output_text:
+        raise ProviderAdapterError("AWS Bedrock yanıtında metin içeriği yok.")
 
     input_tokens, output_tokens, total_tokens, usage_available = _normalized_usage(
         response.get("usage"), "inputTokens", "outputTokens", "totalTokens")
@@ -593,7 +613,7 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
     if system_prompt:
         data["system"] = system_prompt
     if temperature is not None:
-        data["temperature"] = float(temperature)
+        data["temperature"] = min(1.0, max(0.0, float(temperature)))
     if max_tokens is not None:
         data["max_tokens"] = int(max_tokens)
     else:
@@ -668,10 +688,7 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
             "Anthropic API", e, api_key_str=api_key_str) from e
 
     _raise_if_cancelled(cancel_context)
-    output_text = ""
-    for item in res.get("content", []):
-        if item.get("type") == "text":
-            output_text += item.get("text", "")
+    output_text = _extract_text_content(res.get("content", []))
 
     input_tokens, output_tokens, total_tokens, usage_available = _normalized_usage(
         res.get("usage"), "input_tokens", "output_tokens")
