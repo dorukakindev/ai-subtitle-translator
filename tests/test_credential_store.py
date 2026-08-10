@@ -128,7 +128,7 @@ class FallbackRoundtripTest(unittest.TestCase):
         self.assertEqual(json.loads(settings.read_text(encoding="utf-8")), {})
         self.assertEqual(cs.load_key("main_custom"), "provider-secret-value")
         self.assertEqual(cs.load_key("openai_helper"), "helper-secret-value")
-        self.assertEqual(cs.load_key("helper_role_qc_key"), "qc-secret-value")
+        self.assertEqual(cs.load_key("helper_qc_key"), "qc-secret-value")
 
     def test_migration_write_failure_preserves_original_settings_file(self):
         settings = Path(self._tmp.name) / ".gui_settings.json"

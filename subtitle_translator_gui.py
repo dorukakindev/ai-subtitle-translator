@@ -15535,6 +15535,9 @@ class App(ctk.CTk):
         self.postprocess_btn.configure(state=s)
         self.stop_btn.configure(state="normal" if running else "disabled")
         self.pause_btn.configure(state="normal" if running else "disabled")
+        adv_btn = getattr(self, "adv_settings_btn", None)
+        if adv_btn is not None:
+            adv_btn.configure(state=s)
         self._is_running = running
         if running:
             self._motion_progress_value = 0.0
@@ -17317,6 +17320,19 @@ class App(ctk.CTk):
         return added
 
     def _helper_model_config(self, role: str):
+        assignments = self.__dict__.get("_api_key_assignments", {})
+        profiles = self.__dict__.get("_api_key_profiles", {})
+        assigned = assignments.get(role) if isinstance(assignments, dict) else None
+        profile = profiles.get(assigned) if isinstance(profiles, dict) else None
+        if profile:
+            provider = "anthropic" if profile["provider"] == "anthropic" else "openai"
+            base_url = profile.get("base_url", "").strip()
+            if profile["provider"] == "openai_official":
+                base_url = "https://api.openai.com/v1"
+            from helper_models import HelperModelConfig
+            return HelperModelConfig(
+                label="Özel (Custom)", provider=provider,
+                model=profile["model"], base_url=base_url)
         if role not in self.helper_model_vars:
             return resolve_helper_model("GPT-5.4 (Reseller)")
         lbl = self.helper_model_vars[role].get()
@@ -17423,6 +17439,14 @@ class App(ctk.CTk):
     def _main_api_base_url(self):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             return self._active_snapshot.get("main_api_base_url", None)
+        assignments = self.__dict__.get("_api_key_assignments", {})
+        profiles = self.__dict__.get("_api_key_profiles", {})
+        assigned = assignments.get("main") if isinstance(assignments, dict) else None
+        profile = profiles.get(assigned) if isinstance(profiles, dict) else None
+        if profile:
+            if profile["provider"] == "openai_official":
+                return "https://api.openai.com/v1"
+            return _normalize_api_base_url(profile.get("base_url", ""))
         if self._main_custom_active():
             u = self.main_custom_url_var.get().strip()
             return _normalize_api_base_url(u) if u else None
@@ -17431,6 +17455,12 @@ class App(ctk.CTk):
     def _main_model_name(self) -> str:
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             return self._active_snapshot.get("main_model_name", "")
+        assignments = self.__dict__.get("_api_key_assignments", {})
+        profiles = self.__dict__.get("_api_key_profiles", {})
+        assigned = assignments.get("main") if isinstance(assignments, dict) else None
+        profile = profiles.get(assigned) if isinstance(profiles, dict) else None
+        if profile:
+            return profile["model"]
         if self._main_custom_active():
             return self.main_custom_model_var.get().strip()
         return self.model_var.get()
@@ -17868,9 +17898,10 @@ class App(ctk.CTk):
             if d.get("src_lang") in SOURCE_LANGUAGES: self.src_var.set(d["src_lang"])
             if d.get("tgt_lang") in LANGUAGES:     self.tgt_var.set(d["tgt_lang"])
             if d.get("mode") in ("batch","sync"):  self.mode_var.set(d["mode"])
-            if d.get("hybrid"):
-                self.hybrid_var.set(True)
-                self.hybrid_frame.grid()
+            if "hybrid" in d:
+                self.hybrid_var.set(bool(d["hybrid"]))
+                if self.hybrid_var.get():
+                    self.hybrid_frame.grid()
             
             # Legacy single-helper settings, kept only for old settings files.
             if hasattr(self, "helper_custom_provider_var") and "helper_custom_provider" in d:
@@ -18131,19 +18162,6 @@ class App(ctk.CTk):
             if pid == profile_id
         ]
         credential_store.delete_key(f"api_profile_{profile_id}")
-        for role in assigned_roles:
-            if role == "main":
-                if profile["provider"] == "openai_official":
-                    self._replace_entry_value(self.api_key_entry, "")
-                    credential_store.delete_key("openai")
-                else:
-                    self._replace_entry_value(self.main_custom_key_entry, "")
-                    credential_store.delete_key("main_custom")
-            else:
-                self.helper_role_key_vars[role].set("")
-                self.helper_custom_key_vars[role].set("")
-                credential_store.delete_key(f"helper_role_{role}_key")
-                credential_store.delete_key(f"helper_{role}_key")
         self._api_key_profiles.pop(profile_id, None)
         self._api_key_assignments = {
             role: pid for role, pid in self._api_key_assignments.items()
@@ -18425,6 +18443,9 @@ class App(ctk.CTk):
     # ── Advanced Settings Dialog ──────────────────────────────────────────────
     def _show_advanced_settings(self):
         """Display advanced settings dialog with 7 sliders."""
+        if getattr(self, "_is_running", False):
+            self._log("Çeviri sırasında gelişmiş ayarlar değiştirilemez.", "warn")
+            return
         dlg = ctk.CTkToplevel(self)
         dlg.title("Gelişmiş Ayarlar")
         dlg.geometry("500x600")

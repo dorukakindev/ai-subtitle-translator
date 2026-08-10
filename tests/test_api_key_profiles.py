@@ -118,6 +118,61 @@ class ApiKeyProfileTest(unittest.TestCase):
             self.assertEqual(gui.App._main_api_key(app), "profile-key")
             self.assertEqual(gui.App._helper_api_key(app, "qc"), "profile-key")
 
+    def test_assigned_profile_locks_main_route_against_manual_custom_values(self):
+        pid = "e" * 32
+        app = app_stub()
+        app._api_key_profiles[pid] = {
+            "name": "P", "provider": "openai_compatible",
+            "model": "profile-model", "base_url": "https://profile.test/v1",
+        }
+        app._api_key_assignments["main"] = pid
+        app.main_custom_var.set(True)
+        app.main_custom_model_var.set("manual-model")
+        app.main_custom_url_var.set("https://manual.test/v1")
+        app.main_custom_key_entry.set("manual-key")
+
+        with patch.object(gui.credential_store, "load_key", return_value="profile-key"):
+            self.assertEqual(gui.App._main_api_key(app), "profile-key")
+        self.assertEqual(gui.App._main_model_name(app), "profile-model")
+        self.assertEqual(gui.App._main_api_base_url(app), "https://profile.test/v1")
+
+    def test_assigned_profile_locks_helper_route_against_manual_custom_values(self):
+        pid = "f" * 32
+        app = app_stub()
+        app._api_key_profiles[pid] = {
+            "name": "P", "provider": "anthropic",
+            "model": "profile-model", "base_url": "https://profile.test/v1/messages",
+        }
+        app._api_key_assignments["critic"] = pid
+        app.helper_model_vars["critic"].set("Özel (Custom)")
+        app.helper_custom_provider_vars["critic"].set("openai")
+        app.helper_custom_model_vars["critic"].set("manual-model")
+        app.helper_custom_url_vars["critic"].set("https://manual.test/v1")
+        app.helper_custom_key_vars["critic"].set("manual-key")
+
+        cfg = gui.App._helper_model_config(app, "critic")
+        self.assertEqual((cfg.provider, cfg.model, cfg.base_url), (
+            "anthropic", "profile-model", "https://profile.test/v1/messages"))
+        with patch.object(gui.credential_store, "load_key", return_value="profile-key"):
+            self.assertEqual(gui.App._helper_api_key(app, "critic"), "profile-key")
+
+    def test_delete_profile_only_removes_profile_credential(self):
+        app = app_stub()
+        app._refresh_api_keys_panel = Mock()
+        pid = "1" * 32
+        app._api_key_profiles[pid] = {
+            "name": "P", "provider": "openai_compatible",
+            "model": "model", "base_url": "https://profile.test/v1",
+        }
+        app._api_key_assignments = {"main": pid, "critic": pid}
+
+        with patch.object(gui.messagebox, "askyesno", return_value=True), \
+                patch.object(gui.credential_store, "delete_key") as delete:
+            gui.App._delete_api_profile(app, pid)
+
+        delete.assert_called_once_with(f"api_profile_{pid}")
+        self.assertEqual(app._api_key_assignments, {})
+
 
 if __name__ == "__main__":
     unittest.main()

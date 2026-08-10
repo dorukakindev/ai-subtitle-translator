@@ -34,6 +34,14 @@ class ClipboardSafetyTest(unittest.TestCase):
 
 
 class AdvancedSettingsCancelTest(unittest.TestCase):
+    def test_running_app_rejects_advanced_settings(self):
+        logs = []
+        stub = SimpleNamespace(_is_running=True, _log=lambda *args: logs.append(args))
+        with patch.object(gui.ctk, "CTkToplevel") as dialog:
+            gui.App._show_advanced_settings(stub)
+        dialog.assert_not_called()
+        self.assertTrue(logs)
+
     def test_restore_helper_reverts_only_snapshotted_values(self):
         stub = SimpleNamespace(_chunk_size=99, _temperature=0.9)
         gui.App._restore_advanced_settings(

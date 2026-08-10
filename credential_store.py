@@ -299,7 +299,7 @@ def migrate_from_settings(settings_path: str | Path) -> None:
         custom_match = custom_role_key_pattern.match(key_name)
         if custom_match:
             role = custom_match.group(1).lower()
-            save_key(f"helper_role_{role}_key", val)
+            save_key(f"helper_{role}_key", val)
             del data[key_name]
             changed = True
             continue

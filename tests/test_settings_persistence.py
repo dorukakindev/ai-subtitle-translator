@@ -144,6 +144,7 @@ class SettingsPersistenceTest(unittest.TestCase):
             settings_path = Path(tmp) / ".gui_settings.json"
             settings_path.write_text(json.dumps({
                 "api_url": "None",
+                "hybrid": False,
                 "critic": True,
                 "polish": False,
                 "qc": False,
@@ -164,12 +165,14 @@ class SettingsPersistenceTest(unittest.TestCase):
                 "notify": False,
             }), encoding="utf-8")
             app = _SettingsOnlyApp(settings_path)
+            app.hybrid_var.set(True)
 
             with mock.patch.object(gui.credential_store, "migrate_from_settings"), \
                  mock.patch.object(gui.credential_store, "load_key", return_value=None):
                 gui.App._load_settings(app)
 
             self.assertTrue(app.critic_var.get())
+            self.assertFalse(app.hybrid_var.get())
             self.assertEqual(app.api_url_var.get(), "")
             for attr in (
                 "polish_var", "qc_var", "native_var", "backtrans_var",
