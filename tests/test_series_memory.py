@@ -103,6 +103,19 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(
             m._data["terms"], {"Security Services": "Güvenlik Servisi"})
 
+    def test_acronym_and_lowercase_word_keep_separate_canonical_terms(self):
+        m = self._mem()
+        m.merge_terms({"US": "ABD", "us": "bize"})
+        self.assertEqual(m.get_terms(), {"US": "ABD", "us": "bize"})
+
+    def test_acronym_origin_does_not_expose_later_lowercase_term(self):
+        m = self._mem()
+        m.merge_terms({"US": "ABD"}, season=1, ep=1)
+        m.merge_terms({"us": "bize"}, season=1, ep=10)
+        hint = m.build_hint(before_episode=(1, 2))
+        self.assertIn("'US' → 'ABD'", hint)
+        self.assertNotIn("'us' → 'bize'", hint)
+
     def test_merge_characters_list_of_dicts(self):
         m = self._mem()
         m.merge_characters([{"name": "Sam", "speaking_style": "blunt"}])
@@ -326,6 +339,20 @@ class PersistenceTest(unittest.TestCase):
             loaded = sm.SeriesMemory.load(td, "show")
             self.assertEqual(loaded.get_terms(), {"Alpha": "Alfa", "Beta": "Beta TR"})
             self.assertEqual(loaded._data["updated_eps"], ["s01e01", "s01e02"])
+
+    def test_stale_instances_keep_acronym_and_lowercase_term_separate(self):
+        with tempfile.TemporaryDirectory() as td:
+            first = sm.SeriesMemory.load(td, "show")
+            second = sm.SeriesMemory.load(td, "show")
+            first.merge_terms({"US": "ABD"})
+            second.merge_terms({"us": "bize"})
+            first.save()
+            second.save()
+
+            self.assertEqual(
+                sm.SeriesMemory.load(td, "show").get_terms(),
+                {"US": "ABD", "us": "bize"},
+            )
 
     def test_concurrent_save_does_not_merge_wrong_language_disk_data(self):
         with tempfile.TemporaryDirectory() as td:

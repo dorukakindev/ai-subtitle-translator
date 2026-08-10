@@ -124,14 +124,17 @@ class TranslationMemory:
         # serileştir (eşzamanlı INSERT/commit aynı bağlantıda bozulmaya yol açabilir).
         self._lock = threading.RLock()
         self._closed = False
+        self._unavailable = False
         self._init_db()
 
     # ── Bağlantı ──────────────────────────────────────────────────────────────
 
-    def _get_conn(self) -> sqlite3.Connection:
+    def _get_conn(self) -> sqlite3.Connection | None:
         with self._lock:
             if self._closed:
                 raise RuntimeError("TranslationMemory is closed")
+            if self._unavailable:
+                return None
             if self._conn is None:
                 conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
                 try:
@@ -146,15 +149,20 @@ class TranslationMemory:
     def _init_db(self):
         try:
             self._get_conn()
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e).lower() or "unable" in str(e).lower():
+        except sqlite3.DatabaseError as e:
+            if (isinstance(e, sqlite3.OperationalError)
+                    and ("locked" in str(e).lower() or "unable" in str(e).lower())):
                 self._conn = None
                 print(
                     f"[TM] DB geçici olarak kullanılamıyor; sonraki işlemde tekrar denenecek: {e}",
                     file=sys.stderr,
                 )
                 return
-            raise
+            self._unavailable = True
+            print(
+                f"[TM] DB bozuk; bu oturumda TM arama ve kayıt kapatıldı: {e}",
+                file=sys.stderr,
+            )
 
     def _ensure_schema(self, conn):
         conn.execute("""
@@ -198,16 +206,16 @@ class TranslationMemory:
                               source_language: str = "", context_fingerprint: str = "") -> str:
         """Ayarların özetini döndürür — farklı model/profanity/schema_name/kaynak dil farklı TM girişi demektir."""
         parts = []
-        model_short = (model or "").strip().lower().replace(" ", "-")[:40]
+        model_short = (model or "").strip().lower().replace(" ", "-")
         if model_short:
             parts.append(f"m:{model_short}")
-        prof = (profanity or "").strip().lower()[:20]
+        prof = (profanity or "").strip().lower()
         if prof:
             parts.append(f"p:{prof}")
-        sch = (schema_name or "").strip().lower()[:40]
+        sch = (schema_name or "").strip().lower()
         if sch:
             parts.append(f"s:{sch}")
-        src = (source_language or "").strip().lower()[:40]
+        src = (source_language or "").strip().lower()
         if src:
             parts.append(f"l:{src}")
         context_key = _context_key(context_fingerprint)
@@ -361,8 +369,8 @@ class TranslationMemory:
         lo = int(src_len * 0.6)
         hi = int(src_len * 1.4)
         lang = tgt_lang.strip().lower()
-        sch = schema_name.strip().lower()[:40] if schema_name else ""
-        src_lang = source_language.strip().lower()[:40] if source_language else ""
+        sch = schema_name.strip().lower() if schema_name else ""
+        src_lang = source_language.strip().lower() if source_language else ""
         ctx_key = _context_key(context_fingerprint)
         clauses = ["LENGTH(source) BETWEEN ? AND ?", "schema_name = ?", "src_lang = ?", "context_key = ?"]
         params = [lo, hi, sch, src_lang, ctx_key]
@@ -374,7 +382,7 @@ class TranslationMemory:
             params.append(model.strip().casefold())
         if profanity:
             clauses.append("profanity = ?")
-            params.append(profanity.strip().lower()[:20])
+            params.append(profanity.strip().lower())
         sql = ("SELECT source, target FROM tm WHERE "
                + " AND ".join(clauses) + " LIMIT 500")
         try:
@@ -430,9 +438,9 @@ class TranslationMemory:
                     "INSERT OR REPLACE INTO tm(hash,source,target,model,ts,tgt_lang,profanity,schema_name,src_lang,context_key) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (h, source.strip(), target.strip(), model, time.time(),
-                     tgt_lang.strip().lower(), profanity.strip().lower()[:20] if profanity else "",
-                     schema_name.strip().lower()[:40] if schema_name else "",
-                      source_language.strip().lower()[:40] if source_language else "",
+                      tgt_lang.strip().lower(), profanity.strip().lower() if profanity else "",
+                      schema_name.strip().lower() if schema_name else "",
+                       source_language.strip().lower() if source_language else "",
                       _context_key(context_fingerprint)),
                 )
                 conn.commit()
@@ -463,9 +471,9 @@ class TranslationMemory:
                 model,
                 time.time(),
                 tgt_lang.strip().lower(),
-                profanity.strip().lower()[:20] if profanity else "",
-                schema_name.strip().lower()[:40] if schema_name else "",
-                source_language.strip().lower()[:40] if source_language else "",
+                profanity.strip().lower() if profanity else "",
+                schema_name.strip().lower() if schema_name else "",
+                source_language.strip().lower() if source_language else "",
                 _context_key(context_fingerprint),
             ))
         if not rows:
@@ -486,9 +494,13 @@ class TranslationMemory:
     # ── İstatistikler ─────────────────────────────────────────────────────────
 
     def stats(self) -> dict:
-        with self._lock:
-            row = self._get_conn().execute("SELECT COUNT(*) FROM tm").fetchone()
-        return {"total": row[0] if row else 0}
+        try:
+            with self._lock:
+                conn = self._get_conn()
+                row = conn.execute("SELECT COUNT(*) FROM tm").fetchone() if conn else None
+            return {"total": row[0] if row else 0}
+        except Exception:
+            return {"total": 0}
 
     def hit_count_session(self) -> int:
         """Bu oturumda kaç kez TM'den çeviri alındığını döner (bellekte tutar)."""

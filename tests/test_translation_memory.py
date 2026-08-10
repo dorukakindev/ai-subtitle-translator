@@ -314,5 +314,39 @@ class TMSourceLanguageIsolationTest(unittest.TestCase):
             "hediye")
 
 
+class TMSettingsFingerprintTest(unittest.TestCase):
+    def test_long_model_names_do_not_share_exact_memory_entry(self):
+        tm = _tmp_tm()
+        prefix = "provider/model-with-a-long-common-prefix-"
+        first_model = prefix + "first"
+        second_model = prefix + "second"
+        tm.store("Same source", "ilk karsilik", tgt_lang="Turkish", model=first_model)
+        tm.store("Same source", "ikinci karsilik", tgt_lang="Turkish", model=second_model)
+
+        self.assertEqual(
+            tm.lookup("Same source", tgt_lang="Turkish", model=first_model),
+            "ilk karsilik",
+        )
+        self.assertEqual(
+            tm.lookup("Same source", tgt_lang="Turkish", model=second_model),
+            "ikinci karsilik",
+        )
+
+
+class TMCorruptDatabaseTest(unittest.TestCase):
+    def test_corrupt_database_disables_tm_without_overwriting_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "broken.db"
+            original = b"not a sqlite database"
+            db_path.write_bytes(original)
+
+            tm = TranslationMemory(db_path=db_path)
+
+            self.assertEqual(tm.stats(), {"total": 0})
+            self.assertIsNone(tm.lookup("source", tgt_lang="Turkish"))
+            self.assertFalse(tm.store("source", "hedef", tgt_lang="Turkish"))
+            self.assertEqual(db_path.read_bytes(), original)
+
+
 if __name__ == "__main__":
     unittest.main()

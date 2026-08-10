@@ -64,6 +64,20 @@ def _source_key(value: str) -> str:
     return _target_key(value or "en")
 
 
+def _term_identity(value) -> str:
+    text = str(value or "").strip()
+    if text.isupper() and any(ch.isalpha() for ch in text):
+        return f"exact:{text}"
+    return f"folded:{text.casefold()}"
+
+
+def _term_origin_key(value) -> str:
+    text = str(value or "").strip()
+    if text.isupper() and any(ch.isalpha() for ch in text):
+        return f"exact:{text}"
+    return text.casefold()
+
+
 def _tv_root_info(filename: str):
     path = Path(filename)
     for parent in path.parents:
@@ -240,12 +254,17 @@ class SeriesMemory:
         }
         for key in ("terms", "characters"):
             values = dict(disk.get(key) or {})
-            known = {str(item).strip().casefold() for item in values}
+            known = {
+                (_term_identity(item) if key == "terms"
+                 else str(item).strip().casefold())
+                for item in values
+            }
             for item, value in dict(memory.get(key) or {}).items():
-                folded = str(item).strip().casefold()
-                if folded not in known:
+                identity = (_term_identity(item) if key == "terms"
+                            else str(item).strip().casefold())
+                if identity not in known:
                     values[item] = value
-                    known.add(folded)
+                    known.add(identity)
             merged[key] = values
         addresses = list(disk.get("address_map") or [])
         seen = {
@@ -313,22 +332,23 @@ class SeriesMemory:
         if not isinstance(terms, dict):
             return
         t = self._data["terms"]
-        known = {str(key).strip().casefold() for key in t}
+        known = {_term_identity(key) for key in t}
         for src, tgt in terms.items():
             if not (src and tgt):
                 continue
             # Kaynak==hedef (küçük-harf sıradan kelime) İngilizce sızıntısı üretir;
             # özel ad/kısaltma (büyük harf içeren) korunur.
             s, v = str(src).strip(), str(tgt).strip()
-            if not s or s.casefold() in known:
+            identity = _term_identity(s)
+            if not s or identity in known:
                 continue
             if s.lower() == v.lower() and s.islower():
                 continue
             t[s] = v
-            known.add(s.casefold())
+            known.add(identity)
             tag = self._episode_tag(season, ep)
             if tag:
-                self._data["term_origins"].setdefault(s.casefold(), tag)
+                self._data["term_origins"].setdefault(_term_origin_key(s), tag)
 
     def merge_characters(self, chars, season=None, ep=None):
         """chars: {name: style} | [{name, style|speaking_style}] | [CharacterVoice]."""
@@ -433,7 +453,7 @@ class SeriesMemory:
         addr_origins = self._data.get("address_origins") or {}
         terms = {
             source: target for source, target in terms.items()
-            if allowed(term_origins.get(str(source).strip().casefold()))
+            if allowed(term_origins.get(_term_origin_key(source)))
         }
         chars = {
             name: meta for name, meta in chars.items()
