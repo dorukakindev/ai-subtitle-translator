@@ -82,7 +82,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
         self.assertEqual(repaired, 1)
         self.assertEqual(result[0][2], "Neredesin?")
 
-    def test_repair_injects_and_enforces_locked_terms(self):
+    def test_repair_injects_locked_terms_but_reports_soft_violation(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[HATA]")]
         raw = {"1": "Biotechnology Supply Laboratory is closed."}
         response = SimpleNamespace(
@@ -94,16 +94,20 @@ class PermanentQuotaFailureTest(unittest.TestCase):
             "Biotechnology Supply Laboratory":
             "Biyoteknoloji Tedarik Laboratuvarı",
         }
+        advisories = []
         with patch("subtitle_translator_gui._safe_chat_create",
                    return_value=response) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish", locked_terms=locked, retry_delays=())
+                tgt_lang="Turkish", locked_terms=locked, retry_delays=(),
+                advisory_reviews_out=advisories)
         payload = __import__("json").loads(
             create.call_args.kwargs["messages"][1]["content"])
         self.assertEqual(payload["glossary"], locked)
-        self.assertEqual(repaired, 0)
-        self.assertEqual(result[0][2], "[HATA]")
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(repaired, 1)
+        self.assertNotEqual(result[0][2], "[HATA]")
+        self.assertEqual(advisories[0]["reason"], "locked_term_violation")
 
     def test_repair_uses_rich_prompt_and_neighbor_context(self):
         blocks = [("2", "00:00:02,000 --> 00:00:03,000", "[HATA]")]
@@ -187,7 +191,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
             "Birinci kaynak.", "İkinci kaynak.",
         ])
 
-    def test_repair_rejects_foreign_leak_then_accepts_clean_retry(self):
+    def test_repair_reports_foreign_leak_without_retry(self):
         blocks = [(1, "00:00:01,000 --> 00:00:02,000", "[HATA]")]
         raw = {"1": "I told the girl."}
         responses = [
@@ -203,15 +207,19 @@ class PermanentQuotaFailureTest(unittest.TestCase):
             ),
         ]
 
+        advisories = []
         with patch("subtitle_translator_gui._safe_chat_create",
                    side_effect=responses) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, raw, client=object(), src_lang="English",
-                tgt_lang="Turkish", retry_delays=(0,))
+                tgt_lang="Turkish", retry_delays=(0,),
+                advisory_reviews_out=advisories)
 
-        self.assertEqual(create.call_count, 2)
+        self.assertEqual(create.call_count, 1)
         self.assertEqual(repaired, 1)
-        self.assertEqual(result[0][2], "Kıza söyledim.")
+        self.assertNotEqual(result[0][2], "Kıza söyledim.")
+        self.assertTrue(advisories[0]["reason"].startswith(
+            "non_turkish_target:"))
 
     def test_unresolved_mixed_source_line_is_quarantined(self):
         blocks = [(

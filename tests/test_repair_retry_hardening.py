@@ -194,18 +194,33 @@ class PersistentRepairRetryTest(unittest.TestCase):
         self.assertEqual(repaired, 0)
         self.assertEqual(result[0][2], "[HATA]")
 
-    def test_locked_term_rejection_log_names_the_exact_lock(self):
+    def test_locked_term_warning_is_accepted_once_and_reported(self):
         log = MagicMock()
+        advisories = []
         with patch("subtitle_translator_gui._safe_chat_create",
-                   return_value=_response([{"i": "4", "t": "Mary geldi."}])):
-            gui._repair_untranslated_sync(
+                   return_value=_response([{"i": "4", "t": "Mary geldi."}])) as create:
+            result, repaired = gui._repair_untranslated_sync(
                 [("4", _TS, "[HATA]")], {"4": "John arrived."}, object(),
                 "English", "Turkish", locked_terms={"John": "John"},
-                log_fn=log, retry_delays=())
+                log_fn=log,
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"),
+                advisory_reviews_out=advisories)
 
         log_text = " ".join(str(call.args[0]) for call in log.call_args_list)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], "Mary geldi.")
+        self.assertIn("Onarım inceleme özeti", log_text)
         self.assertIn("locked_term_violation", log_text)
-        self.assertIn("kilit='John->John'", log_text)
+        self.assertIn("kaynak='John arrived.'", log_text)
+        self.assertIn("aday='Mary geldi.'", log_text)
+        self.assertNotIn("Onarım reddi", log_text)
+        self.assertEqual(advisories, [{
+            "id": "4",
+            "reason": "locked_term_violation",
+            "source": "John arrived.",
+            "candidate": "Mary geldi.",
+        }])
 
     def test_quoted_song_title_translation_is_accepted_without_retry(self):
         source = (

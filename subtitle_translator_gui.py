@@ -4859,6 +4859,12 @@ def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: st
     return ""
 
 
+def _repair_reason_is_advisory(reason: str) -> bool:
+    value = str(reason or "")
+    return value == "locked_term_violation" or value.startswith(
+        "non_turkish_target:")
+
+
 def _repair_validation_source_map(raw_src_map: dict, source_cues) -> dict:
     result = {str(idx): str(text or "") for idx, text in (raw_src_map or {}).items()}
     normalized = []
@@ -4890,7 +4896,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               cancel_context=None,
                               system_prompt=None, locked_terms=None,
                               permanent_failure_cb=None, retry_delays=None,
-                              retry_wait_fn=None):
+                              retry_wait_fn=None, advisory_reviews_out=None):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -4998,6 +5004,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         return out, 0
 
     repaired = 0
+    advisory_reviews = []
+    advisory_accepted_ids = set()
 
     if hata_indices and client:
         if log_fn:
@@ -5202,6 +5210,15 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                                 tgt_lang=tgt_lang,
                                 locked_terms=_repair_relevant_locked_terms(
                                     attempt_locked_terms, [validation_src]))
+                            if _repair_reason_is_advisory(reason):
+                                advisory_reviews.append({
+                                    "id": rid,
+                                    "reason": reason,
+                                    "source": src_text,
+                                    "candidate": translated,
+                                })
+                                advisory_accepted_ids.add(rid)
+                                reason = ""
                         if reason:
                             rejection_reasons[rid] = reason
                             rejection_candidates[rid] = str(translated or "")
@@ -5308,8 +5325,30 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
             except Exception:
                 pass
 
+    if advisory_reviews:
+        if advisory_reviews_out is not None:
+            advisory_reviews_out.extend(dict(item) for item in advisory_reviews)
+        if log_fn:
+            log_fn(
+                f"Onarım inceleme özeti: {len(advisory_reviews)} cue guard tarafından "
+                "engellenmedi; kaynak/aday bilgileri nihai denetim için raporlandı.",
+                "warn",
+            )
+            for item in advisory_reviews:
+                source_preview = re.sub(
+                    r"\s+", " ", str(item["source"])).strip()[:120]
+                candidate_preview = re.sub(
+                    r"\s+", " ", str(item["candidate"])).strip()[:120]
+                log_fn(
+                    f"  İncelenecek cue #{item['id']}: {item['reason']} | "
+                    f"kaynak={source_preview!r} | aday={candidate_preview!r}",
+                    "warn",
+                )
+
     unresolved_mixed = 0
     for block_pos, _idx, _ts, src in hata_indices:
+        if str(_idx) in advisory_accepted_ids:
+            continue
         text = str(out[block_pos][2] or "")
         if (not text.startswith("[HATA")
                 and "[ÇEVİRİ EKSİK]" not in text
@@ -8904,6 +8943,38 @@ def _blocks_have_translation_failures(blocks) -> bool:
     )
 
 
+def _partition_quality_blocks(blocks):
+    order = [str(idx) for idx, _ts, _text in (blocks or [])]
+    failed = {
+        str(idx): (idx, ts, text)
+        for idx, ts, text in (blocks or [])
+        if _blocks_have_translation_failures([(idx, ts, text)])
+    }
+    healthy = [
+        block for block in (blocks or []) if str(block[0]) not in failed
+    ]
+    return healthy, failed, order
+
+
+def _restore_quality_failure_blocks(blocks, failed: dict, order: list):
+    if not failed:
+        return list(blocks or [])
+    processed = {
+        str(idx): (idx, ts, text) for idx, ts, text in (blocks or [])
+    }
+    restored = []
+    used = set()
+    for idx in order or []:
+        block = failed.get(str(idx), processed.get(str(idx)))
+        if block is not None:
+            restored.append(block)
+            used.add(str(idx))
+    restored.extend(
+        block for block in (blocks or []) if str(block[0]) not in used
+    )
+    return restored
+
+
 _UNTRANSLATED_ENGLISH_SIGNAL_RE = re.compile(
     r"\b(?:the|and|are|is|was|were|this|that|these|those|with|from|"
     r"what|where|when|why|how|you|your|have|has|not|don't|can't)\b",
@@ -10048,6 +10119,15 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         trace_txt = _format_pass_trace(r.get("pass_trace") or {})
         if trace_txt:
             lines.append(f"   {'Kalite geçişi kırılımı'.ljust(width)} : {trace_txt}")
+        repair_advisories = (
+            (r.get("pass_trace") or {}).get("__repair_advisories__") or [])
+        if repair_advisories:
+            lines.append(
+                f"   Onarım sonrası elle incelenecek : {len(repair_advisories)} cue")
+            for item in repair_advisories:
+                lines.append(
+                    f"      - #{item.get('id')}: {item.get('reason')} | "
+                    f"kaynak={item.get('source')!r} | aday={item.get('candidate')!r}")
         multi_count, multi_txt = _multi_pass_history(r.get("pass_history") or {})
         if multi_count:
             lines.append(f"   {'Çoklu-pass satırı'.ljust(width)} : {multi_count} ({multi_txt})")
@@ -25005,6 +25085,7 @@ class App(ctk.CTk):
             _raw_backup_blocks = list(sorted_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
             _raw_map_pre = _raw_src_map_from_cues(cues)
             _n_repaired = 0
+            _repair_advisories = []
             _before_repair = list(sorted_blocks)
             self._record_file_status(
                 filepath, "Eksik Çeviri Onarımı", "running")
@@ -25024,24 +25105,30 @@ class App(ctk.CTk):
                     permanent_failure_cb=(
                         self._block_automatic_recovery_for_permanent_provider),
                     retry_wait_fn=lambda delay, cancelled: (
-                        App._repair_retry_wait(self, delay, cancelled)))
+                        App._repair_retry_wait(self, delay, cancelled)),
+                    advisory_reviews_out=_repair_advisories)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
-            _quality_api_allowed = not _blocks_have_translation_failures(
-                sorted_blocks)
-            if not _quality_api_allowed:
-                self._log(
-                    f"{fname}: eksik çeviri kaldığı için Critic/Polish/Native/"
-                    "Condense/QC/Nihai Anlam API geçişleri atlandı.",
-                    "warn",
-                )
-
             _pass_trace = {}
             _pass_status = {}
             _pass_history = {}
+            if _repair_advisories:
+                _pass_trace["__repair_advisories__"] = _repair_advisories
             _record_pass_change(
                 _pass_trace, "Repair", _before_repair,
                 sorted_blocks, _pass_history)
+            _quality_failed_blocks = {}
+            _quality_original_order = []
+            if _blocks_have_translation_failures(sorted_blocks):
+                sorted_blocks, _quality_failed_blocks, _quality_original_order = (
+                    _partition_quality_blocks(sorted_blocks))
+                self._log(
+                    f"{fname}: {len(_quality_failed_blocks)} eksik cue kalite "
+                    "geçişlerinden izole edildi; sağlam cue'larda Critic/Polish/"
+                    "Native/Condense/QC/Nihai Anlam çalışmaya devam edecek.",
+                    "warn",
+                )
+            _quality_api_allowed = bool(sorted_blocks)
             # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
             self._update_file_progress(filepath, "Tutarlılık taraması", 87)
             _before_consistency = list(sorted_blocks)
@@ -25349,6 +25436,8 @@ class App(ctk.CTk):
                     sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
+            sorted_blocks = _restore_quality_failure_blocks(
+                sorted_blocks, _quality_failed_blocks, _quality_original_order)
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
                 self._record_file_status(
                     filepath, "Nihai SDH Temizleme", "running")
@@ -27456,6 +27545,7 @@ class App(ctk.CTk):
             except Exception:
                 _analysis_result = None
             _n_repaired = 0
+            _repair_advisories = []
             _before_repair = list(sorted_blocks)
             self._record_file_status(fp, "Eksik Çeviri Onarımı", "running")
             try:
@@ -27477,20 +27567,27 @@ class App(ctk.CTk):
                         permanent_failure_cb=(
                             self._block_automatic_recovery_for_permanent_provider),
                         retry_wait_fn=lambda delay, cancelled: (
-                            App._repair_retry_wait(self, delay, cancelled)))
+                            App._repair_retry_wait(self, delay, cancelled)),
+                        advisory_reviews_out=_repair_advisories)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _record_pass_change(
                 _pass_trace, "Repair", _before_repair,
                 sorted_blocks, _pass_history)
-            _quality_api_allowed = not _blocks_have_translation_failures(
-                sorted_blocks)
-            if not _quality_api_allowed:
+            if _repair_advisories:
+                _pass_trace["__repair_advisories__"] = _repair_advisories
+            _quality_failed_blocks = {}
+            _quality_original_order = []
+            if _blocks_have_translation_failures(sorted_blocks):
+                sorted_blocks, _quality_failed_blocks, _quality_original_order = (
+                    _partition_quality_blocks(sorted_blocks))
                 self._log(
-                    f"{Path(fp).name}: eksik çeviri kaldığı için model tabanlı "
-                    "kalite geçişleri atlandı.",
+                    f"{Path(fp).name}: {len(_quality_failed_blocks)} eksik cue "
+                    "kalite geçişlerinden izole edildi; sağlam cue'larda model "
+                    "tabanlı kalite geçişleri çalışmaya devam edecek.",
                     "warn",
                 )
+            _quality_api_allowed = bool(sorted_blocks)
             # Tekrarlanan kaynak cümlelerin çevirilerini çoğunluğa göre normalize et
             self._record_file_status(fp, "Tutarlılık Taraması", "running")
             _before_consistency = list(sorted_blocks)
@@ -27769,6 +27866,8 @@ class App(ctk.CTk):
                     sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
+            sorted_blocks = _restore_quality_failure_blocks(
+                sorted_blocks, _quality_failed_blocks, _quality_original_order)
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
                 self._record_file_status(fp, "Nihai SDH Temizleme", "running")
                 _before_final_sdh = list(sorted_blocks)
