@@ -461,6 +461,18 @@ class GetSubtitleFilesTest(unittest.TestCase):
 
             self.assertEqual([Path(f).name for f in files], ["episode.srt"])
 
+    def test_direct_reports_folder_scan_never_selects_delivery_artifacts(self):
+        from subtitle_formats import get_subtitle_files
+        with tempfile.TemporaryDirectory() as d:
+            reports = Path(d, "Raporlar")
+            reports.mkdir()
+            (reports / "episode.upload-ready-copy.srt").write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nMerhaba\n", encoding="utf-8")
+            (reports / "episode.ham.srt").write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nHam\n", encoding="utf-8")
+
+            self.assertEqual(get_subtitle_files(str(reports), recursive=True), [])
+
     def test_cikti_file_named_not_excluded(self):
         """Dizin değil DOSYA adı 'ÇIKTI.srt' ise dışlanmaz (yalnız dizin bileşeni sayılır)."""
         from subtitle_formats import get_subtitle_files

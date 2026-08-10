@@ -789,6 +789,11 @@ def get_subtitle_files(directory: str, recursive: bool = True,
     allowed_exts = {".srt", ".vtt", ".ass", ".ssa"}
     result = []
 
+    # Raporlar yalnizca teslim, kurtarma ve kalite yan-artifaktlarini tutar.
+    if (_path_key(base.name) == _path_key("Raporlar")
+            and _path_key("Raporlar") in excl_dirs):
+        return []
+
     def _cancelled() -> bool:
         if cancel_check is None:
             return False
