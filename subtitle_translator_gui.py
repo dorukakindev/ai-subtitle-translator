@@ -6015,6 +6015,16 @@ def normalize_schema_name(name: str) -> str:
     return raw or "Otomatik"
 
 
+def _resolve_analysis_depth_choice(value: str, default_value: str = "Standart") -> str:
+    raw = str(value or "").strip()
+    ascii_raw = raw.replace("ı", "i").replace("İ", "I")
+    key = unicodedata.normalize("NFKD", ascii_raw).encode("ascii", "ignore").decode("ascii")
+    if key.lower() in {"", "varsayilan", "default", "inherit"}:
+        raw = str(default_value or "Standart").strip()
+    import hybrid_translate as ht
+    return ht.analysis_depth_label(raw)
+
+
 def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback=None,
                                  filename: str = "", return_details: bool = False,
                                  cancel_context=None):
@@ -6725,7 +6735,7 @@ _BATCH_RUN_CONTEXT_KEYS = (
     "same_folder", "mode", "auto_glossary", "term_normalize", "critic",
     "polish", "native", "qc", "condense", "backtrans",
     "semantic_reconcile", "review", "twowave", "clean_sdh", "linebreak",
-    "chain_ctx", "style", "analysis_depth", "content_type",
+    "chain_ctx", "style", "analysis_depth", "file_analysis_depths", "content_type",
     "main_model_name", "main_api_base_url", "helper_models", "helper_urls",
     "api_key_fingerprint", "resume_origin_run_id",
 )
@@ -6764,7 +6774,7 @@ def _refresh_start_snapshot(current: dict, fresh: dict) -> dict:
     merged = copy.deepcopy(current)
     for key in (
         "main_api_key", "helper_keys", "file_schemas",
-        "file_glossaries", "file_source_languages",
+        "file_glossaries", "file_source_languages", "file_analysis_depths",
     ):
         if key in fresh:
             merged[key] = copy.deepcopy(fresh[key])
@@ -11444,6 +11454,11 @@ class App(ctk.CTk):
             if filepath in files:
                 self._file_schema_vars[filepath] = ctk.StringVar(
                     value=normalize_schema_name(schema_name))
+        for filepath, depth_name in dict(
+                settings.get("file_analysis_depths") or {}).items():
+            if filepath in files:
+                self._file_analysis_depth_vars[filepath] = ctk.StringVar(
+                    value=_resolve_analysis_depth_choice(depth_name))
         self._refresh_selected_files_ui(
             f"Çökme kurtarması: {len(files)} tamamlanmamış dosya sıraya alındı")
         self._language_preflight_done = True
@@ -12894,7 +12909,7 @@ class App(ctk.CTk):
                         dropdown_fg_color=CARD, text_color=FG,
                         state="readonly").pack(fill="x", padx=4, pady=(0,2))
         ctk.CTkLabel(hfr,
-                     text="Gelismis ve Maksimum daha fazla chunk/token kullanir; karakter, terim, argo, sahne ve risk notlarini daha derin cikarir.",
+                     text="Gelismis ve Maksimum daha fazla chunk/token kullanir; karakter, terim, argo, sahne ve risk notlarini daha derin cikarir. Dosya listesinden her filme ayri seviye verebilirsin.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).pack(fill="x", padx=4, pady=(0,6))
         hf_lbl("Çeviri stili")
@@ -13437,6 +13452,7 @@ class App(ctk.CTk):
         self._file_rows_frame.grid_columnconfigure(0, weight=1)
         self._file_schema_vars = {}
         self._file_language_vars = {}
+        self._file_analysis_depth_vars = {}
 
         # ── Log yeniden boyutlandırma tutamacı ──────────────────────────────────
         # Dosya listesi ile Log arasında sürüklenebilir ince bir çubuk: yukarı
@@ -13672,6 +13688,11 @@ class App(ctk.CTk):
             fp: var for fp, var in getattr(self, "_file_language_vars", {}).items()
             if fp in file_set
         }
+        self._file_analysis_depth_vars = {
+            fp: var for fp, var in getattr(
+                self, "_file_analysis_depth_vars", {}).items()
+            if fp in file_set
+        }
         self._file_list_files = files
         if reset_page:
             self._file_list_page = 0
@@ -13719,13 +13740,26 @@ class App(ctk.CTk):
                               button_hover_color=ACCENT,
                               dropdown_fg_color=CARD, text_color=FG,
                               ).grid(row=0, column=2, padx=(4, 2), pady=4)
+            depth_var = self._file_analysis_depth_vars.get(fp)
+            if depth_var is None:
+                depth_var = ctk.StringVar(value="Varsayılan")
+                self._file_analysis_depth_vars[fp] = depth_var
+            ctk.CTkOptionMenu(
+                row_fr, variable=depth_var,
+                values=["Varsayılan", "Standart", "Gelişmiş", "Maksimum"],
+                width=105, height=26,
+                font=ctk.CTkFont("Segoe UI", 10),
+                fg_color=BORDER, button_color=BORDER,
+                button_hover_color=ACCENT,
+                dropdown_fg_color=CARD, text_color=FG,
+            ).grid(row=0, column=3, padx=(4, 2), pady=4)
             # Dosya silme butonu
             ctk.CTkButton(row_fr, text="X", width=26, height=26,
                           font=ctk.CTkFont("Segoe UI", 11, "bold"),
                           fg_color="transparent", hover_color=BORDER,
                           text_color=WARN,
                           command=lambda p=fp: self._remove_file_from_list(p)
-                          ).grid(row=0, column=3, padx=(0, 6), pady=4)
+                          ).grid(row=0, column=4, padx=(0, 6), pady=4)
         self._file_list_lbl.configure(text=f"DOSYALAR ({len(files)})")
         if pages > 1:
             self._file_page_lbl.configure(text=f"{page + 1}/{pages}")
@@ -13760,6 +13794,7 @@ class App(ctk.CTk):
             self._selected_files.remove(filepath)
         self._file_schema_vars.pop(filepath, None)
         getattr(self, "_file_language_vars", {}).pop(filepath, None)
+        getattr(self, "_file_analysis_depth_vars", {}).pop(filepath, None)
         remaining = list(self._selected_files)
         if remaining:
             self._refresh_selected_files_ui(f"Dosya listeden çıkarıldı: {Path(filepath).name}")
@@ -13874,6 +13909,18 @@ class App(ctk.CTk):
         name = normalize_schema_name(var.get() if var else self.content_type_var.get())
         return self._schema_by_name(name)
 
+    def _get_file_analysis_depth(self, filepath: str) -> str:
+        snapshot = getattr(self, "_active_snapshot", None) or {}
+        if threading.current_thread() is not threading.main_thread() and snapshot:
+            per_file = snapshot.get("file_analysis_depths") or {}
+            return _resolve_analysis_depth_choice(
+                per_file.get(filepath), snapshot.get("analysis_depth", "Standart"))
+        var = getattr(self, "_file_analysis_depth_vars", {}).get(filepath)
+        value = var.get() if var is not None else "Varsayılan"
+        global_var = getattr(self, "analysis_depth_var", None)
+        default_value = global_var.get() if global_var is not None else "Standart"
+        return _resolve_analysis_depth_choice(value, default_value)
+
     def _load_context_cache_for_file(self, ht, filepath: str, target_language: str,
                                      source_language: str, schema_dict: dict = None,
                                      glossary: dict = None):
@@ -13885,8 +13932,7 @@ class App(ctk.CTk):
         return ht.load_context_cache(
             filepath,
             expected_target=target_language,
-            expected_analysis_depth=App._run_setting(
-                self, "analysis_depth", "analysis_depth_var", "Standart"),
+            expected_analysis_depth=App._get_file_analysis_depth(self, filepath),
             expected_source=_lang_iso639_1(source_language),
             helper_model=self._helper_api_model("analysis"),
             helper_url=self._helper_api_base_url("analysis"),
@@ -13989,6 +14035,7 @@ class App(ctk.CTk):
         file_schemas = {}
         file_glossaries = {}
         file_source_languages = {}
+        file_analysis_depths = {}
         for fp in srt_files:
             try:
                 var_s = getattr(self, "_file_schema_vars", {}).get(fp)
@@ -14002,6 +14049,10 @@ class App(ctk.CTk):
                 pass
             try:
                 file_source_languages[fp] = self._get_file_source_language(fp)
+            except Exception:
+                pass
+            try:
+                file_analysis_depths[fp] = self._get_file_analysis_depth(fp)
             except Exception:
                 pass
 
@@ -14021,6 +14072,7 @@ class App(ctk.CTk):
             "output_dir": self.output_var.get(),
             "src_lang": self.src_var.get(),
             "file_source_languages": file_source_languages,
+            "file_analysis_depths": file_analysis_depths,
             "tgt_lang": self.tgt_var.get(),
             "profanity": self.profanity_var.get(),
             "same_folder": self.same_folder_var.get(),
@@ -14167,6 +14219,8 @@ class App(ctk.CTk):
         result["helper_urls"] = dict(snapshot.get("helper_urls") or {})
         result["file_source_languages"] = dict(
             snapshot.get("file_source_languages") or {})
+        result["file_analysis_depths"] = dict(
+            snapshot.get("file_analysis_depths") or {})
         result["file_schema_names"] = {
             path: str((schema or {}).get("name") or "Otomatik")
             for path, schema in dict(snapshot.get("file_schemas") or {}).items()
@@ -16535,7 +16589,7 @@ class App(ctk.CTk):
                     if key in resume_settings:
                         self._active_snapshot[key] = resume_settings[key]
                 for key in ("helper_models", "helper_urls", "file_source_languages",
-                            "file_glossaries"):
+                            "file_glossaries", "file_analysis_depths"):
                     if key in resume_settings:
                         self._active_snapshot[key] = dict(resume_settings.get(key) or {})
                 if "global_glossary_path" in resume_settings:
@@ -16686,6 +16740,7 @@ class App(ctk.CTk):
         self._selected_files = [p for p in self._selected_files if self._norm_path(p) != norm_fp]
         self._file_schema_vars.pop(filepath, None)
         getattr(self, "_file_language_vars", {}).pop(filepath, None)
+        getattr(self, "_file_analysis_depth_vars", {}).pop(filepath, None)
         try:
             row["frame"].destroy()
         except Exception:
@@ -18748,6 +18803,7 @@ class App(ctk.CTk):
         self._file_list_page = 0
         self._file_schema_vars = {}
         self._file_language_vars = {}
+        self._file_analysis_depth_vars = {}
         rows = getattr(self, "_file_rows_frame", None)
         if rows is not None:
             for widget in rows.winfo_children():
@@ -23408,6 +23464,7 @@ class App(ctk.CTk):
         for filepath in removed:
             self._file_schema_vars.pop(filepath, None)
             getattr(self, "_file_language_vars", {}).pop(filepath, None)
+            getattr(self, "_file_analysis_depth_vars", {}).pop(filepath, None)
         if kept:
             original_input = self.input_var.get()
             self._refresh_selected_files_ui(
@@ -25376,6 +25433,9 @@ class App(ctk.CTk):
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
+                analysis_depth = self._get_file_analysis_depth(filepath)
+                self._log(
+                    f"[{fname}] Analiz derinligi: {analysis_depth}", "info")
 
                 cached = self._load_context_cache_for_file(
                     ht, filepath, tgt, file_src,
@@ -25408,10 +25468,12 @@ class App(ctk.CTk):
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
                              schema=schema_dict,
-                            analysis_depth=App._run_setting(
-                                self, "analysis_depth", "analysis_depth_var", "Standart"),
-                            token_callback=self._token_callback_for_model(
-                                self._helper_api_model("analysis")),
+                            analysis_depth=analysis_depth,
+                            token_callback=App._token_callback_for_pass(
+                                self, self._helper_api_model("analysis"),
+                                "Yardimci Analiz",
+                                base_url=self._helper_api_base_url("analysis"),
+                                file_path=filepath),
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
                             scene_gap_sec=float(self._snap_get(
@@ -25448,8 +25510,7 @@ class App(ctk.CTk):
                                               idiom_map=idiom_map,
                                                cultural_refs=cultural_refs,
                                                target_language=tgt,
-                                               analysis_depth=App._run_setting(
-                                                   self, "analysis_depth", "analysis_depth_var", "Standart"),
+                                               analysis_depth=analysis_depth,
                                                helper_model=self._helper_api_model("analysis"),
                                                helper_url=self._helper_api_base_url("analysis"),
                                                style=App._run_setting(
@@ -26211,8 +26272,7 @@ class App(ctk.CTk):
                 (context, char_examples, pronoun_map, character_styles,
                  scene_emotions, idiom_map, cultural_refs),
                 cues,
-                App._run_setting(
-                    self, "analysis_depth", "analysis_depth_var", "Standart"),
+                analysis_depth,
                 complete=_analysis_ok)
             report_rows.append({
                 "name": fname, "source_path": filepath,
@@ -27902,9 +27962,7 @@ class App(ctk.CTk):
                                 _resume_analysis_metrics = (
                                     ht.analysis_effectiveness_metrics(
                                         _analysis_result, _orig_cues,
-                                        App._run_setting(
-                                            self, "analysis_depth",
-                                            "analysis_depth_var", "Standart"),
+                                        self._get_file_analysis_depth(str(_src_path)),
                                         complete=True)
                                     if _analysis_result else {})
                                 report_rows.append({"name": Path(output_path).name,
@@ -28982,6 +29040,7 @@ class App(ctk.CTk):
             "context_lines": self._context_lines,
             "lookahead_lines": self._lookahead_lines,
             "analysis_depth": _snapshot.get("analysis_depth") or "Standart",
+            "file_analysis_depths": _snapshot.get("file_analysis_depths") or {},
             "helper_models": _snapshot.get("helper_models") or {},
             "helper_urls": _snapshot.get("helper_urls") or {},
             "file_schemas": _snapshot.get("file_schemas") or {},
@@ -29148,6 +29207,9 @@ class App(ctk.CTk):
                 glossary = ht.load_glossary(
                     self._get_file_glossary(filepath), strict=True)
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
+                analysis_depth = self._get_file_analysis_depth(filepath)
+                self._log(
+                    f"[{fname}] Analiz derinligi: {analysis_depth}", "info")
 
                 cached = self._load_context_cache_for_file(
                     ht, filepath, tgt, file_src,
@@ -29219,10 +29281,12 @@ class App(ctk.CTk):
                             stop_flag_fn=lambda: self._stop_flag,
                             progress_fn=_ap,
                              schema=schema_dict,
-                            analysis_depth=App._run_setting(
-                                self, "analysis_depth", "analysis_depth_var", "Standart"),
-                            token_callback=self._token_callback_for_model(
-                                self._helper_api_model("analysis")),
+                            analysis_depth=analysis_depth,
+                            token_callback=App._token_callback_for_pass(
+                                self, self._helper_api_model("analysis"),
+                                "Yardimci Analiz",
+                                base_url=self._helper_api_base_url("analysis"),
+                                file_path=filepath),
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
                             scene_gap_sec=float(self._snap_get(
@@ -29259,8 +29323,7 @@ class App(ctk.CTk):
                                               idiom_map=idiom_map,
                                                cultural_refs=cultural_refs,
                                                target_language=tgt,
-                                               analysis_depth=App._run_setting(
-                                                   self, "analysis_depth", "analysis_depth_var", "Standart"),
+                                               analysis_depth=analysis_depth,
                                                helper_model=self._helper_api_model("analysis"),
                                                helper_url=self._helper_api_base_url("analysis"),
                                                style=App._run_setting(
@@ -30127,8 +30190,7 @@ class App(ctk.CTk):
                     f"{len(_analysis_idioms or {})} deyim")
                 _analysis_metrics = ht.analysis_effectiveness_metrics(
                     analysis_tuple, cues,
-                    App._run_setting(
-                        self, "analysis_depth", "analysis_depth_var", "Standart"),
+                    analysis_depth,
                     complete=analysis_ok)
                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
