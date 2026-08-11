@@ -9,6 +9,18 @@ import subtitle_translator_gui as gui
 
 
 class MissingRepairToggleTest(unittest.TestCase):
+    def test_disabled_repair_uses_reporting_phase_name(self):
+        self.assertEqual(
+            gui._missing_repair_phase(False), "Eksik Cue Raporlama")
+        self.assertEqual(
+            gui._missing_repair_phase(False, partial_only=True),
+            "Eksik Cue Raporlama")
+        self.assertEqual(
+            gui._missing_repair_phase(True), "Eksik Çeviri Onarımı")
+        self.assertEqual(
+            gui._missing_repair_phase(True, partial_only=True),
+            "Yalnız Eksik Cue Onarımı")
+
     def test_disabled_setting_blocks_all_chunk_repair_api_paths(self):
         app = gui.App.__new__(gui.App)
         app._active_snapshot = {"repair_missing": False}

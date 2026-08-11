@@ -5805,6 +5805,12 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     return out, repaired
 
 
+def _missing_repair_phase(enabled: bool, partial_only: bool = False) -> str:
+    if not enabled:
+        return "Eksik Cue Raporlama"
+    return "Yalnız Eksik Cue Onarımı" if partial_only else "Eksik Çeviri Onarımı"
+
+
 def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
     out = list(blocks or [])
     if not source_cues:
@@ -25645,7 +25651,9 @@ class App(ctk.CTk):
                 f"{len(missing_before)} eksik cue API'ye gönderilmeyecek.",
                 "warn",
             )
-        self._record_file_status(filepath, "Yalnız Eksik Cue Onarımı", "running")
+        self._record_file_status(
+            filepath, _missing_repair_phase(repair_enabled, partial_only=True),
+            "running")
         repaired_blocks, repaired = _repair_untranslated_sync(
             partial_blocks, raw_src_map, client,
             src_lang=file_src, tgt_lang=tgt, model=model,
@@ -26337,8 +26345,10 @@ class App(ctk.CTk):
             _n_repaired = 0
             _repair_advisories = []
             _before_repair = list(sorted_blocks)
+            _repair_enabled = bool(App._run_setting(
+                self, "repair_missing", "repair_missing_var", False))
             self._record_file_status(
-                filepath, "Eksik Çeviri Onarımı", "running")
+                filepath, _missing_repair_phase(_repair_enabled), "running")
             try:
                 sorted_blocks, _n_repaired = _repair_untranslated_sync(
                     sorted_blocks, _raw_map_pre, client,
@@ -26360,8 +26370,7 @@ class App(ctk.CTk):
                     retry_wait_fn=lambda delay, cancelled: (
                         App._repair_retry_wait(self, delay, cancelled)),
                     advisory_reviews_out=_repair_advisories,
-                    enabled=bool(App._run_setting(
-                        self, "repair_missing", "repair_missing_var", False)))
+                    enabled=_repair_enabled)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _pass_trace = {}
@@ -28831,7 +28840,10 @@ class App(ctk.CTk):
             _n_repaired = 0
             _repair_advisories = []
             _before_repair = list(sorted_blocks)
-            self._record_file_status(fp, "Eksik Çeviri Onarımı", "running")
+            _repair_enabled = bool(App._run_setting(
+                self, "repair_missing", "repair_missing_var", False))
+            self._record_file_status(
+                fp, _missing_repair_phase(_repair_enabled), "running")
             try:
                 if openai_key:
                     _repair_client = OpenAI(
@@ -28857,8 +28869,7 @@ class App(ctk.CTk):
                         retry_wait_fn=lambda delay, cancelled: (
                             App._repair_retry_wait(self, delay, cancelled)),
                         advisory_reviews_out=_repair_advisories,
-                        enabled=bool(App._run_setting(
-                            self, "repair_missing", "repair_missing_var", False)))
+                        enabled=_repair_enabled)
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _record_pass_change(
@@ -30178,8 +30189,11 @@ class App(ctk.CTk):
                 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 try:
+                    _repair_enabled = bool(App._run_setting(
+                        self, "repair_missing", "repair_missing_var", False))
                     self._record_file_status(
-                        filepath, "Eksik Çeviri Onarımı", "running")
+                        filepath, _missing_repair_phase(_repair_enabled),
+                        "running")
                     _raw_map_pre = _raw_src_map_from_cues(cues)
                     _repair_client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
@@ -30198,8 +30212,7 @@ class App(ctk.CTk):
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
                         locked_terms=_file_locked_terms,
-                        enabled=bool(App._run_setting(
-                            self, "repair_missing", "repair_missing_var", False)),
+                        enabled=_repair_enabled,
                         retry_wait_fn=lambda delay, cancelled: (
                             App._repair_retry_wait(self, delay, cancelled)))
                 except Exception as e:
