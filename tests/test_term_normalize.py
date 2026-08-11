@@ -6,7 +6,7 @@ aynı kalmış 'sızıntı' biçimi) — sayıca çoğunluk ASLA tek başına ka
 gerçek vakada YANLIŞ biçim (Troy, İngilizce) çoğunluktaydı (14), DOĞRU biçim (Truva)
 azınlıktaydı (3)."""
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import subtitle_translator_gui as gui
 
@@ -342,11 +342,12 @@ class NormalizeMixedTermsTest(unittest.TestCase):
             {"id": "4", "tr": "Ama Truva hâlâ tartışmalı."},
             {"id": "4", "tr": "Ama Troya hâlâ tartışmalı."},
         ]
+        status = {}
         import sys
         with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
             result, n = gui._normalize_mixed_terms(
                 blocks, src, "key", "url", "model",
-                locked_terms={"Troy": "Truva"})
+                locked_terms={"Troy": "Truva"}, status_out=status)
 
         result_map = {idx: text for idx, _ts, text in result}
         self.assertEqual(n, 1)
@@ -354,6 +355,38 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         self.assertEqual(result_map["2"], "Sonra Troy yıkıldı.")
         self.assertEqual(result_map["3"], "Truva'nın kalıntıları bulundu.")
         self.assertEqual(result_map["4"], "Ama Troy hâlâ tartışmalı.")
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual(status["partial_chunks"], 1)
+
+    def test_missing_usage_is_reported_for_term_normalization(self):
+        blocks = _b(
+            (1, "Troy kuşatması başladı."),
+            (2, "Sonra Troy yıkıldı."),
+            (3, "Truva'nın kalıntıları bulundu."),
+            (4, "Ama Troy hâlâ tartışmalı."),
+            (5, "Truva'ya dair yeni kanıtlar var."),
+        )
+        src = _s(**{
+            "1": "The Troy siege began.", "2": "Then Troy fell.",
+            "3": "The ruins of Troy were found.",
+            "4": "But Troy is still disputed.",
+            "5": "New evidence about Troy exists.",
+        })
+        fixes = [
+            {"id": "1", "tr": "Truva kuşatması başladı."},
+            {"id": "2", "tr": "Sonra Truva yıkıldı."},
+            {"id": "4", "tr": "Ama Truva hâlâ tartışmalı."},
+        ]
+        callback = MagicMock()
+        callback.report_missing_usage = MagicMock()
+
+        import sys
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
+            gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model",
+                locked_terms={"Troy": "Truva"}, token_callback=callback)
+
+        callback.report_missing_usage.assert_called_once_with()
 
     def test_missing_helper_key_returns_unchanged(self):
         blocks = _b(

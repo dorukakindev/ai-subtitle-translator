@@ -454,6 +454,7 @@ class SyncCheckpointTest(unittest.TestCase):
             SimpleNamespace(index=2, start="00:00:05,000", end="00:00:06,000", text="Where are you?"),
         ]
         app = SimpleNamespace(
+            repair_missing_var=SimpleNamespace(get=lambda: True),
             _force_retranslate_paths=set(),
             _get_file_schema=lambda _fp: {"name": "Otomatik", "rules": []},
             _get_file_glossary=lambda _fp: "",
@@ -516,6 +517,7 @@ class SyncCheckpointTest(unittest.TestCase):
         cues = [SimpleNamespace(
             index=1, start="00:00:01,000", end="00:00:02,000", text="Hello.")]
         app = SimpleNamespace(
+            repair_missing_var=SimpleNamespace(get=lambda: True),
             _force_retranslate_paths=set(),
             _get_file_schema=lambda _fp: {"name": "Otomatik", "rules": []},
             _get_file_glossary=lambda _fp: "",

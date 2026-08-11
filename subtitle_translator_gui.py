@@ -7884,6 +7884,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     CHUNK = 60
     total_chunks = (len(items) + CHUNK - 1) // CHUNK
     successful_chunks = 0
+    partial_chunks = 0
     cancelled = False
     if status_out is not None:
         status_out["total_chunks"] = total_chunks
@@ -7902,9 +7903,9 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
                 max_tokens=max(800, len(chunk) * 100),
                 temperature=0.2,
             )
-            if token_callback and getattr(resp, "usage", None):
-                total, cached = _get_usage_details(resp.usage)
-                token_callback(total, cached=cached)
+            _report_response_usage(
+                token_callback, resp, log_fn=log_fn,
+                pass_name="Terim Normalizasyonu")
             if not resp.choices:
                 raise ValueError("empty_response")
             content = resp.choices[0].message.content or ""
@@ -7945,6 +7946,8 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
                 f"yalnız güvenli dönen cue'lar uygulanacak ({detail})", "warn")
         if complete_response:
             successful_chunks += 1
+        elif chunk_results:
+            partial_chunks += 1
         result_map.update(chunk_results)
 
     fixes_by_idx = {it["id"]: [(f["wrong"], f["correct"]) for f in it["fixes"]] for it in items}
@@ -7981,13 +7984,14 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     pass_status = (
         "cancelled" if cancelled
         else "completed" if successful_chunks == total_chunks
-        else "partial" if successful_chunks
+        else "partial" if successful_chunks or partial_chunks
         else "failed"
     )
     if status_out is not None:
         status_out.update({
             "status": pass_status,
             "successful_chunks": successful_chunks,
+            "partial_chunks": partial_chunks,
             "failed_chunks": failed_chunks,
             "changed": fixed_count,
         })
