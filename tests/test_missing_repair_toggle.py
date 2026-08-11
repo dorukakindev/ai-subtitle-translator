@@ -1,4 +1,5 @@
 import inspect
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,45 @@ import subtitle_translator_gui as gui
 
 
 class MissingRepairToggleTest(unittest.TestCase):
+    def test_disabled_setting_blocks_all_chunk_repair_api_paths(self):
+        app = gui.App.__new__(gui.App)
+        app._active_snapshot = {"repair_missing": False}
+        app._stop_flag = False
+        logs = []
+        app._log = lambda message, level="info": logs.append((level, message))
+        app._json_repair_pass = MagicMock(
+            side_effect=AssertionError("JSON repair must stay disabled"))
+        app._resend_missing_blocks = MagicMock(
+            side_effect=AssertionError("cue repair must stay disabled"))
+        request = {
+            "custom_id": "chunk_1",
+            "body": {
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "system", "content": "Translate."},
+                    {"role": "user", "content": json.dumps({"tr": [
+                        {"i": 1, "t": "Hello."},
+                        {"i": 2, "t": "Goodbye."},
+                    ]})},
+                ],
+            },
+        }
+        raw_map = {"chunk_1": json.dumps([
+            {"i": 1, "t": "Merhaba."},
+        ], ensure_ascii=False)}
+
+        with unittest.mock.patch.object(gui, "_safe_chat_create") as chat:
+            unresolved = gui.App._retry_hata(
+                app, object(), raw_map, [request], max_rounds=3)
+
+        self.assertEqual(unresolved, {"chunk_1"})
+        app._json_repair_pass.assert_not_called()
+        app._resend_missing_blocks.assert_not_called()
+        chat.assert_not_called()
+        rendered = "\n".join(message for _level, message in logs)
+        self.assertIn("Eksik Cue API Onarımı kapalı", rendered)
+        self.assertIn("2", rendered)
+
     def test_disabled_repair_logs_every_cue_without_api_call(self):
         client = MagicMock()
         logs = []

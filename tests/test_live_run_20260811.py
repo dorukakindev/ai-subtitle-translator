@@ -46,7 +46,7 @@ class LiveRunRecoveryTest(unittest.TestCase):
             {"i": 3, "t": "Sağlam son çeviri."},
         ], ensure_ascii=False)
 
-        def targeted(_client, _req, current_raw, max_sub=1):
+        def targeted(_client, _req, current_raw, max_sub=1, file_path=""):
             items = json.loads(current_raw)
             self.assertEqual(max_sub, 1)
             self.assertEqual(items[0]["t"], "Sağlam ilk çeviri.")

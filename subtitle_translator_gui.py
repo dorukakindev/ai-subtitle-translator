@@ -17539,10 +17539,54 @@ class App(ctk.CTk):
         import hybrid_translate as ht
         if getattr(self, "_stop_flag", False):
             return {req.get("custom_id", "") for req in requests_list}
+        req_by_id = {r["custom_id"]: r for r in requests_list}
+
+        snapshot = self.__dict__.get("_active_snapshot")
+        if isinstance(snapshot, dict) and "repair_missing" in snapshot:
+            repair_enabled = bool(snapshot.get("repair_missing"))
+        else:
+            repair_var = self.__dict__.get("repair_missing_var")
+            repair_enabled = (
+                bool(repair_var.get()) if repair_var is not None else True)
+        if not repair_enabled:
+            unresolved = {}
+            for cid, req in req_by_id.items():
+                reason = _chunk_response_retry_reason(raw_map.get(cid), req)
+                if not reason:
+                    continue
+                cue_ids = []
+                try:
+                    user_message = next(
+                        msg["content"]
+                        for msg in req.get("body", {}).get("messages", [])
+                        if msg.get("role") == "user")
+                    payload = json.loads(user_message)
+                    missing = _missing_block_items(
+                        [item for item in payload.get("tr", [])
+                         if isinstance(item, dict)],
+                        raw_map.get(cid, ""),
+                    )
+                    cue_ids = [str(item.get("i")) for item in missing]
+                except Exception:
+                    cue_ids = []
+                unresolved[cid] = (reason, cue_ids)
+            report_once = self.__dict__.setdefault(
+                "_repair_disabled_chunk_report_once", set())
+            for cid, (reason, cue_ids) in unresolved.items():
+                report_key = (id(raw_map), cid, reason, tuple(cue_ids))
+                if report_key in report_once:
+                    continue
+                report_once.add(report_key)
+                detail = f" ({_fmt_align_ranges(cue_ids)})" if cue_ids else ""
+                self._log(
+                    f"  ↪ {cid}: {reason}; Eksik Cue API Onarımı kapalı, API yeniden "
+                    f"denenmedi{detail}. Şüpheli cue inceleme raporuna bırakıldı",
+                    "warn",
+                )
+            return set(unresolved)
         # Step 0: try cheap JSON repair before full re-translation
         self._json_repair_pass(
             client, raw_map, requests_list, file_map, file_path)
-        req_by_id = {r["custom_id"]: r for r in requests_list}
 
         def _request_file_path(req):
             if file_path:
