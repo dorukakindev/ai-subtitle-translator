@@ -117,7 +117,13 @@ def mutate_batch_ids(path, *, add=(), remove=(), replace=None) -> list[str]:
 
 def best_effort_cancel_remote_batch(client, batch_id: str, log_fn=None) -> bool:
     try:
-        client.batches.cancel(batch_id)
+        from provider_retry import provider_call_with_retry
+        provider_call_with_retry(
+            lambda: client.batches.cancel(batch_id),
+            client,
+            "",
+            {"operation": "batch_cancel", "batch_id": str(batch_id)},
+        )
         if log_fn:
             log_fn(f"Metadata kaydı başarısız olan batch iptal edildi: {batch_id}", "warn")
         return True

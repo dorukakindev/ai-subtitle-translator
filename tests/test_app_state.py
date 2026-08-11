@@ -1,8 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-from app_state import atomic_write_json, is_safe_batch_id, mutate_batch_ids
+from app_state import (atomic_write_json, best_effort_cancel_remote_batch,
+                       is_safe_batch_id, mutate_batch_ids)
 
 
 class AppStateTest(unittest.TestCase):
@@ -32,6 +35,20 @@ class AppStateTest(unittest.TestCase):
             result = mutate_batch_ids(path, add=["batch_ok", "../escape", "x/y"])
             self.assertEqual(result, ["batch_ok"])
             self.assertEqual(path.read_text(encoding="utf-8"), "batch_ok")
+
+    def test_best_effort_cancel_retries_transient_provider_failure(self):
+        class TemporaryFailure(RuntimeError):
+            status_code = 503
+
+        cancel = MagicMock(side_effect=[TemporaryFailure("unavailable"), object()])
+        client = SimpleNamespace(
+            batches=SimpleNamespace(cancel=cancel),
+            base_url="https://example.invalid/v1",
+        )
+        with patch("provider_retry._REGISTRY.wait_for_retry", return_value=0):
+            self.assertTrue(best_effort_cancel_remote_batch(client, "batch_retry"))
+
+        self.assertEqual(cancel.call_count, 2)
 
 
 if __name__ == "__main__":
