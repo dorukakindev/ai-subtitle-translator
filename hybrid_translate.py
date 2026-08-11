@@ -196,6 +196,83 @@ def _analysis_depth_config(value: str) -> dict:
     return _ANALYSIS_DEPTH_CONFIG[normalize_analysis_depth(value)]
 
 
+def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
+                                   *, complete=True,
+                                   analysis_chunks=None) -> dict:
+    result = tuple(analysis_result or ())
+    context = result[0] if len(result) > 0 else None
+    examples = result[1] if len(result) > 1 else {}
+    pronouns = result[2] if len(result) > 2 else {}
+    scenes = result[4] if len(result) > 4 else []
+    idioms = result[5] if len(result) > 5 else {}
+    cultural = result[6] if len(result) > 6 else []
+    cues = list(cues or [])
+    cue_ids = set()
+    for cue in cues:
+        try:
+            cue_id = cue.index if hasattr(cue, "text") else cue[0]
+            cue_ids.add(int(cue_id))
+        except (TypeError, ValueError, IndexError):
+            continue
+    covered = set()
+    referent_scenes = 0
+    goal_scenes = 0
+    valid_scenes = 0
+    for scene in scenes or []:
+        if not isinstance(scene, dict):
+            continue
+        try:
+            start, end = int(scene.get("start")), int(scene.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if end < start:
+            continue
+        valid_scenes += 1
+        covered.update(idx for idx in cue_ids if start <= idx <= end)
+        referent_scenes += bool(scene.get("referents"))
+        goal_scenes += bool(scene.get("speaker_goals"))
+    depth_key = normalize_analysis_depth(analysis_depth)
+    chunk_size = int(_analysis_depth_config(depth_key)["chunk_size"])
+    chunk_count = (
+        int(analysis_chunks) if analysis_chunks is not None
+        else ((len(cues) + chunk_size - 1) // chunk_size) if cues else 0)
+    return {
+        "depth": depth_key,
+        "complete": bool(complete and not getattr(context, "_analysis_degraded", False)),
+        "source_cues": len(cues),
+        "analysis_chunks": chunk_count,
+        "terms": len(getattr(context, "recurring_terms", {}) or {}),
+        "characters": len(getattr(context, "characters", ()) or ()),
+        "examples": len(examples or {}),
+        "pronoun_pairs": len(pronouns or {}),
+        "scenes": valid_scenes,
+        "scene_covered_cues": len(covered),
+        "scene_coverage_pct": round(100.0 * len(covered) / len(cue_ids), 1) if cue_ids else 0.0,
+        "referent_scenes": referent_scenes,
+        "goal_scenes": goal_scenes,
+        "idioms": len(idioms or {}),
+        "cultural_refs": len(cultural or []),
+    }
+
+
+def analysis_effectiveness_log_line(metrics: dict) -> str:
+    m = dict(metrics or {})
+    return (
+        f"Analiz verim ozeti [{analysis_depth_label(m.get('depth'))}]: "
+        f"{'tamam' if m.get('complete') else 'kismi'} | "
+        f"{int(m.get('analysis_chunks', 0))} analiz chunk | "
+        f"{int(m.get('terms', 0))} terim | "
+        f"{int(m.get('characters', 0))} karakter | "
+        f"{int(m.get('pronoun_pairs', 0))} hitap cifti | "
+        f"{int(m.get('scenes', 0))} sahne, "
+        f"cue kapsami %{float(m.get('scene_coverage_pct', 0.0)):.1f} | "
+        f"{int(m.get('referent_scenes', 0))} gonderge | "
+        f"{int(m.get('goal_scenes', 0))} konusmaci hedefi | "
+        f"{int(m.get('idioms', 0))} deyim | "
+        f"{int(m.get('cultural_refs', 0))} kulturel referans"
+    )
+
+
 # ── Timestamp / CPS yardımcıları ─────────────────────────────────────────────
 
 def _ts_to_sec(ts: str) -> float:
@@ -3260,10 +3337,21 @@ def analyze_with_helper(
                 "warn",
             )
 
+    analysis_result = (
+        merged, examples, pronoun_map, character_styles, scene_emotions,
+        idiom_map, cultural_refs)
+    if log_fn:
+        log_fn(analysis_effectiveness_log_line(
+            analysis_effectiveness_metrics(
+                analysis_result, cues, depth_key,
+                complete=not getattr(merged, "_analysis_degraded", False),
+                analysis_chunks=len(chunks))),
+            "info")
+
     # Return extended tuple:
     # (merged, examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs)
     # Callers unpacking first 3 still work; add *_ to catch extras safely.
-    return merged, examples, pronoun_map, character_styles, scene_emotions, idiom_map, cultural_refs
+    return analysis_result
 
 
 def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):

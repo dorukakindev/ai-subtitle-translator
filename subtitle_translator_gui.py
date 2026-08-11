@@ -9849,6 +9849,33 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     if helper_on:
         analysis_status = str(row.get("analysis_status") or "etkin")
         lines.append(f"Yardımcı Analiz: {analysis_status}")
+        metrics = dict(row.get("analysis_metrics") or {})
+        if metrics:
+            depth_label = {
+                "standard": "Standart", "advanced": "Gelişmiş",
+                "maximum": "Maksimum",
+            }.get(str(metrics.get("depth") or ""), "Bilinmiyor")
+            lines.append(
+                f"Analiz kapsam ölçümü [{depth_label}]: "
+                f"{int(metrics.get('analysis_chunks', 0) or 0)} analiz chunk, "
+                f"{int(metrics.get('terms', 0) or 0)} terim, "
+                f"{int(metrics.get('characters', 0) or 0)} karakter, "
+                f"{int(metrics.get('pronoun_pairs', 0) or 0)} hitap çifti, "
+                f"{int(metrics.get('scenes', 0) or 0)} sahne, "
+                f"cue kapsamı %{float(metrics.get('scene_coverage_pct', 0.0) or 0.0):.1f}, "
+                f"{int(metrics.get('referent_scenes', 0) or 0)} gönderge, "
+                f"{int(metrics.get('goal_scenes', 0) or 0)} konuşmacı hedefi, "
+                f"{int(metrics.get('idioms', 0) or 0)} deyim, "
+                f"{int(metrics.get('cultural_refs', 0) or 0)} kültürel referans")
+            lines.append(
+                "Analiz sonrası karşılaştırma ölçümü: "
+                f"Critic {int(trace.get('Critic', 0) or 0)} düzeltme, "
+                f"tüm pass'ler {int(row.get('pass_fix', 0) or 0)} değişik cue, "
+                f"{int(row.get('warn', 0) or 0)} nihai uyarı, "
+                f"{int(row.get('hata', 0) or 0)} eksik/hata")
+            lines.append(
+                "Analiz derinliği kararı: tek koşu nedensel kanıt değildir; "
+                "aynı kaynakta diğer derinliğin raporuyla karşılaştırılmalı")
     else:
         lines.append("Yardımcı Analiz: kapalı")
 
@@ -26180,6 +26207,13 @@ class App(ctk.CTk):
                 f"{len(_analysis_locked_terms)} terim, "
                 f"{len(getattr(context, 'characters', ()) or ())} karakter, "
                 f"{len(char_examples or {})} örnek, {len(idiom_map or {})} deyim")
+            _analysis_metrics = ht.analysis_effectiveness_metrics(
+                (context, char_examples, pronoun_map, character_styles,
+                 scene_emotions, idiom_map, cultural_refs),
+                cues,
+                App._run_setting(
+                    self, "analysis_depth", "analysis_depth_var", "Standart"),
+                complete=_analysis_ok)
             report_rows.append({
                 "name": fname, "source_path": filepath,
                 "output_path": str(_write_path),
@@ -26194,6 +26228,7 @@ class App(ctk.CTk):
                 "pass_coverage": _pc,
                 "helper_analysis": True,
                 "analysis_status": _analysis_status,
+                "analysis_metrics": _analysis_metrics,
                 "chain_ctx": bool(App._run_setting(
                     self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": len(batch_reqs),
@@ -27864,6 +27899,14 @@ class App(ctk.CTk):
                                 _resume_analysis_status = (
                                     "tamam (önbellek)" if _analysis_result
                                     else "kullanılamadı (resume önbelleği yok)")
+                                _resume_analysis_metrics = (
+                                    ht.analysis_effectiveness_metrics(
+                                        _analysis_result, _orig_cues,
+                                        App._run_setting(
+                                            self, "analysis_depth",
+                                            "analysis_depth_var", "Standart"),
+                                        complete=True)
+                                    if _analysis_result else {})
                                 report_rows.append({"name": Path(output_path).name,
                                                     "source_path": str(_src_path),
                                                     "output_path": str(_write_path),
@@ -27882,6 +27925,7 @@ class App(ctk.CTk):
                                                      "pass_coverage": _pc,
                                                      "helper_analysis": True,
                                                      "analysis_status": _resume_analysis_status,
+                                                     "analysis_metrics": _resume_analysis_metrics,
                                                      "chain_ctx": bool(App._run_setting(
                                                          self, "chain_ctx", "chain_ctx_var", True)),
                                                      "translation_chunks": len(file_map),
@@ -30081,6 +30125,11 @@ class App(ctk.CTk):
                     f"{len(getattr(_analysis_context, 'characters', ()) or ())} karakter, "
                     f"{len(_analysis_examples or {})} örnek, "
                     f"{len(_analysis_idioms or {})} deyim")
+                _analysis_metrics = ht.analysis_effectiveness_metrics(
+                    analysis_tuple, cues,
+                    App._run_setting(
+                        self, "analysis_depth", "analysis_depth_var", "Standart"),
+                    complete=analysis_ok)
                 _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
                 report_rows.append({
                     "name": fname, "source_path": filepath,
@@ -30097,6 +30146,7 @@ class App(ctk.CTk):
                     "pass_coverage": _pc,
                     "helper_analysis": True,
                     "analysis_status": _analysis_status,
+                    "analysis_metrics": _analysis_metrics,
                     "chain_ctx": bool(App._run_setting(
                         self, "chain_ctx", "chain_ctx_var", True)),
                     "translation_chunks": len(fmap),
