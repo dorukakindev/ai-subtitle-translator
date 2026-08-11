@@ -243,6 +243,32 @@ class PersistentRepairRetryTest(unittest.TestCase):
             "candidate": "Mary geldi.",
         }])
 
+    def test_shifted_question_repair_is_accepted_once_and_reported(self):
+        log = MagicMock()
+        advisories = []
+        source = "How did I know he would lie there all night?"
+        candidate = "Dondurma bütün gece soğuktu."
+        with patch("subtitle_translator_gui._safe_chat_create",
+                   return_value=_response([{"i": "1417", "t": candidate}])) as create:
+            result, repaired = gui._repair_untranslated_sync(
+                [("1417", _TS, "[HATA]")], {"1417": source}, object(),
+                "English", "Turkish", log_fn=log,
+                retry_wait_fn=lambda *_args: self.fail("retry should not run"),
+                advisory_reviews_out=advisories)
+
+        log_text = " ".join(str(call.args[0]) for call in log.call_args_list)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(repaired, 1)
+        self.assertEqual(result[0][2], candidate)
+        self.assertIn("source_question", log_text)
+        self.assertNotIn("Onarım reddi", log_text)
+        self.assertEqual(advisories, [{
+            "id": "1417",
+            "reason": "source_question",
+            "source": source,
+            "candidate": candidate,
+        }])
+
     def test_quoted_song_title_translation_is_accepted_without_retry(self):
         source = (
             'One seven-inch single - "I\'m the Leader of the Gang," brackets, '

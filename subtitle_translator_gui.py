@@ -4933,12 +4933,14 @@ def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: st
             return f"non_turkish_target:{token}"
     if ht.locked_term_violation(src, value, locked_terms or {}):
         return "locked_term_violation"
+    if ht._question_mark_mismatch(src, value):
+        return "source_question"
     return ""
 
 
 def _repair_reason_is_advisory(reason: str) -> bool:
     value = str(reason or "")
-    return value == "locked_term_violation" or value.startswith(
+    return value in {"locked_term_violation", "source_question"} or value.startswith(
         "non_turkish_target:")
 
 
