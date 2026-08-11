@@ -36,6 +36,45 @@ class PipelineStageMappingTest(unittest.TestCase):
         self.assertEqual(gui._phase_detail_text("Critic Pass", ""), "")
 
 
+class JobBoardSummaryTest(unittest.TestCase):
+    def test_summary_groups_finished_skipped_and_errors(self):
+        rows = {
+            "a": {"state": "waiting"},
+            "b": {"state": "running"},
+            "c": {"state": "done"},
+            "d": {"state": "skip"},
+            "e": {"state": "error"},
+        }
+
+        self.assertEqual(
+            gui._job_board_counts(rows),
+            {"waiting": 1, "running": 1, "done": 1,
+             "skip": 1, "error": 1})
+        self.assertEqual(gui._job_board_summary_text(rows),
+                         "○ 1   ● 1   ✓ 2   ! 1")
+
+    def test_file_progress_updates_numeric_badge_and_active_surface(self):
+        filepath = "episode.srt"
+        row = {
+            "dot": MagicMock(), "phase": MagicMock(), "pb": MagicMock(),
+            "frame": MagicMock(), "pct": MagicMock(),
+            "remove": MagicMock(), "state": "waiting",
+            "value": 0.0, "target": 0.0, "color": gui.FG2,
+        }
+        app = SimpleNamespace(
+            _job_rows={filepath: row}, _PHASE_COLORS=gui.App._PHASE_COLORS,
+            _is_running=False, _is_shutting_down=False,
+            _refresh_job_board_title=lambda: None,
+        )
+
+        gui.App._update_file_progress(
+            app, filepath, "Native Okuyucu", 64.6, "running")
+
+        self.assertEqual(row["state"], "running")
+        self.assertEqual(row["pct"].configure.call_args.kwargs["text"], "65%")
+        self.assertIn("fg_color", row["frame"].configure.call_args.kwargs)
+
+
 class PipelineRailStateTest(unittest.TestCase):
     @staticmethod
     def _item():

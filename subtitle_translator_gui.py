@@ -619,6 +619,25 @@ def _phase_detail_text(phase: str, detail: str) -> str:
     return ""
 
 
+def _job_board_counts(rows) -> dict:
+    counts = {"waiting": 0, "running": 0, "done": 0,
+              "skip": 0, "error": 0}
+    for row in (rows or {}).values():
+        state = str(row.get("state", "waiting") or "waiting").casefold()
+        if state not in counts:
+            state = "waiting"
+        counts[state] += 1
+    return counts
+
+
+def _job_board_summary_text(rows) -> str:
+    counts = _job_board_counts(rows)
+    finished = counts["done"] + counts["skip"]
+    return (
+        f"○ {counts['waiting']}   ● {counts['running']}   "
+        f"✓ {finished}   ! {counts['error']}")
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -13072,6 +13091,11 @@ class App(ctk.CTk):
                                       text_color=FG2)
         self._jb_title.grid(row=0, column=0, sticky="w")
 
+        self._jb_summary = ctk.CTkLabel(
+            jb_hdr, text="○ 0   ● 0   ✓ 0   ! 0", anchor="e",
+            font=ctk.CTkFont("Consolas", 10, "bold"), text_color=FG2)
+        self._jb_summary.grid(row=0, column=1, sticky="e", padx=(12, 2))
+
         self._job_rows_frame = ctk.CTkScrollableFrame(
             self._job_board, fg_color="transparent", height=180,
             scrollbar_button_color=BORDER,
@@ -16167,21 +16191,29 @@ class App(ctk.CTk):
                 pb.grid(row=0, column=3, padx=(2, 12), pady=9)
                 pb.set(0)
 
+                pct_lbl = ctk.CTkLabel(
+                    row_fr, text="0%", width=38, anchor="e",
+                    font=ctk.CTkFont("Consolas", 9, "bold"),
+                    text_color=FG2)
+                pct_lbl.grid(row=0, column=4, padx=(0, 6))
+
                 remove_btn = ctk.CTkButton(
                     row_fr, text="×", width=26, height=26,
                     font=ctk.CTkFont("Segoe UI", 15, "bold"),
                     fg_color="transparent", hover_color=BORDER, text_color=WARN,
                     command=lambda p=fp: self._remove_queued_file(p))
-                remove_btn.grid(row=0, column=4, padx=(0, 6), pady=4)
+                remove_btn.grid(row=0, column=5, padx=(0, 6), pady=4)
 
                 self._job_rows[fp] = {"dot": dot, "phase": phase_lbl,
                                       "pb": pb, "frame": row_fr,
+                                      "pct": pct_lbl,
                                       "remove": remove_btn, "state": "waiting",
                                       "value": 0.0, "target": 0.0,
                                       "color": FG2}
 
             n = len(files)
             self._jb_title.configure(text=f"DOSYALAR — 0 / {n}")
+            self._jb_summary.configure(text=_job_board_summary_text(self._job_rows))
             self._file_list_outer.grid_remove()
             self._job_board.grid()
 
@@ -16227,9 +16259,12 @@ class App(ctk.CTk):
         self._set_stat(self.stat_files_var, str(len(self._job_rows)))
 
     def _refresh_job_board_title(self):
-        done_n = sum(1 for r in self._job_rows.values()
-                     if r["dot"].cget("text") in ("✓", "✗", "—"))
+        counts = _job_board_counts(self._job_rows)
+        done_n = counts["done"] + counts["skip"] + counts["error"]
         self._jb_title.configure(text=f"DOSYALAR — {done_n} / {len(self._job_rows)}")
+        summary = self.__dict__.get("_jb_summary")
+        if summary is not None:
+            summary.configure(text=_job_board_summary_text(self._job_rows))
 
     def _update_file_progress(self, filepath: str, phase: str,
                                pct: float, status: str = "running"):
@@ -16274,12 +16309,22 @@ class App(ctk.CTk):
                     text=phase, text_color=color,
                     fg_color=_mix_hex_color(CARD, color, 0.13))
                 row["pb"].configure(progress_color=color)
+                pct_label = row.get("pct")
+                if pct_label is not None:
+                    pct_label.configure(
+                        text=("—" if status == "skip"
+                              else f"{int(round(value * 100))}%"),
+                        text_color=color)
                 row["color"] = color
                 row["target"] = value
                 if status == "running":
                     row["state"] = "running"
                     self._motion_active_filepath = filepath
                     row["remove"].configure(state="disabled")
+                    row["frame"].configure(
+                        fg_color=_mix_hex_color(CARD, color, 0.06),
+                        border_width=1,
+                        border_color=_mix_hex_color(BORDER_SOFT, color, 0.55))
                     if App._motion_enabled(self) and self.__dict__.get("_is_running", False):
                         App._ensure_motion_animation(self)
                     else:
@@ -16287,6 +16332,7 @@ class App(ctk.CTk):
                         row["pb"].set(value)
                 else:
                     row["state"] = status
+                    row["frame"].configure(fg_color=CARD)
                     row["value"] = value
                     row["pb"].set(value)
                     if status == "done" and App._motion_enabled(self):
