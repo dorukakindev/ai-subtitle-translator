@@ -1637,6 +1637,8 @@ def _generate_character_examples(
         }
         return _analysis_aux_result(
             (examples, styles), status, "character_examples", True)
+    except RequestCancelled:
+        raise
     except Exception as _e:
         if log_fn:
             log_fn(f"Karakter örnekleri oluşturulamadı: {_e}", "warn")
@@ -1751,6 +1753,8 @@ def _generate_pronoun_map(
                 except Exception:
                     pass
             return _analysis_aux_result({}, status, "pronoun_map", False)
+    except RequestCancelled:
+        raise
     except Exception:
         return _analysis_aux_result({}, status, "pronoun_map", False)
 
@@ -1965,8 +1969,7 @@ def _extract_emotional_arc(
                     temperature=0.3,
                 )
             except RequestCancelled:
-                complete = False
-                break
+                raise
             except Exception as exc:
                 complete = False
                 if log_fn:
@@ -1995,6 +1998,8 @@ def _extract_emotional_arc(
             all_bound.extend(bound)
             complete = complete and page_complete
         return _analysis_aux_result(all_bound, status, "scene_plan", complete)
+    except RequestCancelled:
+        raise
     except Exception as e:
         if log_fn:
             log_fn(f"Sahne planı çıkarılamadı: {e}", "warn")
@@ -2100,6 +2105,8 @@ def _generate_idiom_map(
                 except Exception:
                     pass
             return _analysis_aux_result({}, status, "idiom_map", False)
+    except RequestCancelled:
+        raise
     except Exception as e:
         if log_fn:
             log_fn(f"Deyim haritası oluşturulamadı: {e}", "warn")
@@ -2203,6 +2210,8 @@ def _generate_cultural_refs(
                 except Exception:
                     pass
             return _analysis_aux_result([], status, "cultural_refs", False)
+    except RequestCancelled:
+        raise
     except Exception as e:
         if log_fn:
             log_fn(f"Kültürel referanslar çıkarılamadı: {e}", "warn")

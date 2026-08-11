@@ -6,9 +6,42 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import hybrid_translate as ht
+from request_cancellation import RequestCancelled
 
 
 class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
+    def test_auxiliary_analysis_preserves_request_cancellation(self):
+        cue = SimpleNamespace(text="Source line.", index=1)
+        scene_cue = SimpleNamespace(
+            text="Source line.", index=1,
+            start="00:00:01,000", end="00:00:02,000")
+        character = SimpleNamespace(name="Alice", speaking_style="calm")
+        context = SimpleNamespace(
+            characters=[character, SimpleNamespace(name="Bob", speaking_style="formal")],
+            setting="",
+            summary="",
+        )
+        calls = [
+            lambda: ht._generate_character_examples(
+                [character], "Turkish", "key", "https://example.test/v1", "gpt-5.4"),
+            lambda: ht._generate_pronoun_map(
+                context, "Turkish", "key", "https://example.test/v1", "gpt-5.4"),
+            lambda: ht._generate_idiom_map(
+                [cue], "Turkish", "key", "https://example.test/v1", "gpt-5.4"),
+            lambda: ht._generate_cultural_refs(
+                [cue], {"name": "Film"}, "Turkish",
+                "key", "https://example.test/v1", "gpt-5.4"),
+            lambda: ht._extract_emotional_arc(
+                [scene_cue], "Turkish", "key",
+                "https://example.test/v1", "gpt-5.4"),
+        ]
+        with patch("openai.OpenAI"), patch.object(
+                ht, "_safe_chat_create", side_effect=RequestCancelled("stopped")):
+            for call in calls:
+                with self.subTest(call=call):
+                    with self.assertRaises(RequestCancelled):
+                        call()
+
     def test_auxiliary_shapes_are_sanitized(self):
         examples, pronouns, styles, idioms, refs = ht._sanitize_analysis_aux(
             character_examples={"A": ["Bir.", 3], "bad": "not-a-list"},
