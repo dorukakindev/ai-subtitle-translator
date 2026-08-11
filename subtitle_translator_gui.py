@@ -4970,6 +4970,54 @@ def _targeted_strict_chunk_salvage(raw, req: dict, reason: str):
         return None
 
 
+def _targeted_non_turkish_chunk_salvage(raw, req: dict):
+    try:
+        import hybrid_translate as ht
+        payload = json.loads(req["body"]["messages"][1]["content"])
+        expected_items = [
+            item for item in payload.get("tr", [])
+            if isinstance(item, dict) and "i" in item
+        ]
+        response_items = json.loads(_extract_json_array(raw))
+        if len(expected_items) < 2 or not isinstance(response_items, list):
+            return None
+        response_by_id = {
+            str(item["i"]): str(item.get("t", ""))
+            for item in response_items
+            if isinstance(item, dict) and "i" in item
+            and isinstance(item.get("t"), str)
+        }
+        if len(response_by_id) != len(expected_items):
+            return None
+        src_map = _chunk_src_map_from_request(req)
+        bad_ids = {
+            str(item["i"])
+            for item in expected_items
+            if ht.non_turkish_leak_token(
+                response_by_id.get(str(item["i"]), ""),
+                source_text=_chunk_leak_source_text(src_map, item["i"]),
+            )
+        }
+        if not bad_ids:
+            return None
+        canonical = [
+            {
+                "i": item["i"],
+                "t": (
+                    "[HATA_NON_TURKISH_TARGET]"
+                    if str(item["i"]) in bad_ids
+                    else response_by_id[str(item["i"])]
+                ),
+            }
+            for item in expected_items
+        ]
+        return json.dumps(canonical, ensure_ascii=False), sorted(
+            bad_ids, key=lambda value: (0, int(value))
+            if str(value).isdigit() else (1, str(value)))
+    except Exception:
+        return None
+
+
 def _chunk_response_retry_reason(raw, req: dict | None) -> str:
     if raw is None:
         return "missing_response"
@@ -6847,6 +6895,8 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
             wa, wb = _source_word_set(sa), _source_word_set(sb)
             if wa and wb and wa == wb:
                 continue  # aynı kaynak sözcükleri farklı sırada → meşru
+            if min(len(wa), len(wb)) >= 3 and (wa <= wb or wb <= wa):
+                continue
             if _align_lcs_len(sa, sb) >= lcs_thresh:
                 continue  # kaynaklar uzun ortak ifade paylaşıyor → meşru
             dup_ids.append(seq[a][0])
@@ -7887,6 +7937,27 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             "warn" if successful_chunks else "err",
         )
     return new_blocks, fixed_count
+
+
+def _source_map_for_quality_blocks(blocks: list, cues: list) -> dict:
+    by_id = {}
+    by_timestamp = {}
+    for cue in cues or []:
+        try:
+            cue_id = str(cue.index)
+            timestamp = f"{cue.start} --> {cue.end}"
+            text = _clean_src(cue.text)
+        except AttributeError:
+            try:
+                cue_id, timestamp, text = str(cue[0]), str(cue[1]), _clean_src(cue[2])
+            except Exception:
+                continue
+        by_id[cue_id] = text
+        by_timestamp[timestamp] = text
+    return {
+        str(idx): by_timestamp.get(str(timestamp), by_id.get(str(idx), ""))
+        for idx, timestamp, _text in blocks or []
+    }
 
 
 def scan_translation_quality(fp: str, blocks: list, log_fn=None,
@@ -17379,6 +17450,8 @@ class App(ctk.CTk):
         report_only_reasons = {"cue_content_owner_mismatch"}
         report_only_cids = set()
         report_only_ids = set()
+        recovery_report_once = self.__dict__.setdefault(
+            "_recovery_report_once", set())
         for cid, req in req_by_id.items():
             reason = _retry_reason(cid)
             if reason not in strict_reasons:
@@ -17399,14 +17472,22 @@ class App(ctk.CTk):
                 except Exception:
                     bad_ids = []
                 report_only_cids.add(cid)
-                report_only_ids.update(str(value) for value in bad_ids)
+                report_key = (
+                    id(raw_map), cid, reason,
+                    tuple(str(value) for value in bad_ids),
+                )
+                first_report = report_key not in recovery_report_once
+                recovery_report_once.add(report_key)
+                if first_report:
+                    report_only_ids.update(str(value) for value in bad_ids)
                 detail = (
                     f" ({_fmt_align_ranges(bad_ids)})" if bad_ids else "")
-                self._log(
-                    f"  ↪ {cid}: {reason}; şüpheli cue yalnız inceleme raporuna "
-                    f"bırakıldı{detail}. API yeniden denenmedi, mevcut çeviri korundu",
-                    "warn",
-                )
+                if first_report:
+                    self._log(
+                        f"  ↪ {cid}: {reason}; şüpheli cue yalnız inceleme raporuna "
+                        f"bırakıldı{detail}. API yeniden denenmedi, mevcut çeviri korundu",
+                        "warn",
+                    )
                 continue
             targeted = _targeted_strict_chunk_salvage(
                 raw_map.get(cid, ""), req, reason)
@@ -17417,6 +17498,44 @@ class App(ctk.CTk):
             self._log(
                 f"  ↪ {cid}: {reason}; {len(bad_ids)} şüpheli cue hedefli "
                 f"onarıma bırakıldı ({_fmt_align_ranges(bad_ids)}), sağlam cue'lar korundu",
+                "warn",
+            )
+
+        for cid, req in req_by_id.items():
+            if _retry_reason(cid) != "non_turkish_target":
+                continue
+            targeted = _targeted_non_turkish_chunk_salvage(
+                raw_map.get(cid, ""), req)
+            if targeted is None:
+                continue
+            original_raw = raw_map.get(cid, "")
+            raw_map[cid], bad_ids = targeted
+            self._log(
+                f"  ↪ {cid}: {len(bad_ids)} hedef-dil kaçağı yalnız ilgili "
+                f"cue için bir kez onarılacak ({_fmt_align_ranges(bad_ids)}); "
+                "sağlam cue'lar korunuyor",
+                "warn",
+            )
+            try:
+                merged = self._resend_missing_blocks(
+                    client, req, raw_map[cid], max_sub=1)
+            except Exception as repair_error:
+                self._log(
+                    f"  ↪ {cid}: hedefli hedef-dil onarımı çalışmadı "
+                    f"({repair_error}); mevcut çeviri rapora bırakıldı",
+                    "warn",
+                )
+                merged = None
+            if (merged is not None
+                    and _chunk_response_retry_reason(merged, req) != "non_turkish_target"):
+                raw_map[cid] = merged
+                continue
+            raw_map[cid] = original_raw
+            report_only_cids.add(cid)
+            self._log(
+                f"  ↪ {cid}: hedef-dil kaçağı tek cue denemesinde giderilemedi; "
+                "pahalı tüm-chunk tekrarı yapılmadı, mevcut çeviri inceleme "
+                "raporuna bırakıldı",
                 "warn",
             )
 
@@ -17431,6 +17550,7 @@ class App(ctk.CTk):
             to_retry = [
                 cid for cid in pending
                 if cid not in upstream_failed and cid not in partial_only_cids
+                and cid not in report_only_cids
                 and retry_reasons.get(cid) not in strict_reasons
             ]
             if not to_retry:
@@ -17530,6 +17650,7 @@ class App(ctk.CTk):
         repair_cids = [
             cid for cid in req_by_id
             if _needs_retry(cid)
+            and cid not in report_only_cids
             and (_retry_reason(cid) not in strict_reasons
                  or cid in partial_only_cids)
         ]
@@ -17551,6 +17672,8 @@ class App(ctk.CTk):
 
         for cid in req_by_id:
             if _retry_reason(cid) != "non_turkish_target":
+                continue
+            if cid in report_only_cids:
                 continue
             try:
                 items = json.loads(_extract_json_array(raw_map.get(cid, "")))
@@ -17591,7 +17714,8 @@ class App(ctk.CTk):
             )
         return {
             cid for cid in req_by_id
-            if _retry_reason(cid) not in {"", *report_only_reasons}
+            if cid not in report_only_cids
+            and _retry_reason(cid) not in {"", *report_only_reasons}
         }
 
     def _resend_missing_blocks(self, client, req: dict, current_raw: str, max_sub: int = 1):
@@ -26267,7 +26391,7 @@ class App(ctk.CTk):
                     filepath, "Nihai Teslim Denetimi", "running")
                 _w = scan_translation_quality(
                     filepath, sorted_blocks, log_fn=self._log,
-                    src_clean_map={str(c.index): _clean_src(c.text) for c in cues},
+                    src_clean_map=_source_map_for_quality_blocks(sorted_blocks, cues),
                     issue_fn=self._record_quality_issue,
                     locked_terms=_locked_terms, source_language=file_src)
             except Exception as delivery_error:
@@ -27808,7 +27932,7 @@ class App(ctk.CTk):
                             _log_cps_warning(pp, self._log)
                             # [HATA] satırlarını görünür işaretle bırak + etiketleri geri uygula
                             if _orig_cues:
-                                _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
+                                _src_map = _source_map_for_quality_blocks(pp, _orig_cues)
                                 if (getattr(self, "term_normalize_var", None)
                                         and self.term_normalize_var.get()):
                                     try:
@@ -28708,7 +28832,8 @@ class App(ctk.CTk):
                 w = (_hata_n if _has_missing else
                      scan_translation_quality(
                          fp, sorted_blocks, log_fn=self._log,
-                         src_clean_map=src_blocks,
+                         src_clean_map=_source_map_for_quality_blocks(
+                             sorted_blocks, _src_cues),
                          issue_fn=self._record_quality_issue,
                          locked_terms=_locked_terms_for(fp),
                          source_language=_file_src_lang))
@@ -30124,7 +30249,9 @@ class App(ctk.CTk):
                     self._record_file_status(
                         filepath, "Nihai Teslim Denetimi", "running")
                     _w = scan_translation_quality(filepath, _final_blocks,
-                                                  log_fn=self._log, src_clean_map=_src_map,
+                                                  log_fn=self._log,
+                                                  src_clean_map=_source_map_for_quality_blocks(
+                                                      _final_blocks, cues),
                                                   issue_fn=self._record_quality_issue,
                                                   locked_terms=_locked_terms,
                                                   source_language=file_src)
