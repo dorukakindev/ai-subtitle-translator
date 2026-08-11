@@ -4541,7 +4541,8 @@ def _is_punct_only_translation(src_text: str, tr_text: str) -> bool:
     return not _has_wordlike_text(tr_sem)
 
 
-_NUMERIC_ONLY_SRC_RE = re.compile(r'^[\d\s.,;:!?…\-]+$')
+_NUMERIC_ONLY_SRC_RE = re.compile(
+    r'^[\d\s.,;:!?…/\-–—\'’"“”()\[\]]+$')
 
 
 def _src_is_numeric_only(src_text: str) -> bool:

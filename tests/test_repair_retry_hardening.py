@@ -425,6 +425,12 @@ class RepairFlowParityTest(unittest.TestCase):
 
 
 class IdentityInterjectionRegressionTest(unittest.TestCase):
+    def test_quoted_date_only_cues_are_valid_identity_translations(self):
+        for text in ('"12/8/54."', '"9/9/54."', "'03-11-1986'"):
+            with self.subTest(text=text):
+                self.assertTrue(gui._src_is_numeric_only(text))
+                self.assertEqual(gui._untranslated_reason(text, text), "")
+
     def test_short_identity_interjections_are_valid_translations(self):
         self.assertEqual(gui._untranslated_reason("Hey, hey!", "Hey, hey!"), "")
         self.assertEqual(gui._untranslated_reason("Jack, hey.", "Jack, hey."), "")
