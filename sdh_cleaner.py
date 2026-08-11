@@ -797,6 +797,7 @@ _HEADING_LABEL_PATTERNS = (
     re.compile(r"^\s*(?:chapter|episode|part|act|scene|season|book|volume|b\u00f6l\u00fcm|kisim|k\u0131s\u0131m|sahne|sezon|cilt)\s*(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)?\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:breaking news|news flash|special report|live report|son dakika|son dakika haberi)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:location|date|time|konum|tarih|saat|note|warning|caution|notice|disclaimer)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:esteemed\s+sir|dear\s+sir|your\s+honou?r|superior\s+court)\s*$", re.IGNORECASE),
 )
 
 

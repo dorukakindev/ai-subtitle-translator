@@ -40,6 +40,17 @@ class TestPackage5SpeakerHeading(unittest.TestCase):
             src_map={"1": src3}, source_driven=True)
         self.assertEqual(res3[0][2], "Karalar, Dünya yüzeyinin")
 
+    def test_formal_salutations_are_not_stripped_as_speaker_labels(self):
+        self.assertEqual(
+            sdh.strip_labels_by_source(
+                "Sayın Hakim: Doğru değil.", "Your Honor: Not right."),
+            "Sayın Hakim: Doğru değil.",
+        )
+        self.assertEqual(
+            sdh.strip_labels_by_source("Yüksek Mahkeme:", "Superior Court:"),
+            "Yüksek Mahkeme:",
+        )
+
     def test_clean_sdh_blocks_preserves_headings(self):
         """clean_sdh_blocks preserves heading lines while cleaning speaker labels."""
         blocks = [

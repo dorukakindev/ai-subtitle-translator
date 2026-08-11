@@ -749,5 +749,17 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertFalse(any("EKSİK" in text for _idx, _ts, text in result))
 
 
+    def test_superior_court_heading_is_required_dialogue(self):
+        self.assertFalse(gui._source_cue_is_delivery_removable("Superior Court:"))
+        result = gui._prepare_upload_ready_blocks(
+            [("516", "00:46:07,230 --> 00:46:08,891", "Yüksek Mahkeme:")],
+            "Turkish",
+            source_cues=[(
+                "516", "00:46:07,230 --> 00:46:08,891", "Superior Court:")],
+        )
+        self.assertTrue(any(
+            text == "Yüksek Mahkeme:" for _idx, _ts, text in result))
+
+
 if __name__ == "__main__":
     unittest.main()
