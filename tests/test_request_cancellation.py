@@ -1,3 +1,5 @@
+import ast
+import inspect
 import json
 import threading
 import unittest
@@ -357,6 +359,22 @@ class GuiCancellationWiringTest(unittest.TestCase):
 
 
 class SyncRetryCancellationTest(unittest.TestCase):
+    def test_every_direct_gui_chat_call_receives_cancel_context(self):
+        tree = ast.parse(inspect.getsource(gui))
+        missing = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute) else "")
+            if name != "_safe_chat_create":
+                continue
+            if "cancel_context" not in {kw.arg for kw in node.keywords}:
+                missing.append(node.lineno)
+
+        self.assertEqual(missing, [])
+
     def test_stop_during_retry_backoff_never_starts_a_second_request(self):
         class TransientError(RuntimeError):
             status_code = 429

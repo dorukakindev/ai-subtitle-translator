@@ -2471,7 +2471,7 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
                       model: str = "gpt-5.4-mini", log_fn=None,
                       max_chars: int = MERGE_MAX_CHARS, max_gap_ms: int = MERGE_MAX_GAP_MS,
                       cps_limit: int = None, max_window: int = 6,
-                      token_callback=None) -> list:
+                      token_callback=None, cancel_context=None) -> list:
     """AI destekli akıllı cue segmentasyonu. Yalnızca aday pencereler (kelime kelime
     bölünmüş olabilecek ardışık diziler) modele gönderilir; model gruplamayı + satır
     kırmayı önerir, zamanlama/CPS deterministik zorlanır, metin orijinalden kurulur.
@@ -2519,6 +2519,7 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
         try:
             resp = ht._safe_chat_create(
                 client, model=model,
+                cancel_context=cancel_context,
                 _checkpoint_label="ai_segmentation",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=n_cues * 60 + 400,
@@ -15436,6 +15437,8 @@ class App(ctk.CTk):
                     try:
                         resp = _safe_chat_create(
                             client,
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"),
                             _checkpoint_label="translation_preview",
                             **req["body"],
                         )
@@ -17180,7 +17183,9 @@ class App(ctk.CTk):
                             self, self._helper_api_model("analysis"),
                             "AI Segmentasyon",
                             base_url=self._helper_api_base_url("analysis"),
-                            file_path=file_path))
+                            file_path=file_path),
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"))
                 self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
             out = merge_fragmented_cues(blocks,
                                         max_chars=self._merge_max_chars,
@@ -22750,7 +22755,9 @@ class App(ctk.CTk):
                             max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS),
                             token_callback=_app_token_callback(
                                 self, mm_model, "AI Segmentasyon",
-                                base_url=mm_url, file_path=fp))
+                                base_url=mm_url, file_path=fp),
+                            cancel_context=self.__dict__.get(
+                                "_helper_request_canceller"))
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"AI segmentasyon hatası: {e}", "warn")
@@ -25686,6 +25693,8 @@ class App(ctk.CTk):
             body = req["body"]
             resp = _safe_chat_create(
                 client,
+                cancel_context=self.__dict__.get(
+                    "_helper_request_canceller"),
                 _checkpoint_label="main_translation",
                 **body,
             )
