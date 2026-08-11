@@ -26411,8 +26411,9 @@ class App(ctk.CTk):
             _before_pass = list(sorted_blocks)
             _src_map_for_condense = {str(c.index): _clean_src(c.text) for c in cues} if cues else {}
             if _quality_api_allowed:
-                self._record_file_status(
-                    filepath, "Okuma Hızı Kısaltma", "running")
+                if self.condense_var.get():
+                    self._record_file_status(
+                        filepath, "Okuma Hızı Kısaltma", "running")
                 _condense_status = {}
                 sorted_blocks = self._maybe_condense(
                     sorted_blocks,
@@ -28942,7 +28943,9 @@ class App(ctk.CTk):
                 1 for block in sorted_blocks
                 if _pre_pass.get(str(block[0])) not in (None, block[2]))
             if sorted_blocks and _quality_api_allowed and not self._stop_flag:
-                self._record_file_status(fp, "Okuma Hızı Kısaltma", "running")
+                if self.condense_var.get():
+                    self._record_file_status(
+                        fp, "Okuma Hızı Kısaltma", "running")
                 _before_pass = list(sorted_blocks)
                 _condense_status = {}
                 sorted_blocks = self._maybe_condense(
@@ -30315,8 +30318,9 @@ class App(ctk.CTk):
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)
-                        self._record_file_status(
-                            filepath, "Okuma Hızı Kısaltma", "running")
+                        if self.condense_var.get():
+                            self._record_file_status(
+                                filepath, "Okuma Hızı Kısaltma", "running")
                         _condense_status = {}
                         pp_blocks = self._maybe_condense(
                             pp_blocks,

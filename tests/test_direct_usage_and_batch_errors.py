@@ -107,6 +107,18 @@ class DirectUsageAndBatchErrorTests(unittest.TestCase):
         for match in condense_calls + merge_calls:
             self.assertIn("file_path=", source[match.start():match.start() + 900])
 
+    def test_disabled_condense_does_not_open_a_timing_stage(self):
+        source = inspect.getsource(gui.App)
+        timing_calls = list(re.finditer(
+            r'_record_file_status\(\s*[^,]+, "Okuma Hızı Kısaltma", "running"\)',
+            source,
+        ))
+
+        self.assertEqual(len(timing_calls), 3)
+        for match in timing_calls:
+            prefix = source[max(0, match.start() - 100):match.start()]
+            self.assertIn("if self.condense_var.get():", prefix)
+
     def test_malformed_batch_error_row_does_not_hide_later_errors(self):
         content = "\n".join([
             "not-json",
