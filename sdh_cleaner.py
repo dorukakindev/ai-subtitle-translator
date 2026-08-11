@@ -106,7 +106,7 @@ _SDH_KEYWORDS = {
     "click", "clicks", "clicking", "keyboard", "typing", "beep", "ping",
     "whistle", "whistling", "shout", "shouts", "shouting",
     "yell", "yells", "yelling", "hum", "humming", "rapping",
-    "starts", "tolls", "crowing", "cooing", "shivers",
+    "starts", "stops", "stopping", "tolls", "crowing", "cooing", "shivers",
 }
 
 _SPEAKER_WORDS = {

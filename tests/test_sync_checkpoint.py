@@ -405,6 +405,24 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertFalse(gui._partial_output_recovery_allowed(
             reports, partial, source, ()))
 
+    def test_partial_missing_ignores_multiline_sound_effect_cue(self):
+        source = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Hello."),
+            ("2", "00:00:03,000 --> 00:00:04,000",
+             "- [Engine Stops]\n- [Horn Honks]"),
+        ]
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Merhaba."),
+            ("2", "00:00:03,000 --> 00:00:04,000", "[ÇEVİRİ EKSİK]"),
+        ]
+        raw_src_map = {idx: text for idx, _ts, text in source}
+
+        self.assertEqual(
+            [],
+            gui._partial_missing_translation_ids(
+                blocks, raw_src_map, source, source_language="English"),
+        )
+
     def test_partial_repair_only_preserves_healthy_text_and_skips_pipeline(self):
         root = Path(self.tmpdir.name)
         source_dir = root / "source"

@@ -2981,6 +2981,11 @@ def _delivery_source_is_all_credit(text: str) -> bool:
 
 def _is_delivery_sdh_only(text: str) -> bool:
     value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if (len(lines) > 1
+            and all(re.fullmatch(r"\s*[-–—]?\s*[\[(].*[\])]\s*", line)
+                    for line in lines)):
+        return all(_is_delivery_sdh_only(line) for line in lines)
     value = re.sub(r"^\s*[-–—]\s*(?=[\[(])", "", value)
     if not value:
         return False
@@ -9297,10 +9302,14 @@ def _partial_missing_translation_ids(blocks, raw_src_map, source_cues=(), *,
                 idx, text = str(cue[0]), str(cue[2] or "")
         except (TypeError, ValueError, IndexError):
             continue
-        if text.strip() and not _src_is_sdh_only(text):
+        if text.strip() and not _source_cue_is_delivery_removable(text):
             source_ids.append(idx)
     if not source_ids:
-        source_ids = [str(idx) for idx in (raw_src_map or {})]
+        source_ids = [
+            str(idx) for idx, text in (raw_src_map or {}).items()
+            if str(text or "").strip()
+            and not _source_cue_is_delivery_removable(text)
+        ]
     missing = []
     for idx in source_ids:
         src = str((raw_src_map or {}).get(idx, "") or "")
