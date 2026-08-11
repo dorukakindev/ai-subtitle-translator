@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import subtitle_translator_gui as gui
+import hybrid_translate as ht
 
 
 def _request(items):
@@ -134,6 +135,24 @@ class LiveRunFalsePositiveTest(unittest.TestCase):
             gui._source_map_for_quality_blocks(final_blocks, cues),
             {"2": "The army is here.", "3": "The Pampa is wide."},
         )
+
+    def test_analysis_glossary_repairs_ascii_turkish_before_locking(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "big strike": "buyuk grev",
+            "workers": "isciler",
+            "fellow": "yoldas",
+            "little brother": "kardesim",
+            "private property": "ozel mulkiyet",
+            "What do we have to do?": "Ne yapmaliyiz?",
+        })
+        self.assertEqual(cleaned, {
+            "big strike": "büyük grev",
+            "workers": "işçiler",
+            "fellow": "yoldaş",
+            "little brother": "kardeşim",
+            "private property": "özel mülkiyet",
+            "What do we have to do?": "Ne yapmalıyız?",
+        })
 
 
 if __name__ == "__main__":

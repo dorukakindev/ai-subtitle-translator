@@ -6561,6 +6561,14 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
             "yilan": "yılan", "kurbaga": "kurbağa", "seytan": "şeytan",
             "cumasi": "cuması", "dunyanin": "dünyanın", "kucuk": "küçük",
             "tuyler": "tüyler", "noktasi": "noktası",
+            "buyuk": "büyük", "isci": "işçi", "isciler": "işçiler",
+            "yoldas": "yoldaş", "kardesim": "kardeşim", "onbasi": "onbaşı",
+            "yuzbasi": "yüzbaşı", "kisla": "kışla", "kacma": "kaçma",
+            "ozel": "özel", "mulkiyet": "mülkiyet", "ates": "ateş",
+            "olmus": "ölmüş", "kizilderili": "kızılderili",
+            "cocugu": "çocuğu", "picler": "piçler", "sirket": "şirket",
+            "calisanlari": "çalışanları", "kartus": "kartuş",
+            "yapmaliyiz": "yapmalıyız", "icin": "için",
         }
         for wrong, correct in replacements.items():
             value_s = re.sub(
