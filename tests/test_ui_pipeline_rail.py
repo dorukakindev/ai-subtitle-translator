@@ -75,6 +75,42 @@ class JobBoardSummaryTest(unittest.TestCase):
         self.assertIn("fg_color", row["frame"].configure.call_args.kwargs)
 
 
+class ReadinessCardTest(unittest.TestCase):
+    def test_readiness_copy_reflects_idle_ready_and_running_states(self):
+        self.assertEqual(
+            gui._readiness_view(0, "Turkish", "Özel"),
+            ("DOSYA BEKLENİYOR", "Dosya veya klasör ekleyin", "waiting"))
+        self.assertEqual(
+            gui._readiness_view(14, "Turkish", "Maksimum kalite"),
+            ("ÇEVİRİYE HAZIR",
+             "14 dosya  ·  Turkish  ·  Maksimum kalite", "ready"))
+        self.assertEqual(
+            gui._readiness_view(14, "Turkish", "Maksimum kalite", True)[0],
+            "ÇALIŞIYOR")
+
+    def test_card_uses_live_file_count_target_and_profile(self):
+        state_label = MagicMock()
+        detail_label = MagicMock()
+        card = MagicMock()
+        app = SimpleNamespace(
+            _readiness_state_lbl=state_label,
+            _readiness_detail_lbl=detail_label,
+            _readiness_card=card,
+            _selected_files=["one.srt", "two.srt"],
+            _file_list_files=[], _is_running=False,
+            tgt_var=SimpleNamespace(get=lambda: "Turkish"),
+            workflow_profile_var=SimpleNamespace(get=lambda: "Maksimum kalite"),
+        )
+
+        gui.App._update_readiness_card(app)
+
+        self.assertEqual(
+            state_label.configure.call_args.kwargs["text"], "ÇEVİRİYE HAZIR")
+        self.assertEqual(
+            detail_label.configure.call_args.kwargs["text"],
+            "2 dosya  ·  Turkish  ·  Maksimum kalite")
+
+
 class PipelineRailStateTest(unittest.TestCase):
     @staticmethod
     def _item():

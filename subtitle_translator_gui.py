@@ -638,6 +638,21 @@ def _job_board_summary_text(rows) -> str:
         f"✓ {finished}   ! {counts['error']}")
 
 
+def _readiness_view(file_count: int, target: str, profile: str,
+                    running: bool = False) -> tuple[str, str, str]:
+    count = max(0, int(file_count or 0))
+    target = str(target or "Hedef dil seçilmedi").strip()
+    profile = str(profile or "Özel").strip()
+    detail = (
+        f"{count} dosya  ·  {target}  ·  {profile}"
+        if count else "Dosya veya klasör ekleyin")
+    if running:
+        return "ÇALIŞIYOR", detail, "active"
+    if count:
+        return "ÇEVİRİYE HAZIR", detail, "ready"
+    return "DOSYA BEKLENİYOR", detail, "waiting"
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -12680,6 +12695,35 @@ class App(ctk.CTk):
             text_color=FG,
         ).pack(fill="x", padx=4, pady=(0, 4))
 
+        self._readiness_card = ctk.CTkFrame(
+            sb, fg_color=PANEL, corner_radius=10,
+            border_width=1, border_color=BORDER_SOFT)
+        self._readiness_card.grid(
+            row=r, column=0, sticky="ew", padx=4, pady=(4, 8)); r += 1
+        self._readiness_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            self._readiness_card, text="ÇALIŞMA HAZIRLIĞI", anchor="w",
+            font=ctk.CTkFont("Consolas", 9, "bold"), text_color=FG2,
+        ).grid(row=0, column=0, sticky="w", padx=(11, 6), pady=(8, 2))
+        self._readiness_state_lbl = ctk.CTkLabel(
+            self._readiness_card, text="DOSYA BEKLENİYOR", height=22,
+            corner_radius=6, anchor="center",
+            font=ctk.CTkFont("Segoe UI", 9, "bold"),
+            fg_color=CARD, text_color=FG2)
+        self._readiness_state_lbl.grid(
+            row=0, column=1, sticky="e", padx=(6, 8), pady=(7, 2))
+        self._readiness_detail_lbl = ctk.CTkLabel(
+            self._readiness_card, text="Dosya veya klasör ekleyin",
+            anchor="w", font=ctk.CTkFont("Segoe UI", 10), text_color=FG2)
+        self._readiness_detail_lbl.grid(
+            row=1, column=0, columnspan=2, sticky="ew",
+            padx=11, pady=(2, 9))
+        self.workflow_profile_var.trace_add(
+            "write", lambda *_args: self._update_readiness_card())
+        self.tgt_var.trace_add(
+            "write", lambda *_args: self._update_readiness_card())
+        App._update_readiness_card(self)
+
         # ── Butonlar ──────────────────────────────────────────────────────────
         sep()
         # Başlat + Test yan yana
@@ -13498,6 +13542,7 @@ class App(ctk.CTk):
         self._populate_file_list(files)
         self.clear_files_btn.grid(row=0, column=1, padx=(6, 0))
         self.clear_info_btn.grid(row=0, column=1, sticky="e", padx=(4, 0))
+        App._update_readiness_card(self)
 
     def _apply_schema_to_all(self):
         """Tüm dosyaları global şemaya sıfırla."""
@@ -16034,6 +16079,41 @@ class App(ctk.CTk):
 
         self._start_worker(_work)
 
+    def _update_readiness_card(self):
+        if threading.current_thread() is not threading.main_thread():
+            _post_ui(self, App._update_readiness_card, self)
+            return
+        state_label = self.__dict__.get("_readiness_state_lbl")
+        detail_label = self.__dict__.get("_readiness_detail_lbl")
+        card = self.__dict__.get("_readiness_card")
+        if state_label is None or detail_label is None or card is None:
+            return
+        running = bool(self.__dict__.get("_is_running", False))
+        if running and self.__dict__.get("_job_rows"):
+            file_count = len(self._job_rows)
+        else:
+            files = (self.__dict__.get("_selected_files") or
+                     self.__dict__.get("_file_list_files") or ())
+            file_count = len(files)
+        try:
+            target = self.tgt_var.get()
+        except Exception:
+            target = ""
+        try:
+            profile = self.workflow_profile_var.get()
+        except Exception:
+            profile = "Özel"
+        state, detail, tone = _readiness_view(
+            file_count, target, profile, running)
+        color = {"waiting": FG2, "ready": GREEN, "active": ACCENT}[tone]
+        state_label.configure(
+            text=state, text_color=color,
+            fg_color=_mix_hex_color(CARD, color, 0.13))
+        detail_label.configure(
+            text=detail, text_color=FG if file_count else FG2)
+        card.configure(
+            border_color=_mix_hex_color(BORDER_SOFT, color, 0.5))
+
     def _set_running(self, running):
         # Worker thread'lerden çağrılabilir; Tk widget .configure()/after_cancel YALNIZCA
         # ana thread'de güvenli (Tcl thread-safe değil). Ana thread'de değilsek marshal et.
@@ -16059,6 +16139,7 @@ class App(ctk.CTk):
         if adv_btn is not None:
             adv_btn.configure(state=s)
         self._is_running = running
+        App._update_readiness_card(self)
         if running:
             self._motion_progress_value = 0.0
             self._motion_progress_target = 0.0
@@ -16259,6 +16340,7 @@ class App(ctk.CTk):
         self._log(f"Kuyruktan çıkarıldı: {Path(filepath).name}", "info")
         self._refresh_job_board_title()
         self._set_stat(self.stat_files_var, str(len(self._job_rows)))
+        App._update_readiness_card(self)
 
     def _refresh_job_board_title(self):
         counts = _job_board_counts(self._job_rows)
@@ -18318,6 +18400,7 @@ class App(ctk.CTk):
         self.file_info_var.set("")
         self.clear_files_btn.grid_remove()
         self.clear_info_btn.grid_remove()
+        App._update_readiness_card(self)
         self._log("Dosya seçimi temizlendi — klasör modu aktif", "info")
 
     def _pick_glossary(self):
