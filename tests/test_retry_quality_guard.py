@@ -49,11 +49,11 @@ class UpstreamProviderRecoveryTest(unittest.TestCase):
 
         self.assertEqual(full_retry.call_count, 1)
         small_recovery.assert_called_once()
-        self.assertEqual(small_recovery.call_args.kwargs["max_sub"], 8)
+        self.assertEqual(small_recovery.call_args.kwargs["max_sub"], 1)
         self.assertEqual(json.loads(raw_map["chunk_1"])[0]["t"], "Merhaba.")
         self.assertTrue(any("küçük isteklerle kurtarmaya" in msg for msg, _ in logs))
 
-    def test_deterministic_strict_failure_retries_whole_chunk_only_once(self):
+    def test_deterministic_strict_failure_is_reported_without_chunk_retry(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._json_repair_pass = lambda *_args, **_kwargs: None
@@ -78,9 +78,8 @@ class UpstreamProviderRecoveryTest(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", return_value=response) as retry:
             app._retry_hata(object(), raw_map, [req], max_rounds=3)
 
-        self.assertEqual(retry.call_count, 1)
-        self.assertTrue(all(
-            item["t"] == "[HATA]" for item in json.loads(raw_map["chunk_1"])))
+        self.assertEqual(retry.call_count, 0)
+        self.assertEqual(raw_map["chunk_1"], bad)
 
     def test_all_missing_chunk_is_recovered_in_small_groups(self):
         items = [{"i": i, "t": f"Source {i}"} for i in range(1, 6)]
@@ -115,7 +114,7 @@ class UpstreamProviderRecoveryTest(unittest.TestCase):
                 app, object(), req, "", max_sub=2
             )
 
-        self.assertEqual(group_sizes, [2, 2, 1])
+        self.assertEqual(group_sizes, [1, 1, 1, 1, 1])
         parsed = json.loads(merged)
         self.assertEqual([item["t"] for item in parsed],
                          [f"Çeviri {i}" for i in range(1, 6)])
@@ -252,7 +251,7 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
             },
         }
 
-    def test_retries_chunk_internal_duplicate_with_id_integrity_guard(self):
+    def test_chunk_internal_duplicate_is_not_retried_as_whole_chunk(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._log = lambda *args, **kwargs: None
@@ -283,11 +282,9 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", fake_chat_create):
             app._retry_hata(object(), raw_map, requests, max_rounds=1)
 
-        self.assertEqual(len(calls), 1, "chunk-içi tekrar tespit edilip yeniden denenmeliydi")
-        guard_messages = [m["content"] for m in calls[0]["messages"]]
-        self.assertTrue(any("ID INTEGRITY" in msg for msg in guard_messages))
+        self.assertEqual(len(calls), 0)
         result = json.loads(raw_map["chunk_1"])
-        self.assertNotEqual(result[0]["t"], result[1]["t"])
+        self.assertEqual(result[0]["t"], result[1]["t"])
 
     def test_clean_chunk_not_retried_for_duplicate_reason(self):
         app = gui.App.__new__(gui.App)
@@ -539,7 +536,7 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", targeted_repair):
             app._retry_hata(object(), raw_map, requests, max_rounds=3)
 
-        self.assertEqual(calls, [["2", "3"]])
+        self.assertEqual(calls, [["2"], ["3"]])
         result = json.loads(raw_map["chunk_1"])
         self.assertEqual(result[0]["t"], "Bu sağlıklı ve bağımsız ilk çeviridir.")
         self.assertEqual(result[1]["t"], "İkinci satır bir kamerayı anlatıyor.")

@@ -197,20 +197,17 @@ class PersistentRepairRetryTest(unittest.TestCase):
         self.assertNotIn("ayrıştırılmalı", system_prompt)
         self.assertEqual(payload["glossary"], {"history": "tarih"})
 
-    def test_checkpoint_repair_retries_do_not_repeat_long_waits(self):
+    def test_checkpoint_repair_is_attempted_only_once(self):
         waits = []
-        responses = [
-            _checkpoint_response([{"i": "8", "t": "Please come here."}])
-            for _ in range(4)
-        ]
         with patch("subtitle_translator_gui._safe_chat_create",
-                   side_effect=responses) as create:
+                   return_value=_checkpoint_response([
+                       {"i": "8", "t": "Please come here."}])) as create:
             result, repaired = gui._repair_untranslated_sync(
                 [("8", _TS, "[HATA]")], {"8": "Please come here."},
                 object(), "English", "Turkish",
                 retry_wait_fn=lambda delay, _cancelled: waits.append(delay) or True)
 
-        self.assertEqual(create.call_count, 4)
+        self.assertEqual(create.call_count, 1)
         self.assertEqual(waits, [])
         self.assertEqual(repaired, 0)
         self.assertEqual(result[0][2], "[HATA]")
@@ -301,7 +298,7 @@ class PersistentRepairRetryTest(unittest.TestCase):
         self.assertEqual(result[0][2], candidate)
         self.assertEqual(create.call_count, 1)
 
-    def test_retry_sends_only_still_missing_cues(self):
+    def test_each_missing_cue_is_sent_once_and_alone(self):
         blocks = [("1", _TS, "[HATA]"), ("2", _TS, "[HATA]")]
         source = {"1": "First source.", "2": "Second source."}
         responses = [
@@ -323,58 +320,56 @@ class PersistentRepairRetryTest(unittest.TestCase):
             create.call_args_list[0].kwargs["messages"][1]["content"])
         second_payload = json.loads(
             create.call_args_list[1].kwargs["messages"][1]["content"])
-        self.assertEqual([str(item["i"]) for item in first_payload["tr"]], ["1", "2"])
+        self.assertEqual([str(item["i"]) for item in first_payload["tr"]], ["1"])
         self.assertEqual([str(item["i"]) for item in second_payload["tr"]], ["2"])
-        self.assertEqual(waits, [30])
+        self.assertEqual(waits, [])
 
-    def test_exhaustion_uses_30_60_120_and_logs_reasons(self):
+    def test_failed_candidate_is_reported_without_retry(self):
         log = MagicMock()
         waits = []
+        advisories = []
         response = _response([{"i": "8", "t": "Please come here."}])
         with patch("subtitle_translator_gui._safe_chat_create",
                    return_value=response) as create:
             result, repaired = gui._repair_untranslated_sync(
                 [("8", _TS, "[HATA]")], {"8": "Please come here."},
                 object(), "English", "Turkish", log_fn=log,
-                retry_wait_fn=lambda delay, _cancelled: waits.append(delay) or True)
+                retry_wait_fn=lambda delay, _cancelled: waits.append(delay) or True,
+                advisory_reviews_out=advisories)
 
-        self.assertEqual(create.call_count, 4)
-        self.assertEqual(waits, [30, 60, 120])
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(waits, [])
         self.assertEqual(repaired, 0)
         self.assertEqual(result[0][2], "[HATA]")
         log_text = " ".join(str(call.args[0]) for call in log.call_args_list)
         self.assertIn("Onarım reddi #8", log_text)
         self.assertIn("identical_source", log_text)
-        self.assertIn("deneme 4/4", log_text)
-        payloads = [
-            json.loads(call.kwargs["messages"][1]["content"])
-            for call in create.call_args_list
-        ]
-        self.assertEqual(
-            [payload["repair_attempt"] for payload in payloads], [1, 2, 3, 4])
-        self.assertNotIn("repair_retry", payloads[0])
-        for payload in payloads[1:]:
-            self.assertEqual(payload["repair_retry"][0]["i"], "8")
-            self.assertEqual(
-                payload["repair_retry"][0]["reason"], "identical_source")
-            self.assertEqual(
-                payload["repair_retry"][0]["previous"], "Please come here.")
+        self.assertIn("deneme 1/1", log_text)
+        self.assertIn("tek API denemesinde", log_text)
+        payload = json.loads(
+            create.call_args.kwargs["messages"][1]["content"])
+        self.assertEqual(payload["repair_attempt"], 1)
+        self.assertNotIn("repair_retry", payload)
+        self.assertEqual(advisories, [{
+            "id": "8",
+            "reason": "identical_source",
+            "source": "Please come here.",
+            "candidate": "Please come here.",
+            "unresolved": True,
+        }])
 
-    def test_cancel_during_retry_wait_prevents_next_request(self):
+    def test_retry_wait_is_never_used(self):
         waits = []
-
-        def wait(delay, _cancelled):
-            waits.append(delay)
-            return delay < 60
 
         with patch("subtitle_translator_gui._safe_chat_create",
                    return_value=SimpleNamespace(choices=[], usage=None)) as create:
             gui._repair_untranslated_sync(
                 [("1", _TS, "[HATA]")], {"1": "Translate me."},
-                object(), "English", "Turkish", retry_wait_fn=wait)
+                object(), "English", "Turkish",
+                retry_wait_fn=lambda delay, _cancelled: waits.append(delay) or True)
 
-        self.assertEqual(create.call_count, 2)
-        self.assertEqual(waits, [30, 60])
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(waits, [])
 
     def test_permanent_http_400_stops_all_batches(self):
         class BadRequest(RuntimeError):
@@ -445,21 +440,20 @@ class IdentityInterjectionRegressionTest(unittest.TestCase):
     def test_real_repair_flow_accepts_identity_interjections_without_retry(self):
         source = {"96": "Hey, hey!", "981": "Jack, hey.", "1441": "Hey, hey."}
         blocks = [(idx, _TS, "[HATA]") for idx in source]
-        response = _response([
-            {"i": "96", "t": "Hey, hey!"},
-            {"i": "981", "t": "Jack, hey."},
-            {"i": "1441", "t": "Hey, hey."},
-        ])
+        responses = [
+            _response([{"i": idx, "t": text}])
+            for idx, text in source.items()
+        ]
 
         with patch("subtitle_translator_gui._safe_chat_create",
-                   return_value=response) as create:
+                   side_effect=responses) as create:
             result, repaired = gui._repair_untranslated_sync(
                 blocks, source, object(), "English", "Turkish",
                 retry_wait_fn=lambda *_args: self.fail("retry should not run"))
 
         self.assertEqual(repaired, 3)
         self.assertEqual([text for _idx, _ts, text in result], list(source.values()))
-        self.assertEqual(create.call_count, 1)
+        self.assertEqual(create.call_count, 3)
         self.assertEqual(gui._partial_missing_translation_ids(
             result, source, result, source_language="English"), [])
 

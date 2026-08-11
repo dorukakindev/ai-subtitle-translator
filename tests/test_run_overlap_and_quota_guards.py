@@ -240,7 +240,7 @@ class PermanentQuotaFailureTest(unittest.TestCase):
                 blocks, raw, client=object(), src_lang="English",
                 tgt_lang="Turkish", retry_delays=(0,))
 
-        self.assertEqual(create.call_count, 2)
+        self.assertEqual(create.call_count, 1)
         self.assertEqual(repaired, 0)
         self.assertEqual(result[0][2], "[ÇEVİRİ EKSİK]")
 

@@ -57,20 +57,20 @@ class CueOwnershipGuardTest(unittest.TestCase):
         ])
         self.assertEqual(gui._chunk_response_retry_reason(raw, request), "")
 
-    def test_failed_owner_retry_is_replaced_by_hata_not_written_as_shift(self):
+    def test_owner_mismatch_is_preserved_for_manual_report_without_retry(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._json_repair_pass = lambda *_args, **_kwargs: None
         app._log = lambda *_args, **_kwargs: None
-        raw_map = {"chunk_0": json.dumps([
+        original = json.dumps([
             {"i": 1, "t": "Mary ayrıldı."},
             {"i": 2, "t": "John geldi."},
-        ])}
+        ])
+        raw_map = {"chunk_0": original}
         unresolved = app._retry_hata(
             MagicMock(), raw_map, [self._request()], max_rounds=0)
         self.assertEqual(unresolved, {"chunk_0"})
-        self.assertTrue(all(
-            item["t"] == "[HATA]" for item in json.loads(raw_map["chunk_0"])))
+        self.assertEqual(raw_map["chunk_0"], original)
 
     def test_invalid_wave_tail_is_not_injected_into_next_wave(self):
         request = self._request()

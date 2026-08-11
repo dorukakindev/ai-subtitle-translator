@@ -626,6 +626,25 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("#5: Critic -> Native (override)", txt)
         self.assertIn("Pass etkileşimleri: 1; override: 1", txt)
 
+    def test_unresolved_single_attempt_repair_is_explicit_in_report(self):
+        rows = [{
+            "name": "a.srt",
+            "total": 1,
+            "pass_trace": {
+                "__repair_advisories__": [{
+                    "id": "8",
+                    "reason": "identical_source",
+                    "source": "Please come here.",
+                    "candidate": "Please come here.",
+                    "unresolved": True,
+                }],
+            },
+        }]
+        txt = gui.build_quality_report_text(
+            rows, "gpt-5.4-mini", "Turkish", "hybrid", 0)
+        self.assertIn("[ONARILAMADI] #8: identical_source", txt)
+        self.assertIn("Please come here.", txt)
+
 
 class RotateLogsTest(unittest.TestCase):
     def test_keeps_newest_n(self):

@@ -4982,9 +4982,6 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
         return "parse_error"
 
 
-_REPAIR_RETRY_DELAYS = (30, 60, 120)
-
-
 def _repair_relevant_locked_terms(locked_terms, source_texts) -> dict:
     """Yalnız onarılan cue grubunda gerçekten geçen sabit terimleri döndür."""
     import hybrid_translate as ht
@@ -5074,7 +5071,7 @@ def _repair_validation_source_map(raw_src_map: dict, source_cues) -> dict:
 
 def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
-                              log_fn=None, token_cb=None, max_per_call=15,
+                              log_fn=None, token_cb=None, max_per_call=1,
                               source_cues=None, cancel_check=None,
                               cancel_context=None,
                               system_prompt=None, locked_terms=None,
@@ -5091,6 +5088,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     (Explorer 1 #36/#636'da doğrulandı) — bunun yerine doğrudan düşürülürler,
     tıpkı clean_sdh'in ilk geçişte yapacağı gibi.
     Döner: (güncel_blocks, onarılan_sayı).
+    Maliyet politikası: her API isteği tek cue içerir ve cue ikinci kez denenmez.
     """
     if not raw_src_map:
         return blocks, 0
@@ -5133,8 +5131,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     import hybrid_translate as ht
     locked_terms = ht.sanitize_glossary_for_turkish(
         raw_locked_terms, target_language=tgt_lang, log_fn=log_fn) or {}
-    retry_delays = tuple(
-        _REPAIR_RETRY_DELAYS if retry_delays is None else retry_delays)
+    # Teslimden sonra kullanici logu elle inceletiyor. Maliyeti sinirlamak icin
+    # her eksik cue yalniz basina ve yalniz bir kez gonderilir; reddedilen aday
+    # tekrar API'ye verilmez, kaynak/aday/neden bilgisi rapora birakilir.
+    max_per_call = 1
+    retry_delays = ()
     if source_cues:
         existing = {str(block[0]): block for block in out}
         ordered = []
@@ -5207,9 +5208,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         validation_source_map = _repair_validation_source_map(
             raw_src_map, source_cues)
 
-        # Küçük gruplar halinde çevir; sonraki denemeye yalnız çözülemeyen cue'lar gider.
+        # Her cue tek basina ve tek denemede cevrilir.
         permanent_failure = False
-        total_attempts = len(retry_delays) + 1
+        total_attempts = 1
         for batch_start in range(0, len(hata_indices), max_per_call):
             if _cancelled():
                 if log_fn:
@@ -5217,6 +5218,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 break
             pending = list(hata_indices[batch_start:batch_start + max_per_call])
             prior_rejections = {}
+            last_failures = {}
             previous_response_checkpoint_hit = False
             for attempt_index in range(total_attempts):
                 if not pending:
@@ -5406,6 +5408,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         if reason:
                             rejection_reasons[rid] = reason
                             rejection_candidates[rid] = str(translated or "")
+                            last_failures[rid] = (
+                                reason, str(translated or ""))
                             next_pending.append((block_pos, idx, ts, src_text))
                             continue
                         out[block_pos] = (idx, ts, translated)
@@ -5456,6 +5460,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         log_fn("  Onarım kullanıcı tarafından durduruldu", "warn")
                     break
                 except Exception as e:
+                    for _pos, idx, _ts, _src in pending:
+                        last_failures[str(idx)] = (
+                            f"response_error:{type(e).__name__}", "")
                     if log_fn:
                         ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in pending)
                         log_fn(
@@ -5494,6 +5501,17 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         break
                 if permanent_failure:
                     break
+            for _block_pos, idx, _ts, src_text in pending:
+                rid = str(idx)
+                reason, candidate = last_failures.get(
+                    rid, ("single_attempt_unresolved", ""))
+                advisory_reviews.append({
+                    "id": rid,
+                    "reason": reason,
+                    "source": src_text,
+                    "candidate": candidate,
+                    "unresolved": True,
+                })
             if permanent_failure or _cancelled():
                 break
 
@@ -5512,21 +5530,43 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         if advisory_reviews_out is not None:
             advisory_reviews_out.extend(dict(item) for item in advisory_reviews)
         if log_fn:
-            log_fn(
-                f"Onarım inceleme özeti: {len(advisory_reviews)} cue guard tarafından "
-                "engellenmedi; kaynak/aday bilgileri nihai denetim için raporlandı.",
-                "warn",
-            )
-            for item in advisory_reviews:
-                source_preview = re.sub(
-                    r"\s+", " ", str(item["source"])).strip()[:120]
-                candidate_preview = re.sub(
-                    r"\s+", " ", str(item["candidate"])).strip()[:120]
+            accepted_reviews = [
+                item for item in advisory_reviews
+                if not item.get("unresolved")]
+            unresolved_reviews = [
+                item for item in advisory_reviews if item.get("unresolved")]
+            if accepted_reviews:
                 log_fn(
-                    f"  İncelenecek cue #{item['id']}: {item['reason']} | "
-                    f"kaynak={source_preview!r} | aday={candidate_preview!r}",
+                    f"Onarım inceleme özeti: {len(accepted_reviews)} cue guard tarafından "
+                    "engellenmedi; kaynak/aday bilgileri nihai denetim için raporlandı.",
                     "warn",
                 )
+                for item in accepted_reviews:
+                    source_preview = re.sub(
+                        r"\s+", " ", str(item["source"])).strip()[:120]
+                    candidate_preview = re.sub(
+                        r"\s+", " ", str(item["candidate"])).strip()[:120]
+                    log_fn(
+                        f"  İncelenecek cue #{item['id']}: {item['reason']} | "
+                        f"kaynak={source_preview!r} | aday={candidate_preview!r}",
+                        "warn",
+                    )
+            if unresolved_reviews:
+                log_fn(
+                    f"Onarım raporu: {len(unresolved_reviews)} cue tek API denemesinde "
+                    "onarılamadı; yeniden denenmedi ve elle incelemeye bırakıldı.",
+                    "warn",
+                )
+                for item in unresolved_reviews:
+                    source_preview = re.sub(
+                        r"\s+", " ", str(item["source"])).strip()[:120]
+                    candidate_preview = re.sub(
+                        r"\s+", " ", str(item["candidate"])).strip()[:120]
+                    log_fn(
+                        f"  Onarılamayan cue #{item['id']}: {item['reason']} | "
+                        f"kaynak={source_preview!r} | aday={candidate_preview!r}",
+                        "warn",
+                    )
 
     unresolved_mixed = 0
     for block_pos, _idx, _ts, src in hata_indices:
@@ -10318,8 +10358,9 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             lines.append(
                 f"   Onarım sonrası elle incelenecek : {len(repair_advisories)} cue")
             for item in repair_advisories:
+                status = "ONARILAMADI" if item.get("unresolved") else "UYARI"
                 lines.append(
-                    f"      - #{item.get('id')}: {item.get('reason')} | "
+                    f"      - [{status}] #{item.get('id')}: {item.get('reason')} | "
                     f"kaynak={item.get('source')!r} | aday={item.get('candidate')!r}")
         multi_count, multi_txt = _multi_pass_history(r.get("pass_history") or {})
         if multi_count:
@@ -16977,7 +17018,8 @@ class App(ctk.CTk):
                     # again and could replace the sound cues that already
                     # arrived.  Keep this chunk on the missing-cue repair path.
                     partial_only_cids.add(cid)
-                    merged = self._resend_missing_blocks(client, req, raw)
+                    merged = self._resend_missing_blocks(
+                        client, req, raw, max_sub=1)
                     if merged is not None:
                         raw_map[cid] = merged
                         self._log(
@@ -17077,7 +17119,7 @@ class App(ctk.CTk):
                 "warn",
             )
 
-        strict_retried = set()
+        strict_reported = set()
         for round_idx in range(max_rounds):
             if self._stop_flag:
                 break
@@ -17088,8 +17130,7 @@ class App(ctk.CTk):
             to_retry = [
                 cid for cid in pending
                 if cid not in upstream_failed and cid not in partial_only_cids
-                and not (retry_reasons.get(cid) in strict_reasons
-                         and cid in strict_retried)
+                and retry_reasons.get(cid) not in strict_reasons
             ]
             if not to_retry:
                 break
@@ -17110,8 +17151,6 @@ class App(ctk.CTk):
                 req = req_by_id.get(cid)
                 if not req:
                     continue
-                if retry_reasons.get(cid) in strict_reasons:
-                    strict_retried.add(cid)
                 for attempt in range(3):  # up to 3 attempts per round for transient errors
                     try:
                         resp = _safe_chat_create(
@@ -17172,31 +17211,26 @@ class App(ctk.CTk):
             if permanent_failure:
                 self._block_automatic_recovery_for_permanent_provider()
             return set(req_by_id)
-        strict_fallback = set()
         for cid, req in req_by_id.items():
             reason = _retry_reason(cid)
             if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue",
                               "cue_content_owner_mismatch"}:
                 continue
-            try:
-                messages = req.get("body", {}).get("messages", [])
-                user_msg = next(m for m in messages if m.get("role") == "user")
-                payload = json.loads(user_msg.get("content", ""))
-                tr_items = payload.get("tr", [])
-                raw_map[cid] = json.dumps(
-                    [{"i": it["i"], "t": "[HATA]"} for it in tr_items
-                     if isinstance(it, dict) and "i" in it],
-                    ensure_ascii=False,
-                )
-                strict_fallback.add(cid)
+            if cid not in strict_reported:
+                strict_reported.add(cid)
                 self._log(
-                    f"  ↪ {cid}: katı ID denemesi başarısız "
-                    f"({reason}); tüm chunk satır bazlı onarıma bırakıldı",
+                    f"  ↪ {cid}: katı doğrulama sorunu ({reason}) cue bazında "
+                    "yalıtılamadı; pahalı tüm-chunk tekrarı yapılmadı, "
+                    "elle inceleme için raporlandı",
                     "warn",
                 )
-            except Exception:
-                pass
-        for cid in [c for c in req_by_id if c not in strict_fallback and _needs_retry(c)]:
+        repair_cids = [
+            cid for cid in req_by_id
+            if _needs_retry(cid)
+            and (_retry_reason(cid) not in strict_reasons
+                 or cid in partial_only_cids)
+        ]
+        for cid in repair_cids:
             if self._stop_flag:
                 break
             try:
@@ -17204,7 +17238,7 @@ class App(ctk.CTk):
                     client,
                     req_by_id[cid],
                     raw_map.get(cid, ""),
-                    max_sub=8 if cid in upstream_failed else 20,
+                    max_sub=1,
                 )
             except Exception as e:
                 self._log(f"  ↺ {cid}: alt-istek kurtarması hatası — {e}", "warn")
@@ -17242,10 +17276,11 @@ class App(ctk.CTk):
 
         return {cid for cid in req_by_id if _retry_reason(cid)}
 
-    def _resend_missing_blocks(self, client, req: dict, current_raw: str, max_sub: int = 20):
+    def _resend_missing_blocks(self, client, req: dict, current_raw: str, max_sub: int = 1):
         """Bir chunk'ta hâlâ eksik/[HATA] olan blokları, yalnızca o blokları içeren
         daha küçük isteklerle yeniden çevirir (kesilme kurtarması). Birleştirilmiş
-        JSON dizisi (string) döner; kurtarılacak bir şey yoksa None."""
+        JSON dizisi (string) döner; her istek tek cue içerir, kurtarılacak bir şey
+        yoksa None."""
         try:
             payload = json.loads(req["body"]["messages"][1]["content"])
         except Exception:
@@ -17270,7 +17305,8 @@ class App(ctk.CTk):
         model   = req["body"]["model"]
         _ml     = model.lower()
         _no_temp = _ml.startswith(("gpt-5", "o1", "o3", "o4", "codex-"))
-        n_groups = math.ceil(len(missing) / max_sub)
+        max_sub = 1
+        n_groups = len(missing)
         recovery_kind = "sağlayıcı kurtarması" if len(missing) == len(all_items) else "kesilme kurtarması"
         self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
                   f"{n_groups} küçük istekle tamamlanıyor ({recovery_kind})", "warn")
