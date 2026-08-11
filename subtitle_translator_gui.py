@@ -9842,7 +9842,13 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
 
     chain_on = bool(row.get("chain_ctx", snapshot.get("chain_ctx")))
     chunk_count = int(row.get("translation_chunks", 0) or 0)
-    if chain_on and chunk_count:
+    run_mode = str(row.get("mode", snapshot.get("mode", "")) or "").strip().lower()
+    twowave_on = bool(row.get("twowave", snapshot.get("twowave")))
+    if chain_on and run_mode == "batch" and not twowave_on:
+        lines.append(
+            "Zincirleme Bağlam: açık ama normal Batch'te uygulanmadı "
+            "(chunk'lar paralel gönderildi)")
+    elif chain_on and chunk_count:
         lines.append(f"Zincirleme Bağlam: çalıştı, {chunk_count} chunk")
     elif chain_on:
         lines.append("Zincirleme Bağlam: açık, çalışma kaydı yok")

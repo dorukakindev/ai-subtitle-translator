@@ -63,6 +63,25 @@ class ReportingAccountingRound4Test(unittest.TestCase):
         self.assertIn("Zincirleme Bağlam: açık, çalışma kaydı yok", audit)
         self.assertNotIn("Zincirleme Bağlam: çalıştı", audit)
 
+    def test_normal_batch_chain_is_not_reported_as_applied(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done", "chain_ctx": True,
+            "translation_chunks": 4,
+        }, {"mode": "batch", "twowave": False})
+
+        self.assertIn(
+            "Zincirleme Bağlam: açık ama normal Batch'te uygulanmadı "
+            "(chunk'lar paralel gönderildi)", audit)
+        self.assertFalse(any("Zincirleme Bağlam: çalıştı" in line for line in audit))
+
+    def test_twowave_batch_chain_keeps_applied_report(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done", "chain_ctx": True,
+            "translation_chunks": 4,
+        }, {"mode": "batch", "twowave": True})
+
+        self.assertIn("Zincirleme Bağlam: çalıştı, 4 chunk", audit)
+
     def test_unknown_model_report_does_not_invent_a_usd_price(self):
         text = gui.build_quality_report_text(
             [{"name": "episode.srt", "total": 1}],
