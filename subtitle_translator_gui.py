@@ -11220,6 +11220,10 @@ class App(ctk.CTk):
             "<Control-Shift-L>", self._shortcut_copy_complete_log, add="+")
         self.bind_all(
             "<Alt-End>", self._shortcut_pin_log_bottom, add="+")
+        self.bind_all(
+            "<Control-Shift-D>", self._shortcut_copy_diagnostic, add="+")
+        self.bind_all(
+            "<Control-Shift-S>", self._shortcut_show_last_summary, add="+")
         self._apply_media_mode("Dizi", notify=False)
         self._load_settings()
         if self._restored_geometry:
@@ -13476,6 +13480,13 @@ class App(ctk.CTk):
             command=self._pin_log_bottom)
         self._log_context_menu.add_command(
             label="Temizle", command=self._clear_log)
+        self._log_context_menu.add_separator()
+        self._log_context_menu.add_command(
+            label="Tanı paketini kopyala", accelerator="Ctrl+Shift+D",
+            command=self._copy_diagnostic_package)
+        self._log_context_menu.add_command(
+            label="Son çalışma özetini aç", accelerator="Ctrl+Shift+S",
+            command=self._show_last_run_summary)
         self.log_box.bind(
             "<Button-3>", self._show_log_context_menu, add="+")
 
@@ -15193,6 +15204,14 @@ class App(ctk.CTk):
         self._pin_log_bottom()
         return "break"
 
+    def _shortcut_copy_diagnostic(self, _event=None):
+        self._copy_diagnostic_package()
+        return "break"
+
+    def _shortcut_show_last_summary(self, _event=None):
+        self._show_last_run_summary()
+        return "break"
+
     def _copy_selected_log_text(self):
         try:
             content = self.log_box.get("sel.first", "sel.last")
@@ -15217,9 +15236,16 @@ class App(ctk.CTk):
         try:
             has_selection = bool(log_box.tag_ranges("sel"))
             has_content = bool(log_box.get("1.0", "end-1c").strip())
+            record_getter = getattr(self, "_current_run_record_snapshot", None)
+            try:
+                has_record = bool(record_getter()) if callable(record_getter) else False
+            except Exception:
+                has_record = False
             menu.entryconfigure(0, state="normal" if has_selection else "disabled")
             menu.entryconfigure(1, state="normal" if has_content else "disabled")
             menu.entryconfigure(4, state="normal" if has_content else "disabled")
+            menu.entryconfigure(6, state="normal" if has_record else "disabled")
+            menu.entryconfigure(7, state="normal" if has_record else "disabled")
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             try:

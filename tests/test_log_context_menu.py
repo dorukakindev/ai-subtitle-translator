@@ -10,13 +10,19 @@ class LogContextMenuTest(unittest.TestCase):
         app = SimpleNamespace(
             _copy_complete_log_to_clipboard=MagicMock(),
             _pin_log_bottom=MagicMock(),
+            _copy_diagnostic_package=MagicMock(),
+            _show_last_run_summary=MagicMock(),
         )
 
         self.assertEqual(
             gui.App._shortcut_copy_complete_log(app), "break")
         self.assertEqual(gui.App._shortcut_pin_log_bottom(app), "break")
+        self.assertEqual(gui.App._shortcut_copy_diagnostic(app), "break")
+        self.assertEqual(gui.App._shortcut_show_last_summary(app), "break")
         app._copy_complete_log_to_clipboard.assert_called_once_with()
         app._pin_log_bottom.assert_called_once_with()
+        app._copy_diagnostic_package.assert_called_once_with()
+        app._show_last_run_summary.assert_called_once_with()
 
     def test_selected_log_text_is_copied_without_touching_layout(self):
         app = SimpleNamespace(
@@ -48,6 +54,8 @@ class LogContextMenuTest(unittest.TestCase):
         menu.entryconfigure.assert_any_call(0, state="disabled")
         menu.entryconfigure.assert_any_call(1, state="disabled")
         menu.entryconfigure.assert_any_call(4, state="disabled")
+        menu.entryconfigure.assert_any_call(6, state="disabled")
+        menu.entryconfigure.assert_any_call(7, state="disabled")
         menu.tk_popup.assert_called_once_with(120, 240)
         menu.grab_release.assert_called_once()
 
@@ -56,7 +64,11 @@ class LogContextMenuTest(unittest.TestCase):
         log_box = MagicMock()
         log_box.tag_ranges.return_value = ("1.0", "1.4")
         log_box.get.return_value = "log"
-        app = SimpleNamespace(_log_context_menu=menu, log_box=log_box)
+        app = SimpleNamespace(
+            _log_context_menu=menu,
+            log_box=log_box,
+            _current_run_record_snapshot=lambda: {"run_id": "run-1"},
+        )
 
         gui.App._show_log_context_menu(
             app, SimpleNamespace(x_root=1, y_root=2))
@@ -64,6 +76,8 @@ class LogContextMenuTest(unittest.TestCase):
         menu.entryconfigure.assert_any_call(0, state="normal")
         menu.entryconfigure.assert_any_call(1, state="normal")
         menu.entryconfigure.assert_any_call(4, state="normal")
+        menu.entryconfigure.assert_any_call(6, state="normal")
+        menu.entryconfigure.assert_any_call(7, state="normal")
 
 
 if __name__ == "__main__":
