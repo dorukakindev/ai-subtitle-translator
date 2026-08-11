@@ -5529,6 +5529,23 @@ _FOREIGN_TITLE_CONNECTORS = frozenset({
     "der", "die", "das", "von",
 })
 
+_VOCALIZATION_TOKEN_RE = re.compile(
+    r"^(?:la+|a+h+|ha+h*|o+h+|o+oh+|u+h+|huh+|h+m+|m+h+|m+|"
+    r"k+h+|k+|na+|da+|ba+)$",
+    re.I,
+)
+
+
+def is_vocalization_only_text(value: str) -> bool:
+    """Şarkı hecesi/ünlem dışında çevrilebilir sözcük içermiyor mu."""
+    text = re.sub(r"</?[^>]+>|\{[^}]*\}|\[[^\]]*\]", " ", str(value or ""))
+    words = re.findall(r"[A-Za-z]+", text)
+    return bool(words) and all(_VOCALIZATION_TOKEN_RE.fullmatch(word) for word in words)
+
+
+def _without_vocalization_words(words):
+    return [word for word in words if not _VOCALIZATION_TOKEN_RE.fullmatch(word)]
+
 
 def _quoted_english_title_key(value: str) -> str:
     words = re.findall(r"[A-Za-z]+(?:['\u2019][A-Za-z]+)?", str(value or ""))
@@ -5584,8 +5601,10 @@ def has_source_english_overlap(src_text: str, tr_text: str) -> bool:
     source, target = _mask_shared_quoted_english_titles(source, target)
     if not source.strip() or not target.strip():
         return False
-    src_words = re.findall(r"[A-Za-z]+", source)
-    tr_words = re.findall(r"[A-Za-z]+", target)
+    src_words = _without_vocalization_words(re.findall(r"[A-Za-z]+", source))
+    tr_words = _without_vocalization_words(re.findall(r"[A-Za-z]+", target))
+    if not src_words or not tr_words:
+        return False
     src_lowercase = {word for word in src_words if word == word.lower()}
     if any(word in src_lowercase and word in _SOURCE_ENGLISH_FUNCTION_WORDS
            for word in tr_words if word == word.lower()):

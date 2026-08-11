@@ -4627,7 +4627,7 @@ def _src_text_is_all_caps(src_text: str) -> bool:
 
 
 def _src_is_proper_name_phrase(src_text: str) -> bool:
-    text = str(src_text or "").strip()
+    text = _clean_src(str(src_text or "")).strip()
     if not text:
         return False
     text = re.sub(r"^\s*[-–—]\s*", "", text)
@@ -4637,7 +4637,7 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
         return False
     name_particles = {
         "al", "au", "da", "de", "del", "della", "der", "di", "do", "dos",
-        "du", "la", "las", "le", "los", "van", "von", "y", "and",
+        "du", "la", "las", "le", "los", "no", "van", "von", "y", "and",
     }
     if (not tokens[0][0].isupper()
             or not tokens[-1][0].isupper()
@@ -4756,6 +4756,8 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
                 return f"partial_english_phrase:{match.group(0)}"
     try:
         import hybrid_translate as ht
+        if ht.is_vocalization_only_text(src_text):
+            return ""
         if source_is_english and ht.has_source_english_overlap(src_text, tr_text):
             return "source_english_overlap"
     except Exception:
