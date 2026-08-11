@@ -968,6 +968,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "clean_sdh": True,
     "backup_raw": True,
     "term_normalize": True,
+    "repair_missing": False,
     "media_mode": "Dizi",
     "content_type": "Otomatik",
     "series_memory": True,
@@ -995,6 +996,7 @@ WORKFLOW_PROFILES = {
         "semantic_reconcile_var": True,
         "review_pass_var": True,
         "term_normalize_var": True,
+        "repair_missing_var": False,
         "chain_ctx_var": True,
         "precontext_var": False,
         "series_memory_var": True,
@@ -1013,6 +1015,7 @@ WORKFLOW_PROFILES = {
         "semantic_reconcile_var": False,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "repair_missing_var": False,
         "chain_ctx_var": True,
         "precontext_var": False,
         "series_memory_var": True,
@@ -1031,6 +1034,7 @@ WORKFLOW_PROFILES = {
         "semantic_reconcile_var": False,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "repair_missing_var": False,
         "chain_ctx_var": True,
         "precontext_var": True,
         "series_memory_var": False,
@@ -1051,6 +1055,7 @@ _BOUNDARY_QUALITY_VARS = {
     "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
+    "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
     "linebreak": ("linebreak_var", "Satır Bölme"),
 }
@@ -5170,7 +5175,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               cancel_context=None,
                               system_prompt=None, locked_terms=None,
                               permanent_failure_cb=None, retry_delays=None,
-                              retry_wait_fn=None, advisory_reviews_out=None):
+                              retry_wait_fn=None, advisory_reviews_out=None,
+                              enabled=True):
     """[HATA*] satırlarını sync API çağrısıyla otomatik çevirir.
 
     _fill_hata_with_source'dan ÖNCE çağrılmalı. Başarılı çevirileri blocks'a
@@ -5285,7 +5291,23 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     advisory_reviews = []
     advisory_accepted_ids = set()
 
-    if hata_indices and client:
+    if hata_indices and not enabled:
+        advisory_reviews.extend({
+            "id": str(idx),
+            "reason": "automatic_repair_disabled",
+            "source": src,
+            "candidate": str(out[block_pos][2] or ""),
+            "unresolved": True,
+        } for block_pos, idx, _ts, src in hata_indices)
+        if log_fn:
+            ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in hata_indices)
+            log_fn(
+                f"Eksik Cue API Onarımı kapalı: {len(hata_indices)} cue API'ye "
+                f"gönderilmedi; elle incelemeye bırakıldı ({ids}).",
+                "warn",
+            )
+
+    if hata_indices and client and enabled:
         if log_fn:
             log_fn(f"🔧  {len(hata_indices)} çevrilmemiş satır sync ile onarılıyor...", "info")
 
@@ -5646,18 +5668,30 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         "warn",
                     )
             if unresolved_reviews:
-                log_fn(
-                    f"Onarım raporu: {len(unresolved_reviews)} cue tek API denemesinde "
-                    "onarılamadı; yeniden denenmedi ve elle incelemeye bırakıldı.",
-                    "warn",
-                )
+                repair_disabled = all(
+                    item.get("reason") == "automatic_repair_disabled"
+                    for item in unresolved_reviews)
+                if repair_disabled:
+                    log_fn(
+                        f"Eksik Cue API Onarımı kapalı: {len(unresolved_reviews)} cue "
+                        "kaynak ve mevcut metniyle raporlandı.",
+                        "warn",
+                    )
+                else:
+                    log_fn(
+                        f"Onarım raporu: {len(unresolved_reviews)} cue tek API denemesinde "
+                        "onarılamadı; yeniden denenmedi ve elle incelemeye bırakıldı.",
+                        "warn",
+                    )
                 for item in unresolved_reviews:
                     source_preview = re.sub(
                         r"\s+", " ", str(item["source"])).strip()[:120]
                     candidate_preview = re.sub(
                         r"\s+", " ", str(item["candidate"])).strip()[:120]
+                    label = ("API'ye gönderilmeyen cue" if repair_disabled
+                             else "Onarılamayan cue")
                     log_fn(
-                        f"  Onarılamayan cue #{item['id']}: {item['reason']} | "
+                        f"  {label} #{item['id']}: {item['reason']} | "
                         f"kaynak={source_preview!r} | aday={candidate_preview!r}",
                         "warn",
                     )
@@ -6776,7 +6810,7 @@ def _saved_regular_requests(fmap_data: dict, saved_fmap: dict):
 _BATCH_RUN_CONTEXT_KEYS = (
     "context_version",
     "input_dir", "output_dir", "src_lang", "tgt_lang", "profanity",
-    "same_folder", "mode", "auto_glossary", "term_normalize", "critic",
+    "same_folder", "mode", "auto_glossary", "term_normalize", "repair_missing", "critic",
     "polish", "native", "qc", "condense", "backtrans",
     "semantic_reconcile", "review", "twowave", "clean_sdh", "linebreak",
     "chain_ctx", "style", "analysis_depth", "file_analysis_depths", "content_type",
@@ -10032,12 +10066,17 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
          ("Backtranslation",)),
         ("Terim Normalizasyonu", bool(snapshot.get("term_normalize")),
          ("Term-Normalize",)),
+        ("Eksik Cue API Onarımı", bool(snapshot.get("repair_missing")),
+         ("Repair", "Eksik Çeviri Onarımı", "Yalnız Eksik Cue Onarımı")),
         ("Okuma Hızı Kısaltma", bool(snapshot.get("condense")),
          ("Condense",)),
         ("SDH temizleme", bool(snapshot.get("clean_sdh")), ("SDH",)),
         ("Satır düzenleme", bool(snapshot.get("linebreak")), ("Line-break",)),
     )
     for title, enabled, labels in features:
+        if title == "Eksik Cue API Onarımı" and not enabled:
+            lines.append(f"{title}: kapalı")
+            continue
         status_info = next(
             (pass_status.get(label) for label in labels
              if isinstance(pass_status.get(label), dict)), None)
@@ -11464,6 +11503,7 @@ class App(ctk.CTk):
             "content_type": "content_type_var",
             "global_glossary_path": "glossary_var",
             "term_normalize": "term_normalize_var",
+            "repair_missing": "repair_missing_var",
             "critic": "critic_var",
             "polish": "polish_var",
             "native": "native_var",
@@ -12522,6 +12562,27 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
+
+        self.repair_missing_var = ctk.BooleanVar(value=False)
+        repair_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        repair_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        repair_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(
+            repair_fr, text="", variable=self.repair_missing_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            repair_fr, text="Eksik Cue API Onarımı",
+            font=ctk.CTkFont("Segoe UI", 12), text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(
+            sb,
+            text="Kapalıyken çeviri sonunda eksik görünen cue'lar için\n"
+                 "ek API isteği göndermez; cue kimliği, kaynak ve mevcut\n"
+                 "metni loga yazar. Dosya tamamlanmış sayılmaz.",
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            justify="left", wraplength=260,
+        ).grid(row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Ön-Bağlam Analizi (hybrid kapalıyken dosya özeti çıkarır)
         self.precontext_var = ctk.BooleanVar(value=True)
@@ -14166,6 +14227,8 @@ class App(ctk.CTk):
                 self.workflow_profile_var.get()
                 if getattr(self, "workflow_profile_var", None) else "Özel"),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
+            "repair_missing": bool(getattr(self, "repair_missing_var", None)
+                                   and self.repair_missing_var.get()),
             "critic": self.critic_var.get(),
             "polish": self.polish_var.get(),
             "native": self.native_var.get(),
@@ -14223,6 +14286,7 @@ class App(ctk.CTk):
             "analysis_depth_var": "analysis_depth",
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
+            "repair_missing_var": "repair_missing",
             "prevent_sleep_var": "prevent_sleep",
             "auto_retry_files_var": "auto_retry_files",
             "auto_resume_crash_var": "auto_resume_crash",
@@ -14267,6 +14331,7 @@ class App(ctk.CTk):
             "input_dir", "output_dir", "src_lang", "tgt_lang", "mode",
             "hybrid_mode", "analysis_depth", "style", "content_type",
             "profanity", "same_folder", "auto_glossary", "term_normalize",
+            "repair_missing",
             "critic", "polish", "native", "qc", "condense", "backtrans",
             "semantic_reconcile", "review", "twowave", "clean_sdh",
             "linebreak", "ai_segment", "merge_cues", "chain_ctx",
@@ -15735,8 +15800,14 @@ class App(ctk.CTk):
                 "yeniden gönderilmeyecek.", "warn")
             return False
         failed = []
+        manual_missing = 0
         for filepath, item in dict(record.get("files") or {}).items():
             if not _file_recovery_is_retryable(item):
+                continue
+            phase = str((item or {}).get("phase") or "").casefold()
+            if (not snapshot.get("repair_missing")
+                    and "eksik çeviri" in phase):
+                manual_missing += 1
                 continue
             if not Path(filepath).is_file():
                 continue
@@ -15745,6 +15816,12 @@ class App(ctk.CTk):
                 self._auto_retry_attempts[filepath] = attempt + 1
                 failed.append(filepath)
         if not failed:
+            if manual_missing:
+                self._log(
+                    f"Eksik Cue API Onarımı kapalı: {manual_missing} eksik dosya "
+                    "otomatik yeniden başlatılmadı; cue ayrıntıları logda bırakıldı.",
+                    "warn",
+                )
             return False
         self._selected_files = failed
         self._input_folder_explicitly_selected = False
@@ -16640,6 +16717,7 @@ class App(ctk.CTk):
                     "input_dir", "output_dir", "src_lang", "tgt_lang", "mode",
                     "hybrid_mode", "analysis_depth", "style", "content_type",
                     "profanity", "same_folder", "auto_glossary", "term_normalize",
+                    "repair_missing",
                     "critic", "polish", "native", "qc", "condense", "backtrans",
                     "semantic_reconcile", "review", "twowave", "clean_sdh",
                     "linebreak", "ai_segment", "merge_cues", "chain_ctx",
@@ -18808,6 +18886,8 @@ class App(ctk.CTk):
                 if getattr(self, "media_mode_var", None) else "Dizi"),
             "review_pass": self.review_pass_var.get(),
             "term_normalize": self.term_normalize_var.get(),
+            "repair_missing": bool(getattr(self, "repair_missing_var", None)
+                                   and self.repair_missing_var.get()),
             "twowave": self.twowave_var.get(),
             "same_folder": self.same_folder_var.get(),
             "file_list_height": int(self._file_rows_frame.cget("height")),
@@ -19216,6 +19296,8 @@ class App(ctk.CTk):
                 self.condense_var.set(bool(d["condense"]))
             if "term_normalize" in d:
                 self.term_normalize_var.set(bool(d["term_normalize"]))
+            if "repair_missing" in d:
+                self.repair_missing_var.set(bool(d["repair_missing"]))
             if "twowave" in d:
                 self.twowave_var.set(bool(d["twowave"]))
             if "same_folder" in d:
@@ -20506,6 +20588,8 @@ class App(ctk.CTk):
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
                             locked_terms=_repair_locked_terms,
+                            enabled=bool(App._run_setting(
+                                self, "repair_missing", "repair_missing_var", False)),
                             retry_wait_fn=lambda delay, cancelled: (
                                 App._repair_retry_wait(self, delay, cancelled)))
                     except Exception as repair_error:
@@ -25296,13 +25380,23 @@ class App(ctk.CTk):
             source_language=file_src)
         system_prompt = _build_sync_system_prompt(
             file_src, tgt, schema_dict, profanity)
-        self._log(
-            f"Kısmi onarım modu: {len(partial_blocks) - len(missing_before)} "
-            f"sağlam cue aynen korunacak; yalnız {len(missing_before)} eksik cue "
-            "çevrilecek. Yardımcı analiz ve bütün kalite geçişleri "
-            "atlanıyor.",
-            "ok",
-        )
+        repair_enabled = bool(App._run_setting(
+            self, "repair_missing", "repair_missing_var", False))
+        if repair_enabled:
+            self._log(
+                f"Kısmi onarım modu: {len(partial_blocks) - len(missing_before)} "
+                f"sağlam cue aynen korunacak; yalnız {len(missing_before)} eksik cue "
+                "çevrilecek. Yardımcı analiz ve bütün kalite geçişleri "
+                "atlanıyor.",
+                "ok",
+            )
+        else:
+            self._log(
+                f"Kısmi çıktı bulundu: {len(partial_blocks) - len(missing_before)} "
+                f"sağlam cue korunacak; Eksik Cue API Onarımı kapalı olduğu için "
+                f"{len(missing_before)} eksik cue API'ye gönderilmeyecek.",
+                "warn",
+            )
         self._record_file_status(filepath, "Yalnız Eksik Cue Onarımı", "running")
         repaired_blocks, repaired = _repair_untranslated_sync(
             partial_blocks, raw_src_map, client,
@@ -25316,6 +25410,7 @@ class App(ctk.CTk):
                 self._block_automatic_recovery_for_permanent_provider),
             retry_wait_fn=lambda delay, cancelled: (
                 App._repair_retry_wait(self, delay, cancelled)),
+            enabled=repair_enabled,
         )
         if self._stop_flag:
             return {"stopped": True}
@@ -25985,7 +26080,9 @@ class App(ctk.CTk):
                         self._block_automatic_recovery_for_permanent_provider),
                     retry_wait_fn=lambda delay, cancelled: (
                         App._repair_retry_wait(self, delay, cancelled)),
-                    advisory_reviews_out=_repair_advisories)
+                    advisory_reviews_out=_repair_advisories,
+                    enabled=bool(App._run_setting(
+                        self, "repair_missing", "repair_missing_var", False)))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _pass_trace = {}
@@ -27682,7 +27779,9 @@ class App(ctk.CTk):
                                         locked_terms=_locked_terms,
                                         retry_wait_fn=lambda delay, cancelled: (
                                             App._repair_retry_wait(
-                                                self, delay, cancelled)))
+                                                self, delay, cancelled)),
+                                        enabled=bool(App._run_setting(
+                                            self, "repair_missing", "repair_missing_var", False)))
                                 except Exception as repair_exc:
                                     self._log(
                                         f"Resume: eksik satır onarımı atlandı: {repair_exc}",
@@ -28461,7 +28560,9 @@ class App(ctk.CTk):
                             self._block_automatic_recovery_for_permanent_provider),
                         retry_wait_fn=lambda delay, cancelled: (
                             App._repair_retry_wait(self, delay, cancelled)),
-                        advisory_reviews_out=_repair_advisories)
+                        advisory_reviews_out=_repair_advisories,
+                        enabled=bool(App._run_setting(
+                            self, "repair_missing", "repair_missing_var", False)))
             except Exception as exc:
                 self._log(f"Onarım geçişi atlandı: {exc}", "warn")
             _record_pass_change(
@@ -29216,7 +29317,7 @@ class App(ctk.CTk):
                 for key in (
                     "critic", "polish", "native", "qc", "condense",
                     "backtrans", "semantic_reconcile", "review", "twowave",
-                    "clean_sdh", "linebreak", "term_normalize",
+                    "clean_sdh", "linebreak", "term_normalize", "repair_missing",
                 )
             },
         })
@@ -29781,6 +29882,8 @@ class App(ctk.CTk):
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
                         locked_terms=_repair_locked_terms,
+                        enabled=bool(App._run_setting(
+                            self, "repair_missing", "repair_missing_var", False)),
                         retry_wait_fn=lambda delay, cancelled: (
                             App._repair_retry_wait(self, delay, cancelled)))
                 except Exception as e:

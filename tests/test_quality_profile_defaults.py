@@ -114,6 +114,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "clean_sdh": True,
                 "backup_raw": True,
                 "term_normalize": True,
+                "repair_missing": False,
                 "media_mode": "Dizi",
                 "content_type": "Otomatik",
                 "series_memory": True,
