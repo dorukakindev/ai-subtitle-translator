@@ -738,6 +738,16 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         )
         self.assertFalse(any(text == credit for _idx, _ts, text in result))
 
+    def test_bare_subtitling_header_followed_by_site_is_removed(self):
+        credit = "Subtitling:\nwww.pluridioma.pt"
+        self.assertTrue(gui._source_cue_is_delivery_removable(credit))
+        result = gui._prepare_upload_ready_blocks(
+            [("535", "01:00:00,000 --> 01:00:02,000", "[ÇEVİRİ EKSİK]")],
+            "Turkish",
+            source_cues=[("535", "01:00:00,000 --> 01:00:02,000", credit)],
+        )
+        self.assertFalse(any("EKSİK" in text for _idx, _ts, text in result))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2975,6 +2975,12 @@ def _delivery_source_is_all_credit(text: str) -> bool:
     lines = [line for line in str(text or "").splitlines() if line.strip()]
     if not lines:
         return False
+    if (len(lines) > 1
+            and re.fullmatch(
+                r"\s*(?:subtitles?|subtitling|translation|translator|timing)\s*:\s*",
+                lines[0], re.IGNORECASE)
+            and all(_is_delivery_credit(line) for line in lines[1:])):
+        return True
     credit_seen = False
     for line in lines:
         if _is_delivery_credit(line):
