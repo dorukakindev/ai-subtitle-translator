@@ -482,15 +482,23 @@ def _report_response_usage(token_callback, response, *, log_fn=None,
         try:
             token_callback(total, cached=cached)
         except TypeError:
-            token_callback(total)
+            try:
+                token_callback(total)
+            except Exception:
+                return False
+        except Exception:
+            return False
         return True
     reporter = getattr(token_callback, "report_missing_usage", None)
     if callable(reporter):
-        reporter()
+        try:
+            reporter()
+        except Exception:
+            return False
     else:
         try:
             token_callback(0, usage_available=False)
-        except TypeError:
+        except Exception:
             return False
     if log_fn:
         label = pass_name or "API isteği"
@@ -502,6 +510,15 @@ def _report_response_usage(token_callback, response, *, log_fn=None,
 
 
 # ─────────────────────────────────────────────────────────────────────
+def _app_token_callback(app, model: str, pass_name: str, *, base_url: str = "",
+                        file_path: str = ""):
+    try:
+        return App._token_callback_for_pass(
+            app, model, pass_name, base_url=base_url, file_path=file_path)
+    except Exception:
+        return getattr(app, "_update_tokens", None)
+
+
 def _batch_error_file_entries(content: str, limit: int = 5) -> tuple[list, int]:
     entries = []
     malformed = 0
@@ -15422,9 +15439,13 @@ class App(ctk.CTk):
                             _checkpoint_label="translation_preview",
                             **req["body"],
                         )
-                        if resp.usage:
-                            tot, cached = _get_usage_details(resp.usage)
-                            self._update_tokens(tot, cached=cached)
+                        _report_response_usage(
+                            _app_token_callback(
+                                self, self._main_model_name(),
+                                "Çeviri Önizleme",
+                                base_url=self._main_api_base_url()),
+                            resp, log_fn=self._log,
+                            pass_name="Çeviri Önizleme")
                         raw  = (resp.choices[0].message.content or "").strip()
                         tmap = parse_response(raw, fmap.get(cid, []))
                         pairs = _chain_pairs_from_result(user_msg["content"], tmap)
@@ -17443,10 +17464,11 @@ class App(ctk.CTk):
                     temperature=0.0,
                 )
                 fixed = (resp.choices[0].message.content or "").strip()
-                tok, cached = 0, 0
-                if resp.usage:
-                    tok, cached = _get_usage_details(resp.usage)
-                self._update_tokens(tok, cached=cached)
+                _report_response_usage(
+                    _app_token_callback(
+                        self, self._main_model_name(), "JSON Onarımı",
+                        base_url=self._main_api_base_url()),
+                    resp, log_fn=self._log, pass_name="JSON Onarımı")
                 parsed_repair = parse_translation_payload(fixed, missing_ids)
                 if (parsed_repair.fatal_reason
                         or parsed_repair.duplicate_ids
@@ -17748,11 +17770,16 @@ class App(ctk.CTk):
                             **_retry_body_for(req, retry_reasons.get(cid, "")),
                         )
                         text = _validated_chat_content(resp)
-                        tok, cached = 0, 0
-                        if resp.usage:
-                            tok, cached = _get_usage_details(resp.usage)
                         raw_map[cid] = text
-                        self._update_tokens(tok, cached=cached)
+                        _report_response_usage(
+                            _app_token_callback(
+                                self, req.get("body", {}).get("model", ""),
+                                "Ana Çeviri Yeniden Deneme",
+                                base_url=(self.__dict__.get(
+                                    "_active_snapshot", {}) or {}).get(
+                                        "main_api_base_url", "")),
+                            resp, log_fn=self._log,
+                            pass_name="Ana Çeviri Yeniden Deneme")
                         self._log(f"  ↺ {cid}: tamam", "ok")
                         break
                     except Exception as e:
@@ -17961,9 +17988,15 @@ class App(ctk.CTk):
                     _checkpoint_label="translation_subgroup_recovery",
                     **body,
                 )
-                if resp.usage:
-                    tot, cached = _get_usage_details(resp.usage)
-                    self._update_tokens(tot, cached=cached)
+                _report_response_usage(
+                    _app_token_callback(
+                        self, req.get("body", {}).get("model", ""),
+                        "Eksik Cue Alt-Grup Onarımı",
+                        base_url=(self.__dict__.get(
+                            "_active_snapshot", {}) or {}).get(
+                                "main_api_base_url", "")),
+                    resp, log_fn=self._log,
+                    pass_name="Eksik Cue Alt-Grup Onarımı")
                 txt = _validated_chat_content(resp)
                 info = [(str(it.get("i")), "", "") for it in sub]
                 tmap = parse_response(txt, info)
@@ -21791,9 +21824,12 @@ class App(ctk.CTk):
                     max_tokens=REVIEW_CHUNK * 80,
                     temperature=0.2,
                 )
-                if resp.usage:
-                    tot, cached = _get_usage_details(resp.usage)
-                    self._update_tokens(tot, cached=cached)
+                _report_response_usage(
+                    _app_token_callback(
+                        self, model, "Bağlam İncelemesi",
+                        base_url=b_url, file_path=fp),
+                    resp, log_fn=self._log,
+                    pass_name="Bağlam İncelemesi", filepath=fp)
                 content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
                 raw = _extract_json_array(content)
                 if not raw.strip():
@@ -25266,8 +25302,20 @@ class App(ctk.CTk):
             )
             text = _validated_chat_content(resp)
             tok, cached = 0, 0
-            if resp.usage:
+            if (getattr(resp, "usage", None)
+                    and getattr(resp, "usage_available", None) is not False):
                 tok, cached = _get_usage_details(resp.usage)
+            else:
+                try:
+                    req_path = file_map[req["custom_id"]][0][2]
+                except Exception:
+                    req_path = ""
+                _report_response_usage(
+                    _app_token_callback(
+                        self, self._main_model_name(), "Ana Çeviri",
+                        base_url=b_url, file_path=req_path),
+                    resp, log_fn=self._log,
+                    pass_name="Ana Çeviri", filepath=req_path)
             return req["custom_id"], text, tok, cached
 
         def _progress_tick():
@@ -25628,8 +25676,17 @@ class App(ctk.CTk):
             )
             text = _validated_chat_content(resp)
             tok, cached = 0, 0
-            if resp.usage:
+            if (getattr(resp, "usage", None)
+                    and getattr(resp, "usage_available", None) is not False):
                 tok, cached = _get_usage_details(resp.usage)
+            else:
+                _report_response_usage(
+                    _app_token_callback(
+                        self, self._main_model_name(), "Ana Çeviri",
+                        base_url=self._main_api_base_url(),
+                        file_path=filepath),
+                    resp, log_fn=self._log,
+                    pass_name="Ana Çeviri", filepath=filepath)
             return req["custom_id"], text, tok, cached
 
         for fi, filepath in enumerate(srt_files):

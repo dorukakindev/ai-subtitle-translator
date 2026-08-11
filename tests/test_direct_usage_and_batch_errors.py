@@ -15,6 +15,17 @@ def _response(content):
 
 
 class DirectUsageAndBatchErrorTests(unittest.TestCase):
+    def test_usage_accounting_failure_never_breaks_translation_flow(self):
+        broken = MagicMock(side_effect=RuntimeError("ledger unavailable"))
+        response = SimpleNamespace(
+            usage=SimpleNamespace(total_tokens=12), usage_available=True)
+        self.assertFalse(gui._report_response_usage(broken, response))
+
+        missing = MagicMock()
+        missing.report_missing_usage = MagicMock(
+            side_effect=RuntimeError("ledger unavailable"))
+        self.assertFalse(gui._report_response_usage(missing, _response("[]")))
+
     def test_missing_repair_usage_is_reported(self):
         callback = MagicMock()
         callback.report_missing_usage = MagicMock()
