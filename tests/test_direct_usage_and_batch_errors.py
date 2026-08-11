@@ -1,4 +1,6 @@
 import json
+import inspect
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -46,6 +48,30 @@ class DirectUsageAndBatchErrorTests(unittest.TestCase):
         self.assertEqual(repaired, 1)
         self.assertEqual(blocks[0][2], "Merhaba.")
         callback.report_missing_usage.assert_called_once_with()
+
+    def test_repair_call_sites_bind_usage_to_the_file_and_pass(self):
+        source = inspect.getsource(gui.App)
+        calls = [match.start() for match in re.finditer(
+            r"_repair_untranslated_sync\(", source)]
+
+        self.assertEqual(len(calls), 6)
+        for start in calls:
+            self.assertIn(
+                "token_cb=_app_token_callback(", source[start:start + 1800])
+
+        callback = MagicMock()
+        app = object()
+        with patch.object(gui.App, "_token_callback_for_pass",
+                          return_value=callback) as factory:
+            self.assertIs(
+                gui._app_token_callback(
+                    app, "gpt-test", "Eksik Cue API OnarÄ±mÄ±",
+                    base_url="https://provider.example/v1",
+                    file_path="C:/source.srt"),
+                callback)
+        factory.assert_called_once_with(
+            app, "gpt-test", "Eksik Cue API OnarÄ±mÄ±",
+            base_url="https://provider.example/v1", file_path="C:/source.srt")
 
     def test_missing_precontext_usage_is_reported(self):
         callback = MagicMock()

@@ -20702,7 +20702,11 @@ class App(ctk.CTk):
                             src_lang=src, tgt_lang=tgt,
                             model=self._main_model_name(),
                             schema=schema, profanity=profanity,
-                            log_fn=self._log, token_cb=self._update_tokens,
+                            log_fn=self._log,
+                            token_cb=_app_token_callback(
+                                self, self._main_model_name(),
+                                "Eksik Cue API Onarımı", base_url=b_url,
+                                file_path=orig_path),
                             source_cues=cues,
                             cancel_check=lambda: self._stop_flag,
                             cancel_context=self.__dict__.get(
@@ -25544,7 +25548,10 @@ class App(ctk.CTk):
             partial_blocks, raw_src_map, client,
             src_lang=file_src, tgt_lang=tgt, model=model,
             schema=schema_dict, profanity=profanity,
-            log_fn=self._log, token_cb=self._update_tokens,
+            log_fn=self._log,
+            token_cb=_app_token_callback(
+                self, model, "Eksik Cue API Onarımı",
+                base_url=self._main_api_base_url(), file_path=filepath),
             source_cues=cues, cancel_check=lambda: self._stop_flag,
             cancel_context=self.__dict__.get("_helper_request_canceller"),
             system_prompt=system_prompt, locked_terms=locked_terms,
@@ -26225,7 +26232,10 @@ class App(ctk.CTk):
                     src_lang=file_src, tgt_lang=tgt,
                     model=model,
                     schema=schema_dict, profanity=self.profanity_var.get(),
-                    log_fn=self._log, token_cb=self._update_tokens,
+                    log_fn=self._log,
+                    token_cb=_app_token_callback(
+                        self, model, "Eksik Cue API Onarımı",
+                        base_url=self._main_api_base_url(), file_path=filepath),
                     source_cues=cues,
                     cancel_check=lambda: self._stop_flag,
                     cancel_context=self.__dict__.get(
@@ -27927,7 +27937,11 @@ class App(ctk.CTk):
                                         schema=_resume_schema,
                                         profanity=self._snap_get("profanity", "Orta"),
                                         log_fn=self._log,
-                                        token_cb=self._update_tokens,
+                                        token_cb=_app_token_callback(
+                                            self, self._main_model_name(),
+                                            "Eksik Cue API Onarımı",
+                                            base_url=self._main_api_base_url(),
+                                            file_path=str(_src_path)),
                                         source_cues=_orig_cues,
                                         cancel_check=lambda: self._stop_flag,
                                         cancel_context=self.__dict__.get(
@@ -28709,7 +28723,11 @@ class App(ctk.CTk):
                         src_lang=_file_src_lang, tgt_lang=_tgt_lang,
                         model=self._main_model_name(),
                         schema=schema_dict, profanity=self.profanity_var.get(),
-                        log_fn=self._log, token_cb=self._update_tokens,
+                        log_fn=self._log,
+                        token_cb=_app_token_callback(
+                            self, self._main_model_name(),
+                            "Eksik Cue API Onarımı",
+                            base_url=self._main_api_base_url(), file_path=fp),
                         source_cues=_src_cues,
                         cancel_check=lambda: self._stop_flag,
                         cancel_context=self.__dict__.get(
@@ -30046,7 +30064,11 @@ class App(ctk.CTk):
                         model=self._main_model_name(),
                         schema=self._schema_by_name(file_schema_name),
                         profanity=self.profanity_var.get(),
-                        log_fn=self._log, token_cb=self._update_tokens,
+                        log_fn=self._log,
+                        token_cb=_app_token_callback(
+                            self, self._main_model_name(),
+                            "Eksik Cue API Onarımı", base_url=b_url,
+                            file_path=filepath),
                         source_cues=cues,
                         cancel_check=lambda: self._stop_flag,
                         cancel_context=self.__dict__.get(
