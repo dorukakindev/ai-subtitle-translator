@@ -472,6 +472,29 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["expected_removed_ids"], ["1", "2", "3"])
 
+    def test_delivery_audit_accepts_hadestown_sdh_variants(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "-[click]\n-[silence]"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "[audience clapping to the beat]"),
+            ("3", "00:00:04,000 --> 00:00:05,000", "Real dialogue."),
+        ]
+        delivered = gui._prepare_upload_ready_blocks(
+            [("3", source[2][1], "Gercek diyalog.")],
+            "Turkish",
+            source_cues=source,
+        )
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source, "English")
+            gui.write_srt(output_path, delivered, "Turkish")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
+
     def test_parenthetical_dialogue_and_bracketed_ui_text_are_preserved(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "(No.)"),
