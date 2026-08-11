@@ -107,6 +107,10 @@ _SDH_KEYWORDS = {
     "whistle", "whistling", "shout", "shouts", "shouting",
     "yell", "yells", "yelling", "hum", "humming", "rapping",
     "starts", "stops", "stopping", "tolls", "crowing", "cooing", "shivers",
+    "voices", "echoing", "shrieks", "rattles", "backfires", "backfiring",
+    "sputters", "sputtering", "audible", "dialogue", "dialonue", "cranks",
+    "cranking", "revs", "idling", "chattering", "blowing", "distance",
+    "rumbles", "heavily",
 }
 
 _SPEAKER_WORDS = {
