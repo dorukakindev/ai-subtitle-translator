@@ -16014,7 +16014,9 @@ class App(ctk.CTk):
         if title == self.__dict__.get("_window_title_value"):
             return
         self._window_title_value = title
-        self.title(title)
+        title_setter = getattr(self, "title", None)
+        if callable(title_setter):
+            title_setter(title)
 
     def _set_phase(self, phase: str, detail: str = ""):
         """Büyük faz etiketini günceller. phase = 'analiz'|'çeviri'|'critic'|..."""
