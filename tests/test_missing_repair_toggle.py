@@ -62,6 +62,46 @@ class MissingRepairToggleTest(unittest.TestCase):
         self.assertEqual(app._selected_files, [])
         self.assertTrue(any("otomatik yeniden başlatılmadı" in msg for _level, msg in logs))
 
+    def test_final_error_phase_uses_quality_row_to_skip_missing_retry(self):
+        app = gui.App.__new__(gui.App)
+        app._active_snapshot = {
+            "auto_retry_files": True,
+            "repair_missing": False,
+        }
+        app._auto_retry_blocked_by_permanent_provider = False
+        app._auto_retry_attempts = {}
+        app._selected_files = []
+        app._log = lambda *_args, **_kwargs: None
+
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root, "source.srt")
+            source.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                encoding="utf-8",
+            )
+            record = {
+                "status": "başarısız",
+                "settings": {"mode": "sync"},
+                "files": {
+                    str(source): {
+                        "status": "error",
+                        "phase": "Hata",
+                        "output_path": str(Path(root, "source.partial.srt")),
+                    },
+                },
+                "_quality_report_rows": [{
+                    "source_path": str(source),
+                    "repair_missing_after": 1,
+                    "delivery_audit": {"unresolved_markers": 1},
+                }],
+            }
+
+            scheduled = gui.App._schedule_failed_file_retry(app, record)
+
+        self.assertFalse(scheduled)
+        self.assertEqual(app._selected_files, [])
+        self.assertEqual(app._auto_retry_attempts, {})
+
     def test_default_profiles_keep_expensive_repair_off(self):
         self.assertFalse(gui.QUALITY_PROFILE_DEFAULTS["repair_missing"])
         for profile in gui.WORKFLOW_PROFILES.values():

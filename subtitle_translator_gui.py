@@ -15801,12 +15801,22 @@ class App(ctk.CTk):
             return False
         failed = []
         manual_missing = 0
+        manual_missing_paths = {
+            str(row.get("source_path") or "")
+            for row in list(record.get("_quality_report_rows") or [])
+            if (
+                int(row.get("repair_missing_after", 0) or 0) > 0
+                or int((row.get("delivery_audit") or {}).get(
+                    "unresolved_markers", 0) or 0) > 0
+            )
+        }
         for filepath, item in dict(record.get("files") or {}).items():
             if not _file_recovery_is_retryable(item):
                 continue
             phase = str((item or {}).get("phase") or "").casefold()
             if (not snapshot.get("repair_missing")
-                    and "eksik çeviri" in phase):
+                    and ("eksik çeviri" in phase
+                         or str(filepath) in manual_missing_paths)):
                 manual_missing += 1
                 continue
             if not Path(filepath).is_file():
