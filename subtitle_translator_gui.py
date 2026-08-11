@@ -5117,6 +5117,23 @@ def _repair_relevant_locked_terms(locked_terms, source_texts) -> dict:
     }
 
 
+def _hybrid_file_locked_terms(schema_terms, analysis_tuple, file_terms,
+                              target_language: str) -> dict:
+    """Hybrid batch Faz 2 terimlerini yalnız güncel dosyanın verilerinden kurar."""
+    import hybrid_translate as ht
+
+    context = analysis_tuple[0] if analysis_tuple else None
+    analysis_terms = getattr(context, "recurring_terms", {}) if context else {}
+    return {
+        **ht.sanitize_glossary_for_turkish(
+            dict(schema_terms or {}), target_language=target_language),
+        **ht.sanitize_glossary_for_turkish(
+            dict(analysis_terms or {}), target_language=target_language),
+        **ht.sanitize_glossary_for_turkish(
+            dict(file_terms or {}), target_language=target_language),
+    }
+
+
 def _repair_locked_term_violation_detail(src: str, candidate: str,
                                          locked_terms) -> str:
     import hybrid_translate as ht
@@ -29894,6 +29911,13 @@ class App(ctk.CTk):
                     self._record_file_status(
                         filepath, "Batch çıktısı boş", "error")
                     continue
+                _file_locked_terms = _hybrid_file_locked_terms(
+                    (self._schema_by_name(file_schema_name) or {}).get(
+                        "glossary") or {},
+                    analysis_tuple,
+                    self._get_locked_terms_dict(filepath, tgt),
+                    tgt,
+                )
                 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 try:
@@ -29901,14 +29925,6 @@ class App(ctk.CTk):
                         filepath, "Eksik Çeviri Onarımı", "running")
                     _raw_map_pre = _raw_src_map_from_cues(cues)
                     _repair_client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
-                    _repair_locked_terms = {
-                        **ht.sanitize_glossary_for_turkish(
-                            dict(glossary or {}), target_language=tgt),
-                        **ht.sanitize_glossary_for_turkish(
-                            dict(getattr(context, "recurring_terms", {}) or {}),
-                            target_language=tgt),
-                        **self._get_locked_terms_dict(filepath, tgt),
-                    }
                     _final_blocks, _n_repaired = _repair_untranslated_sync(
                         _final_blocks, _raw_map_pre, _repair_client,
                         src_lang=file_src, tgt_lang=tgt,
@@ -29920,7 +29936,7 @@ class App(ctk.CTk):
                         cancel_check=lambda: self._stop_flag,
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
-                        locked_terms=_repair_locked_terms,
+                        locked_terms=_file_locked_terms,
                         enabled=bool(App._run_setting(
                             self, "repair_missing", "repair_missing_var", False)),
                         retry_wait_fn=lambda delay, cancelled: (
@@ -29998,8 +30014,7 @@ class App(ctk.CTk):
                         filepath, "Tutarlılık Taraması", "running")
                     _final_blocks, _cons_fixes = ht.consistency_sweep(
                         cues, _final_blocks, log_fn=self._log,
-                        locked_terms=self._get_locked_terms_dict(
-                            filepath, tgt))
+                        locked_terms=_file_locked_terms)
                     _consistency_status.update({
                         "status": "completed", "successful_chunks": 1})
                 except Exception as exc:
@@ -30061,7 +30076,7 @@ class App(ctk.CTk):
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
                                 log_fn=self._log,
-                                glossary=self._get_locked_terms_dict(filepath, tgt),
+                                glossary=_file_locked_terms,
                                 analysis_result=_full_analysis,
                                 change_log=_critic_change_log,
                                 scene_gap_sec=float(self._snap_get(
@@ -30093,7 +30108,7 @@ class App(ctk.CTk):
                             pp_blocks = self._polish_pass(pp_blocks, tgt, self._helper_api_key("polish"), self._helper_api_base_url("polish"), self._helper_api_model("polish"),
                                                           src_map=_src_map_from_cues(cues),
                                                           analysis_result=_full_analysis,
-                                                          locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                                                          locked_terms=_file_locked_terms,
                                                           status_out=_polish_status)
                             _pass_status["Polish"] = dict(_polish_status)
                             if self._stop_flag:
@@ -30121,7 +30136,7 @@ class App(ctk.CTk):
                                     base_url=self._helper_api_base_url("critic"),
                                     file_path=filepath),
                                 src_map=_src_map_from_cues(cues),
-                                locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                                locked_terms=_file_locked_terms,
                                 progress_callback=App._pass_progress_callback(
                                     self, filepath, "Native Okuyucu", 94.0, 96.0),
                                 scene_gap_sec=float(self._snap_get(
@@ -30142,8 +30157,7 @@ class App(ctk.CTk):
                             _before_pass = list(pp_blocks)
                             pp_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                                 cues, pp_blocks, log_fn=self._log,
-                                locked_terms=self._get_locked_terms_dict(
-                                    filepath, tgt))
+                                locked_terms=_file_locked_terms)
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)
@@ -30156,7 +30170,7 @@ class App(ctk.CTk):
                             self._helper_api_base_url("analysis"),
                             self._helper_api_model("analysis"),
                             tgt, src_map=_src_map_from_cues(cues),
-                            locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                            locked_terms=_file_locked_terms,
                             status_out=_condense_status)
                         _pass_status["Condense"] = dict(_condense_status)
                         if self._stop_flag:
@@ -30203,8 +30217,7 @@ class App(ctk.CTk):
                                         tgt_lang=tgt,
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
-                                        locked_terms=self._get_locked_terms_dict(
-                                            filepath, tgt),
+                                        locked_terms=_file_locked_terms,
                                         cancel_context=self.__dict__.get("_helper_request_canceller"),
                                         token_callback=App._token_callback_for_pass(
                                             self, self._helper_api_model("qc"),
@@ -30235,8 +30248,7 @@ class App(ctk.CTk):
                                         tgt_lang=tgt,
                                         base_url=self._helper_api_base_url("qc"),
                                         log_fn=self._log,
-                                        locked_terms=self._get_locked_terms_dict(
-                                            filepath, tgt),
+                                        locked_terms=_file_locked_terms,
                                         cancel_context=self.__dict__.get("_helper_request_canceller"),
                                         token_callback=App._token_callback_for_pass(
                                             self, self._helper_api_model("qc"),
@@ -30266,7 +30278,7 @@ class App(ctk.CTk):
                 _log_cps_warning(_final_blocks, self._log)
                 # Etiket geri yükleme + birleştirme + yazım HER ZAMAN çalışır (kalite
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
-                _locked_terms = self._get_locked_terms_dict(filepath, tgt)
+                _locked_terms = _file_locked_terms
                 if (getattr(self, "term_normalize_var", None)
                         and self.term_normalize_var.get()):
                     try:
