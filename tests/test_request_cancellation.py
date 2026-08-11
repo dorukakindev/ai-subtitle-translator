@@ -419,6 +419,36 @@ class SyncRetryCancellationTest(unittest.TestCase):
         self.assertIs(calls[0]["cancel_context"], canceller)
         self.assertEqual(unresolved, {"chunk-1"})
 
+    def test_retry_hata_preserves_request_cancelled(self):
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _active_snapshot={"repair_missing": True},
+            _helper_request_canceller=RunRequestCanceller(),
+            _json_repair_pass=lambda *_args, **_kwargs: None,
+            _log=lambda *_args, **_kwargs: None,
+        )
+        req = {
+            "custom_id": "chunk-1",
+            "body": {
+                "model": "gpt-5.4-mini",
+                "messages": [
+                    {"role": "system", "content": "translate"},
+                    {"role": "user", "content": json.dumps({
+                        "tr": [{"i": 1, "t": "Source line"}],
+                    })},
+                ],
+            },
+        }
+
+        with patch.object(
+                gui, "_chunk_response_retry_reason",
+                return_value="provider_error"), patch.object(
+                gui, "_safe_chat_create",
+                side_effect=RequestCancelled("stopped")):
+            with self.assertRaises(RequestCancelled):
+                gui.App._retry_hata(
+                    app, object(), {"chunk-1": "[HATA]"}, [req], max_rounds=1)
+
 
 if __name__ == "__main__":
     unittest.main()

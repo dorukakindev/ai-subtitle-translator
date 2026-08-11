@@ -17517,7 +17517,7 @@ class App(ctk.CTk):
                     f"({len(parsed_repair.translations)} yeni, "
                     f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
             except RequestCancelled:
-                break
+                raise
             except Exception as repair_error:
                 # Recovery remains non-fatal, but it must be diagnosable.
                 self._log(
@@ -17636,6 +17636,8 @@ class App(ctk.CTk):
                             "sağlam cue'lar korunuyor",
                             "ok",
                         )
+            except RequestCancelled:
+                raise
             except Exception as salvage_error:
                 self._log(
                     f"  ↳ {cid}: erken alt-grup kurtarması çalışmadı ({salvage_error})",
@@ -17785,6 +17787,8 @@ class App(ctk.CTk):
                 merged = self._resend_missing_blocks(
                     client, req, raw_map[cid], max_sub=1,
                     file_path=_request_file_path(req))
+            except RequestCancelled:
+                raise
             except Exception as repair_error:
                 self._log(
                     f"  ↪ {cid}: hedefli hedef-dil onarımı çalışmadı "
@@ -17860,6 +17864,8 @@ class App(ctk.CTk):
                             pass_name="Ana Çeviri Yeniden Deneme")
                         self._log(f"  ↺ {cid}: tamam", "ok")
                         break
+                    except RequestCancelled:
+                        raise
                     except Exception as e:
                         if _is_provider_unavailable_error(e):
                             permanent_failure = True
@@ -17937,6 +17943,8 @@ class App(ctk.CTk):
                     max_sub=1,
                     file_path=_request_file_path(req_by_id[cid]),
                 )
+            except RequestCancelled:
+                raise
             except Exception as e:
                 self._log(f"  ↺ {cid}: alt-istek kurtarması hatası — {e}", "warn")
                 merged = None
