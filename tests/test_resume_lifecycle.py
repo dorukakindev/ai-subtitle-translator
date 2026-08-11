@@ -120,7 +120,7 @@ class CrashResumeSnapshotRefreshTest(unittest.TestCase):
 
 
 class BatchOwnerCancellationTest(unittest.TestCase):
-    def test_clearing_active_batches_updates_owner_before_remote_cancel(self):
+    def test_cancelled_batches_leave_owner_only_after_remote_cancel(self):
         events = []
         app = SimpleNamespace(
             _batch_lock=threading.RLock(),
@@ -137,11 +137,28 @@ class BatchOwnerCancellationTest(unittest.TestCase):
                       side_effect=lambda ids: events.append(("session", tuple(ids)))):
             gui.App._cancel_active_batches(app)
 
-        self.assertEqual(events[0], "owner")
+        self.assertEqual(events[0], ("cancel", "batch_A"))
         self.assertEqual(app._active_batches, {})
         self.assertIn(("cancel", "batch_A"), events)
         self.assertIn(("session", ("batch_A",)), events)
         self.assertIn(("recovery", ("batch_A",)), events)
+
+    def test_failed_cancel_remains_owned_and_recoverable(self):
+        events = []
+        app = SimpleNamespace(
+            _batch_lock=threading.RLock(),
+            _active_batches={"batch_A": ("sk-test", "")},
+            _write_batch_owner=lambda: events.append("owner"),
+            _clear_batch_recovery=lambda ids: events.append(
+                ("recovery", tuple(ids))),
+            _log=MagicMock(),
+        )
+
+        with patch.object(gui, "OpenAI", side_effect=RuntimeError("offline")):
+            gui.App._cancel_active_batches(app)
+
+        self.assertEqual(app._active_batches, {"batch_A": ("sk-test", "")})
+        self.assertEqual(events, ["owner", ("recovery", ())])
 
     def test_queue_removal_keeps_recovery_when_remote_cancel_fails(self):
         source = inspect.getsource(gui.App._run_hybrid)

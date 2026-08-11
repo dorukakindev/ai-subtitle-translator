@@ -46,12 +46,12 @@ class BatchAccountingTest(unittest.TestCase):
         self.app._cancel_active_batches()
         self.assertEqual(len(self.app._active_batches), 0)
 
-    def test_cancel_clears_dict_even_if_api_fails(self):
+    def test_cancel_failure_keeps_batch_active_for_retry(self):
         # Ağ çağrısı yok: production sembolü doğrudan patch'lenir.
         self.app._register_batch("batch_x", "sk-invalid-key-xxxxx")
         with patch.object(gui, "OpenAI", side_effect=RuntimeError("cancel failed")):
             self.app._cancel_active_batches()
-        self.assertEqual(len(self.app._active_batches), 0)
+        self.assertEqual(set(self.app._active_batches), {"batch_x"})
 
     def test_cancel_failure_keeps_recovery_files(self):
         bid = "batch_keep"

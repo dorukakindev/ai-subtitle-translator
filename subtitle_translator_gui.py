@@ -20831,8 +20831,6 @@ class App(ctk.CTk):
         UI'ı bloklamamak için arka plan thread'inde çağrılmalı."""
         with self._batch_lock:
             items = list(self._active_batches.items())
-            self._active_batches.clear()
-            self._write_batch_owner()
         cancelled = []
         for bid, auth in items:
             if isinstance(auth, (tuple, list)):
@@ -20845,6 +20843,10 @@ class App(ctk.CTk):
                 cancelled.append(bid)
             except Exception as e:
                 self._log(f"Batch iptal edilemedi ({bid}): {e}", "warn")
+        with self._batch_lock:
+            for bid in cancelled:
+                self._active_batches.pop(bid, None)
+            self._write_batch_owner()
         if cancelled:
             import hybrid_translate as ht
             ht.mark_cancelled_batch_sessions(cancelled)
