@@ -15,6 +15,7 @@ import unittest
 
 import subtitle_translator_gui as gui
 import hybrid_translate as ht
+from request_cancellation import RequestCancelled
 
 
 def _fake_chat(response_obj=None, raise_exc=None):
@@ -200,6 +201,31 @@ class AiResegmentTest(unittest.TestCase):
         with _Patched(raise_exc=RuntimeError("boom")):
             out = gui.ai_resegment_cues(self.BLOCKS, "fake-key")
         self.assertEqual(len(out), 2)                  # deterministik yedekle birleşti
+
+    def test_request_cancellation_is_not_downgraded_to_fallback(self):
+        with _Patched(raise_exc=RequestCancelled("stopped")):
+            with self.assertRaises(RequestCancelled):
+                gui.ai_resegment_cues(self.BLOCKS, "fake-key")
+
+    def test_app_merge_wrapper_preserves_request_cancellation(self):
+        app = types.SimpleNamespace(
+            ai_segment_var=types.SimpleNamespace(get=lambda: True),
+            merge_cues_var=types.SimpleNamespace(get=lambda: False),
+            _helper_api_key=lambda role: "fake-key",
+            _helper_api_base_url=lambda role: "https://example.invalid/v1",
+            _helper_api_model=lambda role: "fake-model",
+            _merge_max_chars=84,
+            _merge_max_gap_ms=800,
+            _log=lambda *args: None,
+        )
+        original = gui.ai_resegment_cues
+        gui.ai_resegment_cues = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RequestCancelled("stopped"))
+        try:
+            with self.assertRaises(RequestCancelled):
+                gui.App._maybe_merge_cues(app, self.BLOCKS, "movie.srt")
+        finally:
+            gui.ai_resegment_cues = original
 
     def test_no_candidates_uses_deterministic_path(self):
         # Tam cümleler → aday pencere yok → AI hiç çağrılmaz, merge_fragmented_cues döner

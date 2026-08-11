@@ -2530,6 +2530,8 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
                 pass_name="AI Segmentasyon")
             content = (resp.choices[0].message.content or "").strip() if resp.choices else ""
             data = ht._extract_json_object(content) if content else {}
+        except RequestCancelled:
+            raise
         except Exception as e:
             if log_fn:
                 log_fn(f"AI segmentasyon isteği hatası (pencere {wi}+), yedek: {e}", "warn")
@@ -17193,6 +17195,8 @@ class App(ctk.CTk):
             if len(out) < len(blocks):
                 self._log(f"Parçalı cue birleştirme: {len(blocks)} → {len(out)} blok", "ok")
             return out
+        except RequestCancelled:
+            raise
         except Exception as e:
             self._log_exc("Cue birleştirme hatası", e)
             return blocks
@@ -22784,6 +22788,8 @@ class App(ctk.CTk):
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"))
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
+                    except RequestCancelled:
+                        raise
                     except Exception as e:
                         self._log(f"AI segmentasyon hatası: {e}", "warn")
                         postprocess_failed = True
