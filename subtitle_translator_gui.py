@@ -17104,7 +17104,8 @@ class App(ctk.CTk):
         _post_ui(self, _upd)
 
     def _maybe_condense(self, blocks, mm_k, mm_u, mm_m, tgt, src_map=None,
-                        locked_terms=None, status_out: dict | None = None):
+                        locked_terms=None, status_out: dict | None = None,
+                        file_path: str = ""):
         """condense_var açıksa CPS sınırını aşan satırları kısaltır. Aksi halde blocks aynen döner."""
         if status_out is not None:
             status_out.clear()
@@ -17132,10 +17133,9 @@ class App(ctk.CTk):
                 helper_api_key=mm_k, helper_url=mm_u, helper_model=mm_m,
                 tgt_lang=tgt, cps_limit=21.0,
                 log_fn=self._log,
-                token_callback=(
-                    self._token_callback_for_model(mm_m)
-                    if hasattr(self, "_token_callback_for_model")
-                    else self._update_tokens),
+                token_callback=_app_token_callback(
+                    self, mm_m, "Okuma Hızı Kısaltma",
+                    base_url=mm_u, file_path=file_path),
                 src_map=src_map,
                 locked_terms=locked_terms,
                 cancel_context=cancel_context,
@@ -17156,7 +17156,7 @@ class App(ctk.CTk):
             self._log_exc("Kısaltma pass hatası", e)
             return blocks
 
-    def _maybe_merge_cues(self, blocks):
+    def _maybe_merge_cues(self, blocks, file_path: str = ""):
         """ai_segment_var açıksa AI destekli akıllı segmentasyon, değilse merge_cues_var
         açıksa hızlı parçalı birleştirme uygular. ÇIKTI biçimlendirmesidir — TM/scan
         PRE-merge bloklarla çalıştığı için bu yalnızca write_srt'e giden son adımda uygulanır."""
@@ -17176,8 +17176,11 @@ class App(ctk.CTk):
                         blocks, key, self._helper_api_base_url("analysis"), self._helper_api_model("analysis"),
                         log_fn=self._log, max_chars=self._merge_max_chars,
                         max_gap_ms=self._merge_max_gap_ms,
-                        token_callback=self._token_callback_for_model(
-                            self._helper_api_model("analysis")))
+                        token_callback=_app_token_callback(
+                            self, self._helper_api_model("analysis"),
+                            "AI Segmentasyon",
+                            base_url=self._helper_api_base_url("analysis"),
+                            file_path=file_path))
                 self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
             out = merge_fragmented_cues(blocks,
                                         max_chars=self._merge_max_chars,
@@ -20739,7 +20742,7 @@ class App(ctk.CTk):
                     source_language=src)
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    self._maybe_merge_cues(blocks), tgt, self._log,
+                    self._maybe_merge_cues(blocks, file_path=orig_path), tgt, self._log,
                     source_cues=cues)
                 missing = len(remaining_missing_ids)
                 _write_path = _partial_output_path(out_path) if missing else Path(out_path)
@@ -22745,7 +22748,9 @@ class App(ctk.CTk):
                             blocks, mm_key, mm_url, mm_model, log_fn=self._log,
                             max_chars=job.get("merge_max_chars", MERGE_MAX_CHARS),
                             max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS),
-                            token_callback=self._token_callback_for_model(mm_model))
+                            token_callback=_app_token_callback(
+                                self, mm_model, "AI Segmentasyon",
+                                base_url=mm_url, file_path=fp))
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"AI segmentasyon hatası: {e}", "warn")
@@ -24619,7 +24624,10 @@ class App(ctk.CTk):
                     file_src = (source_languages or {}).get(fp, src)
                     return fp, analyze_file_precontext(client, blocks, model, file_src, tgt,
                                                        log_fn=self._log,
-                                                       token_cb=self._update_tokens,
+                                                       token_cb=_app_token_callback(
+                                                           self, model, "Ön-Bağlam Analizi",
+                                                           base_url=str(getattr(client, "base_url", "") or ""),
+                                                           file_path=fp),
                                                        cancel_context=self.__dict__.get(
                                                            "_helper_request_canceller"))
                 except RequestCancelled:
@@ -25841,7 +25849,10 @@ class App(ctk.CTk):
                     try:
                         detected_name = detect_content_type_with_ai(
                             client, cues, model, self._log,
-                            token_callback=self._token_callback_for_model(model),
+                            token_callback=_app_token_callback(
+                                self, model, "İçerik Türü Ön Analizi",
+                                base_url=self._main_api_base_url(),
+                                file_path=filepath),
                             filename=filepath,
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"))
@@ -26410,7 +26421,8 @@ class App(ctk.CTk):
                     self._helper_api_model("analysis"),
                     tgt, src_map=_src_map_for_condense,
                     locked_terms=_locked_terms,
-                    status_out=_condense_status)
+                    status_out=_condense_status,
+                    file_path=filepath)
                 _pass_status["Condense"] = dict(_condense_status)
             if self._stop_flag:
                 break
@@ -26617,7 +26629,7 @@ class App(ctk.CTk):
                     filepath, f"{label.title()} değişti", 100, "error")
                 continue
             _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks), tgt, self._log,
+                self._maybe_merge_cues(sorted_blocks, file_path=filepath), tgt, self._log,
                 source_cues=cues)
             _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
             _has_missing = _hata_n > 0
@@ -28122,7 +28134,8 @@ class App(ctk.CTk):
                                 tgt,
                                 src_map=_src_map_from_cues(_orig_cues),
                                 locked_terms=_locked_terms,
-                                status_out=_condense_status)
+                                status_out=_condense_status,
+                                file_path=str(_src_path))
                             _pass_status["Condense"] = dict(_condense_status)
                             if self._stop_flag:
                                 break
@@ -28291,7 +28304,7 @@ class App(ctk.CTk):
                                     "err")
                                 break
                             _delivery_blocks = _prepare_upload_ready_blocks(
-                                self._maybe_merge_cues(pp), tgt, self._log,
+                                self._maybe_merge_cues(pp, file_path=str(_src_path)), tgt, self._log,
                                 source_cues=_orig_cues)
                             _write_path = (
                                 _partial_output_path(output_path)
@@ -28938,7 +28951,8 @@ class App(ctk.CTk):
                     self._helper_api_model("analysis"), _tgt_lang,
                     src_map=src_blocks,
                     locked_terms=_locked_terms_for(fp),
-                    status_out=_condense_status)
+                    status_out=_condense_status,
+                    file_path=fp)
                 _pass_status["Condense"] = dict(_condense_status)
                 if self._stop_flag:
                     break
@@ -29076,7 +29090,7 @@ class App(ctk.CTk):
             if _has_missing:
                 _write_path = _partial_output_path(out_path)
             _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks), _tgt_lang, self._log,
+                self._maybe_merge_cues(sorted_blocks, file_path=fp), _tgt_lang, self._log,
                 source_cues=_src_cues)
             self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
@@ -29645,7 +29659,9 @@ class App(ctk.CTk):
                         client = OpenAI(api_key=openai_key, base_url=b_url if b_url else None)
                         detected_name = detect_content_type_with_ai(
                             client, cues, model, self._log,
-                            token_callback=self._token_callback_for_model(model),
+                            token_callback=_app_token_callback(
+                                self, model, "İçerik Türü Ön Analizi",
+                                base_url=b_url, file_path=filepath),
                             filename=filepath,
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"))
@@ -30093,7 +30109,8 @@ class App(ctk.CTk):
                     try:
                         write_srt(
                             str(_partial_path),
-                            self._maybe_merge_cues(_final_blocks), tgt)
+                            self._maybe_merge_cues(
+                                _final_blocks, file_path=filepath), tgt)
                         _quarantined = _quarantine_incomplete_final(out_path)
                         if _quarantined:
                             self._log(
@@ -30308,7 +30325,8 @@ class App(ctk.CTk):
                             self._helper_api_model("analysis"),
                             tgt, src_map=_src_map_from_cues(cues),
                             locked_terms=_file_locked_terms,
-                            status_out=_condense_status)
+                            status_out=_condense_status,
+                            file_path=filepath)
                         _pass_status["Condense"] = dict(_condense_status)
                         if self._stop_flag:
                             break
@@ -30506,7 +30524,8 @@ class App(ctk.CTk):
                     continue
                 _write_path = _partial_output_path(out_path) if _has_missing else out_path
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    self._maybe_merge_cues(_final_blocks), tgt, self._log,
+                    self._maybe_merge_cues(
+                        _final_blocks, file_path=filepath), tgt, self._log,
                     source_cues=cues)
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)

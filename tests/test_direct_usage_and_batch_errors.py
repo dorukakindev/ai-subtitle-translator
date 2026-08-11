@@ -89,6 +89,24 @@ class DirectUsageAndBatchErrorTests(unittest.TestCase):
         self.assertEqual(result["summary"], "Özet")
         callback.report_missing_usage.assert_called_once_with()
 
+    def test_auxiliary_pass_usage_is_bound_to_pass_and_file(self):
+        source = inspect.getsource(gui.App)
+
+        self.assertNotIn(
+            "token_callback=self._token_callback_for_model(", source)
+        self.assertNotIn("token_cb=self._update_tokens", source)
+        self.assertIn('"Okuma Hızı Kısaltma"', source)
+        self.assertIn('"AI Segmentasyon"', source)
+        self.assertIn('"Ön-Bağlam Analizi"', source)
+        self.assertIn('"İçerik Türü Ön Analizi"', source)
+
+        condense_calls = list(re.finditer(r"self\._maybe_condense\(", source))
+        merge_calls = list(re.finditer(r"self\._maybe_merge_cues\(", source))
+        self.assertEqual(len(condense_calls), 4)
+        self.assertEqual(len(merge_calls), 6)
+        for match in condense_calls + merge_calls:
+            self.assertIn("file_path=", source[match.start():match.start() + 900])
+
     def test_malformed_batch_error_row_does_not_hide_later_errors(self):
         content = "\n".join([
             "not-json",
