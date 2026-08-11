@@ -149,6 +149,12 @@ class ValidateTermNormalizeCandidateTest(unittest.TestCase):
             [("Troy", "Truva")])
         self.assertTrue(ok, reason)
 
+    def test_accepts_attached_turkish_suffix_for_common_noun(self):
+        ok, reason = gui._validate_term_normalize_candidate(
+            "Memories'leri geri geldi.", "Anıları geri geldi.",
+            [("Memories", "Anılar")])
+        self.assertTrue(ok, reason)
+
     def test_valid_multiline_swap(self):
         # Zaten TÜRKÇE bir cümlede yalnızca ad değişiyor (ör. gerçek #218 vakası) —
         # bu VALID; tüm satırın diğer dilden çevrildiği durum (#53 gibi) bu
