@@ -2839,10 +2839,11 @@ _DELIVERY_CREDIT_ROLE_RE = re.compile(
 )
 _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
+    r"\bcopyright\s*(?:(?:©|\(c\))\s*)?\d{4}\b|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
     r"\bocr\s+(?:by|:)\s*\S|\bsubti(?:tl|fl)ing\s*:\s*\S|"
-    r"\b(?:subtitles?|subs?|translation|translator|timing|typeset(?:ting)?|"
+    r"\b(?:subtitles?|subtitler|subs?|translation|translator|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
@@ -2862,7 +2863,7 @@ _DELIVERY_CREDIT_LINE_CONTINUATION_RE = re.compile(
     r"^\s*(?:&|and\b|ve\b)\s*\S|"
     r"^\s*[^\s@]+@[^\s@]+(?:\s*[;:]-?[)D])?\s*$", re.IGNORECASE)
 _DELIVERY_CREDIT_LABEL_RE = re.compile(
-    r"^\s*(?:subtitles?|subs?|translation|timing|typeset(?:ting)?|"
+    r"^\s*(?:subtitles?|subtitler|subs?|translation|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?|script|metni|translator|çevir(?:i|en|men))\s*:\s*(.+?)\s*$",
     re.IGNORECASE | re.DOTALL)
 _DELIVERY_SDH_TOKEN_RE = re.compile(

@@ -760,6 +760,16 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertTrue(any(
             text == "Yüksek Mahkeme:" for _idx, _ts, text in result))
 
+    def test_copyright_and_subtitler_cue_is_removed(self):
+        credit = "Copyright © 1999 TITE LBI LD, Berlin\nSubtitler: Alan Wildblood et al."
+        self.assertTrue(gui._source_cue_is_delivery_removable(credit))
+        result = gui._prepare_upload_ready_blocks(
+            [("1", "00:00:01,000 --> 00:00:03,000", "Telif Hakkı 1999\nAlan Wildblood")],
+            "Turkish",
+            source_cues=[("1", "00:00:01,000 --> 00:00:03,000", credit)],
+        )
+        self.assertFalse(any("Wildblood" in text for _idx, _ts, text in result))
+
 
 if __name__ == "__main__":
     unittest.main()
