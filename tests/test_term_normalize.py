@@ -78,11 +78,29 @@ class MixedTermAutofixPlanTest(unittest.TestCase):
             "4": "But Troy is still disputed.",
             "5": "New evidence about Troy exists.",
         })
-        plan = gui._mixed_term_autofix_plan(blocks, src)
+        plan = gui._mixed_term_autofix_plan(
+            blocks, src, locked_terms={"Troy": "Truva"})
         # cue 1,2,4'teki 'Troy' (yanlış/sızıntı) hedeflenmeli
         self.assertEqual(set(plan.keys()), {"1", "2", "4"})
         for idx in ("1", "2", "4"):
             self.assertEqual(plan[idx], [("Troy", "Truva")])
+
+    def test_same_source_term_with_distinct_entities_is_report_only_without_lock(self):
+        blocks = _b(
+            (1, "Gürcistan sınırında beklediler."),
+            (2, "Georgia eyaletinde büyüdü."),
+            (3, "Gürcistan ekonomisi küçüldü."),
+            (4, "Georgia valisi konuştu."),
+            (5, "Gürcistan başkenti değişmedi."),
+        )
+        src = _s(**{
+            "1": "They waited at the Georgia border.",
+            "2": "He grew up in Georgia state.",
+            "3": "Georgia economy shrank.",
+            "4": "Georgia governor spoke.",
+            "5": "Georgia capital did not change.",
+        })
+        self.assertEqual(gui._mixed_term_autofix_plan(blocks, src), {})
 
     def test_two_valid_turkish_variants_not_planned(self):
         # İki küme de kaynakla (Iliad) birebir aynı DEĞİL (ikisi de Türkçe transliterasyon)
@@ -261,7 +279,9 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         ]
         import sys
         with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
-            result, n = gui._normalize_mixed_terms(blocks, src, "key", "url", "model")
+            result, n = gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model",
+                locked_terms={"Troy": "Truva"})
         self.assertEqual(n, 3)
         result_map = {idx: text for idx, _ts, text in result}
         self.assertEqual(result_map["1"], "Truva kuşatması başladı.")
@@ -294,7 +314,9 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         ]
         import sys
         with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
-            result, n = gui._normalize_mixed_terms(blocks, src, "key", "url", "model")
+            result, n = gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model",
+                locked_terms={"Troy": "Truva"})
         self.assertEqual(n, 2)  # yalnızca 2 ve 4 uygulandı, 1 reddedildi
         result_map = {idx: text for idx, _ts, text in result}
         self.assertEqual(result_map["1"], "Troy kuşatması başladı.")  # değişmedi
@@ -323,7 +345,8 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         import sys
         with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
             result, n = gui._normalize_mixed_terms(
-                blocks, src, "key", "url", "model")
+                blocks, src, "key", "url", "model",
+                locked_terms={"Troy": "Truva"})
 
         result_map = {idx: text for idx, _ts, text in result}
         self.assertEqual(n, 1)

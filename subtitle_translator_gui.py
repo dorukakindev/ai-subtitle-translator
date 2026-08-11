@@ -7353,10 +7353,11 @@ def _mixed_term_autofix_plan(blocks: list, src_map: dict,
                              locked_terms: dict | None = None) -> dict:
     """Karışık-terim kümelerinden GÜVENLİ otomatik-düzeltme planı çıkarır.
 
-    Yalnızca 'çevrilmeden kalmış İngilizce sızıntısı' durumunu hedefler: bir terim
+    Yalnızca kilitli terimde 'çevrilmeden kalmış İngilizce sızıntısı' durumunu hedefler: bir terim
     için TAM OLARAK 2 gerçek küme varsa VE kümelerden BİRİNİN temsilcisi kaynak
     terimle (case-insensitive) BİREBİR aynıysa (= büyük olasılıkla hiç çevrilmemiş),
-    o küme 'yanlış' sayılır, diğeri 'doğru'. SAYICA ÇOĞUNLUK ASLA tek başına karar
+    o küme 'yanlış' sayılır. Kilit yoksa aynı yazımlı farklı özel ad/anlamları
+    ayırt etmek güvenli değildir; yalnızca raporlanır. SAYICA ÇOĞUNLUK ASLA tek başına karar
     vermez — çoğunluk YANLIŞ olabilir (ör. bir terim yardımcı geçişlerde tekrar
     tekrar çevrilemeyip İngilizce kalırsa sayıca daha fazla bile olabilir; gerçek
     vaka: Strangest Things S02E03'te kaynak-eşleşen 'Troy' 14 kez, doğru 'Truva'
@@ -7381,13 +7382,15 @@ def _mixed_term_autofix_plan(blocks: list, src_map: dict,
         other_i = 1 - leak_i
         if real_clusters[other_i][0][1].lower() == term_l:
             continue  # her iki küme de kaynakla aynı — belirsiz, atla
-        wrong_literal = real_clusters[leak_i][0][1]
         locked_target = next(
             (str(target) for source, target in (locked_terms or {}).items()
              if str(source).casefold() == term.casefold() and str(target).strip()),
             "",
         )
-        correct_literal = locked_target or real_clusters[other_i][0][1]
+        if not locked_target:
+            continue
+        wrong_literal = real_clusters[leak_i][0][1]
+        correct_literal = locked_target
         for idx, _tok in real_clusters[leak_i]:
             fix = (wrong_literal, correct_literal)
             if fix not in plan.setdefault(idx, []):
