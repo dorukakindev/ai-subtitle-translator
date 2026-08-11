@@ -653,6 +653,36 @@ def _readiness_view(file_count: int, target: str, profile: str,
     return "DOSYA BEKLENİYOR", detail, "waiting"
 
 
+APP_WINDOW_TITLE = "Subtitle Translator"
+
+
+def _progress_window_title(phase: str, detail: str = "",
+                           progress: float = 0.0,
+                           running: bool = False) -> str:
+    phase = re.sub(r"\s+", " ", str(phase or "")).strip()
+    phase_key = phase.casefold()
+    if not phase or phase_key.startswith("hazır"):
+        return APP_WINDOW_TITLE
+    if any(token in phase_key for token in (
+            "tamam", "kısmen", "hata", "durduruldu", "iptal")):
+        return f"{phase} — {APP_WINDOW_TITLE}"
+    if not running:
+        return APP_WINDOW_TITLE
+    try:
+        pct = max(0, min(100, int(round(float(progress) * 100))))
+    except (TypeError, ValueError):
+        pct = 0
+    focus = re.sub(r"\s+", " ", str(detail or "")).strip()
+    if "—" in focus:
+        focus = focus.split("—", 1)[0].strip()
+    if len(focus) > 42:
+        focus = focus[:39].rstrip() + "…"
+    parts = [phase, f"%{pct}"]
+    if focus:
+        parts.append(focus)
+    return " · ".join(parts) + f" — {APP_WINDOW_TITLE}"
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -11060,7 +11090,7 @@ def _json_glossary_store_is_valid(path) -> bool:
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Subtitle Translator")
+        self.title(APP_WINDOW_TITLE)
         self.minsize(900, 620)
         self.configure(fg_color=BG)
         self._restored_geometry = None  # kayıtlı pencere pozisyonu
@@ -11160,6 +11190,9 @@ class App(ctk.CTk):
         self._motion_progress_value = 0.0
         self._motion_progress_target = 0.0
         self._motion_activity_text = ""
+        self._window_phase = "Hazır"
+        self._window_phase_detail = ""
+        self._window_title_value = APP_WINDOW_TITLE
 
         # ── Log dosyası ───────────────────────────────────────────────────────
         import datetime
@@ -15841,6 +15874,18 @@ class App(ctk.CTk):
             item["number"].configure(text=number, text_color=stage_color)
             item["label"].configure(text_color=stage_color)
 
+    def _refresh_progress_window_title(self):
+        title = _progress_window_title(
+            self.__dict__.get("_window_phase", "Hazır"),
+            self.__dict__.get("_window_phase_detail", ""),
+            self.__dict__.get("_motion_progress_target", 0.0),
+            bool(self.__dict__.get("_is_running", False)),
+        )
+        if title == self.__dict__.get("_window_title_value"):
+            return
+        self._window_title_value = title
+        self.title(title)
+
     def _set_phase(self, phase: str, detail: str = ""):
         """Büyük faz etiketini günceller. phase = 'analiz'|'çeviri'|'critic'|..."""
         key   = phase.lower().split()[0]
@@ -15849,6 +15894,8 @@ class App(ctk.CTk):
 
         def _upd():
             try:
+                self._window_phase = phase
+                self._window_phase_detail = visible_detail
                 self._motion_phase_color = color
                 self._motion_activity_text = (
                     "" if key in {"hazır", "tamam"} else "ÇALIŞIYOR")
@@ -15863,6 +15910,7 @@ class App(ctk.CTk):
                     text="" if key in {"hazır", "tamam"} else "ÇALIŞIYOR ·")
                 self.progress_lbl.configure(text=visible_detail)
                 App._update_pipeline_rail(self, phase, color)
+                App._refresh_progress_window_title(self)
                 App._ensure_motion_animation(self)
             except Exception:
                 pass
@@ -15893,6 +15941,7 @@ class App(ctk.CTk):
                 else:
                     self._motion_progress_value = v
                     self.progress.set(v)
+                App._refresh_progress_window_title(self)
             except Exception:
                 pass
         _post_ui(self, _upd)
@@ -16269,6 +16318,7 @@ class App(ctk.CTk):
         if adv_btn is not None:
             adv_btn.configure(state=s)
         self._is_running = running
+        App._refresh_progress_window_title(self)
         App._update_readiness_card(self)
         if running:
             self._motion_progress_value = 0.0
