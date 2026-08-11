@@ -269,6 +269,18 @@ class PersistentRepairRetryTest(unittest.TestCase):
             "candidate": candidate,
         }])
 
+    def test_negation_and_number_mismatches_are_advisory(self):
+        cases = (
+            ("He did not leave.", "Gitti.", "source_negation"),
+            ("There were 15 people.", "Orada 5 kişi vardı.", "source_numbers"),
+        )
+        for source, candidate, expected in cases:
+            with self.subTest(expected=expected):
+                reason = gui._repair_candidate_rejection_reason(
+                    source, candidate, src_lang="English", tgt_lang="Turkish")
+                self.assertEqual(reason, expected)
+                self.assertTrue(gui._repair_reason_is_advisory(reason))
+
     def test_quoted_song_title_translation_is_accepted_without_retry(self):
         source = (
             'One seven-inch single - "I\'m the Leader of the Gang," brackets, '

@@ -4805,6 +4805,127 @@ def _chunk_leak_source_text(chunk_src_map: dict, item_id) -> str:
     return str(chunk_src_map.get(str(item_id), "") or "")
 
 
+def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[str]:
+    owner_stopwords = {
+        "a", "an", "and", "are", "but", "can", "could", "did",
+        "do", "does", "for", "from", "had", "has", "have", "he",
+        "hello", "here", "how", "i", "if", "in", "is", "it", "no",
+        "not", "now", "oh", "or", "please", "she", "that", "the",
+        "then", "there", "they", "this", "to", "was", "we", "were",
+        "what", "when", "where", "who", "why", "will", "would", "yes",
+        "you",
+    }
+    owner_tokens = {}
+    token_owners = defaultdict(set)
+    for idx, source_text in (owner_src_map or {}).items():
+        tokens = set(re.findall(
+            r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
+            str(source_text or "")))
+        tokens = {
+            token for token in tokens
+            if token[0].isdigit() or token.casefold() not in owner_stopwords
+        }
+        owner_tokens[str(idx)] = tokens
+        for token in tokens:
+            token_owners[token.casefold()].add(str(idx))
+    unique_tokens = {
+        idx: {token for token in tokens
+              if len(token_owners.get(token.casefold(), ())) == 1}
+        for idx, tokens in owner_tokens.items()
+    }
+    mismatched = set()
+    for item in items or []:
+        if not isinstance(item, dict) or "i" not in item:
+            continue
+        idx = str(item["i"])
+        target = str(item.get("t") or "")
+        foreign = {
+            token for owner, tokens in unique_tokens.items()
+            if owner != idx for token in tokens
+            if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
+                         re.IGNORECASE)
+        }
+        own = unique_tokens.get(idx, set())
+        if foreign and own and not any(
+                re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
+                          re.IGNORECASE) for token in own):
+            mismatched.add(idx)
+    return mismatched
+
+
+def _targeted_strict_chunk_salvage(raw, req: dict, reason: str):
+    if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue",
+                      "cue_content_owner_mismatch"}:
+        return None
+    try:
+        payload = json.loads(req["body"]["messages"][1]["content"])
+        expected_items = [
+            item for item in payload.get("tr", [])
+            if isinstance(item, dict) and "i" in item
+        ]
+        response_items = json.loads(_extract_json_array(raw))
+        if not expected_items or not isinstance(response_items, list):
+            return None
+        expected_ids = [str(item["i"]) for item in expected_items]
+        response_by_id = defaultdict(list)
+        for item in response_items:
+            if (isinstance(item, dict) and "i" in item
+                    and isinstance(item.get("t"), str)):
+                response_by_id[str(item["i"])].append(str(item["t"]))
+        bad_ids = {
+            idx for idx in expected_ids
+            if len(response_by_id.get(idx, ())) != 1
+        }
+        if reason == "empty_dialogue":
+            bad_ids.update(
+                idx for idx in expected_ids
+                if len(response_by_id.get(idx, ())) == 1
+                and not response_by_id[idx][0].strip())
+        elif reason == "adjacent_duplicate":
+            seq = [
+                (str(item.get("i")), _align_visible(item.get("t", "")))
+                for item in response_items if isinstance(item, dict) and "i" in item
+            ]
+            bad_ids.update(_find_adjacent_duplicate_ids(
+                seq, _chunk_src_map_from_request(req)))
+        elif reason == "cue_content_owner_mismatch":
+            owner_src_map = (
+                _chunk_leak_src_map_from_request(req)
+                or _chunk_src_map_from_request(req))
+            bad_ids.update(_chunk_content_owner_mismatch_ids(
+                response_items, owner_src_map))
+        elif reason == "id_integrity":
+            actual_ids = [
+                str(item.get("i")) for item in response_items
+                if isinstance(item, dict) and "i" in item
+            ]
+            expected_positions = {idx: pos for pos, idx in enumerate(expected_ids)}
+            actual_expected = [idx for idx in actual_ids if idx in expected_positions]
+            for pos, idx in enumerate(actual_expected):
+                if pos >= len(expected_ids) or idx != expected_ids[pos]:
+                    bad_ids.add(idx)
+                    if pos < len(expected_ids):
+                        bad_ids.add(expected_ids[pos])
+        bad_ids.intersection_update(expected_ids)
+        if not bad_ids or len(bad_ids) >= len(expected_ids):
+            return None
+        canonical = [
+            {
+                "i": item["i"],
+                "t": (
+                    "[HATA]" if str(item["i"]) in bad_ids
+                    else response_by_id[str(item["i"])][0]
+                ),
+            }
+            for item in expected_items
+        ]
+        return json.dumps(canonical, ensure_ascii=False), sorted(
+            bad_ids, key=lambda value: (0, int(value))
+            if str(value).isdigit() else (1, str(value)))
+    except Exception:
+        return None
+
+
 def _chunk_response_retry_reason(raw, req: dict | None) -> str:
     if raw is None:
         return "missing_response"
@@ -4849,48 +4970,9 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
                 idx = str(it.get("i"))
                 if not it.get("t", "").strip() and idx in required_set:
                     return "empty_dialogue"
-            owner_tokens = {}
-            token_owners = defaultdict(set)
-            owner_stopwords = {
-                "a", "an", "and", "are", "but", "can", "could", "did",
-                "do", "does", "for", "from", "had", "has", "have", "he",
-                "hello", "here", "how", "i", "if", "in", "is", "it", "no",
-                "not", "now", "oh", "or", "please", "she", "that", "the",
-                "then", "there", "they", "this", "to", "was", "we", "were",
-                "what", "when", "where", "who", "why", "will", "would", "yes",
-                "you",
-            }
             owner_src_map = chunk_leak_src_map or chunk_src_map
-            for idx, source_text in owner_src_map.items():
-                tokens = set(re.findall(
-                    r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
-                    str(source_text or "")))
-                tokens = {
-                    token for token in tokens
-                    if token[0].isdigit() or token.casefold() not in owner_stopwords
-                }
-                owner_tokens[idx] = tokens
-                for token in tokens:
-                    token_owners[token.casefold()].add(idx)
-            unique_tokens = {
-                idx: {token for token in tokens
-                      if len(token_owners.get(token.casefold(), ())) == 1}
-                for idx, tokens in owner_tokens.items()
-            }
-            for it in items:
-                idx = str(it.get("i"))
-                target = str(it.get("t") or "")
-                foreign = {
-                    token for owner, tokens in unique_tokens.items()
-                    if owner != idx for token in tokens
-                    if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
-                                 re.IGNORECASE)
-                }
-                own = unique_tokens.get(idx, set())
-                if foreign and own and not any(
-                        re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
-                                  re.IGNORECASE) for token in own):
-                    return "cue_content_owner_mismatch"
+            if _chunk_content_owner_mismatch_ids(items, owner_src_map):
+                return "cue_content_owner_mismatch"
             seq = [(str(it.get("i")), _align_visible(it.get("t", "")))
                    for it in items if "i" in it]
             if _find_adjacent_duplicate_ids(seq, chunk_src_map):
@@ -4950,13 +5032,20 @@ def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: st
         return "locked_term_violation"
     if ht._question_mark_mismatch(src, value):
         return "source_question"
+    if (ht._source_negation_requires_turkish_negation(src)
+            and not ht._has_turkish_negation(value)):
+        return "source_negation"
+    if ht._numeric_token_mismatch(src, value):
+        return "source_numbers"
     return ""
 
 
 def _repair_reason_is_advisory(reason: str) -> bool:
     value = str(reason or "")
-    return value in {"locked_term_violation", "source_question"} or value.startswith(
-        "non_turkish_target:")
+    return value in {
+        "locked_term_violation", "source_question", "source_negation",
+        "source_numbers",
+    } or value.startswith("non_turkish_target:")
 
 
 def _repair_validation_source_map(raw_src_map: dict, source_cues) -> dict:
@@ -16970,9 +17059,25 @@ class App(ctk.CTk):
                 body["temperature"] = min(float(body.get("temperature") or 0.2), 0.2)
             return body
 
-        strict_retried = set()
         strict_reasons = {"adjacent_duplicate", "id_integrity", "empty_dialogue",
                           "cue_content_owner_mismatch"}
+        for cid, req in req_by_id.items():
+            reason = _retry_reason(cid)
+            if reason not in strict_reasons:
+                continue
+            targeted = _targeted_strict_chunk_salvage(
+                raw_map.get(cid, ""), req, reason)
+            if targeted is None:
+                continue
+            raw_map[cid], bad_ids = targeted
+            partial_only_cids.add(cid)
+            self._log(
+                f"  ↪ {cid}: {reason}; {len(bad_ids)} şüpheli cue hedefli "
+                f"onarıma bırakıldı ({_fmt_align_ranges(bad_ids)}), sağlam cue'lar korundu",
+                "warn",
+            )
+
+        strict_retried = set()
         for round_idx in range(max_rounds):
             if self._stop_flag:
                 break

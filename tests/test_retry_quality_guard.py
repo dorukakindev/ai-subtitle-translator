@@ -476,14 +476,12 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
                           side_effect=AssertionError("atlanmış SFX id yeniden denenmemeli")):
             app._retry_hata(object(), raw_map, requests, max_rounds=1)
 
-    def test_failed_strict_retry_does_not_merge_partial_shifted_output(self):
+    def test_empty_dialogue_fallback_preserves_nonempty_cue(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._log = lambda *args, **kwargs: None
         app._update_tokens = lambda *args, **kwargs: None
-        app._resend_missing_blocks = lambda *args, **kwargs: (
-            self.fail("katı ID hatasında kısmi çıktı birleştirilmemeli")
-        )
+        app._resend_missing_blocks = lambda *args, **kwargs: None
         raw_map = {"chunk_1": json.dumps([
             {"i": 1, "t": "Sonraki satırın içeriği."},
             {"i": 2, "t": ""},
@@ -506,9 +504,46 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
             app._retry_hata(object(), raw_map, requests, max_rounds=1)
 
         self.assertEqual(json.loads(raw_map["chunk_1"]), [
-            {"i": 1, "t": "[HATA]"},
+            {"i": 1, "t": "Sonraki satırın içeriği."},
             {"i": 2, "t": "[HATA]"},
         ])
+
+    def test_adjacent_duplicate_repairs_only_suspicious_cues(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._log = lambda *args, **kwargs: None
+        app._update_tokens = lambda *args, **kwargs: None
+        raw_map = {"chunk_1": json.dumps([
+            {"i": 1, "t": "Bu sağlıklı ve bağımsız ilk çeviridir."},
+            {"i": 2, "t": "Yolları düşünüldüğünde, benzer bir işi yapacak kadar güçlü değildir."},
+            {"i": 3, "t": "Yolları düşünüldüğünde, benzer bir işi yapacak kadar güçlü değildir."},
+        ], ensure_ascii=False)}
+        requests = [self._req("chunk_1", [
+            {"i": 1, "t": "THE FIRST HEALTHY LINE IS INDEPENDENT.", "d": 1.0},
+            {"i": 2, "t": "THE HUGE SIZE OF THE STONES AND THE DIFFICULT MOUNTAIN", "d": 1.0},
+            {"i": 3, "t": "PATHS THEY TRAVELED OVER.", "d": 1.0},
+        ])]
+        calls = []
+
+        def targeted_repair(_client, **kwargs):
+            payload = json.loads(kwargs["messages"][1]["content"])
+            calls.append([str(item["i"]) for item in payload["tr"]])
+            return SimpleNamespace(
+                usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps([
+                    {"i": 2, "t": "İkinci satır bir kamerayı anlatıyor."},
+                    {"i": 3, "t": "Üçüncü satır bir uçağı anlatıyor."},
+                ], ensure_ascii=False)))],
+            )
+
+        with patch.object(gui, "_safe_chat_create", targeted_repair):
+            app._retry_hata(object(), raw_map, requests, max_rounds=3)
+
+        self.assertEqual(calls, [["2", "3"]])
+        result = json.loads(raw_map["chunk_1"])
+        self.assertEqual(result[0]["t"], "Bu sağlıklı ve bağımsız ilk çeviridir.")
+        self.assertEqual(result[1]["t"], "İkinci satır bir kamerayı anlatıyor.")
+        self.assertEqual(result[2]["t"], "Üçüncü satır bir uçağı anlatıyor.")
 
 
 class ChunkSrcMapFromRequestTest(unittest.TestCase):
