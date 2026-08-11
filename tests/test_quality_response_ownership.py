@@ -69,6 +69,34 @@ class QualityResponseOwnershipTest(unittest.TestCase):
         self.assertEqual(call.call_count, 2)
         self.assertEqual(status["status"], "completed")
 
+    def test_critic_retry_prompt_excludes_already_recovered_items(self):
+        cues = [
+            Cue(1, "FIRST_ONLY_RETRY_SENTINEL."),
+            Cue(2, "SECOND_ONLY_RETRY_SENTINEL."),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Birinci okay."),
+            (2, "00:00:01,000 --> 00:00:02,000", "İkinci okay."),
+        ]
+        responses = iter([
+            '[{"id":"1","fixed":"Birinci."},'
+            '{"id":"2","fixed":"İkinci."',
+            "[]",
+        ])
+        prompts = []
+
+        def fake_create(*_args, **kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            return _response(next(responses))
+
+        with patch.dict(sys.modules, {"openai": SimpleNamespace(OpenAI=FakeOpenAI)}), \
+             patch("hybrid_translate._safe_chat_create", side_effect=fake_create):
+            ht.critic_pass_with_helper(cues, blocks, "key")
+
+        self.assertEqual(len(prompts), 2)
+        self.assertNotIn("FIRST_ONLY_RETRY_SENTINEL", prompts[1])
+        self.assertIn("SECOND_ONLY_RETRY_SENTINEL", prompts[1])
+
     def test_native_marks_unrecovered_truncated_response_partial(self):
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Bu garip bir cumle."),

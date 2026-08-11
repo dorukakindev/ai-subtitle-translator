@@ -11739,6 +11739,7 @@ def critic_pass_with_helper(
                 pass
             pairs.append(pair)
 
+        pairs_payload = json.dumps(pairs, ensure_ascii=False)
         prompt = (
             f"You are a professional {tgt_lang} subtitle editor. "
             f"These lines were flagged as potentially containing errors.{context_info}\n\n"
@@ -11780,7 +11781,7 @@ def critic_pass_with_helper(
             f"target <=21 CPS and avoid >24 CPS when possible. Remove filler first, never drop names, numbers, facts, "
             f"negation, or speaker ownership.\n\n"
             f"Fix ONLY lines that have real problems — ignore stylistic preferences.\n\n"
-            f"Lines:\n{json.dumps(pairs, ensure_ascii=False)}\n\n"
+            f"Lines:\n{pairs_payload}\n\n"
             f'Return ONLY fixes as JSON array: [{{"id":"5","fixed":"..."}}]\n'
             f"Return [] only if there are no real problems and no must_fix_flow=true items."
         )
@@ -11802,10 +11803,10 @@ def critic_pass_with_helper(
                     log_fn(f"Critic Helper chunk boş yanıt döndü — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
             def _retry_partial(remaining_items):
+                remaining_payload = json.dumps(remaining_items, ensure_ascii=False)
                 retry_prompt = (
-                    prompt
-                    + "\n\nPrevious JSON was truncated. Review ONLY these remaining lines and return a complete JSON array, including [] when no fix is needed:\n"
-                    + json.dumps(remaining_items, ensure_ascii=False)
+                    prompt.replace(pairs_payload, remaining_payload, 1)
+                    + "\n\nPrevious JSON was truncated. Review ONLY the Lines above and return a complete JSON array, including [] when no fix is needed."
                 )
                 retry_resp = _safe_chat_create(
                     client,
