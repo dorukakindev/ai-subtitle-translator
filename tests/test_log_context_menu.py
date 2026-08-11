@@ -6,6 +6,18 @@ import subtitle_translator_gui as gui
 
 
 class LogContextMenuTest(unittest.TestCase):
+    def test_keyboard_shortcuts_delegate_to_existing_safe_actions(self):
+        app = SimpleNamespace(
+            _copy_complete_log_to_clipboard=MagicMock(),
+            _pin_log_bottom=MagicMock(),
+        )
+
+        self.assertEqual(
+            gui.App._shortcut_copy_complete_log(app), "break")
+        self.assertEqual(gui.App._shortcut_pin_log_bottom(app), "break")
+        app._copy_complete_log_to_clipboard.assert_called_once_with()
+        app._pin_log_bottom.assert_called_once_with()
+
     def test_selected_log_text_is_copied_without_touching_layout(self):
         app = SimpleNamespace(
             log_box=MagicMock(),

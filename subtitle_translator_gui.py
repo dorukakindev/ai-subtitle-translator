@@ -11216,6 +11216,10 @@ class App(ctk.CTk):
         self._project_memories = {}
 
         self._build_ui()
+        self.bind_all(
+            "<Control-Shift-L>", self._shortcut_copy_complete_log, add="+")
+        self.bind_all(
+            "<Alt-End>", self._shortcut_pin_log_bottom, add="+")
         self._apply_media_mode("Dizi", notify=False)
         self._load_settings()
         if self._restored_geometry:
@@ -13464,10 +13468,12 @@ class App(ctk.CTk):
         self._log_context_menu.add_command(
             label="Seçileni kopyala", command=self._copy_selected_log_text)
         self._log_context_menu.add_command(
-            label="Tüm logu kopyala", command=self._copy_complete_log_to_clipboard)
+            label="Tüm logu kopyala", accelerator="Ctrl+Shift+L",
+            command=self._copy_complete_log_to_clipboard)
         self._log_context_menu.add_separator()
         self._log_context_menu.add_command(
-            label="En alta git", command=self._pin_log_bottom)
+            label="En alta git", accelerator="Alt+End",
+            command=self._pin_log_bottom)
         self._log_context_menu.add_command(
             label="Temizle", command=self._clear_log)
         self.log_box.bind(
@@ -15178,6 +15184,14 @@ class App(ctk.CTk):
             self.log_box.see("end")
         except Exception:
             pass
+
+    def _shortcut_copy_complete_log(self, _event=None):
+        self._copy_complete_log_to_clipboard()
+        return "break"
+
+    def _shortcut_pin_log_bottom(self, _event=None):
+        self._pin_log_bottom()
+        return "break"
 
     def _copy_selected_log_text(self):
         try:
