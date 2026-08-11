@@ -592,6 +592,33 @@ def _dashboard_stat_columns(content_width: int) -> int:
         return 3
 
 
+PIPELINE_STAGE_LABELS = ("Hazırlık", "Çeviri", "Kalite", "Teslim")
+
+
+def _pipeline_stage_index(phase: str) -> int:
+    """Görünür faz adını dört kullanıcı aşamasından birine indirger."""
+    value = str(phase or "").strip().casefold()
+    if any(token in value for token in (
+            "tamam", "teslim", "çıktı", "yazıyor", "hata")):
+        return 3
+    if any(token in value for token in (
+            "critic", "polish", "native", "qc", "nihai", "mutabakat",
+            "tutarlılık", "terim", "sdh", "post-işlem", "kalite")):
+        return 2
+    if any(token in value for token in (
+            "çeviri", "translation", "onarım", "repair")):
+        return 1
+    return 0
+
+
+def _phase_detail_text(phase: str, detail: str) -> str:
+    if detail:
+        return str(detail)
+    if str(phase or "").strip().casefold().startswith("hazır"):
+        return "Dosya veya klasör ekleyerek başlayın."
+    return ""
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -12954,9 +12981,16 @@ class App(ctk.CTk):
         self._phase_activity_lbl.grid(
             row=0, column=2, sticky="e", padx=(8, 4))
 
+        self._progress_pct_lbl = ctk.CTkLabel(
+            pb_top, text="0%", width=48, height=24, corner_radius=6,
+            fg_color=CARD, font=ctk.CTkFont("Consolas", 10, "bold"),
+            text_color=FG2)
+        self._progress_pct_lbl.grid(
+            row=0, column=3, sticky="e", padx=(4, 6))
+
         # Speed and elapsed time display
         speed_elapsed_fr = ctk.CTkFrame(pb_top, fg_color="transparent")
-        speed_elapsed_fr.grid(row=0, column=3, sticky="e", padx=(8,0))
+        speed_elapsed_fr.grid(row=0, column=4, sticky="e", padx=(8,0))
         speed_elapsed_fr.grid_columnconfigure((0,1,2), weight=0)
         self.speed_lbl = ctk.CTkLabel(speed_elapsed_fr, text="",
                                       font=ctk.CTkFont("Segoe UI", 10),
@@ -12972,25 +13006,54 @@ class App(ctk.CTk):
         self.eta_lbl.grid(row=0, column=2, sticky="e")
 
         # Satır 1: detay (dosya adı, chunk ilerlemesi vb.)
-        self.progress_lbl = ctk.CTkLabel(pb_fr, text="",
+        self.progress_lbl = ctk.CTkLabel(
+                                         pb_fr,
+                                         text="Dosya veya klasör ekleyerek başlayın.",
                                          font=ctk.CTkFont("Segoe UI", 11),
                                          text_color=FG2, anchor="w")
         self.progress_lbl.grid(row=1, column=0, sticky="ew", padx=20, pady=(0,4))
+
+        # Kullanıcı odaklı dört aşamalı çeviri rayı.
+        pipeline_fr = ctk.CTkFrame(pb_fr, fg_color="transparent")
+        pipeline_fr.grid(row=2, column=0, sticky="ew", padx=16, pady=(4, 8))
+        pipeline_fr.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        self._pipeline_stage_widgets = []
+        for stage_index, stage_label in enumerate(PIPELINE_STAGE_LABELS):
+            stage_fr = ctk.CTkFrame(
+                pipeline_fr, height=30, fg_color=CARD,
+                corner_radius=7, border_width=1, border_color=BORDER_SOFT)
+            stage_fr.grid(
+                row=0, column=stage_index, sticky="ew",
+                padx=(0 if stage_index == 0 else 3,
+                      0 if stage_index == 3 else 3))
+            stage_fr.grid_columnconfigure(1, weight=1)
+            stage_no = ctk.CTkLabel(
+                stage_fr, text=f"0{stage_index + 1}", width=25,
+                font=ctk.CTkFont("Consolas", 9, "bold"), text_color=FG2)
+            stage_no.grid(row=0, column=0, padx=(7, 2), pady=5)
+            stage_name = ctk.CTkLabel(
+                stage_fr, text=stage_label.upper(), anchor="w",
+                font=ctk.CTkFont("Segoe UI", 9, "bold"), text_color=FG2)
+            stage_name.grid(row=0, column=1, sticky="ew", padx=(2, 7), pady=5)
+            self._pipeline_stage_widgets.append(
+                {"frame": stage_fr, "number": stage_no, "label": stage_name})
 
         # Overall progress bar
         self.progress = ctk.CTkProgressBar(pb_fr, height=8,
                                            progress_color=ACCENT,
                                            fg_color=BORDER)
-        self.progress.grid(row=2, column=0, sticky="ew", padx=16, pady=(0,6))
+        self.progress.grid(row=3, column=0, sticky="ew", padx=16, pady=(0,6))
         self.progress.set(0)
 
         # Per-file progress bar
         self.progress_file = ctk.CTkProgressBar(pb_fr, height=6,
                                                 progress_color=GREEN,
                                                 fg_color=BORDER)
-        self.progress_file.grid(row=3, column=0, sticky="ew", padx=16, pady=(0,14))
+        self.progress_file.grid(row=4, column=0, sticky="ew", padx=16, pady=(0,14))
         self.progress_file.set(0)
         self.progress_file.grid_remove()  # Hidden until processing starts
+
+        self._update_pipeline_rail("Hazır", FG2)
 
         # ── İş panosu (çalışma sırasında dosya başı ilerleme) ─────────────────
         self._job_board = ctk.CTkFrame(
@@ -15349,16 +15412,27 @@ class App(ctk.CTk):
         self.log_box.configure(state="disabled")
 
     _PHASE_COLORS = {
+        "api":       INFO_BLUE,
+        "dosya":     INFO_BLUE,
+        "kaynak":    INFO_BLUE,
+        "türkçe":    INFO_BLUE,
+        "içerik":    INFO_BLUE,
         "analiz":    INFO_BLUE,
         "çeviri":    ACCENT,
+        "onarım":    YELLOW,
         "critic":    INFO_BLUE,
         "native":    INFO_BLUE,
         "nihai":     TEAL,
         "polish":    POLISH,
         "qc":        TEAL,
         "sweep":     TEAL,
+        "tutarlılık": TEAL,
+        "terim":     TEAL,
+        "sdh":       TEAL,
+        "post-işlem": POLISH,
         "yazıyor":   ACCENT,
         "tamam":     GREEN,
+        "kısmen":    YELLOW,
         "hata":      RED,
         "hazır":     FG2,
     }
@@ -15539,10 +15613,38 @@ class App(ctk.CTk):
                     pass
         App._ensure_motion_animation(self)
 
+    def _update_pipeline_rail(self, phase: str, color: str):
+        widgets = list(
+            self.__dict__.get("_pipeline_stage_widgets", ()) or ())
+        if not widgets:
+            return
+        current = _pipeline_stage_index(phase)
+        phase_key = str(phase or "").strip().casefold()
+        fully_complete = phase_key.startswith("tamam")
+        for index, item in enumerate(widgets):
+            if index < current or (fully_complete and index == current):
+                stage_color = GREEN
+                stage_bg = _mix_hex_color(CARD, GREEN, 0.14)
+                number = "✓"
+            elif index == current:
+                stage_color = color
+                stage_bg = _mix_hex_color(CARD, color, 0.16)
+                number = f"0{index + 1}"
+            else:
+                stage_color = FG_DIS
+                stage_bg = CARD
+                number = f"0{index + 1}"
+            item["frame"].configure(
+                fg_color=stage_bg,
+                border_color=_mix_hex_color(BORDER_SOFT, stage_color, 0.55))
+            item["number"].configure(text=number, text_color=stage_color)
+            item["label"].configure(text_color=stage_color)
+
     def _set_phase(self, phase: str, detail: str = ""):
         """Büyük faz etiketini günceller. phase = 'analiz'|'çeviri'|'critic'|..."""
         key   = phase.lower().split()[0]
         color = self._PHASE_COLORS.get(key, ACCENT)
+        visible_detail = _phase_detail_text(phase, detail)
 
         def _upd():
             try:
@@ -15558,8 +15660,8 @@ class App(ctk.CTk):
                 self.progress.configure(progress_color=color)
                 self._phase_activity_lbl.configure(
                     text="" if key in {"hazır", "tamam"} else "ÇALIŞIYOR ·")
-                if detail:
-                    self.progress_lbl.configure(text=detail)
+                self.progress_lbl.configure(text=visible_detail)
+                App._update_pipeline_rail(self, phase, color)
                 App._ensure_motion_animation(self)
             except Exception:
                 pass
@@ -15579,6 +15681,12 @@ class App(ctk.CTk):
         def _upd(v=val):
             try:
                 self._motion_progress_target = v
+                pct_label = self.__dict__.get("_progress_pct_lbl")
+                if pct_label is not None:
+                    pct_label.configure(
+                        text=f"{int(round(v * 100))}%",
+                        text_color=self.__dict__.get(
+                            "_motion_phase_color", FG2))
                 if App._motion_enabled(self) and self.__dict__.get("_is_running", False):
                     App._ensure_motion_animation(self)
                 else:
