@@ -61,7 +61,8 @@ class CueOwnershipGuardTest(unittest.TestCase):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._json_repair_pass = lambda *_args, **_kwargs: None
-        app._log = lambda *_args, **_kwargs: None
+        logs = []
+        app._log = lambda message, *_args, **_kwargs: logs.append(message)
         original = json.dumps([
             {"i": 1, "t": "Mary ayrıldı."},
             {"i": 2, "t": "John geldi."},
@@ -69,8 +70,40 @@ class CueOwnershipGuardTest(unittest.TestCase):
         raw_map = {"chunk_0": original}
         unresolved = app._retry_hata(
             MagicMock(), raw_map, [self._request()], max_rounds=0)
-        self.assertEqual(unresolved, {"chunk_0"})
+        self.assertEqual(unresolved, set())
         self.assertEqual(raw_map["chunk_0"], original)
+        self.assertTrue(any("API yeniden denenmedi" in item for item in logs))
+
+    def test_single_owner_mismatch_does_not_trigger_small_api_retry(self):
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._json_repair_pass = lambda *_args, **_kwargs: None
+        logs = []
+        app._log = lambda message, *_args, **_kwargs: logs.append(message)
+        request = {"custom_id": "chunk_0", "body": {
+            "model": "gpt-test",
+            "messages": [
+                {"role": "system", "content": "translate"},
+                {"role": "user", "content": json.dumps({"tr": [
+                    {"i": 1, "t": "John arrived."},
+                    {"i": 2, "t": "The door opened."},
+                    {"i": 3, "t": "Mary left."},
+                ]})},
+            ],
+        }}
+        original = json.dumps([
+            {"i": 1, "t": "Mary geldi."},
+            {"i": 2, "t": "Kapı açıldı."},
+            {"i": 3, "t": "Mary ayrıldı."},
+        ])
+        raw_map = {"chunk_0": original}
+        with patch.object(gui, "_safe_chat_create") as api_call:
+            unresolved = app._retry_hata(
+                MagicMock(), raw_map, [request], max_rounds=2)
+        api_call.assert_not_called()
+        self.assertEqual(unresolved, set())
+        self.assertEqual(raw_map["chunk_0"], original)
+        self.assertTrue(any("#1" in item for item in logs))
 
     def test_invalid_wave_tail_is_not_injected_into_next_wave(self):
         request = self._request()

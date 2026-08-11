@@ -4905,8 +4905,7 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
 
 
 def _targeted_strict_chunk_salvage(raw, req: dict, reason: str):
-    if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue",
-                      "cue_content_owner_mismatch"}:
+    if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue"}:
         return None
     try:
         payload = json.loads(req["body"]["messages"][1]["content"])
@@ -4939,12 +4938,6 @@ def _targeted_strict_chunk_salvage(raw, req: dict, reason: str):
             ]
             bad_ids.update(_find_adjacent_duplicate_ids(
                 seq, _chunk_src_map_from_request(req)))
-        elif reason == "cue_content_owner_mismatch":
-            owner_src_map = (
-                _chunk_leak_src_map_from_request(req)
-                or _chunk_src_map_from_request(req))
-            bad_ids.update(_chunk_content_owner_mismatch_ids(
-                response_items, owner_src_map))
         elif reason == "id_integrity":
             actual_ids = [
                 str(item.get("i")) for item in response_items
@@ -17383,9 +17376,37 @@ class App(ctk.CTk):
 
         strict_reasons = {"adjacent_duplicate", "id_integrity", "empty_dialogue",
                           "cue_content_owner_mismatch"}
+        report_only_reasons = {"cue_content_owner_mismatch"}
+        report_only_cids = set()
+        report_only_ids = set()
         for cid, req in req_by_id.items():
             reason = _retry_reason(cid)
             if reason not in strict_reasons:
+                continue
+            if reason in report_only_reasons:
+                try:
+                    response_items = json.loads(_extract_json_array(
+                        raw_map.get(cid, "")))
+                    owner_src_map = (
+                        _chunk_leak_src_map_from_request(req)
+                        or _chunk_src_map_from_request(req))
+                    bad_ids = sorted(
+                        _chunk_content_owner_mismatch_ids(
+                            response_items, owner_src_map),
+                        key=lambda value: (0, int(value))
+                        if str(value).isdigit() else (1, str(value)),
+                    )
+                except Exception:
+                    bad_ids = []
+                report_only_cids.add(cid)
+                report_only_ids.update(str(value) for value in bad_ids)
+                detail = (
+                    f" ({_fmt_align_ranges(bad_ids)})" if bad_ids else "")
+                self._log(
+                    f"  ↪ {cid}: {reason}; şüpheli cue yalnız inceleme raporuna "
+                    f"bırakıldı{detail}. API yeniden denenmedi, mevcut çeviri korundu",
+                    "warn",
+                )
                 continue
             targeted = _targeted_strict_chunk_salvage(
                 raw_map.get(cid, ""), req, reason)
@@ -17496,6 +17517,8 @@ class App(ctk.CTk):
             if reason not in {"adjacent_duplicate", "id_integrity", "empty_dialogue",
                               "cue_content_owner_mismatch"}:
                 continue
+            if cid in report_only_cids:
+                continue
             if cid not in strict_reported:
                 strict_reported.add(cid)
                 self._log(
@@ -17554,7 +17577,22 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
-        return {cid for cid in req_by_id if _retry_reason(cid)}
+        if report_only_ids:
+            ordered = sorted(
+                report_only_ids,
+                key=lambda value: (0, int(value))
+                if str(value).isdigit() else (1, str(value)),
+            )
+            self._log(
+                "  Cue sahipliği inceleme özeti: "
+                f"{len(ordered)} cue API tekrarı yapılmadan rapora bırakıldı "
+                f"({_fmt_align_ranges(ordered)})",
+                "warn",
+            )
+        return {
+            cid for cid in req_by_id
+            if _retry_reason(cid) not in {"", *report_only_reasons}
+        }
 
     def _resend_missing_blocks(self, client, req: dict, current_raw: str, max_sub: int = 1):
         """Bir chunk'ta hâlâ eksik/[HATA] olan blokları, yalnızca o blokları içeren
