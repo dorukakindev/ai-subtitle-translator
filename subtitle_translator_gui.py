@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qsl, urlparse
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
 from openai import OpenAI
 from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model, normalize_helper_model_label
@@ -13459,6 +13460,19 @@ class App(ctk.CTk):
         self.log_box.grid(row=1, column=0, sticky="nsew", padx=12, pady=(6,12))
         self.log_box.configure(state="disabled")
 
+        self._log_context_menu = tk.Menu(self, tearoff=0)
+        self._log_context_menu.add_command(
+            label="Seçileni kopyala", command=self._copy_selected_log_text)
+        self._log_context_menu.add_command(
+            label="Tüm logu kopyala", command=self._copy_complete_log_to_clipboard)
+        self._log_context_menu.add_separator()
+        self._log_context_menu.add_command(
+            label="En alta git", command=self._pin_log_bottom)
+        self._log_context_menu.add_command(
+            label="Temizle", command=self._clear_log)
+        self.log_box.bind(
+            "<Button-3>", self._show_log_context_menu, add="+")
+
         # Scroll kilidi: kullanıcı yukarı kaydırınca auto-scroll durur
         self._log_pinned = True
         for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>",
@@ -15164,6 +15178,41 @@ class App(ctk.CTk):
             self.log_box.see("end")
         except Exception:
             pass
+
+    def _copy_selected_log_text(self):
+        try:
+            content = self.log_box.get("sel.first", "sel.last")
+        except (tk.TclError, AttributeError):
+            return False
+        if not str(content).strip():
+            return False
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.update_idletasks()
+            return True
+        except Exception as exc:
+            self._log(f"Seçili log panoya kopyalanamadı: {exc}", "warn")
+            return False
+
+    def _show_log_context_menu(self, event):
+        menu = self.__dict__.get("_log_context_menu")
+        log_box = self.__dict__.get("log_box")
+        if menu is None or log_box is None:
+            return "break"
+        try:
+            has_selection = bool(log_box.tag_ranges("sel"))
+            has_content = bool(log_box.get("1.0", "end-1c").strip())
+            menu.entryconfigure(0, state="normal" if has_selection else "disabled")
+            menu.entryconfigure(1, state="normal" if has_content else "disabled")
+            menu.entryconfigure(4, state="normal" if has_content else "disabled")
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            try:
+                menu.grab_release()
+            except Exception:
+                pass
+        return "break"
 
     def _complete_session_log_text(self):
         log_file = getattr(self, "_log_file", None)
