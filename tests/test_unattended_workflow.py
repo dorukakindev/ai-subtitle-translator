@@ -88,6 +88,27 @@ class SubtitlePreflightTest(unittest.TestCase):
                 [str(source)], str(root), str(root / "out"))
             self.assertIn("encoding", {issue["code"] for issue in issues})
 
+    def test_opensubtitles_vip_placeholder_is_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "downloaded.srt"
+            source.write_text(
+                "1\n00:00:00,001 --> 04:00:00,001\n"
+                "Altyazıları almak için OpenSubtitles.org\n"
+                "VIP üye olun -> osdb.link/vip\n",
+                encoding="utf-8",
+            )
+
+            issues = gui.scan_subtitle_preflight(
+                [str(source)], str(root), str(root / "out"))
+
+            placeholder = [
+                item for item in issues
+                if item["code"] == "download_placeholder"
+            ]
+            self.assertEqual(len(placeholder), 1)
+            self.assertEqual(placeholder[0]["severity"], "error")
+
     def test_filename_language_mismatch_is_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

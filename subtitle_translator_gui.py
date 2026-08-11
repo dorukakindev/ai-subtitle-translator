@@ -3628,6 +3628,21 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "path": str(path), "message": "Geçerli altyazı cue'su bulunamadı.",
             })
         else:
+            compact_text = " ".join(
+                str(cue_text or "") for _cue_id, _timestamp, cue_text in cues)
+            placeholder_download = bool(
+                len(cues) <= 3
+                and re.search(r"(?i)\b(?:opensubtitles(?:\.org)?|osdb\.link/vip)\b", compact_text)
+                and re.search(r"(?i)\b(?:vip|download|indir|almak)\b", compact_text)
+            )
+            if placeholder_download:
+                issues.append({
+                    "severity": "error", "code": "download_placeholder",
+                    "path": str(path),
+                    "message": (
+                        "Dosya gerçek altyazı değil; altyazı indirme/VIP "
+                        "yer tutucusu içeriyor."),
+                })
             for cue_id, timestamp, _text in cues:
                 try:
                     start_ms, end_ms = _srt_timestamp_bounds(timestamp)
