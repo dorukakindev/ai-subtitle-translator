@@ -17407,7 +17407,8 @@ class App(ctk.CTk):
                 pass
         _post_ui(self, _upd)
 
-    def _json_repair_pass(self, client, raw_map: dict, requests_list: list):
+    def _json_repair_pass(self, client, raw_map: dict, requests_list: list,
+                          file_map: dict | None = None, file_path: str = ""):
         """Before full retry, try to repair malformed JSON responses.
         For chunks where JSON extraction failed, ask the model to fix its own output.
         This avoids a full re-translation (cheaper) and recovers most parse failures.
@@ -17417,6 +17418,12 @@ class App(ctk.CTk):
             if getattr(self, "_stop_flag", False):
                 break
             cid = req["custom_id"]
+            req_file_path = file_path
+            if not req_file_path:
+                try:
+                    req_file_path = str((file_map or {})[cid][0][2])
+                except (KeyError, IndexError, TypeError):
+                    req_file_path = ""
             raw = raw_map.get(cid)
             if raw is None:
                 continue  # no response at all — handled by retry_hata
@@ -17475,7 +17482,8 @@ class App(ctk.CTk):
                 _report_response_usage(
                     _app_token_callback(
                         self, self._main_model_name(), "JSON Onarımı",
-                        base_url=self._main_api_base_url()),
+                        base_url=self._main_api_base_url(),
+                        file_path=req_file_path),
                     resp, log_fn=self._log, pass_name="JSON Onarımı")
                 parsed_repair = parse_translation_payload(fixed, missing_ids)
                 if (parsed_repair.fatal_reason
@@ -17516,7 +17524,9 @@ class App(ctk.CTk):
         if repaired:
             self._log(f"JSON onarımı: {repaired} chunk kurtarıldı", "ok")
 
-    def _retry_hata(self, client, raw_map: dict, requests_list: list, max_rounds: int = 2):
+    def _retry_hata(self, client, raw_map: dict, requests_list: list,
+                    max_rounds: int = 2, file_map: dict | None = None,
+                    file_path: str = ""):
         """Retry chunks that produced [HATA] or failed to parse.
         First attempts JSON repair (cheap), then full re-translation.
         Up to `max_rounds` passes with exponential backoff on 429/5xx.
@@ -17526,8 +17536,17 @@ class App(ctk.CTk):
         if getattr(self, "_stop_flag", False):
             return {req.get("custom_id", "") for req in requests_list}
         # Step 0: try cheap JSON repair before full re-translation
-        self._json_repair_pass(client, raw_map, requests_list)
+        self._json_repair_pass(
+            client, raw_map, requests_list, file_map, file_path)
         req_by_id = {r["custom_id"]: r for r in requests_list}
+
+        def _request_file_path(req):
+            if file_path:
+                return file_path
+            try:
+                return str((file_map or {})[req["custom_id"]][0][2])
+            except (KeyError, IndexError, TypeError):
+                return ""
         if getattr(self, "_stop_flag", False):
             return {cid for cid in req_by_id if _chunk_response_retry_reason(
                 raw_map.get(cid), req_by_id.get(cid))}
@@ -17560,7 +17579,8 @@ class App(ctk.CTk):
                     # arrived.  Keep this chunk on the missing-cue repair path.
                     partial_only_cids.add(cid)
                     merged = self._resend_missing_blocks(
-                        client, req, raw, max_sub=1)
+                        client, req, raw, max_sub=1,
+                        file_path=_request_file_path(req))
                     if merged is not None:
                         raw_map[cid] = merged
                         self._log(
@@ -17715,7 +17735,8 @@ class App(ctk.CTk):
             )
             try:
                 merged = self._resend_missing_blocks(
-                    client, req, raw_map[cid], max_sub=1)
+                    client, req, raw_map[cid], max_sub=1,
+                    file_path=_request_file_path(req))
             except Exception as repair_error:
                 self._log(
                     f"  ↪ {cid}: hedefli hedef-dil onarımı çalışmadı "
@@ -17785,7 +17806,8 @@ class App(ctk.CTk):
                                 "Ana Çeviri Yeniden Deneme",
                                 base_url=(self.__dict__.get(
                                     "_active_snapshot", {}) or {}).get(
-                                        "main_api_base_url", "")),
+                                        "main_api_base_url", ""),
+                                file_path=_request_file_path(req)),
                             resp, log_fn=self._log,
                             pass_name="Ana Çeviri Yeniden Deneme")
                         self._log(f"  ↺ {cid}: tamam", "ok")
@@ -17865,6 +17887,7 @@ class App(ctk.CTk):
                     req_by_id[cid],
                     raw_map.get(cid, ""),
                     max_sub=1,
+                    file_path=_request_file_path(req_by_id[cid]),
                 )
             except Exception as e:
                 self._log(f"  ↺ {cid}: alt-istek kurtarması hatası — {e}", "warn")
@@ -17920,7 +17943,8 @@ class App(ctk.CTk):
             and _retry_reason(cid) not in {"", *report_only_reasons}
         }
 
-    def _resend_missing_blocks(self, client, req: dict, current_raw: str, max_sub: int = 1):
+    def _resend_missing_blocks(self, client, req: dict, current_raw: str,
+                               max_sub: int = 1, file_path: str = ""):
         """Bir chunk'ta hâlâ eksik/[HATA] olan blokları, yalnızca o blokları içeren
         daha küçük isteklerle yeniden çevirir (kesilme kurtarması). Birleştirilmiş
         JSON dizisi (string) döner; her istek tek cue içerir, kurtarılacak bir şey
@@ -18002,7 +18026,8 @@ class App(ctk.CTk):
                         "Eksik Cue Alt-Grup Onarımı",
                         base_url=(self.__dict__.get(
                             "_active_snapshot", {}) or {}).get(
-                                "main_api_base_url", "")),
+                                "main_api_base_url", ""),
+                        file_path=file_path),
                     resp, log_fn=self._log,
                     pass_name="Eksik Cue Alt-Grup Onarımı")
                 txt = _validated_chat_content(resp)
@@ -25381,7 +25406,8 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry)
+                                max_rounds=self._max_retry,
+                                file_map=file_map)
                             raw = raw_map.get(cid, raw)
                         if not _chunk_response_retry_reason(raw, req):
                             tmap = parse_response(raw, file_map[cid])
@@ -25400,7 +25426,8 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry)
+                                max_rounds=self._max_retry,
+                                file_map=file_map)
                             raw = raw_map.get(cid, raw)
                         if not _chunk_response_retry_reason(raw, req):
                             tmap = parse_response(raw, file_map[cid])
@@ -25421,7 +25448,8 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(text, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry)
+                                max_rounds=self._max_retry,
+                                file_map=file_map)
                             text = raw_map.get(cid_r, text)
                         self._save_sync_ckpt_entry(cid_r, text, src_h)
                         if _chunk_response_retry_reason(text, req):
@@ -25473,7 +25501,8 @@ class App(ctk.CTk):
 
         if not self._stop_flag:
             unresolved = self._retry_hata(
-                client, raw_map, requests, max_rounds=self._max_retry)
+                client, raw_map, requests, max_rounds=self._max_retry,
+                file_map=file_map)
             for req in requests:
                 cid = req.get("custom_id", "")
                 raw = raw_map.get(cid, "")
@@ -25566,7 +25595,9 @@ class App(ctk.CTk):
             log_fn=self._log,
             token_cb=_app_token_callback(
                 self, model, "Eksik Cue API Onarımı",
-                base_url=self._main_api_base_url(), file_path=filepath),
+                base_url=str((self.__dict__.get("_active_snapshot") or {}).get(
+                    "main_api_base_url", "")),
+                file_path=filepath),
             source_cues=cues, cancel_check=lambda: self._stop_flag,
             cancel_context=self.__dict__.get("_helper_request_canceller"),
             system_prompt=system_prompt, locked_terms=locked_terms,
@@ -26118,7 +26149,8 @@ class App(ctk.CTk):
                                 and _chunk_response_retry_reason(raw, req)):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry)
+                                max_rounds=self._max_retry,
+                                file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
                         if not _chunk_response_retry_reason(raw, req):
                             tmap = parse_response(raw, fmap.get(cid_hint, []))
@@ -26141,7 +26173,8 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry)
+                                max_rounds=self._max_retry,
+                                file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
                         if not _chunk_response_retry_reason(raw, req):
                             tmap = parse_response(raw, fmap.get(cid_hint, []))
@@ -26162,7 +26195,8 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(text, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry)
+                                max_rounds=self._max_retry,
+                                file_path=filepath)
                             text = raw_map.get(cid, text)
                         self._save_sync_ckpt_entry(cid, text, src_h)
                         if _chunk_response_retry_reason(text, req):
@@ -26213,7 +26247,8 @@ class App(ctk.CTk):
             # ── Retry + Birleştir ─────────────────────────────────────────────
             if not _partial_repair_only:
                 self._retry_hata(
-                    client, raw_map, batch_reqs, max_rounds=self._max_retry)
+                    client, raw_map, batch_reqs, max_rounds=self._max_retry,
+                    file_path=filepath)
             for req in batch_reqs:
                 cid = req.get("custom_id", "")
                 raw = raw_map.get(cid, "")
@@ -27183,7 +27218,9 @@ class App(ctk.CTk):
 
         final_written = False
         if not self._stop_flag and accumulated_raw_map and all_terminal:
-            self._retry_hata(client, accumulated_raw_map, requests, max_rounds=self._max_retry)
+            self._retry_hata(
+                client, accumulated_raw_map, requests,
+                max_rounds=self._max_retry, file_map=file_map)
             missing_ids = set(file_map) - set(accumulated_raw_map)
             if missing_ids:
                 self._log(f"{len(missing_ids)} batch sonucu eksik; final dosya yazılmadı.", "warn")
@@ -27773,7 +27810,8 @@ class App(ctk.CTk):
                 ]
                 self._retry_hata(
                     group["client"], group["raw_map"], retry_list,
-                    max_rounds=self._max_retry)
+                    max_rounds=self._max_retry,
+                    file_map=group["file_map"])
                 missing_ids = set(group["file_map"]) - set(group["raw_map"])
                 if missing_ids:
                     self._log(

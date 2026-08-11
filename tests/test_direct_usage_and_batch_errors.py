@@ -119,6 +119,56 @@ class DirectUsageAndBatchErrorTests(unittest.TestCase):
             prefix = source[max(0, match.start() - 100):match.start()]
             self.assertIn("if self.condense_var.get():", prefix)
 
+    def test_json_repair_usage_is_bound_to_request_file(self):
+        app = SimpleNamespace(
+            _stop_flag=False,
+            _helper_request_canceller=None,
+            _main_model_name=lambda: "gpt-test",
+            _main_api_base_url=lambda: "https://provider.example/v1",
+            _log=lambda *_args, **_kwargs: None,
+        )
+        req = {
+            "custom_id": "chunk-1",
+            "body": {
+                "model": "gpt-test",
+                "messages": [
+                    {"role": "system", "content": "translate"},
+                    {"role": "user", "content": json.dumps({
+                        "tr": [{"i": "1", "t": "Hello."}],
+                    })},
+                ],
+            },
+        }
+        callback = MagicMock()
+        callback.report_missing_usage = MagicMock()
+        response = _response('[{"i":"1","t":"Merhaba."}]')
+
+        with patch.object(gui, "_safe_chat_create", return_value=response), \
+             patch.object(gui, "_app_token_callback",
+                          return_value=callback) as callback_factory:
+            gui.App._json_repair_pass(
+                app, object(), {"chunk-1": "{broken"}, [req],
+                file_map={"chunk-1": [("1", "ts", "C:/movie/source.srt")]},
+            )
+
+        callback_factory.assert_called_once_with(
+            app, "gpt-test", "JSON Onarımı",
+            base_url="https://provider.example/v1",
+            file_path="C:/movie/source.srt",
+        )
+
+    def test_retry_call_sites_supply_file_ownership(self):
+        source = inspect.getsource(gui.App)
+        calls = list(re.finditer(r"self\._retry_hata\(", source))
+
+        self.assertEqual(len(calls), 10)
+        for match in calls:
+            call_text = source[match.start():match.start() + 500]
+            self.assertTrue(
+                "file_map=" in call_text or "file_path=" in call_text,
+                call_text,
+            )
+
     def test_malformed_batch_error_row_does_not_hide_later_errors(self):
         content = "\n".join([
             "not-json",
