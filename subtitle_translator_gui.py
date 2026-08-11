@@ -502,6 +502,24 @@ def _report_response_usage(token_callback, response, *, log_fn=None,
 
 
 # ─────────────────────────────────────────────────────────────────────
+def _batch_error_file_entries(content: str, limit: int = 5) -> tuple[list, int]:
+    entries = []
+    malformed = 0
+    for line in str(content or "").splitlines()[:100]:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            error = row.get("error") or {}
+            message = error.get("message", "") if isinstance(error, dict) else str(error)
+            entries.append((str(row.get("custom_id", "?")), str(message)))
+        except Exception:
+            malformed += 1
+        if len(entries) >= max(0, int(limit)):
+            break
+    return entries, malformed
+
+
 # CustomTkinter ZeroDivisionError patch (scaling 0 olduğunda çöküyor)
 # Bilinen bug: https://github.com/TomSchimansky/CustomTkinter/issues/2295
 # Pencere boyutlandırma sırasında __window_scaling veya __widget_scaling
@@ -5490,9 +5508,9 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     raw_text = (resp.choices[0].message.content or "").strip()
                     if not raw_text:
                         raise ValueError("response_content_empty")
-                    if token_cb and resp.usage:
-                        tok, cached = _get_usage_details(resp.usage)
-                        token_cb(tok, cached=cached)
+                    _report_response_usage(
+                        token_cb, resp, log_fn=log_fn,
+                        pass_name="Eksik Cue API Onarımı")
                     items = json.loads(_extract_json_array(raw_text))
                     if not isinstance(items, list):
                         raise ValueError("response_not_array")
@@ -6031,12 +6049,9 @@ def analyze_file_precontext(client, blocks, model, src, tgt,
             ],
             max_tokens=4000, temperature=0.2,   # 1200 yetersizdi: çok karakter/terim olan
         )                                       # dosyalarda JSON kesilip parse çöküyordu
-        if token_cb and resp.usage:
-            tot, cached = _get_usage_details(resp.usage)
-            try:
-                token_cb(tot, cached=cached)
-            except TypeError:
-                token_cb(tot)
+        _report_response_usage(
+            token_cb, resp, log_fn=log_fn,
+            pass_name="Ön-Bağlam Analizi")
         rawtxt = _strip_md((resp.choices[0].message.content or "").strip())
         s, e = rawtxt.find("{"), rawtxt.rfind("}")
         if s == -1 or e <= s:
@@ -29250,11 +29265,16 @@ class App(ctk.CTk):
                 client, lambda: client.files.content(error_file_id),
                 "batch_error_download",
                 cancel_check=lambda: self._stop_flag).text
-            for line in content.strip().splitlines()[:5]:
-                r = json.loads(line)
-                self._log(f"{r.get('custom_id','?')}: {r.get('error',{}).get('message','')}", "err")
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log(f"Batch hata dosyası okunamadı: {exc}", "warn")
+            return
+        entries, malformed = _batch_error_file_entries(content)
+        for custom_id, message in entries:
+            self._log(f"{custom_id}: {message}", "err")
+        if malformed:
+            self._log(
+                f"Batch hata dosyasında {malformed} bozuk JSONL satırı atlandı.",
+                "warn")
 
     def _run_twowave_batches(self, openai_key, requests, fmap, out_path,
                              source_path, output_dir, fname, progress_fn=None,
