@@ -6,6 +6,25 @@ import subtitle_translator_gui as gui
 
 
 class HybridBatchTermIsolationTests(unittest.TestCase):
+    def test_tm_fingerprint_changes_with_locked_term_policy(self):
+        source_hash = "a" * 64
+        first = gui._tm_context_fingerprint(
+            source_hash, {"US": "ABD", "Parish": "Cemaat"})
+        reordered = gui._tm_context_fingerprint(
+            source_hash, {"Parish": "Cemaat", "US": "ABD"})
+        changed = gui._tm_context_fingerprint(
+            source_hash, {"US": "bize", "Parish": "Cemaat"})
+
+        self.assertEqual(first, reordered)
+        self.assertNotEqual(first, changed)
+        self.assertEqual(gui._tm_context_fingerprint("", {"US": "ABD"}), "")
+
+    def test_all_translation_flows_bind_tm_to_current_term_policy(self):
+        source = inspect.getsource(gui.App)
+
+        self.assertNotIn("context_fingerprint=_expected_source_hash", source)
+        self.assertGreaterEqual(source.count("_tm_context_fingerprint("), 7)
+
     def test_each_file_builds_an_isolated_locked_term_set(self):
         first = gui._hybrid_file_locked_terms(
             {"Empire": "İmparatorluk"},

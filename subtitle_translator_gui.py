@@ -8553,6 +8553,22 @@ def _file_content_sha256(path) -> str:
         return ""
 
 
+def _tm_context_fingerprint(source_hash: str, locked_terms=None) -> str:
+    source_hash = str(source_hash or "").strip()
+    if not source_hash:
+        return ""
+    normalized_terms = sorted(
+        (str(source).strip(), str(target).strip())
+        for source, target in (locked_terms or {}).items()
+        if str(source).strip() and str(target).strip()
+    )
+    payload = json.dumps(
+        {"source_sha256": source_hash, "locked_terms": normalized_terms},
+        ensure_ascii=False, separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _file_state_signature(path) -> dict:
     value = Path(path)
     try:
@@ -25130,7 +25146,10 @@ class App(ctk.CTk):
         for req in requests:
             try:
                 req_path = file_map[req["custom_id"]][0][2]
-                req_hash = source_hashes.get(req_path) or _file_content_sha256(req_path)
+                req_hash = _tm_context_fingerprint(
+                    source_hashes.get(req_path) or _file_content_sha256(req_path),
+                    self._get_locked_terms_dict(req_path, tgt),
+                )
                 payload = json.loads(req["body"]["messages"][1]["content"])
                 _tm_groups[(req.get("schema_name", ""),
                             req.get("source_language", ""), req_hash)].extend(
@@ -25158,8 +25177,10 @@ class App(ctk.CTk):
                 sch_name = req.get("schema_name", "")
                 source_language = req.get("source_language", "")
                 req_path = file_map[req["custom_id"]][0][2]
-                context_fingerprint = (
-                    source_hashes.get(req_path) or _file_content_sha256(req_path))
+                context_fingerprint = _tm_context_fingerprint(
+                    source_hashes.get(req_path) or _file_content_sha256(req_path),
+                    self._get_locked_terms_dict(req_path, tgt),
+                )
                 results = []
                 for item in items:
                     cached = _tm_cache.get((item["t"], sch_name, source_language,
@@ -25874,6 +25895,10 @@ class App(ctk.CTk):
                 **_analysis_locked_terms,
                 **self._get_locked_terms_dict(filepath, tgt),
             }
+            _tm_fingerprint = _tm_context_fingerprint(
+                _expected_source_hash,
+                self._get_locked_terms_dict(filepath, tgt),
+            )
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                         chunk_size=self._chunk_size, glossary=glossary,
                                                         scene_emotions=scene_emotions,
@@ -25889,7 +25914,8 @@ class App(ctk.CTk):
                                                              "scene_gap_seconds", self._scene_gap_seconds)),
                                                          temperature=self._temperature,
                                                          use_tm_context=not App._run_setting(
-                                                             self, "chain_ctx", "chain_ctx_var", True))
+                                                             self, "chain_ctx", "chain_ctx_var", True),
+                                                         context_fingerprint=_tm_fingerprint)
             total     = len(batch_reqs)
             completed = [0]
             failed    = [0]
@@ -26637,7 +26663,7 @@ class App(ctk.CTk):
                                  self._main_model_name(), tgt,
                                  schema_name=schema_dict.get("name", ""),
                                  source_language=file_src,
-                                 context_fingerprint=_expected_source_hash)
+                                 context_fingerprint=_tm_fingerprint)
             if _analysis_ok and _hata_n == 0 and _n_filled == 0:
                 if _file_pm is not None:
                     try:
@@ -28266,7 +28292,10 @@ class App(ctk.CTk):
                                         source_language=source_language or self._effective_file_source_language(
                                             str(_src_path), self._snap_get("src_lang", "English")),
                                         context_fingerprint=(
-                                            _file_content_sha256(_src_path)
+                                            _tm_context_fingerprint(
+                                                _file_content_sha256(_src_path),
+                                                self._get_locked_terms_dict(
+                                                    str(_src_path), tgt))
                                             if _src_path else ""))
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
@@ -29067,7 +29096,9 @@ class App(ctk.CTk):
                 sorted_blocks, src_blocks, model_name, _tgt_lang,
                 schema_name=schema_dict.get("name", ""),
                 source_language=_file_src_lang,
-                context_fingerprint=_expected_source_hash)
+                context_fingerprint=_tm_context_fingerprint(
+                    _expected_source_hash,
+                    self._get_locked_terms_dict(fp, _tgt_lang)))
             if _hata_n == 0 and _n_filled == 0:
                 _series_memory_status = {}
                 self._commit_precontext_series_memory(
@@ -29684,6 +29715,10 @@ class App(ctk.CTk):
                         filepath, context, pronoun_map, tgt)
                 if _file_pm is not None:
                     system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+                _tm_fingerprint = _tm_context_fingerprint(
+                    _expected_source_hash,
+                    self._get_locked_terms_dict(filepath, tgt),
+                )
                 self._record_file_status(
                     filepath, "İstek Hazırlığı", "running")
                 requests, fmap = ht.build_batch_requests(cues, system_prompt, model,
@@ -29700,7 +29735,8 @@ class App(ctk.CTk):
                                                           lookahead_lines=self._lookahead_lines,
                                                           scene_gap_sec=float(self._snap_get(
                                                               "scene_gap_seconds", self._scene_gap_seconds)),
-                                                          temperature=self._temperature)
+                                                          temperature=self._temperature,
+                                                          context_fingerprint=_tm_fingerprint)
                 self._log(f"{len(requests)} istek oluşturuldu", "info")
 
                 out_path = str(_resolve_output_path(input_dir, output_dir, filepath,
@@ -30446,7 +30482,9 @@ class App(ctk.CTk):
                     self._store_tm_pairs(
                         _final_blocks, _src_map, self._main_model_name(), tgt,
                         schema_name=file_schema_name, source_language=file_src,
-                        context_fingerprint=_expected_source_hash)
+                        context_fingerprint=_tm_context_fingerprint(
+                            _expected_source_hash,
+                            self._get_locked_terms_dict(filepath, tgt)))
                 if (not _hybrid_quality_failed and analysis_ok
                         and _n_filled == 0 and not any(
                         str(text or "").startswith("[HATA")
