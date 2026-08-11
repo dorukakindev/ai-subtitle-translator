@@ -653,14 +653,6 @@ def _readiness_view(file_count: int, target: str, profile: str,
     return "DOSYA BEKLENİYOR", detail, "waiting"
 
 
-def _scroll_fraction_for_anchor(anchor_y: int, content_height: int,
-                                viewport_height: int) -> float:
-    scrollable = max(0, int(content_height) - int(viewport_height))
-    if scrollable <= 0:
-        return 0.0
-    return max(0.0, min(1.0, int(anchor_y) / scrollable))
-
-
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -11950,63 +11942,18 @@ class App(ctk.CTk):
         self._build_sidebar()
         self._build_main()
 
-    def _jump_sidebar(self, section_key: str):
-        anchor = (self.__dict__.get("_sidebar_section_widgets", {}) or {}).get(
-            section_key)
-        sidebar = self.__dict__.get("_sb")
-        canvas = getattr(sidebar, "_parent_canvas", None)
-        if anchor is None or canvas is None:
-            return
-        try:
-            self.update_idletasks()
-            bounds = canvas.bbox("all")
-            if not bounds:
-                return
-            content_height = max(0, int(bounds[3]) - int(bounds[1]))
-            fraction = _scroll_fraction_for_anchor(
-                max(0, int(anchor.winfo_y()) - 8),
-                content_height, int(canvas.winfo_height()))
-            canvas.yview_moveto(fraction)
-        except Exception:
-            pass
-
     # ── Sol panel ─────────────────────────────────────────────────────────────
     def _build_sidebar(self):
-        sidebar_shell = ctk.CTkFrame(
-            self, width=302, fg_color="transparent")
-        sidebar_shell.grid(
-            row=0, column=0, sticky="nsew", padx=(12, 6), pady=12)
-        sidebar_shell.grid_columnconfigure(0, weight=1)
-        sidebar_shell.grid_rowconfigure(1, weight=1)
-        self._sidebar_shell = sidebar_shell
-
-        quick_nav = ctk.CTkFrame(
-            sidebar_shell, fg_color=PANEL, corner_radius=9,
-            border_width=1, border_color=BORDER_SOFT)
-        quick_nav.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        quick_nav.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
-        for column, (label, key) in enumerate((
-                ("API", "api"), ("MOD", "mode"), ("DOSYA", "files"),
-                ("KALİTE", "quality"), ("HAZIR", "ready"))):
-            ctk.CTkButton(
-                quick_nav, text=label, height=29, corner_radius=6,
-                font=ctk.CTkFont("Consolas", 8, "bold"),
-                fg_color="transparent", hover_color=ACCENT_SOFT,
-                text_color=FG2,
-                command=lambda target=key: self._jump_sidebar(target),
-            ).grid(row=0, column=column, sticky="ew", padx=1, pady=3)
-
-        sb = ctk.CTkScrollableFrame(sidebar_shell, width=290, fg_color=PANEL,
+        sb = ctk.CTkScrollableFrame(self, width=290, fg_color=PANEL,
                                     scrollbar_button_color=BORDER,
                                     scrollbar_button_hover_color=ACCENT)
-        sb.grid(row=1, column=0, sticky="nsew")
+        sb.grid(row=0, column=0, sticky="nsew", padx=(12,6), pady=12)
         sb.grid_columnconfigure(0, weight=1)
         self._sb = sb
-        self._sidebar_section_widgets = {}
 
         r = 0
 
-        def section(txt, key=""):
+        def section(txt):
             nonlocal r
             fr = ctk.CTkFrame(sb, fg_color="transparent")
             fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(16, 5))
@@ -12018,8 +11965,6 @@ class App(ctk.CTk):
                 fr, text=txt, font=ctk.CTkFont("Segoe UI", 10, "bold"),
                 text_color=FG2,
             ).grid(row=0, column=1, sticky="w")
-            if key:
-                self._sidebar_section_widgets[key] = fr
             r += 1
 
         def lbl(txt, info=None):
@@ -12064,7 +12009,7 @@ class App(ctk.CTk):
                 row=r, column=0, sticky="ew", padx=4, pady=8); r += 1
 
         # ── API ──────────────────────────────────────────────────────────────
-        section("API AYARLARI", "api")
+        section("API AYARLARI")
         lbl("OpenAI API Key")
         self.api_key_entry = entry(show="•")
         lbl("OpenAI API Base URL (opsiyonel)")
@@ -12177,7 +12122,7 @@ class App(ctk.CTk):
 
         # ── Mod ──────────────────────────────────────────────────────────────
         sep()
-        section("ÇEVİRİ MODU", "mode")
+        section("ÇEVİRİ MODU")
         self.mode_var = ctk.StringVar(value="sync")
         mode_fr = ctk.CTkFrame(sb, fg_color="transparent")
         mode_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
@@ -12228,7 +12173,7 @@ class App(ctk.CTk):
 
         # ── Klasörler ─────────────────────────────────────────────────────────
         sep()
-        section("KLASÖRLER", "files")
+        section("KLASÖRLER")
         for lbl_txt, attr, default in [
             ("Giriş klasörü (.srt)", "input_var",  ""),
             ("Çıkış klasörü",        "output_var", ""),
@@ -12328,7 +12273,7 @@ class App(ctk.CTk):
 
         # ── Kalite özellikleri ────────────────────────────────────────────────
         sep()
-        section("KALİTE", "quality")
+        section("KALİTE")
 
         # Zincirleme Bağlam (sync modda önceki chunk çevirileri bağlam olur)
         self.chain_ctx_var = ctk.BooleanVar(value=True)
@@ -12844,7 +12789,6 @@ class App(ctk.CTk):
             border_width=1, border_color=BORDER_SOFT)
         self._readiness_card.grid(
             row=r, column=0, sticky="ew", padx=4, pady=(4, 8)); r += 1
-        self._sidebar_section_widgets["ready"] = self._readiness_card
         self._readiness_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             self._readiness_card, text="ÇALIŞMA HAZIRLIĞI", anchor="w",

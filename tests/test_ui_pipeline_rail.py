@@ -111,29 +111,6 @@ class ReadinessCardTest(unittest.TestCase):
             "2 dosya  ·  Turkish  ·  Maksimum kalite")
 
 
-class SidebarQuickNavigationTest(unittest.TestCase):
-    def test_scroll_fraction_clamps_to_available_content(self):
-        self.assertEqual(gui._scroll_fraction_for_anchor(400, 500, 500), 0.0)
-        self.assertEqual(gui._scroll_fraction_for_anchor(-20, 1000, 200), 0.0)
-        self.assertEqual(gui._scroll_fraction_for_anchor(900, 1000, 200), 1.0)
-        self.assertAlmostEqual(
-            gui._scroll_fraction_for_anchor(400, 1000, 200), 0.5)
-
-    def test_quick_navigation_moves_sidebar_to_registered_anchor(self):
-        canvas = MagicMock()
-        canvas.bbox.return_value = (0, 0, 300, 1200)
-        canvas.winfo_height.return_value = 300
-        anchor = SimpleNamespace(winfo_y=lambda: 458)
-        sidebar = SimpleNamespace(_parent_canvas=canvas)
-        app = SimpleNamespace(
-            _sidebar_section_widgets={"quality": anchor}, _sb=sidebar,
-            update_idletasks=lambda: None)
-
-        gui.App._jump_sidebar(app, "quality")
-
-        canvas.yview_moveto.assert_called_once_with(0.5)
-
-
 class PipelineRailStateTest(unittest.TestCase):
     @staticmethod
     def _item():
