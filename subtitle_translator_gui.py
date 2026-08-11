@@ -684,6 +684,20 @@ def _progress_window_title(phase: str, detail: str = "",
     return " · ".join(parts) + f" — {APP_WINDOW_TITLE}"
 
 
+def _phase_activity_indicator(activity: str, age_seconds: float,
+                              pulse_step: int = 0) -> str:
+    label = re.sub(r"\s+", " ", str(activity or "ÇALIŞIYOR")).strip()
+    try:
+        elapsed = max(0, int(float(age_seconds)))
+    except (TypeError, ValueError):
+        elapsed = 0
+    if elapsed >= 8:
+        minutes, seconds = divmod(elapsed, 60)
+        return f"BEKLİYOR · {minutes}:{seconds:02d}"
+    dots = "·" * (1 + (max(0, int(pulse_step or 0)) // 3) % 3)
+    return f"{label} {dots}"
+
+
 _install_customtkinter_dpi_guard()
 
 ctk.set_appearance_mode("dark")
@@ -7588,6 +7602,12 @@ _TERM_SUFFIX_CLASSES = {
 }
 
 
+_TERM_NORMALIZE_ATTACHED_SUFFIX_RE = (
+    r"(?:lar|ler)?(?:n?[ıiuü](?:m|n|z)?|[yn]?[ae]|"
+    r"n?(?:da|de|ta|te)(?:n)?|n?(?:dan|den|tan|ten)|y?(?:la|le))?"
+)
+
+
 def _term_suffix_class(value: str) -> str:
     suffix = str(value or "").lstrip("'’").casefold()
     return next((name for name, forms in _TERM_SUFFIX_CLASSES.items()
@@ -7644,7 +7664,8 @@ def _validate_term_normalize_candidate(old: str, new: str, fixes: list) -> tuple
             r"(?<!\w)" + re.escape(wrong) + r"(?:['’]\w+)?(?!\w)",
             re.IGNORECASE)
         pat_correct = re.compile(
-            r"(?<!\w)" + re.escape(correct) + r"(?:['’]\w+)?(?!\w)",
+            r"(?<!\w)" + re.escape(correct)
+            + r"(?:['’]\w+|" + _TERM_NORMALIZE_ATTACHED_SUFFIX_RE + r")(?!\w)",
             re.IGNORECASE)
         if pat_wrong.search(new):
             return False, "term_not_replaced"
@@ -11191,6 +11212,7 @@ class App(ctk.CTk):
         self._motion_progress_value = 0.0
         self._motion_progress_target = 0.0
         self._motion_activity_text = ""
+        self._motion_activity_started_at = time.monotonic()
         self._window_phase = "Hazır"
         self._window_phase_detail = ""
         self._window_title_value = APP_WINDOW_TITLE
@@ -15821,7 +15843,14 @@ class App(ctk.CTk):
                 self.progress.configure(progress_color=phase_color)
                 self._phase_dot.configure(text="●", text_color=phase_color)
                 self._phase_activity_lbl.configure(
-                    text="ÇALIŞIYOR" if self.__dict__.get("_is_running", False) else "")
+                    text=(
+                        _phase_activity_indicator(
+                            self.__dict__.get("_motion_activity_text"),
+                            time.monotonic() - self.__dict__.get(
+                                "_motion_activity_started_at", time.monotonic()),
+                            self.__dict__.get("_motion_step", 0),
+                        )
+                        if self.__dict__.get("_is_running", False) else ""))
                 self._phase_card.configure(
                     border_width=1,
                     border_color=_mix_hex_color(BORDER, phase_color, 0.38))
@@ -15881,11 +15910,14 @@ class App(ctk.CTk):
         dot_text = dot_frames[(self._motion_step // 4) % len(dot_frames)]
         activity = str(
             self.__dict__.get("_motion_activity_text") or "ÇALIŞIYOR")
-        activity_dots = "·" * (1 + (self._motion_step // 3) % 3)
+        activity_age = time.monotonic() - self.__dict__.get(
+            "_motion_activity_started_at", time.monotonic())
         try:
             self._phase_dot.configure(text=dot_text, text_color=phase_color)
             self._phase_activity_lbl.configure(
-                text=f"{activity} {activity_dots}", text_color=phase_color)
+                text=_phase_activity_indicator(
+                    activity, activity_age, self._motion_step),
+                text_color=phase_color)
             self._phase_card.configure(
                 border_width=1,
                 border_color=_mix_hex_color(BORDER, phase_color, 0.72))
@@ -15985,6 +16017,7 @@ class App(ctk.CTk):
             try:
                 self._window_phase = phase
                 self._window_phase_detail = visible_detail
+                self._motion_activity_started_at = time.monotonic()
                 self._motion_phase_color = color
                 self._motion_activity_text = (
                     "" if key in {"hazır", "tamam"} else "ÇALIŞIYOR")
@@ -16009,6 +16042,7 @@ class App(ctk.CTk):
     def _set_status(self, msg):
         def _upd():
             try:
+                self._motion_activity_started_at = time.monotonic()
                 self.progress_lbl.configure(text=msg)
             except Exception:
                 pass
@@ -16018,7 +16052,11 @@ class App(ctk.CTk):
         val = max(0.0, min(1.0, pct / 100))
         def _upd(v=val):
             try:
+                previous_target = float(
+                    self.__dict__.get("_motion_progress_target", 0.0))
                 self._motion_progress_target = v
+                if abs(v - previous_target) > 0.0005:
+                    self._motion_activity_started_at = time.monotonic()
                 pct_label = self.__dict__.get("_progress_pct_lbl")
                 if pct_label is not None:
                     pct_label.configure(
