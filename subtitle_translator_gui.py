@@ -5257,7 +5257,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
             source_ids.add(sid)
             if sid in existing:
                 ordered.append(existing[sid])
-            elif src.strip() and not _src_is_sdh_only(src):
+            elif src.strip() and not _source_cue_is_delivery_removable(src):
                 ordered.append((idx, ts, "[HATA]"))
                 inserted += 1
         ordered.extend(block for block in out if str(block[0]) not in source_ids)
@@ -5279,7 +5279,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     source_language=src_lang)):
             if not (src and src.strip()):
                 continue
-            if _src_is_sdh_only(src):
+            if _source_cue_is_delivery_removable(src):
                 drop_positions.append(i)
             else:
                 hata_indices.append((i, idx, ts, src))
@@ -5720,7 +5720,10 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         drop_set = set(drop_positions)
         out = [b for pos, b in enumerate(out) if pos not in drop_set]
         if log_fn:
-            log_fn(f"↺  {len(drop_positions)} SFX/müzik-only cue onarılmadı, düşürüldü", "info")
+            log_fn(
+                f"↺  {len(drop_positions)} SDH/kredi cue'su onarılmadı, düşürüldü",
+                "info",
+            )
 
     return out, repaired
 

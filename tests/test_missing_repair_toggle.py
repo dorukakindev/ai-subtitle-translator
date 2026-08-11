@@ -34,6 +34,30 @@ class MissingRepairToggleTest(unittest.TestCase):
         self.assertIn("Translate this line.", rendered)
         self.assertIn("API'ye gönderilmedi", rendered)
 
+    def test_source_credit_is_removed_instead_of_reported_missing(self):
+        for credit in (
+                "Subtitling: www.pluridioma.pt",
+                "Plain English translation by Aleksandar@Radovanovic.com"):
+            with self.subTest(credit=credit):
+                client = MagicMock()
+                reviews = []
+                blocks, repaired = gui._repair_untranslated_sync(
+                    [("848", "00:01:00,000 --> 00:01:01,000", "[HATA]")],
+                    {"848": credit},
+                    client,
+                    "English",
+                    "Turkish",
+                    source_cues=[(
+                        "848", "00:01:00,000 --> 00:01:01,000", credit)],
+                    advisory_reviews_out=reviews,
+                    enabled=False,
+                )
+
+                self.assertEqual(blocks, [])
+                self.assertEqual(repaired, 0)
+                self.assertEqual(reviews, [])
+                client.chat.completions.create.assert_not_called()
+
     def test_missing_only_failure_is_not_automatically_restarted(self):
         app = gui.App.__new__(gui.App)
         app._active_snapshot = {
