@@ -252,6 +252,20 @@ class BuildQualityReportTextTest(unittest.TestCase):
                                             "sync", 0)
         self.assertIn("TOPLAM: 1 dosya, 10 satır", txt)
 
+    def test_cps_summary_uses_weighted_average_and_real_maximum(self):
+        rows = [
+            {"name": "a.srt", "total": 100, "cps_avg": 10.0, "cps_max": 20.0},
+            {"name": "b.srt", "total": 300, "cps_avg": 20.0, "cps_max": 30.0},
+        ]
+
+        txt = gui.build_quality_report_text(
+            rows, "gpt-5.4-mini", "Turkish", "sync", 0)
+
+        summary = txt.split("TOPLAM:", 1)[1]
+        self.assertIn("Ortalama CPS: 17.5", summary)
+        self.assertIn("Maksimum CPS: 30.0", summary)
+        self.assertNotIn("Maksimum CPS: 50", summary)
+
 
     def test_pass_trace_breakdown_is_rendered_and_summed(self):
         rows = [
@@ -436,6 +450,22 @@ class BuildQualityReportTextTest(unittest.TestCase):
         }, {"qc": True})
 
         self.assertIn("QC: çalıştı, 0 cue değiştirdi", audit)
+
+    def test_disabled_zero_trace_pass_is_not_reported_as_executed(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_trace": {"Final-Semantic": 0, "Condense": 0},
+        }, {
+            "semantic_reconcile": False,
+            "condense": False,
+        })
+
+        self.assertIn("Nihai Anlam Mutabakatı: kapalı", audit)
+        self.assertIn("Okuma Hızı Kısaltma: kapalı", audit)
+        self.assertNotIn(
+            "Nihai Anlam Mutabakatı: çalıştı, 0 cue değiştirdi", audit)
+        self.assertNotIn(
+            "Okuma Hızı Kısaltma: çalıştı, 0 cue değiştirdi", audit)
 
     def test_repair_only_audit_marks_every_quality_pass_skipped(self):
         audit = gui._quality_feature_audit({

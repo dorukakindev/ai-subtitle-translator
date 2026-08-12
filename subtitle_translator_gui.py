@@ -10408,6 +10408,11 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         status_info = next(
             (pass_status.get(label) for label in labels
              if isinstance(pass_status.get(label), dict)), None)
+        trace_changed = any(
+            int(trace.get(label, 0) or 0) > 0 for label in labels)
+        if not enabled and not status_info and not trace_changed:
+            lines.append(f"{title}: kapalı")
+            continue
         if status_info and status_info.get("status") in {
                 "failed", "partial", "cancelled"}:
             state = status_info["status"]
@@ -10923,11 +10928,28 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             lines.append(f"   {'Pass etkileşimi'.ljust(width)} : {override_count} ({override_txt})")
     sums = {}
     for key, _lbl in fields:
+        if key in {"cps_avg", "cps_max"}:
+            continue
         vals = [r[key] for r in rows if key in r]
         if vals:
             sums[key] = sum(vals)
+    cps_rows = [
+        r for r in rows
+        if "cps_avg" in r and int(r.get("total", 0) or 0) > 0
+    ]
+    if cps_rows:
+        weights = [max(int(r.get("total", 0) or 0), 1) for r in cps_rows]
+        sums["cps_avg"] = round(
+            sum(float(r["cps_avg"]) * weight
+                for r, weight in zip(cps_rows, weights)) / sum(weights), 1)
+        sums["cps_max"] = round(
+            max(float(r.get("cps_max", 0.0) or 0.0) for r in cps_rows), 1)
     total_lines = sum(r.get("total", 0) for r in rows)
-    parts = [f"{lbl}: {sums[key]}" for key, lbl in fields if key in sums]
+    parts = [
+        f"{lbl}: {sums[key]:.1f}" if key in {"cps_avg", "cps_max"}
+        else f"{lbl}: {sums[key]}"
+        for key, lbl in fields if key in sums
+    ]
     trace_sums = {}
     for r in rows:
         for name, count in (r.get("pass_trace") or {}).items():
@@ -27174,7 +27196,7 @@ class App(ctk.CTk):
                 "name": fname, "source_path": filepath,
                 "output_path": str(_write_path),
                 "total": len(sorted_blocks),
-                "hata": _hata_n + _n_filled, "cps": _cps_n,
+                "hata": _hata_n, "cps": _cps_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "pass_fix": _pass_fix,
                 "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
@@ -31196,7 +31218,7 @@ class App(ctk.CTk):
                     "name": fname, "source_path": filepath,
                     "output_path": str(out_path),
                     "total": len(_final_blocks),
-                    "hata": _hata_n + _n_filled, "cps": _cps_n,
+                    "hata": _hata_n, "cps": _cps_n,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                     "cons": _cons_fixes, "pass_fix": _pass_fix,
                     "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,

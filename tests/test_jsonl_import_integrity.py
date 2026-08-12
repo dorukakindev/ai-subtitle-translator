@@ -80,6 +80,7 @@ class FinalizationFailClosedTest(unittest.TestCase):
         self.assertEqual(marked, 1)
         self.assertEqual(finalized[0][2], "<i>Merhaba.</i>")
         self.assertEqual(finalized[1][2], "[ÇEVİRİ EKSİK]")
+        self.assertEqual(gui._count_hata_cps(finalized)[0], marked)
 
     def test_tag_restore_failure_is_not_swallowed(self):
         with patch.object(gui, "_restore_tags_blocks",
