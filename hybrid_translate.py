@@ -1852,11 +1852,9 @@ def _bind_scene_plan_to_requested(raw_scenes: list, requested_scenes: list) -> t
     for raw in raw_scenes if isinstance(raw_scenes, list) else []:
         scene = _sanitize_scene_plan_entry(raw)
         if not scene:
-            valid = False
             continue
         key = (scene["start"], scene["end"])
         if key not in requested_ranges:
-            valid = False
             continue
         if key in accepted:
             accepted.pop(key, None)
@@ -1868,8 +1866,7 @@ def _bind_scene_plan_to_requested(raw_scenes: list, requested_scenes: list) -> t
             continue
         accepted[key] = scene
 
-    if len(accepted) != len(requested_ranges):
-        valid = False
+    valid = valid and len(accepted) == len(requested_ranges) and not conflicted
     return [accepted[key] for key in requested_ranges if key in accepted], valid
 
 

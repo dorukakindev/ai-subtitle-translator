@@ -225,6 +225,19 @@ class ScenePlanPaginationTest(unittest.TestCase):
         self.assertEqual([scene["summary"] for scene in result], ["First", "Second"])
         self.assertTrue(complete)
 
+    def test_complete_requested_plan_ignores_unrequested_extra_entry(self):
+        result, complete = ht._bind_scene_plan_to_requested(
+            [
+                {"start": 1, "end": 10, "summary": "First"},
+                {"start": 11, "end": 20, "summary": "Second"},
+                {"start": 999, "end": 1000, "summary": "Invented"},
+                {"summary": "Malformed extra"},
+            ],
+            [{"start": 1, "end": 10}, {"start": 11, "end": 20}],
+        )
+        self.assertEqual([scene["summary"] for scene in result], ["First", "Second"])
+        self.assertTrue(complete)
+
     def test_missing_requested_range_is_incomplete(self):
         result, complete = ht._bind_scene_plan_to_requested(
             [{"start": 1, "end": 10, "summary": "First"}],
