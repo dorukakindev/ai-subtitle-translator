@@ -10274,6 +10274,27 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 detail += f" ({reason_text})"
             lines.append(
                 f"Critic cümle-zinciri kapsamı: {reviewed_groups} grup/{reviewed_cues} cue{detail}")
+        validator_candidates = list(critic_status.get("validator_candidates") or [])
+        if validator_candidates:
+            reason_counts = {}
+            cue_ids = []
+            for candidate in validator_candidates:
+                cue_id = str(candidate.get("id") or "")
+                if cue_id and cue_id not in cue_ids:
+                    cue_ids.append(cue_id)
+                for reason in str(candidate.get("reason") or "").split("|"):
+                    reason = reason.strip()
+                    if reason and reason != "CROSS_CUE_SENTENCE_REVIEW":
+                        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            reason_text = ", ".join(
+                f"{key}:{value}" for key, value in sorted(
+                    reason_counts.items(), key=lambda row: -row[1]))
+            cue_text = ",".join(cue_ids[:30])
+            if len(cue_ids) > 30:
+                cue_text += f",+{len(cue_ids) - 30}"
+            lines.append(
+                f"Critic deterministik inceleme adayları: {len(cue_ids)} cue "
+                f"[{cue_text or '-'}]" + (f" ({reason_text})" if reason_text else ""))
 
     auto_enabled = bool(snapshot.get("auto_glossary"))
     auto_status = pass_status.get("Auto-Glossary")

@@ -11645,6 +11645,7 @@ def critic_pass_with_helper(
             "reviewed_sentence_groups": 0, "reviewed_sentence_cues": 0,
             "rejected_count": 0, "rejected_reasons": {},
             "rejected_candidates": [],
+            "validator_candidates": [],
             "suggested": 0, "report_only": not apply_changes,
         })
     if not tr_blocks:
@@ -11793,6 +11794,12 @@ def critic_pass_with_helper(
         if marker not in existing:
             v_reasons[sid] = "|".join(part for part in (existing, marker) if part)
 
+    validator_candidates = [
+        {"id": sid, "reason": reason}
+        for sid, reason in v_reasons.items()
+        if reason and reason != "CROSS_CUE_SENTENCE_REVIEW"
+    ]
+
     suspicious = [
         (idx, ts, text)
         for idx, ts, text in result
@@ -11808,6 +11815,7 @@ def critic_pass_with_helper(
                 "report_only": not apply_changes,
                 "reviewed_sentence_groups": len(sentence_review_groups),
                 "reviewed_sentence_cues": len(sentence_review_ids),
+                "validator_candidates": list(validator_candidates),
             })
         if log_fn:
             log_fn("Critic Pass (Helper): incelenecek satır yok, atlanıyor ✓", "ok")
@@ -12392,6 +12400,7 @@ def critic_pass_with_helper(
                 "rejected_count": critic_rejected,
                 "rejected_reasons": dict(critic_rejected_reasons),
                 "rejected_candidates": list(critic_rejected_candidates),
+                "validator_candidates": list(validator_candidates),
             })
         if change_log is not None:
             del change_log[change_log_start:]
@@ -12419,6 +12428,7 @@ def critic_pass_with_helper(
             "rejected_count": critic_rejected,
             "rejected_reasons": dict(critic_rejected_reasons),
             "rejected_candidates": list(critic_rejected_candidates),
+            "validator_candidates": list(validator_candidates),
         })
 
     if log_fn:

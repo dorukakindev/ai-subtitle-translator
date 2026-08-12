@@ -62,6 +62,10 @@ class ContextPayloadReportingTests(unittest.TestCase):
                     "reviewed_sentence_cues": 7,
                     "rejected_count": 2,
                     "rejected_reasons": {"person_swap": 2},
+                    "validator_candidates": [
+                        {"id": "11", "reason": "BROKEN_FRAGMENT_FLOW"},
+                        {"id": "12", "reason": "EARLY_VERB_CLOSURE|CROSS_CUE_SENTENCE_REVIEW"},
+                    ],
                 }
             },
         }, {"critic": True, "chain_ctx": True})
@@ -71,6 +75,9 @@ class ContextPayloadReportingTests(unittest.TestCase):
         self.assertIn("Cümle zinciri kanıtı", report)
         self.assertIn("Critic cümle-zinciri kapsamı: 3 grup/7 cue", report)
         self.assertIn("person_swap:2", report)
+        self.assertIn("Critic deterministik inceleme adayları: 2 cue [11,12]", report)
+        self.assertIn("BROKEN_FRAGMENT_FLOW:1", report)
+        self.assertIn("EARLY_VERB_CLOSURE:1", report)
 
     def test_filters_multi_file_requests_with_file_map(self):
         first = _request({"tr": [{"i": 1, "t": "First"}], "ctx": [{"i": 0}]})
