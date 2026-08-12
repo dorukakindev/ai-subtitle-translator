@@ -216,6 +216,12 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "O kadar çok şey örtüşüyor ki:",
         )
 
+    def test_repeated_listen_imperative_is_not_a_speaker_label(self):
+        blocks = [("595", "00:10:00,000 --> 00:10:02,000", "Simdi dinle. Iyi dinle:")]
+        src_map = _src(**{"595": "Now, listen. Listen:"})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "Simdi dinle. Iyi dinle:")
+
     def test_chevron_language_only_cue_dropped(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", ">> [anlaşılmayan konuşma]")]
         src_map = _src(**{"1": "&gt;&gt; [non-english]"})
