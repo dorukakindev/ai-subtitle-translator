@@ -434,6 +434,7 @@ class IdentityInterjectionRegressionTest(unittest.TestCase):
     def test_short_identity_interjections_are_valid_translations(self):
         self.assertEqual(gui._untranslated_reason("Hey, hey!", "Hey, hey!"), "")
         self.assertEqual(gui._untranslated_reason("Jack, hey.", "Jack, hey."), "")
+        self.assertEqual(gui._untranslated_reason("Bravo, bravo.", "Bravo, bravo."), "")
         self.assertEqual(
             gui._untranslated_reason("Hello everyone.", "Hello everyone."),
             "identical_source",

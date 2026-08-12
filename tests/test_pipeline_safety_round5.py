@@ -13,6 +13,22 @@ from subtitle_formats import get_subtitle_files
 
 
 class BatchWriteGuardTests(unittest.TestCase):
+    def test_source_hash_retries_transient_network_read_failure(self):
+        with patch.object(Path, "read_bytes", side_effect=[OSError("network"), b"source"]), \
+                patch.object(gui.time, "sleep") as sleep:
+            value = gui._file_content_sha256("source.srt")
+
+        self.assertEqual(value, __import__("hashlib").sha256(b"source").hexdigest())
+        sleep.assert_called_once_with(0.05)
+
+    def test_source_hash_stays_fail_closed_after_repeated_read_failure(self):
+        with patch.object(Path, "read_bytes", side_effect=OSError("network")), \
+                patch.object(gui.time, "sleep") as sleep:
+            value = gui._file_content_sha256("source.srt")
+
+        self.assertEqual(value, "")
+        self.assertEqual(sleep.call_count, 2)
+
     def test_rejects_changed_source_and_changed_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

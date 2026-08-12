@@ -4838,10 +4838,12 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
     if _is_punct_only_translation(src_text, tr_text) and not _src_all_caps:
         return "punct_only_translation"
     _LOANWORDS = frozenset([
-        "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah",
+        "ok", "yes", "no", "hi", "hey", "wow", "oh", "ah", "bravo",
         "robot", "laser", "internet", "pizza", "taxi", "stereo",
     ])
-    _IDENTITY_INTERJECTIONS = frozenset(["ok", "hi", "hey", "wow", "oh", "ah"])
+    _IDENTITY_INTERJECTIONS = frozenset([
+        "ok", "hi", "hey", "wow", "oh", "ah", "bravo",
+    ])
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
     identity_tokens = re.findall(r"[^\W\d_]+", str(src_text), re.UNICODE)
@@ -8588,10 +8590,15 @@ def _claim_interrupted_run_record(path, run_id: str,
 
 
 def _file_content_sha256(path) -> str:
-    try:
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    except Exception:
-        return ""
+    for attempt in range(3):
+        try:
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except (OSError, PermissionError):
+            if attempt < 2:
+                time.sleep((0.05, 0.15)[attempt])
+        except Exception:
+            break
+    return ""
 
 
 def _tm_context_fingerprint(source_hash: str, locked_terms=None) -> str:
