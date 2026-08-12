@@ -115,5 +115,65 @@ class CriticSentenceContextRegressionTest(unittest.TestCase):
         self.assertEqual(result[1][2], "hayatım boyunca ilgi duydum.")
 
 
+    def test_report_only_does_not_feed_proposed_fix_into_later_chunk(self):
+        cues = [Cue(i, f"Source {i}.") for i in range(1, 102)]
+        blocks = [
+            (i, "00:00:00,000 --> 00:00:01,000", f"Target {i}.")
+            for i in range(1, 102)
+        ]
+        responses = iter([
+            [{"id": "1", "fixed": "Proposed first."}],
+            [{"id": "101", "fixed": "Proposed last."}],
+        ])
+
+        class Completions:
+            def create(self, **_kwargs):
+                return SimpleNamespace(
+                    usage=None,
+                    choices=[SimpleNamespace(message=SimpleNamespace(
+                        content=json.dumps(next(responses))))],
+                )
+
+        class OpenAI:
+            def __init__(self, **_kwargs):
+                self.chat = SimpleNamespace(completions=Completions())
+
+        semantic_inputs = []
+
+        def capture_semantic_map(candidate, *_args, **_kwargs):
+            semantic_inputs.append(list(candidate))
+            return {}
+
+        validator_hits = [
+            (idx, ts, text, "BAD_TURKISH_CASE_FLOW")
+            for idx, ts, text in blocks
+        ]
+        changes = []
+        status = {}
+        with patch.dict(sys.modules, {
+                "openai": SimpleNamespace(OpenAI=OpenAI)}), \
+             patch("hybrid_translate.run_validators",
+                   return_value=validator_hits), \
+             patch("hybrid_translate.validate_polish_candidate",
+                   return_value=(True, "")), \
+             patch("hybrid_translate._semantic_reason_map",
+                   side_effect=capture_semantic_map):
+            result = ht.critic_pass_with_helper(
+                cues=cues,
+                tr_blocks=blocks,
+                helper_api_key="test",
+                change_log=changes,
+                status_out=status,
+                apply_changes=False,
+            )
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(len(semantic_inputs), 4)
+        self.assertEqual(semantic_inputs[2][0][2], "Target 1.")
+        self.assertEqual(status["changed"], 0)
+        self.assertEqual(status["suggested"], 2)
+        self.assertEqual([row["id"] for row in changes], ["1", "101"])
+
+
 if __name__ == "__main__":
     unittest.main()

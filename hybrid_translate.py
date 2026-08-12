@@ -12362,8 +12362,9 @@ def critic_pass_with_helper(
                     continue
                 if item["recovered"]:
                     reflow_recovered += 1
-                result[item["pos"]] = (
-                    item["old_idx"], item["old_ts"], final_text)
+                if apply_changes:
+                    result[item["pos"]] = (
+                        item["old_idx"], item["old_ts"], final_text)
                 mm_fixed += 1
                 for tok in reason_toks:
                     reason_stats[tok]["accepted"] += 1
