@@ -91,6 +91,17 @@ class GlossMissReasonTest(unittest.TestCase):
         self.assertFalse(ht._locked_source_term_present(
             "Father", "Father will be looking out to see."))
 
+    def test_auto_glossary_drops_madam_as_judge(self):
+        logs = []
+        gloss = ht.sanitize_glossary_for_turkish(
+            {"Madam": "Sayın Hakim", "Madam!": "Hanımefendi!"},
+            target_language="tr",
+            log_fn=lambda message, *_: logs.append(message),
+        )
+        self.assertNotIn("Madam", gloss)
+        self.assertEqual(gloss["Madam!"], "Hanımefendi!")
+        self.assertTrue(any("Madam->Sayın Hakim" in message for message in logs))
+
     def test_auto_glossary_drops_polysemous_take_but_keeps_phrase_lock(self):
         logs = []
         gloss = ht.sanitize_glossary_for_turkish(
