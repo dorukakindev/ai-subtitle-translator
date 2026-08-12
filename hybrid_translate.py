@@ -11551,7 +11551,7 @@ def critic_pass_with_helper(
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
-    Stage 2 — Helper review (fast): ONLY suspicious lines, not the whole file.
+    Stage 2 — Helper review: suspicious lines plus every complete multi-cue sentence.
     Returns improved blocks list [(idx, ts, text), ...].
 
     Args:
@@ -11717,7 +11717,7 @@ def critic_pass_with_helper(
                 "reviewed_sentence_cues": len(sentence_review_ids),
             })
         if log_fn:
-            log_fn("Critic Pass (Helper): şüpheli satır yok, atlanıyor ✓", "ok")
+            log_fn("Critic Pass (Helper): incelenecek satır yok, atlanıyor ✓", "ok")
         return result
 
     v_count = len(validator_hits)
@@ -11727,9 +11727,10 @@ def critic_pass_with_helper(
                      if any(token in reason for token in flow_group_reason_tokens))
     if log_fn:
         log_fn(
-            f"Critic Pass (Helper): {len(suspicious)} şüpheli satır "
+            f"Critic Pass (Helper): {len(suspicious)} inceleme satırı "
             f"(pattern:{p_count}, validator:{v_count}, flow:{flow_count}, "
-            f"cümle-grubu:{len(sentence_review_groups)}) inceleniyor...", "info"
+            f"tam-cümle:{len(sentence_review_groups)} grup/"
+            f"{len(sentence_review_ids)} cue) inceleniyor...", "info"
         )
 
     try:
@@ -11941,10 +11942,27 @@ def critic_pass_with_helper(
                     log_fn(f"Critic Helper chunk boş yanıt döndü — {len(chunk)} satır bu turda atlandı", "warn")
                 continue
             def _retry_partial(remaining_items):
-                remaining_payload = json.dumps(remaining_items, ensure_ascii=False)
+                retry_items = []
+                for item in remaining_items:
+                    retry_item = dict(item)
+                    group_ids = retry_item.get("frag_group") or []
+                    if group_ids:
+                        retry_item["group_orig"] = " ".join(
+                            orig_dict.get(str(gid), "") for gid in group_ids
+                            if orig_dict.get(str(gid), "")
+                        )
+                        retry_item["group_tr"] = " ".join(
+                            tr_text_by_id.get(str(gid), "") for gid in group_ids
+                            if tr_text_by_id.get(str(gid), "")
+                        )
+                    retry_items.append(retry_item)
+                remaining_payload = json.dumps(retry_items, ensure_ascii=False)
                 retry_prompt = (
                     prompt.replace(pairs_payload, remaining_payload, 1)
-                    + "\n\nPrevious JSON was truncated. Review ONLY the Lines above and return a complete JSON array, including [] when no fix is needed."
+                    + "\n\nPrevious JSON was truncated. Review ONLY the remaining Lines above and return "
+                    "a complete JSON array for the listed ids, including [] when no fix is needed. "
+                    "Other frag_group members may already have been received; use group_orig/group_tr as "
+                    "read-only whole-sentence context and do not return ids that are not listed above."
                 )
                 retry_resp = _safe_chat_create(
                     client,
@@ -12237,6 +12255,8 @@ def critic_pass_with_helper(
                 "successful_chunks": successful_chunks,
                 "failed_chunks": max(0, total_chunks - successful_chunks),
                 "total_chunks": total_chunks, "changed": 0,
+                "reviewed_sentence_groups": len(sentence_review_groups),
+                "reviewed_sentence_cues": len(sentence_review_ids),
             })
         if change_log is not None:
             del change_log[change_log_start:]

@@ -15459,9 +15459,9 @@ class App(ctk.CTk):
                         )
                         _report_response_usage(
                             _app_token_callback(
-                                self, self._main_model_name(),
+                                self, model,
                                 "Çeviri Önizleme",
-                                base_url=self._main_api_base_url()),
+                                base_url=base_url),
                             resp, log_fn=self._log,
                             pass_name="Çeviri Önizleme")
                         raw  = (resp.choices[0].message.content or "").strip()

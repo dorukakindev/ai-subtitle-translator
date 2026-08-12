@@ -97,6 +97,37 @@ class QualityResponseOwnershipTest(unittest.TestCase):
         self.assertNotIn("FIRST_ONLY_RETRY_SENTINEL", prompts[1])
         self.assertIn("SECOND_ONLY_RETRY_SENTINEL", prompts[1])
 
+    def test_critic_retry_keeps_whole_sentence_context_for_remaining_fragment(self):
+        cues = [
+            Cue(1, "FIRST_FRAGMENT_SENTINEL", end="00:00:01,000"),
+            Cue(2, "SECOND_FRAGMENT_SENTINEL.",
+                "00:00:01,000", "00:00:02,000"),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "İlk parça"),
+            (2, "00:00:01,000 --> 00:00:02,000", "ikinci parça."),
+        ]
+        responses = iter([
+            '[{"id":"1","fixed":"İlk parça"},'
+            '{"id":"2","fixed":"ikinci parça."',
+            "[]",
+        ])
+        prompts = []
+
+        def fake_create(*_args, **kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            return _response(next(responses))
+
+        with patch.dict(sys.modules, {"openai": SimpleNamespace(OpenAI=FakeOpenAI)}), \
+             patch("hybrid_translate._safe_chat_create", side_effect=fake_create):
+            ht.critic_pass_with_helper(cues, blocks, "key")
+
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('"id": "2"', prompts[1])
+        self.assertNotIn('"id": "1"', prompts[1])
+        self.assertIn('"group_orig": "FIRST_FRAGMENT_SENTINEL SECOND_FRAGMENT_SENTINEL."', prompts[1])
+        self.assertIn('"group_tr": "İlk parça ikinci parça."', prompts[1])
+
     def test_native_marks_unrecovered_truncated_response_partial(self):
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Bu garip bir cumle."),
