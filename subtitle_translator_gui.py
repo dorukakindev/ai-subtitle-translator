@@ -30227,63 +30227,22 @@ class App(ctk.CTk):
                 if self._stop_flag:
                     break
                 
-                _n_filled_save = 0
-                _unresolved_missing = sum(
-                    1 for _idx, _ts, _txt in _final_blocks
-                    if str(_txt or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(_txt or "")
-                )
-                if _unresolved_missing:
-                    _partial_path = _partial_output_path(out_path)
-                    try:
-                        write_srt(
-                            str(_partial_path),
-                            self._maybe_merge_cues(
-                                _final_blocks, file_path=filepath), tgt)
-                        _quarantined = _quarantine_incomplete_final(out_path)
-                        if _quarantined:
-                            self._log(
-                                f"Önceki eksik nihai çıktı karantinaya alındı: "
-                                f"{_quarantined.name}",
-                                "warn",
-                            )
-                    except Exception as partial_error:
-                        self._log_exc(
-                            f"[{fname}] kısmi çıktı yazılamadı",
-                            partial_error)
-                        self._record_batch_terminal_state(
-                            ht, session, filepath, "failed")
-                        self._record_file_status(
-                            filepath, "Kısmi çıktı yazılamadı", "error")
-                        continue
-                    self._log(
-                        f"{fname}: {_unresolved_missing} eksik çeviri kaldı; "
-                        "Critic/Polish atlandı, dosya tamamlandı sayılmayacak.",
-                        "err",
-                    )
-                    _hata_n, _cps_n = _count_hata_cps(_final_blocks)
-                    _cps_avg, _cps_max = _cps_stats(_final_blocks)
-                    report_rows.append({
-                        "name": fname, "source_path": filepath,
-                        "output_path": str(_partial_path),
-                        "total": len(_final_blocks),
-                        "hata": max(_hata_n, _unresolved_missing), "cps": _cps_n,
-                        "cps_avg": _cps_avg, "cps_max": _cps_max,
-                        "cons": 0, "pass_fix": 0,
-                        "qc_auto": 0, "qc": 0, "warn": _unresolved_missing,
-                        "pass_trace": {}, "pass_history": {},
-                        "pass_coverage": "skipped_missing",
-                        "run_status": "error",
-                        "tm_hits": self._tm.hit_count_session(),
-                    })
-                    self._record_batch_terminal_state(
-                        ht, session, filepath, "failed")
-                    self._record_file_status(
-                        filepath, f"Eksik çeviri: {_unresolved_missing}", "error")
-                    continue
                 _raw_backup_blocks = list(_final_blocks)   # kalite geçişleri öncesi ham çeviri (yedek)
                 _pass_trace = {}
                 _pass_status = {}
                 _pass_history = {}
+                _quality_failed_blocks = {}
+                _quality_original_order = []
+                if _blocks_have_translation_failures(_final_blocks):
+                    _final_blocks, _quality_failed_blocks, _quality_original_order = (
+                        _partition_quality_blocks(_final_blocks))
+                    self._log(
+                        f"{fname}: {len(_quality_failed_blocks)} eksik cue kalite "
+                        "geçişlerinden izole edildi; sağlam cue'larda Critic ve "
+                        "diğer etkin kalite geçişleri çalışmaya devam edecek.",
+                        "warn",
+                    )
+                _quality_api_allowed = bool(_final_blocks)
                 # Tutarlılık taraması (düz sync/batch + sync-hybrid ile paritede)
                 _cons_fixes = 0
                 _before_consistency = list(_final_blocks)
@@ -30596,25 +30555,29 @@ class App(ctk.CTk):
                             f"Terim normalizasyonu atlandı: {term_error}", "warn")
                 if self._stop_flag:
                     break
-                _before_semantic = list(_final_blocks)
-                _semantic_status = {}
-                _back_status = {}
-                self._run_final_semantic_checks(
-                    out_path, _src_map, _final_blocks, src_lang=file_src,
-                    cues=cues, changed_ids=_pass_history.keys(),
-                    source_path=filepath, locked_terms=_locked_terms,
-                    analysis_result=_full_analysis,
-                    status_out=_semantic_status,
-                    backtranslation_status_out=_back_status)
-                _pass_status["Final-Semantic"] = dict(_semantic_status)
-                _pass_status["Backtranslation"] = dict(_back_status)
+                if _quality_api_allowed:
+                    _before_semantic = list(_final_blocks)
+                    _semantic_status = {}
+                    _back_status = {}
+                    self._run_final_semantic_checks(
+                        out_path, _src_map, _final_blocks, src_lang=file_src,
+                        cues=cues, changed_ids=_pass_history.keys(),
+                        source_path=filepath, locked_terms=_locked_terms,
+                        analysis_result=_full_analysis,
+                        status_out=_semantic_status,
+                        backtranslation_status_out=_back_status)
+                    _pass_status["Final-Semantic"] = dict(_semantic_status)
+                    _pass_status["Backtranslation"] = dict(_back_status)
+                    if self._stop_flag:
+                        break
+                    _record_pass_change(
+                        _pass_trace, "Final-Semantic", _before_semantic,
+                        _final_blocks, _pass_history)
                 if self._stop_flag:
                     break
-                _record_pass_change(
-                    _pass_trace, "Final-Semantic", _before_semantic,
-                    _final_blocks, _pass_history)
-                if self._stop_flag:
-                    break
+                _final_blocks = _restore_quality_failure_blocks(
+                    _final_blocks, _quality_failed_blocks,
+                    _quality_original_order)
                 if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
                     self._record_file_status(
                         filepath, "Nihai SDH Temizleme", "running")
@@ -30679,8 +30642,46 @@ class App(ctk.CTk):
                             f"{Path(_quarantined).name}",
                             "warn",
                         )
+                    _hata_n, _cps_n = _count_hata_cps(_final_blocks)
+                    _cps_avg, _cps_max = _cps_stats(_final_blocks)
+                    _pass_fix = sum(
+                        1 for block in _final_blocks
+                        if _pre_pass.get(str(block[0])) not in (None, block[2]))
+                    _partial_coverage = "+".join(
+                        key for key, enabled in (
+                            ("critic", self.critic_var.get()),
+                            ("polish", self.polish_var.get()),
+                            ("native", self.native_var.get()),
+                            ("QC", self.qc_var.get()),
+                            ("condense", self.condense_var.get()),
+                            ("backtrans", self.backtrans_var.get()),
+                            ("review", self.review_pass_var.get()),
+                            ("semantic", self._semantic_reconcile_enabled()),
+                            ("termnorm", self.term_normalize_var.get()),
+                        ) if enabled)
+                    report_rows.append({
+                        "name": fname, "source_path": filepath,
+                        "output_path": str(_write_path),
+                        "total": len(_final_blocks),
+                        "hata": max(_hata_n, _hata_n_pre), "cps": _cps_n,
+                        "cps_avg": _cps_avg, "cps_max": _cps_max,
+                        "cons": _cons_fixes, "pass_fix": _pass_fix,
+                        "qc_auto": _qc_auto_fixes, "qc": _qc_fixes,
+                        "warn": _hata_n_pre,
+                        "pass_trace": _pass_trace,
+                        "pass_status": _pass_status,
+                        "pass_history": _pass_history,
+                        "pass_coverage": _partial_coverage,
+                        "run_status": "error",
+                        "delivery_scan_failed": True,
+                        "repair_missing_after": _hata_n_pre,
+                        "translation_chunks": len(fmap),
+                        "tm_hits": self._tm.hit_count_session(),
+                    })
                     self._record_batch_terminal_state(
                         ht, session, filepath, "failed")
+                    self._record_file_status(
+                        filepath, f"Eksik çeviri: {_hata_n_pre}", "error")
                     continue
                 _src_map = {str(c.index): _clean_src(c.text) for c in cues}
                 # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede

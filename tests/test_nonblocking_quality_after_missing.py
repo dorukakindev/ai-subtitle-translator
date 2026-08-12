@@ -31,13 +31,26 @@ class NonblockingQualityAfterMissingTest(unittest.TestCase):
     def test_both_main_postprocess_flows_continue_on_healthy_cues(self):
         source = inspect.getsource(gui.App)
         self.assertGreaterEqual(
-            source.count("_partition_quality_blocks(sorted_blocks)"), 2)
+            source.count("_partition_quality_blocks("), 3)
         self.assertGreaterEqual(
-            source.count("_restore_quality_failure_blocks("), 2)
+            source.count("_restore_quality_failure_blocks("), 3)
         self.assertNotIn(
             "eksik çeviri kaldığı için Critic/Polish/Native/",
             source,
         )
+
+    def test_hybrid_batch_runs_quality_on_healthy_cues_before_partial_delivery(self):
+        source = inspect.getsource(gui.App._run_hybrid)
+        partition = source.index("_partition_quality_blocks(_final_blocks)")
+        critic = source.index("ht.critic_pass_with_helper(", partition)
+        restore = source.index("_restore_quality_failure_blocks(", critic)
+        partial_delivery = source.index("if _has_missing:", restore)
+
+        self.assertLess(partition, critic)
+        self.assertLess(critic, restore)
+        self.assertLess(restore, partial_delivery)
+        self.assertNotIn("Critic/Polish atlandı", source)
+        self.assertIn('"pass_status": _pass_status', source[partial_delivery:])
         self.assertNotIn(
             "eksik çeviri kaldığı için model tabanlı kalite "
             "geçişleri atlandı",

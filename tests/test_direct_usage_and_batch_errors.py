@@ -103,7 +103,7 @@ class DirectUsageAndBatchErrorTests(unittest.TestCase):
         condense_calls = list(re.finditer(r"self\._maybe_condense\(", source))
         merge_calls = list(re.finditer(r"self\._maybe_merge_cues\(", source))
         self.assertEqual(len(condense_calls), 4)
-        self.assertEqual(len(merge_calls), 6)
+        self.assertEqual(len(merge_calls), 5)
         for match in condense_calls + merge_calls:
             self.assertIn("file_path=", source[match.start():match.start() + 900])
 
