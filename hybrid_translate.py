@@ -1881,6 +1881,7 @@ def _extract_emotional_arc(
     status=None,
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
+    _retry_missing: bool = True,
 ) -> list:
     """Extract a per-scene semantic plan from the subtitle file.
 
@@ -1921,8 +1922,10 @@ def _extract_emotional_arc(
 
         scenes_json = []
         for sc in scenes:
+            sampled = _evenly_sample_cues(sc, 8)
+            per_cue_limit = max(24, 340 // max(1, len(sampled)))
             text_sample = " ".join(
-                _clean_source_text(c.text) for c in sc[:8]  # first 8 lines as sample
+                _clean_source_text(c.text)[:per_cue_limit] for c in sampled
             )
             scenes_json.append({
                 "start": sc[0].index,
@@ -2000,6 +2003,44 @@ def _extract_emotional_arc(
             bound, page_complete = _bind_scene_plan_to_requested(raw_scenes, page)
             all_bound.extend(bound)
             complete = complete and page_complete
+        if not complete and _retry_missing:
+            accepted_ranges = {
+                (int(scene["start"]), int(scene["end"]))
+                for scene in all_bound
+                if isinstance(scene, dict) and "start" in scene and "end" in scene
+            }
+            missing_scenes = [
+                scene for scene in scenes
+                if (int(scene[0].index), int(scene[-1].index)) not in accepted_ranges
+            ]
+            missing_cues = [cue for scene in missing_scenes for cue in scene]
+            if missing_cues:
+                if log_fn:
+                    log_fn(
+                        f"Sahne planı eksik: yalnız {len(missing_scenes)} sahne "
+                        "bir kez hedefli yeniden isteniyor...",
+                        "warn",
+                    )
+                retry_status = {}
+                retried = _extract_emotional_arc(
+                    missing_cues, tgt_lang, helper_api_key, helper_url,
+                    helper_model, log_fn=log_fn,
+                    token_callback=token_callback, status=retry_status,
+                    cancel_context=cancel_context,
+                    scene_gap_sec=scene_gap_sec, _retry_missing=False,
+                )
+                combined = {
+                    (int(scene["start"]), int(scene["end"])): scene
+                    for scene in [*all_bound, *retried]
+                    if isinstance(scene, dict) and "start" in scene and "end" in scene
+                }
+                requested_ranges = [
+                    (int(scene[0].index), int(scene[-1].index)) for scene in scenes
+                ]
+                all_bound = [
+                    combined[key] for key in requested_ranges if key in combined
+                ]
+                complete = all(key in combined for key in requested_ranges)
         return _analysis_aux_result(all_bound, status, "scene_plan", complete)
     except RequestCancelled:
         raise
@@ -3274,17 +3315,14 @@ def analyze_with_helper(
     # Extract per-scene semantic plan (summary/speakers/goals/referents/tone)
     if log_fn:
         log_fn("Sahne planı analizi yapılıyor...", "info")
-    scene_emotions = _retry_failed_analysis_aux(
-        "scene_plan", "Sahne planı", aux_status, log_fn,
-        lambda: _extract_emotional_arc(
-            cues, target_language,
-            helper_api_key, helper_url, helper_model,
-            log_fn=log_fn,
-            token_callback=token_callback,
-            status=aux_status,
-            cancel_context=cancel_context,
-            scene_gap_sec=scene_gap_sec,
-        ),
+    scene_emotions = _extract_emotional_arc(
+        cues, target_language,
+        helper_api_key, helper_url, helper_model,
+        log_fn=log_fn,
+        token_callback=token_callback,
+        status=aux_status,
+        cancel_context=cancel_context,
+        scene_gap_sec=scene_gap_sec,
     )
     if log_fn and scene_emotions:
         _with_ref = sum(1 for s in scene_emotions if isinstance(s, dict) and s.get("referents"))
@@ -11657,7 +11695,8 @@ def critic_pass_with_helper(
             source_text=orig_dict.get(str(idx), ""), locked_terms=glossary)
         if n and not locked_term_violation(
                 orig_dict.get(str(idx), ""), fixed, glossary):
-            result[i] = (idx, ts, fixed)
+            if apply_changes:
+                result[i] = (idx, ts, fixed)
             local_fixed += 1
             if change_log is not None:
                 change_log.append({

@@ -17686,6 +17686,43 @@ class App(ctk.CTk):
                         raw_map.get(cid, ""),
                     )
                     cue_ids = [str(item.get("i")) for item in missing]
+                    if reason == "non_turkish_target":
+                        response_items = json.loads(_extract_json_array(
+                            raw_map.get(cid, "")))
+                        leak_src_map = (
+                            _chunk_leak_src_map_from_request(req)
+                            or _chunk_src_map_from_request(req))
+                        leaks = []
+                        for item in response_items:
+                            if not isinstance(item, dict):
+                                continue
+                            item_id = str(item.get("i", ""))
+                            token = ht.non_turkish_leak_token(
+                                str(item.get("t", "")),
+                                source_text=_chunk_leak_source_text(
+                                    leak_src_map, item_id),
+                            )
+                            if token:
+                                leaks.append((item_id, token))
+                        if leaks:
+                            cue_ids = [item_id for item_id, _token in leaks]
+                            reason = (
+                                "non_turkish_target:"
+                                + ", ".join(
+                                    f"#{item_id}='{token}'"
+                                    for item_id, token in leaks[:5]))
+                    elif reason == "cue_content_owner_mismatch":
+                        response_items = json.loads(_extract_json_array(
+                            raw_map.get(cid, "")))
+                        owner_src_map = (
+                            _chunk_leak_src_map_from_request(req)
+                            or _chunk_src_map_from_request(req))
+                        cue_ids = sorted(
+                            _chunk_content_owner_mismatch_ids(
+                                response_items, owner_src_map),
+                            key=lambda value: (0, int(value))
+                            if str(value).isdigit() else (1, str(value)),
+                        )
                 except Exception:
                     cue_ids = []
                 unresolved[cid] = (reason, cue_ids)

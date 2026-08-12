@@ -199,6 +199,40 @@ class ScenePlanPaginationTest(unittest.TestCase):
             [(1, 1), (2, 2)],
         )
 
+    def test_long_scene_sample_covers_beginning_middle_and_end(self):
+        cues = [self.Cue(i, i) for i in range(1, 21)]
+        for cue in cues:
+            cue.start = f"00:00:{cue.index:02d},000"
+            cue.end = f"00:00:{cue.index:02d},200"
+            cue.text = f"Unique dialogue {cue.index}"
+        requested = []
+
+        def create(_client, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            page, _ = json.JSONDecoder().raw_decode(
+                prompt.split("Scenes:\n", 1)[1])
+            requested.extend(page)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                    "scenes": [{"start": 1, "end": 20, "summary": "x"}]
+                })))],
+                usage=None,
+            )
+
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = lambda **_kwargs: object()
+        with patch.dict(sys.modules, {"openai": fake_openai}), \
+             patch.object(ht, "_safe_chat_create", side_effect=create):
+            ht._extract_emotional_arc(
+                cues, "Turkish", "key", "url", "model",
+                scene_gap_sec=3.0)
+
+        self.assertEqual(len(requested), 1)
+        sample = requested[0]["sample"]
+        self.assertIn("Unique dialogue 1", sample)
+        self.assertIn("Unique dialogue 20", sample)
+        self.assertTrue(any(f"Unique dialogue {i}" in sample for i in range(8, 14)))
+
     def test_drops_conflicting_duplicate_range(self):
         result, complete = ht._bind_scene_plan_to_requested(
             [
@@ -248,6 +282,44 @@ class ScenePlanPaginationTest(unittest.TestCase):
             [(1, 10)],
         )
         self.assertFalse(complete)
+
+    def test_retries_only_missing_scene_once(self):
+        cues = [self.Cue(1, 0), self.Cue(2, 5)]
+        requested = []
+
+        def create(_client, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            page, _ = json.JSONDecoder().raw_decode(
+                prompt.split("Scenes:\n", 1)[1])
+            requested.append(page)
+            returned = page[:1] if len(requested) == 1 else page
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                    "scenes": [
+                        {"start": item["start"], "end": item["end"],
+                         "summary": f"Plan {item['start']}"}
+                        for item in returned
+                    ]
+                })))],
+                usage=None,
+            )
+
+        logs = []
+        fake_openai = types.ModuleType("openai")
+        fake_openai.OpenAI = lambda **_kwargs: object()
+        with patch.dict(sys.modules, {"openai": fake_openai}), \
+             patch.object(ht, "_safe_chat_create", side_effect=create):
+            status = {}
+            result = ht._extract_emotional_arc(
+                cues, "Turkish", "key", "url", "model",
+                status=status,
+                log_fn=lambda message, level="info": logs.append(message),
+            )
+
+        self.assertEqual([len(page) for page in requested], [2, 1])
+        self.assertEqual([scene["start"] for scene in result], [1, 2])
+        self.assertTrue(status["scene_plan"])
+        self.assertTrue(any("yalnız 1 sahne" in message for message in logs))
 
 
 class ScenePlanPayloadEntryTest(unittest.TestCase):

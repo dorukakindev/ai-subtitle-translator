@@ -86,6 +86,40 @@ class MissingRepairToggleTest(unittest.TestCase):
         self.assertIn("Translate this line.", rendered)
         self.assertIn("API'ye gönderilmedi", rendered)
 
+    def test_disabled_chunk_repair_logs_leaking_cue_and_token(self):
+        app = gui.App.__new__(gui.App)
+        app._active_snapshot = {"repair_missing": False}
+        app._stop_flag = False
+        logs = []
+        app._log = lambda message, level="info": logs.append(message)
+        request = {
+            "custom_id": "chunk_1",
+            "body": {
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "system", "content": "Translate."},
+                    {"role": "user", "content": json.dumps({"tr": [
+                        {"i": 1, "t": "Black knife."},
+                        {"i": 2, "t": "Hello."},
+                    ]})},
+                ],
+            },
+        }
+        raw_map = {"chunk_1": json.dumps([
+            {"i": 1, "t": "qora pichoq"},
+            {"i": 2, "t": "Merhaba."},
+        ], ensure_ascii=False)}
+
+        with unittest.mock.patch.object(gui, "_safe_chat_create") as chat:
+            unresolved = gui.App._retry_hata(
+                app, object(), raw_map, [request], max_rounds=3)
+
+        self.assertEqual(unresolved, {"chunk_1"})
+        chat.assert_not_called()
+        rendered = "\n".join(logs)
+        self.assertIn("#1='qora'", rendered)
+        self.assertIn("(#1)", rendered)
+
     def test_source_credit_is_removed_instead_of_reported_missing(self):
         for credit in (
                 "Subtitling: www.pluridioma.pt",

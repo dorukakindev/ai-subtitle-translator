@@ -47,6 +47,35 @@ class QualityReportOnlyModeTest(unittest.TestCase):
         self.assertTrue(status["report_only"])
         self.assertTrue(any("yalnız rapor" in message for message in logs))
 
+    def test_critic_report_only_reviews_the_real_unmodified_text(self):
+        cue = SimpleNamespace(index=1, text="This metaphor works.",
+                              start_ms=0, end_ms=1000)
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Bu metafoor ise yarıyor.")]
+        requests = []
+
+        def create(_client, **kwargs):
+            requests.append(gui.json.dumps(kwargs["messages"], ensure_ascii=False))
+            return SimpleNamespace(
+                usage=None,
+                choices=[SimpleNamespace(message=SimpleNamespace(content="[]"))],
+            )
+
+        with patch.dict(sys.modules, {"openai": self._openai_module([])}), \
+             patch.object(ht, "_safe_chat_create", side_effect=create), \
+             patch.object(ht, "_apply_local_fixes",
+                          return_value=("Bu metafor ise yarıyor.", 1)), \
+             patch.object(ht, "run_validators", return_value=[
+                 (1, "This metaphor works.", "Bu metafoor ise yarıyor.",
+                  "DANGLING_TURKISH_FRAGMENT")
+             ]):
+            result = ht.critic_pass_with_helper(
+                [cue], blocks, "key", apply_changes=False)
+
+        self.assertEqual(result, blocks)
+        self.assertTrue(requests)
+        self.assertIn("Bu metafoor ise yarıyor.", requests[0])
+        self.assertNotIn("Bu metafor ise yarıyor.", requests[0])
+
     def test_term_normalization_report_only_keeps_original_and_logs_candidate(self):
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Troy kuşatması başladı."),
