@@ -6751,6 +6751,72 @@ def _file_translation_chunk_count(file_map: dict, filepath) -> int:
     return count
 
 
+def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> dict:
+    """Summarize context actually carried by built translation requests."""
+    target = (
+        os.path.normcase(os.path.abspath(str(filepath)))
+        if filepath else ""
+    )
+    metrics = {
+        "chunks": 0, "source_cues": 0,
+        "ctx_chunks": 0, "ctx_cues": 0,
+        "next_ctx_chunks": 0, "next_ctx_cues": 0,
+        "prev_scene_chunks": 0, "prev_scene_cues": 0,
+        "prev_tr_chunks": 0, "prev_tr_pairs": 0,
+        "scene_plan_chunks": 0, "sentence_group_chunks": 0,
+        "sentence_groups": 0, "fragment_cues": 0,
+    }
+    allowed_ids = None
+    if target and file_map:
+        allowed_ids = set()
+        for custom_id, rows in file_map.items():
+            if any(
+                    len(row) >= 3
+                    and os.path.normcase(os.path.abspath(str(row[2]))) == target
+                    for row in rows or ()):
+                allowed_ids.add(custom_id)
+    for req in requests or ():
+        if allowed_ids is not None and req.get("custom_id") not in allowed_ids:
+            continue
+        if target:
+            req_path = str(req.get("_source_path") or req.get("source_path") or "")
+            if req_path and os.path.normcase(os.path.abspath(req_path)) != target:
+                continue
+        try:
+            messages = req.get("body", {}).get("messages", [])
+            user_content = next(
+                msg.get("content") for msg in reversed(messages)
+                if msg.get("role") == "user")
+            payload = json.loads(user_content)
+        except Exception:
+            continue
+        tr_items = payload.get("tr") or []
+        metrics["chunks"] += 1
+        metrics["source_cues"] += len(tr_items)
+        metrics["fragment_cues"] += sum(
+            1 for item in tr_items
+            if isinstance(item, dict) and item.get("frag") not in (None, "", "none"))
+        for key, chunk_key, cue_key in (
+                ("ctx", "ctx_chunks", "ctx_cues"),
+                ("next_ctx", "next_ctx_chunks", "next_ctx_cues"),
+                ("prev_scene", "prev_scene_chunks", "prev_scene_cues")):
+            values = payload.get(key) or []
+            if values:
+                metrics[chunk_key] += 1
+                metrics[cue_key] += len(values)
+        prev_tr = payload.get("prev_tr") or []
+        if prev_tr:
+            metrics["prev_tr_chunks"] += 1
+            metrics["prev_tr_pairs"] += len(prev_tr)
+        if payload.get("scene"):
+            metrics["scene_plan_chunks"] += 1
+        groups = payload.get("sentence_groups") or []
+        if groups:
+            metrics["sentence_group_chunks"] += 1
+            metrics["sentence_groups"] += len(groups)
+    return metrics
+
+
 def _slice_file_map(file_map: dict, requests: list) -> dict:
     ids = {req.get("custom_id") for req in requests or []}
     return {cid: info for cid, info in (file_map or {}).items() if cid in ids}
@@ -10178,6 +10244,36 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         lines.append("Zincirleme Bağlam: açık, çalışma kaydı yok")
     else:
         lines.append("Zincirleme Bağlam: kapalı")
+
+    context_metrics = dict(row.get("context_payload_metrics") or {})
+    if context_metrics.get("chunks"):
+        lines.append(
+            "Bağlam taşıma kanıtı: "
+            f"{int(context_metrics.get('ctx_chunks', 0))}/{int(context_metrics['chunks'])} chunk önceki kaynak, "
+            f"{int(context_metrics.get('next_ctx_chunks', 0))}/{int(context_metrics['chunks'])} chunk sonraki kaynak, "
+            f"{int(context_metrics.get('prev_tr_chunks', 0))}/{int(context_metrics['chunks'])} chunk önceki çeviri; "
+            f"{int(context_metrics.get('scene_plan_chunks', 0))} chunk sahne planı")
+        lines.append(
+            "Cümle zinciri kanıtı: "
+            f"{int(context_metrics.get('sentence_groups', 0))} çok-cue cümle grubu, "
+            f"{int(context_metrics.get('fragment_cues', 0))} parçalı cue, "
+            f"{int(context_metrics.get('prev_scene_chunks', 0))} sahne köprüsü")
+
+    critic_status = pass_status.get("Critic")
+    if isinstance(critic_status, dict):
+        reviewed_groups = int(critic_status.get("reviewed_sentence_groups", 0) or 0)
+        reviewed_cues = int(critic_status.get("reviewed_sentence_cues", 0) or 0)
+        rejected = int(critic_status.get("rejected_count", 0) or 0)
+        if reviewed_groups or rejected:
+            reasons = dict(critic_status.get("rejected_reasons") or {})
+            reason_text = ", ".join(
+                f"{key}:{value}" for key, value in sorted(reasons.items(), key=lambda row: -row[1])
+            )
+            detail = f"; korunup raporlanan {rejected} öneri"
+            if reason_text:
+                detail += f" ({reason_text})"
+            lines.append(
+                f"Critic cümle-zinciri kapsamı: {reviewed_groups} grup/{reviewed_cues} cue{detail}")
 
     auto_enabled = bool(snapshot.get("auto_glossary"))
     auto_status = pass_status.get("Auto-Glossary")
@@ -27057,6 +27153,8 @@ class App(ctk.CTk):
                 "chain_ctx": bool(App._run_setting(
                     self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": len(batch_reqs),
+                "context_payload_metrics": _context_payload_metrics(
+                    batch_reqs, filepath, fmap),
                 "tm_hits": self._tm.hit_count_session(),
                 "delivery_scan_failed": _delivery_scan_failed,
                 "run_status": "error" if (
@@ -29543,6 +29641,8 @@ class App(ctk.CTk):
                 "chain_ctx": bool(App._run_setting(
                     self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": _translation_chunks,
+                "context_payload_metrics": _context_payload_metrics(
+                    requests, fp, file_map),
                 "tm_hits": self._tm.hit_count_session(),
                 "delivery_scan_failed": _delivery_scan_failed,
                 "run_status": "error" if (
@@ -31074,6 +31174,8 @@ class App(ctk.CTk):
                     "chain_ctx": bool(App._run_setting(
                         self, "chain_ctx", "chain_ctx_var", True)),
                     "translation_chunks": len(fmap),
+                    "context_payload_metrics": _context_payload_metrics(
+                        requests, filepath, fmap),
                     "tm_hits": self._tm.hit_count_session(),
                     "delivery_scan_failed": _delivery_scan_failed,
                     "run_status": (
