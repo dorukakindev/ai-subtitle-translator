@@ -24,7 +24,8 @@ from openai import OpenAI
 from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model, normalize_helper_model_label
 from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               restore_format_tags, read_subtitle_text,
-                              clean_translation_source_text)
+                              clean_translation_source_text,
+                              normalize_subtitle_control_artifacts)
 import credential_store
 import series_memory
 import sdh_cleaner
@@ -2825,6 +2826,7 @@ def write_srt(filepath, blocks, target_language="Turkish"):
                     text = ht.normalize_latin_homoglyphs(str(text))
             except Exception:
                 text = str(text)
+            text = normalize_subtitle_control_artifacts(text)
             text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
             text = re.sub(r'\n{2,}', '\n', text)
             if is_turkish:
@@ -2846,7 +2848,8 @@ def _write_srt_preserving_text(filepath, blocks):
     out.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for idx, ts, text in blocks:
-        value = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        value = normalize_subtitle_control_artifacts(text)
+        value = value.replace("\r\n", "\n").replace("\r", "\n")
         value = re.sub(r"\n{2,}", "\n", value)
         if not value.strip():
             value = "[ÇEVİRİ EKSİK]"
@@ -10360,6 +10363,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         len(_DELIVERY_ASS_POSITION_RE.findall(text)) for text in output_texts)
     residual_format_tags = sum(
         _delivery_ass_command_count(text) for text in output_texts)
+    residual_control_chars = sum(
+        sum(ord(char) < 32 and char not in "\n\r\t" for char in text)
+        for text in output_texts)
     serialized_json_residue_ids = [
         str(idx) for idx, _ts, text in output_dialogue
         if re.search(r"\}\s*,\s*\{", str(text or ""))
@@ -10384,6 +10390,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
         residual_format_tags, residual_literal_newline_cues, hatted_letters,
+        residual_control_chars,
         serialized_json_residue_ids,
         signature_mismatch, duplicate_cue_ids, unnumbered_cue_lines,
         invalid_timestamp_ids,
@@ -10405,6 +10412,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "residual_literal_newline_cues": residual_literal_newline_cues,
         "residual_position_tags": residual_position_tags,
         "residual_format_tags": residual_format_tags,
+        "residual_control_chars": residual_control_chars,
         "serialized_json_residue_ids": serialized_json_residue_ids,
         "hatted_letters": hatted_letters,
         "delivery_signatures": delivery_signatures,
@@ -10442,6 +10450,7 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("residual_literal_newline_cues"),
         audit.get("residual_position_tags"),
         audit.get("residual_format_tags"),
+        audit.get("residual_control_chars"),
         audit.get("serialized_json_residue_ids"),
         audit.get("hatted_letters"),
         audit.get("signature_mismatch"),
@@ -14982,6 +14991,10 @@ class App(ctk.CTk):
         icons = {"ok": "✓", "err": "✗", "warn": "⚠", "info": "›"}
         icon  = icons.get(tag, " ")
         disk_msg = _sanitize_settings_backup_text(str(msg))
+        disk_msg = "".join(
+            char if ord(char) >= 32 or char in "\n\r\t"
+            else f"\\x{ord(char):02x}"
+            for char in disk_msg)
         recorder = getattr(self, "_record_log_metadata", None)
         if callable(recorder):
             recorder(disk_msg, tag)

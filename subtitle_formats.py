@@ -256,6 +256,19 @@ def _decode_cp1254_or_mac_roman(raw: bytes) -> str | None:
     return mac_roman if cp_penalty >= 2 and mac_penalty < cp_penalty else cp1254
 
 
+_NUL_HEX_ARTIFACT_RE = re.compile(r"\x00([0-9A-Fa-f]{2})")
+
+
+def normalize_subtitle_control_artifacts(text: str) -> str:
+    """Repair model-emitted NUL+hex escapes and remove other C0 controls."""
+    value = _NUL_HEX_ARTIFACT_RE.sub(
+        lambda match: chr(int(match.group(1), 16)), str(text or ""))
+    return "".join(
+        char if ord(char) >= 32 or char in "\n\r\t" else " "
+        for char in value
+    )
+
+
 def read_subtitle_text(filepath) -> str:
     """Altyazı dosyasını toleranslı çözümler: utf-8-sig → utf-16 (BOM) → cp1254 → latin-1(replace).
 

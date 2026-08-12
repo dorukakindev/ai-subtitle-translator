@@ -17,7 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 from app_state import (_interprocess_lock, atomic_write_json, atomic_write_text,
                        best_effort_cancel_remote_batch,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
-from subtitle_formats import clean_translation_source_text
+from subtitle_formats import (clean_translation_source_text,
+                              normalize_subtitle_control_artifacts)
 from request_cancellation import RequestCancelled
 from provider_retry import ProviderWaitCancelled
 
@@ -12863,6 +12864,7 @@ def _normalize_output_text(text: str, target_language: str = "Turkish",
     """Final SRT write-time cleanup shared by hybrid/batch output paths."""
     is_turkish = str(target_language or "").strip().lower() in (
         _GLOSSARY_GUARD_TURKISH_TARGETS)
+    text = normalize_subtitle_control_artifacts(text)
     text = normalize_latin_homoglyphs(str(text)) if is_turkish else str(text)
     text = unicodedata.normalize("NFC", text.strip()).replace("\t", " ")
     text = re.sub(r"\n{2,}", "\n", text)
