@@ -1004,6 +1004,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "clean_sdh": True,
     "backup_raw": True,
     "term_normalize": True,
+    "quality_report_only": True,
     "repair_missing": False,
     "media_mode": "Dizi",
     "content_type": "Otomatik",
@@ -1032,6 +1033,7 @@ WORKFLOW_PROFILES = {
         "semantic_reconcile_var": True,
         "review_pass_var": True,
         "term_normalize_var": True,
+        "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
         "precontext_var": False,
@@ -1051,6 +1053,7 @@ WORKFLOW_PROFILES = {
         "semantic_reconcile_var": False,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
         "precontext_var": False,
@@ -1070,6 +1073,7 @@ WORKFLOW_PROFILES = {
         "semantic_reconcile_var": False,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
         "precontext_var": True,
@@ -1091,6 +1095,7 @@ _BOUNDARY_QUALITY_VARS = {
     "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
+    "quality_report_only": ("quality_report_only_var", "Critic/Terim Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
     "linebreak": ("linebreak_var", "Satır Bölme"),
@@ -1160,6 +1165,7 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
             "semantic_reconcile": False,
             "review_pass": False,
             "term_normalize": True,
+            "quality_report_only": True,
             "chain_ctx": True,
             "clean_sdh": True,
             "backup_raw": True,
@@ -6898,7 +6904,8 @@ def _saved_regular_requests(fmap_data: dict, saved_fmap: dict):
 _BATCH_RUN_CONTEXT_KEYS = (
     "context_version",
     "input_dir", "output_dir", "src_lang", "tgt_lang", "profanity",
-    "same_folder", "mode", "auto_glossary", "term_normalize", "repair_missing", "critic",
+    "same_folder", "mode", "auto_glossary", "term_normalize", "quality_report_only",
+    "repair_missing", "critic",
     "polish", "native", "qc", "condense", "backtrans",
     "semantic_reconcile", "review", "twowave", "clean_sdh", "linebreak",
     "chain_ctx", "style", "analysis_depth", "file_analysis_depths", "content_type",
@@ -7884,7 +7891,8 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
                            helper_model: str, log_fn=None,
                            locked_terms: dict | None = None,
                            cancel_context=None, token_callback=None,
-                           status_out: dict | None = None) -> tuple:
+                           status_out: dict | None = None,
+                           apply_changes: bool = True) -> tuple:
     """_mixed_term_autofix_plan'ın GÜVENLİ bulduğu (yalnızca çevrilmeden-kalmış-
     İngilizce-sızıntısı sınıfı) karışık-terim örneklerini yardımcı modelle düzeltir.
     Riskli/belirsiz durumlar (bkz. plan fonksiyonunun docstring'i) dokunulmadan
@@ -7897,6 +7905,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
         status_out.update({
             "status": "not_started", "successful_chunks": 0,
             "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            "suggested": 0, "report_only": not apply_changes,
         })
     plan = _mixed_term_autofix_plan(
         sorted_blocks, src_map, locked_terms=locked_terms)
@@ -8025,11 +8034,21 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             candidate = result_map[sidx]
             ok, reason = _validate_term_normalize_candidate(text, candidate, fixes_by_idx[sidx])
             if ok:
-                new_blocks.append((idx, ts, candidate))
                 fixed_count += 1
                 for w, c in fixes_by_idx[sidx]:
                     key = f"{w}->{c}"
                     per_term_fixed[key] = per_term_fixed.get(key, 0) + 1
+                if not apply_changes:
+                    if log_fn:
+                        log_fn(
+                            f"Terim normalizasyonu yalnız rapor #{sidx} | "
+                            f"kaynak='{src_map.get(sidx, '')}' | mevcut='{text}' | "
+                            f"öneri='{candidate}'",
+                            "warn",
+                        )
+                    new_blocks.append((idx, ts, text))
+                    continue
+                new_blocks.append((idx, ts, candidate))
                 continue
             else:
                 rejected += 1
@@ -8039,7 +8058,14 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     if log_fn:
         if fixed_count:
             detail = ", ".join(f"{k}:{v}" for k, v in per_term_fixed.items())
-            log_fn(f"✓ Terim normalizasyonu: {fixed_count} satır düzeltildi ({detail})", "ok")
+            if apply_changes:
+                log_fn(f"✓ Terim normalizasyonu: {fixed_count} satır düzeltildi ({detail})", "ok")
+            else:
+                log_fn(
+                    f"Terim normalizasyonu: {fixed_count} öneri yalnız raporlandı; "
+                    f"altyazı değiştirilmedi ({detail})",
+                    "warn",
+                )
         if rejected:
             detail = ", ".join(f"{k}:{v}" for k, v in rejected_reasons.items())
             log_fn(f"⚠ Terim normalizasyonu: {rejected} öneri güvenlik filtresinden döndü ({detail})", "warn")
@@ -8056,7 +8082,9 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             "successful_chunks": successful_chunks,
             "partial_chunks": partial_chunks,
             "failed_chunks": failed_chunks,
-            "changed": fixed_count,
+            "changed": fixed_count if apply_changes else 0,
+            "suggested": fixed_count,
+            "report_only": not apply_changes,
         })
     if log_fn and failed_chunks:
         log_fn(
@@ -8064,7 +8092,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             f"paket başarılı, {failed_chunks} paket başarısız",
             "warn" if successful_chunks else "err",
         )
-    return new_blocks, fixed_count
+    return new_blocks, fixed_count if apply_changes else 0
 
 
 def _source_map_for_quality_blocks(blocks: list, cues: list) -> dict:
@@ -10245,7 +10273,13 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             lines.append(f"{title}: {state_text}{detail}")
             continue
         ran = [label for label in labels if label in trace]
-        if ran:
+        if (status_info and status_info.get("status") == "completed"
+                and status_info.get("report_only")):
+            suggested = int(status_info.get("suggested", 0) or 0)
+            lines.append(
+                f"{title}: yalnız rapor modunda çalıştı, {suggested} öneri; "
+                "altyazı değiştirilmedi")
+        elif ran:
             changed = sum(int(trace.get(label, 0) or 0) for label in ran)
             lines.append(f"{title}: çalıştı, {changed} cue değiştirdi")
         elif status_info and status_info.get("status") == "completed":
@@ -11654,6 +11688,7 @@ class App(ctk.CTk):
             "content_type": "content_type_var",
             "global_glossary_path": "glossary_var",
             "term_normalize": "term_normalize_var",
+            "quality_report_only": "quality_report_only_var",
             "repair_missing": "repair_missing_var",
             "critic": "critic_var",
             "polish": "polish_var",
@@ -12820,6 +12855,25 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
+
+        self.quality_report_only_var = ctk.BooleanVar(value=True)
+        qro_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        qro_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        qro_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(qro_fr, text="", variable=self.quality_report_only_var,
+                      width=44, height=22,
+                      fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
+        ctk.CTkLabel(qro_fr, text="Critic + Terim: Yalnız Raporla",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(
+            sb,
+            text="Varsayılan güvenli mod. Critic ve Terim Normalizasyonu\n"
+                 "önerileri cue numarasıyla log ve rapora yazar;\n"
+                 "nihai altyazı metnini kendiliğinden değiştirmez.",
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            justify="left", wraplength=260).grid(
+                row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # İki-Dalgalı Zincirli Batch (B3)
         self.twowave_var = ctk.BooleanVar(value=False)
@@ -14378,6 +14432,9 @@ class App(ctk.CTk):
                 self.workflow_profile_var.get()
                 if getattr(self, "workflow_profile_var", None) else "Özel"),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
+            "quality_report_only": bool(
+                getattr(self, "quality_report_only_var", None) is None
+                or self.quality_report_only_var.get()),
             "repair_missing": bool(getattr(self, "repair_missing_var", None)
                                    and self.repair_missing_var.get()),
             "critic": self.critic_var.get(),
@@ -14437,6 +14494,7 @@ class App(ctk.CTk):
             "analysis_depth_var": "analysis_depth",
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
+            "quality_report_only_var": "quality_report_only",
             "repair_missing_var": "repair_missing",
             "prevent_sleep_var": "prevent_sleep",
             "auto_retry_files_var": "auto_retry_files",
@@ -16630,7 +16688,9 @@ class App(ctk.CTk):
                                 "Terim Normalizasyonu",
                                 base_url=self._helper_api_base_url("polish"),
                                 file_path=source_path),
-                            status_out=term_status)
+                            status_out=term_status,
+                            apply_changes=not bool(snapshot.get(
+                                "quality_report_only", True)))
                         if term_status.get("status") not in {"completed", "skipped"}:
                             raise RuntimeError(
                                 "sezon terim denetimi tamamlanamadı: "
@@ -19153,6 +19213,9 @@ class App(ctk.CTk):
                 if getattr(self, "media_mode_var", None) else "Dizi"),
             "review_pass": self.review_pass_var.get(),
             "term_normalize": self.term_normalize_var.get(),
+            "quality_report_only": bool(
+                getattr(self, "quality_report_only_var", None) is None
+                or self.quality_report_only_var.get()),
             "repair_missing": bool(getattr(self, "repair_missing_var", None)
                                    and self.repair_missing_var.get()),
             "twowave": self.twowave_var.get(),
@@ -19563,6 +19626,8 @@ class App(ctk.CTk):
                 self.condense_var.set(bool(d["condense"]))
             if "term_normalize" in d:
                 self.term_normalize_var.set(bool(d["term_normalize"]))
+            if "quality_report_only" in d:
+                self.quality_report_only_var.set(bool(d["quality_report_only"]))
             if "repair_missing" in d:
                 self.repair_missing_var.set(bool(d["repair_missing"]))
             if "twowave" in d:
@@ -22753,12 +22818,16 @@ class App(ctk.CTk):
                                 file_path=fp),
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
-                            status_out=_critic_status)
+                            status_out=_critic_status,
+                            apply_changes=not bool(self._snap_get(
+                                "quality_report_only", True)))
                         if self._stop_flag:
                             break
                         self._write_critic_change_report(
                             fp, _critic_change_log,
-                            _critic_status.get("rejected_candidates", []))
+                            _critic_status.get("rejected_candidates", []),
+                            report_only=bool(self._snap_get(
+                                "quality_report_only", True)))
                         if _pass_failed(_critic_status):
                             postprocess_failed = True
                     except Exception as e:
@@ -23182,7 +23251,8 @@ class App(ctk.CTk):
             self._log_exc("QC değişiklik raporu yazılamadı", e)
 
     def _write_critic_change_report(
-            self, fp, applied_records: list, rejected_records: list | None = None):
+            self, fp, applied_records: list, rejected_records: list | None = None,
+            report_only: bool = False):
         """Critic Pass tarafından fiilen değiştirilen satırları TEK bir txt
         dosyasına (kaynak/öncesi/sonrası/sebep) yazar — QC değişiklik raporuyla
         aynı motivasyon (bkz. _write_qc_change_report yukarıda): Critic 150-200
@@ -23200,11 +23270,19 @@ class App(ctk.CTk):
             lines = [
                 f"Critic Denetimi — {Path(fp).name}",
                 f"Toplam: {len(applied_records)} satır",
-                f"Uygulanan: {len(applied_records)} | Korunan/reddedilen: {len(rejected_records)}",
+                (f"Yalnız raporlanan: {len(applied_records)} | "
+                 f"Korunan/reddedilen: {len(rejected_records)}"
+                 if report_only else
+                 f"Uygulanan: {len(applied_records)} | Korunan/reddedilen: {len(rejected_records)}"),
                 "=" * 60, "",
             ]
             if applied_records:
-                lines.extend(["UYGULANAN DÜZELTMELER", "-" * 60, ""])
+                lines.extend([
+                    "YALNIZ RAPORLANAN ÖNERİLER" if report_only else "UYGULANAN DÜZELTMELER",
+                    ("Bu öneriler altyazıya uygulanmadı; mevcut Türkçe aynen korundu."
+                     if report_only else ""),
+                    "-" * 60, "",
+                ])
             for rec in applied_records:
                 lines.append(f"#{rec['id']}  [{rec.get('reason', '')}]")
                 if rec.get("source"):
@@ -23228,7 +23306,9 @@ class App(ctk.CTk):
             atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
             self._log(
                 f"Critic değişiklik raporu/denetimi: {report_path.name}  "
-                f"({len(applied_records)} uygulandı, {len(rejected_records)} korundu)",
+                f"({len(applied_records)} "
+                f"{'yalnız raporlandı' if report_only else 'uygulandı'}, "
+                f"{len(rejected_records)} korundu)",
                 "ok")
         except Exception as e:
             self._log_exc("Critic değişiklik raporu yazılamadı", e)
@@ -26515,6 +26595,8 @@ class App(ctk.CTk):
                     cancel_context=self.__dict__.get(
                         "_helper_request_canceller"),
                     status_out=_critic_status,
+                    apply_changes=not bool(self._snap_get(
+                        "quality_report_only", True)),
                 )
                 _pass_status["Critic"] = dict(_critic_status)
                 if self._stop_flag:
@@ -26522,7 +26604,9 @@ class App(ctk.CTk):
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
                 self._write_critic_change_report(
                     out_path, _critic_change_log,
-                    _critic_status.get("rejected_candidates", []))
+                    _critic_status.get("rejected_candidates", []),
+                    report_only=bool(self._snap_get(
+                        "quality_report_only", True)))
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
             if self.polish_var.get() and sorted_blocks and _quality_api_allowed:
@@ -26747,7 +26831,9 @@ class App(ctk.CTk):
                             "Terim Normalizasyonu",
                             base_url=self._helper_api_base_url("polish"),
                             file_path=filepath),
-                        status_out=_term_status)
+                        status_out=_term_status,
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)))
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
@@ -28259,7 +28345,9 @@ class App(ctk.CTk):
                                         file_path=str(_src_path)),
                                     cancel_context=self.__dict__.get(
                                         "_helper_request_canceller"),
-                                    status_out=_critic_status)
+                                    status_out=_critic_status,
+                                    apply_changes=not bool(self._snap_get(
+                                        "quality_report_only", True)))
                                 _pass_status["Critic"] = dict(_critic_status)
                                 if self._stop_flag:
                                     break
@@ -28270,7 +28358,9 @@ class App(ctk.CTk):
                                     _pass_history)
                                 self._write_critic_change_report(
                                     output_path, _critic_change_log,
-                                    _critic_status.get("rejected_candidates", []))
+                                    _critic_status.get("rejected_candidates", []),
+                                    report_only=bool(self._snap_get(
+                                        "quality_report_only", True)))
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
                                 _before_pass = list(pp)
@@ -28438,7 +28528,9 @@ class App(ctk.CTk):
                                                  base_url=self._helper_api_base_url(
                                                      "polish"),
                                                  file_path=str(_src_path)),
-                                             status_out=_term_status)
+                                             status_out=_term_status,
+                                             apply_changes=not bool(self._snap_get(
+                                                 "quality_report_only", True)))
                                         _pass_status["Term-Normalize"] = dict(_term_status)
                                         if self._stop_flag:
                                             break
@@ -29050,7 +29142,9 @@ class App(ctk.CTk):
                             file_path=fp),
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
-                        status_out=_critic_status)
+                        status_out=_critic_status,
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)))
                     _pass_status["Critic"] = dict(_critic_status)
                     if self._stop_flag:
                         break
@@ -29061,7 +29155,9 @@ class App(ctk.CTk):
                         _pass_history)
                     self._write_critic_change_report(
                         out_path, _critic_change_log,
-                        _critic_status.get("rejected_candidates", []))
+                        _critic_status.get("rejected_candidates", []),
+                        report_only=bool(self._snap_get(
+                            "quality_report_only", True)))
                 except Exception as e:
                     _pass_status["Critic"] = {
                         "status": "failed", "error": str(e)}
@@ -29225,7 +29321,9 @@ class App(ctk.CTk):
                             "Terim Normalizasyonu",
                             base_url=self._helper_api_base_url("polish"),
                             file_path=fp),
-                        status_out=_term_status)
+                        status_out=_term_status,
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)))
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
@@ -30412,7 +30510,9 @@ class App(ctk.CTk):
                                     file_path=filepath),
                                 cancel_context=self.__dict__.get(
                                     "_helper_request_canceller"),
-                                status_out=_critic_status)
+                                status_out=_critic_status,
+                                apply_changes=not bool(self._snap_get(
+                                    "quality_report_only", True)))
                             _pass_status["Critic"] = dict(_critic_status)
                             if self._stop_flag:
                                 break
@@ -30423,7 +30523,9 @@ class App(ctk.CTk):
                                 pp_blocks, _pass_history)
                             self._write_critic_change_report(
                                 out_path, _critic_change_log,
-                                _critic_status.get("rejected_candidates", []))
+                                _critic_status.get("rejected_candidates", []),
+                                report_only=bool(self._snap_get(
+                                    "quality_report_only", True)))
                         if self.polish_var.get() and pp_blocks:
                             self._record_file_status(
                                 filepath, "Polish Pass", "running")
@@ -30627,7 +30729,9 @@ class App(ctk.CTk):
                                 "Terim Normalizasyonu",
                                 base_url=self._helper_api_base_url("polish"),
                                 file_path=filepath),
-                            status_out=_term_status)
+                            status_out=_term_status,
+                            apply_changes=not bool(self._snap_get(
+                                "quality_report_only", True)))
                         _pass_status["Term-Normalize"] = dict(_term_status)
                         _record_pass_change(
                             _pass_trace, "Term-Normalize", _before_termnorm,

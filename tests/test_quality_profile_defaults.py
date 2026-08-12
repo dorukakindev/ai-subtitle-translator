@@ -114,6 +114,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "clean_sdh": True,
                 "backup_raw": True,
                 "term_normalize": True,
+                "quality_report_only": True,
                 "repair_missing": False,
                 "media_mode": "Dizi",
                 "content_type": "Otomatik",
@@ -196,6 +197,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         self.assertEqual(profile["analysis_depth_var"], "Gelişmiş")
         self.assertTrue(profile["critic_var"])
         self.assertTrue(profile["term_normalize_var"])
+        self.assertTrue(profile["quality_report_only_var"])
         self.assertTrue(profile["chain_ctx_var"])
         for key in ("polish_var", "native_var", "backtrans_var",
                     "semantic_reconcile_var", "review_pass_var", "qc_var",

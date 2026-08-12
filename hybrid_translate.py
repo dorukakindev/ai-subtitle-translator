@@ -11555,6 +11555,7 @@ def critic_pass_with_helper(
     cancel_context=None,
     scene_gap_sec: float = SCENE_GAP_SEC,
     status_out: dict | None = None,
+    apply_changes: bool = True,
 ) -> list:
     """Two-stage critic pass:
     Stage 1 — Local regex fixes (instant): known English slang patterns.
@@ -11579,6 +11580,7 @@ def critic_pass_with_helper(
             "reviewed_sentence_groups": 0, "reviewed_sentence_cues": 0,
             "rejected_count": 0, "rejected_reasons": {},
             "rejected_candidates": [],
+            "suggested": 0, "report_only": not apply_changes,
         })
     if not tr_blocks:
         if status_out is not None:
@@ -11638,11 +11640,24 @@ def critic_pass_with_helper(
                     "before": text,
                     "after": fixed,
                 })
+            if log_fn and not apply_changes:
+                log_fn(
+                    f"Critic yalnız rapor #{idx} | kaynak='{orig_dict.get(str(idx), '')}' | "
+                    f"mevcut='{text}' | öneri='{fixed}'",
+                    "warn",
+                )
 
     tr_text_by_id = {str(b[0]): b[2] for b in result}
 
     if log_fn and local_fixed:
-        log_fn(f"Critic Pass (local): {local_fixed} transliterasyon düzeltildi", "ok")
+        if apply_changes:
+            log_fn(f"Critic Pass (local): {local_fixed} transliterasyon düzeltildi", "ok")
+        else:
+            log_fn(
+                f"Critic Pass (local): {local_fixed} öneri yalnız raporlandı; "
+                "altyazı değiştirilmedi",
+                "warn",
+            )
 
     # ── Stage 2: Helper — only suspicious lines ──────────────────────────────
     # Deterministic validators first (fast, no API call)
@@ -11721,13 +11736,16 @@ def critic_pass_with_helper(
     if not suspicious:
         if status_out is not None:
             status_out.update({
-                "status": "completed", "changed": local_fixed,
+                "status": "completed",
+                "changed": local_fixed if apply_changes else 0,
+                "suggested": local_fixed,
+                "report_only": not apply_changes,
                 "reviewed_sentence_groups": len(sentence_review_groups),
                 "reviewed_sentence_cues": len(sentence_review_ids),
             })
         if log_fn:
             log_fn("Critic Pass (Helper): incelenecek satır yok, atlanıyor ✓", "ok")
-        return result
+        return result if apply_changes else list(tr_blocks)
 
     v_count = len(validator_hits)
     p_count = sum(1 for idx, ts, text in suspicious
@@ -11750,7 +11768,7 @@ def critic_pass_with_helper(
             log_fn(f"Critic Pass Helper bağlantı hatası: {e}", "err")
         if status_out is not None:
             status_out.update({"status": "failed", "error": str(e)})
-        return result
+        return result if apply_changes else list(tr_blocks)
 
     context_info = build_polish_context_hint(analysis_result, tgt_lang)
     scene_plan = (
@@ -12283,6 +12301,12 @@ def critic_pass_with_helper(
                         "before": old_text,
                         "after": final_text,
                     })
+                if log_fn and not apply_changes:
+                    log_fn(
+                        f"Critic yalnız rapor #{fid} | kaynak='{orig_dict.get(fid, '')}' | "
+                        f"mevcut='{old_text}' | öneri='{final_text}'",
+                        "warn",
+                    )
         except RequestCancelled:
             cancelled = True
             break
@@ -12321,7 +12345,9 @@ def critic_pass_with_helper(
             "successful_chunks": successful_chunks,
             "failed_chunks": failed_chunks,
             "total_chunks": total_chunks,
-            "changed": local_fixed + mm_fixed,
+            "changed": (local_fixed + mm_fixed) if apply_changes else 0,
+            "suggested": local_fixed + mm_fixed,
+            "report_only": not apply_changes,
             "reviewed_sentence_groups": len(sentence_review_groups),
             "reviewed_sentence_cues": len(sentence_review_ids),
             "rejected_count": critic_rejected,
@@ -12343,7 +12369,13 @@ def critic_pass_with_helper(
                 f"Critic Pass (Helper) tamamlanamadı: {successful_chunks}/{total_chunks} paket başarılı, "
                 f"{failed_chunks} paket başarısız",
                 "warn" if successful_chunks else "err")
-        if mm_fixed:
+        if (local_fixed or mm_fixed) and not apply_changes:
+            log_fn(
+                f"Critic Pass: {local_fixed + mm_fixed} güvenli öneri yalnız raporlandı; "
+                "altyazı değiştirilmedi",
+                "warn",
+            )
+        elif mm_fixed:
             reflow_bit = f" ({reflow_recovered} tanesi satır-sayısı yeniden sarılarak kurtarıldı)" if reflow_recovered else ""
             log_fn(f"Critic Pass (Helper): {mm_fixed} satır düzeltildi ✓{reflow_bit}", "ok")
         elif pass_status == "completed":
@@ -12355,7 +12387,7 @@ def critic_pass_with_helper(
             )
             log_fn(f"Critic Pass (Helper): sebep-bazlı isabet — {stats_str}", "info")
 
-    return result
+    return result if apply_changes else list(tr_blocks)
 
 
 # ── Batch istekleri ───────────────────────────────────────────────────────────
