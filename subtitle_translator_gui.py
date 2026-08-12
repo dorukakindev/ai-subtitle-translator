@@ -1095,7 +1095,7 @@ _BOUNDARY_QUALITY_VARS = {
     "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
-    "quality_report_only": ("quality_report_only_var", "Critic/Terim Yalnız Rapor"),
+    "quality_report_only": ("quality_report_only_var", "Anlamsal Passler Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
     "linebreak": ("linebreak_var", "Satır Bölme"),
@@ -12863,13 +12863,13 @@ class App(ctk.CTk):
         ctk.CTkSwitch(qro_fr, text="", variable=self.quality_report_only_var,
                       width=44, height=22,
                       fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
-        ctk.CTkLabel(qro_fr, text="Critic + Terim: Yalnız Raporla",
+        ctk.CTkLabel(qro_fr, text="Anlamsal Passler: Yalnız Raporla",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(
             sb,
-            text="Varsayılan güvenli mod. Critic ve Terim Normalizasyonu\n"
-                 "önerileri cue numarasıyla log ve rapora yazar;\n"
+            text="Varsayılan güvenli mod. Tutarlılık, Critic ve Terim\n"
+                 "önerilerini cue numarasıyla log ve rapora yazar;\n"
                  "nihai altyazı metnini kendiliğinden değiştirmez.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260).grid(
@@ -20903,7 +20903,9 @@ class App(ctk.CTk):
                         self._log("Polish Pass tamamlandı", "ok")
                     blocks, _ = ht.final_consistency_sweep(
                         cues, blocks, log_fn=self._log,
-                        locked_terms=self._get_locked_terms_dict(orig_path, tgt))
+                        locked_terms=self._get_locked_terms_dict(orig_path, tgt),
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)))
 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 if missing_ids:
@@ -26558,7 +26560,9 @@ class App(ctk.CTk):
             _before_consistency = list(sorted_blocks)
             sorted_blocks, _cons_fixes = ht.consistency_sweep(
                 cues, sorted_blocks, log_fn=self._log,
-                locked_terms=_locked_terms)
+                locked_terms=_locked_terms,
+                apply_changes=not bool(self._snap_get(
+                    "quality_report_only", True)))
             _record_pass_change(
                 _pass_trace, "Consistency", _before_consistency,
                 sorted_blocks, _pass_history)
@@ -26673,7 +26677,9 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                     cues, sorted_blocks, log_fn=self._log,
-                    locked_terms=_locked_terms)
+                    locked_terms=_locked_terms,
+                    apply_changes=not bool(self._snap_get(
+                        "quality_report_only", True)))
                 if _final_cons_fixes:
                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
 
@@ -28281,7 +28287,9 @@ class App(ctk.CTk):
                                 self._set_status("Consistency sweep...")
                                 pp, _cons_fixes = ht.consistency_sweep(
                                     _orig_cues, pp, log_fn=self._log,
-                                    locked_terms=_locked_terms)
+                                    locked_terms=_locked_terms,
+                                    apply_changes=not bool(self._snap_get(
+                                        "quality_report_only", True)))
                             else:
                                 _cons_fixes = 0
                             _record_pass_change(
@@ -28411,7 +28419,9 @@ class App(ctk.CTk):
                                 _before_pass = list(pp)
                                 pp, _final_cons_fixes = ht.final_consistency_sweep(
                                     _orig_cues, pp, log_fn=self._log,
-                                    locked_terms=_locked_terms)
+                                    locked_terms=_locked_terms,
+                                    apply_changes=not bool(self._snap_get(
+                                        "quality_report_only", True)))
                                 if _final_cons_fixes:
                                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp, _pass_history)
                             _before_pass = list(pp)
@@ -29078,9 +29088,14 @@ class App(ctk.CTk):
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
                     _src_cues, sorted_blocks, log_fn=self._log,
-                    locked_terms=_locked_terms_for(fp))
+                    locked_terms=_locked_terms_for(fp),
+                    apply_changes=not bool(self._snap_get(
+                        "quality_report_only", True)))
                 _consistency_status.update({
-                    "status": "completed", "successful_chunks": 1})
+                    "status": "completed", "successful_chunks": 1,
+                    "suggested": _cons_fixes,
+                    "report_only": bool(self._snap_get(
+                        "quality_report_only", True))})
             except Exception as exc:
                 _consistency_status.update({
                     "status": "failed", "failed_chunks": 1,
@@ -29233,7 +29248,9 @@ class App(ctk.CTk):
                     _before_pass = list(sorted_blocks)
                     sorted_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                         _src_cues, sorted_blocks, log_fn=self._log,
-                        locked_terms=_locked_terms_for(fp))
+                        locked_terms=_locked_terms_for(fp),
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)))
                     if _final_cons_fixes:
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
@@ -30436,9 +30453,14 @@ class App(ctk.CTk):
                         filepath, "Tutarlılık Taraması", "running")
                     _final_blocks, _cons_fixes = ht.consistency_sweep(
                         cues, _final_blocks, log_fn=self._log,
-                        locked_terms=_file_locked_terms)
+                        locked_terms=_file_locked_terms,
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)))
                     _consistency_status.update({
-                        "status": "completed", "successful_chunks": 1})
+                        "status": "completed", "successful_chunks": 1,
+                        "suggested": _cons_fixes,
+                        "report_only": bool(self._snap_get(
+                            "quality_report_only", True))})
                 except Exception as exc:
                     _consistency_status.update({
                         "status": "failed", "failed_chunks": 1,
@@ -30585,7 +30607,9 @@ class App(ctk.CTk):
                             _before_pass = list(pp_blocks)
                             pp_blocks, _final_cons_fixes = ht.final_consistency_sweep(
                                 cues, pp_blocks, log_fn=self._log,
-                                locked_terms=_file_locked_terms)
+                                locked_terms=_file_locked_terms,
+                                apply_changes=not bool(self._snap_get(
+                                    "quality_report_only", True)))
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)

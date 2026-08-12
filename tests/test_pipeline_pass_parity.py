@@ -245,7 +245,7 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertIn("**self._get_locked_terms_dict(filepath, tgt)", src)
         self.assertGreaterEqual(src.count("locked_terms=_locked_terms"), 6)
         self.assertIn("glossary=_locked_terms", src)
-        self.assertIn("locked_terms=_locked_terms)", src)
+        self.assertIn("locked_terms=_locked_terms,", src)
 
     def test_sync_hybrid_critic_receives_all_analysis_fields(self):
         src = inspect.getsource(gui.App._run_sync_hybrid)

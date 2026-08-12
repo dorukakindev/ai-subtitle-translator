@@ -78,6 +78,28 @@ class QualityReportOnlyModeTest(unittest.TestCase):
         self.assertTrue(status["report_only"])
         self.assertTrue(any("yalnız rapor #1" in message for message in logs))
 
+    def test_consistency_report_only_keeps_minority_translation(self):
+        cues = [
+            SimpleNamespace(index=i, text="Please come with me.")
+            for i in range(1, 4)
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Lütfen benimle gel."),
+            (2, "00:00:01,000 --> 00:00:02,000", "Lütfen benimle gel."),
+            (3, "00:00:02,000 --> 00:00:03,000", "Lütfen bana eşlik et."),
+        ]
+        logs = []
+        with patch("hybrid_translate.validate_polish_candidate",
+                   return_value=(True, "")):
+            result, suggested = ht.consistency_sweep(
+                cues, blocks,
+                log_fn=lambda message, level="info": logs.append(message),
+                apply_changes=False)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(suggested, 1)
+        self.assertTrue(any("Tutarlılık yalnız rapor #3" in item for item in logs))
+
     def test_critic_report_labels_suggestions_as_not_applied(self):
         app = gui.App.__new__(gui.App)
         app._log = lambda *args, **kwargs: None

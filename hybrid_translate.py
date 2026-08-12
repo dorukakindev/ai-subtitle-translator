@@ -11044,6 +11044,7 @@ def consistency_sweep(
     minority_threshold: float | None = None,
     min_words: int = 3,
     locked_terms: dict | None = None,
+    apply_changes: bool = True,
 ) -> tuple:
     """Normalize recurring source phrases to their most common translation.
     By default, only normalizes when a strict majority (>50%) of occurrences agree.
@@ -11118,14 +11119,28 @@ def consistency_sweep(
                         continue
                     result[pos] = (old_idx, old_ts, best_tr)
                     fixes += 1
+                    if log_fn and not apply_changes:
+                        log_fn(
+                            f"Tutarlılık yalnız rapor #{old_idx} | "
+                            f"kaynak='{orig_text_dict.get(str(old_idx), '')}' | "
+                            f"mevcut='{tr}' | öneri='{best_tr}'",
+                            "warn",
+                        )
 
     if log_fn:
         if fixes:
-            log_fn(f"Consistency sweep: {fixes} tekrar tutarsızlığı normalize edildi", "ok")
+            if apply_changes:
+                log_fn(f"Consistency sweep: {fixes} tekrar tutarsızlığı normalize edildi", "ok")
+            else:
+                log_fn(
+                    f"Consistency sweep: {fixes} öneri yalnız raporlandı; "
+                    "altyazı değiştirilmedi",
+                    "warn",
+                )
         else:
             log_fn("Consistency sweep: tutarsızlık bulunamadı ✓", "ok")
 
-    return result, fixes
+    return (result if apply_changes else list(tr_blocks)), fixes
 
 
 def final_consistency_sweep(
@@ -11134,11 +11149,12 @@ def final_consistency_sweep(
     log_fn=None,
     min_words: int = 3,
     locked_terms: dict | None = None,
+    apply_changes: bool = True,
 ) -> tuple:
     """Run a second, safety-checked consistency sweep after critic/polish edits."""
     swept, fixes = consistency_sweep(
         cues, tr_blocks, log_fn=None, min_words=min_words,
-        locked_terms=locked_terms)
+        locked_terms=locked_terms, apply_changes=True)
     if not fixes:
         # first_seen fallback kaldırıldı — bağlam-kördü: majority sweep anlaşamadığında
         # (yani bağlam-bağımlılığın en olası olduğu durumda) ilk görülen çeviriyi diğer
@@ -11168,9 +11184,23 @@ def final_consistency_sweep(
         if ok:
             result[pos] = (old_idx, old_ts, new_text)
             accepted += 1
+            if log_fn and not apply_changes:
+                log_fn(
+                    f"Final tutarlılık yalnız rapor #{old_idx} | "
+                    f"kaynak='{orig_dict.get(str(old_idx), '')}' | "
+                    f"mevcut='{old_text}' | öneri='{new_text}'",
+                    "warn",
+                )
     if log_fn and accepted:
-        log_fn(f"Final consistency sweep: {accepted} tutarsızlık normalize edildi", "ok")
-    return result, accepted
+        if apply_changes:
+            log_fn(f"Final consistency sweep: {accepted} tutarsızlık normalize edildi", "ok")
+        else:
+            log_fn(
+                f"Final consistency sweep: {accepted} öneri yalnız raporlandı; "
+                "altyazı değiştirilmedi",
+                "warn",
+            )
+    return (result if apply_changes else list(tr_blocks)), accepted
 
 
 # ── QC Auto-Fix ───────────────────────────────────────────────────────────────
