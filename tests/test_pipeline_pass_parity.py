@@ -292,7 +292,7 @@ class PipelinePassParityTest(unittest.TestCase):
                 src = inspect.getsource(flow)
                 invalid_pos = src.find("if _chunk_response_retry_reason(text, req):")
                 retry_pos = src.find("self._retry_hata(", invalid_pos)
-                pair_pos = src.find("_chain_pairs_from_result(", retry_pos)
+                pair_pos = src.find("_chain_pairs_from_chunk_response(", retry_pos)
                 self.assertTrue(0 <= invalid_pos < retry_pos < pair_pos)
 
     def test_plain_sync_freezes_precontext_terms_for_quality_passes(self):

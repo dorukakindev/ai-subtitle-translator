@@ -173,6 +173,27 @@ class ChainPairsFromResultTest(unittest.TestCase):
     def test_invalid_json_returns_empty(self):
         self.assertEqual(gui._chain_pairs_from_result("garbage", {"1": "Bir."}), [])
 
+    def test_report_only_owner_warning_still_feeds_prev_translation(self):
+        req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
+            "tr": [{"i": 1, "t": "Hello."}]
+        })}]}}
+        with patch.object(
+                gui, "_chunk_response_retry_reason",
+                return_value="cue_content_owner_mismatch"):
+            pairs = gui._chain_pairs_from_chunk_response(
+                req, '[{"i":1,"t":"Merhaba."}]',
+                [(1, "00:00:00,000 --> 00:00:01,000", "source.srt")])
+        self.assertEqual(pairs, [{"i": 1, "tr": "Merhaba."}])
+        self.assertNotIn("_chain_break_reason", req)
+
+    def test_real_invalid_response_is_recorded_as_chain_break(self):
+        req = {"body": {"messages": [{}, {"role": "user", "content": "{}"}]}}
+        with patch.object(
+                gui, "_chunk_response_retry_reason", return_value="empty_dialogue"):
+            pairs = gui._chain_pairs_from_chunk_response(req, "[]", [])
+        self.assertEqual(pairs, [])
+        self.assertEqual(req["_chain_break_reason"], "empty_dialogue")
+
     def test_chain_rejects_non_string_translation(self):
         req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
             "tr": [{"i": 1, "t": "Hello."}]

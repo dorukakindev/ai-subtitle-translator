@@ -16,6 +16,12 @@ def _request(payload):
 
 
 class ContextPayloadReportingTests(unittest.TestCase):
+    def test_write_results_receives_explicit_translation_requests(self):
+        import inspect
+
+        signature = inspect.signature(gui.App._write_results)
+        self.assertIn("translation_requests", signature.parameters)
+
     def test_counts_context_that_was_really_injected(self):
         metrics = gui._context_payload_metrics([
             _request({
@@ -54,6 +60,9 @@ class ContextPayloadReportingTests(unittest.TestCase):
                 "prev_tr_chunks": 1, "scene_plan_chunks": 2,
                 "sentence_groups": 3, "fragment_cues": 7,
                 "prev_scene_chunks": 1,
+                "chain_breaks": [
+                    {"chunk": "film__g51", "reason": "empty_dialogue"},
+                ],
             },
             "pass_status": {
                 "Critic": {
@@ -78,6 +87,9 @@ class ContextPayloadReportingTests(unittest.TestCase):
         self.assertIn("Critic deterministik inceleme adayları: 2 cue [11,12]", report)
         self.assertIn("BROKEN_FRAGMENT_FLOW:1", report)
         self.assertIn("EARLY_VERB_CLOSURE:1", report)
+        self.assertIn(
+            "Zincirleme bağlam kopması: 1 chunk — film__g51[empty_dialogue]",
+            report)
 
     def test_filters_multi_file_requests_with_file_map(self):
         first = _request({"tr": [{"i": 1, "t": "First"}], "ctx": [{"i": 0}]})

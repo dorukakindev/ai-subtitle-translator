@@ -5152,6 +5152,25 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
         return "parse_error"
 
 
+_CHAIN_REPORT_ONLY_REASONS = frozenset({"cue_content_owner_mismatch"})
+
+
+def _chain_pairs_from_chunk_response(req: dict, raw, info: list) -> list:
+    """Build prev_tr pairs unless the response is genuinely unsafe for context."""
+    reason = _chunk_response_retry_reason(raw, req)
+    if reason and reason not in _CHAIN_REPORT_ONLY_REASONS:
+        req["_chain_break_reason"] = reason
+        return []
+    req.pop("_chain_break_reason", None)
+    try:
+        translated = parse_response(raw, info)
+        return _chain_pairs_from_result(
+            req["body"]["messages"][1]["content"], translated) or []
+    except Exception:
+        req["_chain_break_reason"] = "chain_parse_error"
+        return []
+
+
 def _repair_relevant_locked_terms(locked_terms, source_texts) -> dict:
     """Yalnız onarılan cue grubunda gerçekten geçen sabit terimleri döndür."""
     import hybrid_translate as ht
@@ -6765,6 +6784,7 @@ def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> di
         "prev_tr_chunks": 0, "prev_tr_pairs": 0,
         "scene_plan_chunks": 0, "sentence_group_chunks": 0,
         "sentence_groups": 0, "fragment_cues": 0,
+        "chain_breaks": [],
     }
     allowed_ids = None
     if target and file_map:
@@ -6814,6 +6834,12 @@ def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> di
         if groups:
             metrics["sentence_group_chunks"] += 1
             metrics["sentence_groups"] += len(groups)
+        chain_break_reason = str(req.get("_chain_break_reason") or "")
+        if chain_break_reason:
+            metrics["chain_breaks"].append({
+                "chunk": str(req.get("custom_id") or "?"),
+                "reason": chain_break_reason,
+            })
     return metrics
 
 
@@ -10258,6 +10284,17 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             f"{int(context_metrics.get('sentence_groups', 0))} çok-cue cümle grubu, "
             f"{int(context_metrics.get('fragment_cues', 0))} parçalı cue, "
             f"{int(context_metrics.get('prev_scene_chunks', 0))} sahne köprüsü")
+        chain_breaks = list(context_metrics.get("chain_breaks") or [])
+        if chain_breaks:
+            detail = ", ".join(
+                f"{item.get('chunk', '?')}[{item.get('reason', '?')}]"
+                for item in chain_breaks[:20])
+            if len(chain_breaks) > 20:
+                detail += f", +{len(chain_breaks) - 20}"
+            lines.append(
+                f"Zincirleme bağlam kopması: {len(chain_breaks)} chunk — {detail}")
+        elif row.get("chain_ctx", snapshot.get("chain_ctx")):
+            lines.append("Zincirleme bağlam kopması: yok")
 
     critic_status = pass_status.get("Critic")
     if isinstance(critic_status, dict):
@@ -25789,12 +25826,8 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_map=file_map)
                             raw = raw_map.get(cid, raw)
-                        if not _chunk_response_retry_reason(raw, req):
-                            tmap = parse_response(raw, file_map[cid])
-                            prev_pairs = _chain_pairs_from_result(
-                                user_msg["content"], tmap) or []
-                        else:
-                            prev_pairs = []
+                        prev_pairs = _chain_pairs_from_chunk_response(
+                            req, raw, file_map[cid])
                         continue
                     user_msg["content"] = _inject_prev_tr(
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
@@ -25809,12 +25842,8 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_map=file_map)
                             raw = raw_map.get(cid, raw)
-                        if not _chunk_response_retry_reason(raw, req):
-                            tmap = parse_response(raw, file_map[cid])
-                            prev_pairs = _chain_pairs_from_result(
-                                user_msg["content"], tmap) or []
-                        else:
-                            prev_pairs = []
+                        prev_pairs = _chain_pairs_from_chunk_response(
+                            req, raw, file_map[cid])
                         _progress_tick()
                         continue
                     try:
@@ -25832,12 +25861,8 @@ class App(ctk.CTk):
                                 file_map=file_map)
                             text = raw_map.get(cid_r, text)
                         self._save_sync_ckpt_entry(cid_r, text, src_h)
-                        if _chunk_response_retry_reason(text, req):
-                            prev_pairs = []
-                        else:
-                            tmap = parse_response(text, file_map[cid])
-                            prev_pairs = _chain_pairs_from_result(
-                                user_msg["content"], tmap) or []
+                        prev_pairs = _chain_pairs_from_chunk_response(
+                            req, text, file_map[cid])
                     except Exception as e:
                         prev_pairs = []
                         with lock:
@@ -25901,8 +25926,9 @@ class App(ctk.CTk):
                                                 output_baselines=output_baselines,
                                                 locked_terms_by_file=
                                                 _precontext_locked_terms,
-                                                source_drift_files=source_drift_files,
-                                                total_files=len(srt_files))
+                                                 source_drift_files=source_drift_files,
+                                                 total_files=len(srt_files),
+                                                 translation_requests=requests)
             is_full_success = bool(_all_written)
             if should_clear_sync_ckpt(self._stop_flag, is_full_success):
                 self._clear_sync_ckpt(used_ckpt_keys)
@@ -26535,12 +26561,8 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
-                        if not _chunk_response_retry_reason(raw, req):
-                            tmap = parse_response(raw, fmap.get(cid_hint, []))
-                            prev_pairs = _chain_pairs_from_result(
-                                req["body"]["messages"][1]["content"], tmap) or []
-                        else:
-                            prev_pairs = []
+                        prev_pairs = _chain_pairs_from_chunk_response(
+                            req, raw, fmap.get(cid_hint, []))
                         completed[0] += 1
                         _hyb_tick()
                         continue
@@ -26559,12 +26581,8 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
-                        if not _chunk_response_retry_reason(raw, req):
-                            tmap = parse_response(raw, fmap.get(cid_hint, []))
-                            prev_pairs = _chain_pairs_from_result(
-                                user_msg["content"], tmap) or []
-                        else:
-                            prev_pairs = []
+                        prev_pairs = _chain_pairs_from_chunk_response(
+                            req, raw, fmap.get(cid_hint, []))
                         _hyb_tick()
                         continue
                     try:
@@ -26582,12 +26600,8 @@ class App(ctk.CTk):
                                 file_path=filepath)
                             text = raw_map.get(cid, text)
                         self._save_sync_ckpt_entry(cid, text, src_h)
-                        if _chunk_response_retry_reason(text, req):
-                            prev_pairs = []
-                        else:
-                            tmap = parse_response(text, fmap.get(cid, []))
-                            prev_pairs = _chain_pairs_from_result(
-                                user_msg["content"], tmap) or []
+                        prev_pairs = _chain_pairs_from_chunk_response(
+                            req, text, fmap.get(cid, []))
                     except Exception as e:
                         prev_pairs = []
                         with lock:
@@ -27633,7 +27647,8 @@ class App(ctk.CTk):
                     output_baselines=output_baselines,
                     locked_terms_by_file=locked_terms_by_file,
                     source_drift_files=source_drift_files,
-                    total_files=len(srt_files))
+                    total_files=len(srt_files),
+                    translation_requests=requests)
         elif not self._stop_flag:
             self._log("Tüm batch parçaları terminal duruma gelmedi; eksik final dosya yazılmadı.", "warn")
         # Kurtarma kaydını YALNIZCA terminal (OpenAI'nin bitirdiği) batch'ler için temizle —
@@ -28226,7 +28241,8 @@ class App(ctk.CTk):
                     schema_names=group["schema_names"],
                     source_hashes=group["source_hashes"],
                     output_baselines=group["output_baselines"],
-                    locked_terms_by_file=group["locked_terms_by_file"])
+                    locked_terms_by_file=group["locked_terms_by_file"],
+                    translation_requests=retry_list)
                 if written:
                     regular_written_bids.extend(group["terminal_bids"])
                     _regular_batch_manifest_path(run_id).unlink(missing_ok=True)
@@ -29100,7 +29116,7 @@ class App(ctk.CTk):
                        output_paths=None, source_languages=None, schema_names=None,
                        source_hashes=None, output_baselines=None,
                        locked_terms_by_file=None, source_drift_files=(),
-                       total_files=0):
+                       total_files=0, translation_requests=None):
         import hybrid_translate as ht
         input_dir  = self.input_var.get()
         report_dir = _resolve_report_dir(input_dir, output_dir)
@@ -29663,7 +29679,7 @@ class App(ctk.CTk):
                     self, "chain_ctx", "chain_ctx_var", True)),
                 "translation_chunks": _translation_chunks,
                 "context_payload_metrics": _context_payload_metrics(
-                    requests, fp, file_map),
+                    translation_requests, fp, file_map),
                 "tm_hits": self._tm.hit_count_session(),
                 "delivery_scan_failed": _delivery_scan_failed,
                 "run_status": "error" if (
