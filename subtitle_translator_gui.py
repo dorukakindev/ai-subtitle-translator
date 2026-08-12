@@ -7487,10 +7487,11 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                     matched or (
                         similar
                         if similarity >= 0.72 or transliteration_hint
-                        else cand_words[0]
+                        else (cand_words[0] if len(cand_words) == 1 else None)
                     )
                 ), cid
-                break
+                if found_token:
+                    break
             if not found_token:
                 continue
             placed = False

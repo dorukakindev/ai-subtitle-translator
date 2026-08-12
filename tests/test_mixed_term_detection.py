@@ -24,6 +24,23 @@ def _s(**kw):
 
 
 class MixedTermDetectionTest(unittest.TestCase):
+    def test_multiple_unrelated_names_do_not_become_term_renderings(self):
+        blocks = _b(
+            (1, "Katalin Simo, 11 Aralik 1915."),
+            (2, "Katalin yeniden 11 Aralik dedi."),
+            (3, "Tarih 11 Aralik 1915."),
+            (4, "Son tarih de 11 Aralik."),
+            (5, "Kayitta 11 Aralik yaziyor."),
+        )
+        src = _s(**{
+            "1": "Katalin Simo, born 11 December 1915.",
+            "2": "Katalin repeated 11 December.",
+            "3": "The date was 11 December 1915.",
+            "4": "The final date was 11 December.",
+            "5": "It says 11 December in the record.",
+        })
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_consistently_mixed_term_detected(self):
         # Kaynakta "Incas" 5 kez, cümle-ortasında geçiyor; çeviri YARI YARIYA
         # İnka*/Incas* arasında bölünmüş — gerçek karışıklık, tespit edilmeli.
