@@ -229,6 +229,16 @@ class WqxTargetGuardTest(unittest.TestCase):
         clean = {"church": "kilise"}
         self.assertEqual(ht.sanitize_glossary_for_turkish(clean), clean)
 
+    def test_quoted_target_is_kept_without_analysis_commentary(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "Lydia": '\"Lidya\"; özel ad, televizyon sunucusu.',
+            "Milosevic": '“Miloşeviç”; Türkçe kullanım tercih edilmeli.',
+        })
+        self.assertEqual(cleaned, {
+            "Lydia": "Lidya",
+            "Milosevic": "Miloşeviç",
+        })
+
     def test_non_turkish_target_language_skips_guard(self):
         dirty = {"Armed Forces": "Qawweyaha Xoogga Dalka"}
         cleaned = ht.sanitize_glossary_for_turkish(dirty, target_language="de")

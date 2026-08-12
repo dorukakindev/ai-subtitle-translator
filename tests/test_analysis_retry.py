@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 
 class AnalyzeWithHelperRetryTest(unittest.TestCase):
-    def test_conflicting_chunk_terms_are_dropped_and_not_cacheable(self):
+    def test_conflicting_chunk_terms_are_dropped_without_discarding_analysis(self):
         import hybrid_translate as ht
 
         fake_models = types.ModuleType("subtitle_localizer.models")
@@ -39,7 +39,8 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
                 log_fn=lambda message, level="info": logs.append((level, message)))
 
         self.assertEqual(merged.recurring_terms, {})
-        self.assertTrue(getattr(merged, "_analysis_degraded", False))
+        self.assertFalse(getattr(merged, "_analysis_degraded", False))
+        self.assertEqual(merged._analysis_term_conflicts, ["The Order"])
         self.assertTrue(any("The Order" in message for _level, message in logs))
 
     def test_failed_auxiliary_component_is_retried_once(self):

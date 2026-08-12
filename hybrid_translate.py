@@ -3469,7 +3469,8 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
         scene_notes=merged_notes,
     )
     if conflicting_terms:
-        merged._analysis_degraded = True
+        merged._analysis_term_conflicts = sorted(
+            conflicting_terms, key=str.casefold)
         if log_fn:
             log_fn(
                 "Yardımcı analiz terim çatışması: "
@@ -6625,6 +6626,11 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         if not key or not value:
             continue
         value_s = str(value)
+        quoted_target = re.fullmatch(
+            r'\s*["“]([^"”/\r\n]+)["”]\s*;\s*([^"“”/]+)',
+            value_s, flags=re.DOTALL)
+        if quoted_target:
+            value_s = quoted_target.group(1).strip()
         replacements = {
             "basrahibe": "başrahibe", "kardes": "kardeş",
             "tanri": "tanrı", "carmih": "çarmıh", "sarap": "şarap",
