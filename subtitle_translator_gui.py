@@ -9774,10 +9774,42 @@ def _output_matches_source_fingerprint(report_dir, output_path, source_path) -> 
     return bool(expected) and expected == _file_content_sha256(source_path)
 
 
-def _write_output_source_fingerprint(report_dir, output_path, source_hash) -> bool:
+def _archive_delivery_source(source_path, output_path, source_hash="") -> Path:
+    source = Path(source_path)
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    payload = source.read_bytes()
+    actual_hash = hashlib.sha256(payload).hexdigest()
+    if source_hash and actual_hash != str(source_hash).strip():
+        raise OSError("source_changed")
+    delivery_parent = Path(output_path).parent
+    if (delivery_parent.name.casefold() == "kurtarma"
+            and delivery_parent.parent.name.casefold() == "raporlar"):
+        delivery_parent = delivery_parent.parent.parent
+    archive_dir = delivery_parent / "Raporlar" / "Kaynak"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    candidate = archive_dir / source.name
+    if candidate.is_file():
+        if _file_content_sha256(candidate) == actual_hash:
+            return candidate
+        candidate = archive_dir / (
+            f"{source.stem}.{actual_hash[:12]}{source.suffix}")
+        if candidate.is_file() and _file_content_sha256(candidate) == actual_hash:
+            return candidate
+    atomic_write_bytes(candidate, payload)
+    if _file_content_sha256(candidate) != actual_hash:
+        candidate.unlink(missing_ok=True)
+        raise OSError("source_archive_verification_failed")
+    return candidate
+
+
+def _write_output_source_fingerprint(report_dir, output_path, source_hash,
+                                     source_path=None) -> bool:
     if not source_hash:
         return False
     try:
+        if source_path is not None:
+            _archive_delivery_source(source_path, output_path, source_hash)
         path = _output_source_fingerprint_path(report_dir, output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(path, str(source_hash).strip(), encoding="utf-8")
@@ -25749,10 +25781,11 @@ class App(ctk.CTk):
                 log_fn=self._log, source_cues=cues)
         _write_srt_preserving_text(write_path, write_blocks)
         fingerprint_ok = _write_output_source_fingerprint(
-            report_dir, write_path, expected_source_hash)
+            report_dir, write_path, expected_source_hash,
+            source_path=filepath)
         if not fingerprint_ok:
             self._log(
-                f"{Path(filepath).name}: kaynak-çıktı parmak izi yazılamadı; "
+                f"{Path(filepath).name}: kaynak arşivi/parmak izi yazılamadı; "
                 "dosya tamamlandı sayılmayacak.",
                 "err",
             )
@@ -26787,10 +26820,11 @@ class App(ctk.CTk):
             _quarantined = (
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
             _fingerprint_ok = _write_output_source_fingerprint(
-                report_dir, _write_path, _expected_source_hash)
+                report_dir, _write_path, _expected_source_hash,
+                source_path=filepath)
             if not _fingerprint_ok:
                 self._log(
-                    f"{fname}: kaynak-çıktı parmak izi yazılamadı; "
+                    f"{fname}: kaynak arşivi/parmak izi yazılamadı; "
                     "dosya tamamlandı sayılmayacak.", "err")
             self._save_raw_backup(
                 _write_path, _raw_backup_blocks, _raw_map, tgt)
@@ -28464,11 +28498,13 @@ class App(ctk.CTk):
                                 if _has_missing else Path(output_path))
                             write_srt(_write_path, _delivery_blocks, tgt)
                             _fingerprint_ok = _write_output_source_fingerprint(
-                                report_dir, _write_path, expected_source_hash)
+                                report_dir, _write_path, expected_source_hash,
+                                source_path=(_src_path or source_path))
                             if not _fingerprint_ok:
                                 self._log(
-                                    f"Resume: {Path(output_path).name} için kaynak-çıktı "
-                                    "parmak izi yazılamadı; dosya tamamlandı sayılmayacak.",
+                                    f"Resume: {Path(output_path).name} için kaynak "
+                                    "arşivi/parmak izi yazılamadı; dosya tamamlandı "
+                                    "sayılmayacak.",
                                     "err")
                             _quarantined = (
                                 _quarantine_incomplete_final(output_path)
@@ -29257,10 +29293,11 @@ class App(ctk.CTk):
                 _quarantine_incomplete_final(out_path) if _has_missing else None)
             _fingerprint_ok = _write_output_source_fingerprint(
                 report_dir, _write_path,
-                expected_source_hash or _file_content_sha256(fp))
+                expected_source_hash or _file_content_sha256(fp),
+                source_path=fp)
             if not _fingerprint_ok:
                 self._log(
-                    f"{Path(fp).name}: kaynak-çıktı parmak izi yazılamadı; "
+                    f"{Path(fp).name}: kaynak arşivi/parmak izi yazılamadı; "
                     "dosya tamamlandı sayılmayacak.", "err")
             if _has_missing:
                 self._log(
@@ -30657,10 +30694,11 @@ class App(ctk.CTk):
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)
                 _fingerprint_ok = _write_output_source_fingerprint(
-                    report_dir, _write_path, expected_source_hash)
+                    report_dir, _write_path, expected_source_hash,
+                    source_path=filepath)
                 if not _fingerprint_ok:
                     self._log(
-                        f"{fname}: kaynak-çıktı parmak izi yazılamadı; "
+                        f"{fname}: kaynak arşivi/parmak izi yazılamadı; "
                         "dosya tamamlandı sayılmayacak.", "err")
                 _quarantined = (
                     _quarantine_incomplete_final(out_path) if _has_missing else None)
