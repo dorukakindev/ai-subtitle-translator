@@ -335,6 +335,11 @@ def _locked_source_term_present(term: str, source_text: str) -> bool:
     key = str(term or "").strip()
     if not key or not value:
         return False
+    if key.casefold() == "father":
+        return re.search(
+            r"(?:^|[\n.!?]\s*|,\s+)Father(?=\s*[,!?;:.])",
+            value,
+        ) is not None
     if key.isupper() and any(char.isalpha() for char in key):
         return re.search(
             r"(?<!\w)" + re.escape(key) + r"(?!\w)", value, re.UNICODE

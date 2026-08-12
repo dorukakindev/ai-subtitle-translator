@@ -79,6 +79,18 @@ class GlossMissReasonTest(unittest.TestCase):
             "AGITATORS", "We send our agitators there."))
         self.assertTrue(ht._locked_source_term_present("AGITATORS", "AGITATORS"))
 
+    def test_father_lock_only_matches_religious_direct_address(self):
+        self.assertTrue(ht._locked_source_term_present(
+            "Father", "I beg your forgiveness, Father,"))
+        self.assertTrue(ht._locked_source_term_present(
+            "Father", "Father, I was the murderer."))
+        self.assertFalse(ht._locked_source_term_present(
+            "Father", "I met his father."))
+        self.assertFalse(ht._locked_source_term_present(
+            "Father", "You can be proud of your father."))
+        self.assertFalse(ht._locked_source_term_present(
+            "Father", "Father will be looking out to see."))
+
     def test_auto_glossary_drops_polysemous_take_but_keeps_phrase_lock(self):
         logs = []
         gloss = ht.sanitize_glossary_for_turkish(
