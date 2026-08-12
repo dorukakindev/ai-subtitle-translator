@@ -1095,7 +1095,7 @@ _BOUNDARY_QUALITY_VARS = {
     "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
-    "quality_report_only": ("quality_report_only_var", "Anlamsal Passler Yalnız Rapor"),
+    "quality_report_only": ("quality_report_only_var", "Tutarlılık/Critic/Terim Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
     "linebreak": ("linebreak_var", "Satır Bölme"),
@@ -12863,7 +12863,7 @@ class App(ctk.CTk):
         ctk.CTkSwitch(qro_fr, text="", variable=self.quality_report_only_var,
                       width=44, height=22,
                       fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
-        ctk.CTkLabel(qro_fr, text="Anlamsal Passler: Yalnız Raporla",
+        ctk.CTkLabel(qro_fr, text="Tutarlılık + Critic + Terim: Yalnız Raporla",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(
