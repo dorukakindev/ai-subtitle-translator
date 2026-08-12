@@ -2895,6 +2895,8 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
     r"\bripped\s+and\s+(?:spread|shared)\s+by\b|\bprocessed\s+by\b|"
+    r"^\s*(?:dvd|blu-?ray)\s+(?:authoring|mastering)(?:\s+(?:by|:))?"
+    r"\s+[\w ._-]{2,}\s*$|"
     r"\b(?:çevir(?:i|en|men))\s*:\s*\S|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
     r"film\s+ve\s+video\s+altyazılama|"

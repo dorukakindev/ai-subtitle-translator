@@ -86,6 +86,23 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("Film ve Video", "\n".join(text for _i, _ts, text in result))
         self.assertIn("Gerçek diyalog.", "\n".join(text for _i, _ts, text in result))
 
+    def test_dvd_authoring_credit_is_removed(self):
+        blocks = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Gerçek diyalog."),
+            ("2", "00:00:04,000 --> 00:00:05,000", "DVD Yazarlığı DiMEDIA Group"),
+        ]
+        source = [
+            ("1", blocks[0][1], "Real dialogue."),
+            ("2", blocks[1][1], "DVD Authoring DiMEDIA Group"),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        joined = "\n".join(text for _i, _ts, text in result)
+
+        self.assertIn("Gerçek diyalog.", joined)
+        self.assertNotIn("DiMEDIA", joined)
+
     def test_french_subtitle_company_credit_is_removed_from_source(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Altyazi : TransPerfect Media"),
