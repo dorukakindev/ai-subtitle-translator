@@ -11569,6 +11569,7 @@ def critic_pass_with_helper(
         status_out.update({
             "status": "not_started", "successful_chunks": 0,
             "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+            "reviewed_sentence_groups": 0, "reviewed_sentence_cues": 0,
         })
     if not tr_blocks:
         if status_out is not None:
@@ -11687,10 +11688,14 @@ def critic_pass_with_helper(
                     editable_ids.add(result_ids[pos + 1])
 
     sentence_review_ids = set()
+    sentence_review_groups = set()
     for group_ids in frag_group_by_id.values():
-        normalized = {str(gid) for gid in group_ids}
-        if normalized & helper_ids:
-            sentence_review_ids.update(normalized)
+        ordered = tuple(str(gid) for gid in group_ids)
+        if len(ordered) < 2:
+            continue
+        sentence_review_groups.add(ordered)
+        sentence_review_ids.update(ordered)
+        editable_ids.update(ordered)
     helper_ids.update(sentence_review_ids)
     for sid in sentence_review_ids:
         existing = v_reasons.get(sid, "")
@@ -11706,7 +11711,11 @@ def critic_pass_with_helper(
 
     if not suspicious:
         if status_out is not None:
-            status_out.update({"status": "completed", "changed": local_fixed})
+            status_out.update({
+                "status": "completed", "changed": local_fixed,
+                "reviewed_sentence_groups": len(sentence_review_groups),
+                "reviewed_sentence_cues": len(sentence_review_ids),
+            })
         if log_fn:
             log_fn("Critic Pass (Helper): şüpheli satır yok, atlanıyor ✓", "ok")
         return result
@@ -11720,7 +11729,7 @@ def critic_pass_with_helper(
         log_fn(
             f"Critic Pass (Helper): {len(suspicious)} şüpheli satır "
             f"(pattern:{p_count}, validator:{v_count}, flow:{flow_count}, "
-            f"cümle-grubu:{len(sentence_review_ids)}) inceleniyor...", "info"
+            f"cümle-grubu:{len(sentence_review_groups)}) inceleniyor...", "info"
         )
 
     try:
@@ -11815,14 +11824,15 @@ def critic_pass_with_helper(
                 group_ids = frag_group_by_id.get(str(idx))
                 if group_ids:
                     pair["frag_group"] = group_ids
-                    pair["group_orig"] = " ".join(
-                        orig_dict.get(gid, "") for gid in group_ids
-                        if orig_dict.get(gid, "")
-                    )
-                    pair["group_tr"] = " ".join(
-                        tr_text_by_id.get(gid, "") for gid in group_ids
-                        if tr_text_by_id.get(gid, "")
-                    )
+                    if str(idx) == str(group_ids[0]):
+                        pair["group_orig"] = " ".join(
+                            orig_dict.get(gid, "") for gid in group_ids
+                            if orig_dict.get(gid, "")
+                        )
+                        pair["group_tr"] = " ".join(
+                            tr_text_by_id.get(gid, "") for gid in group_ids
+                            if tr_text_by_id.get(gid, "")
+                        )
             reason = v_reasons.get(str(idx), "")
             if reason:
                 pair["reason"] = reason
@@ -11872,7 +11882,8 @@ def critic_pass_with_helper(
             f"GLOSSARY: if a line has a \"must_use\" field {{source: target}}, the {tgt_lang} text MUST "
             f"contain that exact target term (rewrite the line to include it, keeping it natural).\n\n"
             f"CROSS-CUE FLOW: items may include frag='start|mid|end', frag_group, group_orig, and group_tr. "
-            f"Those items are parts of one source sentence; read group_orig as the complete source sentence "
+            f"Those items are parts of one source sentence; group_orig/group_tr appear on the first item of "
+            f"the group. Read group_orig as the complete source sentence "
             f"before editing any single subtitle line. CROSS_CUE_SENTENCE_REVIEW means the complete sentence "
             f"was selected proactively: verify predicate, subject, referents, tense, polarity, and total meaning "
             f"across the whole group, but return no fix when it is already correct and natural.\n"
@@ -11885,7 +11896,10 @@ def critic_pass_with_helper(
             f"Example:\n"
             f"  Bad: id 4 'Ufak bir tadını alacaksınız' + id 5 'bir fosseptik teknisyeni olmanın ne demek olduğunun.'\n"
             f"  Better: id 4 'Fosseptik teknisyenliğinin' + id 5 'nasıl bir şey olduğunu tadacaksınız.'\n"
-            f"Preserve the total meaning across the group and keep each subtitle concise.\n\n"
+            f"Preserve the total meaning across the group and keep each subtitle concise. If you change ANY "
+            f"item in a frag_group, return one JSON object for EVERY id in that frag_group. For members that "
+            f"do not need a text change, return their existing tr text exactly; this is required for atomic "
+            f"whole-sentence validation.\n\n"
             f"PARENTHETICAL NOTE FIX: if reason includes PAREN_NOTE, the {tgt_lang} text added a "
             f"parenthetical translator gloss '(...)' explaining a term that the source line does not "
             f"have in parentheses. Remove the added parenthetical note — translate the term naturally "
@@ -11985,8 +11999,8 @@ def critic_pass_with_helper(
                 if fid and ftext and fid in chunk_ids and fid in idx_to_pos:
                     pos = idx_to_pos[fid]
                     old_idx, old_ts, old_text = result[pos]
-                    if ftext.strip() == str(old_text or "").strip():
-                        continue
+                    unchanged_anchor = (
+                        ftext.strip() == str(old_text or "").strip())
                     neighbor_start = max(0, pos - 2)
                     neighbor_end = min(len(result), pos + 3)
                     neighbor_texts = [
@@ -12004,15 +12018,19 @@ def critic_pass_with_helper(
                         + list(flow_reasons_by_id.get(fid, set()))
                     ))
                     final_text = str(ftext)
-                    ok, reason = validate_polish_candidate(
-                        old_text,
-                        final_text,
-                        source_text=orig_dict.get(fid, ""),
-                        neighbor_texts=neighbor_texts,
-                        fragment_tag=fragment_tag,
-                        locked_terms=glossary,
-                    )
-                    if not ok and reason in _SEMANTIC_REWRITE_REJECTIONS:
+                    if unchanged_anchor:
+                        ok, reason = True, "unchanged_fragment_anchor"
+                    else:
+                        ok, reason = validate_polish_candidate(
+                            old_text,
+                            final_text,
+                            source_text=orig_dict.get(fid, ""),
+                            neighbor_texts=neighbor_texts,
+                            fragment_tag=fragment_tag,
+                            locked_terms=glossary,
+                        )
+                    if (not unchanged_anchor and not ok
+                            and reason in _SEMANTIC_REWRITE_REJECTIONS):
                         semantic_ok, semantic_reason = (
                             validate_semantic_reconciliation_candidate(
                                 old_text,
@@ -12063,10 +12081,12 @@ def critic_pass_with_helper(
                         "ok": ok,
                         "reason": reason,
                         "recovered": recovered,
+                        "changed": not unchanged_anchor,
                     })
 
             prepared_by_id = {item["fid"]: item for item in prepared}
             checked_fragment_groups = set()
+            invalid_fragment_group_ids = set()
             for item in prepared:
                 group_ids = tuple(
                     str(group_id) for group_id in
@@ -12093,7 +12113,9 @@ def critic_pass_with_helper(
                 joined_ok, _joined_reason = validate_polish_candidate(
                     old_joined, new_joined, source_text=source_joined,
                     locked_terms=glossary)
-                if joined_ok:
+                if not joined_ok:
+                    invalid_fragment_group_ids.update(group_ids)
+                else:
                     for member in group_items:
                         if member["reason"] in _SEMANTIC_REWRITE_REJECTIONS:
                             member["ok"] = True
@@ -12103,7 +12125,7 @@ def critic_pass_with_helper(
                 result, cues, glossary, scene_gap_sec=gap_limit)
             trial_result = list(result)
             for item in prepared:
-                if item["ok"]:
+                if item["ok"] and item["changed"]:
                     trial_result[item["pos"]] = (
                         item["old_idx"], item["old_ts"], item["final_text"])
             after_reason_map = _semantic_reason_map(
@@ -12123,7 +12145,7 @@ def critic_pass_with_helper(
                 }
                 checked_groups = set()
                 for item in prepared:
-                    if not item["ok"]:
+                    if not item["ok"] or not item["changed"]:
                         continue
                     group_ids = tuple(
                         str(group_id) for group_id in
@@ -12164,6 +12186,9 @@ def critic_pass_with_helper(
                 if ok and fid in locked_fragment_reject_ids:
                     ok = False
                     reason = "fragment_group_locked_term"
+                if ok and fid in invalid_fragment_group_ids:
+                    ok = False
+                    reason = "fragment_group_semantic_rejection"
                 if fid in partial_flow_group_ids:
                     ok = False
                     reason = (
@@ -12180,6 +12205,8 @@ def critic_pass_with_helper(
                 if not ok:
                     critic_rejected += 1
                     critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
+                    continue
+                if not item["changed"]:
                     continue
                 if item["recovered"]:
                     reflow_recovered += 1
@@ -12230,6 +12257,8 @@ def critic_pass_with_helper(
             "failed_chunks": failed_chunks,
             "total_chunks": total_chunks,
             "changed": local_fixed + mm_fixed,
+            "reviewed_sentence_groups": len(sentence_review_groups),
+            "reviewed_sentence_cues": len(sentence_review_ids),
         })
 
     if log_fn:
