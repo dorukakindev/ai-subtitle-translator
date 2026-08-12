@@ -57,6 +57,29 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertIn('"id": "1"', prompts[0])
         self.assertNotIn('"id": "2"', prompts[0])
 
+    def test_critic_records_rejected_candidate_without_editing(self):
+        cues = [Cue(1, "Mary arrived.")]
+        blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Mary geldi.")]
+        prompts = []
+        fixes = [{"id": "1", "fixed": "John geldi."}]
+        status = {}
+        validator_hit = [(1, blocks[0][1], blocks[0][2], "PERSON_DRIFT")]
+
+        with patch.dict(
+                sys.modules, {"openai": self._fake_openai_module(fixes, prompts)}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hit):
+            result = ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(status["rejected_count"], 1)
+        record = status["rejected_candidates"][0]
+        self.assertIn(record["reason"], {"critical_fact_swap", "person_drift"})
+        self.assertEqual(record["source"], "Mary arrived.")
+        self.assertEqual(record["before"], "Mary geldi.")
+        self.assertEqual(record["candidate"], "John geldi.")
+
     def _fake_openai_module(self, fixes, prompts):
         class FakeCompletions:
             def create(self, **kwargs):

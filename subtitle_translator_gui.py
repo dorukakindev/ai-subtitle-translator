@@ -22711,7 +22711,9 @@ class App(ctk.CTk):
                             status_out=_critic_status)
                         if self._stop_flag:
                             break
-                        self._write_critic_change_report(fp, _critic_change_log)
+                        self._write_critic_change_report(
+                            fp, _critic_change_log,
+                            _critic_status.get("rejected_candidates", []))
                         if _pass_failed(_critic_status):
                             postprocess_failed = True
                     except Exception as e:
@@ -23134,7 +23136,8 @@ class App(ctk.CTk):
         except Exception as e:
             self._log_exc("QC değişiklik raporu yazılamadı", e)
 
-    def _write_critic_change_report(self, fp, applied_records: list):
+    def _write_critic_change_report(
+            self, fp, applied_records: list, rejected_records: list | None = None):
         """Critic Pass tarafından fiilen değiştirilen satırları TEK bir txt
         dosyasına (kaynak/öncesi/sonrası/sebep) yazar — QC değişiklik raporuyla
         aynı motivasyon (bkz. _write_qc_change_report yukarıda): Critic 150-200
@@ -23143,12 +23146,20 @@ class App(ctk.CTk):
         report_path = (
             Path(fp).parent / "Raporlar"
             / f"{Path(fp).stem}.critic_degisiklikler.txt")
-        if not applied_records:
+        rejected_records = list(rejected_records or [])
+        if not applied_records and not rejected_records:
             report_path.unlink(missing_ok=True)
             return
         try:
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            lines = [f"Critic Değişiklikleri — {Path(fp).name}", f"Toplam: {len(applied_records)} satır", "=" * 60, ""]
+            lines = [
+                f"Critic Denetimi — {Path(fp).name}",
+                f"Toplam: {len(applied_records)} satır",
+                f"Uygulanan: {len(applied_records)} | Korunan/reddedilen: {len(rejected_records)}",
+                "=" * 60, "",
+            ]
+            if applied_records:
+                lines.extend(["UYGULANAN DÜZELTMELER", "-" * 60, ""])
             for rec in applied_records:
                 lines.append(f"#{rec['id']}  [{rec.get('reason', '')}]")
                 if rec.get("source"):
@@ -23156,8 +23167,24 @@ class App(ctk.CTk):
                 lines.append(f"Önce   : {rec['before']}")
                 lines.append(f"Sonra  : {rec['after']}")
                 lines.append("")
+            if rejected_records:
+                lines.extend([
+                    "KORUNAN / REDDEDİLEN ÖNERİLER",
+                    "Bu öneriler altyazıya uygulanmadı; mevcut Türkçe aynen korundu.",
+                    "-" * 60, "",
+                ])
+                for rec in rejected_records:
+                    lines.append(f"#{rec.get('id', '')}  [{rec.get('reason', '')}]")
+                    if rec.get("source"):
+                        lines.append(f"Kaynak : {rec['source']}")
+                    lines.append(f"Mevcut : {rec.get('before', '')}")
+                    lines.append(f"Öneri  : {rec.get('candidate', '')}")
+                    lines.append("")
             atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
-            self._log(f"Critic değişiklik raporu: {report_path.name}  ({len(applied_records)} satır)", "ok")
+            self._log(
+                f"Critic değişiklik raporu/denetimi: {report_path.name}  "
+                f"({len(applied_records)} uygulandı, {len(rejected_records)} korundu)",
+                "ok")
         except Exception as e:
             self._log_exc("Critic değişiklik raporu yazılamadı", e)
 
@@ -26447,7 +26474,9 @@ class App(ctk.CTk):
                 if self._stop_flag:
                     break
                 _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
-                self._write_critic_change_report(out_path, _critic_change_log)
+                self._write_critic_change_report(
+                    out_path, _critic_change_log,
+                    _critic_status.get("rejected_candidates", []))
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
             if self.polish_var.get() and sorted_blocks and _quality_api_allowed:
@@ -28192,7 +28221,9 @@ class App(ctk.CTk):
                                 _record_pass_change(
                                     _pass_trace, "Critic", _before_pass, pp,
                                     _pass_history)
-                                self._write_critic_change_report(output_path, _critic_change_log)
+                                self._write_critic_change_report(
+                                    output_path, _critic_change_log,
+                                    _critic_status.get("rejected_candidates", []))
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
                                 _before_pass = list(pp)
@@ -28979,7 +29010,9 @@ class App(ctk.CTk):
                     _record_pass_change(
                         _pass_trace, "Critic", _before_pass, sorted_blocks,
                         _pass_history)
-                    self._write_critic_change_report(out_path, _critic_change_log)
+                    self._write_critic_change_report(
+                        out_path, _critic_change_log,
+                        _critic_status.get("rejected_candidates", []))
                 except Exception as e:
                     _pass_status["Critic"] = {
                         "status": "failed", "error": str(e)}
@@ -30338,7 +30371,9 @@ class App(ctk.CTk):
                             _record_pass_change(
                                 _pass_trace, "Critic", _before_pass,
                                 pp_blocks, _pass_history)
-                            self._write_critic_change_report(out_path, _critic_change_log)
+                            self._write_critic_change_report(
+                                out_path, _critic_change_log,
+                                _critic_status.get("rejected_candidates", []))
                         if self.polish_var.get() and pp_blocks:
                             self._record_file_status(
                                 filepath, "Polish Pass", "running")

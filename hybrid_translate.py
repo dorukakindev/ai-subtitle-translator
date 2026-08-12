@@ -11570,6 +11570,8 @@ def critic_pass_with_helper(
             "status": "not_started", "successful_chunks": 0,
             "failed_chunks": 0, "total_chunks": 0, "changed": 0,
             "reviewed_sentence_groups": 0, "reviewed_sentence_cues": 0,
+            "rejected_count": 0, "rejected_reasons": {},
+            "rejected_candidates": [],
         })
     if not tr_blocks:
         if status_out is not None:
@@ -11790,6 +11792,7 @@ def critic_pass_with_helper(
     reflow_recovered = 0
     critic_rejected = 0
     critic_rejected_reasons: dict[str, int] = {}
+    critic_rejected_candidates: list[dict] = []
     reason_stats: dict[str, dict[str, int]] = {}
     successful_chunks = 0
     critic_chunks = _critic_suspicious_chunks(
@@ -11990,6 +11993,7 @@ def critic_pass_with_helper(
                     log_fn(f"Critic Helper chunk kesik JSON'un kalan satırları alınamadı", "warn")
             fix_by_id = {}
             conflicting_ids = set()
+            conflicting_candidates = {}
             for fix in fixes:
                 if not isinstance(fix, dict):
                     continue
@@ -12003,6 +12007,10 @@ def critic_pass_with_helper(
                     continue
                 if fid in fix_by_id and fix_by_id[fid] != ftext:
                     conflicting_ids.add(fid)
+                    values = conflicting_candidates.setdefault(
+                        fid, [fix_by_id[fid]])
+                    if ftext not in values:
+                        values.append(ftext)
                     continue
                 fix_by_id.setdefault(fid, ftext)
             for fid in conflicting_ids:
@@ -12011,6 +12019,14 @@ def critic_pass_with_helper(
                 critic_rejected_reasons["duplicate_fix_conflict"] = (
                     critic_rejected_reasons.get("duplicate_fix_conflict", 0) + 1
                 )
+                critic_rejected_candidates.append({
+                    "id": fid,
+                    "reason": "duplicate_fix_conflict",
+                    "source": orig_dict.get(fid, ""),
+                    "before": tr_text_by_id.get(fid, ""),
+                    "candidate": " || ".join(
+                        conflicting_candidates.get(fid, [])),
+                })
 
             prepared = []
             for fid, ftext in fix_by_id.items():
@@ -12223,6 +12239,25 @@ def critic_pass_with_helper(
                 if not ok:
                     critic_rejected += 1
                     critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
+                    rejected_record = {
+                        "id": fid,
+                        "reason": reason,
+                        "source": orig_dict.get(fid, ""),
+                        "before": old_text,
+                        "candidate": final_text,
+                    }
+                    critic_rejected_candidates.append(rejected_record)
+                    if log_fn:
+                        def _excerpt(value):
+                            clean = " ".join(str(value or "").split())
+                            return clean if len(clean) <= 180 else clean[:177] + "..."
+                        log_fn(
+                            f"Critic korudu #{fid} [{reason}] | "
+                            f"kaynak='{_excerpt(rejected_record['source'])}' | "
+                            f"mevcut='{_excerpt(old_text)}' | "
+                            f"öneri='{_excerpt(final_text)}'",
+                            "warn",
+                        )
                     continue
                 if not item["changed"]:
                     continue
@@ -12257,6 +12292,9 @@ def critic_pass_with_helper(
                 "total_chunks": total_chunks, "changed": 0,
                 "reviewed_sentence_groups": len(sentence_review_groups),
                 "reviewed_sentence_cues": len(sentence_review_ids),
+                "rejected_count": critic_rejected,
+                "rejected_reasons": dict(critic_rejected_reasons),
+                "rejected_candidates": list(critic_rejected_candidates),
             })
         if change_log is not None:
             del change_log[change_log_start:]
@@ -12279,6 +12317,9 @@ def critic_pass_with_helper(
             "changed": local_fixed + mm_fixed,
             "reviewed_sentence_groups": len(sentence_review_groups),
             "reviewed_sentence_cues": len(sentence_review_ids),
+            "rejected_count": critic_rejected,
+            "rejected_reasons": dict(critic_rejected_reasons),
+            "rejected_candidates": list(critic_rejected_candidates),
         })
 
     if log_fn:

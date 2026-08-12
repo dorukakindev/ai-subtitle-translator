@@ -77,6 +77,27 @@ class WriteCriticChangeReportTest(unittest.TestCase):
             self.assertTrue(report_path.exists())
             self.assertFalse(any(level == "err" for level, _ in app.logs))
 
+    def test_rejected_only_report_keeps_current_text_and_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            fp = str(Path(td) / "episode.srt")
+            app = _StubApp()
+            rejected = [{
+                "id": "9", "reason": "critical_fact_swap",
+                "source": "Mary arrived.", "before": "Mary geldi.",
+                "candidate": "John geldi.",
+            }]
+
+            gui.App._write_critic_change_report(app, fp, [], rejected)
+
+            report_path = (
+                Path(td) / "Raporlar" / "episode.critic_degisiklikler.txt")
+            text = report_path.read_text(encoding="utf-8")
+            self.assertIn("Korunan/reddedilen: 1", text)
+            self.assertIn("mevcut Türkçe aynen korundu", text)
+            self.assertIn("Mary arrived.", text)
+            self.assertIn("Mevcut : Mary geldi.", text)
+            self.assertIn("Öneri  : John geldi.", text)
+
 
 if __name__ == "__main__":
     unittest.main()
