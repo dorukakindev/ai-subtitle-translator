@@ -287,6 +287,7 @@ class BuildQualityReportTextTest(unittest.TestCase):
             "analysis_status": "kısmi",
             "chain_ctx": True,
             "translation_chunks": 4,
+            "context_payload_metrics": {"chunks": 4, "prev_tr_chunks": 3},
             "pass_trace": {"Consistency": 0, "Native": 0, "Critic": 2},
         }
         snapshot = {
@@ -299,7 +300,9 @@ class BuildQualityReportTextTest(unittest.TestCase):
         audit = gui._quality_feature_audit(row, snapshot)
 
         self.assertIn("Yardımcı Analiz: kısmi", audit)
-        self.assertIn("Zincirleme Bağlam: çalıştı, 4 chunk", audit)
+        self.assertIn(
+            "Zincirleme Bağlam: çalıştı, 3/4 chunk önceki çeviriyi aldı",
+            audit)
         self.assertIn("Critic Pass: çalıştı, 2 cue değiştirdi", audit)
         self.assertIn("Native Okuyucu: çalıştı, 0 cue değiştirdi", audit)
         self.assertIn(

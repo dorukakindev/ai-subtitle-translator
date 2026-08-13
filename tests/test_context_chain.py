@@ -3,6 +3,7 @@ Zincirleme bağlam (prev_tr), ön-bağlam hint'i ve tuple'lı consistency_sweep 
 API çağrısı yapan fonksiyonlar test edilmez; sadece saf yardımcılar.
 """
 import json
+import inspect
 import os
 import sys
 import tempfile
@@ -184,6 +185,37 @@ class ChainPairsFromResultTest(unittest.TestCase):
         pairs = gui._extend_chain_pairs(first, second, max_pairs=15)
         self.assertEqual([pair["i"] for pair in pairs], list(range(6, 21)))
         self.assertEqual(pairs[-1]["tr"], "ikinci-20")
+
+    def test_failed_chunk_keeps_older_pairs_for_the_next_context(self):
+        # İkinci chunk ağ/sağlayıcı hatasıyla hiç sonuç vermediyse, üçüncü
+        # chunk'ın ctx'sinde kalan ilk chunk çevirisi kaybolmamalı.
+        previous = [{"i": 1, "tr": "Önceki sağlam çeviri."}]
+        carried = gui._extend_chain_pairs(previous, [], max_pairs=30)
+        content = json.dumps({
+            "tr": [{"i": 3, "t": "Current line."}],
+            "ctx": [{"i": 1, "t": "Earlier."}, {"i": 2, "t": "Failed."}],
+        }, ensure_ascii=False)
+        payload = json.loads(gui._inject_prev_tr(content, carried, max_pairs=30))
+        self.assertEqual(payload["prev_tr"], previous)
+
+
+class ChainRecoveryOrderTest(unittest.TestCase):
+    def test_sync_and_hybrid_inject_chain_context_before_reused_raw_can_retry(self):
+        # Checkpoint/TM'den gelen hatalı ham yanıt tekrar denenecekse, retry
+        # aynı scene'deki önceki çevirileri görmelidir.
+        sync_source = inspect.getsource(gui.App._run_sync)
+        sync_chain = sync_source[sync_source.index("def chain_file"):]
+        self.assertLess(
+            sync_chain.index('user_msg["content"] = _inject_prev_tr'),
+            sync_chain.index("if cid not in api_ids"),
+        )
+
+        hybrid_source = inspect.getsource(gui.App._run_sync_hybrid)
+        hybrid_chain = hybrid_source[hybrid_source.index("if App._run_setting(self, \"chain_ctx\""):]
+        self.assertLess(
+            hybrid_chain.index('user_msg["content"] = _inject_prev_tr'),
+            hybrid_chain.index("if cid_hint in raw_map"),
+        )
 
     def test_report_only_owner_warning_still_feeds_prev_translation(self):
         req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({

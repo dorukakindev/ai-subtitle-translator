@@ -3405,6 +3405,14 @@ def analyze_with_helper(
     return analysis_result
 
 
+def _analysis_term_identity(source) -> str:
+    """Keep uppercase acronyms distinct from ordinary title-cased words."""
+    text = str(source or "").strip()
+    if text.isupper() and any(char.isalpha() for char in text):
+        return f"exact:{text}"
+    return f"folded:{text.casefold()}"
+
+
 def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     _ensure_path()
     from subtitle_localizer.models import ContextMemory
@@ -3427,7 +3435,7 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
             target_text = str(target or "").strip()
             if not source_text or not target_text:
                 continue
-            key = source_text.casefold()
+            key = _analysis_term_identity(source_text)
             previous_source = merged_term_keys.get(key)
             if previous_source is None:
                 merged_term_keys[key] = source_text
@@ -3520,6 +3528,7 @@ def build_system_prompt(
     character_styles: dict = None,  # {char_name: {register, dialect}} from analysis
     idiom_map: dict = None,         # {english_idiom: turkish_equivalent}
     cultural_refs: list = None,     # [{src, type, action, target}]
+    locked_terms: dict = None,
 ) -> str:
     register = _infer_register(context.tone or "", schema=schema)
 
@@ -3629,7 +3638,9 @@ def build_system_prompt(
 
     # ── Mandatory terms ───────────────────────────────────────────────────────
     safe_recurring_terms = sanitize_glossary_for_turkish(
-        getattr(context, "recurring_terms", {}), target_language=tgt_lang
+        locked_terms if locked_terms is not None
+        else getattr(context, "recurring_terms", {}),
+        target_language=tgt_lang,
     )
     if safe_recurring_terms:
         parts.append("## MANDATORY TERM TRANSLATIONS")
@@ -12272,7 +12283,7 @@ def critic_pass_with_helper(
 
             prepared_by_id = {item["fid"]: item for item in prepared}
             checked_fragment_groups = set()
-            invalid_fragment_group_ids = set()
+            invalid_fragment_group_reasons = {}
             for item in prepared:
                 group_ids = tuple(
                     str(group_id) for group_id in
@@ -12288,6 +12299,9 @@ def critic_pass_with_helper(
                         member["ok"]
                         or member["reason"] in _SEMANTIC_REWRITE_REJECTIONS
                         for member in group_items):
+                    for group_id in group_ids:
+                        invalid_fragment_group_reasons[group_id] = (
+                            "fragment_group_member_rejected")
                     continue
                 old_joined = "\n".join(member["old_text"] for member in group_items)
                 new_joined = "\n".join(member["final_text"] for member in group_items)
@@ -12300,7 +12314,9 @@ def critic_pass_with_helper(
                     old_joined, new_joined, source_text=source_joined,
                     locked_terms=glossary)
                 if not joined_ok:
-                    invalid_fragment_group_ids.update(group_ids)
+                    for group_id in group_ids:
+                        invalid_fragment_group_reasons[group_id] = (
+                            "fragment_group_semantic_rejection")
                 else:
                     for member in group_items:
                         if member["reason"] in _SEMANTIC_REWRITE_REJECTIONS:
@@ -12364,17 +12380,18 @@ def critic_pass_with_helper(
                 old_text = item["old_text"]
                 final_text = item["final_text"]
                 reason_toks = item["reason_toks"]
-                for tok in reason_toks:
-                    reason_stats.setdefault(tok, {"suggested": 0, "accepted": 0})
-                    reason_stats[tok]["suggested"] += 1
+                if item["changed"]:
+                    for tok in reason_toks:
+                        reason_stats.setdefault(tok, {"suggested": 0, "accepted": 0})
+                        reason_stats[tok]["suggested"] += 1
                 ok = item["ok"]
                 reason = item["reason"]
                 if ok and fid in locked_fragment_reject_ids:
                     ok = False
                     reason = "fragment_group_locked_term"
-                if ok and fid in invalid_fragment_group_ids:
+                if ok and fid in invalid_fragment_group_reasons:
                     ok = False
-                    reason = "fragment_group_semantic_rejection"
+                    reason = invalid_fragment_group_reasons[fid]
                 if fid in partial_flow_group_ids:
                     ok = False
                     reason = (
@@ -12389,27 +12406,28 @@ def critic_pass_with_helper(
                     ok = False
                     reason = "new_validator_issue"
                 if not ok:
-                    critic_rejected += 1
-                    critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
-                    rejected_record = {
-                        "id": fid,
-                        "reason": reason,
-                        "source": orig_dict.get(fid, ""),
-                        "before": old_text,
-                        "candidate": final_text,
-                    }
-                    critic_rejected_candidates.append(rejected_record)
-                    if log_fn:
-                        def _excerpt(value):
-                            clean = " ".join(str(value or "").split())
-                            return clean if len(clean) <= 180 else clean[:177] + "..."
-                        log_fn(
-                            f"Critic korudu #{fid} [{reason}] | "
-                            f"kaynak='{_excerpt(rejected_record['source'])}' | "
-                            f"mevcut='{_excerpt(old_text)}' | "
-                            f"öneri='{_excerpt(final_text)}'",
-                            "warn",
-                        )
+                    if item["changed"]:
+                        critic_rejected += 1
+                        critic_rejected_reasons[reason] = critic_rejected_reasons.get(reason, 0) + 1
+                        rejected_record = {
+                            "id": fid,
+                            "reason": reason,
+                            "source": orig_dict.get(fid, ""),
+                            "before": old_text,
+                            "candidate": final_text,
+                        }
+                        critic_rejected_candidates.append(rejected_record)
+                        if log_fn:
+                            def _excerpt(value):
+                                clean = " ".join(str(value or "").split())
+                                return clean if len(clean) <= 180 else clean[:177] + "..."
+                            log_fn(
+                                f"Critic korudu #{fid} [{reason}] | "
+                                f"kaynak='{_excerpt(rejected_record['source'])}' | "
+                                f"mevcut='{_excerpt(old_text)}' | "
+                                f"öneri='{_excerpt(final_text)}'",
+                                "warn",
+                            )
                     continue
                 if not item["changed"]:
                     continue

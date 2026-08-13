@@ -91,6 +91,30 @@ class ContextPayloadReportingTests(unittest.TestCase):
             "Zincirleme bağlam kopması: 1 chunk — film__g51[empty_dialogue]",
             report)
 
+    def test_chain_report_requires_real_previous_translation_injection(self):
+        one_chunk = "\n".join(gui._quality_feature_audit({
+            "chain_ctx": True,
+            "translation_chunks": 1,
+            "context_payload_metrics": {"chunks": 1, "prev_tr_chunks": 0},
+        }, {"chain_ctx": True}))
+        self.assertIn("dosya tek chunk olduğu için", one_chunk)
+        self.assertNotIn("Zincirleme Bağlam: çalıştı", one_chunk)
+
+        no_injection = "\n".join(gui._quality_feature_audit({
+            "chain_ctx": True,
+            "translation_chunks": 3,
+            "context_payload_metrics": {"chunks": 3, "prev_tr_chunks": 0},
+        }, {"chain_ctx": True}))
+        self.assertIn("hiçbirine önceki çeviri enjekte edilmedi", no_injection)
+        self.assertNotIn("Zincirleme Bağlam: çalıştı", no_injection)
+
+        injected = "\n".join(gui._quality_feature_audit({
+            "chain_ctx": True,
+            "translation_chunks": 3,
+            "context_payload_metrics": {"chunks": 3, "prev_tr_chunks": 2},
+        }, {"chain_ctx": True}))
+        self.assertIn("çalıştı, 2/3 chunk", injected)
+
     def test_filters_multi_file_requests_with_file_map(self):
         first = _request({"tr": [{"i": 1, "t": "First"}], "ctx": [{"i": 0}]})
         first["custom_id"] = "first"

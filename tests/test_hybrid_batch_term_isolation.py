@@ -82,6 +82,21 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
             gui._tm_context_fingerprint(source_hash, changed),
         )
 
+    def test_effective_locks_override_conflicting_analysis_terms_in_prompt(self):
+        import hybrid_translate as ht
+
+        context = SimpleNamespace(
+            summary="", setting="", tone="", characters=[], scene_notes=[],
+            recurring_terms={"Georgia": "GÃ¼rcistan"},
+        )
+        prompt = ht.build_system_prompt(
+            context, "English", "Turkish",
+            locked_terms={"Georgia": "Georgia eyaleti"},
+        )
+
+        self.assertIn("Georgia eyaleti", prompt)
+        self.assertNotIn("rcistan", prompt)
+
     def test_phase_two_reuses_current_file_terms_for_every_quality_pass(self):
         source = inspect.getsource(gui.App._run_hybrid)
         phase_two = source.split("FAZ 2", 1)[1]
@@ -99,6 +114,13 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         self.assertIn("_locked_terms = _merge_locked_term_sources(", source)
         self.assertIn("_expected_source_hash,\n                _locked_terms", source)
         self.assertIn("chunk_size=self._chunk_size, glossary=_locked_terms", source)
+        self.assertIn("locked_terms=_locked_terms", source)
+
+    def test_hybrid_batch_uses_effective_locks_in_system_prompt(self):
+        source = inspect.getsource(gui.App._run_hybrid)
+        phase_two = source.split("FAZ 2", 1)[1]
+
+        self.assertIn("locked_terms=_file_locked_terms", phase_two)
 
 
 if __name__ == "__main__":

@@ -10340,18 +10340,33 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     chunk_count = int(row.get("translation_chunks", 0) or 0)
     run_mode = str(row.get("mode", snapshot.get("mode", "")) or "").strip().lower()
     twowave_on = bool(row.get("twowave", snapshot.get("twowave")))
+    context_metrics = dict(row.get("context_payload_metrics") or {})
+    measured_chunks = int(context_metrics.get("chunks", 0) or 0)
+    measured_prev_tr = int(context_metrics.get("prev_tr_chunks", 0) or 0)
     if chain_on and run_mode == "batch" and not twowave_on:
         lines.append(
             "Zincirleme Bağlam: açık ama normal Batch'te uygulanmadı "
             "(chunk'lar paralel gönderildi)")
+    elif chain_on and measured_prev_tr:
+        lines.append(
+            f"Zincirleme Bağlam: çalıştı, {measured_prev_tr}/{measured_chunks} "
+            "chunk önceki çeviriyi aldı")
+    elif chain_on and measured_chunks == 1:
+        lines.append(
+            "Zincirleme Bağlam: açık; dosya tek chunk olduğu için önceki "
+            "çeviri enjeksiyonu gerekmedi")
+    elif chain_on and measured_chunks:
+        lines.append(
+            f"Zincirleme Bağlam: açık ama {measured_chunks} chunk'ın hiçbirine "
+            "önceki çeviri enjekte edilmedi")
     elif chain_on and chunk_count:
-        lines.append(f"Zincirleme Bağlam: çalıştı, {chunk_count} chunk")
+        lines.append(
+            "Zincirleme Bağlam: açık; gerçek enjeksiyon ölçümü bulunamadı")
     elif chain_on:
         lines.append("Zincirleme Bağlam: açık, çalışma kaydı yok")
     else:
         lines.append("Zincirleme Bağlam: kapalı")
 
-    context_metrics = dict(row.get("context_payload_metrics") or {})
     if context_metrics.get("chunks"):
         lines.append(
             "Bağlam taşıma kanıtı: "
@@ -25516,7 +25531,8 @@ class App(ctk.CTk):
                 if isinstance(snapshot, dict) and key in snapshot:
                     return snapshot[key]
                 var = getattr(self, var_name, None)
-                return var.get() if var is not None else default
+                getter = getattr(var, "get", None)
+                return getter() if callable(getter) else (var if var is not None else default)
 
             parts = [
                 self._main_model_name(),
@@ -25524,6 +25540,7 @@ class App(ctk.CTk):
                 _value("profanity", "profanity_var"),
                 _value("style", "style_var"),
                 _value("content_type", "content_type_var"),
+                str(_value("temperature", "_temperature", 0.2)),
                 _checkpoint_base_url(self._main_api_base_url()),
                 str(bool(_value("chain_ctx", "chain_ctx_var", False))),
             ]
@@ -25933,6 +25950,8 @@ class App(ctk.CTk):
                     user_msg = req["body"]["messages"][1]
                     if not _req_has_ctx(req):
                         prev_pairs = []
+                    user_msg["content"] = _inject_prev_tr(
+                        user_msg["content"], prev_pairs, max_pairs=self._context_lines)
                     if cid not in api_ids:
                         # TM önbellekten doldu — API çağrısı yok, sadece zinciri besle
                         raw = raw_map.get(cid, "")
@@ -25946,8 +25965,6 @@ class App(ctk.CTk):
                             prev_pairs, _chain_pairs_from_chunk_response(
                                 req, raw, file_map[cid]), self._context_lines)
                         continue
-                    user_msg["content"] = _inject_prev_tr(
-                        user_msg["content"], prev_pairs, max_pairs=self._context_lines)
                     resumed_n, resumed_now = self._prefill_sync_ckpt([req], raw_map)
                     if resumed_n:
                         used_ckpt_keys.update(resumed_now)
@@ -25983,7 +26000,10 @@ class App(ctk.CTk):
                             prev_pairs, _chain_pairs_from_chunk_response(
                                 req, text, file_map[cid]), self._context_lines)
                     except Exception as e:
-                        prev_pairs = []
+                        # Hatalı chunk zincire eklenmez; ama aynı sahnedeki daha eski
+                        # sağlam çeviriler sonraki isteğin ctx'sine hâlâ karşılık gelir.
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, [], self._context_lines)
                         with lock:
                             failed[0] += 1
                         self._log_exc(f"Chunk hatası [{cid}]", e)
@@ -26535,6 +26555,13 @@ class App(ctk.CTk):
             # ── OpenAI sync ───────────────────────────────────────────────────
             # Dizi hafızasını bu bölümün analiziyle güncelle, sonra önceki
             # bölümlerin birikmiş kararlarını prompt'a ekle (ilk karar kanon)
+            _analysis_locked_terms = ht.sanitize_glossary_for_turkish(
+                dict(getattr(context, "recurring_terms", {}) or {}),
+                target_language=tgt)
+            _locked_terms = _merge_locked_term_sources(
+                _analysis_locked_terms,
+                self._get_locked_terms_dict(filepath, tgt),
+            )
             system_prompt = ht.build_system_prompt(
                 context, file_src, tgt,
                 schema=schema_dict,
@@ -26544,17 +26571,11 @@ class App(ctk.CTk):
                 character_styles=character_styles,
                 idiom_map=None,   # deyimler per-chunk 'idioms' payload'ında veriliyor — çift enjeksiyon olmasın
                 cultural_refs=cultural_refs,
+                locked_terms=_locked_terms,
             )
             system_prompt += self._series_hint_for(filepath)
             if _file_pm is not None:
                 system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
-            _analysis_locked_terms = ht.sanitize_glossary_for_turkish(
-                dict(getattr(context, "recurring_terms", {}) or {}),
-                target_language=tgt)
-            _locked_terms = _merge_locked_term_sources(
-                _analysis_locked_terms,
-                self._get_locked_terms_dict(filepath, tgt),
-            )
             _tm_fingerprint = _tm_context_fingerprint(
                 _expected_source_hash,
                 _locked_terms,
@@ -26669,6 +26690,9 @@ class App(ctk.CTk):
                     cid_hint = req.get("custom_id", "?")
                     if not _req_has_ctx(req):
                         prev_pairs = []
+                    user_msg = req["body"]["messages"][1]
+                    user_msg["content"] = _inject_prev_tr(
+                        user_msg["content"], prev_pairs, max_pairs=self._context_lines)
                     # Çökme kurtarma: bu chunk önceki koşuda tamamlanmış → API'ye gönderme,
                     # yalnızca zinciri (prev_pairs) besle.
                     if cid_hint in raw_map:
@@ -26686,9 +26710,6 @@ class App(ctk.CTk):
                         completed[0] += 1
                         _hyb_tick()
                         continue
-                    user_msg = req["body"]["messages"][1]
-                    user_msg["content"] = _inject_prev_tr(
-                        user_msg["content"], prev_pairs, max_pairs=self._context_lines)
                     resumed_n, resumed_now = self._prefill_sync_ckpt(
                         [req], raw_map, scope=_ckpt_scope)
                     if resumed_n:
@@ -26725,7 +26746,10 @@ class App(ctk.CTk):
                             prev_pairs, _chain_pairs_from_chunk_response(
                                 req, text, fmap.get(cid, [])), self._context_lines)
                     except Exception as e:
-                        prev_pairs = []
+                        # Hatalı chunk zincire eklenmez; daha eski doğrulanmış bağlamı
+                        # sonraki aynı-sahne chunk'ı için koru.
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, [], self._context_lines)
                         with lock:
                             failed[0] += 1
                         self._log_exc(f"Chunk hatası [{cid_hint}] [{fname}]", e)
@@ -30433,6 +30457,15 @@ class App(ctk.CTk):
                                   character_styles, scene_emotions, idiom_map, cultural_refs)
 
                 # Batch isteği oluştur + gönder
+                if _analysis_ok:
+                    self._stage_series_memory_from_analysis(
+                        filepath, context, pronoun_map, tgt)
+                _file_locked_terms = _hybrid_file_locked_terms(
+                    (schema_dict or {}).get("glossary") or {},
+                    analysis_tuple,
+                    self._get_locked_terms_dict(filepath, tgt),
+                    tgt,
+                )
                 system_prompt = ht.build_system_prompt(
                     context, file_src, tgt,
                     schema=schema_dict,
@@ -30442,19 +30475,11 @@ class App(ctk.CTk):
                     character_styles=character_styles,
                     idiom_map=None,   # deyimler per-chunk 'idioms' payload'ında veriliyor — çift enjeksiyon olmasın
                     cultural_refs=cultural_refs,
+                    locked_terms=_file_locked_terms,
                 )
                 system_prompt += self._series_hint_for(filepath)
-                if _analysis_ok:
-                    self._stage_series_memory_from_analysis(
-                        filepath, context, pronoun_map, tgt)
                 if _file_pm is not None:
                     system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
-                _file_locked_terms = _hybrid_file_locked_terms(
-                    (schema_dict or {}).get("glossary") or {},
-                    analysis_tuple,
-                    self._get_locked_terms_dict(filepath, tgt),
-                    tgt,
-                )
                 _tm_fingerprint = _tm_context_fingerprint(
                     _expected_source_hash,
                     _file_locked_terms,

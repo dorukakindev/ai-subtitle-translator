@@ -43,6 +43,36 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
         self.assertEqual(merged._analysis_term_conflicts, ["The Order"])
         self.assertTrue(any("The Order" in message for _level, message in logs))
 
+    def test_uppercase_acronym_and_titlecase_term_survive_chunk_merge(self):
+        import hybrid_translate as ht
+
+        fake_models = types.ModuleType("subtitle_localizer.models")
+
+        class ContextMemory:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_models.ContextMemory = ContextMemory
+        fake_pkg = types.ModuleType("subtitle_localizer")
+        fake_pkg.models = fake_models
+        memories = [
+            SimpleNamespace(
+                source_language="en", summary="one", setting="", tone="",
+                characters=[], recurring_terms={"US": "ABD"}, scene_notes=[]),
+            SimpleNamespace(
+                source_language="en", summary="two", setting="", tone="",
+                characters=[], recurring_terms={"Us": "Biz"}, scene_notes=[]),
+        ]
+
+        with patch.dict(sys.modules, {
+            "subtitle_localizer": fake_pkg,
+            "subtitle_localizer.models": fake_models,
+        }), patch.object(ht, "_ensure_path", lambda: None):
+            merged = ht._merge_memories(memories, target_language="tr")
+
+        self.assertEqual(merged.recurring_terms, {"US": "ABD", "Us": "Biz"})
+        self.assertFalse(hasattr(merged, "_analysis_term_conflicts"))
+
     def test_failed_auxiliary_component_is_retried_once(self):
         import hybrid_translate as ht
 

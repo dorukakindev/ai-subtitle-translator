@@ -129,6 +129,72 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertEqual(prompts[0].count("SCENE_CONTEXT_SENTINEL"), 1)
         self.assertIn("applies to following lines", prompts[0])
 
+    def test_critic_rejects_whole_fragment_group_when_one_member_fails_guard(self):
+        cues = [
+            Cue(1, "This is", "00:00:00,000", "00:00:01,000"),
+            Cue(2, "a sentence.", "00:00:01,000", "00:00:02,000"),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Bu"),
+            (2, "00:00:01,000 --> 00:00:02,000", "bir cümledir."),
+        ]
+        fixes = [
+            {"id": "1", "fixed": "Bu bir"},
+            {"id": "2", "fixed": "cümledir."},
+        ]
+        validator_hits = [
+            (1, blocks[0][1], blocks[0][2], "GARBLE_TOKEN"),
+            (2, blocks[1][1], blocks[1][2], "GARBLE_TOKEN"),
+        ]
+        changes = []
+        status = {}
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hits), \
+             patch("hybrid_translate.validate_polish_candidate",
+                   side_effect=[(True, ""), (False, "person_drift")]), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}):
+            result = ht.critic_pass_with_helper(
+                cues, blocks, "test", change_log=changes, status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(changes, [])
+        self.assertEqual(status["rejected_count"], 2)
+        self.assertEqual(status["rejected_candidates"][0]["reason"],
+                         "fragment_group_member_rejected")
+        self.assertEqual(status["rejected_candidates"][1]["reason"], "person_drift")
+
+    def test_critic_does_not_count_unchanged_fragment_anchor_as_rejected(self):
+        cues = [
+            Cue(1, "This is", "00:00:00,000", "00:00:01,000"),
+            Cue(2, "a sentence.", "00:00:01,000", "00:00:02,000"),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Bu"),
+            (2, "00:00:01,000 --> 00:00:02,000", "bir cumle."),
+        ]
+        fixes = [
+            {"id": "1", "fixed": "Bu bir"},
+            {"id": "2", "fixed": "bir cumle."},
+        ]
+        validator_hits = [
+            (1, blocks[0][1], blocks[0][2], "GARBLE_TOKEN"),
+            (2, blocks[1][1], blocks[1][2], "GARBLE_TOKEN"),
+        ]
+        status = {}
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes, [])}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hits), \
+             patch("hybrid_translate.validate_polish_candidate",
+                   return_value=(False, "person_drift")), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}):
+            result = ht.critic_pass_with_helper(
+                cues, blocks, "test", status_out=status)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(status["rejected_count"], 1)
+        self.assertEqual([item["id"] for item in status["rejected_candidates"]], ["1"])
+
     def test_critic_records_rejected_candidate_without_editing(self):
         cues = [Cue(1, "Mary arrived.")]
         blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Mary geldi.")]

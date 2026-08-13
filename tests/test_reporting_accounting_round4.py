@@ -78,9 +78,12 @@ class ReportingAccountingRound4Test(unittest.TestCase):
         audit = gui._quality_feature_audit({
             "run_status": "done", "chain_ctx": True,
             "translation_chunks": 4,
+            "context_payload_metrics": {"chunks": 4, "prev_tr_chunks": 2},
         }, {"mode": "batch", "twowave": True})
 
-        self.assertIn("Zincirleme Bağlam: çalıştı, 4 chunk", audit)
+        self.assertIn(
+            "Zincirleme Bağlam: çalıştı, 2/4 chunk önceki çeviriyi aldı",
+            audit)
 
     def test_unknown_model_report_does_not_invent_a_usd_price(self):
         text = gui.build_quality_report_text(

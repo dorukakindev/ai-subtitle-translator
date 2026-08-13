@@ -184,6 +184,22 @@ class SyncCheckpointTest(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertNotEqual(second, third)
 
+    def test_fingerprint_separates_translation_temperature(self):
+        def var(value):
+            return SimpleNamespace(get=lambda: value)
+
+        app = SimpleNamespace(
+            _main_model_name=lambda: "gpt-5.4",
+            _main_api_base_url=lambda: "https://provider.example/v1",
+            tgt_var=var("Turkish"), profanity_var=var("Orta"),
+            style_var=var("natural"), content_type_var=var("Film"),
+            chain_ctx_var=var(True), _temperature=0.2,
+            _active_snapshot=None, _file_language_vars={},
+        )
+        first = gui.App._ckpt_fingerprint(app)
+        app._temperature = 0.7
+        self.assertNotEqual(first, gui.App._ckpt_fingerprint(app))
+
     def test_fingerprint_preserves_case_sensitive_endpoint_path(self):
         def var(value):
             return SimpleNamespace(get=lambda: value)
