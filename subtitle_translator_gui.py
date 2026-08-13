@@ -2252,7 +2252,8 @@ def _is_sdh_only(text: str) -> bool:
 
 def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                           max_gap_ms: int = MERGE_MAX_GAP_MS,
-                          only_continuation: bool = True) -> list:
+                          only_continuation: bool = True,
+                          source_cues=None) -> list:
     """Art arda gelen, aynı cümleye ait kısa cue'ları tek bloğa birleştirir
     (Amazon WEB-DL gibi kelime-kelime bölünmüş kaynaklar için).
 
@@ -2263,6 +2264,25 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
     diyalog/SDH değil. Birleştirilenler ≤2 satıra sarılır; bloklar yeniden numaralanır."""
     if not blocks or len(blocks) < 2:
         return list(blocks)
+    source_pairs = None
+    if source_cues is not None:
+        try:
+            source_blocks = []
+            for cue in source_cues:
+                if hasattr(cue, "index") and not callable(getattr(cue, "index")):
+                    source_blocks.append((
+                        cue.index, f"{cue.start} --> {cue.end}", str(cue.text or "")))
+                else:
+                    idx, ts, text = cue
+                    source_blocks.append((idx, ts, str(text or "")))
+            _frag_ids, source_groups = _fragment_groups_gui(source_blocks)
+            source_pairs = {
+                (str(left), str(right))
+                for group in source_groups
+                for left, right in zip(group.get("items", []), group.get("items", [])[1:])
+            }
+        except Exception:
+            source_pairs = None
     groups = []
     for idx, ts, text in blocks:
         parts = str(ts).split('-->')
@@ -2289,6 +2309,9 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                     and combined <= max_chars
                     and cps_ok
                     and not unresolved_boundary
+                    and (source_pairs is None
+                         or (str(g.get("last_id", g.get("id", ""))), str(idx))
+                         in source_pairs)
                     and (not only_continuation or not _ends_sentence_gui(_clean_src(g["text"])))
                     and not _is_dialogue_cue(g["text"]) and not _is_dialogue_cue(text)
                     and not _is_sdh_only(g["text"]) and not _is_sdh_only(text)):
@@ -2299,10 +2322,12 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                 joined = re.sub(r'\s*\n\s*', ' ', joined)                       # iç newline'ları boşluğa
                 joined = re.sub(r'</(i|b|u|font)>\s*<\1\b[^>]*>', ' ', joined)  # </i> <i> vb. sınırı topla
                 g["text"], g["end"], g["end_sec"] = joined.strip(), end_str, ce
+                g["last_id"] = idx
                 g["count"] += 1
                 continue
         groups.append({"id": idx, "start": start_str, "end": end_str, "start_sec": cs,
-                       "end_sec": ce, "text": text, "count": 1, "ts": ts})
+                       "end_sec": ce, "text": text, "count": 1, "ts": ts,
+                       "last_id": idx})
     out = []
     for i, g in enumerate(groups, 1):
         txt = _break_to_line_budget(g["text"], 2) if g["count"] > 1 else g["text"]
@@ -17689,9 +17714,11 @@ class App(ctk.CTk):
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"))
                 self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
+            source_cues = self._cached_blocks_for(file_path) if file_path else None
             out = merge_fragmented_cues(blocks,
                                         max_chars=self._merge_max_chars,
-                                        max_gap_ms=self._merge_max_gap_ms)
+                                        max_gap_ms=self._merge_max_gap_ms,
+                                        source_cues=source_cues)
             if len(out) < len(blocks):
                 self._log(f"Parçalı cue birleştirme: {len(blocks)} → {len(out)} blok", "ok")
             return out
@@ -23425,7 +23452,8 @@ class App(ctk.CTk):
                         blocks = merge_fragmented_cues(
                             blocks,
                             max_chars=job.get("merge_max_chars", MERGE_MAX_CHARS),
-                            max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS))
+                            max_gap_ms=job.get("merge_max_gap_ms", MERGE_MAX_GAP_MS),
+                            source_cues=orig_cues)
                         self._log(f"Parçalı cue birleştirme: {_before} → {len(blocks)} blok", "ok")
                     except Exception as e:
                         self._log(f"Cue birleştirme hatası: {e}", "warn")

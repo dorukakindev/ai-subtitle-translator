@@ -69,6 +69,26 @@ class MergeFragmentedCuesTest(unittest.TestCase):
              ("2", "00:00:02,000 --> 00:00:03,000", "Devam")]
         self.assertEqual(len(gui.merge_fragmented_cues(b)), 2)
 
+    def test_source_sentence_boundary_blocks_target_punctuation_merge(self):
+        ts1 = "00:00:01,000 --> 00:00:02,000"
+        ts2 = "00:00:02,000 --> 00:00:03,000"
+        source = [("1", ts1, "Are you coming?"), ("2", ts2, "No.")]
+        translated = [("1", ts1, "Geliyor musun"), ("2", ts2, "Hayır.")]
+
+        out = gui.merge_fragmented_cues(translated, source_cues=source)
+
+        self.assertEqual(len(out), 2)
+
+    def test_source_fragment_pair_still_merges_when_target_has_no_punctuation(self):
+        ts1 = "00:00:01,000 --> 00:00:02,000"
+        ts2 = "00:00:02,000 --> 00:00:03,000"
+        source = [("1", ts1, "Are you"), ("2", ts2, "coming?")]
+        translated = [("1", ts1, "Geliyor musun"), ("2", ts2, "değil mi?")]
+
+        out = gui.merge_fragmented_cues(translated, source_cues=source)
+
+        self.assertEqual(len(out), 1)
+
     def test_sdh_not_merged(self):
         b = [("1", "00:00:01,000 --> 00:00:02,000", "[Kapı kapanır]"),
              ("2", "00:00:02,000 --> 00:00:03,000", "Merhaba")]
