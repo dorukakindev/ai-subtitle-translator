@@ -10936,8 +10936,17 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
             if (not visible or visible.casefold() not in target_lines
                     or _source_cue_is_delivery_removable(visible)):
                 continue
-            if _is_untranslated(
-                    visible, visible, source_language=source_language):
+            reason = _untranslated_reason(
+                visible, visible, source_language=source_language)
+            source_is_english = (
+                source_language is None
+                or _lang_iso639_1(source_language) == "en")
+            foreign_name_line = (
+                source_is_english and reason == "identical_source"
+                and bool(re.search(r"[^\x00-\x7f]", visible))
+                and not bool(re.search(r"[.!?…]\s*$", visible))
+            )
+            if reason and not foreign_name_line:
                 flagged.append(str(idx))
                 break
     return flagged

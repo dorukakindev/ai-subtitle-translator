@@ -716,8 +716,9 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
     def test_delivery_fragment_guard_preserves_proper_names_and_titles(self):
         flagged = gui._delivery_untranslated_fragment_ids(
-            [("1", "00:00:01,000 --> 00:00:02,000", "Friends' Bar\nAllan Jordan")],
-            {"1": "Friends' Bar\nAllan Jordan"},
+            [("1", "00:00:01,000 --> 00:00:02,000",
+              "Friends' Bar\nAllan Jordan\nSlovenský filmový ústav\nsunar")],
+            {"1": "Friends' Bar\nAllan Jordan\nSlovenský filmový ústav\npresents"},
             target_language="Turkish", source_language="English")
 
         self.assertEqual(flagged, [])
