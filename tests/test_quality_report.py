@@ -645,6 +645,83 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["expected_removed_ids"], ["1", "2", "3", "4", "5"])
 
+    def test_delivery_audit_treats_wrapped_sound_of_as_expected_sdh(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n(LOUDER SOUND OF CHILDREN)\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\n(SOUND OF HAIR DRYERS)\n\n"
+                "3\n00:00:03,000 --> 00:00:04,000\nHello\n",
+                encoding="utf-8")
+            output.write_text(
+                "3\n00:00:03,000 --> 00:00:04,000\nMerhaba\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English")
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
+
+    def test_delivery_audit_treats_verified_bare_french_sdh_as_expected(self):
+        descriptions = [
+            "Musique d'intrigue", "Il rit", "Smacks",
+            "Chants des oiseaux", "On frappe aux carreaux",
+            "Elle ouvre le robinet L'eau coule", "Grondement du moteur",
+            "Moteurs de machines",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text("\n\n".join(
+                f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\n{text}"
+                for i, text in enumerate(descriptions, 1)
+            ) + "\n\n9\n00:00:09,000 --> 00:00:09,500\nBonjour\n",
+                encoding="utf-8")
+            output.write_text(
+                "9\n00:00:09,000 --> 00:00:09,500\nMerhaba\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English",
+                source_language="French")
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], [str(i) for i in range(1, 9)])
+
+    def test_delivery_audit_hard_gates_exact_untranslated_line_fragment(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source_blocks = [(
+                "1", "00:00:01,000 --> 00:00:03,000",
+                "I'm Allan Jordan,\nMrs. Regnier's lawyer.")]
+            translated = [(
+                "1", "00:00:01,000 --> 00:00:03,000",
+                "Ben Allan Jordan,\nMrs. Regnier's lawyer.")]
+            gui.write_srt(source, source_blocks, "English")
+            gui.write_srt(
+                output, gui._prepare_upload_ready_blocks(translated, "Turkish"),
+                "Turkish")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="Turkish",
+                source_language="English")
+
+        self.assertEqual(audit["untranslated_fragment_ids"], ["1"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
+
+    def test_delivery_fragment_guard_preserves_proper_names_and_titles(self):
+        flagged = gui._delivery_untranslated_fragment_ids(
+            [("1", "00:00:01,000 --> 00:00:02,000", "Friends' Bar\nAllan Jordan")],
+            {"1": "Friends' Bar\nAllan Jordan"},
+            target_language="Turkish", source_language="English")
+
+        self.assertEqual(flagged, [])
+
     def test_file_process_report_contains_full_pass_history(self):
         row = {
             "name": "episode.srt",

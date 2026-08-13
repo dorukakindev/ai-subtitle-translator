@@ -24,6 +24,22 @@ def _s(**kw):
 
 
 class MixedTermDetectionTest(unittest.TestCase):
+    def test_italic_speaker_labels_do_not_become_mixed_terms(self):
+        blocks = _b(
+            (1, "Neden olmasın?"),
+            (2, "Hayır."),
+            (3, "Görünmeli."),
+            (4, "Buna sevindim."),
+        )
+        src = _s(**{
+            "1": "<i>- JAKE: Why not?</i>",
+            "2": "<i>JAKE: No.</i>",
+            "3": "<i>- JAKE: Should she?</i>",
+            "4": "<i>JAKE: I'm glad.</i>",
+        })
+
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_multiple_unrelated_names_do_not_become_term_renderings(self):
         blocks = _b(
             (1, "Katalin Simo, 11 Aralik 1915."),

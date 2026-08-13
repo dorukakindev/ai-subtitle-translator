@@ -2973,7 +2973,15 @@ _DELIVERY_LANGUAGE_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
-    r"^(?:(?:petit|leger)\s+)?gemissement\s+de\s+(?:douleur|plaisir)[.!…]?\s*$",
+    r"^(?:"
+    r"(?:(?:petit|leger)\s+)?gemissement\s+de\s+(?:douleur|plaisir)|"
+    r"musique\s+(?:d'intrigue|intrigante|inquietante(?:\s+au\s+piano)?|"
+    r"douce\s+au\s+violon)|"
+    r"(?:il|elle)\s+rit|chants?\s+(?:des\s+)?oiseaux|"
+    r"on\s+frappe\s+aux\s+carreaux|"
+    r"elle\s+ouvre\s+le\s+robinet\s+l'eau\s+coule|"
+    r"grondement\s+du\s+moteur|moteurs?\s+de\s+machines|smacks"
+    r")[.!…]?\s*$",
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
@@ -3086,6 +3094,11 @@ def _is_delivery_sdh_only(text: str) -> bool:
     value = re.sub(r"^\s*[-–—]\s*(?=[\[(])", "", value)
     if not value:
         return False
+    if re.fullmatch(
+            r"[\[(]\s*(?:(?:louder|faint|distant)\s+)?sounds?\s+of\b"
+            r"[^\])\r\n]{1,100}[\])]",
+            value, re.IGNORECASE):
+        return True
     # Bare English sound descriptions are still non-dialogue, even when they
     # arrive without brackets and bypass the bracket-token parser below.
     bare_english_sdh = value.strip().strip("[](){} ")
@@ -7647,7 +7660,8 @@ _MIXED_TERM_SPEAKER_RE = re.compile(
 
 
 def _mixed_term_strip_speaker(text: str) -> str:
-    return _MIXED_TERM_SPEAKER_RE.sub('', text)
+    value = re.sub(r"</?(?:i|b|u)>", "", str(text or ""), flags=re.IGNORECASE)
+    return _MIXED_TERM_SPEAKER_RE.sub('', value)
 
 
 # Çeviri-tarafı "aday özel-isim" toplarken cümle-başı bağlaç/zarfları elemek için
@@ -10896,6 +10910,39 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     return lines
 
 
+def _delivery_visible_line(text: str) -> str:
+    value = re.sub(r"\{\\[^}]*\}", "", str(text or ""))
+    value = re.sub(r"</?(?:i|b|u)>", "", value, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
+                                        target_language="Turkish",
+                                        source_language=None) -> list[str]:
+    if normalize_language_name(target_language, allow_auto=False) != "Turkish":
+        return []
+    flagged = []
+    for idx, _timestamp, target_text in blocks or []:
+        source_text = str((source_map or {}).get(str(idx), "") or "")
+        if not source_text:
+            continue
+        target_lines = {
+            _delivery_visible_line(line).casefold()
+            for line in str(target_text or "").splitlines()
+            if _delivery_visible_line(line)
+        }
+        for source_line in source_text.splitlines():
+            visible = _delivery_visible_line(source_line)
+            if (not visible or visible.casefold() not in target_lines
+                    or _source_cue_is_delivery_removable(visible)):
+                continue
+            if _is_untranslated(
+                    visible, visible, source_language=source_language):
+                flagged.append(str(idx))
+                break
+    return flagged
+
+
 def _subtitle_delivery_audit(source_path: str, output_path: str,
                              target_language="Turkish", source_language=None) -> dict:
     audit = {
@@ -10997,6 +11044,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         key=lambda value: (0, int(value))
         if str(value).isdigit() else (1, str(value)),
     )
+    untranslated_fragment_ids = _delivery_untranslated_fragment_ids(
+        output_dialogue, output_source_map, target_language, source_language)
     unresolved_markers = sum(
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
         for text in output_texts)
@@ -11034,7 +11083,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     signature_mismatch = delivery_signatures != expected_signatures
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
-        delivery_owner_mismatch_ids,
+        delivery_owner_mismatch_ids, untranslated_fragment_ids,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
         residual_format_tags, residual_literal_newline_cues, hatted_letters,
         residual_control_chars,
@@ -11054,6 +11103,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "timestamp_mismatch_ids": timestamp_mismatches,
         "source_to_output_ids": source_to_output_ids,
         "delivery_owner_mismatch_ids": delivery_owner_mismatch_ids,
+        "untranslated_fragment_ids": untranslated_fragment_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_sdh_cues": residual_sdh_cues,
@@ -11092,6 +11142,7 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("missing_dialogue_ids"),
         audit.get("extra_dialogue_ids"),
         audit.get("timestamp_mismatch_ids"),
+        audit.get("untranslated_fragment_ids"),
         audit.get("unresolved_markers"),
         audit.get("residual_credit_cues"),
         audit.get("residual_sdh_cues"),
@@ -11158,6 +11209,7 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("extra_dialogue_ids", "Fazladan diyalog kimlikleri"),
         ("timestamp_mismatch_ids", "Zaman damgası uyuşmazlıkları"),
         ("delivery_owner_mismatch_ids", "Kaynak-cue sahiplik inceleme kimlikleri"),
+        ("untranslated_fragment_ids", "Satır içinde çevrilmeden kalan kaynak kimlikleri"),
         ("unresolved_markers", "Eksik çeviri işaretleri"),
         ("residual_credit_cues", "Kalan eski kredi cue'ları"),
         ("residual_sdh_cues", "Kalan SDH cue'ları"),
@@ -11359,6 +11411,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                 f"   Yapısal teslim denetimi : {delivery_audit.get('status')} | "
                 f"eksik diyalog={len(delivery_audit.get('missing_dialogue_ids') or [])}, "
                 f"zaman uyuşmazlığı={len(delivery_audit.get('timestamp_mismatch_ids') or [])}, "
+                f"satır içi kaynak kalıntısı={len(delivery_audit.get('untranslated_fragment_ids') or [])}, "
                 f"kalan kredi={delivery_audit.get('residual_credit_cues', 0)}, "
                 f"kalan SDH={delivery_audit.get('residual_sdh_cues', 0)}, "
                 f"eksik işareti={delivery_audit.get('unresolved_markers', 0)}")
@@ -11367,6 +11420,11 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                 lines.append(
                     "   >>> Kaynak-cue sahiplik incelemesi (rapor): "
                     f"{len(owner_ids)} cue ({', '.join(map(str, owner_ids))})")
+            fragment_ids = delivery_audit.get("untranslated_fragment_ids") or []
+            if fragment_ids:
+                lines.append(
+                    "   >>> Satır içinde çevrilmeden kalan kaynak: "
+                    f"{len(fragment_ids)} cue ({', '.join(map(str, fragment_ids))})")
         trace_txt = _format_pass_trace(r.get("pass_trace") or {})
         if trace_txt:
             lines.append(f"   {'Kalite geçişi kırılımı'.ljust(width)} : {trace_txt}")
