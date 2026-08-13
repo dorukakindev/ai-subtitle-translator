@@ -10820,6 +10820,15 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     extras.sort()
     output_texts = [text for _idx, _ts, text in output_dialogue]
     output_source_map = _delivery_source_map(output_dialogue, source_rows)
+    owner_source_map = _delivery_owner_source_map(
+        source_rows, source_to_output_ids)
+    delivery_owner_mismatch_ids = sorted(
+        _chunk_content_owner_mismatch_ids(
+            [{"i": idx, "t": text} for idx, _ts, text in output_dialogue],
+            owner_source_map),
+        key=lambda value: (0, int(value))
+        if str(value).isdigit() else (1, str(value)),
+    )
     unresolved_markers = sum(
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
         for text in output_texts)
@@ -10857,6 +10866,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     signature_mismatch = delivery_signatures != expected_signatures
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
+        delivery_owner_mismatch_ids,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
         residual_format_tags, residual_literal_newline_cues, hatted_letters,
         residual_control_chars,
@@ -10875,6 +10885,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "extra_dialogue_ids": extras,
         "timestamp_mismatch_ids": timestamp_mismatches,
         "source_to_output_ids": source_to_output_ids,
+        "delivery_owner_mismatch_ids": delivery_owner_mismatch_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_sdh_cues": residual_sdh_cues,
@@ -10978,6 +10989,7 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("expected_removed_ids", "Beklenen temizlenmiş kimlikler"),
         ("extra_dialogue_ids", "Fazladan diyalog kimlikleri"),
         ("timestamp_mismatch_ids", "Zaman damgası uyuşmazlıkları"),
+        ("delivery_owner_mismatch_ids", "Kaynak-cue sahiplik inceleme kimlikleri"),
         ("unresolved_markers", "Eksik çeviri işaretleri"),
         ("residual_credit_cues", "Kalan eski kredi cue'ları"),
         ("residual_sdh_cues", "Kalan SDH cue'ları"),
@@ -11182,6 +11194,11 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                 f"kalan kredi={delivery_audit.get('residual_credit_cues', 0)}, "
                 f"kalan SDH={delivery_audit.get('residual_sdh_cues', 0)}, "
                 f"eksik işareti={delivery_audit.get('unresolved_markers', 0)}")
+            owner_ids = delivery_audit.get("delivery_owner_mismatch_ids") or []
+            if owner_ids:
+                lines.append(
+                    "   >>> Kaynak-cue sahiplik incelemesi (rapor): "
+                    f"{len(owner_ids)} cue ({', '.join(map(str, owner_ids))})")
         trace_txt = _format_pass_trace(r.get("pass_trace") or {})
         if trace_txt:
             lines.append(f"   {'Kalite geçişi kırılımı'.ljust(width)} : {trace_txt}")

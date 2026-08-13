@@ -547,6 +547,46 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["extra_dialogue_ids"], [])
         self.assertFalse(gui._delivery_audit_has_hard_error(audit))
 
+    def test_delivery_audit_reports_cross_sentence_named_content_swap(self):
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source_blocks = [
+                ("1", "00:00:01,000 --> 00:00:02,000", "John arrived."),
+                ("2", "00:00:03,000 --> 00:00:04,000", "Mary waited."),
+            ]
+            translated = [
+                ("1", "00:00:01,000 --> 00:00:02,000", "Mary bekledi."),
+                ("2", "00:00:03,000 --> 00:00:04,000", "John geldi."),
+            ]
+            gui.write_srt(source, source_blocks, "English")
+            gui.write_srt(
+                output,
+                gui._prepare_upload_ready_blocks(translated, "Turkish"),
+                "Turkish")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="Turkish")
+
+        self.assertEqual(audit["delivery_owner_mismatch_ids"], ["1", "3"])
+        self.assertEqual(audit["status"], "review")
+        self.assertFalse(gui._delivery_audit_has_hard_error(audit))
+
+    def test_delivery_owner_map_allows_natural_fragment_information_shift(self):
+        source_rows = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "John did not"),
+            ("2", "00:00:02,001 --> 00:00:03,000", "leave Mary."),
+        ]
+
+        owner_map = gui._delivery_owner_source_map(
+            source_rows, {"1": "1", "2": "2"})
+        mismatches = gui._chunk_content_owner_mismatch_ids([
+            {"i": "1", "t": "John, Mary'yi"},
+            {"i": "2", "t": "terk etmedi."},
+        ], owner_map)
+
+        self.assertEqual(mismatches, set())
+
     def test_delivery_audit_hard_gates_extra_dialogue_without_credit_text(self):
         with tempfile.TemporaryDirectory() as td:
             source = Path(td) / "source.srt"
@@ -627,6 +667,22 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("#7", text)
         self.assertIn("Önce: Eski", text)
         self.assertIn("Sonra: Yeni", text)
+
+    def test_owner_mismatch_ids_are_visible_in_both_delivery_reports(self):
+        audit = {
+            "status": "review", "source_cues": 2, "output_cues": 2,
+            "missing_dialogue_ids": [], "timestamp_mismatch_ids": [],
+            "delivery_owner_mismatch_ids": ["4", "5"],
+        }
+        row = {"name": "episode.srt", "total": 2, "delivery_audit": audit}
+
+        summary = gui.build_quality_report_text(
+            [row], "gpt-5.4-mini", "Turkish", "sync", 0)
+        detail = gui._file_process_report_text(row, "run-1")
+
+        self.assertIn("Kaynak-cue sahiplik incelemesi (rapor): 2 cue (4, 5)",
+                      summary)
+        self.assertIn("Kaynak-cue sahiplik inceleme kimlikleri: 4, 5", detail)
 
     def test_pass_history_multi_pass_lines_are_reported(self):
         rows = [{
