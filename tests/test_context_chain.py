@@ -426,6 +426,15 @@ class EllipsisFragmentGuiTest(unittest.TestCase):
         self.assertEqual(tags["1"], "start")
         self.assertEqual(tags["2"], "end")
 
+    def test_military_and_french_titles_before_names_stay_one_sentence(self):
+        for title, surname in (("Capt.", "Conan arrived."),
+                               ("Gen.", "Della Rovere spoke."),
+                               ("Mme.", "Bovary waited.")):
+            with self.subTest(title=title):
+                tags = self._tags(f"I called {title}", surname)
+                self.assertEqual(tags["1"], "start")
+                self.assertEqual(tags["2"], "end")
+
     def test_title_abbreviation_before_new_reply_stays_separate(self):
         tags = self._tags("Yes, Dr.", "No, that is impossible.")
         self.assertEqual(tags["1"], "none")
@@ -468,6 +477,15 @@ class EllipsisFragmentHybridTest(unittest.TestCase):
         tags = self._tags("I spoke to Dr.", "Smith yesterday.")
         self.assertEqual(tags[1], "start")
         self.assertEqual(tags[2], "end")
+
+    def test_military_and_french_titles_before_names_stay_one_sentence(self):
+        for title, surname in (("Capt.", "Conan arrived."),
+                               ("Gen.", "Della Rovere spoke."),
+                               ("Mme.", "Bovary waited.")):
+            with self.subTest(title=title):
+                tags = self._tags(f"I called {title}", surname)
+                self.assertEqual(tags[1], "start")
+                self.assertEqual(tags[2], "end")
 
     def test_title_abbreviation_before_new_reply_stays_separate(self):
         tags = self._tags("Yes, Dr.", "No, that is impossible.")

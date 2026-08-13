@@ -385,7 +385,8 @@ def _ellipsis_continues(cur: str, nxt: str) -> bool:
 def _abbreviation_continues(cur: str, nxt: str) -> bool:
     current = str(cur or "").rstrip().rstrip('"\'»”)]} ')
     if not re.search(
-            r"(?:^|\s)(?:(?i:Mr|Mrs|Ms|Dr|Prof|Rev|Fr|Sr|Jr|St)|[A-Z])\.$",
+            r"(?:^|\s)(?:(?i:Mr|Mrs|Ms|Dr|Prof|Rev|Fr|Sr|Sra|Jr|St|"
+            r"Gen|Capt|Cpt|Col|Maj|Lt|Sgt|Mme|Mlle|Dra)|[A-Z])\.$",
             current):
         return False
     following = str(nxt or "").lstrip('"\'«“([{ ')
