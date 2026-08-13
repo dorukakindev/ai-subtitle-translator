@@ -10467,10 +10467,13 @@ def _turkish_person_signature(token: str) -> tuple[str, str] | None:
     word = _polish_norm(token)
     patterns = (
         (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])m$", "past_1sg"),
+        (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])n$", "past_2sg"),
         (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])$", "past_3sg"),
         (r"^(.{3,}?)(?:ıyor|iyor|uyor|üyor)um$", "present_1sg"),
+        (r"^(.{3,}?)(?:ıyor|iyor|uyor|üyor)sun$", "present_2sg"),
         (r"^(.{3,}?)(?:ıyor|iyor|uyor|üyor)$", "present_3sg"),
         (r"^(.{3,}?)(?:acağım|eceğim)$", "future_1sg"),
+        (r"^(.{3,}?)(?:acaksın|eceksin)$", "future_2sg"),
         (r"^(.{3,}?)(?:acak|ecek)$", "future_3sg"),
     )
     for pattern, signature in patterns:
@@ -10480,8 +10483,9 @@ def _turkish_person_signature(token: str) -> tuple[str, str] | None:
     return None
 
 
-def _has_turkish_person_drift(original_text: str, candidate_text: str) -> bool:
-    """Reject same-verb 1st-person -> 3rd-person edits without guessing syntax."""
+def _has_turkish_person_drift(original_text: str, candidate_text: str,
+                              source_text: str = "") -> bool:
+    """Reject source-backed same-verb person edits without guessing syntax."""
     old_signatures = [
         sig for token in re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", original_text)
         if (sig := _turkish_person_signature(token))
@@ -10497,6 +10501,15 @@ def _has_turkish_person_drift(original_text: str, candidate_text: str) -> bool:
             if old_kind.split("_", 1)[0] != new_kind.split("_", 1)[0]:
                 continue
             if old_kind.endswith("1sg") and new_kind.endswith("3sg"):
+                return True
+            if old_kind == new_kind:
+                continue
+            source = str(source_text or "")
+            old_person = old_kind.rsplit("_", 1)[-1]
+            new_person = new_kind.rsplit("_", 1)[-1]
+            if old_person == "1sg" and new_person == "2sg" and re.search(r"\bI\b", source):
+                return True
+            if old_person == "2sg" and new_person == "1sg" and re.search(r"\byou\b", source, re.IGNORECASE):
                 return True
     return False
 
@@ -10840,7 +10853,7 @@ def validate_polish_candidate(
         return False, "source_numbers"
     if src and _numeric_token_mismatch(src, new):
         return False, "source_numbers"
-    if _has_turkish_person_drift(old, new):
+    if _has_turkish_person_drift(old, new, src):
         return False, "person_drift"
     if _has_critical_fact_swap(old, new, src):
         return False, "critical_fact_swap"

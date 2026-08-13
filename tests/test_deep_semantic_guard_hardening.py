@@ -74,6 +74,13 @@ class TurkishMeaningGuardTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_modality")
 
+    def test_rejects_source_backed_first_to_second_person_verb_shift(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Onu gördüm.", "Onu gördün.", source_text="I saw him.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "person_drift")
+
     def test_allows_unclassified_rephrasing_of_source_obligation(self):
         ok, reason = ht.validate_polish_candidate(
             "Gitmek zorundasın.", "Git.", source_text="You must leave.",
