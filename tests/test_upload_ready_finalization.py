@@ -708,6 +708,15 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_release_site_promos_are_removed_but_film_credits_remain(self):
+        for source in (
+                "Downloaded from\nYTS.MX",
+                "Official YIFY movies site:\nYTS.MX"):
+            with self.subTest(source=source):
+                self.assertTrue(gui._source_cue_is_delivery_removable(source))
+        self.assertFalse(gui._source_cue_is_delivery_removable(
+            "Slovenský filmový ústav\npresents"))
+
     def test_bare_french_and_turkish_sdh_are_delivery_removable(self):
         for source in (
                 "Musique douce instrumentale", "Musique gaie populaire",

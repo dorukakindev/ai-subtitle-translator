@@ -2947,6 +2947,14 @@ _DELIVERY_CREDIT_COMPANION_RE = re.compile(
 _DELIVERY_CREDIT_LINE_CONTINUATION_RE = re.compile(
     r"^\s*(?:&|and\b|ve\b)\s*\S|"
     r"^\s*[^\s@]+@[^\s@]+(?:\s*[;:]-?[)D])?\s*$", re.IGNORECASE)
+_DELIVERY_RELEASE_AD_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:downloaded\s+from|indirildi(?:\s*:)?|official\s+yify\s+movies\s+site\s*:|"
+    r"resmi\s+yify\s+film\s+sitesi\s*:?)\s*\n\s*(?:yts(?:\.mx)?|yify)|"
+    r"(?:https?://|www\.)\S+"
+    r")\s*$",
+    re.IGNORECASE,
+)
 _DELIVERY_CREDIT_LABEL_RE = re.compile(
     r"^\s*(?:subtitles?|subtitler|subs?|translation|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?|script|metni|translator|çevir(?:i|en|men))\s*:\s*(.+?)\s*$",
@@ -3140,6 +3148,7 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
     if (_is_delivery_sdh_only(value)
             or _src_is_sdh_only(value)
             or _delivery_source_is_all_credit(value)
+            or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
             or _DELIVERY_BARE_SOURCE_SDH_RE.fullmatch(
                 sdh_cleaner._ascii_fold(value).strip())):
