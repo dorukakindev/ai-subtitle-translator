@@ -242,7 +242,9 @@ class PipelinePassParityTest(unittest.TestCase):
     def test_sync_hybrid_locks_analysis_terms_for_all_quality_passes(self):
         src = inspect.getsource(gui.App._run_sync_hybrid)
         self.assertIn("_analysis_locked_terms = ht.sanitize_glossary_for_turkish", src)
-        self.assertIn("**self._get_locked_terms_dict(filepath, tgt)", src)
+        self.assertIn("_locked_terms = _merge_locked_term_sources(", src)
+        self.assertIn("self._get_locked_terms_dict(filepath, tgt)", src)
+        self.assertIn("_expected_source_hash,\n                _locked_terms", src)
         self.assertGreaterEqual(src.count("locked_terms=_locked_terms"), 6)
         self.assertIn("glossary=_locked_terms", src)
         self.assertIn("locked_terms=_locked_terms,", src)
