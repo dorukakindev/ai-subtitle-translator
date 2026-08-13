@@ -663,6 +663,36 @@ class FragmentSyntaxHintPayloadTest(unittest.TestCase):
         self.assertEqual(
             [item["i"] for item in fourth["ctx"]], list(range(1, 31)))
 
+    def test_zero_context_does_not_expand_to_unbounded_gui_history(self):
+        srt = "".join(
+            f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},900\nLine {i}.\n\n"
+            for i in range(1, 7)
+        )
+        fd, fp = tempfile.mkstemp(suffix=".srt")
+        os.close(fd)
+        Path(fp).write_text(srt, encoding="utf-8")
+        try:
+            reqs, _ = gui.build_requests(
+                [fp], "English", "Turkish", "gpt-4.1-mini",
+                chunk_size=2, context_lines=0, lookahead_lines=0)
+            self.assertTrue(all(
+                "ctx" not in json.loads(req["body"]["messages"][1]["content"])
+                for req in reqs))
+        finally:
+            os.unlink(fp)
+
+    def test_zero_context_does_not_expand_to_unbounded_hybrid_history(self):
+        cues = [
+            self.Cue(i, f"00:00:{i:02d},000", f"00:00:{i:02d},900", f"Line {i}.")
+            for i in range(1, 7)
+        ]
+        reqs, _ = ht.build_batch_requests(
+            cues, "system", "gpt-4.1-mini",
+            chunk_size=2, context_lines=0, lookahead_lines=0)
+        self.assertTrue(all(
+            "ctx" not in json.loads(req["body"]["messages"][1]["content"])
+            for req in reqs))
+
     def test_hybrid_chain_context_does_not_inject_contextless_tm_text(self):
         class TM:
             def __init__(self):

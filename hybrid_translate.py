@@ -13011,6 +13011,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
         context_lines = CONTEXT_LINES
     if lookahead_lines is None:
         lookahead_lines = LOOKAHEAD_LINES
+    context_lines = max(0, int(context_lines))
+    lookahead_lines = max(0, int(lookahead_lines))
     scene_gap_sec = SCENE_GAP_SEC if scene_gap_sec is None else float(scene_gap_sec)
     temperature = 0.2 if temperature is None else float(temperature)
     json_instruction = JSON_INSTRUCTION
@@ -13148,7 +13150,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
                     item["tr"] = cached
                     tm.record_hit()
             chunk_ctx.append(item)
-        prev_ctx = (prev_ctx + chunk_ctx)[-context_lines:]
+        prev_ctx = ((prev_ctx + chunk_ctx)[-context_lines:]
+                    if context_lines else [])
         try:
             prev_end_sec = _ts_to_sec(chunk[-1].end)
         except Exception:

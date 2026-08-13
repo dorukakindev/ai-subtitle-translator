@@ -4388,6 +4388,8 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
         context_lines = CONTEXT_LINES
     if lookahead_lines is None:
         lookahead_lines = LOOKAHEAD_LINES
+    context_lines = max(0, int(context_lines))
+    lookahead_lines = max(0, int(lookahead_lines))
     scene_gap_sec = SCENE_GAP_SEC if scene_gap_sec is None else float(scene_gap_sec)
     temperature = 0.2 if temperature is None else float(temperature)
     sys_prompt = _build_sync_system_prompt(src, tgt, schema, profanity)
@@ -4518,7 +4520,8 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                 {"i": idx, "t": _clean_src(text)}
                 for (idx, ts, text) in chunk
             ]
-            prev_ctx = (prev_ctx + chunk_ctx)[-context_lines:]
+            prev_ctx = ((prev_ctx + chunk_ctx)[-context_lines:]
+                        if context_lines else [])
 
             # gpt-5/reasoning model checks
             _model_lower = model.lower()
