@@ -21,6 +21,34 @@ def _request(items):
     }
 
 
+class MissingRepairUnitsTest(unittest.TestCase):
+    def setUp(self):
+        self.items = [
+            {"i": 1, "t": "I want"},
+            {"i": 2, "t": "to leave."},
+            {"i": 3, "t": "Now."},
+        ]
+        self.groups = [{"id": "g1", "items": [1, 2]}]
+
+    def test_complete_fragment_sentence_is_repaired_as_one_unit(self):
+        units, deferred = gui._missing_repair_units(
+            self.items, self.groups, self.items[:2])
+        self.assertEqual([[item["i"] for item in unit] for unit in units], [[1, 2]])
+        self.assertEqual(deferred, set())
+
+    def test_partial_fragment_sentence_is_reported_not_retranslated_in_isolation(self):
+        units, deferred = gui._missing_repair_units(
+            self.items, self.groups, [self.items[0]])
+        self.assertEqual(units, [])
+        self.assertEqual(deferred, {"1"})
+
+    def test_unrelated_missing_cue_remains_single_cue_repair(self):
+        units, deferred = gui._missing_repair_units(
+            self.items, self.groups, [self.items[2]])
+        self.assertEqual([[item["i"] for item in unit] for unit in units], [[3]])
+        self.assertEqual(deferred, set())
+
+
 class PartialTranslationRetryTest(unittest.TestCase):
     def test_partial_json_never_retries_the_complete_chunk(self):
         items = [

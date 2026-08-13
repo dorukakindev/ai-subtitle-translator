@@ -6704,6 +6704,58 @@ def _missing_block_items(all_items: list, current_raw: str) -> list:
     ]
 
 
+def _missing_repair_units(all_items: list, sentence_groups: list,
+                          missing_items: list) -> tuple[list[list[dict]], set[str]]:
+    """Eksik cue'ları güvenli onarım isteklerine ayır.
+
+    Çok-cue bir cümlenin yalnız bir parçası eksikse, sağlam komşu cue'yu
+    değiştirmeden o parçayı yeniden çevirmek güvenilir değildir. Tüm grup
+    eksikse tek istekte korunur; kısmi grup ise teslim incelemesine bırakılır.
+    """
+    ordered_items = [item for item in (all_items or []) if isinstance(item, dict)
+                     and item.get("i") is not None]
+    by_id = {str(item["i"]): item for item in ordered_items}
+    missing_ids = {
+        str(item.get("i")) for item in (missing_items or [])
+        if isinstance(item, dict) and item.get("i") is not None
+    }
+    complete_groups = {}
+    deferred = set()
+    for group in sentence_groups or []:
+        if not isinstance(group, dict):
+            continue
+        group_ids = []
+        for value in group.get("items") or []:
+            sid = str(value)
+            if sid in by_id and sid not in group_ids:
+                group_ids.append(sid)
+        if len(group_ids) < 2:
+            continue
+        affected = set(group_ids) & missing_ids
+        if not affected:
+            continue
+        if set(group_ids).issubset(missing_ids):
+            for sid in group_ids:
+                complete_groups[sid] = group_ids
+        else:
+            deferred.update(affected)
+
+    units = []
+    emitted = set()
+    for item in ordered_items:
+        sid = str(item["i"])
+        if sid not in missing_ids or sid in deferred or sid in emitted:
+            continue
+        group_ids = complete_groups.get(sid)
+        if group_ids:
+            units.append([by_id[group_id] for group_id in group_ids])
+            emitted.update(group_ids)
+        else:
+            units.append([item])
+            emitted.add(sid)
+    return units, deferred
+
+
 def _is_upstream_provider_error(exc) -> bool:
     text = str(exc or "").lower()
     return any(marker in text for marker in (
@@ -18442,6 +18494,8 @@ class App(ctk.CTk):
         missing = _missing_block_items(all_items, current_raw)
         if not missing:
             return None
+        repair_units, deferred_fragment_ids = _missing_repair_units(
+            all_items, payload.get("sentence_groups") or [], missing)
 
         from response_integrity import parse_translation_payload
         expected_ids = {str(it.get("i")) for it in all_items if "i" in it}
@@ -18456,16 +18510,21 @@ class App(ctk.CTk):
         model   = req["body"]["model"]
         _ml     = model.lower()
         _no_temp = _ml.startswith(("gpt-5", "o1", "o3", "o4", "codex-"))
-        max_sub = 1
-        n_groups = len(missing)
+        n_requests = len(repair_units)
         recovery_kind = "sağlayıcı kurtarması" if len(missing) == len(all_items) else "kesilme kurtarması"
         self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
-                  f"{n_groups} küçük istekle tamamlanıyor ({recovery_kind})", "warn")
+                  f"{n_requests} küçük istekle tamamlanıyor ({recovery_kind})", "warn")
+        if deferred_fragment_ids:
+            self._log(
+                f"  ↳ {req['custom_id']}: {_fmt_align_ranges(sorted(deferred_fragment_ids))} "
+                "kısmi cümle grubu tek cue onarımına gönderilmedi; sağlam komşu "
+                "çeviriyi bozmamak için teslim incelemesine bırakıldı",
+                "warn")
 
-        for s in range(0, len(missing), max_sub):
+        for sub in repair_units:
             if self._stop_flag:
                 break
-            sub = [dict(item) for item in missing[s:s + max_sub]]
+            sub = [dict(item) for item in sub]
             sub_payload = {"tr": sub}
             sub_ids = {str(item.get("i")) for item in sub}
             complete_groups = []
