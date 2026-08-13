@@ -63,16 +63,17 @@ class TerraGuardTests(unittest.TestCase):
                               _update_tokens=lambda *a, **k: None)
         response = SimpleNamespace(
             usage=None,
-            choices=[SimpleNamespace(message=SimpleNamespace(content='[{"i":"2","t":"iki"}]'))],
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='[{"i":"1","t":"bir"},{"i":"2","t":"iki"}]'))],
         )
         with patch.object(gui, "_safe_chat_create", return_value=response) as create:
-            result = gui.App._resend_missing_blocks(app, object(), req, '[{"i":"1","t":"bir"}]')
+            result = gui.App._resend_missing_blocks(
+                app, object(), req, '[{"i":"1","t":""},{"i":"2","t":""}]')
         resent = json.loads(create.call_args.kwargs["messages"][1]["content"])
         for key in ("ctx", "next_ctx", "prev_scene", "scene", "idioms", "prev_tr", "glossary"):
             self.assertEqual(resent[key], payload[key])
-        self.assertNotIn("sentence_groups", resent)
-        self.assertNotIn("frag", resent["tr"][0])
-        self.assertNotIn("frag_group", resent["tr"][0])
+        self.assertEqual(resent["sentence_groups"], payload["sentence_groups"])
+        self.assertEqual([item["i"] for item in resent["tr"]], ["1", "2"])
         self.assertEqual(json.loads(result)[1]["t"], "iki")
 
 

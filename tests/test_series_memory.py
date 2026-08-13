@@ -136,6 +136,30 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(list(m._data["characters"]), ["Sam"])
         self.assertEqual(m._data["characters"]["Sam"]["style"], "blunt")
 
+    def test_turkish_dotted_character_case_variant_does_not_duplicate(self):
+        m = self._mem()
+        m.merge_characters({"İpek": ""})
+        m.merge_characters({"ipek": "resmi"})
+
+        self.assertEqual(list(m._data["characters"]), ["İpek"])
+        self.assertEqual(m._data["characters"]["İpek"]["style"], "resmi")
+
+    def test_english_i_character_case_variant_does_not_duplicate(self):
+        m = self._mem()
+        m.merge_characters({"Iris": ""})
+        m.merge_characters({"iris": "resmi"})
+
+        self.assertEqual(list(m._data["characters"]), ["Iris"])
+        self.assertEqual(m._data["characters"]["Iris"]["style"], "resmi")
+
+    def test_turkish_dotted_address_pair_does_not_duplicate(self):
+        m = self._mem()
+        m.merge_address_map([{"a": "İpek", "b": "Ali", "register": "siz"}])
+        m.merge_address_map([{"a": "ipek", "b": "ali", "register": "sen"}])
+
+        self.assertEqual(len(m._data["address_map"]), 1)
+        self.assertEqual(m._data["address_map"][0]["register"], "siz")
+
     def test_merge_address_map_pairwise_and_dict(self):
         m = self._mem()
         m.merge_address_map([{"a": "Sam", "b": "Chief", "register": "siz"}])

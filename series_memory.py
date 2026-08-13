@@ -15,6 +15,7 @@ Saklama: <input_dir>/.series_memory/<show-slug>.json
 import json
 import re
 import threading
+import unicodedata
 from pathlib import Path
 
 from app_state import _interprocess_lock, atomic_write_json
@@ -76,6 +77,11 @@ def _term_origin_key(value) -> str:
     if text.isupper() and any(ch.isalpha() for ch in text):
         return f"exact:{text}"
     return text.casefold()
+
+
+def _character_identity(value) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").strip().casefold())
+    return "".join(char for char in text if not unicodedata.combining(char)).replace("ı", "i")
 
 
 def _tv_root_info(filename: str):
@@ -362,19 +368,19 @@ class SeriesMemory:
                     items.append((ch["name"], ch.get("style") or ch.get("speaking_style") or ""))
                 elif hasattr(ch, "name"):
                     items.append((ch.name, getattr(ch, "speaking_style", "") or ""))
-        known = {str(key).strip().casefold(): key for key in c}
+        known = {_character_identity(key): key for key in c}
         for name, style in items:
             clean_name = str(name or "").strip()
             if not clean_name:
                 continue
-            canonical = known.get(clean_name.casefold())
+            canonical = known.get(_character_identity(clean_name))
             if canonical is None:
                 c[clean_name] = {"style": str(style or "").strip()}
-                known[clean_name.casefold()] = clean_name
+                known[_character_identity(clean_name)] = clean_name
                 tag = self._episode_tag(season, ep)
                 if tag:
                     self._data["character_origins"].setdefault(
-                        clean_name.casefold(), tag)
+                        _character_identity(clean_name), tag)
             elif (isinstance(c.get(canonical), dict)
                   and not c[canonical].get("style") and str(style or "").strip()):
                 c[canonical]["style"] = str(style).strip()
@@ -383,8 +389,8 @@ class SeriesMemory:
         """pairs: [{a, b, register}] (pairwise) | {name: register} (per-character)."""
         amap = self._data["address_map"]
         seen = {
-            (str(p.get("a") or "").strip().casefold(),
-             str(p.get("b") or "").strip().casefold())
+            (_character_identity(p.get("a")),
+             _character_identity(p.get("b")))
             for p in amap if isinstance(p, dict)
         }
         entries = []
@@ -398,7 +404,7 @@ class SeriesMemory:
                     entries.append({"a": str(p["a"]), "b": str(p.get("b") or ""),
                                     "register": str(p["register"])})
         for e in entries:
-            key = (e["a"].strip().casefold(), e["b"].strip().casefold())
+            key = (_character_identity(e["a"]), _character_identity(e["b"]))
             if key not in seen:
                 seen.add(key)
                 amap.append(e)

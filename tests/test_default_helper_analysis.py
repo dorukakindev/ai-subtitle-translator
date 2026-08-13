@@ -194,6 +194,39 @@ class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
         )
         self.assertEqual(pronouns, {"Alice-Bob": "sen"})
 
+    def test_auxiliary_maps_keep_turkish_dotted_character_names(self):
+        characters = [
+            SimpleNamespace(name="İpek", speaking_style="formal"),
+            SimpleNamespace(name="Ali", speaking_style="neutral"),
+        ]
+        context = SimpleNamespace(characters=characters, setting="", summary="")
+        examples_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "examples": {"ipek": ["Merhaba."]},
+                "styles": {"ipek": {"register": "formal", "dialect": "standard"}},
+            })))],
+        )
+        pronoun_response = SimpleNamespace(
+            usage=None,
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+                "pronoun_map": {"ipek-ali": "siz"},
+            })))],
+        )
+
+        with patch("openai.OpenAI"), patch.object(
+                ht, "_safe_chat_create",
+                side_effect=[examples_response, pronoun_response]):
+            examples, styles = ht._generate_character_examples(
+                characters, "Turkish", "key", "https://example.test/v1", "gpt-5.4")
+            pronouns = ht._generate_pronoun_map(
+                context, "Turkish", "key", "https://example.test/v1", "gpt-5.4")
+
+        self.assertEqual(examples, {"İpek": ["Merhaba."]})
+        self.assertEqual(
+            styles, {"İpek": {"register": "formal", "dialect": "standard"}})
+        self.assertEqual(pronouns, {"İpek-Ali": "siz"})
+
     def test_idiom_and_cultural_refs_must_exist_in_source_text(self):
         cues = [
             SimpleNamespace(

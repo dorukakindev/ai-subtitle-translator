@@ -338,7 +338,7 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", fake_chat_create):
             app._retry_hata(object(), raw_map, requests, max_rounds=1)
 
-    def test_empty_dialogue_retries_only_missing_cue(self):
+    def test_empty_dialogue_in_partial_fragment_group_is_deferred(self):
         app = gui.App.__new__(gui.App)
         app._stop_flag = False
         app._log = lambda *args, **kwargs: None
@@ -371,15 +371,10 @@ class RetryHataAdjacentDuplicateTest(unittest.TestCase):
         with patch.object(gui, "_safe_chat_create", fake_chat_create):
             app._retry_hata(object(), raw_map, [req], max_rounds=1)
 
-        self.assertEqual(len(calls), 1)
-        guard_messages = [m["content"] for m in calls[0]["messages"]]
-        retry_payload = json.loads(next(
-            m["content"] for m in calls[0]["messages"] if m.get("role") == "user"
-        ))
-        self.assertNotIn("sentence_groups", retry_payload)
-        self.assertEqual([item["i"] for item in retry_payload["tr"]], [2])
-        self.assertTrue(all("frag" not in it and "frag_group" not in it
-                            for it in retry_payload["tr"]))
+        self.assertEqual(calls, [])
+        repaired = json.loads(raw_map["chunk_1"])
+        self.assertEqual(repaired[0]["t"], "Sonraki satırın içeriği.")
+        self.assertEqual(repaired[1]["t"], "[HATA]")
 
     def test_missing_id_retries_whole_chunk(self):
         app = gui.App.__new__(gui.App)

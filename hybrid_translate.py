@@ -1628,19 +1628,19 @@ def _generate_character_examples(
             data.get("examples", {}), character_styles=data.get("styles", {})
         )
         known_names = {
-            str(character.name or "").strip().casefold(): str(character.name or "").strip()
+            _analysis_name_identity(character.name): str(character.name or "").strip()
             for character in characters[:6]
             if str(character.name or "").strip()
         }
         examples = {
-            known_names[name.casefold()]: lines
+            known_names[_analysis_name_identity(name)]: lines
             for name, lines in examples.items()
-            if name.casefold() in known_names
+            if _analysis_name_identity(name) in known_names
         }
         styles = {
-            known_names[name.casefold()]: info
+            known_names[_analysis_name_identity(name)]: info
             for name, info in styles.items()
-            if name.casefold() in known_names
+            if _analysis_name_identity(name) in known_names
         }
         return _analysis_aux_result(
             (examples, styles), status, "character_examples", True)
@@ -1726,13 +1726,13 @@ def _generate_pronoun_map(
                 pronoun_map=data.get("pronoun_map", {})
             )
             valid_pairs = {
-                f"{left}-{right}".casefold(): f"{left}-{right}"
+                _analysis_name_identity(f"{left}-{right}"): f"{left}-{right}"
                 for left in chars for right in chars if left != right
             }
             pronouns = {
-                valid_pairs[pair.casefold()]: form
+                valid_pairs[_analysis_name_identity(pair)]: form
                 for pair, form in pronouns.items()
-                if pair.casefold() in valid_pairs
+                if _analysis_name_identity(pair) in valid_pairs
             }
             return _analysis_aux_result(pronouns, status, "pronoun_map", True)
         except json.JSONDecodeError:
@@ -1748,13 +1748,13 @@ def _generate_pronoun_map(
                         pronoun_map=data.get("pronoun_map", {})
                     )
                     valid_pairs = {
-                        f"{left}-{right}".casefold(): f"{left}-{right}"
+                        _analysis_name_identity(f"{left}-{right}"): f"{left}-{right}"
                         for left in chars for right in chars if left != right
                     }
                     pronouns = {
-                        valid_pairs[pair.casefold()]: form
+                        valid_pairs[_analysis_name_identity(pair)]: form
                         for pair, form in pronouns.items()
-                        if pair.casefold() in valid_pairs
+                        if _analysis_name_identity(pair) in valid_pairs
                     }
                     return _analysis_aux_result(pronouns, status, "pronoun_map", True)
                 except Exception:
@@ -3413,6 +3413,11 @@ def _analysis_term_identity(source) -> str:
     return f"folded:{text.casefold()}"
 
 
+def _analysis_name_identity(value) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").strip().casefold())
+    return "".join(char for char in text if not unicodedata.combining(char)).replace("ı", "i")
+
+
 def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     _ensure_path()
     from subtitle_localizer.models import ContextMemory
@@ -3450,7 +3455,7 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     merged_chars = []
     for m in memories:
         for c in m.characters:
-            key = c.name.lower()
+            key = _analysis_name_identity(c.name)
             if key not in seen:
                 seen.add(key)
                 merged_chars.append(c)
