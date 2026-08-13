@@ -790,6 +790,27 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         )
         self.assertFalse(any("EKSİK" in text for _idx, _ts, text in result))
 
+    def test_ahd_creator_credit_is_removed(self):
+        credit = (
+            "Subtitles created using AHD Subtitles Maker Professional\n"
+            "E-mail: ahdsoftwares@hotmail.com"
+        )
+        self.assertTrue(gui._source_cue_is_delivery_removable(credit))
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            "Subtitles created by Basti"))
+
+    def test_middle_signature_avoids_out_of_order_overlap(self):
+        blocks = [
+            ("1", "00:00:00,000 --> 00:00:01,000", "Bir"),
+            ("2", "00:00:10,000 --> 00:00:12,000", "İki"),
+            ("3", "00:00:09,000 --> 00:00:10,500", "Üç"),
+            ("4", "00:00:14,000 --> 00:00:16,000", "Dört"),
+        ]
+        _pos, start, end = gui._delivery_middle_signature_slot(blocks)
+        dialogue = [gui._srt_timestamp_bounds(ts) for _idx, ts, _text in blocks]
+        self.assertFalse(any(start < other_end and other_start < end
+                             for other_start, other_end in dialogue))
+
     def test_embedded_source_credit_lines_do_not_remove_real_title(self):
         source = [("26", "00:00:02,000 --> 00:00:05,000",
                    "~ RUN MELOS! ~\nSubtitles by Odyssey\nOCR by Inactive (Subs.com.ru)")]

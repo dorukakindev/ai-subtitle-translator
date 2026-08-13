@@ -2927,6 +2927,8 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:/\S*)?\s*(?:$|\n)|"
     r"\bcopyright\s*(?:(?:©|\(c\))\s*)?\d{4}\b|"
     r"\brevised\s+(?:\w+\s+)?subtitles?\s*\n\s*by\s+\S+|"
+    r"\bsubtitles?\s+created\s+(?:using|by)\b|"
+    r"^\s*e-?mail\s*:\s*\S+@\S+\s*$|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
     r"\bocr\s+(?:by|:)\s*\S|\bsubti(?:tl|fl)ing\s*:\s*\S|"
@@ -3221,25 +3223,37 @@ def _delivery_middle_signature_slot(blocks: list):
         except ValueError:
             return None
         timed.append((pos, start, end))
-    first_start = timed[0][1]
-    last_end = timed[-1][2]
+    chronological = sorted(timed, key=lambda row: (row[1], row[2], row[0]))
+    first_start = min(row[1] for row in chronological)
+    last_end = max(row[2] for row in chronological)
     midpoint = (first_start + last_end) / 2
     candidates = []
-    for left, right in zip(timed, timed[1:]):
-        available = right[1] - left[2] - 2
+    left = chronological[0]
+    occupied_end = left[2]
+    for right in chronological[1:]:
+        available = right[1] - occupied_end - 2
         if available < 500:
+            if right[2] > occupied_end:
+                left = right
+                occupied_end = right[2]
             continue
-        slot_midpoint = (left[2] + right[1]) / 2
-        candidates.append((abs(slot_midpoint - midpoint), -available, left, right))
+        slot_midpoint = (occupied_end + right[1]) / 2
+        candidates.append((
+            abs(slot_midpoint - midpoint), -available,
+            right[0], occupied_end, right[1],
+        ))
+        if right[2] > occupied_end:
+            left = right
+            occupied_end = right[2]
     if not candidates:
         return None
-    _distance, neg_available, left, right = min(candidates)
+    _distance, neg_available, insert_pos, left_end, right_start = min(candidates)
     duration = min(2000, -neg_available)
-    gap_start = left[2] + 1
-    gap_end = right[1] - 1
+    gap_start = left_end + 1
+    gap_end = right_start - 1
     start = max(gap_start, int((gap_start + gap_end - duration) / 2))
     end = min(gap_end, start + duration)
-    return left[0] + 1, start, end
+    return insert_pos, start, end
 
 
 def _normalize_delivery_ids(blocks: list) -> list:
