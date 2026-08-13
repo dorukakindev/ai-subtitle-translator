@@ -26363,7 +26363,10 @@ class App(ctk.CTk):
                             raw_map[cid_r] = text
                             completed[0] += 1
                             used_ckpt_keys.add(f"{cid_r}:{src_h}")
-                        self._update_tokens(tok, cached=cached_tok)
+                        self._update_tokens(
+                            tok, cached=cached_tok, model=model,
+                            pass_name="Ana Çeviri", base_url=b_url,
+                            file_path=fp)
                         if _chunk_response_retry_reason(text, req):
                             self._retry_hata(
                                 client, raw_map, [req],
@@ -26410,7 +26413,11 @@ class App(ctk.CTk):
                             raw_map[cid] = text
                             completed[0] += 1
                             used_ckpt_keys.add(f"{cid}:{src_h}")
-                        self._update_tokens(tok, cached=cached_tok)
+                        req_path = file_map.get(cid, [(None, None, "")])[0][2]
+                        self._update_tokens(
+                            tok, cached=cached_tok, model=model,
+                            pass_name="Ana Çeviri", base_url=b_url,
+                            file_path=req_path)
                         self._save_sync_ckpt_entry(cid, text, src_h)
                     except Exception as e:
                         with lock:
@@ -27109,7 +27116,11 @@ class App(ctk.CTk):
                             raw_map[cid] = text
                             completed[0] += 1
                             used_ckpt_keys.add(f"{cid}:{src_h}")
-                        self._update_tokens(tok, cached=cached_tok)
+                        self._update_tokens(
+                            tok, cached=cached_tok, model=model,
+                            pass_name="Ana Çeviri",
+                            base_url=self._main_api_base_url(),
+                            file_path=filepath)
                         if _chunk_response_retry_reason(text, req):
                             self._retry_hata(
                                 client, raw_map, [req],
@@ -27147,7 +27158,11 @@ class App(ctk.CTk):
                                 raw_map[cid] = text
                                 completed[0] += 1
                                 used_ckpt_keys.add(f"{cid}:{src_h}")
-                            self._update_tokens(tok, cached=cached_tok)
+                            self._update_tokens(
+                                tok, cached=cached_tok, model=model,
+                                pass_name="Ana Çeviri",
+                                base_url=self._main_api_base_url(),
+                                file_path=filepath)
                             self._save_sync_ckpt_entry(cid, text, src_h)
                         except Exception as e:
                             with lock:
@@ -27269,38 +27284,50 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 _critic_change_log = []
                 _critic_status = {}
-                sorted_blocks = ht.critic_pass_with_helper(
-                    cues=cues,
-                    tr_blocks=sorted_blocks,
-                    helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
-                    tgt_lang=tgt,
-                    log_fn=self._log,
-                    glossary=_locked_terms,
-                    analysis_result=(context, char_examples, pronoun_map,
-                                     character_styles, scene_emotions,
-                                     idiom_map, cultural_refs),
-                    change_log=_critic_change_log,
-                    scene_gap_sec=float(self._snap_get(
-                        "scene_gap_seconds", self._scene_gap_seconds)),
-                    token_callback=App._token_callback_for_pass(
-                        self, self._helper_api_model("critic"), "Critic Pass",
-                        base_url=self._helper_api_base_url("critic"),
-                        file_path=filepath),
-                    cancel_context=self.__dict__.get(
-                        "_helper_request_canceller"),
-                    status_out=_critic_status,
-                    apply_changes=not bool(self._snap_get(
-                        "quality_report_only", True)),
-                )
-                _pass_status["Critic"] = dict(_critic_status)
-                if self._stop_flag:
-                    break
-                _record_pass_change(_pass_trace, "Critic", _before_pass, sorted_blocks, _pass_history)
-                self._write_critic_change_report(
-                    out_path, _critic_change_log,
-                    _critic_status.get("rejected_candidates", []),
-                    report_only=bool(self._snap_get(
-                        "quality_report_only", True)))
+                try:
+                    sorted_blocks = ht.critic_pass_with_helper(
+                        cues=cues,
+                        tr_blocks=sorted_blocks,
+                        helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
+                        tgt_lang=tgt,
+                        log_fn=self._log,
+                        glossary=_locked_terms,
+                        analysis_result=(context, char_examples, pronoun_map,
+                                         character_styles, scene_emotions,
+                                         idiom_map, cultural_refs),
+                        change_log=_critic_change_log,
+                        scene_gap_sec=float(self._snap_get(
+                            "scene_gap_seconds", self._scene_gap_seconds)),
+                        token_callback=App._token_callback_for_pass(
+                            self, self._helper_api_model("critic"), "Critic Pass",
+                            base_url=self._helper_api_base_url("critic"),
+                            file_path=filepath),
+                        cancel_context=self.__dict__.get(
+                            "_helper_request_canceller"),
+                        status_out=_critic_status,
+                        apply_changes=not bool(self._snap_get(
+                            "quality_report_only", True)),
+                    )
+                    _pass_status["Critic"] = dict(_critic_status)
+                    if self._stop_flag:
+                        break
+                    _record_pass_change(
+                        _pass_trace, "Critic", _before_pass, sorted_blocks,
+                        _pass_history)
+                    self._write_critic_change_report(
+                        out_path, _critic_change_log,
+                        _critic_status.get("rejected_candidates", []),
+                        report_only=bool(self._snap_get(
+                            "quality_report_only", True)))
+                except RequestCancelled:
+                    raise
+                except Exception as critic_error:
+                    sorted_blocks = _before_pass
+                    _pass_status["Critic"] = {
+                        "status": "failed", "error": str(critic_error)}
+                    self._log_exc(
+                        f"[{fname}] Critic Pass başarısız; ana çeviri korundu",
+                        critic_error)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
             if self.polish_var.get() and sorted_blocks and _quality_api_allowed:
@@ -27309,22 +27336,34 @@ class App(ctk.CTk):
                 self._log(f"Polish Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
                 _polish_status = {}
-                sorted_blocks = self._polish_pass(
-                    sorted_blocks, tgt,
-                    self._helper_api_key("polish"),
-                    self._helper_api_base_url("polish"),
-                    self._helper_api_model("polish"),
-                    src_map=_src_map_from_cues(cues),
-                    analysis_result=(context, char_examples, pronoun_map,
-                                     character_styles, scene_emotions, idiom_map, cultural_refs),
-                    locked_terms=_locked_terms,
-                    status_out=_polish_status)
-                _pass_status["Polish"] = dict(_polish_status)
-                if self._stop_flag:
-                    break
-                _record_pass_change(_pass_trace, "Polish", _before_pass, sorted_blocks, _pass_history)
-                if _polish_status.get("status") == "completed":
-                    self._log("Polish Pass tamamlandı", "ok")
+                try:
+                    sorted_blocks = self._polish_pass(
+                        sorted_blocks, tgt,
+                        self._helper_api_key("polish"),
+                        self._helper_api_base_url("polish"),
+                        self._helper_api_model("polish"),
+                        src_map=_src_map_from_cues(cues),
+                        analysis_result=(context, char_examples, pronoun_map,
+                                         character_styles, scene_emotions, idiom_map, cultural_refs),
+                        locked_terms=_locked_terms,
+                        status_out=_polish_status)
+                    _pass_status["Polish"] = dict(_polish_status)
+                    if self._stop_flag:
+                        break
+                    _record_pass_change(
+                        _pass_trace, "Polish", _before_pass, sorted_blocks,
+                        _pass_history)
+                    if _polish_status.get("status") == "completed":
+                        self._log("Polish Pass tamamlandı", "ok")
+                except RequestCancelled:
+                    raise
+                except Exception as polish_error:
+                    sorted_blocks = _before_pass
+                    _pass_status["Polish"] = {
+                        "status": "failed", "error": str(polish_error)}
+                    self._log_exc(
+                        f"[{fname}] Polish Pass başarısız; önceki sağlam metin korundu",
+                        polish_error)
 
             # ── Native Okuyucu Pass ───────────────────────────────────────────
             if self.native_var.get() and sorted_blocks and _quality_api_allowed:
@@ -27333,31 +27372,43 @@ class App(ctk.CTk):
                 self._log(f"Native Okuyucu Pass başlıyor ({len(sorted_blocks)} satır)...", "info")
                 _before_pass = list(sorted_blocks)
                 _native_status = {}
-                sorted_blocks = ht.native_reader_pass(
-                    tr_blocks=sorted_blocks,
-                    helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
-                    tgt_lang=tgt,
-                    log_fn=self._log,
-                    analysis_result=(context, char_examples, pronoun_map,
-                                     character_styles, scene_emotions, idiom_map, cultural_refs),
-                    token_callback=App._token_callback_for_pass(
-                        self, self._helper_api_model("critic"),
-                        "Native Okuyucu",
-                        base_url=self._helper_api_base_url("critic"),
-                        file_path=filepath),
-                    src_map=_src_map_from_cues(cues),
-                    locked_terms=_locked_terms,
-                    progress_callback=App._pass_progress_callback(
-                        self, filepath, "Native Okuyucu", 94.0, 96.0),
-                    scene_gap_sec=float(self._snap_get(
-                        "scene_gap_seconds", self._scene_gap_seconds)),
-                    cancel_context=self.__dict__.get("_helper_request_canceller"),
-                    status_out=_native_status,
-                )
-                _pass_status["Native"] = dict(_native_status)
-                if self._stop_flag:
-                    break
-                _record_pass_change(_pass_trace, "Native", _before_pass, sorted_blocks, _pass_history)
+                try:
+                    sorted_blocks = ht.native_reader_pass(
+                        tr_blocks=sorted_blocks,
+                        helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
+                        tgt_lang=tgt,
+                        log_fn=self._log,
+                        analysis_result=(context, char_examples, pronoun_map,
+                                         character_styles, scene_emotions, idiom_map, cultural_refs),
+                        token_callback=App._token_callback_for_pass(
+                            self, self._helper_api_model("critic"),
+                            "Native Okuyucu",
+                            base_url=self._helper_api_base_url("critic"),
+                            file_path=filepath),
+                        src_map=_src_map_from_cues(cues),
+                        locked_terms=_locked_terms,
+                        progress_callback=App._pass_progress_callback(
+                            self, filepath, "Native Okuyucu", 94.0, 96.0),
+                        scene_gap_sec=float(self._snap_get(
+                            "scene_gap_seconds", self._scene_gap_seconds)),
+                        cancel_context=self.__dict__.get("_helper_request_canceller"),
+                        status_out=_native_status,
+                    )
+                    _pass_status["Native"] = dict(_native_status)
+                    if self._stop_flag:
+                        break
+                    _record_pass_change(
+                        _pass_trace, "Native", _before_pass, sorted_blocks,
+                        _pass_history)
+                except RequestCancelled:
+                    raise
+                except Exception as native_error:
+                    sorted_blocks = _before_pass
+                    _pass_status["Native"] = {
+                        "status": "failed", "error": str(native_error)}
+                    self._log_exc(
+                        f"[{fname}] Native Okuyucu başarısız; önceki sağlam metin korundu",
+                        native_error)
 
             if (sorted_blocks and _quality_api_allowed
                     and (self.critic_var.get() or self.polish_var.get()
@@ -31649,9 +31700,7 @@ class App(ctk.CTk):
                     self._store_tm_pairs(
                         _final_blocks, _src_map, self._main_model_name(), tgt,
                         schema_name=file_schema_name, source_language=file_src,
-                        context_fingerprint=_tm_context_fingerprint(
-                            _expected_source_hash,
-                            self._get_locked_terms_dict(filepath, tgt)))
+                        context_fingerprint=_tm_fingerprint)
                 if (not _hybrid_quality_failed and analysis_ok
                         and _n_filled == 0 and not any(
                         str(text or "").startswith("[HATA")

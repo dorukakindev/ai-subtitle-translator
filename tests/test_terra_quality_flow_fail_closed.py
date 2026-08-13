@@ -45,6 +45,27 @@ class QualityFlowFailClosedTests(unittest.TestCase):
                 self.assertIn(f'_pass_status["{name}"]', source)
         self.assertGreaterEqual(source.count('"status": "failed"'), 5)
 
+    def test_sync_hybrid_rolls_back_unexpected_surface_pass_failures(self):
+        source = inspect.getsource(gui.App._run_sync_hybrid)
+        for pass_name, error_name in (
+                ("Critic", "critic_error"),
+                ("Polish", "polish_error"),
+                ("Native", "native_error")):
+            with self.subTest(pass_name=pass_name):
+                catch = source.index(f"except Exception as {error_name}:")
+                rollback = source.index("sorted_blocks = _before_pass", catch)
+                failed = source.index(
+                    f'_pass_status["{pass_name}"] = {{', rollback)
+                self.assertLess(catch, rollback)
+                self.assertLess(rollback, failed)
+
+    def test_sync_translation_usage_has_explicit_pass_and_file(self):
+        for method in (gui.App._run_sync, gui.App._run_sync_hybrid):
+            with self.subTest(method=method.__name__):
+                source = inspect.getsource(method)
+                self.assertIn('pass_name="Ana Çeviri"', source)
+                self.assertIn("file_path=", source)
+
     def test_hybrid_review_failures_are_recorded(self):
         for method in (gui.App._wait_batch_hybrid, gui.App._run_hybrid):
             with self.subTest(method=method.__name__):

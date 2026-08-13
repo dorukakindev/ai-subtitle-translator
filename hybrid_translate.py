@@ -10648,12 +10648,14 @@ _CRITICAL_FACT_GROUPS = (
 )
 
 _SOURCE_MODALITY_PATTERNS = {
+    "possibility": re.compile(
+        r"\b(?:may|might|could)\b|\bcan\s+[a-z]+\b|"
+        r"\b(?:be|is|are|was|were)\s+able\s+to\b",
+        re.IGNORECASE),
     "obligation": re.compile(
         r"\b(?:must|have\s+to|has\s+to|had\s+to|need\s+to|needs\s+to|"
-        r"required\s+to|require(?:s|d)?\s+to|obliged\s+to)\b", re.IGNORECASE),
-    "possibility": re.compile(
-        r"\b(?:may|might|could)\b|\b(?:be|is|are|was|were)\s+able\s+to\b",
-        re.IGNORECASE),
+        r"required\s+to|require(?:s|d)?\s+to|obliged\s+to|"
+        r"should\s+[a-z]+|ought\s+to)\b", re.IGNORECASE),
     "future": re.compile(
         r"\b(?:will|shall)\b|\b(?:am|is|are)\s+going\s+to\b", re.IGNORECASE),
     "intent": re.compile(
@@ -10700,6 +10702,69 @@ def _has_source_backed_modality_drift(source_text: str, old: str, new: str) -> b
         if kind not in new_classes and (new_classes - {kind}):
             return True
     return False
+
+
+_SOURCE_FREQUENCY_PATTERNS = {
+    "always": re.compile(r"\b(?:always|every\s+time)\b", re.IGNORECASE),
+    "often": re.compile(r"\b(?:often|frequently|usually)\b", re.IGNORECASE),
+    "sometimes": re.compile(r"\b(?:sometimes|occasionally)\b", re.IGNORECASE),
+    "rarely": re.compile(r"\b(?:rarely|seldom|hardly\s+ever)\b", re.IGNORECASE),
+}
+
+_TURKISH_FREQUENCY_PATTERNS = {
+    "always": re.compile(r"\b(?:her\s+zaman|daima|hep)\b", re.IGNORECASE),
+    "often": re.compile(r"\b(?:sık\s+sık|çoğu\s+zaman|genellikle)\b", re.IGNORECASE),
+    "sometimes": re.compile(r"\b(?:bazen|ara\s+sıra|kimi\s+zaman)\b", re.IGNORECASE),
+    "rarely": re.compile(r"\b(?:nadiren|seyrek(?:en)?)\b", re.IGNORECASE),
+}
+
+
+def _has_source_backed_frequency_drift(source_text: str, old: str, new: str) -> bool:
+    source_classes = {
+        kind for kind, pattern in _SOURCE_FREQUENCY_PATTERNS.items()
+        if pattern.search(source_text or "")
+    }
+    if not source_classes:
+        return False
+    old_classes = {
+        kind for kind, pattern in _TURKISH_FREQUENCY_PATTERNS.items()
+        if pattern.search(old or "")
+    }
+    new_classes = {
+        kind for kind, pattern in _TURKISH_FREQUENCY_PATTERNS.items()
+        if pattern.search(new or "")
+    }
+    return bool(source_classes & old_classes and new_classes and new_classes != old_classes)
+
+
+def _has_source_backed_quantity_drift(source_text: str, old: str, new: str) -> bool:
+    source = str(source_text or "")
+    if re.search(r"\b(?:less|fewer)\b", source, re.IGNORECASE):
+        expected = "less"
+    elif re.search(r"\bmore\b", source, re.IGNORECASE):
+        expected = "more"
+    else:
+        return False
+    old_fold = _turkish_ascii_fold(_polish_norm(old)).casefold()
+    new_fold = _turkish_ascii_fold(_polish_norm(new)).casefold()
+    old_class = (
+        "less" if re.search(r"\bdaha\s+az\b", old_fold)
+        else "more" if re.search(r"\bdaha\s+(?:cok|fazla)\b", old_fold)
+        else ""
+    )
+    new_class = (
+        "less" if re.search(r"\bdaha\s+az\b", new_fold)
+        else "more" if re.search(r"\bdaha\s+(?:cok|fazla)\b", new_fold)
+        else ""
+    )
+    return old_class == expected and bool(new_class) and new_class != old_class
+
+
+def _has_source_backed_approximation_loss(source_text: str, old: str, new: str) -> bool:
+    if not re.search(r"\b(?:almost|nearly)\b", source_text or "", re.IGNORECASE):
+        return False
+    marker = re.compile(r"\b(?:neredeyse|hemen\s+hemen|az\s+kalsın)\b", re.IGNORECASE)
+    return bool(marker.search(old or "")) and not marker.search(new or "")
 
 _TURKISH_REPETITION_MARKER_RE = re.compile(
     r"\b(?:tekrar|yeniden|yine|gene)\b|\bbir\s+daha\b", re.IGNORECASE)
@@ -10857,6 +10922,12 @@ def validate_polish_candidate(
         return False, "source_repetition_addition"
     if src and _has_source_backed_modality_drift(src, old, new):
         return False, "source_modality"
+    if src and _has_source_backed_frequency_drift(src, old, new):
+        return False, "source_frequency"
+    if src and _has_source_backed_quantity_drift(src, old, new):
+        return False, "source_quantity"
+    if src and _has_source_backed_approximation_loss(src, old, new):
+        return False, "source_approximation"
     if src and _question_mark_mismatch(src, new):
         return False, "source_question"
     if src and _has_question_main_content_drift(src, old, new):

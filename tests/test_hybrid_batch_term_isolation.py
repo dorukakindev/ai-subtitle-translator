@@ -32,7 +32,7 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         source = inspect.getsource(gui.App)
 
         self.assertNotIn("context_fingerprint=_expected_source_hash", source)
-        self.assertGreaterEqual(source.count("_tm_context_fingerprint("), 7)
+        self.assertGreaterEqual(source.count("_tm_context_fingerprint("), 6)
 
     def test_each_file_builds_an_isolated_locked_term_set(self):
         first = gui._hybrid_file_locked_terms(
@@ -121,6 +121,15 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         phase_two = source.split("FAZ 2", 1)[1]
 
         self.assertIn("locked_terms=_file_locked_terms", phase_two)
+
+    def test_hybrid_batch_stores_tm_with_the_same_effective_fingerprint(self):
+        source = inspect.getsource(gui.App._run_hybrid)
+        store = source.index("self._store_tm_pairs(")
+        store_end = source.index("if (not _hybrid_quality_failed", store)
+        self.assertIn(
+            "context_fingerprint=_tm_fingerprint",
+            source[store:store_end],
+        )
 
 
 if __name__ == "__main__":

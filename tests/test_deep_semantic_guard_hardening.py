@@ -74,6 +74,43 @@ class TurkishMeaningGuardTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_modality")
 
+    def test_rejects_source_backed_should_to_possibility(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gitmelisin.", "Gidebilirsin.", source_text="You should leave.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_modality")
+
+    def test_rejects_source_backed_ability_to_obligation(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gidebilir.", "Gitmek zorunda.", source_text="He can leave.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_modality")
+
+    def test_rejects_source_backed_frequency_swap(self):
+        ok, reason = ht.validate_polish_candidate(
+            "O her zaman gelir.", "O bazen gelir.",
+            source_text="He always comes.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_frequency")
+
+    def test_rejects_source_backed_less_to_more_swap(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Ona daha az para verdim.", "Ona daha çok para verdim.",
+            source_text="I gave him less money.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_quantity")
+
+    def test_rejects_source_backed_almost_deletion(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Neredeyse öldü.", "Öldü.", source_text="He almost died.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_approximation")
+
     def test_rejects_source_backed_first_to_second_person_verb_shift(self):
         ok, reason = ht.validate_polish_candidate(
             "Onu gördüm.", "Onu gördün.", source_text="I saw him.",
