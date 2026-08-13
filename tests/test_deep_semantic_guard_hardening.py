@@ -58,6 +58,14 @@ class TurkishMeaningGuardTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "person_drift")
 
+    def test_rejects_dative_recipient_swap_when_subject_is_retained(self):
+        ok, reason = ht.validate_polish_candidate(
+            "O ona verdi.", "O bana verdi.",
+            source_text="He gave it to her.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "critical_fact_swap")
+
     def test_rejects_source_backed_plural_loss(self):
         ok, reason = ht.validate_polish_candidate(
             "Çocuklar geldi.", "Çocuk geldi.",
