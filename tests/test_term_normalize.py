@@ -358,6 +358,40 @@ class NormalizeMixedTermsTest(unittest.TestCase):
         self.assertEqual(status["status"], "partial")
         self.assertEqual(status["partial_chunks"], 1)
 
+    def test_identical_duplicate_id_is_reported_partial_but_safe_items_apply(self):
+        blocks = _b(
+            (1, "Troy kuşatması başladı."),
+            (2, "Sonra Troy yıkıldı."),
+            (3, "Truva'nın kalıntıları bulundu."),
+            (4, "Ama Troy hâlâ tartışmalı."),
+            (5, "Truva'ya dair yeni kanıtlar var."),
+        )
+        src = _s(**{
+            "1": "The Troy siege began.", "2": "Then Troy fell.",
+            "3": "The ruins of Troy were found.", "4": "But Troy is still disputed.",
+            "5": "New evidence about Troy exists.",
+        })
+        fixes = [
+            {"id": "1", "tr": "Truva kuşatması başladı."},
+            {"id": "1", "tr": "Truva kuşatması başladı."},
+            {"id": "2", "tr": "Sonra Truva yıkıldı."},
+            {"id": "4", "tr": "Ama Truva hâlâ tartışmalı."},
+        ]
+        status = {}
+        import sys
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module(fixes)}):
+            result, n = gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model",
+                locked_terms={"Troy": "Truva"}, status_out=status)
+
+        self.assertEqual(n, 3)
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual(status["successful_chunks"], 0)
+        self.assertEqual(status["partial_chunks"], 1)
+        self.assertEqual(
+            {idx: text for idx, _ts, text in result}["1"],
+            "Truva kuşatması başladı.")
+
     def test_missing_usage_is_reported_for_term_normalization(self):
         blocks = _b(
             (1, "Troy kuşatması başladı."),

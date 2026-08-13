@@ -59,6 +59,29 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         self.assertNotIn("Priest", first)
         self.assertNotIn("Captain", second)
 
+    def test_effective_file_terms_resolve_casefold_conflicts_by_precedence(self):
+        terms = gui._hybrid_file_locked_terms(
+            {"Oracle": "Kahin"},
+            (SimpleNamespace(recurring_terms={"oracle": "Kehanet"}),),
+            {"oracle": "Kullanıcı Kararı"},
+            "Turkish",
+        )
+
+        self.assertEqual(terms, {"oracle": "Kullanıcı Kararı"})
+
+    def test_analysis_term_changes_tm_fingerprint(self):
+        source_hash = "b" * 64
+        static = {"Oracle": "Kahin"}
+        first = gui._hybrid_file_locked_terms(
+            static, (SimpleNamespace(recurring_terms={}),), {}, "Turkish")
+        changed = gui._hybrid_file_locked_terms(
+            static, (SimpleNamespace(recurring_terms={"Vessel": "Kap"}),), {}, "Turkish")
+
+        self.assertNotEqual(
+            gui._tm_context_fingerprint(source_hash, first),
+            gui._tm_context_fingerprint(source_hash, changed),
+        )
+
     def test_phase_two_reuses_current_file_terms_for_every_quality_pass(self):
         source = inspect.getsource(gui.App._run_hybrid)
         phase_two = source.split("FAZ 2", 1)[1]
@@ -66,8 +89,16 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         self.assertIn("_file_locked_terms = _hybrid_file_locked_terms(", phase_two)
         self.assertIn("locked_terms=_file_locked_terms", phase_two)
         self.assertIn("glossary=_file_locked_terms", phase_two)
+        self.assertIn("_tm_context_fingerprint(\n                    _expected_source_hash,\n                    _file_locked_terms", source)
         self.assertNotIn("dict(glossary or {})", phase_two)
         self.assertNotIn('getattr(context, "recurring_terms"', phase_two)
+
+    def test_sync_hybrid_uses_effective_locks_for_tm_and_chunk_glossary(self):
+        source = inspect.getsource(gui.App._run_sync_hybrid)
+
+        self.assertIn("_locked_terms = _merge_locked_term_sources(", source)
+        self.assertIn("_expected_source_hash,\n                _locked_terms", source)
+        self.assertIn("chunk_size=self._chunk_size, glossary=_locked_terms", source)
 
 
 if __name__ == "__main__":

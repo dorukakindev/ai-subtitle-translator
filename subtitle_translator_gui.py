@@ -4177,7 +4177,8 @@ def _make_smart_chunks_gui(blocks: list, chunk_size: int, frag_tags=None,
                         break
             # Never cut inside a fragment group — ama chunk'ı şişirme: sert tavan koy
             # (grup MAX_FRAG_GROUP ile sınırlı; yine de noktasız uç durumda güvence)
-            _frag_ceiling = min(n, i + chunk_size + MAX_FRAG_GROUP)
+            # Sahne hizalamasından sonraki tam fragment grubu için tavan.
+            _frag_ceiling = min(n, end + MAX_FRAG_GROUP)
             while (end < _frag_ceiling
                    and frag_tags.get(blocks[end - 1][0]) in ("start", "mid")):
                 end += 1
@@ -5199,8 +5200,15 @@ def _chain_pairs_from_chunk_response(req: dict, raw, info: list) -> list:
     req.pop("_chain_break_reason", None)
     try:
         translated = parse_response(raw, info)
-        return _chain_pairs_from_result(
+        pairs = _chain_pairs_from_result(
             req["body"]["messages"][1]["content"], translated) or []
+        if reason == "cue_content_owner_mismatch":
+            items = json.loads(_extract_json_array(raw))
+            owner_map = (_chunk_leak_src_map_from_request(req)
+                         or _chunk_src_map_from_request(req))
+            bad_ids = _chunk_content_owner_mismatch_ids(items, owner_map)
+            return [pair for pair in pairs if str(pair["i"]) not in bad_ids]
+        return pairs
     except Exception:
         req["_chain_break_reason"] = "chain_parse_error"
         return []
@@ -5256,14 +5264,14 @@ def _hybrid_file_locked_terms(schema_terms, analysis_tuple, file_terms,
 
     context = analysis_tuple[0] if analysis_tuple else None
     analysis_terms = getattr(context, "recurring_terms", {}) if context else {}
-    return {
-        **ht.sanitize_glossary_for_turkish(
+    return _merge_locked_term_sources(
+        ht.sanitize_glossary_for_turkish(
             dict(schema_terms or {}), target_language=target_language),
-        **ht.sanitize_glossary_for_turkish(
+        ht.sanitize_glossary_for_turkish(
             dict(analysis_terms or {}), target_language=target_language),
-        **ht.sanitize_glossary_for_turkish(
+        ht.sanitize_glossary_for_turkish(
             dict(file_terms or {}), target_language=target_language),
-    }
+    )
 
 
 def _repair_locked_term_violation_detail(src: str, candidate: str,
@@ -8153,6 +8161,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             continue
         chunk_results = {}
         conflicting_ids = set()
+        duplicate_ids = set()
         for item in data:
             if not isinstance(item, dict):
                 continue
@@ -8160,16 +8169,23 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             new_text = item.get("tr")
             if rid not in chunk_ids or not isinstance(new_text, str):
                 continue
-            if rid in chunk_results and chunk_results[rid] != new_text:
-                conflicting_ids.add(rid)
+            if rid in chunk_results:
+                if chunk_results[rid] != new_text:
+                    conflicting_ids.add(rid)
+                else:
+                    duplicate_ids.add(rid)
                 continue
             chunk_results.setdefault(rid, new_text)
         for rid in conflicting_ids:
             chunk_results.pop(rid, None)
-        complete_response = not conflicting_ids and set(chunk_results) == chunk_ids
+        complete_response = (
+            not conflicting_ids and not duplicate_ids
+            and set(chunk_results) == chunk_ids
+        )
         if not complete_response and log_fn:
+            invalid_ids = sorted(conflicting_ids | duplicate_ids)
             missing_ids = sorted(chunk_ids - set(chunk_results))
-            detail = ", ".join(missing_ids[:8]) or "çelişkili kimlik"
+            detail = ", ".join((missing_ids or invalid_ids)[:8]) or "geçersiz kimlik"
             log_fn(
                 f"Terim normalizasyonu paketi eksik/çelişkili JSON döndürdü; "
                 f"yalnız güvenli dönen cue'lar uygulanacak ({detail})", "warn")
@@ -26535,16 +26551,16 @@ class App(ctk.CTk):
             _analysis_locked_terms = ht.sanitize_glossary_for_turkish(
                 dict(getattr(context, "recurring_terms", {}) or {}),
                 target_language=tgt)
-            _locked_terms = {
-                **_analysis_locked_terms,
-                **self._get_locked_terms_dict(filepath, tgt),
-            }
-            _tm_fingerprint = _tm_context_fingerprint(
-                _expected_source_hash,
+            _locked_terms = _merge_locked_term_sources(
+                _analysis_locked_terms,
                 self._get_locked_terms_dict(filepath, tgt),
             )
+            _tm_fingerprint = _tm_context_fingerprint(
+                _expected_source_hash,
+                _locked_terms,
+            )
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
-                                                        chunk_size=self._chunk_size, glossary=glossary,
+                                                        chunk_size=self._chunk_size, glossary=_locked_terms,
                                                         scene_emotions=scene_emotions,
                                                         idiom_map=idiom_map,
                                                         tm=self._tm,
@@ -30433,15 +30449,21 @@ class App(ctk.CTk):
                         filepath, context, pronoun_map, tgt)
                 if _file_pm is not None:
                     system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+                _file_locked_terms = _hybrid_file_locked_terms(
+                    (schema_dict or {}).get("glossary") or {},
+                    analysis_tuple,
+                    self._get_locked_terms_dict(filepath, tgt),
+                    tgt,
+                )
                 _tm_fingerprint = _tm_context_fingerprint(
                     _expected_source_hash,
-                    self._get_locked_terms_dict(filepath, tgt),
+                    _file_locked_terms,
                 )
                 self._record_file_status(
                     filepath, "İstek Hazırlığı", "running")
                 requests, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                           chunk_size=self._chunk_size,
-                                                          glossary=glossary,
+                                                          glossary=_file_locked_terms,
                                                           scene_emotions=scene_emotions,
                                                           idiom_map=idiom_map,
                                                           tm=self._tm,

@@ -198,6 +198,24 @@ class ChainPairsFromResultTest(unittest.TestCase):
         self.assertEqual(pairs, [{"i": 1, "tr": "Merhaba."}])
         self.assertNotIn("_chain_break_reason", req)
 
+    def test_owner_mismatched_translation_does_not_feed_chain(self):
+        req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
+            "tr": [
+                {"i": 1, "t": "Alpha says hello."},
+                {"i": 2, "t": "Bravo says hello."},
+            ]
+        })}]}}
+        raw = json.dumps([
+            {"i": 1, "t": "Bravo diyor."},
+            {"i": 2, "t": "Bravo diyor."},
+        ])
+        pairs = gui._chain_pairs_from_chunk_response(
+            req, raw,
+            [(1, "00:00:00,000 --> 00:00:01,000", "source.srt"),
+             (2, "00:00:01,000 --> 00:00:02,000", "source.srt")])
+        self.assertEqual(pairs, [{"i": 2, "tr": "Bravo diyor."}])
+        self.assertNotIn("_chain_break_reason", req)
+
     def test_real_invalid_response_is_recorded_as_chain_break(self):
         req = {"body": {"messages": [{}, {"role": "user", "content": "{}"}]}}
         with patch.object(
@@ -626,6 +644,16 @@ class SceneAlignedChunkGuiTest(unittest.TestCase):
         self.assertEqual([grouped["1"], grouped["2"]], ["start", "end"])
         self.assertEqual([broken["1"], broken["2"]], ["none", "none"])
 
+    def test_scene_aligned_cut_keeps_late_fragment_group_whole(self):
+        blocks = self._blocks(40, gap_after=30)
+        tags = {block[0]: "none" for block in blocks}
+        for cue_id in range(28, 38):
+            tags[str(cue_id)] = (
+                "start" if cue_id == 28 else "end" if cue_id == 37 else "mid")
+        chunks = gui._make_smart_chunks_gui(blocks, 25, frag_tags=tags)
+        first_ids = {block[0] for block in chunks[0]}
+        self.assertTrue({str(i) for i in range(28, 38)}.issubset(first_ids))
+
 
 class SceneAlignedChunkHybridTest(unittest.TestCase):
     class Cue:
@@ -670,6 +698,16 @@ class SceneAlignedChunkHybridTest(unittest.TestCase):
         broken = ht._tag_fragments(cues, scene_gap_sec=3.0)
         self.assertEqual([grouped[1], grouped[2]], ["start", "end"])
         self.assertEqual([broken[1], broken[2]], ["none", "none"])
+
+    def test_scene_aligned_cut_keeps_late_fragment_group_whole(self):
+        cues = self._cues(40, gap_after=30)
+        tags = {cue.index: "none" for cue in cues}
+        for cue_id in range(28, 38):
+            tags[cue_id] = (
+                "start" if cue_id == 28 else "end" if cue_id == 37 else "mid")
+        chunks = ht._make_smart_chunks(cues, 25, frag_tags=tags)
+        first_ids = {cue.index for cue in chunks[0]}
+        self.assertTrue(set(range(28, 38)).issubset(first_ids))
 
 
 class UnpunctuatedGuardGuiTest(unittest.TestCase):

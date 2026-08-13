@@ -57,6 +57,78 @@ class CriticFragmentFlowTest(unittest.TestCase):
         self.assertIn('"id": "1"', prompts[0])
         self.assertNotIn('"id": "2"', prompts[0])
 
+    def test_critic_omits_structural_neighbor_across_scene_gap(self):
+        cues = [
+            Cue(1, "OLD_SCENE_SENTINEL.", "00:00:01,000", "00:00:02,000"),
+            Cue(2, "NEW_SCENE_SENTINEL.", "00:00:04,000", "00:00:05,000"),
+        ]
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "Eski sahne."),
+            (2, "00:00:04,000 --> 00:00:05,000", "Yeni sahne."),
+        ]
+        prompts = []
+        validator_hit = [(2, blocks[1][1], blocks[1][2], "SPEAKER_LABEL_MISMATCH")]
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hit):
+            ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                scene_gap_sec=1.0,
+            )
+
+        self.assertEqual(len(prompts), 1)
+        self.assertIn('"id": "2"', prompts[0])
+        self.assertNotIn('"prev": {"id": "1"', prompts[0])
+
+    def test_critic_keeps_structural_neighbor_when_scene_gaps_disabled(self):
+        cues = [
+            Cue(1, "OLD_SCENE_SENTINEL.", "00:00:01,000", "00:00:02,000"),
+            Cue(2, "NEW_SCENE_SENTINEL.", "00:00:04,000", "00:00:05,000"),
+        ]
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "Eski sahne."),
+            (2, "00:00:04,000 --> 00:00:05,000", "Yeni sahne."),
+        ]
+        prompts = []
+        validator_hit = [(2, blocks[1][1], blocks[1][2], "SPEAKER_LABEL_MISMATCH")]
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hit):
+            ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                scene_gap_sec=0,
+            )
+
+        self.assertIn('"prev": {"id": "1"', prompts[0])
+
+    def test_critic_deduplicates_same_scene_context_within_chunk(self):
+        cues = [
+            Cue(1, "SOURCE_ONE."),
+            Cue(2, "SOURCE_TWO."),
+        ]
+        blocks = [
+            (1, "00:00:00,000 --> 00:00:01,000", "Bir okay."),
+            (2, "00:00:01,000 --> 00:00:02,000", "İki okay."),
+        ]
+        prompts = []
+        validator_hits = [
+            (1, blocks[0][1], blocks[0][2], "GARBLE_TOKEN"),
+            (2, blocks[1][1], blocks[1][2], "GARBLE_TOKEN"),
+        ]
+        analysis = (SimpleNamespace(), {}, {}, {}, [{
+            "start": 1, "end": 2, "summary": "SCENE_CONTEXT_SENTINEL",
+        }])
+
+        with patch.dict(sys.modules, {"openai": self._fake_openai_module([], prompts)}), \
+             patch("hybrid_translate.run_validators", return_value=validator_hits):
+            ht.critic_pass_with_helper(
+                cues=cues, tr_blocks=blocks, helper_api_key="test",
+                analysis_result=analysis,
+            )
+
+        self.assertEqual(prompts[0].count("SCENE_CONTEXT_SENTINEL"), 1)
+        self.assertIn("applies to following lines", prompts[0])
+
     def test_critic_records_rejected_candidate_without_editing(self):
         cues = [Cue(1, "Mary arrived.")]
         blocks = [(1, "00:00:00,000 --> 00:00:01,000", "Mary geldi.")]

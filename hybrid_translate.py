@@ -543,7 +543,8 @@ def _make_smart_chunks(cues: list, chunk_size: int, frag_tags: dict = None,
             # Never cut inside a fragment group: if the last cue in this
             # chunk is 'start' or 'mid', push forward until we hit 'end' —
             # ama sert tavan koy ki noktasız uç durumda chunk şişmesin
-            _frag_ceiling = min(n, i + chunk_size + MAX_FRAG_GROUP)
+            # Sahne hizalamasından sonraki tam fragment grubu için tavan.
+            _frag_ceiling = min(n, end + MAX_FRAG_GROUP)
             while (end < _frag_ceiling
                    and frag_tags.get(cues[end - 1].index) in ("start", "mid")):
                 end += 1
@@ -11692,6 +11693,22 @@ def critic_pass_with_helper(
     tr_text_by_id = {str(b[0]): b[2] for b in result}
     gap_limit = float(
         SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
+    cue_pos_by_id = {str(c.index): pos for pos, c in enumerate(cues)}
+
+    def _same_scene_neighbors(left_id: str, right_id: str) -> bool:
+        if gap_limit <= 0:
+            return True
+        left_pos = cue_pos_by_id.get(str(left_id))
+        right_pos = cue_pos_by_id.get(str(right_id))
+        if left_pos is None or right_pos is None:
+            return True
+        if right_pos != left_pos + 1:
+            return False
+        try:
+            return (_ts_to_sec(cues[right_pos].start)
+                    - _ts_to_sec(cues[left_pos].end)) < gap_limit
+        except Exception:
+            return True
     frag_tags = {}
     frag_group_by_id = {}
     if cues:
@@ -11942,11 +11959,13 @@ def critic_pass_with_helper(
             break
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         pairs = []
+        last_scene_context = None
         for idx, ts, text in chunk:
             pair = {"id": str(idx), "orig": orig_dict.get(str(idx), ""), "tr": text}
             local_scene = _scene_context_for_chunk(scene_plan, idx, idx)
-            if local_scene:
+            if local_scene and local_scene != last_scene_context:
                 pair["scene"] = local_scene
+            last_scene_context = local_scene or None
             duration = _block_duration(str(ts))
             if duration > 0:
                 pair["d"] = round(duration, 2)
@@ -11977,14 +11996,16 @@ def critic_pass_with_helper(
                 )
                 if any(token in reason for token in structural_reasons):
                     pos = idx_to_pos.get(str(idx))
-                    if pos is not None and pos > 0:
+                    if (pos is not None and pos > 0
+                            and _same_scene_neighbors(result_ids[pos - 1], sid)):
                         prev_id = result_ids[pos - 1]
                         pair["prev"] = {
                             "id": prev_id,
                             "orig": orig_dict.get(prev_id, ""),
                             "tr": tr_text_by_id.get(prev_id, ""),
                         }
-                    if pos is not None and pos + 1 < len(result_ids):
+                    if (pos is not None and pos + 1 < len(result_ids)
+                            and _same_scene_neighbors(sid, result_ids[pos + 1])):
                         next_id = result_ids[pos + 1]
                         pair["next"] = {
                             "id": next_id,
@@ -12053,6 +12074,8 @@ def critic_pass_with_helper(
             f"negation, or speaker ownership.\n\n"
             f"Fix ONLY lines that have real problems — ignore stylistic preferences.\n\n"
             f"Lines:\n{pairs_payload}\n\n"
+            f"SCENE CONTEXT: when a line has a 'scene' field, that scene context applies to following "
+            f"lines until another 'scene' field appears.\n\n"
             f'Return ONLY fixes as JSON array: [{{"id":"5","fixed":"..."}}]\n'
             f"Return [] only if there are no real problems and no must_fix_flow=true items."
         )
