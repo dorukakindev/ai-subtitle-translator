@@ -48,6 +48,50 @@ class MissingRepairUnitsTest(unittest.TestCase):
         self.assertEqual([[item["i"] for item in unit] for unit in units], [[3]])
         self.assertEqual(deferred, set())
 
+    def test_resend_keeps_a_whole_fragment_sentence_in_one_request(self):
+        request = _request(self.items)
+        payload = json.loads(request["body"]["messages"][1]["content"])
+        payload["sentence_groups"] = self.groups
+        request["body"]["messages"][1]["content"] = json.dumps(payload)
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._log = MagicMock()
+        raw = json.dumps([
+            {"i": 1, "t": "[HATA]"},
+            {"i": 2, "t": "[HATA]"},
+            {"i": 3, "t": "Şimdi."},
+        ])
+
+        with patch.object(gui, "_safe_chat_create",
+                          side_effect=gui.RequestCancelled("stop")) as send:
+            gui.App._resend_missing_blocks(app, object(), request, raw)
+
+        sent = json.loads(send.call_args.kwargs["messages"][1]["content"])
+        self.assertEqual([item["i"] for item in sent["tr"]], [1, 2])
+        self.assertEqual(sent["sentence_groups"], self.groups)
+
+    def test_resend_does_not_send_an_isolated_fragment_member(self):
+        request = _request(self.items)
+        payload = json.loads(request["body"]["messages"][1]["content"])
+        payload["sentence_groups"] = self.groups
+        request["body"]["messages"][1]["content"] = json.dumps(payload)
+        app = gui.App.__new__(gui.App)
+        app._stop_flag = False
+        app._log = MagicMock()
+        raw = json.dumps([
+            {"i": 1, "t": "[HATA]"},
+            {"i": 2, "t": "Ayrılmak istiyorum."},
+            {"i": 3, "t": "Şimdi."},
+        ])
+
+        with patch.object(gui, "_safe_chat_create") as send:
+            result = gui.App._resend_missing_blocks(app, object(), request, raw)
+
+        send.assert_not_called()
+        result_by_id = {item["i"]: item["t"] for item in json.loads(result)}
+        self.assertEqual(result_by_id[1], "[HATA]")
+        self.assertIn("teslim incelemesine", str(app._log.call_args_list))
+
 
 class PartialTranslationRetryTest(unittest.TestCase):
     def test_partial_json_never_retries_the_complete_chunk(self):
