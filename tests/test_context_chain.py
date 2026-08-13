@@ -475,6 +475,42 @@ class EllipsisFragmentHybridTest(unittest.TestCase):
         self.assertEqual(tags[2], "none")
 
 
+class LongVerifiedSentenceFragmentTest(unittest.TestCase):
+    TS = "00:00:01,000 --> 00:00:02,000"
+
+    class Cue:
+        def __init__(self, index, text):
+            self.index = index
+            self.text = text
+
+    def test_gui_keeps_twelve_cue_sentence_with_explicit_period(self):
+        texts = [f"sentence fragment {i}," for i in range(1, 12)] + ["final predicate."]
+        blocks = [(str(i + 1), self.TS, text) for i, text in enumerate(texts)]
+        tags = gui._tag_fragments_gui(blocks)
+        self.assertEqual(tags["1"], "start")
+        self.assertEqual(tags["12"], "end")
+        self.assertEqual(len(gui._make_smart_chunks_gui(
+            blocks, 5, frag_tags=tags)[0]), 12)
+
+    def test_hybrid_keeps_twelve_cue_sentence_with_explicit_period(self):
+        texts = [f"sentence fragment {i}," for i in range(1, 12)] + ["final predicate."]
+        cues = [self.Cue(i + 1, text) for i, text in enumerate(texts)]
+        tags = ht._tag_fragments(cues)
+        self.assertEqual(tags[1], "start")
+        self.assertEqual(tags[12], "end")
+        self.assertEqual(len(ht._make_smart_chunks(
+            cues, 5, frag_tags=tags)[0]), 12)
+
+    def test_unpunctuated_twelve_cue_tail_is_not_forced_into_one_sentence(self):
+        texts = [f"caption fragment {i}" for i in range(1, 13)]
+        blocks = [(str(i + 1), self.TS, text) for i, text in enumerate(texts)]
+        cues = [self.Cue(i + 1, text) for i, text in enumerate(texts)]
+        self.assertTrue(all(
+            tag == "none" for tag in gui._tag_fragments_gui(blocks).values()))
+        self.assertTrue(all(
+            tag == "none" for tag in ht._tag_fragments(cues).values()))
+
+
 class FragmentSyntaxHintPayloadTest(unittest.TestCase):
     SRT = (
         "1\n00:00:01,000 --> 00:00:02,000\nYou can only leave this island,\n\n"

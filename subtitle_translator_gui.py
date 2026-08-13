@@ -4034,7 +4034,9 @@ SCENE_GAP_SEC    = 3.0   # seconds; larger gap = new scene → reset rolling con
 # kapanmayan bir dizi gerçek bir cümle değildir → dosyada noktalama yok demektir
 # (ör. otomatik üretilmiş altyazı). O durumda frag mantığı güvenilmez; grubu bağımsız
 # bırakırız ki chunk'lama serbestçe bölebilsin (model sürekliliği next_ctx'ten anlar).
-MAX_FRAG_GROUP   = 10
+MAX_FRAG_GROUP   = 30
+MAX_UNPUNCTUATED_FRAG_GROUP = 10
+MAX_FRAG_GROUP_CHARS = 2400
 CPS_WARN_LIMIT   = 24    # chars/sec; Turkish naturally longer than English (21→24)
 
 def _ts_to_sec_gui(ts_str: str) -> float:
@@ -4168,9 +4170,14 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
                 for k in group:
                     tags[blocks[k][0]] = "none"
                 continue
-            # GÜVENLİK: aşırı uzun "kapanmayan" grup = noktalama yok (gerçek cümle değil).
-            # Hepsini bağımsız (none) bırak → chunk'lama serbest böler, dev chunk oluşmaz.
-            if len(group) > MAX_FRAG_GROUP:
+            explicitly_closed = _closes(group[-1])
+            group_char_count = sum(
+                len(_clean_src(blocks[k][2])) for k in group)
+            group_limit = (
+                MAX_FRAG_GROUP if explicitly_closed
+                else MAX_UNPUNCTUATED_FRAG_GROUP)
+            if (len(group) > group_limit
+                    or group_char_count > MAX_FRAG_GROUP_CHARS):
                 for k in group:
                     tags[blocks[k][0]] = "none"
                 continue

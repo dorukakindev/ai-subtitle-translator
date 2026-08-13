@@ -137,7 +137,9 @@ LOOKAHEAD_LINES = 15  # next-chunk cues sent as read-ahead
 SCENE_GAP_SEC   = 3.0   # gap ≥ this resets rolling context (new scene)
 # Bir çok-satırlı cümle fragman grubu en fazla bu kadar cue sürebilir; daha uzun
 # kapanmayan dizi = noktalamasız dosya (gerçek cümle değil) → bağımsız bırakılır.
-MAX_FRAG_GROUP  = 10
+MAX_FRAG_GROUP  = 30
+MAX_UNPUNCTUATED_FRAG_GROUP = 10
+MAX_FRAG_GROUP_CHARS = 2400
 CPS_WARN_LIMIT = 24    # characters/second — Turkish naturally longer than English; 24 is safe for TR subs
 
 ANALYSIS_DEPTH_LABELS = ("Standart", "Gelismis", "Maksimum")
@@ -457,9 +459,14 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
                 for k in group:
                     tags[cues[k].index] = "none"
                 continue
-            # GÜVENLİK: aşırı uzun "kapanmayan" grup = noktalama yok (gerçek cümle değil).
-            # Hepsini bağımsız (none) bırak → chunk'lama serbest böler, dev chunk oluşmaz.
-            if len(group) > MAX_FRAG_GROUP:
+            explicitly_closed = _closes(group[-1])
+            group_char_count = sum(
+                len(_clean_source_text(cues[k].text)) for k in group)
+            group_limit = (
+                MAX_FRAG_GROUP if explicitly_closed
+                else MAX_UNPUNCTUATED_FRAG_GROUP)
+            if (len(group) > group_limit
+                    or group_char_count > MAX_FRAG_GROUP_CHARS):
                 for k in group:
                     tags[cues[k].index] = "none"
                 continue
