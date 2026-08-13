@@ -7122,6 +7122,14 @@ def _is_provider_unavailable_error(exc) -> bool:
     )
 
 
+def _should_offer_provider_recovery(exc) -> bool:
+    return (
+        not _is_permanent_provider_error(exc)
+        and (_is_transient_retry_error(exc)
+             or _is_provider_unavailable_error(exc))
+    )
+
+
 def _is_permanent_provider_error(exc) -> bool:
     text = str(exc or "").lower()
     status = getattr(exc, "status_code", None)
@@ -12490,6 +12498,9 @@ class App(ctk.CTk):
         self._log_lock       = threading.Lock()   # log dosyası concurrent write
         self._worker_lock    = threading.Lock()
         self._worker_threads = set()
+        self._provider_recovery_condition = threading.Condition()
+        self._provider_recovery_active = False
+        self._provider_recovery_generation = 0
         self._credential_save_lock = threading.Lock()
         self._main_custom_key_save_generation = 0
         self._selected_files = []   # manually picked files; empty = use input folder
@@ -24542,6 +24553,279 @@ class App(ctk.CTk):
             event.wait(timeout=poll_interval)
         return "completed"
 
+    def _probe_main_provider_once(self, client, model: str, file_path: str = ""):
+        body = {
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": "API health check. Reply with exactly OK.",
+            }],
+            "max_completion_tokens": 128,
+            "timeout": 45,
+        }
+        try:
+            import hybrid_translate as ht
+            body = ht._normalize_chat_create_kwargs(model, body)
+        except Exception:
+            pass
+        request_client = client
+        try:
+            request_client = client.with_options(max_retries=0)
+        except (AttributeError, TypeError):
+            pass
+        cancel_context = self.__dict__.get("_helper_request_canceller")
+        if cancel_context is not None:
+            cancel_context.raise_if_cancelled()
+            cancel_context.register(request_client)
+        try:
+            from provider_retry import provider_call_with_retry
+            response = provider_call_with_retry(
+                lambda: request_client.chat.completions.create(**body),
+                request_client,
+                model,
+                {"operation": "provider_health_probe"},
+                cancel_check=(cancel_context.is_cancelled
+                              if cancel_context is not None else None),
+                retry_delays=(),
+            )
+            _validated_chat_content(response)
+            _report_response_usage(
+                _app_token_callback(
+                    self, model, "Sağlayıcı Sağlık Testi",
+                    base_url=self._main_api_base_url(), file_path=file_path),
+                response, log_fn=self._log,
+                pass_name="Sağlayıcı Sağlık Testi", filepath=file_path)
+            return response
+        finally:
+            if cancel_context is not None:
+                cancel_context.unregister(request_client)
+
+    def _show_provider_recovery_dialog(self, client, model: str, error_text: str,
+                                       file_path: str, result: dict,
+                                       done_event: threading.Event):
+        if getattr(done_event, "_dialog_cancelled", False):
+            return
+        try:
+            dlg = ctk.CTkToplevel(self)
+            dlg.title("Modelden yanıt alınamadı")
+            dlg.geometry("620x390")
+            dlg.resizable(False, False)
+            dlg.transient(self)
+            dlg.grab_set()
+            dlg.configure(fg_color=BG)
+            self._active_modal_dlg = dlg
+            self._active_modal_event = done_event
+
+            ctk.CTkLabel(
+                dlg, text="⚠  Modelden yanıt alınamadı",
+                font=ctk.CTkFont("Segoe UI", 18, "bold"),
+                text_color=ORANGE_LIVE,
+            ).pack(padx=24, pady=(24, 8))
+            ctk.CTkLabel(
+                dlg,
+                text=(
+                    "Otomatik bağlantı denemeleri tamamlandı. Çeviri şu anda "
+                    "bekletiliyor; mevcut ve tamamlanmış chunk'lar korunuyor."
+                ),
+                font=ctk.CTkFont("Segoe UI", 12), text_color=FG,
+                wraplength=560, justify="center",
+            ).pack(padx=24, pady=(0, 12))
+            ctk.CTkLabel(
+                dlg, text=f"Model: {model}\nSon hata: {error_text[:360]}",
+                font=ctk.CTkFont("Consolas", 10), text_color=FG2,
+                wraplength=560, justify="left",
+            ).pack(fill="x", padx=28, pady=(0, 14))
+            status = ctk.CTkLabel(
+                dlg,
+                text="Bekleniyor. Hazır olduğunda modeli tek bir küçük istekle test et.",
+                font=ctk.CTkFont("Segoe UI", 11, "bold"), text_color=FG2,
+                wraplength=560,
+            )
+            status.pack(padx=24, pady=(0, 18))
+
+            buttons = ctk.CTkFrame(dlg, fg_color="transparent")
+            buttons.pack(fill="x", padx=24, pady=(0, 22))
+            buttons.grid_columnconfigure((0, 1, 2), weight=1)
+            continue_btn = ctk.CTkButton(
+                buttons, text="Devam Et", state="disabled",
+                fg_color=BORDER, hover_color=BORDER)
+            test_in_progress = {"value": False}
+
+            def _probe_finished(ok: bool, detail: str = ""):
+                test_in_progress["value"] = False
+                if getattr(done_event, "_dialog_cancelled", False):
+                    return
+                try:
+                    if not dlg.winfo_exists():
+                        return
+                    if ok:
+                        status.configure(
+                            text="✓ Model yanıt verdi. Devam Et düğmesi hazır.",
+                            text_color=GREEN)
+                        test_btn.configure(text="Tekrar Test Et", state="normal")
+                        continue_btn.configure(
+                            state="normal", fg_color=GREEN,
+                            hover_color=GREEN_HOVER)
+                    else:
+                        status.configure(
+                            text=f"Model hâlâ yanıt vermiyor: {detail[:280]}",
+                            text_color=RED)
+                        test_btn.configure(text="Tekrar Dene", state="normal")
+                        continue_btn.configure(
+                            state="disabled", fg_color=BORDER,
+                            hover_color=BORDER)
+                except Exception:
+                    pass
+
+            def _test_model():
+                if test_in_progress["value"]:
+                    return
+                test_in_progress["value"] = True
+                test_btn.configure(text="Test ediliyor...", state="disabled")
+                continue_btn.configure(
+                    state="disabled", fg_color=BORDER, hover_color=BORDER)
+                status.configure(
+                    text="Modele tek bir küçük deneme isteği gönderiliyor...",
+                    text_color=ACCENT)
+
+                def _worker():
+                    try:
+                        self._probe_main_provider_once(
+                            client, model, file_path=file_path)
+                    except RequestCancelled:
+                        _post_ui(self, _probe_finished, False, "çalışma durduruldu")
+                    except Exception as exc:
+                        safe = _sanitize_settings_backup_text(str(exc))
+                        self._log(
+                            f"Sağlayıcı sağlık testi başarısız: {safe[:360]}",
+                            "warn")
+                        _post_ui(self, _probe_finished, False, safe)
+                    else:
+                        self._log(
+                            "Sağlayıcı sağlık testi başarılı: model yanıt verdi",
+                            "ok")
+                        _post_ui(self, _probe_finished, True, "")
+
+                App._start_worker(self, _worker)
+
+            def _continue():
+                result["decision"] = "continue"
+                done_event.set()
+                self._active_modal_dlg = None
+                self._active_modal_event = None
+                dlg.destroy()
+
+            def _wait():
+                self._log(
+                    "Kullanıcı sağlayıcı düzelene kadar beklemeyi seçti", "warn")
+                status.configure(
+                    text="Çeviri beklemede. Hazır olduğunda Tekrar Dene'ye bas.",
+                    text_color=FG2)
+
+            def _stop_run():
+                result["decision"] = "stop"
+                done_event.set()
+                self._active_modal_dlg = None
+                self._active_modal_event = None
+                dlg.destroy()
+                self._stop()
+
+            test_btn = ctk.CTkButton(
+                buttons, text="Modeli Test Et", command=_test_model,
+                fg_color=ACCENT, hover_color=ACCENT_HOVER)
+            test_btn.grid(row=0, column=0, padx=5, sticky="ew")
+            ctk.CTkButton(
+                buttons, text="Bekle", command=_wait,
+                fg_color=CARD, hover_color=BORDER,
+            ).grid(row=0, column=1, padx=5, sticky="ew")
+            continue_btn.configure(command=_continue)
+            continue_btn.grid(row=0, column=2, padx=5, sticky="ew")
+            ctk.CTkButton(
+                dlg, text="Çalışmayı Durdur", command=_stop_run,
+                fg_color=RED, hover_color=RED_HOVER, width=180,
+            ).pack(pady=(0, 20))
+            dlg.protocol("WM_DELETE_WINDOW", _wait)
+            dlg.lift()
+            dlg.focus_force()
+        except Exception as exc:
+            self._log_exc("Sağlayıcı bekleme penceresi açılamadı", exc)
+            result["decision"] = "stop"
+            done_event.set()
+
+    def _coordinate_provider_recovery(self, client, model: str, exc,
+                                      observed_generation: int,
+                                      file_path: str = "") -> bool:
+        condition = self._provider_recovery_condition
+        with condition:
+            if self._provider_recovery_generation != observed_generation:
+                return True
+            if self._provider_recovery_active:
+                while (self._provider_recovery_active
+                       and not getattr(self, "_stop_flag", False)):
+                    condition.wait(timeout=0.5)
+                return (
+                    not getattr(self, "_stop_flag", False)
+                    and self._provider_recovery_generation != observed_generation
+                )
+            self._provider_recovery_active = True
+
+        result = {"decision": ""}
+        done_event = threading.Event()
+        safe_error = _sanitize_settings_backup_text(str(exc))
+        self._log(
+            "API/model otomatik denemeleri tükendi; kullanıcı kararı için "
+            "çeviri bekletiliyor", "warn")
+        self._set_status("Model yanıt vermiyor — kullanıcı kararı bekleniyor...")
+        _post_ui(
+            self, self._show_provider_recovery_dialog,
+            client, model, safe_error, file_path, result, done_event)
+        while not done_event.wait(timeout=0.5):
+            if getattr(self, "_stop_flag", False):
+                done_event._dialog_cancelled = True
+                _post_ui(self, self._dismiss_modal_dialog,
+                         target_event=done_event)
+                result["decision"] = "stop"
+                break
+
+        should_continue = result.get("decision") == "continue"
+        with condition:
+            if should_continue:
+                self._provider_recovery_generation += 1
+            self._provider_recovery_active = False
+            condition.notify_all()
+        if should_continue:
+            self._log(
+                "Sağlayıcı sağlık testi başarılı; bekleyen chunk yeniden deneniyor",
+                "ok")
+            self._set_status("Model yeniden erişilebilir — çeviri sürüyor...")
+        return should_continue
+
+    def _main_translation_chat_create(self, client, body: dict,
+                                      file_path: str = "",
+                                      checkpoint_label: str = "main_translation"):
+        observed_generation = self._provider_recovery_generation
+        while True:
+            try:
+                return _safe_chat_create(
+                    client,
+                    cancel_context=self.__dict__.get(
+                        "_helper_request_canceller"),
+                    _checkpoint_label=checkpoint_label,
+                    **body,
+                )
+            except RequestCancelled:
+                raise
+            except Exception as exc:
+                if not _should_offer_provider_recovery(exc):
+                    raise
+                if not self._coordinate_provider_recovery(
+                        client, str(body.get("model") or ""), exc,
+                        observed_generation, file_path=file_path):
+                    if getattr(self, "_stop_flag", False):
+                        raise RequestCancelled("request cancelled") from exc
+                    raise
+                observed_generation = self._provider_recovery_generation
+
     # ── QC Dialog ────────────────────────────────────────────────────────────
     def _show_qc_dialog(self, issues: list, result_holder: list, done_event: threading.Event):
         """Show QC review dialog. Must be called on main thread."""
@@ -26766,12 +27050,13 @@ class App(ctk.CTk):
 
         def send_one(req):
             body = {k: v for k, v in req["body"].items()}
-            resp = _safe_chat_create(
-                client,
-                cancel_context=self.__dict__.get("_helper_request_canceller"),
-                _checkpoint_label="main_translation",
-                **body,
-            )
+            try:
+                req_path = file_map[req["custom_id"]][0][2]
+            except Exception:
+                req_path = ""
+            resp = self._main_translation_chat_create(
+                client, body, file_path=req_path,
+                checkpoint_label="main_translation")
             text = _validated_chat_content(resp)
             tok, cached = 0, 0
             if (getattr(resp, "usage", None)
@@ -27157,13 +27442,9 @@ class App(ctk.CTk):
 
         def send_one(req):
             body = req["body"]
-            resp = _safe_chat_create(
-                client,
-                cancel_context=self.__dict__.get(
-                    "_helper_request_canceller"),
-                _checkpoint_label="main_translation",
-                **body,
-            )
+            resp = self._main_translation_chat_create(
+                client, body, file_path=filepath,
+                checkpoint_label="main_translation")
             text = _validated_chat_content(resp)
             tok, cached = 0, 0
             if (getattr(resp, "usage", None)

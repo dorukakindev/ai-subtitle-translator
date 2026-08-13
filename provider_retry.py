@@ -892,8 +892,10 @@ def _is_transient_provider_error(exc) -> bool:
     )
 
 
-def _wait_for_transient_retry(exc, attempt: int, total: int, details=None) -> float:
-    scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
+def _wait_for_transient_retry(exc, attempt: int, total: int, details=None,
+                              scheduled=None) -> float:
+    if scheduled is None:
+        scheduled = TRANSIENT_RETRY_DELAYS[attempt - 1]
     header_delay = _retry_after_hint_seconds(exc)
     structured_delay = _structured_retry_after_seconds(exc)
     if header_delay is not None:
@@ -1028,8 +1030,11 @@ def _structured_unsupported(exc) -> bool:
 
 
 def _provider_call_once(call, client, model: str, request_context=None,
-                        cancel_check=None):
-    total = len(TRANSIENT_RETRY_DELAYS)
+                        cancel_check=None, retry_delays=None):
+    use_default_delays = retry_delays is None
+    retry_delays = (TRANSIENT_RETRY_DELAYS if use_default_delays
+                    else tuple(retry_delays))
+    total = len(retry_delays)
     model = str(model or "")
     base_context = dict(request_context or {})
     previous_cancel = getattr(_REQUEST_CONTEXT, "cancel_check", None)
@@ -1079,7 +1084,12 @@ def _provider_call_once(call, client, model: str, request_context=None,
                 previous_context = getattr(_REQUEST_CONTEXT, "value", None)
                 _REQUEST_CONTEXT.value = base_context
                 try:
-                    _wait_for_transient_retry(exc, attempt + 1, total)
+                    if use_default_delays:
+                        _wait_for_transient_retry(exc, attempt + 1, total)
+                    else:
+                        _wait_for_transient_retry(
+                            exc, attempt + 1, total,
+                            scheduled=retry_delays[attempt])
                 finally:
                     if previous_context is None:
                         try:
@@ -1099,9 +1109,10 @@ def _provider_call_once(call, client, model: str, request_context=None,
 
 
 def provider_call_with_retry(call, client, model: str, request_context=None,
-                             cancel_check=None):
+                             cancel_check=None, retry_delays=None):
     return _provider_call_once(
-        call, client, model, request_context, cancel_check=cancel_check)
+        call, client, model, request_context, cancel_check=cancel_check,
+        retry_delays=retry_delays)
 
 
 def _chat_create_once(client, kwargs: dict, request_context=None):
