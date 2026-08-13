@@ -6611,6 +6611,7 @@ _ROMAN_NUMERAL_RE = re.compile(
 )
 _GLOSSARY_KNOWN_BAD_PAIRS = {
     ("confessor", "günah çıkardığı rahip"),
+    ("guardia civil", "civil guard"),
     ("madam", "sayın hakim"),
     ("pontoon", "sallay"),
 }

@@ -469,6 +469,13 @@ class GlossaryVerboseMetaCommentaryGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"Virgin": "Bakire"})
 
+    def test_guardia_civil_english_target_is_not_locked_for_turkish(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "Guardia Civil": "Civil Guard",
+            "Captain": "Yüzbaşı",
+        })
+        self.assertEqual(cleaned, {"Captain": "Yüzbaşı"})
+
     def test_single_wqx_leak_does_not_drop_clean_sibling(self):
         cleaned = ht.sanitize_glossary_for_turkish({
             "maggot": self.MAGGOT_NOTE,
