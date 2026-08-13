@@ -78,6 +78,70 @@ class SubtitlePreflightTest(unittest.TestCase):
             self.assertIn("read_error", codes)
             self.assertIn("duplicate", codes)
 
+    def test_same_movie_year_across_releases_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "Wise.Blood.1979.release-a.eng.srt"
+            second = root / "wise_blood_(1979)_release-b.eng.srt"
+            first.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nFirst.\n",
+                encoding="utf-8",
+            )
+            second.write_text(
+                "1\n00:00:02,000 --> 00:00:04,000\nSecond.\n",
+                encoding="utf-8",
+            )
+
+            issues = gui.scan_subtitle_preflight(
+                [str(first), str(second)], str(root), str(root / "out"))
+
+            duplicates = [
+                item for item in issues
+                if item["code"] == "duplicate_title_year"
+            ]
+            self.assertEqual({item["path"] for item in duplicates}, {
+                str(first), str(second)})
+            self.assertTrue(all(item["severity"] == "warning" for item in duplicates))
+
+    def test_same_cue_content_across_different_paths_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "first.srt"
+            second = root / "second.srt"
+            subtitle = "1\n00:00:01,000 --> 00:00:03,000\nSame source.\n"
+            first.write_text(subtitle, encoding="utf-8")
+            second.write_text(subtitle, encoding="utf-8-sig")
+
+            issues = gui.scan_subtitle_preflight(
+                [str(first), str(second)], str(root), str(root / "out"))
+
+            duplicates = [
+                item for item in issues
+                if item["code"] == "duplicate_content"
+            ]
+            self.assertEqual({item["path"] for item in duplicates}, {
+                str(first), str(second)})
+
+    def test_series_episodes_are_not_grouped_as_duplicate_movies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = root / "Hamiltons.Pharmacopeia.2016.S03E01.eng.srt"
+            second = root / "Hamiltons.Pharmacopeia.2016.S03E02.eng.srt"
+            first.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nEpisode one.\n",
+                encoding="utf-8",
+            )
+            second.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nEpisode two.\n",
+                encoding="utf-8",
+            )
+
+            issues = gui.scan_subtitle_preflight(
+                [str(first), str(second)], str(root), str(root / "out"))
+
+            self.assertNotIn(
+                "duplicate_title_year", {item["code"] for item in issues})
+
     def test_binary_control_data_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

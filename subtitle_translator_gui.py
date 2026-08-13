@@ -3681,6 +3681,42 @@ def _upload_filename_issue(path) -> str:
         f"{episode_hint}; yüklemeden önce dizi adıyla birlikte eklenmeli.")
 
 
+_MOVIE_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_SERIES_PATH_RE = re.compile(
+    r"(?i)(?:^|[ ._\-])(?:s\d{1,2}(?:e\d{1,3})?|season|sezon)(?=$|[ ._\-])")
+
+
+def _selected_movie_title_year_identity(path) -> tuple[str, str]:
+    source = Path(path)
+    nearby_parts = [source.stem, *(parent.name for parent in source.parents[:3])]
+    if any(_SERIES_PATH_RE.search(part or "") for part in nearby_parts):
+        return "", ""
+    for part in nearby_parts:
+        match = _MOVIE_YEAR_RE.search(part or "")
+        if not match:
+            continue
+        raw_title = part[:match.start()]
+        folded = unicodedata.normalize("NFKD", raw_title.casefold())
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        title = " ".join(re.findall(r"[a-z0-9]+", folded))
+        if len(title.replace(" ", "")) < 3:
+            continue
+        year = match.group(1)
+        label = " ".join(re.findall(r"[\w]+", raw_title, re.UNICODE)).strip()
+        return f"{title}|{year}", f"{label or title} ({year})"
+    return "", ""
+
+
+def _subtitle_cue_digest(cues) -> str:
+    rows = []
+    for _cue_id, timestamp, cue_text in cues or ():
+        text = re.sub(r"\s+", " ", str(cue_text or "")).strip()
+        rows.append(f"{str(timestamp).strip()}\0{text}")
+    if not rows:
+        return ""
+    return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
+
+
 def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                             same_folder=False, selected_roots=(),
                             expected_source_language=AUTO_LANGUAGE,
@@ -3688,6 +3724,9 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
     issues = []
     seen_sources = {}
     output_sources = {}
+    movie_identities = {}
+    movie_identity_by_path = {}
+    cue_digests = {}
     ignored_existing = {
         os.path.normcase(os.path.abspath(str(path)))
         for path in (ignore_existing_outputs or ())
@@ -3767,6 +3806,14 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "path": str(path), "message": "Geçerli altyazı cue'su bulunamadı.",
             })
         else:
+            movie_key, movie_label = _selected_movie_title_year_identity(path)
+            if movie_key:
+                movie_identities.setdefault(movie_key, {
+                    "label": movie_label, "paths": []})["paths"].append(str(path))
+                movie_identity_by_path[str(path)] = movie_key
+            cue_digest = _subtitle_cue_digest(cues)
+            if cue_digest:
+                cue_digests.setdefault(cue_digest, []).append(str(path))
             compact_text = " ".join(
                 str(cue_text or "") for _cue_id, _timestamp, cue_text in cues)
             placeholder_download = bool(
@@ -3823,6 +3870,34 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "severity": "error", "code": "output_collision",
                 "path": source,
                 "message": "Başka bir seçili dosyayla aynı hedefe yazacak.",
+            })
+    for sources in cue_digests.values():
+        if len(sources) < 2:
+            continue
+        movie_keys = {movie_identity_by_path.get(source) for source in sources}
+        if len(movie_keys) == 1 and None not in movie_keys:
+            continue
+        peers = ", ".join(Path(item).name for item in sources)
+        for source in sources:
+            issues.append({
+                "severity": "warning", "code": "duplicate_content",
+                "path": source,
+                "message": (
+                    "Başka bir seçili dosyayla cue içeriği ve zamanları tamamen aynı: "
+                    f"{peers}. İkisini birden çevirmek gereksiz API harcaması olabilir."),
+            })
+    for item in movie_identities.values():
+        sources = item["paths"]
+        if len(sources) < 2:
+            continue
+        peers = ", ".join(Path(source).name for source in sources)
+        for source in sources:
+            issues.append({
+                "severity": "warning", "code": "duplicate_title_year",
+                "path": source,
+                "message": (
+                    "Aynı film ve yıl birden fazla kez seçilmiş görünüyor: "
+                    f"{item['label']} [{peers}]. Yalnız kullanacağınız sürümü bırakın."),
             })
     return issues
 
