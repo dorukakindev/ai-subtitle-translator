@@ -3127,7 +3127,8 @@ def _is_delivery_sdh_only(text: str) -> bool:
             r"(?:native|foreign)\s+language|conversing\s+in\s+(?:a\s+)?"
             r"(?:native|foreign)\s+language|mouthing\s+words|clamou?r|"
             r"(?:[\w'-]+\s+)?(?:eats?|chews?)\s+(?:noisily|loudly)|"
-            r"frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
+            r"frog\s+croaks?|rooster\s+crows?)\s*[.!]*",
+            bare_english_sdh, re.IGNORECASE):
         return True
     bare_folded = sdh_cleaner._ascii_fold(value).strip().rstrip(".!…")
     if re.fullmatch(
