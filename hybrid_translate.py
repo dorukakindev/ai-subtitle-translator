@@ -10263,24 +10263,48 @@ def locked_term_violation(
 
     def _target_present(target: str) -> bool:
         target_lower = _polish_norm(target)
-        if target_lower in candidate_lower:
-            return True
         target_words = re.findall(r"\w+", target_lower, re.UNICODE)
         candidate_words = re.findall(r"\w+", candidate_lower, re.UNICODE)
         if not target_words or not candidate_words:
             return False
+
+        def _last_word_matches_target(candidate_word: str, target_word: str) -> bool:
+            """Kilitli hedefi yalnız tam kök veya gerçek Türkçe ekle kabul et.
+
+            Önceki düz ``target in candidate`` kontrolü ``Ada``yı ``Adam`` içinde
+            bulup kilit ihlalini görünmez yapabiliyordu. Kelime sınırı tek başına da
+            ``Adada`` gibi kesmesiz ekleri kaçırır; bu nedenle yalnız izinli ekler
+            için dar bir kök denetimi kullanılır.
+            """
+            candidate_word = str(candidate_word or "")
+            target_word = str(target_word or "")
+            if candidate_word == target_word:
+                return True
+            softened = (
+                target_word[:-1]
+                + {"k": "ğ", "p": "b", "t": "d", "ç": "c"}.get(
+                    target_word[-1:], target_word[-1:])
+            )
+            for stem in (target_word, softened):
+                if not candidate_word.startswith(stem):
+                    continue
+                suffix = candidate_word[len(stem):]
+                if suffix in {
+                    "ı", "i", "u", "ü", "nı", "ni", "nu", "nü",
+                    "yı", "yi", "yu", "yü", "ın", "in", "un", "ün",
+                    "nın", "nin", "nun", "nün", "a", "e", "ya", "ye",
+                    "da", "de", "ta", "te", "dan", "den", "tan", "ten",
+                    "la", "le", "yla", "yle", "lar", "ler", "ları", "leri",
+                    "ların", "lerin", "lara", "lere", "lardan", "lerden",
+                }:
+                    return True
+            return False
+
         width = len(target_words)
         for pos in range(0, len(candidate_words) - width + 1):
             window = candidate_words[pos:pos + width]
-            candidate_last = _turkish_stem(window[-1])
-            target_last = _turkish_stem(target_words[-1])
-            softened_target = (
-                target_last[:-1] + {"k": "ğ", "p": "b", "t": "d", "ç": "c"}.get(
-                    target_last[-1:], target_last[-1:])
-            )
             if (window[:-1] == target_words[:-1]
-                    and (_share_stem(window[-1], target_words[-1])
-                         or candidate_last == softened_target)):
+                    and _last_word_matches_target(window[-1], target_words[-1])):
                 return True
         return False
 
@@ -12609,9 +12633,10 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
             if scene_plan:
                 payload["scene"] = scene_plan
 
-        # Update for next iteration — enrich with TM translations when available
-        prev_ctx = []
-        for c in chunk[-context_lines:]:
+        # Update for next iteration — enrich only the new lines with TM.
+        # A context window can be wider than one chunk, so preserve its tail.
+        chunk_ctx = []
+        for c in chunk:
             item = {"i": c.index, "t": _clean_source_text(c.text)}
             if tm is not None and use_tm_context and context_fingerprint:
                 clean_source = _clean_source_text(c.text)
@@ -12632,7 +12657,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
                 if cached:
                     item["tr"] = cached
                     tm.record_hit()
-            prev_ctx.append(item)
+            chunk_ctx.append(item)
+        prev_ctx = (prev_ctx + chunk_ctx)[-context_lines:]
         try:
             prev_end_sec = _ts_to_sec(chunk[-1].end)
         except Exception:

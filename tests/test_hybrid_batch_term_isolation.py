@@ -6,6 +6,15 @@ import subtitle_translator_gui as gui
 
 
 class HybridBatchTermIsolationTests(unittest.TestCase):
+    def test_locked_term_source_merge_keeps_uppercase_acronym_distinct(self):
+        terms = gui._merge_locked_term_sources(
+            {"Us": "Bizi"},
+            {"US": "ABD"},
+            {"us": "biz"},
+        )
+
+        self.assertEqual(terms, {"us": "biz", "US": "ABD"})
+
     def test_tm_fingerprint_changes_with_locked_term_policy(self):
         source_hash = "a" * 64
         first = gui._tm_context_fingerprint(

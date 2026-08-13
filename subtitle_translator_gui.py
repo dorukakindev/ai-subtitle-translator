@@ -4324,7 +4324,11 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                 prev_end_sec = _ts_end_sec_gui(chunk[-1][1])
             except Exception:
                 prev_end_sec = None
-            prev_ctx = [{"i": idx, "t": _clean_src(text)} for (idx, ts, text) in chunk[-context_lines:]]
+            chunk_ctx = [
+                {"i": idx, "t": _clean_src(text)}
+                for (idx, ts, text) in chunk
+            ]
+            prev_ctx = (prev_ctx + chunk_ctx)[-context_lines:]
 
             # gpt-5/reasoning model checks
             _model_lower = model.lower()
@@ -4362,6 +4366,11 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
             })
     return requests, file_map
 
+def _is_unresolved_chain_translation(value) -> bool:
+    text = str(value or "").strip()
+    return not text or text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
+
+
 def _inject_prev_tr(user_content: str, prev_pairs: list, max_pairs: int = CONTEXT_LINES) -> str:
     """Zincirleme bağlam: önceki chunk'ın çevirilerini payload'a 'prev_tr' olarak ekler.
 
@@ -4397,7 +4406,7 @@ def _inject_prev_tr(user_content: str, prev_pairs: list, max_pairs: int = CONTEX
         sid = str(pair.get("i"))
         tr = pair.get("tr")
         if ((legacy_context or sid in allowed) and isinstance(tr, str)
-                and tr.strip() and not tr.startswith("[HATA")):
+                and not _is_unresolved_chain_translation(tr)):
             valid_pairs[sid] = {"i": pair.get("i"), "tr": tr}
     if legacy_context:
         ordered = list(valid_pairs.values())
@@ -4422,10 +4431,34 @@ def _chain_pairs_from_result(user_content: str, trans_map: dict) -> list:
         if not isinstance(item, dict) or "i" not in item:
             continue
         tr = trans_map.get(str(item["i"]))
-        if not tr or tr == "[HATA]":
+        if _is_unresolved_chain_translation(tr):
             continue
         pairs.append({"i": item["i"], "tr": tr})
     return pairs
+
+
+def _extend_chain_pairs(previous_pairs: list, current_pairs: list,
+                        max_pairs: int = CONTEXT_LINES) -> list:
+    """Biriken zinciri, en yeni kabul edilen çevirilerle sınırlı tut."""
+    try:
+        limit = max(0, int(max_pairs))
+    except (TypeError, ValueError):
+        return []
+    if not limit:
+        return []
+    ordered_ids = []
+    pairs_by_id = {}
+    for pair in list(previous_pairs or []) + list(current_pairs or []):
+        if not isinstance(pair, dict) or pair.get("i") is None:
+            continue
+        translation = pair.get("tr")
+        if _is_unresolved_chain_translation(translation):
+            continue
+        sid = str(pair["i"])
+        if sid not in pairs_by_id:
+            ordered_ids.append(sid)
+        pairs_by_id[sid] = {"i": pair["i"], "tr": translation}
+    return [pairs_by_id[sid] for sid in ordered_ids[-limit:]]
 
 
 # ── İki-dalgalı zincirli batch (B3) — saf yardımcılar ─────────────────────────
@@ -5185,6 +5218,35 @@ def _repair_relevant_locked_terms(locked_terms, source_texts) -> dict:
         for source, target in (locked_terms or {}).items()
         if any(ht._locked_source_term_present(str(source), text) for text in sources)
     }
+
+
+def _locked_term_identity(source) -> str:
+    """Kaynak terimde US/Us gibi anlam ayrımlarını koruyan birleştirme anahtarı."""
+    text = str(source or "").strip()
+    if text.isupper() and any(char.isalpha() for char in text):
+        return f"exact:{text}"
+    return f"folded:{text.casefold()}"
+
+
+def _merge_locked_term_sources(*sources: dict) -> dict:
+    """Düşükten yükseğe öncelikli terim kaynaklarını güvenli biçimde birleştir."""
+    merged = {}
+    keys_by_identity = {}
+    for terms in sources:
+        if not isinstance(terms, dict):
+            continue
+        for source, target in terms.items():
+            source = str(source or "").strip()
+            target = str(target or "").strip()
+            if not source or not target:
+                continue
+            identity = _locked_term_identity(source)
+            previous = keys_by_identity.get(identity)
+            if previous is not None and previous != source:
+                merged.pop(previous, None)
+            merged[source] = target
+            keys_by_identity[identity] = source
+    return merged
 
 
 def _hybrid_file_locked_terms(schema_terms, analysis_tuple, file_terms,
@@ -21985,15 +22047,18 @@ class App(ctk.CTk):
     def _get_locked_terms_dict(self, fp: str | None, tgt: str) -> dict:
         try:
             import hybrid_translate as ht
-            terms = {}
+            schema_terms = {}
+            file_terms = {}
+            project_terms = {}
+            series_terms = {}
             try:
                 schema_dict = self._get_file_schema(fp) if fp else self._get_schema()
-                terms.update((schema_dict or {}).get("glossary") or {})
+                schema_terms = (schema_dict or {}).get("glossary") or {}
             except Exception:
                 pass
             try:
-                terms.update(ht.load_glossary(
-                    self._get_file_glossary(fp), strict=True) or {})
+                file_terms = ht.load_glossary(
+                    self._get_file_glossary(fp), strict=True) or {}
             except ht.GlossaryLoadError:
                 raise
             except Exception:
@@ -22008,7 +22073,7 @@ class App(ctk.CTk):
                 file_pm = getattr(self, "_pm", None)
             if file_pm is not None:
                 try:
-                    terms.update(file_pm.get_glossary() or {})
+                    project_terms = file_pm.get_glossary() or {}
                 except RequestCancelled:
                     raise
                 except Exception:
@@ -22041,15 +22106,26 @@ class App(ctk.CTk):
                             input_dir, slug,
                             target_language=_lang_iso639_1(tgt),
                             source_language=_lang_iso639_1(series_source))
-                        terms.update(sm_obj.get_terms())
+                        series_terms = sm_obj.get_terms()
                 except Exception:
                     pass
+            # Şema genel varsayımdır; proje/dizi hafızası önceki kanondur; açıkça
+            # seçilmiş dosya sözlüğü ise kullanıcı kararı olarak son sözü söyler.
+            terms = _merge_locked_term_sources(
+                schema_terms, project_terms, series_terms, file_terms)
             try:
                 terms = ht.sanitize_glossary_for_turkish(
                     terms, target_language=tgt, log_fn=getattr(self, "_log", None)
                 ) or {}
-            except Exception:
-                pass
+            except Exception as exc:
+                # Doğrulanamayan otomatik terimler prompt'a sızmamalı; açık sözlüğü
+                # de ham halde kullanmak yerine bu dosyada kilitleri kapat.
+                log_fn = getattr(self, "_log", None)
+                if callable(log_fn):
+                    log_fn(
+                        f"Sabit terimler güvenlik denetiminden geçemedi; bu dosyada "
+                        f"sözlük devre dışı bırakıldı: {exc}", "warn")
+                terms = {}
             return {
                 str(source).strip(): str(target).strip()
                 for source, target in terms.items()
@@ -25850,8 +25926,9 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_map=file_map)
                             raw = raw_map.get(cid, raw)
-                        prev_pairs = _chain_pairs_from_chunk_response(
-                            req, raw, file_map[cid])
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, _chain_pairs_from_chunk_response(
+                                req, raw, file_map[cid]), self._context_lines)
                         continue
                     user_msg["content"] = _inject_prev_tr(
                         user_msg["content"], prev_pairs, max_pairs=self._context_lines)
@@ -25866,8 +25943,9 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_map=file_map)
                             raw = raw_map.get(cid, raw)
-                        prev_pairs = _chain_pairs_from_chunk_response(
-                            req, raw, file_map[cid])
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, _chain_pairs_from_chunk_response(
+                                req, raw, file_map[cid]), self._context_lines)
                         _progress_tick()
                         continue
                     try:
@@ -25885,8 +25963,9 @@ class App(ctk.CTk):
                                 file_map=file_map)
                             text = raw_map.get(cid_r, text)
                         self._save_sync_ckpt_entry(cid_r, text, src_h)
-                        prev_pairs = _chain_pairs_from_chunk_response(
-                            req, text, file_map[cid])
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, _chain_pairs_from_chunk_response(
+                                req, text, file_map[cid]), self._context_lines)
                     except Exception as e:
                         prev_pairs = []
                         with lock:
@@ -26585,8 +26664,9 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
-                        prev_pairs = _chain_pairs_from_chunk_response(
-                            req, raw, fmap.get(cid_hint, []))
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, _chain_pairs_from_chunk_response(
+                                req, raw, fmap.get(cid_hint, [])), self._context_lines)
                         completed[0] += 1
                         _hyb_tick()
                         continue
@@ -26605,8 +26685,9 @@ class App(ctk.CTk):
                                 max_rounds=self._max_retry,
                                 file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
-                        prev_pairs = _chain_pairs_from_chunk_response(
-                            req, raw, fmap.get(cid_hint, []))
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, _chain_pairs_from_chunk_response(
+                                req, raw, fmap.get(cid_hint, [])), self._context_lines)
                         _hyb_tick()
                         continue
                     try:
@@ -26624,8 +26705,9 @@ class App(ctk.CTk):
                                 file_path=filepath)
                             text = raw_map.get(cid, text)
                         self._save_sync_ckpt_entry(cid, text, src_h)
-                        prev_pairs = _chain_pairs_from_chunk_response(
-                            req, text, fmap.get(cid, []))
+                        prev_pairs = _extend_chain_pairs(
+                            prev_pairs, _chain_pairs_from_chunk_response(
+                                req, text, fmap.get(cid, [])), self._context_lines)
                     except Exception as e:
                         prev_pairs = []
                         with lock:

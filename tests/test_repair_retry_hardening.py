@@ -116,6 +116,25 @@ class LicensedIdentityRepairTest(unittest.TestCase):
 
 
 class PersistentRepairRetryTest(unittest.TestCase):
+    def test_locked_term_does_not_match_prefix_of_another_turkish_word(self):
+        self.assertTrue(ht.locked_term_violation(
+            "The Island is burning.",
+            "Adam yanıyor.",
+            {"Island": "Ada"},
+        ))
+
+    def test_locked_term_accepts_attached_and_apostrophic_case_suffixes(self):
+        self.assertFalse(ht.locked_term_violation(
+            "They stayed on the Island.",
+            "Adada kaldılar.",
+            {"Island": "Ada"},
+        ))
+        self.assertFalse(ht.locked_term_violation(
+            "They stayed on the Island.",
+            "Ada'da kaldılar.",
+            {"Island": "Ada"},
+        ))
+
     def test_turkish_capital_i_does_not_break_locked_term_match(self):
         self.assertFalse(ht.locked_term_violation(
             "The invaders have installed a transmitter.",

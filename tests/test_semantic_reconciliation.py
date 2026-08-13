@@ -1031,6 +1031,50 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         self.assertEqual(terms["Project Term"], "Proje Terimi")
         self.assertEqual(terms["King Behemoth"], "Kral Behemoth")
 
+    def test_explicit_file_glossary_overrides_auto_memory_conflict(self):
+        app = gui.App.__new__(gui.App)
+        app._pm = MagicMock()
+        app._pm.get_glossary.return_value = {"Oracle": "Proje Kehaneti"}
+        app._get_file_glossary = MagicMock(return_value="glossary.json")
+        app._get_file_schema = MagicMock(return_value={
+            "glossary": {"Oracle": "Şema Kehaneti"}
+        })
+        app.series_memory_var = SimpleNamespace(get=lambda: True)
+        app.input_var = SimpleNamespace(get=lambda: "C:/subs")
+        app._log = MagicMock()
+        series = MagicMock()
+        series.get_terms.return_value = {"Oracle": "Dizi Kehaneti"}
+
+        with patch("hybrid_translate.load_glossary",
+                   return_value={"oracle": "Kullanıcı Kehaneti"}), \
+             patch("hybrid_translate.sanitize_glossary_for_turkish",
+                   side_effect=lambda terms, **_kwargs: terms), \
+             patch("series_memory.SeriesMemory.load", return_value=series):
+            terms = app._get_locked_terms_dict(
+                "C:/subs/Betterman.S01E02.srt", "Turkish"
+            )
+
+        self.assertEqual(terms, {"oracle": "Kullanıcı Kehaneti"})
+
+    def test_locked_terms_fail_closed_when_sanitizer_crashes(self):
+        app = gui.App.__new__(gui.App)
+        app._pm = MagicMock()
+        app._pm.get_glossary.return_value = {"Project": "Proje"}
+        app._get_file_glossary = MagicMock(return_value="glossary.json")
+        app._get_file_schema = MagicMock(return_value={
+            "glossary": {"Schema": "Şema"}
+        })
+        app._log = MagicMock()
+
+        with patch("hybrid_translate.load_glossary",
+                   return_value={"File": "Dosya"}), \
+             patch("hybrid_translate.sanitize_glossary_for_turkish",
+                   side_effect=RuntimeError("test sanitizer failure")):
+            terms = app._get_locked_terms_dict(None, "Turkish")
+
+        self.assertEqual(terms, {})
+        self.assertTrue(app._log.called)
+
     def test_locked_terms_propagates_project_memory_cancellation(self):
         app = gui.App.__new__(gui.App)
         app._pm = MagicMock()

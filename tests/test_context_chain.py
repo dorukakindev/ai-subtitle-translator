@@ -85,6 +85,11 @@ class InjectPrevTrTest(unittest.TestCase):
         content = self._payload()
         self.assertEqual(gui._inject_prev_tr(content, pairs), content)
 
+    def test_skips_unresolved_translation_marker(self):
+        content = self._payload()
+        pairs = [{"i": 9, "tr": "[ÇEVİRİ EKSİK]"}]
+        self.assertEqual(gui._inject_prev_tr(content, pairs), content)
+
     def test_invalid_json_returns_unchanged(self):
         self.assertEqual(gui._inject_prev_tr("not json", [{"i": 1}]), "not json")
 
@@ -172,6 +177,13 @@ class ChainPairsFromResultTest(unittest.TestCase):
 
     def test_invalid_json_returns_empty(self):
         self.assertEqual(gui._chain_pairs_from_result("garbage", {"1": "Bir."}), [])
+
+    def test_extend_keeps_rolling_accepted_translations(self):
+        first = [{"i": i, "tr": f"ilk-{i}"} for i in range(1, 11)]
+        second = [{"i": i, "tr": f"ikinci-{i}"} for i in range(11, 21)]
+        pairs = gui._extend_chain_pairs(first, second, max_pairs=15)
+        self.assertEqual([pair["i"] for pair in pairs], list(range(6, 21)))
+        self.assertEqual(pairs[-1]["tr"], "ikinci-20")
 
     def test_report_only_owner_warning_still_feeds_prev_translation(self):
         req = {"body": {"messages": [{}, {"role": "user", "content": json.dumps({
@@ -503,6 +515,37 @@ class FragmentSyntaxHintPayloadTest(unittest.TestCase):
         self.assertEqual([it["i"] for it in first["next_ctx"]], [3])
         self.assertEqual([it["i"] for it in second["ctx"]], [2])
         self.assertEqual([it["i"] for it in second["next_ctx"]], [5])
+
+    def test_gui_context_window_rolls_across_small_chunks(self):
+        srt = "".join(
+            f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},900\nLine {i}.\n\n"
+            for i in range(1, 36)
+        )
+        fd, fp = tempfile.mkstemp(suffix=".srt")
+        os.close(fd)
+        Path(fp).write_text(srt, encoding="utf-8")
+        try:
+            reqs, _ = gui.build_requests(
+                [fp], "English", "Turkish", "gpt-4.1-mini",
+                chunk_size=10, context_lines=30, lookahead_lines=0)
+            fourth = json.loads(reqs[3]["body"]["messages"][1]["content"])
+            self.assertEqual(
+                [item["i"] for item in fourth["ctx"]],
+                [str(i) for i in range(1, 31)])
+        finally:
+            os.unlink(fp)
+
+    def test_hybrid_context_window_rolls_across_small_chunks(self):
+        cues = [
+            self.Cue(i, f"00:00:{i:02d},000", f"00:00:{i:02d},900", f"Line {i}.")
+            for i in range(1, 36)
+        ]
+        reqs, _ = ht.build_batch_requests(
+            cues, "system", "gpt-4.1-mini",
+            chunk_size=10, context_lines=30, lookahead_lines=0)
+        fourth = json.loads(reqs[3]["body"]["messages"][1]["content"])
+        self.assertEqual(
+            [item["i"] for item in fourth["ctx"]], list(range(1, 31)))
 
     def test_hybrid_chain_context_does_not_inject_contextless_tm_text(self):
         class TM:
