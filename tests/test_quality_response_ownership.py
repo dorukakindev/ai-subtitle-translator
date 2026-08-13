@@ -128,6 +128,39 @@ class QualityResponseOwnershipTest(unittest.TestCase):
         self.assertIn('"group_orig": "FIRST_FRAGMENT_SENTINEL SECOND_FRAGMENT_SENTINEL."', prompts[1])
         self.assertIn('"group_tr": "İlk parça ikinci parça."', prompts[1])
 
+    def test_critic_later_chunk_sees_prior_chunk_accepted_neighbor(self):
+        cues = [Cue(i, f"Source {i}.") for i in range(1, 102)]
+        blocks = [
+            (i, "00:00:00,000 --> 00:00:01,000", f"Eski {i}.")
+            for i in range(1, 102)
+        ]
+        validator_hits = [
+            (i, f"Source {i}.", f"Eski {i}.",
+             "SPEAKER_LABEL_MISMATCH" if i == 101 else "GARBLE_TOKEN")
+            for i in range(1, 102)
+        ]
+        responses = iter([
+            '[{"id":"100","fixed":"Yeni 100."}]',
+            "[]",
+        ])
+        prompts = []
+
+        def fake_create(*_args, **kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            return _response(next(responses))
+
+        with patch.dict(sys.modules, {"openai": SimpleNamespace(OpenAI=FakeOpenAI)}), \
+             patch("hybrid_translate._safe_chat_create", side_effect=fake_create), \
+             patch("hybrid_translate.run_validators", return_value=validator_hits), \
+             patch("hybrid_translate.validate_polish_candidate", return_value=(True, "")), \
+             patch("hybrid_translate._semantic_reason_map", return_value={}):
+            result = ht.critic_pass_with_helper(cues, blocks, "key")
+
+        self.assertEqual(result[99][2], "Yeni 100.")
+        self.assertEqual(len(prompts), 2)
+        self.assertIn('"prev": {"id": "100", "orig": "Source 100.", "tr": "Yeni 100."}',
+                      prompts[1])
+
     def test_native_marks_unrecovered_truncated_response_partial(self):
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Bu garip bir cumle."),

@@ -12371,6 +12371,7 @@ def critic_pass_with_helper(
                 if apply_changes:
                     result[item["pos"]] = (
                         item["old_idx"], item["old_ts"], final_text)
+                    tr_text_by_id[fid] = final_text
                 mm_fixed += 1
                 for tok in reason_toks:
                     reason_stats[tok]["accepted"] += 1
