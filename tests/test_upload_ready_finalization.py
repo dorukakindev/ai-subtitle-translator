@@ -772,6 +772,14 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertNotIn("Tartakirka", joined)
         self.assertNotIn("wordpress.com", joined)
 
+        title_result = gui._prepare_upload_ready_blocks(
+            [("3", source[0][1], "BAĞIMLI")], "Turkish", source_cues=source)
+        title_texts = [
+            text for _idx, _ts, text in title_result
+            if text != "discord: ceviri2"
+        ]
+        self.assertEqual(title_texts, ["BAĞIMLI"])
+
     def test_embedded_source_credit_lines_do_not_remove_real_title(self):
         source = [("26", "00:00:02,000 --> 00:00:05,000",
                    "~ RUN MELOS! ~\nSubtitles by Odyssey\nOCR by Inactive (Subs.com.ru)")]

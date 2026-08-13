@@ -3407,7 +3407,16 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 text, src_map.get(str(idx), "")))
             for idx, ts, text in blocks
         ]
-        blocks = clean_sdh(blocks, src_map=src_map, source_driven=True)
+        sdh_src_map = {}
+        for cue_id, source_text in src_map.items():
+            source_lines = str(source_text or "").splitlines()
+            credit_lines = _delivery_credit_line_indexes(source_text)
+            visible_source = "\n".join(
+                line for i, line in enumerate(source_lines)
+                if i not in credit_lines
+            ).strip()
+            sdh_src_map[cue_id] = visible_source or source_text
+        blocks = clean_sdh(blocks, src_map=sdh_src_map, source_driven=True)
         blocks, quote_markers_fixed = _normalize_delivery_ocr_quote_markers(
             blocks, src_map)
 
