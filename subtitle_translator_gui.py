@@ -4776,6 +4776,54 @@ def _src_map_from_cues(cues) -> dict:
     return out
 
 
+def _candidate_records_with_context(records, source_cues, translation_blocks,
+                                    radius: int = 2) -> list[dict]:
+    records = [dict(record) for record in (records or [])]
+    if not records or not translation_blocks:
+        return records
+    source_map = _src_map_from_cues(source_cues)
+    blocks = list(translation_blocks)
+    positions = {}
+    for position, block in enumerate(blocks):
+        block_id = str(block[0])
+        positions.setdefault(block_id, position)
+        for part in block_id.split("|"):
+            positions.setdefault(part.strip(), position)
+
+    def source_for(block_id):
+        parts = [part.strip() for part in str(block_id).split("|") if part.strip()]
+        values = [source_map.get(part, "") for part in parts]
+        return " / ".join(value for value in values if value)
+
+    for record in records:
+        position = positions.get(str(record.get("id", "")))
+        if position is None:
+            continue
+        before = blocks[max(0, position - radius):position]
+        after = blocks[position + 1:position + radius + 1]
+        record["context_before"] = [
+            {"id": str(idx), "source": source_for(idx), "translation": text}
+            for idx, _timestamp, text in before]
+        record["context_after"] = [
+            {"id": str(idx), "source": source_for(idx), "translation": text}
+            for idx, _timestamp, text in after]
+    return records
+
+
+def _append_candidate_context(lines: list, record: dict):
+    before = list(record.get("context_before") or [])
+    after = list(record.get("context_after") or [])
+    if not before and not after:
+        return
+    lines.append("Komşu bağlam (öneri öncesindeki altyazı):")
+    for label, rows in (("önce", before), ("sonra", after)):
+        for row in rows:
+            lines.append(
+                f"  {label} #{row.get('id', '?')} | Kaynak: "
+                f"{row.get('source', '')}")
+            lines.append(f"                 Türkçe: {row.get('translation', '')}")
+
+
 def _raw_src_map_from_cues(cues) -> dict:
     """Cue listesi → {idx_str: HAM kaynak metin} (etiketler sökülmemiş).
     restore_format_tags için kullanılır — temizlenmiş metin işe yaramaz."""
@@ -10616,6 +10664,7 @@ _PASS_USAGE_ALIASES = {
 
 def _pass_efficiency_rows(row: dict) -> list[dict]:
     trace = dict(row.get("pass_trace") or {})
+    pass_status = dict(row.get("pass_status") or {})
     timing = dict(row.get("timing") or {})
     usage_map = dict(timing.get("api_usage") or {})
     result = []
@@ -10631,11 +10680,18 @@ def _pass_efficiency_rows(row: dict) -> list[dict]:
         tokens = int(usage.get("total_tokens", 0) or 0)
         cost = float(usage.get("cost_usd", 0.0) or 0.0)
         changed = int(changed or 0)
+        status = pass_status.get(str(label)) or {}
+        report_only = bool(
+            isinstance(status, dict) and status.get("report_only"))
+        suggested = int(status.get("suggested", 0) or 0) if report_only else 0
         result.append({
             "pass": str(label), "stage": stage, "changed": changed,
+            "suggested": suggested, "report_only": report_only,
             "tokens": tokens, "cost_usd": cost,
             "tokens_per_change": round(tokens / changed, 2) if changed else None,
             "cost_per_change": round(cost / changed, 8) if changed else None,
+            "tokens_per_suggestion": (
+                round(tokens / suggested, 2) if suggested else None),
         })
     return result
 
@@ -11445,6 +11501,12 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
                     f"- {item['pass']}: {item['changed']} cue | {item['tokens']:,} token | "
                     f"${item['cost_usd']:.6f} | {item['tokens_per_change']:.2f} "
                     "token/düzeltme")
+            elif item.get("report_only") and item.get("suggested"):
+                lines.append(
+                    f"- {item['pass']}: {item['suggested']} öneri "
+                    f"(uygulanmadı) | {item['tokens']:,} token | "
+                    f"${item['cost_usd']:.6f} | "
+                    f"{item['tokens_per_suggestion']:.2f} token/öneri")
             else:
                 lines.append(
                     f"- {item['pass']}: düzeltme yok | {item['tokens']:,} token | "
@@ -17607,6 +17669,7 @@ class App(ctk.CTk):
                                 f"{semantic_status.get('status', 'unknown')}")
                     if snapshot.get("term_normalize", True):
                         term_status = {}
+                        before_term_normalize = list(output_blocks)
                         output_blocks, _ = _normalize_mixed_terms(
                             output_blocks, src_map,
                             self._helper_api_key("polish"),
@@ -17623,6 +17686,10 @@ class App(ctk.CTk):
                             status_out=term_status,
                             apply_changes=not bool(snapshot.get(
                                 "quality_report_only", True)))
+                        self._write_term_normalize_report(
+                            output_path, term_status,
+                            source_cues=source_blocks,
+                            translation_blocks=before_term_normalize)
                         if term_status.get("status") not in {"completed", "skipped"}:
                             raise RuntimeError(
                                 "sezon terim denetimi tamamlanamadı: "
@@ -23798,6 +23865,7 @@ class App(ctk.CTk):
                         self._update_file_progress(fp, "Critic Pass", 20)
                         self._set_phase("Critic Pass", f"{fname}  ({i+1}/{n})")
                         self._log(f"Critic Pass — {len(blocks)} satır...", "info")
+                        _before_critic = list(blocks)
                         _critic_change_log = []
                         _critic_status = {}
                         blocks = ht.critic_pass_with_helper(
@@ -23828,7 +23896,9 @@ class App(ctk.CTk):
                             fp, _critic_change_log,
                             _critic_status.get("rejected_candidates", []),
                             report_only=bool(self._snap_get(
-                                "quality_report_only", True)))
+                                "quality_report_only", True)),
+                            source_cues=orig_cues,
+                            translation_blocks=_before_critic)
                         if _pass_failed(_critic_status):
                             postprocess_failed = True
                     except Exception as e:
@@ -24259,7 +24329,8 @@ class App(ctk.CTk):
 
     def _write_critic_change_report(
             self, fp, applied_records: list, rejected_records: list | None = None,
-            report_only: bool = False):
+            report_only: bool = False, source_cues=None,
+            translation_blocks=None):
         """Critic Pass tarafından fiilen değiştirilen satırları TEK bir txt
         dosyasına (kaynak/öncesi/sonrası/sebep) yazar — QC değişiklik raporuyla
         aynı motivasyon (bkz. _write_qc_change_report yukarıda): Critic 150-200
@@ -24268,7 +24339,10 @@ class App(ctk.CTk):
         report_path = (
             Path(fp).parent / "Raporlar"
             / f"{Path(fp).stem}.critic_degisiklikler.txt")
-        rejected_records = list(rejected_records or [])
+        applied_records = _candidate_records_with_context(
+            applied_records, source_cues, translation_blocks)
+        rejected_records = _candidate_records_with_context(
+            rejected_records, source_cues, translation_blocks)
         if not applied_records and not rejected_records:
             report_path.unlink(missing_ok=True)
             return
@@ -24296,6 +24370,7 @@ class App(ctk.CTk):
                     lines.append(f"Kaynak : {rec['source']}")
                 lines.append(f"Önce   : {rec['before']}")
                 lines.append(f"Sonra  : {rec['after']}")
+                _append_candidate_context(lines, rec)
                 lines.append("")
             if rejected_records:
                 lines.extend([
@@ -24309,6 +24384,7 @@ class App(ctk.CTk):
                         lines.append(f"Kaynak : {rec['source']}")
                     lines.append(f"Mevcut : {rec.get('before', '')}")
                     lines.append(f"Öneri  : {rec.get('candidate', '')}")
+                    _append_candidate_context(lines, rec)
                     lines.append("")
             atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
             self._log(
@@ -24319,6 +24395,78 @@ class App(ctk.CTk):
                 "ok")
         except Exception as e:
             self._log_exc("Critic değişiklik raporu yazılamadı", e)
+
+    def _write_term_normalize_report(
+            self, fp, status: dict, source_cues=None,
+            translation_blocks=None):
+        report_path = (
+            Path(fp).parent / "Raporlar"
+            / f"{Path(fp).stem}.terim_normalizasyonu.txt")
+        status = dict(status or {})
+        safe = _candidate_records_with_context(
+            status.get("safe_candidates"), source_cues, translation_blocks)
+        rejected = _candidate_records_with_context(
+            status.get("rejected_candidates"), source_cues,
+            translation_blocks)
+        response_issues = list(status.get("response_issues") or [])
+        if not safe and not rejected and not response_issues:
+            report_path.unlink(missing_ok=True)
+            return
+        try:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_only = bool(status.get("report_only"))
+            lines = [
+                f"Terim Normalizasyonu — {Path(fp).name}",
+                f"Durum: {status.get('status', 'unknown')}",
+                (f"Güvenli öneri: {len(safe)} (altyazıya uygulanmadı)"
+                 if report_only else f"Uygulanan: {len(safe)}"),
+                f"Korunan/reddedilen: {len(rejected)}",
+                f"JSON/kimlik sorunu: {len(response_issues)}",
+                "=" * 60, "",
+            ]
+            if safe:
+                lines.extend([
+                    ("YALNIZ RAPORLANAN GÜVENLİ ÖNERİLER"
+                     if report_only else "UYGULANAN TERİM DÜZELTMELERİ"),
+                    "-" * 60, "",
+                ])
+                for record in safe:
+                    fixes = ", ".join(
+                        f"{wrong}->{correct}"
+                        for wrong, correct in record.get("fixes") or [])
+                    lines.append(f"#{record.get('id', '?')}  [{fixes or '-'}]")
+                    lines.append(f"Kaynak : {record.get('source', '')}")
+                    lines.append(f"Mevcut : {record.get('before', '')}")
+                    lines.append(f"Öneri  : {record.get('candidate', '')}")
+                    _append_candidate_context(lines, record)
+                    lines.append("")
+            if rejected:
+                lines.extend([
+                    "KORUNAN / REDDEDİLEN TERİM ÖNERİLERİ",
+                    "-" * 60, "",
+                ])
+                for record in rejected:
+                    lines.append(
+                        f"#{record.get('id', '?')}  "
+                        f"[{record.get('reason', 'unknown')}]")
+                    lines.append(f"Kaynak : {record.get('source', '')}")
+                    lines.append(f"Mevcut : {record.get('before', '')}")
+                    lines.append(f"Öneri  : {record.get('candidate', '')}")
+                    _append_candidate_context(lines, record)
+                    lines.append("")
+            if response_issues:
+                lines.extend(["JSON / KİMLİK SORUNLARI", "-" * 60])
+                for issue in response_issues:
+                    lines.append(
+                        f"- #{issue.get('id', '?')}: "
+                        f"{issue.get('reason', 'unknown')}")
+            atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
+            self._log(
+                f"Terim normalizasyonu tanı raporu: {report_path.name} "
+                f"({len(safe)} güvenli, {len(rejected)} korundu, "
+                f"{len(response_issues)} yanıt sorunu)", "ok")
+        except Exception as e:
+            self._log_exc("Terim normalizasyonu tanı raporu yazılamadı", e)
 
     def _dismiss_modal_dialog(self, target_dlg=None, target_event=None):
         """Worker timeout/stop durumunda hâlâ açık olan modal inceleme dialog'unu (QC/Glossary) kapatır.
@@ -27665,7 +27813,9 @@ class App(ctk.CTk):
                         out_path, _critic_change_log,
                         _critic_status.get("rejected_candidates", []),
                         report_only=bool(self._snap_get(
-                            "quality_report_only", True)))
+                            "quality_report_only", True)),
+                        source_cues=cues,
+                        translation_blocks=_before_pass)
                 except RequestCancelled:
                     raise
                 except Exception as critic_error:
@@ -27932,6 +28082,9 @@ class App(ctk.CTk):
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
                         sorted_blocks, _pass_history)
+                    self._write_term_normalize_report(
+                        out_path, _term_status, source_cues=cues,
+                        translation_blocks=_before_termnorm)
                 except Exception as term_error:
                     _pass_status["Term-Normalize"] = {
                         "status": "failed", "error": str(term_error)}
@@ -29644,6 +29797,10 @@ class App(ctk.CTk):
                                         _record_pass_change(
                                             _pass_trace, "Term-Normalize",
                                             _before_termnorm, pp, _pass_history)
+                                        self._write_term_normalize_report(
+                                            output_path, _term_status,
+                                            source_cues=_orig_cues,
+                                            translation_blocks=_before_termnorm)
                                     except Exception as term_error:
                                         _pass_status["Term-Normalize"] = {
                                             "status": "failed",
@@ -30269,7 +30426,9 @@ class App(ctk.CTk):
                         out_path, _critic_change_log,
                         _critic_status.get("rejected_candidates", []),
                         report_only=bool(self._snap_get(
-                            "quality_report_only", True)))
+                            "quality_report_only", True)),
+                        source_cues=_src_cues,
+                        translation_blocks=_before_pass)
                 except Exception as e:
                     _pass_status["Critic"] = {
                         "status": "failed", "error": str(e)}
@@ -30442,6 +30601,9 @@ class App(ctk.CTk):
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
                         sorted_blocks, _pass_history)
+                    self._write_term_normalize_report(
+                        out_path, _term_status, source_cues=_src_cues,
+                        translation_blocks=_before_termnorm)
                 except Exception as term_error:
                     _pass_status["Term-Normalize"] = {
                         "status": "failed", "error": str(term_error)}
@@ -31730,7 +31892,9 @@ class App(ctk.CTk):
                                 out_path, _critic_change_log,
                                 _critic_status.get("rejected_candidates", []),
                                 report_only=bool(self._snap_get(
-                                    "quality_report_only", True)))
+                                    "quality_report_only", True)),
+                                source_cues=cues,
+                                translation_blocks=_before_pass)
                         if self.polish_var.get() and pp_blocks:
                             self._record_file_status(
                                 filepath, "Polish Pass", "running")
@@ -31943,6 +32107,9 @@ class App(ctk.CTk):
                         _record_pass_change(
                             _pass_trace, "Term-Normalize", _before_termnorm,
                             _final_blocks, _pass_history)
+                        self._write_term_normalize_report(
+                            out_path, _term_status, source_cues=cues,
+                            translation_blocks=_before_termnorm)
                     except Exception as term_error:
                         _pass_status["Term-Normalize"] = {
                             "status": "failed", "error": str(term_error),

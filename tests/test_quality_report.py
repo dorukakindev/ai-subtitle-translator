@@ -114,6 +114,22 @@ class PassTraceTest(unittest.TestCase):
         self.assertIsNone(native["tokens_per_change"])
         self.assertEqual(critic["tokens_per_change"], 200.0)
 
+    def test_pass_efficiency_reports_report_only_suggestion_yield(self):
+        rows = gui._pass_efficiency_rows({
+            "pass_trace": {"Critic": 0},
+            "pass_status": {"Critic": {
+                "status": "completed", "report_only": True,
+                "suggested": 6,
+            }},
+            "timing": {"api_usage": {
+                "Critic Pass": {"total_tokens": 1200, "cost_usd": 0.12},
+            }},
+        })
+
+        self.assertEqual(rows[0]["suggested"], 6)
+        self.assertTrue(rows[0]["report_only"])
+        self.assertEqual(rows[0]["tokens_per_suggestion"], 200.0)
+
     def test_multi_pass_history_summary(self):
         history = {
             "5": [{"pass": "Critic"}, {"pass": "Native"}],

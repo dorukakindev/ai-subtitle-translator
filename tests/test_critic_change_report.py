@@ -98,6 +98,40 @@ class WriteCriticChangeReportTest(unittest.TestCase):
             self.assertIn("Mevcut : Mary geldi.", text)
             self.assertIn("Öneri  : John geldi.", text)
 
+    def test_report_includes_neighboring_source_and_translation_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            fp = str(Path(td) / "episode.srt")
+            app = _StubApp()
+            cues = [
+                (10, "00:00:01,000 --> 00:00:02,000", "Where are you?"),
+                (11, "00:00:02,000 --> 00:00:03,000", "I am here."),
+                (12, "00:00:03,000 --> 00:00:04,000", "Come with me."),
+                (13, "00:00:04,000 --> 00:00:05,000", "No."),
+            ]
+            blocks = [
+                (10, cues[0][1], "Neredesin?"),
+                (11, cues[1][1], "Buradayım."),
+                (12, cues[2][1], "Benimle gel."),
+                (13, cues[3][1], "Hayır."),
+            ]
+            records = [{
+                "id": "12", "reason": "context",
+                "source": "Come with me.", "before": "Benimle gel.",
+                "after": "Bana eşlik et.",
+            }]
+
+            gui.App._write_critic_change_report(
+                app, fp, records, source_cues=cues,
+                translation_blocks=blocks)
+
+            report = (Path(td) / "Raporlar"
+                      / "episode.critic_degisiklikler.txt").read_text(
+                          encoding="utf-8")
+            self.assertIn("Komşu bağlam", report)
+            self.assertIn("önce #11 | Kaynak: I am here.", report)
+            self.assertIn("Türkçe: Buradayım.", report)
+            self.assertIn("sonra #13 | Kaynak: No.", report)
+
 
 if __name__ == "__main__":
     unittest.main()
