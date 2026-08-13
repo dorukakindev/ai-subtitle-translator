@@ -10622,6 +10622,60 @@ _CRITICAL_FACT_GROUPS = (
     frozenset(("sol", "sağ", "yukarı", "aşağı", "içeri", "dışarı", "ileri", "geri")),
 )
 
+_SOURCE_MODALITY_PATTERNS = {
+    "obligation": re.compile(
+        r"\b(?:must|have\s+to|has\s+to|had\s+to|need\s+to|needs\s+to|"
+        r"required\s+to|require(?:s|d)?\s+to|obliged\s+to)\b", re.IGNORECASE),
+    "possibility": re.compile(
+        r"\b(?:may|might|could)\b|\b(?:be|is|are|was|were)\s+able\s+to\b",
+        re.IGNORECASE),
+    "future": re.compile(
+        r"\b(?:will|shall)\b|\b(?:am|is|are)\s+going\s+to\b", re.IGNORECASE),
+    "intent": re.compile(
+        r"\b(?:want(?:s|ed)?\s+to|intend(?:s|ed)?\s+to|plan(?:s|ned)?\s+to|"
+        r"wish(?:es|ed)?\s+to|mean(?:s|t)?\s+to)\b", re.IGNORECASE),
+}
+
+
+def _turkish_modality_classes(text: str) -> set[str]:
+    """Return only explicit modal meanings; ordinary tense/rephrasing stays unclassified."""
+    value = _turkish_ascii_fold(_polish_norm(str(text or ""))).casefold()
+    classes = set()
+    if re.search(r"\b(?:zorunda\w*|mecbur\w*|gerek\w*|lazim\w*|"
+                 r"[a-z]+(?:mali|meli)\w*)\b", value):
+        classes.add("obligation")
+    if re.search(r"\b(?:mumkun\w*|olasi\w*|[a-z]+(?:abil|ebil)\w*)\b", value):
+        classes.add("possibility")
+    if re.search(r"\b[a-z]+(?:acak|ecek)\w*\b", value):
+        classes.add("future")
+    if re.search(r"\b(?:niyet\w*|plan\w*|amac\w*|iste(?:r|di|yor|yecek|mek)\w*)\b", value):
+        classes.add("intent")
+    return classes
+
+
+def _has_source_backed_modality_drift(source_text: str, old: str, new: str) -> bool:
+    """Reject a Critic rewrite only when it replaces an explicit source modality.
+
+    Turkish often expresses tense and intent indirectly, so this deliberately
+    acts only when both the old rendering and candidate carry incompatible,
+    explicit modal markers confirmed by the English source.
+    """
+    source = str(source_text or "")
+    if not source:
+        return False
+    source_classes = {
+        kind for kind, pattern in _SOURCE_MODALITY_PATTERNS.items()
+        if pattern.search(source)
+    }
+    if not source_classes:
+        return False
+    old_classes = _turkish_modality_classes(old)
+    new_classes = _turkish_modality_classes(new)
+    for kind in source_classes & old_classes:
+        if kind not in new_classes and (new_classes - {kind}):
+            return True
+    return False
+
 _TURKISH_REPETITION_MARKER_RE = re.compile(
     r"\b(?:tekrar|yeniden|yine|gene)\b|\bbir\s+daha\b", re.IGNORECASE)
 _SOURCE_REPETITION_LICENSE_RE = re.compile(
@@ -10776,6 +10830,8 @@ def validate_polish_candidate(
         return False, "source_negation_addition"
     if src and _has_unsupported_repetition_addition(src, old, new):
         return False, "source_repetition_addition"
+    if src and _has_source_backed_modality_drift(src, old, new):
+        return False, "source_modality"
     if src and _question_mark_mismatch(src, new):
         return False, "source_question"
     if src and _has_question_main_content_drift(src, old, new):

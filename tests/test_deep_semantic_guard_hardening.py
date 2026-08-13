@@ -66,6 +66,20 @@ class TurkishMeaningGuardTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "critical_fact_swap")
 
+    def test_rejects_source_backed_obligation_to_possibility(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gitmek zorundasın.", "Gitmek isteyebilirsin.",
+            source_text="You must leave.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_modality")
+
+    def test_allows_unclassified_rephrasing_of_source_obligation(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gitmek zorundasın.", "Git.", source_text="You must leave.",
+        )
+        self.assertTrue(ok, reason)
+
     def test_rejects_source_backed_plural_loss(self):
         ok, reason = ht.validate_polish_candidate(
             "Çocuklar geldi.", "Çocuk geldi.",
