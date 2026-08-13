@@ -1095,7 +1095,7 @@ _BOUNDARY_QUALITY_VARS = {
     "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
-    "quality_report_only": ("quality_report_only_var", "Tutarlılık/Critic/Terim Yalnız Rapor"),
+    "quality_report_only": ("quality_report_only_var", "Kalite/Teslim Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
     "linebreak": ("linebreak_var", "Satır Bölme"),
@@ -6032,7 +6032,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     if unresolved_mixed and log_fn:
         log_fn(
             f"{unresolved_mixed} onarılamayan karışık/çevrilmemiş satır "
-            "[ÇEVİRİ EKSİK] olarak karantinaya alındı",
+            "[ÇEVİRİ EKSİK] olarak işaretlendi ve inceleme raporuna bırakıldı",
             "err",
         )
 
@@ -6084,7 +6084,7 @@ def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
     if inserted and log_fn:
         log_fn(
             f"Nihai yapısal koruma: {inserted} kayıp diyalog cue'su "
-            "[ÇEVİRİ EKSİK] olarak karantinaya alındı",
+            "[ÇEVİRİ EKSİK] olarak işaretlendi ve inceleme raporuna bırakıldı",
             "err",
         )
     return ordered, inserted
@@ -8889,7 +8889,7 @@ def _reconcile_delivery_outcomes(report_rows, completed_files, failed_files):
     failed_keys = {
         os.path.normcase(os.path.abspath(str(row.get("source_path"))))
         for row in (report_rows or [])
-        if row.get("source_path") and row.get("run_status") == "error"
+        if row.get("source_path") and row.get("run_status") in {"error", "review"}
     }
     completed = [
         path for path in (completed_files or [])
@@ -8937,6 +8937,24 @@ def _source_drift_report_row(filepath: str) -> dict:
         "tm_hits": 0,
         "delivery_scan_failed": True,
         "run_status": "error",
+    }
+
+
+def _delivery_review_report_row(filepath: str, output_path, audit: dict) -> dict:
+    return {
+        "name": Path(filepath).name,
+        "source_path": str(filepath),
+        "output_path": str(output_path or ""),
+        "total": int((audit or {}).get("dialogue_output_cues", 0) or 0),
+        "hata": int((audit or {}).get("unresolved_markers", 0) or 0),
+        "cps": 0,
+        "warn": 1,
+        "pass_status": {"Final-Delivery": {
+            "status": "failed", "error": "manual_review_required"}},
+        "pass_coverage": "teslim yalnız rapor",
+        "delivery_audit": dict(audit or {}),
+        "delivery_scan_failed": True,
+        "run_status": "review",
     }
 
 # ── UI Dispatcher & Thread Safety Helper ────────────────────────────────────
@@ -11090,6 +11108,49 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             1 + bool(first_dialogue_start > 0)
             + bool(_delivery_middle_signature_slot(output_dialogue)))
     signature_mismatch = delivery_signatures != expected_signatures
+    source_text_by_id = {
+        str(idx): str(text or "") for idx, _ts, text in source_rows}
+    output_text_by_id = {
+        str(idx): str(text or "") for idx, _ts, text in output_dialogue}
+    review_details = []
+
+    def _add_review_detail(reason, source_id="", output_id=""):
+        source_id = str(source_id or "")
+        output_id = str(output_id or "")
+        source_text = source_text_by_id.get(source_id, "")
+        if not source_text and output_id:
+            source_text = output_source_map.get(output_id, "")
+        review_details.append({
+            "reason": str(reason),
+            "source_id": source_id,
+            "output_id": output_id,
+            "source": source_text,
+            "target": output_text_by_id.get(output_id, ""),
+        })
+
+    for source_id in missing_dialogue:
+        _add_review_detail("missing_dialogue", source_id)
+    for output_id in extras:
+        _add_review_detail("extra_dialogue", output_id=output_id)
+    for source_id in timestamp_mismatches:
+        _add_review_detail(
+            "timestamp_mismatch", source_id,
+            source_to_output_ids.get(str(source_id), str(source_id)))
+    for output_id in delivery_owner_mismatch_ids:
+        _add_review_detail("cue_owner_mismatch", output_id=output_id)
+    for output_id in untranslated_fragment_ids:
+        _add_review_detail("untranslated_fragment", output_id=output_id)
+    for output_id, _ts, text in output_dialogue:
+        if str(text or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(text or ""):
+            _add_review_detail("unresolved_marker", output_id=output_id)
+    for output_id in invalid_timestamp_ids:
+        _add_review_detail("invalid_timestamp", output_id=output_id)
+    for output_id in reversed_timestamp_ids:
+        _add_review_detail("reversed_timestamp", output_id=output_id)
+    for output_id in signature_overlap_ids:
+        _add_review_detail("signature_overlap", output_id=output_id)
+    for output_id in serialized_json_residue_ids:
+        _add_review_detail("serialized_json_residue", output_id=output_id)
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         delivery_owner_mismatch_ids, untranslated_fragment_ids,
@@ -11130,6 +11191,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "signature_overlap_ids": signature_overlap_ids,
         "duplicate_cue_ids": duplicate_cue_ids,
         "unnumbered_cue_lines": unnumbered_cue_lines,
+        "review_details": review_details,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
     })
@@ -11415,6 +11477,10 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             lines.append("   İşlem dökümü:")
             lines.extend(f"      - {item}" for item in feature_audit)
         delivery_audit = r.get("delivery_audit") or {}
+        if r.get("run_status") == "review":
+            lines.append(
+                "   >>> TESLİM DURUMU: İNCELEME GEREKLİ — çıktı yerinde "
+                "bırakıldı; yüklemeye hazır/tamamlanmış sayılmadı.")
         if delivery_audit.get("status"):
             lines.append(
                 f"   Yapısal teslim denetimi : {delivery_audit.get('status')} | "
@@ -11434,6 +11500,17 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                 lines.append(
                     "   >>> Satır içinde çevrilmeden kalan kaynak: "
                     f"{len(fragment_ids)} cue ({', '.join(map(str, fragment_ids))})")
+            review_details = delivery_audit.get("review_details") or []
+            if review_details:
+                lines.append("   >>> Elle inceleme ayrıntıları:")
+                for detail in review_details:
+                    cue_label = "/".join(filter(None, (
+                        str(detail.get("source_id") or ""),
+                        str(detail.get("output_id") or "")))) or "-"
+                    lines.append(
+                        f"      - [{detail.get('reason', 'review')}] #{cue_label} | "
+                        f"kaynak={detail.get('source', '')!r} | "
+                        f"çıktı={detail.get('target', '')!r}")
         trace_txt = _format_pass_trace(r.get("pass_trace") or {})
         if trace_txt:
             lines.append(f"   {'Kalite geçişi kırılımı'.ljust(width)} : {trace_txt}")
@@ -13567,14 +13644,15 @@ class App(ctk.CTk):
         ctk.CTkSwitch(qro_fr, text="", variable=self.quality_report_only_var,
                       width=44, height=22,
                       fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
-        ctk.CTkLabel(qro_fr, text="Tutarlılık + Critic + Terim: Yalnız Raporla",
+        ctk.CTkLabel(qro_fr, text="Kalite + Teslim: Yalnız Raporla",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(
             sb,
-            text="Varsayılan güvenli mod. Tutarlılık, Critic ve Terim\n"
-                 "önerilerini cue numarasıyla log ve rapora yazar;\n"
-                 "nihai altyazı metnini kendiliğinden değiştirmez.",
+            text="Varsayılan güvenli mod. Kalite ve teslim sorunlarını\n"
+                 "cue numarasıyla log ve rapora yazar; çıktıyı taşımaz\n"
+                 "ve otomatik yeniden çevirmez. Sorunlu dosya yine de\n"
+                 "yüklemeye hazır veya tamamlanmış sayılmaz.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260).grid(
                 row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -15063,6 +15141,21 @@ class App(ctk.CTk):
         except Exception:
             return default
 
+    def _delivery_report_only_enabled(self) -> bool:
+        snapshot = self.__dict__.get("_active_snapshot")
+        if isinstance(snapshot, dict) and "quality_report_only" in snapshot:
+            return bool(snapshot["quality_report_only"])
+        var = self.__dict__.get("quality_report_only_var")
+        try:
+            return bool(var.get())
+        except Exception:
+            return True
+
+    def _maybe_quarantine_incomplete_final(self, out_path) -> Path | None:
+        if self._delivery_report_only_enabled():
+            return None
+        return _quarantine_incomplete_final(out_path)
+
     def _take_run_snapshot(self) -> dict:
         """Ana thread'de çalışarak çeviri oturumu için gereken tüm UI ayarlarının
         saf Python nesnesi olarak kopyasını oluşturur. Worker thread'ler Tk variable .get()
@@ -15599,7 +15692,7 @@ class App(ctk.CTk):
                     row = rows_by_name.get(Path(path).name)
                 if not row:
                     continue
-                if row.get("run_status") == "error":
+                if row.get("run_status") in {"error", "review"}:
                     item["status"] = "error"
                 elif item.get("status") != "error":
                     item["status"] = "done"
@@ -17434,7 +17527,7 @@ class App(ctk.CTk):
                     delivery_audit = _subtitle_delivery_audit(
                         source_path, output_path, tgt, source_language)
                     if _delivery_audit_has_hard_error(delivery_audit):
-                        quarantined = _quarantine_incomplete_final(output_path)
+                        quarantined = self._maybe_quarantine_incomplete_final(output_path)
                         failure_output_path = str(quarantined or output_path)
                         raise RuntimeError(
                             "sezon denetimi yazımı sonrası teslim denetimi "
@@ -17442,7 +17535,7 @@ class App(ctk.CTk):
                     report_dir.mkdir(parents=True, exist_ok=True)
                     if not _write_output_source_fingerprint(
                             report_dir, output_path, expected_source_hash):
-                        quarantined = _quarantine_incomplete_final(output_path)
+                        quarantined = self._maybe_quarantine_incomplete_final(output_path)
                         failure_output_path = str(quarantined or output_path)
                         raise RuntimeError(
                             "sezon denetimi kaynak-çıktı parmak izi yazılamadı")
@@ -21709,20 +21802,25 @@ class App(ctk.CTk):
                 _write_path = _partial_output_path(out_path) if missing else Path(out_path)
                 write_srt(_write_path, _delivery_blocks, tgt)
                 _quarantined = (
-                    _quarantine_incomplete_final(out_path) if missing else None)
+                    self._maybe_quarantine_incomplete_final(out_path) if missing else None)
                 _delivery_failed = False
                 if not missing:
                     _delivery_audit = _subtitle_delivery_audit(
                         orig_path, str(_write_path), tgt, src)
                     if _delivery_audit_has_hard_error(_delivery_audit):
                         _delivery_failed = True
-                        _quarantined = _quarantine_incomplete_final(_write_path)
+                        _quarantined = self._maybe_quarantine_incomplete_final(_write_path)
                         if _quarantined:
                             _write_path = _quarantined
-                        self._log(
-                            "JSONL: yazılan SRT teslim denetiminden geçmedi; "
-                            f"çıktı karantinaya alındı{f': {Path(_quarantined).name}' if _quarantined else ''}.",
-                            "err")
+                        if self._delivery_report_only_enabled():
+                            self._log(
+                                "JSONL: yazılan SRT inceleme gerektiriyor; çıktı "
+                                "yerinde bırakıldı (Yalnız Raporla).", "warn")
+                        else:
+                            self._log(
+                                "JSONL: yazılan SRT teslim denetiminden geçmedi; "
+                                f"çıktı karantinaya alındı{f': {Path(_quarantined).name}' if _quarantined else ''}.",
+                                "err")
                 if missing:
                     self._log(
                         f"JSONL: {missing} eksik çeviri kaldı; kısmi çıktı "
@@ -21738,7 +21836,9 @@ class App(ctk.CTk):
                 if _delivery_failed:
                     _post_ui(self, messagebox.showerror, "Teslim Denetimi Başarısız",
                               f"Yazılan SRT doğrulanamadığı için teslim edilmedi.\n\n"
-                              f"Karantina:\n{_write_path}")
+                              + (f"İnceleme konumu:\n{_write_path}"
+                                 if self._delivery_report_only_enabled() else
+                                 f"Karantina:\n{_write_path}"))
                 elif missing:
                     _post_ui(self, messagebox.showwarning, "Kısmi Sonuç",
                                   f"{len(blocks)} satır SRT'ye dönüştürüldü ancak "
@@ -23807,11 +23907,16 @@ class App(ctk.CTk):
                 delivery_audit = _subtitle_delivery_audit(
                     audit_source, fp, tgt, source_language)
                 if _delivery_audit_has_hard_error(delivery_audit):
-                    quarantined = _quarantine_incomplete_final(fp)
-                    self._log(
-                        f"{fname}: post-işlem çıktısı teslim denetiminden geçmedi; "
-                        f"{Path(quarantined).name if quarantined else 'karantina başarısız'}",
-                        "err")
+                    quarantined = self._maybe_quarantine_incomplete_final(fp)
+                    if self._delivery_report_only_enabled():
+                        self._log(
+                            f"{fname}: post-işlem çıktısı inceleme gerektiriyor; "
+                            "çıktı yerinde bırakıldı (Yalnız Raporla).", "warn")
+                    else:
+                        self._log(
+                            f"{fname}: post-işlem çıktısı teslim denetiminden geçmedi; "
+                            f"{Path(quarantined).name if quarantined else 'karantina başarısız'}",
+                            "err")
                     self._update_file_progress(
                         fp, "Teslim denetimi başarısız", 100, "error")
                     report_rows.append(_postprocess_report_row(
@@ -24492,14 +24597,23 @@ class App(ctk.CTk):
                 if (not row.get("delivery_audit_skip") and (
                         _delivery_audit_has_hard_error(row["delivery_audit"])
                         or row.get("delivery_scan_failed"))):
-                    quarantined = _quarantine_incomplete_final(row.get("output_path", ""))
-                    row["run_status"] = "error"
+                    report_only = self._delivery_report_only_enabled()
+                    quarantined = self._maybe_quarantine_incomplete_final(
+                        row.get("output_path", ""))
+                    row["run_status"] = "review" if report_only else "error"
                     row["delivery_quarantined_path"] = str(quarantined or "")
-                    self._log(
-                        f"Teslim koruması: {row.get('name', 'altyazı')} yüklemeye hazır değil; "
-                        f"{Path(quarantined).name if quarantined else 'çıktı karantinaya alınamadı'}",
-                        "err",
-                    )
+                    if report_only:
+                        self._log(
+                            f"Teslim koruması: {row.get('name', 'altyazı')} inceleme "
+                            "gerektiriyor; çıktı yerinde bırakıldı (Yalnız Raporla).",
+                            "warn",
+                        )
+                    else:
+                        self._log(
+                            f"Teslim koruması: {row.get('name', 'altyazı')} yüklemeye hazır değil; "
+                            f"{Path(quarantined).name if quarantined else 'çıktı karantinaya alınamadı'}",
+                            "err",
+                        )
                 if isinstance(source_row, dict):
                     source_row.update({
                         "delivery_audit": row["delivery_audit"],
@@ -24508,9 +24622,12 @@ class App(ctk.CTk):
                             "delivery_quarantined_path", ""),
                     })
                 if source_path:
+                    needs_review = row.get("run_status") == "review"
                     terminal_status = (
-                        "error" if row.get("run_status") == "error" else "done")
+                        "error" if row.get("run_status") in {"error", "review"}
+                        else "done")
                     terminal_phase = (
+                        "İnceleme gerekli" if needs_review else
                         "Hata" if terminal_status == "error" else "Tamamlandı")
                     self._record_file_status(
                         source_path, terminal_phase, terminal_status)
@@ -26657,14 +26774,16 @@ class App(ctk.CTk):
             delivery_audit = _subtitle_delivery_audit(
                 filepath, str(write_path), tgt, file_src)
             if _delivery_audit_has_hard_error(delivery_audit):
-                quarantined = _quarantine_incomplete_final(write_path)
+                quarantined = self._maybe_quarantine_incomplete_final(write_path)
                 if quarantined:
                     write_path = quarantined
                 complete = False
                 self._log(
                     f"{Path(filepath).name}: eksik cue onarımı tamamlandı ancak "
-                    "nihai teslim denetimi başarısız oldu; çıktı karantinaya "
-                    f"alındı{f': {quarantined.name}' if quarantined else ''}.",
+                    "nihai teslim denetimi başarısız oldu; "
+                    + (f"çıktı karantinaya alındı: {quarantined.name}."
+                       if quarantined else
+                       "çıktı yerinde bırakılıp incelemeye ayrıldı."),
                     "err")
         if complete and not fingerprint_ok:
             complete = False
@@ -26793,12 +26912,38 @@ class App(ctk.CTk):
                                 file_pct = int((fi + 1) / n_files * 100)
                                 self._set_progress(file_pct)
                                 continue
-                            quarantined = _quarantine_incomplete_final(out_path)
+                            quarantined = self._maybe_quarantine_incomplete_final(out_path)
+                            if self._delivery_report_only_enabled():
+                                self._log(
+                                    f"{fname}: mevcut çıktı teslim denetiminden geçmedi; "
+                                    "yerinde bırakıldı ve otomatik yeniden çevrilmedi "
+                                    "(Yalnız Raporla).", "warn")
+                                report_rows.append(_delivery_review_report_row(
+                                    filepath, out_path, existing_audit))
+                                failed_files.append(filepath)
+                                self._update_file_progress(
+                                    filepath, "İnceleme gerekli", 100, "error")
+                                self._set_progress(int((fi + 1) / n_files * 100))
+                                continue
                             self._log(
                                 f"{fname}: mevcut çıktı teslim denetiminden geçmedi; "
                                 f"yeniden üretilecek ({Path(quarantined).name if quarantined else 'karantina başarısız'}).",
                                 "warn")
                     except Exception as existing_error:
+                        if self._delivery_report_only_enabled():
+                            unavailable_audit = {
+                                "status": "unavailable", "error": str(existing_error)}
+                            self._log(
+                                f"{fname}: mevcut çıktı doğrulanamadı; yerinde bırakıldı "
+                                "ve otomatik yeniden çevrilmedi (Yalnız Raporla): "
+                                f"{existing_error}", "warn")
+                            report_rows.append(_delivery_review_report_row(
+                                filepath, out_path, unavailable_audit))
+                            failed_files.append(filepath)
+                            self._update_file_progress(
+                                filepath, "İnceleme gerekli", 100, "error")
+                            self._set_progress(int((fi + 1) / n_files * 100))
+                            continue
                         self._log(
                             f"{fname}: mevcut çıktı doğrulanamadı; yeniden üretilecek "
                             f"({existing_error})", "warn")
@@ -27731,7 +27876,8 @@ class App(ctk.CTk):
             self._record_file_status(filepath, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, tgt)
             _quarantined = (
-                _quarantine_incomplete_final(out_path) if _has_missing else None)
+                self._maybe_quarantine_incomplete_final(out_path)
+                if _has_missing else None)
             _fingerprint_ok = _write_output_source_fingerprint(
                 report_dir, _write_path, _expected_source_hash,
                 source_path=filepath)
@@ -27791,12 +27937,16 @@ class App(ctk.CTk):
                     "tamamlanamadı; dosya tamamlandı sayılmayacak.", "err")
             if not _has_missing and (
                     _delivery_scan_failed or _quality_pass_failed):
-                quarantined = _quarantine_incomplete_final(out_path)
+                quarantined = self._maybe_quarantine_incomplete_final(out_path)
                 if quarantined:
                     _write_path = quarantined
                     self._log(
                         f"{fname}: doğrulanmamış çıktı karantinaya alındı: "
                         f"{quarantined.name}", "warn")
+                elif self._delivery_report_only_enabled():
+                    self._log(
+                        f"{fname}: kalite/teslim sorunu raporlandı; çıktı yerinde "
+                        "bırakıldı ve otomatik yeniden çevrilmeyecek.", "warn")
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             _analysis_status = (
                 f"{'tamam' if _analysis_ok else 'kısmi'} — "
@@ -29434,7 +29584,7 @@ class App(ctk.CTk):
                                     "sayılmayacak.",
                                     "err")
                             _quarantined = (
-                                _quarantine_incomplete_final(output_path)
+                                self._maybe_quarantine_incomplete_final(output_path)
                                 if _has_missing else None)
                             self._save_raw_backup(
                                 _write_path, _raw_backup_blocks, _raw_map, tgt)
@@ -29494,7 +29644,7 @@ class App(ctk.CTk):
                                     _delivery_scan_failed
                                     or _quality_pass_has_hard_failure(_pass_status))
                                 if _resume_quality_failed:
-                                    quarantined = _quarantine_incomplete_final(
+                                    quarantined = self._maybe_quarantine_incomplete_final(
                                         output_path)
                                     if quarantined:
                                         _write_path = quarantined
@@ -30230,7 +30380,8 @@ class App(ctk.CTk):
             self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
             _quarantined = (
-                _quarantine_incomplete_final(out_path) if _has_missing else None)
+                self._maybe_quarantine_incomplete_final(out_path)
+                if _has_missing else None)
             _fingerprint_ok = _write_output_source_fingerprint(
                 report_dir, _write_path,
                 expected_source_hash or _file_content_sha256(fp),
@@ -30290,12 +30441,16 @@ class App(ctk.CTk):
             _quality_pass_failed = _quality_pass_has_hard_failure(_pass_status)
             if not _has_missing and (
                     _delivery_scan_failed or _quality_pass_failed):
-                quarantined = _quarantine_incomplete_final(out_path)
+                quarantined = self._maybe_quarantine_incomplete_final(out_path)
                 if quarantined:
                     _write_path = quarantined
                     self._log(
                         f"{Path(fp).name}: doğrulanmamış çıktı karantinaya "
                         f"alındı: {quarantined.name}", "warn")
+                elif self._delivery_report_only_enabled():
+                    self._log(
+                        f"{Path(fp).name}: kalite/teslim sorunu raporlandı; çıktı "
+                        "yerinde bırakıldı ve otomatik yeniden çevrilmeyecek.", "warn")
             _pc = "+".join(k for k, v in [("critic",self.critic_var.get()),("polish",self.polish_var.get()),("native",self.native_var.get()),("QC",self.qc_var.get()),("condense",self.condense_var.get()),("backtrans",self.backtrans_var.get()),("review",self.review_pass_var.get()),("semantic",self._semantic_reconcile_enabled()),("termnorm",self.term_normalize_var.get()),("2wave",self.twowave_var.get()),("SDH",self.clean_sdh_var.get()),("linebreak",self.linebreak_var.get())] if v)
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
@@ -30690,6 +30845,26 @@ class App(ctk.CTk):
             _file_pm = self._project_memory_for(filepath, file_src)
             file_status = session["files"].get(str(filepath), {}).get("status", "pending")
 
+            if (file_status == "review"
+                    and self._delivery_report_only_enabled()):
+                stored_output = str(
+                    session["files"].get(str(filepath), {}).get("out_path") or "")
+                review_output = Path(stored_output) if stored_output else _resolve_output_path(
+                    input_dir, output_dir, filepath,
+                    same_folder=self.same_folder_var.get(),
+                    selected_roots=self._output_selection_roots())
+                review_audit = _subtitle_delivery_audit(
+                    filepath, str(review_output), tgt, file_src)
+                source_drift_rows.append(_delivery_review_report_row(
+                    filepath, review_output, review_audit))
+                self._record_file_status(
+                    filepath, "İnceleme gerekli", "error")
+                self._log(
+                    f"[{fi+1}/{n_files}] {fname} — inceleme bekliyor; çıktı "
+                    "yerinde bırakıldı, yeni batch gönderilmedi.", "warn")
+                self._set_progress(int((fi + 1) / n_files * 40))
+                continue
+
             # ── Zaten tamamlanmış dosyaları atla ──────────────────────────────
             if file_status == "completed":
                 stored_output = str(
@@ -30702,7 +30877,22 @@ class App(ctk.CTk):
                 existing_audit = _subtitle_delivery_audit(
                     filepath, str(existing_output), tgt, file_src)
                 if _delivery_audit_has_hard_error(existing_audit):
-                    quarantined = _quarantine_incomplete_final(existing_output)
+                    quarantined = self._maybe_quarantine_incomplete_final(
+                        existing_output)
+                    if self._delivery_report_only_enabled():
+                        ht.update_batch_session(
+                            session, filepath, "review",
+                            out_path=str(existing_output))
+                        source_drift_rows.append(_delivery_review_report_row(
+                            filepath, existing_output, existing_audit))
+                        self._record_file_status(
+                            filepath, "İnceleme gerekli", "error")
+                        self._log(
+                            f"{fname}: tamamlandı kaydı var fakat çıktı inceleme "
+                            "gerektiriyor; yerinde bırakıldı ve yeniden işlenmedi.",
+                            "warn")
+                        self._set_progress(int((fi + 1) / n_files * 40))
+                        continue
                     ht.update_batch_session(session, filepath, "pending")
                     file_status = "pending"
                     self._log(
@@ -30769,13 +30959,50 @@ class App(ctk.CTk):
                                     "kaynakla doğrulandı, batch gönderilmedi", "ok")
                                 self._set_progress(int((fi + 1) / n_files * 40))
                                 continue
-                            quarantined = _quarantine_incomplete_final(
+                            quarantined = self._maybe_quarantine_incomplete_final(
                                 existing_output)
+                            if self._delivery_report_only_enabled():
+                                ht.update_batch_session(
+                                    session, filepath, "review",
+                                    out_path=str(existing_output),
+                                    source_hash=_stable_source_hash,
+                                    output_state=ht._file_state_signature(
+                                        existing_output))
+                                source_drift_rows.append(
+                                    _delivery_review_report_row(
+                                        filepath, existing_output,
+                                        existing_audit))
+                                self._record_file_status(
+                                    filepath, "İnceleme gerekli", "error")
+                                self._log(
+                                    f"{fname}: mevcut çıktı inceleme gerektiriyor; "
+                                    "yerinde bırakıldı ve yeni batch gönderilmedi.",
+                                    "warn")
+                                self._set_progress(
+                                    int((fi + 1) / n_files * 40))
+                                continue
                             self._log(
                                 f"{fname}: mevcut çıktı teslim denetiminden geçmedi; "
                                 f"yeniden üretilecek ({Path(quarantined).name if quarantined else 'karantina başarısız'}).",
                                 "warn")
                     except Exception as existing_error:
+                        if self._delivery_report_only_enabled():
+                            unavailable_audit = {
+                                "status": "unavailable", "error": str(existing_error)}
+                            ht.update_batch_session(
+                                session, filepath, "review",
+                                out_path=str(existing_output),
+                                source_hash=_stable_source_hash)
+                            source_drift_rows.append(_delivery_review_report_row(
+                                filepath, existing_output, unavailable_audit))
+                            self._record_file_status(
+                                filepath, "İnceleme gerekli", "error")
+                            self._log(
+                                f"{fname}: mevcut çıktı doğrulanamadı; yerinde "
+                                "bırakıldı ve yeni batch gönderilmedi "
+                                f"(Yalnız Raporla): {existing_error}", "warn")
+                            self._set_progress(int((fi + 1) / n_files * 40))
+                            continue
                         self._log(
                             f"{fname}: mevcut çıktı doğrulanamadı; yeniden "
                             f"üretilecek ({existing_error})", "warn")
@@ -31663,7 +31890,8 @@ class App(ctk.CTk):
                         f"{fname}: kaynak arşivi/parmak izi yazılamadı; "
                         "dosya tamamlandı sayılmayacak.", "err")
                 _quarantined = (
-                    _quarantine_incomplete_final(out_path) if _has_missing else None)
+                    self._maybe_quarantine_incomplete_final(out_path)
+                    if _has_missing else None)
                 self._save_raw_backup(_write_path, _raw_backup_blocks, _raw_map, tgt)
                 if _has_missing:
                     self._log(
@@ -31755,12 +31983,17 @@ class App(ctk.CTk):
                     _delivery_scan_failed
                     or _quality_pass_has_hard_failure(_pass_status))
                 if _hybrid_quality_failed:
-                    quarantined = _quarantine_incomplete_final(out_path)
+                    quarantined = self._maybe_quarantine_incomplete_final(out_path)
                     if quarantined:
                         out_path = str(quarantined)
                         self._log(
                             f"{fname}: doğrulanmamış çıktı karantinaya "
                             f"alındı: {quarantined.name}", "warn")
+                    elif self._delivery_report_only_enabled():
+                        self._log(
+                            f"{fname}: kalite/teslim sorunu raporlandı; çıktı "
+                            "yerinde bırakıldı ve otomatik yeniden çevrilmeyecek.",
+                            "warn")
                 else:
                     self._record_file_status(
                         filepath, "Çeviri Hafızası", "running")
@@ -31899,11 +32132,17 @@ class App(ctk.CTk):
 
         self._save_quality_report(report_rows, output_dir)
         for _row in report_rows:
-            if _row.get("run_status") == "error" and _row.get("source_path"):
+            if (_row.get("run_status") in {"error", "review"}
+                    and _row.get("source_path")):
+                terminal_state = (
+                    "review" if _row.get("run_status") == "review"
+                    and self._delivery_report_only_enabled() else "failed")
                 self._record_batch_terminal_state(
-                    ht, session, str(_row["source_path"]), "failed")
+                    ht, session, str(_row["source_path"]), terminal_state)
                 self._record_file_status(
-                    str(_row["source_path"]), "Teslim denetimi başarısız", "error")
+                    str(_row["source_path"]),
+                    "İnceleme gerekli" if terminal_state == "review"
+                    else "Teslim denetimi başarısız", "error")
         self._set_running(False)
         if not self._stop_flag:
             self._set_progress(100)
@@ -31916,7 +32155,7 @@ class App(ctk.CTk):
                     _completed_files.append(_filepath)
                 elif self._is_queued_file_removed(_filepath):
                     _skipped_files.append(_filepath)
-                elif _file_status == "failed":
+                elif _file_status in {"failed", "review"}:
                     _failed_files.append(_filepath)
             _outcome = summarize_file_outcomes(
                 _completed_files, _failed_files, _skipped_files, n_files)
