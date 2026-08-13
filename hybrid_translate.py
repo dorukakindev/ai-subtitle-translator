@@ -12,6 +12,7 @@ import time
 import hashlib
 import traceback
 import unicodedata
+from copy import copy
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
 from app_state import (_interprocess_lock, atomic_write_json, atomic_write_text,
@@ -3418,6 +3419,10 @@ def _analysis_name_identity(value) -> str:
     return "".join(char for char in text if not unicodedata.combining(char)).replace("ı", "i")
 
 
+def _analysis_style_identity(value) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
 def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     _ensure_path()
     from subtitle_localizer.models import ContextMemory
@@ -3451,14 +3456,26 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
                 conflicting_terms.add(previous_source)
                 merged_terms.pop(previous_source, None)
 
-    seen = set()
+    seen = {}
+    character_conflicts = set()
     merged_chars = []
     for m in memories:
         for c in m.characters:
             key = _analysis_name_identity(c.name)
+            style = _analysis_style_identity(getattr(c, "speaking_style", ""))
             if key not in seen:
-                seen.add(key)
-                merged_chars.append(c)
+                merged_char = copy(c)
+                seen[key] = (merged_char, style)
+                merged_chars.append(merged_char)
+                continue
+            previous, previous_style = seen[key]
+            if not previous_style and style:
+                previous.speaking_style = str(getattr(c, "speaking_style", "")).strip()
+                seen[key] = (previous, style)
+            elif previous_style and style and previous_style != style:
+                previous.speaking_style = ""
+                seen[key] = (previous, "")
+                character_conflicts.add(str(previous.name))
 
     seen_notes = set()
     merged_notes = []
@@ -3490,6 +3507,16 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
                 "Yardımcı analiz terim çatışması: "
                 + ", ".join(sorted(conflicting_terms, key=str.casefold))
                 + " — belirsiz kararlar prompt/cache'e alınmadı",
+                "warn",
+            )
+    if character_conflicts:
+        merged._analysis_character_conflicts = sorted(
+            character_conflicts, key=_analysis_name_identity)
+        if log_fn:
+            log_fn(
+                "YardÄ±mcÄ± analiz karakter Ã¼slubu Ã§atÄ±ÅŸmasÄ±: "
+                + ", ".join(merged._analysis_character_conflicts)
+                + " â€” belirsiz Ã¼slup prompt'a alÄ±nmadÄ±",
                 "warn",
             )
     return merged
@@ -10555,6 +10582,38 @@ _CRITICAL_REFERENCE_FORMS = {
     "second": frozenset(("sen", "seni", "sana", "sende", "senden", "senin", "siz", "sizi", "size", "sizde", "sizden", "sizin")),
     "third": frozenset(("o", "onu", "ona", "onda", "ondan", "onun", "onlar", "onları", "onlara", "onlarda", "onlardan", "onların")),
 }
+_CRITICAL_REFERENCE_CASE_FORMS = {
+    "nominative": {
+        "first": frozenset(("ben", "biz")),
+        "second": frozenset(("sen", "siz")),
+        "third": frozenset(("o", "onlar")),
+    },
+    "accusative": {
+        "first": frozenset(("beni", "bizi")),
+        "second": frozenset(("seni", "sizi")),
+        "third": frozenset(("onu", "onları")),
+    },
+    "dative": {
+        "first": frozenset(("bana", "bize")),
+        "second": frozenset(("sana", "size")),
+        "third": frozenset(("ona", "onlara")),
+    },
+    "locative": {
+        "first": frozenset(("bende", "bizde")),
+        "second": frozenset(("sende", "sizde")),
+        "third": frozenset(("onda", "onlarda")),
+    },
+    "ablative": {
+        "first": frozenset(("benden", "bizden")),
+        "second": frozenset(("senden", "sizden")),
+        "third": frozenset(("ondan", "onlardan")),
+    },
+    "genitive": {
+        "first": frozenset(("benim", "bizim")),
+        "second": frozenset(("senin", "sizin")),
+        "third": frozenset(("onun", "onların")),
+    },
+}
 _CRITICAL_FACT_GROUPS = (
     frozenset(("şimdi", "sonra", "bugün", "yarın", "dün", "önce", "sonra")),
     frozenset(("kırmızı", "mavi", "yeşil", "sarı", "siyah", "beyaz", "mor", "turuncu", "pembe", "gri")),
@@ -10599,6 +10658,18 @@ def _has_critical_fact_swap(old: str, new: str, source_text: str = "") -> bool:
             if any(new_words & other for other in _CRITICAL_REFERENCE_FORMS.values()
                    if other is not forms):
                 return True
+    # A retained third-person subject must not hide a changed object/recipient.
+    # "O ona verdi" -> "O bana verdi" used to pass the broad person check
+    # because both variants still contain a third-person form (the subject).
+    for forms_by_person in _CRITICAL_REFERENCE_CASE_FORMS.values():
+        old_people = {
+            person for person, forms in forms_by_person.items() if old_words & forms
+        }
+        new_people = {
+            person for person, forms in forms_by_person.items() if new_words & forms
+        }
+        if old_people != new_people and old_people and new_people:
+            return True
     for group in _CRITICAL_FACT_GROUPS:
         # Turkish case suffixes are expected on colours/directions (sola,
         # sağa, kırmızıyı), so compare a compact known stem as well as exact

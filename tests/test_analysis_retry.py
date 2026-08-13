@@ -112,6 +112,40 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
             ht._analysis_name_identity("iris"),
         )
 
+    def test_conflicting_character_styles_are_not_injected_as_certain(self):
+        import hybrid_translate as ht
+
+        fake_models = types.ModuleType("subtitle_localizer.models")
+
+        class ContextMemory:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        fake_models.ContextMemory = ContextMemory
+        fake_pkg = types.ModuleType("subtitle_localizer")
+        fake_pkg.models = fake_models
+        character = lambda name, style: SimpleNamespace(
+            name=name, speaking_style=style)
+        memories = [
+            SimpleNamespace(
+                source_language="en", summary="one", setting="", tone="",
+                characters=[character("Alex", "formal")], recurring_terms={}, scene_notes=[]),
+            SimpleNamespace(
+                source_language="en", summary="two", setting="", tone="",
+                characters=[character("alex", "street")], recurring_terms={}, scene_notes=[]),
+        ]
+
+        with patch.dict(sys.modules, {
+            "subtitle_localizer": fake_pkg,
+            "subtitle_localizer.models": fake_models,
+        }), patch.object(ht, "_ensure_path", lambda: None):
+            merged = ht._merge_memories(memories, target_language="tr")
+
+        self.assertEqual([item.name for item in merged.characters], ["Alex"])
+        self.assertEqual(merged.characters[0].speaking_style, "")
+        self.assertEqual(merged._analysis_character_conflicts, ["Alex"])
+        self.assertEqual(memories[0].characters[0].speaking_style, "formal")
+
     def test_failed_auxiliary_component_is_retried_once(self):
         import hybrid_translate as ht
 
