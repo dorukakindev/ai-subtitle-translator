@@ -2276,10 +2276,15 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                     idx, ts, text = cue
                     source_blocks.append((idx, ts, str(text or "")))
             _frag_ids, source_groups = _fragment_groups_gui(source_blocks)
+            source_ts = {
+                str(idx): _srt_timestamp_bounds(ts)
+                for idx, ts, _text in source_blocks
+            }
             source_pairs = {
-                (str(left), str(right))
+                (source_ts[str(left)], source_ts[str(right)])
                 for group in source_groups
                 for left, right in zip(group.get("items", []), group.get("items", [])[1:])
+                if str(left) in source_ts and str(right) in source_ts
             }
         except Exception:
             source_pairs = None
@@ -2310,8 +2315,8 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                     and cps_ok
                     and not unresolved_boundary
                     and (source_pairs is None
-                         or (str(g.get("last_id", g.get("id", ""))), str(idx))
-                         in source_pairs)
+                         or ((g.get("last_start_ms"), g.get("last_end_ms")),
+                             _srt_timestamp_bounds(ts)) in source_pairs)
                     and (not only_continuation or not _ends_sentence_gui(_clean_src(g["text"])))
                     and not _is_dialogue_cue(g["text"]) and not _is_dialogue_cue(text)
                     and not _is_sdh_only(g["text"]) and not _is_sdh_only(text)):
@@ -2323,11 +2328,17 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                 joined = re.sub(r'</(i|b|u|font)>\s*<\1\b[^>]*>', ' ', joined)  # </i> <i> vb. sınırı topla
                 g["text"], g["end"], g["end_sec"] = joined.strip(), end_str, ce
                 g["last_id"] = idx
+                g["last_start_ms"], g["last_end_ms"] = _srt_timestamp_bounds(ts)
                 g["count"] += 1
                 continue
+        try:
+            last_start_ms, last_end_ms = _srt_timestamp_bounds(ts)
+        except ValueError:
+            last_start_ms = last_end_ms = None
         groups.append({"id": idx, "start": start_str, "end": end_str, "start_sec": cs,
                        "end_sec": ce, "text": text, "count": 1, "ts": ts,
-                       "last_id": idx})
+                       "last_id": idx, "last_start_ms": last_start_ms,
+                       "last_end_ms": last_end_ms})
     out = []
     for i, g in enumerate(groups, 1):
         txt = _break_to_line_budget(g["text"], 2) if g["count"] > 1 else g["text"]
@@ -3239,6 +3250,40 @@ def _delivery_source_map(blocks: list, source_cues) -> dict:
             ]
         if matched:
             result[str(idx)] = "\n".join(matched)
+    return result
+
+
+def _delivery_owner_source_map(source_rows: list, source_to_output_ids: dict) -> dict:
+    """Final outputta her cue'nun sahip olduğu kaynak metni döndür.
+
+    Çok-cue cümlelerde Türkçe bilgi dağılımı serbesttir; bu nedenle aynı kaynak
+    fragman grubunun bütün metni her üye çıktı cue'suna lisanslanır. Ayrı
+    cümleler arasında isim/sayı taşımasıysa sahiplik denetiminde görünür kalır.
+    """
+    source_blocks = [
+        (str(idx), str(ts), str(text or ""))
+        for idx, ts, text in source_rows or []
+    ]
+    source_texts = {idx: text for idx, _ts, text in source_blocks}
+    group_text_by_source = {}
+    try:
+        _group_ids, groups = _fragment_groups_gui(source_blocks)
+        for group in groups:
+            group_ids = [str(item) for item in group.get("items", [])]
+            group_text = "\n".join(
+                source_texts.get(item, "") for item in group_ids).strip()
+            if group_text:
+                group_text_by_source.update({item: group_text for item in group_ids})
+    except Exception:
+        pass
+    result = {}
+    for source_id, output_id in (source_to_output_ids or {}).items():
+        sid = str(source_id)
+        oid = str(output_id)
+        text = group_text_by_source.get(sid, source_texts.get(sid, ""))
+        if text:
+            result[oid] = "\n".join(
+                part for part in (result.get(oid, ""), text) if part).strip()
     return result
 
 

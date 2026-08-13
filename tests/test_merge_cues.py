@@ -89,6 +89,17 @@ class MergeFragmentedCuesTest(unittest.TestCase):
 
         self.assertEqual(len(out), 1)
 
+    def test_source_fragment_pair_uses_timestamps_after_signature_renumbering(self):
+        ts1 = "00:00:01,000 --> 00:00:02,000"
+        ts2 = "00:00:02,000 --> 00:00:03,000"
+        source = [("1", ts1, "Are you"), ("2", ts2, "coming?")]
+        translated = [("2", ts1, "Geliyor musun"), ("3", ts2, "değil mi?")]
+
+        out = gui.merge_fragmented_cues(translated, source_cues=source)
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][1], "00:00:01,000 --> 00:00:03,000")
+
     def test_sdh_not_merged(self):
         b = [("1", "00:00:01,000 --> 00:00:02,000", "[Kapı kapanır]"),
              ("2", "00:00:02,000 --> 00:00:03,000", "Merhaba")]
