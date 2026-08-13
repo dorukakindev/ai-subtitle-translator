@@ -12361,7 +12361,8 @@ def critic_pass_with_helper(
         pairs = []
         last_scene_context = None
         for idx, ts, text in chunk:
-            pair = {"id": str(idx), "orig": orig_dict.get(str(idx), ""), "tr": text}
+            sid = str(idx)
+            pair = {"id": sid, "orig": orig_dict.get(sid, ""), "tr": text}
             local_scene = _scene_context_for_chunk(scene_plan, idx, idx)
             if local_scene and local_scene != last_scene_context:
                 pair["scene"] = local_scene
@@ -12385,7 +12386,7 @@ def critic_pass_with_helper(
                             tr_text_by_id.get(gid, "") for gid in group_ids
                             if tr_text_by_id.get(gid, "")
                         )
-            reason = v_reasons.get(str(idx), "")
+            reason = v_reasons.get(sid, "")
             if reason:
                 pair["reason"] = reason
                 structural_reasons = (
@@ -12395,7 +12396,7 @@ def critic_pass_with_helper(
                     "PUNCT_ONLY_TRANSLATION",
                 )
                 if any(token in reason for token in structural_reasons):
-                    pos = idx_to_pos.get(str(idx))
+                    pos = idx_to_pos.get(sid)
                     if (pos is not None and pos > 0
                             and _same_scene_neighbors(result_ids[pos - 1], sid)):
                         prev_id = result_ids[pos - 1]

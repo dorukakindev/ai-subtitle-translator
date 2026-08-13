@@ -70,6 +70,35 @@ class CriticSentenceContextRegressionTest(unittest.TestCase):
         self.assertIn("CROSS_CUE_SENTENCE_REVIEW", prompts[0])
         self.assertIn("EVERY id in that frag_group", prompts[0])
 
+    def test_each_structural_warning_gets_its_own_scene_neighbors(self):
+        cues = [Cue(i, f"Source sentence {i}.") for i in range(1, 6)]
+        blocks = [
+            (i, f"00:00:0{i},000 --> 00:00:0{i},800", f"Çeviri {i}.")
+            for i in range(1, 6)
+        ]
+        prompts = []
+        validator_rows = [
+            (2, "ts", "text", "LENGTH_RATIO_OUTLIER"),
+            (4, "ts", "text", "LENGTH_RATIO_OUTLIER"),
+        ]
+        with patch.dict(sys.modules, {
+                "openai": self._fake_openai([], prompts)}), \
+             patch("hybrid_translate.run_validators",
+                   return_value=validator_rows):
+            ht.critic_pass_with_helper(
+                cues=cues,
+                tr_blocks=blocks,
+                helper_api_key="test",
+            )
+
+        payload = prompts[0].split("Lines:\n", 1)[1].split(
+            "\n\nSCENE CONTEXT:", 1)[0]
+        pairs = {item["id"]: item for item in json.loads(payload)}
+        self.assertEqual(pairs["2"]["prev"]["id"], "1")
+        self.assertEqual(pairs["2"]["next"]["id"], "3")
+        self.assertEqual(pairs["4"]["prev"]["id"], "3")
+        self.assertEqual(pairs["4"]["next"]["id"], "5")
+
     def test_unchanged_group_member_can_anchor_atomic_sentence_fix(self):
         cues = [Cue(1, "Maybe you start on mushrooms and"),
                 Cue(2, "then you go to marijuana.")]
