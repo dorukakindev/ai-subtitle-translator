@@ -119,12 +119,33 @@ class TurkishMeaningGuardTest(unittest.TestCase):
             ("He began to run.", "Koşmaya başladı.", "Koştu."),
             ("He tried to leave.", "Ayrılmaya çalıştı.", "Ayrıldı."),
             ("He pretended to sleep.", "Uyuyormuş gibi yaptı.", "Uyudu."),
+            ("He failed to leave.", "Ayrılmayı başaramadı.", "Ayrıldı."),
+            ("He prevented her from leaving.", "Gitmesini engelledi.", "Gitti."),
+            ("He allowed her to leave.", "Gitmesine izin verdi.", "Gitti."),
+            ("He forced her to leave.", "Onu gitmeye zorladı.", "Gitti."),
+            ("He promised to return.", "Döneceğine söz verdi.", "Döndü."),
+            ("She avoided answering.", "Cevap vermekten kaçındı.", "Cevap verdi."),
+            ("He forgot to lock the door.", "Kapıyı kilitlemeyi unuttu.", "Kapıyı kilitledi."),
+            ("He denied stealing it.", "Onu çaldığını inkâr etti.", "Onu çaldı."),
+            ("She admitted taking it.", "Onu aldığını itiraf etti.", "Onu aldı."),
         )
         for source, old, new in cases:
             with self.subTest(source=source):
                 ok, reason = ht.validate_polish_candidate(old, new, source)
                 self.assertFalse(ok)
                 self.assertEqual(reason, "source_semantic_operator")
+
+    def test_allows_same_source_operator_with_turkish_rephrasing(self):
+        cases = (
+            ("He prevented it.", "Onu engelledi.", "Onu önledi."),
+            ("He allowed it.", "Ona izin verdi.", "Ona müsaade etti."),
+            ("He promised it.", "Bunun için söz verdi.", "Bunu vaat etti."),
+        )
+        for source, old, new in cases:
+            with self.subTest(source=source):
+                self.assertFalse(
+                    ht._has_source_backed_semantic_operator_drift(
+                        source, old, new))
 
     def test_rejects_unsupported_high_impact_operator_addition(self):
         ok, reason = ht.validate_polish_candidate(

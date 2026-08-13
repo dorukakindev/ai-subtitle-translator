@@ -10844,6 +10844,27 @@ _SOURCE_SEMANTIC_OPERATOR_PATTERNS = {
     "manage": re.compile(r"\b(?:manage(?:d|s)?|succeed(?:ed|s)?)\b", re.IGNORECASE),
     "pretend": re.compile(r"\bpretend(?:ed|s|ing)?\b", re.IGNORECASE),
     "refuse": re.compile(r"\brefus(?:e|ed|es|ing)\b", re.IGNORECASE),
+    "fail": re.compile(r"\bfail(?:ed|s|ing)?\b", re.IGNORECASE),
+    "prevent": re.compile(
+        r"\bprevent(?:ed|s|ing)?\b|\bkeep(?:s|ing|t)?\b[^.!?]{0,40}\bfrom\b",
+        re.IGNORECASE),
+    "allow": re.compile(
+        r"\b(?:allow|permit)(?:ted|s|ing|ed)?\b|"
+        r"\blet\s+(?:him|her|them|me|us|you)\b", re.IGNORECASE),
+    "force": re.compile(
+        r"\b(?:forc(?:e|ed|es|ing)|compel(?:led|s|ling))\b", re.IGNORECASE),
+    "promise": re.compile(r"\bpromis(?:e|ed|es|ing)\b", re.IGNORECASE),
+    "avoid": re.compile(r"\bavoid(?:ed|s|ing)?\b", re.IGNORECASE),
+    "forget_to": re.compile(
+        r"\b(?:forget|forgets|forgot|forgotten|forgetting)\s+to\b", re.IGNORECASE),
+    "remember_to": re.compile(
+        r"\bremember(?:ed|s|ing)?\s+to\b", re.IGNORECASE),
+    "deny": re.compile(r"\b(?:deny|denies|denied|denying)\b", re.IGNORECASE),
+    "admit": re.compile(
+        r"\b(?:admit|admits|admitted|admitting|confess|confessed|confesses|confessing)\b",
+        re.IGNORECASE),
+    "continue": re.compile(
+        r"\bcontinu(?:e|ed|es|ing)\b|\bcarry\s+on\b", re.IGNORECASE),
 }
 
 _TURKISH_SEMANTIC_OPERATOR_PATTERNS = {
@@ -10862,6 +10883,17 @@ _TURKISH_SEMANTIC_OPERATOR_PATTERNS = {
     "manage": re.compile(r"\b(?:basar\w*)\b"),
     "pretend": re.compile(r"\b(?:numara\w*|rol\w*|gibi\s+yap\w*)\b"),
     "refuse": re.compile(r"\b(?:reddet\w*|ret\s+et\w*)\b"),
+    "fail": re.compile(r"\b(?:basarama\w*|basarisiz\w*|muvaffak\s+olama\w*)\b"),
+    "prevent": re.compile(r"\b(?:engel\w*|onle\w*|mani\s+ol\w*)\b"),
+    "allow": re.compile(r"\b(?:izin\s+ver\w*|musaade\s+et\w*)\b"),
+    "force": re.compile(r"\b(?:zorla\w*|mecbur\s+et\w*|zorunda\s+birak\w*)\b"),
+    "promise": re.compile(r"\b(?:soz\s+ver\w*|vaat\s+et\w*)\b"),
+    "avoid": re.compile(r"\b(?:kacin\w*|uzak\s+dur\w*)\b"),
+    "forget_to": re.compile(r"\b(?:unut\w*|akl\w*dan\s+cik\w*)\b"),
+    "remember_to": re.compile(r"\b(?:hatirla\w*|animsa\w*|unutma\w*)\b"),
+    "deny": re.compile(r"\b(?:inkar\w*|yalanla\w*)\b"),
+    "admit": re.compile(r"\b(?:itiraf\w*)\b"),
+    "continue": re.compile(r"\b(?:devam\s+et\w*|surdur\w*)\b"),
 }
 
 
@@ -10885,7 +10917,9 @@ def _has_source_backed_semantic_operator_drift(source_text: str, old: str,
         return True
     high_impact = {
         "all", "some", "none", "already", "still", "only", "uncertain",
-        "certain", "pretend", "refuse",
+        "certain", "pretend", "refuse", "fail", "prevent", "allow",
+        "force", "promise", "avoid", "forget_to", "remember_to", "deny",
+        "admit", "continue",
     }
     return bool((new_classes - old_classes - source_classes) & high_impact)
 
