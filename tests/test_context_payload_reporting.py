@@ -71,6 +71,10 @@ class ContextPayloadReportingTests(unittest.TestCase):
                     "reviewed_sentence_cues": 7,
                     "rejected_count": 2,
                     "rejected_reasons": {"person_swap": 2},
+                    "rejected_candidates": [
+                        {"id": "21", "reason": "person_swap"},
+                        {"id": "22", "reason": "person_swap"},
+                    ],
                     "validator_candidates": [
                         {"id": "11", "reason": "BROKEN_FRAGMENT_FLOW"},
                         {"id": "12", "reason": "EARLY_VERB_CLOSURE|CROSS_CUE_SENTENCE_REVIEW"},
@@ -83,6 +87,7 @@ class ContextPayloadReportingTests(unittest.TestCase):
         self.assertIn("Bağlam taşıma kanıtı", report)
         self.assertIn("Cümle zinciri kanıtı", report)
         self.assertIn("Critic cümle-zinciri kapsamı: 3 grup/7 cue", report)
+        self.assertIn("cue [21,22]", report)
         self.assertIn("person_swap:2", report)
         self.assertIn("Critic deterministik inceleme adayları: 2 cue [11,12]", report)
         self.assertIn("BROKEN_FRAGMENT_FLOW:1", report)
@@ -90,6 +95,26 @@ class ContextPayloadReportingTests(unittest.TestCase):
         self.assertIn(
             "Zincirleme bağlam kopması: 1 chunk — film__g51[empty_dialogue]",
             report)
+
+    def test_critic_rejected_candidate_details_fill_missing_reason_summary(self):
+        lines = gui._quality_feature_audit({
+            "pass_status": {
+                "Critic": {
+                    "status": "completed",
+                    "reviewed_sentence_groups": 1,
+                    "reviewed_sentence_cues": 2,
+                    "rejected_count": 2,
+                    "rejected_candidates": [
+                        {"id": "41", "reason": "source_modality"},
+                        {"id": "42", "reason": "source_modality"},
+                    ],
+                }
+            },
+        }, {"critic": True})
+
+        report = "\n".join(lines)
+        self.assertIn("cue [41,42]", report)
+        self.assertIn("source_modality:2", report)
 
     def test_chain_report_requires_real_previous_translation_injection(self):
         one_chunk = "\n".join(gui._quality_feature_audit({

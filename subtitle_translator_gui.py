@@ -10578,10 +10578,25 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         rejected = int(critic_status.get("rejected_count", 0) or 0)
         if reviewed_groups or rejected:
             reasons = dict(critic_status.get("rejected_reasons") or {})
+            rejected_ids = []
+            for candidate in list(critic_status.get("rejected_candidates") or []):
+                cue_id = str(candidate.get("id") or "")
+                if cue_id and cue_id not in rejected_ids:
+                    rejected_ids.append(cue_id)
+                reason = str(candidate.get("reason") or "").strip()
+                if reason and reason not in reasons:
+                    reasons[reason] = sum(
+                        1 for item in critic_status.get("rejected_candidates") or []
+                        if str(item.get("reason") or "").strip() == reason)
             reason_text = ", ".join(
                 f"{key}:{value}" for key, value in sorted(reasons.items(), key=lambda row: -row[1])
             )
             detail = f"; korunup raporlanan {rejected} öneri"
+            if rejected_ids:
+                cue_text = ",".join(rejected_ids[:30])
+                if len(rejected_ids) > 30:
+                    cue_text += f",+{len(rejected_ids) - 30}"
+                detail += f"; cue [{cue_text}]"
             if reason_text:
                 detail += f" ({reason_text})"
             lines.append(
