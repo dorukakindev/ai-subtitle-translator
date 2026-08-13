@@ -38,12 +38,19 @@ class ContentConfidenceTest(unittest.TestCase):
 
 
 class WorkflowProfilesTest(unittest.TestCase):
-    def test_maximum_profile_keeps_semantic_final_pass_enabled(self):
+    def test_maximum_profile_uses_deep_analysis_without_expensive_passes(self):
         profile = gui.WORKFLOW_PROFILES["Maksimum kalite"]
         self.assertTrue(profile["hybrid_var"])
-        self.assertTrue(profile["semantic_reconcile_var"])
-        self.assertTrue(profile["backtrans_var"])
-        self.assertFalse(profile["qc_var"])
+        self.assertEqual(profile["analysis_depth_var"], "Maksimum")
+        self.assertTrue(profile["critic_var"])
+        self.assertTrue(profile["term_normalize_var"])
+        self.assertTrue(profile["chain_ctx_var"])
+        for key in (
+            "polish_var", "native_var", "backtrans_var",
+            "semantic_reconcile_var", "review_pass_var", "qc_var",
+            "season_canon_var",
+        ):
+            self.assertFalse(profile[key])
 
     def test_fast_profile_disables_expensive_quality_passes(self):
         profile = gui.WORKFLOW_PROFILES["Hızlı kontrol"]

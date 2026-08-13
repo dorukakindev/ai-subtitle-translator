@@ -204,6 +204,20 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                     "season_canon_var"):
             self.assertFalse(profile[key])
 
+    def test_maximum_workflow_only_deepens_analysis(self):
+        normal = WORKFLOW_PROFILES["Normal"]
+        maximum = WORKFLOW_PROFILES["Maksimum kalite"]
+        self.assertEqual(normal["analysis_depth_var"], "Gelişmiş")
+        self.assertEqual(maximum["analysis_depth_var"], "Maksimum")
+        for key in (
+            "critic_var", "polish_var", "native_var", "backtrans_var",
+            "semantic_reconcile_var", "review_pass_var",
+            "term_normalize_var", "quality_report_only_var",
+            "repair_missing_var", "chain_ctx_var", "clean_sdh_var",
+            "linebreak_var", "qc_var",
+        ):
+            self.assertEqual(maximum[key], normal[key], key)
+
 
 if __name__ == "__main__":
     unittest.main()
