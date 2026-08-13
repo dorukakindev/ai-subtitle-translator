@@ -361,13 +361,18 @@ def _locked_source_term_present(term: str, source_text: str) -> bool:
 
 def _ends_sentence(text: str) -> bool:
     """True if text ends with sentence-closing punctuation (handles trailing quotes)."""
+    bracket_trimmed = str(text or "").rstrip().rstrip(")]}")
+    if bracket_trimmed != str(text or "").rstrip():
+        return _ends_sentence(bracket_trimmed)
     t = text.strip().rstrip('"\'»"\u201d')
     return bool(t) and t[-1] in '.!?…'
 
 
 def _ellipsis_continues(cur: str, nxt: str) -> bool:
-    """'...' ile biten satır devam cümlesi mi? Sonraki satır elipsisle veya
-    küçük harfle başlıyorsa cümle sarkıyor demektir ('Düşünüyordum...' / '...dün olanları')."""
+    """Return whether an ellipsis continues into the following subtitle cue."""
+    bracket_trimmed = str(cur or "").rstrip().rstrip(")]}")
+    if bracket_trimmed != str(cur or "").rstrip():
+        return _ellipsis_continues(bracket_trimmed, nxt)
     c = cur.rstrip('"\'»” ').rstrip()
     if not (c.endswith('...') or c.endswith('…')):
         return False
@@ -10478,6 +10483,7 @@ def _turkish_person_signature(token: str) -> tuple[str, str] | None:
     """Return a conservative finite-verb stem/person signature for common forms."""
     word = _polish_norm(token)
     patterns = (
+        (r"^(.{3,}?)(?:ıyor|iyor|uyor|üyor)(?:dı|di|du|dü)$", "past_progressive_3sg"),
         (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])m$", "past_1sg"),
         (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])n$", "past_2sg"),
         (r"^(.{3,}?)(?:d[ıiuü]|t[ıiuü])$", "past_3sg"),
@@ -10493,6 +10499,80 @@ def _turkish_person_signature(token: str) -> tuple[str, str] | None:
         if match:
             return match.group(1), signature
     return None
+
+
+def _source_tense_classes(text: str) -> set[str]:
+    """Return only source tenses explicit enough to protect from a surface pass."""
+    source = str(text or "")
+    classes = set()
+    if _SOURCE_MODALITY_PATTERNS["future"].search(source):
+        classes.add("future")
+    if re.search(
+            r"\b(?:am|is|are)\s+(?:not\s+)?[a-z]+ing\b", source, re.IGNORECASE):
+        classes.add("present")
+    if re.search(
+            r"\b(?:was|were)\s+(?:not\s+)?[a-z]+ing\b", source, re.IGNORECASE):
+        classes.add("past_progressive")
+    if re.search(
+            r"\b(?:did|was|were|had|came|went|saw|took|gave|said|made|left|"
+            r"knew|thought|found|felt|became|kept|held|brought|bought|heard|"
+            r"stood|lost|met|paid|ran|sat|spoke|wrote|ate|drank|drove|fell)\b|"
+            r"\b[a-z]{3,}ed\b", source, re.IGNORECASE):
+        classes.add("past")
+    if re.search(
+            r"\b(?:he|she|it)\s+(?:never\s+|always\s+|often\s+|usually\s+)?"
+            r"[a-z]{3,}(?:s|es)\b", source, re.IGNORECASE):
+        classes.add("present")
+    return classes
+
+
+def _has_source_backed_tense_drift(source_text: str, original_text: str,
+                                    candidate_text: str) -> bool:
+    """Reject a same-predicate finite tense change contradicted by the source."""
+    source_classes = _source_tense_classes(source_text)
+    if not source_classes:
+        return False
+    old_signatures = [
+        sig for token in re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", original_text)
+        if (sig := _turkish_person_signature(token))
+    ]
+    new_signatures = [
+        sig for token in re.findall(r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", candidate_text)
+        if (sig := _turkish_person_signature(token))
+    ]
+    for old_stem, old_kind in old_signatures:
+        old_tense = old_kind.rsplit("_", 1)[0]
+        for new_stem, new_kind in new_signatures:
+            if old_stem != new_stem:
+                continue
+            new_tense = new_kind.rsplit("_", 1)[0]
+            if old_tense == new_tense or old_tense not in source_classes:
+                continue
+            if new_tense in {"past", "past_progressive", "present", "future"}:
+                return True
+    return False
+
+
+def _has_source_backed_past_suffix_loss(source_text: str, original_text: str,
+                                         candidate_text: str) -> bool:
+    """Catch source-proven Turkish past/copy suffixes reduced to a bare predicate."""
+    if not ({"past", "past_progressive"} & _source_tense_classes(source_text)):
+        return False
+    old_words = re.findall(
+        r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", _polish_norm(original_text))
+    new_words = set(re.findall(
+        r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", _polish_norm(candidate_text)))
+    new_tenses = {
+        sig[1].rsplit("_", 1)[0]
+        for word in new_words if (sig := _turkish_person_signature(word))
+    }
+    if {"past", "past_progressive"} & new_tenses:
+        return False
+    for word in old_words:
+        match = re.match(r"^(.{3,}?)(?:y)?(?:d[ıiuü]|t[ıiuü])$", word)
+        if match and match.group(1) in new_words:
+            return True
+    return False
 
 
 def _has_turkish_person_drift(original_text: str, candidate_text: str,
@@ -10546,18 +10626,27 @@ def _has_source_backed_plural_loss(source_text: str, original_text: str,
 def _has_source_backed_possessive_drift(source_text: str, original_text: str,
                                         candidate_text: str) -> bool:
     """Catch simple my-X -> his/her-X swaps such as Arabam -> Arabası."""
-    if not re.search(r"\bmy\b", source_text or "", re.IGNORECASE):
-        return False
     old_words = re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{4,}\b", _polish_norm(original_text))
     new_words = re.findall(r"\b[a-zA-ZÇĞİÖŞÜçğıöşü]{4,}\b", _polish_norm(candidate_text))
-    for old_word in old_words:
-        match = re.match(r"^(.{3,}?)(?:ım|im|um|üm|m)$", old_word)
-        if not match:
-            continue
-        stem = match.group(1)
-        if any(re.fullmatch(re.escape(stem) + r"(?:sı|si|su|sü)", new_word)
-               for new_word in new_words):
-            return True
+    if re.search(r"\bmy\b", source_text or "", re.IGNORECASE):
+        for old_word in old_words:
+            match = re.match(r"^(.{3,}?)(?:ım|im|um|üm|m)$", old_word)
+            if not match:
+                continue
+            stem = match.group(1)
+            if any(re.fullmatch(re.escape(stem) + r"(?:sı|si|su|sü)", new_word)
+                   for new_word in new_words):
+                return True
+    if re.search(r"\b(?:his|her|its)\b", source_text or "", re.IGNORECASE):
+        old_third = []
+        for old_word in old_words:
+            match = re.match(r"^(.{3,}?)(?:s)?[ıiuü]n[ıiuü]$", old_word)
+            if match:
+                old_third.append(match.group(1))
+        for stem in old_third:
+            if any(re.fullmatch(re.escape(stem) + r"(?:ım|im|um|üm)[ıiuü]", new_word)
+                   for new_word in new_words):
+                return True
     return False
 
 
@@ -10694,14 +10783,17 @@ def _has_source_backed_modality_drift(source_text: str, old: str, new: str) -> b
         kind for kind, pattern in _SOURCE_MODALITY_PATTERNS.items()
         if pattern.search(source)
     }
-    if not source_classes:
-        return False
     old_classes = _turkish_modality_classes(old)
     new_classes = _turkish_modality_classes(new)
     for kind in source_classes & old_classes:
         if kind not in new_classes and (new_classes - {kind}):
             return True
-    return False
+        if (kind in {"obligation", "possibility", "intent"}
+                and kind not in new_classes
+                and any(_turkish_person_signature(token) for token in re.findall(
+                    r"[a-zA-ZÇĞİÖŞÜçğıöşü]+", new))):
+            return True
+    return bool(not old_classes and (new_classes - source_classes - {"future"}))
 
 
 _SOURCE_FREQUENCY_PATTERNS = {
@@ -10718,14 +10810,73 @@ _TURKISH_FREQUENCY_PATTERNS = {
     "rarely": re.compile(r"\b(?:nadiren|seyrek(?:en)?)\b", re.IGNORECASE),
 }
 
+_SOURCE_SEMANTIC_OPERATOR_PATTERNS = {
+    "all": re.compile(r"\b(?:all|every|each|whole)\b", re.IGNORECASE),
+    "some": re.compile(r"\b(?:some|several)\b", re.IGNORECASE),
+    "none": re.compile(r"\b(?:no|none|neither)\b", re.IGNORECASE),
+    "already": re.compile(r"\balready\b", re.IGNORECASE),
+    "still": re.compile(r"\bstill\b", re.IGNORECASE),
+    "only": re.compile(r"\b(?:only|merely)\b", re.IGNORECASE),
+    "also": re.compile(r"\b(?:also|too|as\s+well)\b", re.IGNORECASE),
+    "uncertain": re.compile(r"\b(?:probably|perhaps|maybe|possibly)\b", re.IGNORECASE),
+    "certain": re.compile(r"\b(?:definitely|certainly|surely)\b", re.IGNORECASE),
+    "begin": re.compile(r"\b(?:begin|began|begun|start(?:ed|s|ing)?)\b", re.IGNORECASE),
+    "stop": re.compile(r"\b(?:stop(?:ped|s|ping)?|quit|ceased?)\b", re.IGNORECASE),
+    "try": re.compile(r"\b(?:try|tries|tried|attempt(?:ed|s)?)\b", re.IGNORECASE),
+    "manage": re.compile(r"\b(?:manage(?:d|s)?|succeed(?:ed|s)?)\b", re.IGNORECASE),
+    "pretend": re.compile(r"\bpretend(?:ed|s|ing)?\b", re.IGNORECASE),
+    "refuse": re.compile(r"\brefus(?:e|ed|es|ing)\b", re.IGNORECASE),
+}
+
+_TURKISH_SEMANTIC_OPERATOR_PATTERNS = {
+    "all": re.compile(r"\b(?:butun|tum|her|herbir)\b"),
+    "some": re.compile(r"\b(?:bazi|birkac)\b"),
+    "none": re.compile(r"\b(?:hicbir|hicbiri|ne\s+.+\s+ne)\b"),
+    "already": re.compile(r"\b(?:coktan|zaten)\b"),
+    "still": re.compile(r"\b(?:hala|henuz)\b"),
+    "only": re.compile(r"\b(?:yalnizca|sadece|sirf)\b"),
+    "also": re.compile(r"\b(?:de|da|ayrica)\b"),
+    "uncertain": re.compile(r"\b(?:muhtemelen|belki|galiba|ihtimal\w*|olasi\w*)\b"),
+    "certain": re.compile(r"\b(?:kesinlikle|mutlaka|muhakkak|elbette)\b"),
+    "begin": re.compile(r"\b(?:basla\w*)\b"),
+    "stop": re.compile(r"\b(?:birak\w*|dur\w*|vazgec\w*)\b"),
+    "try": re.compile(r"\b(?:calis\w*|dene\w*|tesebbus\w*)\b"),
+    "manage": re.compile(r"\b(?:basar\w*)\b"),
+    "pretend": re.compile(r"\b(?:numara\w*|rol\w*|gibi\s+yap\w*)\b"),
+    "refuse": re.compile(r"\b(?:reddet\w*|ret\s+et\w*)\b"),
+}
+
+
+def _turkish_semantic_operator_classes(text: str) -> set[str]:
+    value = _turkish_ascii_fold(_polish_norm(str(text or ""))).casefold()
+    return {
+        kind for kind, pattern in _TURKISH_SEMANTIC_OPERATOR_PATTERNS.items()
+        if pattern.search(value)
+    }
+
+
+def _has_source_backed_semantic_operator_drift(source_text: str, old: str,
+                                                new: str) -> bool:
+    source_classes = {
+        kind for kind, pattern in _SOURCE_SEMANTIC_OPERATOR_PATTERNS.items()
+        if pattern.search(source_text or "")
+    }
+    old_classes = _turkish_semantic_operator_classes(old)
+    new_classes = _turkish_semantic_operator_classes(new)
+    if source_classes & old_classes - new_classes:
+        return True
+    high_impact = {
+        "all", "some", "none", "already", "still", "only", "uncertain",
+        "certain", "pretend", "refuse",
+    }
+    return bool((new_classes - old_classes - source_classes) & high_impact)
+
 
 def _has_source_backed_frequency_drift(source_text: str, old: str, new: str) -> bool:
     source_classes = {
         kind for kind, pattern in _SOURCE_FREQUENCY_PATTERNS.items()
         if pattern.search(source_text or "")
     }
-    if not source_classes:
-        return False
     old_classes = {
         kind for kind, pattern in _TURKISH_FREQUENCY_PATTERNS.items()
         if pattern.search(old or "")
@@ -10734,7 +10885,9 @@ def _has_source_backed_frequency_drift(source_text: str, old: str, new: str) -> 
         kind for kind, pattern in _TURKISH_FREQUENCY_PATTERNS.items()
         if pattern.search(new or "")
     }
-    return bool(source_classes & old_classes and new_classes and new_classes != old_classes)
+    if source_classes & old_classes and new_classes != old_classes:
+        return True
+    return bool(not old_classes and (new_classes - source_classes))
 
 
 def _has_source_backed_quantity_drift(source_text: str, old: str, new: str) -> bool:
@@ -10924,6 +11077,8 @@ def validate_polish_candidate(
         return False, "source_modality"
     if src and _has_source_backed_frequency_drift(src, old, new):
         return False, "source_frequency"
+    if src and _has_source_backed_semantic_operator_drift(src, old, new):
+        return False, "source_semantic_operator"
     if src and _has_source_backed_quantity_drift(src, old, new):
         return False, "source_quantity"
     if src and _has_source_backed_approximation_loss(src, old, new):
@@ -10940,6 +11095,10 @@ def validate_polish_candidate(
         return False, "person_drift"
     if _has_critical_fact_swap(old, new, src):
         return False, "critical_fact_swap"
+    if src and _has_source_backed_tense_drift(src, old, new):
+        return False, "source_tense"
+    if src and _has_source_backed_past_suffix_loss(src, old, new):
+        return False, "source_tense"
     if src and _has_source_backed_plural_loss(src, old, new):
         return False, "plural_drift"
     if src and _has_source_backed_possessive_drift(src, old, new):

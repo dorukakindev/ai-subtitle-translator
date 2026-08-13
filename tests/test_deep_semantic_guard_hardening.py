@@ -96,6 +96,101 @@ class TurkishMeaningGuardTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "source_frequency")
 
+    def test_rejects_source_backed_frequency_deletion(self):
+        ok, reason = ht.validate_polish_candidate(
+            "O hep gelir.", "O gelir.", source_text="He always comes.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_frequency")
+
+    def test_rejects_unsupported_frequency_addition(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gelir.", "Hep gelir.", source_text="He comes.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_frequency")
+
+    def test_rejects_source_backed_semantic_operator_deletions(self):
+        cases = (
+            ("Every child came.", "Her çocuk geldi.", "Çocuk geldi."),
+            ("He already left.", "Çoktan ayrıldı.", "Ayrıldı."),
+            ("He also saw Mary.", "Mary'yi de gördü.", "Mary'yi gördü."),
+            ("He probably left.", "Muhtemelen ayrıldı.", "Ayrıldı."),
+            ("He began to run.", "Koşmaya başladı.", "Koştu."),
+            ("He tried to leave.", "Ayrılmaya çalıştı.", "Ayrıldı."),
+            ("He pretended to sleep.", "Uyuyormuş gibi yaptı.", "Uyudu."),
+        )
+        for source, old, new in cases:
+            with self.subTest(source=source):
+                ok, reason = ht.validate_polish_candidate(old, new, source)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "source_semantic_operator")
+
+    def test_rejects_unsupported_high_impact_operator_addition(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Ayrıldı.", "Muhtemelen ayrıldı.", source_text="He left.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_semantic_operator")
+
+    def test_rejects_future_to_past_tense_drift(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Yarın ayrılacak.", "Yarın ayrıldı.",
+            source_text="He will leave tomorrow.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_tense")
+
+    def test_rejects_progressive_to_past_tense_drift(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Geliyor.", "Geldi.", source_text="He is coming.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_tense")
+
+    def test_rejects_irregular_past_to_progressive_tense_drift(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Geldi.", "Geliyor.", source_text="He came.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_tense")
+
+    def test_rejects_source_backed_copular_past_suffix_loss(self):
+        for old, new, source in (
+                ("Mutluydu.", "Mutlu.", "He was happy."),
+                ("Doktordu.", "Doktor.", "He was a doctor.")):
+            with self.subTest(old=old):
+                ok, reason = ht.validate_polish_candidate(old, new, source)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "source_tense")
+
+    def test_allows_source_backed_copular_past_rephrased_in_past(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Mutluydu.", "Mutlu görünüyordu.", source_text="He was happy.",
+        )
+        self.assertTrue(ok, reason)
+
+    def test_rejects_present_to_past_progressive_tense_drift(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Onu seviyor.", "Onu seviyordu.", source_text="He loves her.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_tense")
+
+    def test_rejects_obligation_deleted_into_past_fact(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gitmek zorundasın.", "Gittin.", source_text="You must go.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_modality")
+
+    def test_rejects_unsupported_obligation_addition(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gidiyorsun.", "Gitmek zorundasın.", source_text="You leave.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_modality")
+
     def test_rejects_source_backed_less_to_more_swap(self):
         ok, reason = ht.validate_polish_candidate(
             "Ona daha az para verdim.", "Ona daha çok para verdim.",
@@ -139,6 +234,20 @@ class TurkishMeaningGuardTest(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertEqual(reason, "possessive_drift")
+
+    def test_rejects_source_backed_third_to_first_possessive_swap(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Kitabını aldı.", "Kitabımı aldı.",
+            source_text="He took his book.",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "possessive_drift")
+
+    def test_allows_obligation_rephrased_without_detectable_modal_suffix(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Gitmek zorundasın.", "Git.", source_text="You must leave.",
+        )
+        self.assertTrue(ok, reason)
 
     def test_rejects_comparative_to_superlative(self):
         ok, reason = ht.validate_polish_candidate(

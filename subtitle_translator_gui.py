@@ -4078,13 +4078,18 @@ def _clean_src(text: str) -> str:
 
 def _ends_sentence_gui(text: str) -> bool:
     """True if text ends with sentence-closing punctuation."""
+    bracket_trimmed = str(text or "").rstrip().rstrip(")]}")
+    if bracket_trimmed != str(text or "").rstrip():
+        return _ends_sentence_gui(bracket_trimmed)
     t = text.strip().rstrip('"\'»"\u201d')
     return bool(t) and t[-1] in '.!?…'
 
 
 def _ellipsis_continues_gui(cur: str, nxt: str) -> bool:
-    """'...' ile biten satır devam cümlesi mi? Sonraki satır elipsisle veya
-    küçük harfle başlıyorsa cümle sarkıyor demektir ('Düşünüyordum...' / '...dün olanları')."""
+    """Return whether an ellipsis continues into the following subtitle cue."""
+    bracket_trimmed = str(cur or "").rstrip().rstrip(")]}")
+    if bracket_trimmed != str(cur or "").rstrip():
+        return _ellipsis_continues_gui(bracket_trimmed, nxt)
     c = cur.rstrip('"\'»” ').rstrip()
     if not (c.endswith('...') or c.endswith('…')):
         return False

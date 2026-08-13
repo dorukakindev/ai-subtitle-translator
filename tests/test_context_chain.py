@@ -416,6 +416,11 @@ class EllipsisFragmentGuiTest(unittest.TestCase):
         self.assertEqual(tags["1"], "start")
         self.assertEqual(tags["2"], "end")
 
+    def test_closing_parenthesis_preserves_sentence_boundary(self):
+        tags = self._tags("(Is that true?)", "Yes.")
+        self.assertEqual(tags["1"], "none")
+        self.assertEqual(tags["2"], "none")
+
 
 class EllipsisFragmentHybridTest(unittest.TestCase):
     class Cue:
@@ -443,6 +448,11 @@ class EllipsisFragmentHybridTest(unittest.TestCase):
         self.assertEqual(tags[1], "start")
         self.assertEqual(tags[2], "mid")
         self.assertEqual(tags[3], "end")
+
+    def test_closing_parenthesis_preserves_sentence_boundary(self):
+        tags = self._tags("(Is that true?)", "Yes.")
+        self.assertEqual(tags[1], "none")
+        self.assertEqual(tags[2], "none")
 
 
 class FragmentSyntaxHintPayloadTest(unittest.TestCase):
