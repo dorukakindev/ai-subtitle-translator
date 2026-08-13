@@ -742,6 +742,36 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             "[ Speaks native language ]"))
 
+    def test_foreign_speech_mouthing_and_action_sdh_are_removable(self):
+        for source in (
+                "[SPEAKS IN FOREIGN LANGUAGE]",
+                "[MOUTHING WORDS]",
+                "<i>(Clamor)</i>",
+                "<i>(Rosaura eats noisily)</i>"):
+            with self.subTest(source=source):
+                self.assertTrue(gui._source_cue_is_delivery_removable(source))
+
+    def test_punctuation_only_source_cue_is_not_required_dialogue(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable("..."))
+
+    def test_collapsed_italian_subtitle_credit_and_bare_domain_are_removed(self):
+        source = [(
+            "3", "00:00:02,000 --> 00:00:05,000",
+            "IL DIPENDENTE\nTraduzione: Tartakirka. Revisione: Jago71\n"
+            "younditalia.wordpress.com",
+        )]
+        blocks = [(
+            "3", source[0][1],
+            "Tartakirka. Jago71\nyounditalia.wordpress.com",
+        )]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+
+        joined = "\n".join(text for _idx, _ts, text in result)
+        self.assertNotIn("Tartakirka", joined)
+        self.assertNotIn("wordpress.com", joined)
+
     def test_embedded_source_credit_lines_do_not_remove_real_title(self):
         source = [("26", "00:00:02,000 --> 00:00:05,000",
                    "~ RUN MELOS! ~\nSubtitles by Odyssey\nOCR by Inactive (Subs.com.ru)")]

@@ -2923,6 +2923,8 @@ _DELIVERY_CREDIT_ROLE_RE = re.compile(
 )
 _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^\s*(?:https?://|www\.|irc\.)\S+\s*$|"
+    r"(?:^|\n)\s*(?:[\w-]+\.)+(?:com|net|org|info|tv|io|ru|pt|it)"
+    r"(?:/\S*)?\s*(?:$|\n)|"
     r"\bcopyright\s*(?:(?:©|\(c\))\s*)?\d{4}\b|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
@@ -2935,6 +2937,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"^\s*(?:dvd|blu-?ray)\s+(?:authoring|mastering)(?:\s+(?:by|:))?"
     r"\s+[\w ._-]{2,}\s*$|"
     r"\b(?:çevir(?:i|en|men))\s*:\s*\S|"
+    r"\b(?:traduzione|revisione)\s*:\s*\S|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
     r"film\s+ve\s+video\s+altyazılama|"
     r"gerhard\s+lehmann\s+ag)",
@@ -3114,8 +3117,10 @@ def _is_delivery_sdh_only(text: str) -> bool:
     # arrive without brackets and bypass the bracket-token parser below.
     bare_english_sdh = value.strip().strip("[](){} ")
     if re.fullmatch(
-            r"(?:muffled\s+(?:speaking|voice)|(?:speaking|speaks)\s+(?:native|foreign)\s+"
-            r"language|conversing\s+in\s+(?:a\s+)?(?:native|foreign)\s+language|"
+            r"(?:muffled\s+(?:speaking|voice)|(?:speaking|speaks)\s+(?:in\s+)?"
+            r"(?:native|foreign)\s+language|conversing\s+in\s+(?:a\s+)?"
+            r"(?:native|foreign)\s+language|mouthing\s+words|clamou?r|"
+            r"(?:[\w'-]+\s+)?(?:eats?|chews?)\s+(?:noisily|loudly)|"
             r"frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
         return True
     bare_folded = sdh_cleaner._ascii_fold(value).strip().rstrip(".!…")
@@ -3142,6 +3147,8 @@ def _is_delivery_sdh_only(text: str) -> bool:
 
 def _source_cue_is_delivery_removable(text: str) -> bool:
     value = str(text or "")
+    if re.fullmatch(r"[\s.…,!?;:—–-]+", value):
+        return True
     if re.fullmatch(
             r"\s*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|"
             r"ninth|tenth)\s*:\s*", value, re.IGNORECASE):
@@ -9308,7 +9315,7 @@ def _batch_write_guard_reason(source_path, output_path, expected_source_hash="",
 
 def _file_recovery_is_retryable(state: dict) -> bool:
     state = state or {}
-    if state.get("status") in {"done", "skip"}:
+    if state.get("status") in {"done", "skip", "review"}:
         return False
     phase = str(state.get("phase") or "").casefold()
     return not any(marker in phase for marker in (
@@ -25227,8 +25234,8 @@ class App(ctk.CTk):
                 if source_path:
                     needs_review = row.get("run_status") == "review"
                     terminal_status = (
-                        "error" if row.get("run_status") in {"error", "review"}
-                        else "done")
+                        "review" if needs_review else
+                        "error" if row.get("run_status") == "error" else "done")
                     terminal_phase = (
                         "İnceleme gerekli" if needs_review else
                         "Hata" if terminal_status == "error" else "Tamamlandı")

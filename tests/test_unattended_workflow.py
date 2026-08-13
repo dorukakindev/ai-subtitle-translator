@@ -307,6 +307,29 @@ class SubtitlePreflightTest(unittest.TestCase):
 
 
 class AutomaticRetryTest(unittest.TestCase):
+    def test_report_only_review_is_terminal_and_not_auto_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "review.srt"
+            source.write_text("x", encoding="utf-8")
+            scheduled = []
+            stub = SimpleNamespace(
+                _active_snapshot={"auto_retry_files": True},
+                _auto_retry_attempts={}, _selected_files=[],
+                _log=lambda *args: None,
+                after=lambda *args: scheduled.append(args),
+            )
+            record = {
+                "run_id": "review-run", "status": "kısmen tamamlandı",
+                "settings": {"auto_retry_files": True, "mode": "sync"},
+                "files": {str(source): {
+                    "status": "review", "phase": "İnceleme gerekli"}},
+            }
+
+            self.assertFalse(
+                gui.App._schedule_failed_file_retry(stub, record))
+            self.assertEqual(stub._selected_files, [])
+            self.assertEqual(scheduled, [])
+
     def test_only_failed_files_are_queued_for_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
             failed = Path(tmp) / "failed.srt"
