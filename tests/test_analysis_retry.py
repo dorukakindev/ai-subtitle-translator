@@ -133,6 +133,9 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
             SimpleNamespace(
                 source_language="en", summary="two", setting="", tone="",
                 characters=[character("alex", "street")], recurring_terms={}, scene_notes=[]),
+            SimpleNamespace(
+                source_language="en", summary="three", setting="", tone="",
+                characters=[character("ALEX", "formal")], recurring_terms={}, scene_notes=[]),
         ]
 
         with patch.dict(sys.modules, {

@@ -3458,6 +3458,7 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
 
     seen = {}
     character_conflicts = set()
+    conflicted_character_keys = set()
     merged_chars = []
     for m in memories:
         for c in m.characters:
@@ -3469,12 +3470,13 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
                 merged_chars.append(merged_char)
                 continue
             previous, previous_style = seen[key]
-            if not previous_style and style:
+            if not previous_style and style and key not in conflicted_character_keys:
                 previous.speaking_style = str(getattr(c, "speaking_style", "")).strip()
                 seen[key] = (previous, style)
             elif previous_style and style and previous_style != style:
                 previous.speaking_style = ""
                 seen[key] = (previous, "")
+                conflicted_character_keys.add(key)
                 character_conflicts.add(str(previous.name))
 
     seen_notes = set()
