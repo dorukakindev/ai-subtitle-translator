@@ -65,6 +65,7 @@ class SourceLanguageLeftoverTest(unittest.TestCase):
         cases = [
             ("Manuel González'e verir", "The priest Manuel González receives it."),
             ("Evaristo Guzmán'ın söyledikleri", "what Councilman Evaristo Guzmán said."),
+            ("Paul-Émile'in bakacağı biri", "Now that Paul-Émile has another mouth to feed"),
         ]
         for translated, source in cases:
             with self.subTest(translated=translated):

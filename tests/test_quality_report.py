@@ -774,6 +774,15 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
         self.assertEqual(flagged, [])
 
+    def test_delivery_fragment_guard_preserves_multiword_name_after_translated_line(self):
+        flagged = gui._delivery_untranslated_fragment_ids(
+            [("297", "00:41:00,000 --> 00:41:02,000",
+              "Bu da nereden çıktı,\nJeanne d'Arc?")],
+            {"297": "Where'd that come from,\nJeanne d'Arc?"},
+            target_language="Turkish", source_language="English")
+
+        self.assertEqual(flagged, [])
+
     def test_file_process_report_contains_full_pass_history(self):
         row = {
             "name": "episode.srt",

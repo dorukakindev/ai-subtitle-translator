@@ -64,6 +64,27 @@ class SourceEnglishOverlapTest(unittest.TestCase):
         translation = '"Please come here before dinner," dedi.'
         self.assertTrue(ht.has_source_english_overlap(source, translation))
 
+    def test_unquoted_cocktail_titles_are_not_flagged_as_english_residue(self):
+        cases = [
+            (
+                "For a Between the Sheets, take three different liquors.",
+                "Between the Sheets için üç farklı içki alırsın.",
+            ),
+            (
+                "A Hair of the Dog, to get you going.",
+                "Seni kendine getirsin diye bir Hair of the Dog.",
+            ),
+        ]
+        for source, translation in cases:
+            with self.subTest(translation=translation):
+                self.assertFalse(ht.has_source_english_overlap(source, translation))
+
+    def test_ordinary_untranslated_phrase_beside_title_is_still_flagged(self):
+        self.assertTrue(ht.has_source_english_overlap(
+            "For a Between the Sheets, take three different liquors.",
+            "Between the Sheets için take three different liquors.",
+        ))
+
     def test_validator_routes_overlap_to_quality_pass(self):
         cue = SimpleNamespace(
             index=7,

@@ -5731,6 +5731,35 @@ def _mask_shared_quoted_english_titles(source: str, target: str) -> tuple[str, s
     return _SOURCE_QUOTED_SPAN_RE.sub(_mask, source), _SOURCE_QUOTED_SPAN_RE.sub(_mask, target)
 
 
+def _unquoted_english_title_keys(value: str) -> set[str]:
+    words = list(re.finditer(r"[A-Za-z]+(?:['\u2019][A-Za-z]+)?", str(value or "")))
+    keys = set()
+    for start in range(len(words)):
+        for end in range(start + 2, min(len(words), start + 16) + 1):
+            raw = [match.group(0) for match in words[start:end]]
+            folded = [word.replace("\u2019", "'").casefold() for word in raw]
+            if not any(word in _ENGLISH_TITLE_CONNECTORS for word in folded):
+                continue
+            if sum(word[:1].isupper() for word in raw) < 2:
+                continue
+            if not all(
+                    word in _ENGLISH_TITLE_CONNECTORS or raw_word[:1].isupper()
+                    for word, raw_word in zip(folded, raw)):
+                continue
+            keys.add(" ".join(folded))
+    return keys
+
+
+def _mask_shared_unquoted_english_titles(source: str, target: str) -> tuple[str, str]:
+    shared = _unquoted_english_title_keys(source) & _unquoted_english_title_keys(target)
+    for key in sorted(shared, key=lambda item: (-len(item.split()), -len(item))):
+        pattern = r"(?<![A-Za-z])" + r"\s+".join(
+            re.escape(word) for word in key.split()) + r"(?![A-Za-z])"
+        source = re.sub(pattern, " ", source, flags=re.IGNORECASE)
+        target = re.sub(pattern, " ", target, flags=re.IGNORECASE)
+    return source, target
+
+
 def has_source_english_overlap(src_text: str, tr_text: str) -> bool:
     """Kaynakta bulunan küçük harfli İngilizce parça hedefte aynen kalmış mı."""
     source = re.sub(r"\s+", " ", str(src_text or "")).strip()
@@ -5738,6 +5767,7 @@ def has_source_english_overlap(src_text: str, tr_text: str) -> bool:
     if not source or not target or source == target:
         return False
     source, target = _mask_shared_quoted_english_titles(source, target)
+    source, target = _mask_shared_unquoted_english_titles(source, target)
     if not source.strip() or not target.strip():
         return False
     src_words = _without_vocalization_words(re.findall(r"[A-Za-z]+", source))
@@ -6051,6 +6081,11 @@ def find_garble_tokens(text, source_text: str = "") -> list:
             continue
         if (m.start() >= 2 and s[m.start() - 1] == "-"
                 and s[m.start() - 2].isalpha()):
+            continue
+        if (m.start() > 0 and m.end() < len(s)
+                and (s[m.start() - 1], s[m.end()]) in {
+                    ('"', '"'), ("'", "'"), ('\u201c', '\u201d'), ('\u2018', '\u2019'),
+                }):
             continue
         if _garble_neighbor_is_capitalized(s, m.start(), m.end()):
             continue  # özel-isim dizisinin parçası olabilir (ör. "Monumento a la Humanidad")
@@ -6468,6 +6503,17 @@ def _source_preserves_latin_extended_token(token: str, source_text: str) -> bool
                 i += 1
             j += 1
         return edits + (j < len(right)) <= 1
+
+    if proper_name:
+        stem_and_suffix = re.split(r"['\u2019]", raw_value, maxsplit=1)
+        if (len(stem_and_suffix) == 2
+                and stem_and_suffix[1].casefold() in _PRESERVED_TERM_TR_SUFFIXES):
+            folded_stem = _latin_base(stem_and_suffix[0])
+            folded_source = _latin_base(source_text)
+            if re.search(
+                    rf"(?<![a-z]){re.escape(folded_stem)}(?![a-z])",
+                    folded_source):
+                return True
 
     if proper_name and _latin_base(raw_value) in _latin_base(source_text):
         return True

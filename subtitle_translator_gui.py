@@ -11201,7 +11201,12 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
             list_tail_proper_name = (
                 source_is_english and reason == "identical_source"
                 and source_line_no > 0 and "," in source_text
-                and bool(re.fullmatch(r"[A-Za-z][A-Za-z'’.-]{2,}[.!?…]*", visible))
+                and bool(re.fullmatch(
+                    r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*"
+                    r"(?:\s+(?:(?:d|de|del|van|von)['’]?)?"
+                    r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*){0,5}"
+                    r"[.!?…]*",
+                    visible))
                 and any(line[:1].isupper() for line in matching_targets)
                 and any(
                     _delivery_visible_line(sibling).casefold() not in target_lines

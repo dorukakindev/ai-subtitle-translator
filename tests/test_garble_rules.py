@@ -26,6 +26,10 @@ class StrayLetterR1Test(unittest.TestCase):
         # "ay'a" (aya/moon-DAT) — apostrof-bitişik meşru ek, başıboş harf DEĞİL.
         self.assertEqual(ht.find_garble_tokens("1969'da ay'a gittiler."), [])
 
+    def test_quoted_spelling_letter_not_flagged(self):
+        self.assertEqual(
+            ht.find_garble_tokens('Mouse "w" ile değil, "u" ile yazılır.'), [])
+
     def test_quoted_word_with_turkish_case_suffix_not_flagged(self):
         self.assertEqual(
             ht.find_garble_tokens('"Keskin nişancılar"ı içeri aldı.'), [])
