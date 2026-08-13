@@ -11,6 +11,8 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
             recurring_terms={"faith": "inanç", "church": "kilise"},
             characters=[SimpleNamespace(name="Hazel"), SimpleNamespace(name="Enoch")],
             _analysis_degraded=False,
+            _analysis_term_conflicts=["faith"],
+            _analysis_character_conflicts=["Hazel"],
         )
         scenes = [
             {"start": 1, "end": 2, "referents": {"he": "Hazel"}},
@@ -37,8 +39,14 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
         self.assertEqual(metrics["goal_scenes"], 1)
         self.assertEqual(metrics["idioms"], 1)
         self.assertEqual(metrics["cultural_refs"], 1)
+        self.assertEqual(metrics["term_conflicts"], ["faith"])
+        self.assertEqual(metrics["character_style_conflicts"], ["Hazel"])
         self.assertIn(
             "Analiz verim ozeti [Gelismis]: tamam | 1 analiz chunk",
+            ht.analysis_effectiveness_log_line(metrics),
+        )
+        self.assertIn(
+            "prompt disi birakilan catismalar: 1 terim/1 karakter",
             ht.analysis_effectiveness_log_line(metrics),
         )
 
@@ -51,6 +59,8 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
                 "characters": 7, "pronoun_pairs": 4, "scenes": 144,
                 "scene_coverage_pct": 98.5, "referent_scenes": 82,
                 "goal_scenes": 43, "idioms": 8, "cultural_refs": 5,
+                "term_conflicts": ["faith", "church"],
+                "character_style_conflicts": ["Hazel"],
             },
             "pass_trace": {"Critic": 16},
             "pass_fix": 16,
@@ -64,6 +74,11 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
         self.assertIn(
             "Analiz sonrası karşılaştırma ölçümü: Critic 16 düzeltme, "
             "tüm pass'ler 16 değişik cue, 2 nihai uyarı, 0 eksik/hata",
+            lines,
+        )
+        self.assertIn(
+            "Analiz çatışmaları (prompt/cache dışında bırakıldı): "
+            "terim [faith,church]; karakter üslubu [Hazel]",
             lines,
         )
 

@@ -7037,7 +7037,9 @@ def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> di
         "scene_plan_chunks": 0, "sentence_group_chunks": 0,
         "sentence_groups": 0, "fragment_cues": 0,
         "chain_breaks": [],
+        "context_gap_chunks": [],
     }
+    chunk_context = []
     allowed_ids = None
     if target and file_map:
         allowed_ids = set()
@@ -7063,6 +7065,9 @@ def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> di
         except Exception:
             continue
         tr_items = payload.get("tr") or []
+        cue_ids = [
+            str(item.get("i")) for item in tr_items
+            if isinstance(item, dict) and item.get("i") not in (None, "")]
         metrics["chunks"] += 1
         metrics["source_cues"] += len(tr_items)
         metrics["fragment_cues"] += sum(
@@ -7091,7 +7096,28 @@ def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> di
             metrics["chain_breaks"].append({
                 "chunk": str(req.get("custom_id") or "?"),
                 "reason": chain_break_reason,
+                "cue_start": cue_ids[0] if cue_ids else "?",
+                "cue_end": cue_ids[-1] if cue_ids else "?",
             })
+        chunk_context.append({
+            "chunk": str(req.get("custom_id") or "?"),
+            "cue_start": cue_ids[0] if cue_ids else "?",
+            "cue_end": cue_ids[-1] if cue_ids else "?",
+            "before": len(payload.get("ctx") or []) + len(payload.get("prev_scene") or []),
+            "after": len(payload.get("next_ctx") or []),
+            "ctx": len(payload.get("ctx") or []),
+            "prev_scene": len(payload.get("prev_scene") or []),
+        })
+    for pos, item in enumerate(chunk_context):
+        reasons = []
+        if pos > 0 and not item["before"]:
+            reasons.append("önceki_kaynak_yok")
+        next_item = chunk_context[pos + 1] if pos + 1 < len(chunk_context) else None
+        if (next_item is not None and not item["after"]
+                and not next_item["prev_scene"]):
+            reasons.append("sonraki_kaynak_yok")
+        if reasons:
+            metrics["context_gap_chunks"].append({**item, "reasons": reasons})
     return metrics
 
 
@@ -8251,6 +8277,9 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             "status": "not_started", "successful_chunks": 0,
             "failed_chunks": 0, "total_chunks": 0, "changed": 0,
             "suggested": 0, "report_only": not apply_changes,
+            "safe_candidate_ids": [], "safe_candidates": [], "rejected_count": 0,
+            "rejected_reasons": {}, "rejected_candidates": [],
+            "response_issues": [],
         })
     plan = _mixed_term_autofix_plan(
         sorted_blocks, src_map, locked_terms=locked_terms)
@@ -8303,6 +8332,7 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     successful_chunks = 0
     partial_chunks = 0
     cancelled = False
+    response_issues = []
     if status_out is not None:
         status_out["total_chunks"] = total_chunks
     for cs in range(0, len(items), CHUNK):
@@ -8369,6 +8399,12 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             log_fn(
                 f"Terim normalizasyonu paketi eksik/çelişkili JSON döndürdü; "
                 f"yalnız güvenli dönen cue'lar uygulanacak ({detail})", "warn")
+        for rid in sorted(conflicting_ids):
+            response_issues.append({"id": rid, "reason": "conflicting_id"})
+        for rid in sorted(duplicate_ids):
+            response_issues.append({"id": rid, "reason": "duplicate_id"})
+        for rid in sorted(chunk_ids - set(chunk_results)):
+            response_issues.append({"id": rid, "reason": "missing_id"})
         if complete_response:
             successful_chunks += 1
         elif chunk_results:
@@ -8379,6 +8415,9 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
     fixed_count = 0
     rejected = 0
     rejected_reasons: dict = {}
+    rejected_candidates = []
+    safe_candidate_ids = []
+    safe_candidates = []
     per_term_fixed: dict = {}
     new_blocks = []
     for idx, ts, text in sorted_blocks:
@@ -8388,6 +8427,14 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             ok, reason = _validate_term_normalize_candidate(text, candidate, fixes_by_idx[sidx])
             if ok:
                 fixed_count += 1
+                safe_candidate_ids.append(sidx)
+                safe_candidates.append({
+                    "id": sidx,
+                    "source": src_map.get(sidx, ""),
+                    "before": text,
+                    "candidate": candidate,
+                    "fixes": list(fixes_by_idx[sidx]),
+                })
                 for w, c in fixes_by_idx[sidx]:
                     key = f"{w}->{c}"
                     per_term_fixed[key] = per_term_fixed.get(key, 0) + 1
@@ -8406,6 +8453,14 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             else:
                 rejected += 1
                 rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+                rejected_candidates.append({
+                    "id": sidx,
+                    "reason": reason,
+                    "source": src_map.get(sidx, ""),
+                    "before": text,
+                    "candidate": candidate,
+                    "fixes": list(fixes_by_idx[sidx]),
+                })
         new_blocks.append((idx, ts, text))
 
     if log_fn:
@@ -8438,6 +8493,12 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             "changed": fixed_count if apply_changes else 0,
             "suggested": fixed_count,
             "report_only": not apply_changes,
+            "safe_candidate_ids": list(safe_candidate_ids),
+            "safe_candidates": list(safe_candidates),
+            "rejected_count": rejected,
+            "rejected_reasons": dict(rejected_reasons),
+            "rejected_candidates": list(rejected_candidates),
+            "response_issues": list(response_issues),
         })
     if log_fn and failed_chunks:
         log_fn(
@@ -10504,6 +10565,18 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 f"{int(metrics.get('goal_scenes', 0) or 0)} konuşmacı hedefi, "
                 f"{int(metrics.get('idioms', 0) or 0)} deyim, "
                 f"{int(metrics.get('cultural_refs', 0) or 0)} kültürel referans")
+            term_conflicts = list(metrics.get("term_conflicts") or [])
+            character_conflicts = list(metrics.get("character_style_conflicts") or [])
+            if term_conflicts or character_conflicts:
+                def _conflict_text(values):
+                    text = ",".join(str(value) for value in values[:20])
+                    if len(values) > 20:
+                        text += f",+{len(values) - 20}"
+                    return text or "-"
+                lines.append(
+                    "Analiz çatışmaları (prompt/cache dışında bırakıldı): "
+                    f"terim [{_conflict_text(term_conflicts)}]; "
+                    f"karakter üslubu [{_conflict_text(character_conflicts)}]")
             lines.append(
                 "Analiz sonrası karşılaştırma ölçümü: "
                 f"Critic {int(trace.get('Critic', 0) or 0)} düzeltme, "
@@ -10559,10 +10632,17 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             f"{int(context_metrics.get('sentence_groups', 0))} çok-cue cümle grubu, "
             f"{int(context_metrics.get('fragment_cues', 0))} parçalı cue, "
             f"{int(context_metrics.get('prev_scene_chunks', 0))} sahne köprüsü")
+        def _chunk_context_label(item):
+            cue_start = str(item.get("cue_start") or "?")
+            cue_end = str(item.get("cue_end") or "?")
+            cue_range = (
+                f"#{cue_start}-{cue_end}"
+                if cue_start != "?" or cue_end != "?" else "")
+            return f"{item.get('chunk', '?')}{cue_range}"
         chain_breaks = list(context_metrics.get("chain_breaks") or [])
         if chain_breaks:
             detail = ", ".join(
-                f"{item.get('chunk', '?')}[{item.get('reason', '?')}]"
+                f"{_chunk_context_label(item)}[{item.get('reason', '?')}]"
                 for item in chain_breaks[:20])
             if len(chain_breaks) > 20:
                 detail += f", +{len(chain_breaks) - 20}"
@@ -10570,6 +10650,16 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 f"Zincirleme bağlam kopması: {len(chain_breaks)} chunk — {detail}")
         elif row.get("chain_ctx", snapshot.get("chain_ctx")):
             lines.append("Zincirleme bağlam kopması: yok")
+        context_gaps = list(context_metrics.get("context_gap_chunks") or [])
+        if context_gaps:
+            detail = ", ".join(
+                f"{_chunk_context_label(item)}"
+                f"[{'|'.join(item.get('reasons') or ['?'])}]"
+                for item in context_gaps[:20])
+            if len(context_gaps) > 20:
+                detail += f", +{len(context_gaps) - 20}"
+            lines.append(
+                f"Bağlam kaynak boşluğu (inceleme): {len(context_gaps)} chunk — {detail}")
 
     critic_status = pass_status.get("Critic")
     if isinstance(critic_status, dict):
@@ -10622,6 +10712,69 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             lines.append(
                 f"Critic deterministik inceleme adayları: {len(cue_ids)} cue "
                 f"[{cue_text or '-'}]" + (f" ({reason_text})" if reason_text else ""))
+
+    term_status = pass_status.get("Term-Normalize")
+    if isinstance(term_status, dict):
+        safe_ids = [str(value) for value in term_status.get("safe_candidate_ids") or []]
+        rejected_candidates = list(term_status.get("rejected_candidates") or [])
+        rejected_ids = []
+        for candidate in rejected_candidates:
+            cue_id = str(candidate.get("id") or "")
+            if cue_id and cue_id not in rejected_ids:
+                rejected_ids.append(cue_id)
+        response_issues = list(term_status.get("response_issues") or [])
+        issue_ids = []
+        issue_reasons = {}
+        for issue in response_issues:
+            cue_id = str(issue.get("id") or "")
+            if cue_id and cue_id not in issue_ids:
+                issue_ids.append(cue_id)
+            reason = str(issue.get("reason") or "unknown")
+            issue_reasons[reason] = issue_reasons.get(reason, 0) + 1
+        if safe_ids or rejected_ids or issue_ids:
+            def _cue_list(values):
+                text = ",".join(values[:30])
+                if len(values) > 30:
+                    text += f",+{len(values) - 30}"
+                return text or "-"
+            parts = [f"güvenli {len(safe_ids)} cue [{_cue_list(safe_ids)}]"]
+            if rejected_ids:
+                reasons = dict(term_status.get("rejected_reasons") or {})
+                reason_text = ", ".join(
+                    f"{key}:{value}" for key, value in sorted(
+                        reasons.items(), key=lambda row: -row[1]))
+                parts.append(
+                    f"korunan {len(rejected_ids)} cue [{_cue_list(rejected_ids)}]"
+                    + (f" ({reason_text})" if reason_text else ""))
+            if issue_ids:
+                reason_text = ", ".join(
+                    f"{key}:{value}" for key, value in sorted(
+                        issue_reasons.items(), key=lambda row: -row[1]))
+                parts.append(
+                    f"JSON/kimlik sorunu {len(issue_ids)} cue [{_cue_list(issue_ids)}]"
+                    + (f" ({reason_text})" if reason_text else ""))
+            lines.append("Terim Normalizasyonu tanısı: " + "; ".join(parts))
+            detail_records = []
+            for candidate in list(term_status.get("safe_candidates") or []):
+                detail_records.append((
+                    "yalnız öneri" if term_status.get("report_only") else "uygulandı",
+                    candidate,
+                ))
+            detail_records.extend(
+                ("korundu", candidate) for candidate in rejected_candidates)
+            def _term_detail_text(value):
+                text = " ".join(str(value or "").split())
+                return text if len(text) <= 240 else text[:237] + "..."
+            for disposition, candidate in detail_records[:30]:
+                lines.append(
+                    f"Terim kararı #{candidate.get('id', '?')} [{disposition}"
+                    + (f":{candidate.get('reason')}" if candidate.get("reason") else "")
+                    + f"] kaynak='{_term_detail_text(candidate.get('source'))}' | "
+                    f"mevcut='{_term_detail_text(candidate.get('before'))}' | "
+                    f"öneri='{_term_detail_text(candidate.get('candidate'))}'")
+            if len(detail_records) > 30:
+                lines.append(
+                    f"Terim kararı ayrıntısı: +{len(detail_records) - 30} kayıt raporda kısaltıldı")
 
     auto_enabled = bool(snapshot.get("auto_glossary"))
     auto_status = pass_status.get("Auto-Glossary")

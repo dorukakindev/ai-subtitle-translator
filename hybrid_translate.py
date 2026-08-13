@@ -254,12 +254,16 @@ def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
         "goal_scenes": goal_scenes,
         "idioms": len(idioms or {}),
         "cultural_refs": len(cultural or []),
+        "term_conflicts": list(
+            getattr(context, "_analysis_term_conflicts", ()) or ()),
+        "character_style_conflicts": list(
+            getattr(context, "_analysis_character_conflicts", ()) or ()),
     }
 
 
 def analysis_effectiveness_log_line(metrics: dict) -> str:
     m = dict(metrics or {})
-    return (
+    line = (
         f"Analiz verim ozeti [{analysis_depth_label(m.get('depth'))}]: "
         f"{'tamam' if m.get('complete') else 'kismi'} | "
         f"{int(m.get('analysis_chunks', 0))} analiz chunk | "
@@ -273,6 +277,13 @@ def analysis_effectiveness_log_line(metrics: dict) -> str:
         f"{int(m.get('idioms', 0))} deyim | "
         f"{int(m.get('cultural_refs', 0))} kulturel referans"
     )
+    term_conflicts = list(m.get("term_conflicts") or [])
+    character_conflicts = list(m.get("character_style_conflicts") or [])
+    if term_conflicts or character_conflicts:
+        line += (
+            f" | prompt disi birakilan catismalar: "
+            f"{len(term_conflicts)} terim/{len(character_conflicts)} karakter")
+    return line
 
 
 # ── Timestamp / CPS yardımcıları ─────────────────────────────────────────────

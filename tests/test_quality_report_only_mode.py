@@ -104,8 +104,54 @@ class QualityReportOnlyModeTest(unittest.TestCase):
         self.assertEqual(changed, 0)
         self.assertEqual(status["changed"], 0)
         self.assertEqual(status["suggested"], 3)
+        self.assertEqual(status["safe_candidate_ids"], ["1", "2", "4"])
         self.assertTrue(status["report_only"])
         self.assertTrue(any("yalnız rapor #1" in message for message in logs))
+
+    def test_term_normalization_records_rejected_and_duplicate_cue_diagnostics(self):
+        blocks = [
+            ("1", "00:00:00,000 --> 00:00:01,000", "Troy kuşatması başladı."),
+            ("2", "00:00:01,000 --> 00:00:02,000", "Sonra Troy yıkıldı."),
+            ("3", "00:00:02,000 --> 00:00:03,000", "Truva'nın kalıntıları bulundu."),
+            ("4", "00:00:03,000 --> 00:00:04,000", "Ama Troy hâlâ tartışmalı."),
+            ("5", "00:00:04,000 --> 00:00:05,000", "Truva'ya dair kanıt var."),
+        ]
+        src = {str(i): "Troy" for i in range(1, 6)}
+        fixes = [
+            {"id": "1", "tr": "Truva kuşatması başladı."},
+            {"id": "2", "tr": "Sonra Atina yıkıldı."},
+            {"id": "4", "tr": "Ama Truva hâlâ tartışmalı."},
+            {"id": "4", "tr": "Ama Truva hâlâ tartışmalı."},
+        ]
+        status = {}
+
+        with patch.dict(sys.modules, {"openai": self._openai_module(fixes)}):
+            result, changed = gui._normalize_mixed_terms(
+                blocks, src, "key", "url", "model",
+                locked_terms={"Troy": "Truva"},
+                status_out=status, apply_changes=False)
+
+        self.assertEqual(result, blocks)
+        self.assertEqual(changed, 0)
+        self.assertEqual(status["safe_candidate_ids"], ["1", "4"])
+        self.assertEqual([item["id"] for item in status["safe_candidates"]], ["1", "4"])
+        self.assertEqual(status["rejected_count"], 1)
+        self.assertEqual(status["rejected_candidates"][0]["id"], "2")
+        self.assertEqual(status["response_issues"], [
+            {"id": "4", "reason": "duplicate_id"},
+        ])
+        report = "\n".join(gui._quality_feature_audit({
+            "pass_status": {"Term-Normalize": status},
+        }, {"term_normalize": True}))
+        self.assertIn("güvenli 2 cue [1,4]", report)
+        self.assertIn("korunan 1 cue [2]", report)
+        self.assertIn("JSON/kimlik sorunu 1 cue [4] (duplicate_id:1)", report)
+        self.assertIn(
+            "Terim kararı #1 [yalnız öneri] kaynak='Troy' | "
+            "mevcut='Troy kuşatması başladı.' | öneri='Truva kuşatması başladı.'",
+            report,
+        )
+        self.assertIn("Terim kararı #2 [korundu:", report)
 
     def test_consistency_report_only_keeps_minority_translation(self):
         cues = [

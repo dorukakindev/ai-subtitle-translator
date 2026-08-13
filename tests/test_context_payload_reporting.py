@@ -49,6 +49,47 @@ class ContextPayloadReportingTests(unittest.TestCase):
         self.assertEqual(metrics["sentence_groups"], 1)
         self.assertEqual(metrics["fragment_cues"], 2)
         self.assertEqual(metrics["prev_scene_chunks"], 1)
+        self.assertEqual(metrics["context_gap_chunks"], [])
+
+    def test_reports_exact_cue_ranges_for_missing_source_context(self):
+        first = _request({"tr": [{"i": 10, "t": "First"}]})
+        first["custom_id"] = "chunk_10"
+        second = _request({"tr": [{"i": 11, "t": "Second"}]})
+        second["custom_id"] = "chunk_11"
+
+        metrics = gui._context_payload_metrics([first, second])
+
+        self.assertEqual(metrics["context_gap_chunks"], [
+            {
+                "chunk": "chunk_10", "cue_start": "10", "cue_end": "10",
+                "before": 0, "after": 0, "ctx": 0, "prev_scene": 0,
+                "reasons": ["sonraki_kaynak_yok"],
+            },
+            {
+                "chunk": "chunk_11", "cue_start": "11", "cue_end": "11",
+                "before": 0, "after": 0, "ctx": 0, "prev_scene": 0,
+                "reasons": ["önceki_kaynak_yok"],
+            },
+        ])
+        lines = gui._quality_feature_audit({
+            "context_payload_metrics": metrics,
+        }, {"chain_ctx": True})
+        report = "\n".join(lines)
+        self.assertIn("chunk_10#10-10[sonraki_kaynak_yok]", report)
+        self.assertIn("chunk_11#11-11[önceki_kaynak_yok]", report)
+
+    def test_scene_boundaries_are_not_reported_as_context_gaps(self):
+        first = _request({"tr": [{"i": 20, "t": "Scene one"}]})
+        first["custom_id"] = "chunk_20"
+        second = _request({
+            "tr": [{"i": 21, "t": "Scene two"}],
+            "prev_scene": [{"i": 20, "t": "Scene one"}],
+        })
+        second["custom_id"] = "chunk_21"
+
+        metrics = gui._context_payload_metrics([first, second])
+
+        self.assertEqual(metrics["context_gap_chunks"], [])
 
     def test_quality_report_exposes_context_and_critic_coverage(self):
         lines = gui._quality_feature_audit({
