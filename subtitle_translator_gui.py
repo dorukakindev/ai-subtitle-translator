@@ -3932,6 +3932,7 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         + "## TURKISH SYNTAX & FLOW\n"
         "- Turkish is SOV — let the finite verb fall at the clause end; do NOT carry English S-V-O order when it yields stilted Turkish.\n"
         "- AVOID premature verb closure (erken yüklem kapanması) on cross-cue sentences. If a sentence continues in the next block, do NOT write a finished Turkish verb in the current block (e.g. do NOT translate 'Throughout history, humanity has struggled / with fears of Armageddon' as 'Tarih boyunca insanlık boğuştu, / Armageddon korkularıyla'). Instead, delay the verb to the end of the sentence or keep the sentence open using Turkish relative clauses, participles, or conjunctions.\n"
+        "- During a single-cue repair, 'repair_neighbors' contains already accepted translations from the same source sentence. Keep the information split across ids: do not repeat a neighbor's meaning or pull its words into the repaired cue. The optional 'frag' field marks start/mid/end of that sentence.\n"
         "- Subtitle Sentence Splitting & Info Flow: When a single sentence spans across multiple contiguous subtitle blocks:\n"
         "  * If they are close in time (dialogue flows naturally), prioritize natural Turkish word order (SOV). It is preferred to shift information across boundaries (e.g. putting the dependent clause 'Yağmur yağdığı için' in the first subtitle, and the verb 'markete gittim' in the second) to keep the Turkish flow smooth and standard.\n"
         "  * If there is a noticeable time gap (> 1.5 seconds) between the subtitles, try to keep the meaning of each block self-contained. In this case, you may use natural-sounding inverted sentences (devrik cümle) or conjunctions ('çünkü', 'fakat') to prevent displaying translations of future speech too early.\n"
@@ -5418,6 +5419,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     if source_cues:
         existing = {str(block[0]): block for block in out}
         ordered = []
+        repair_source_blocks = []
         inserted = 0
         source_ids = set()
         for cue in source_cues:
@@ -5434,6 +5436,7 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 sid = str(idx)
                 src = str(src or "")
             source_ids.add(sid)
+            repair_source_blocks.append((idx, ts, src))
             if sid in existing:
                 ordered.append(existing[sid])
             elif src.strip() and not _source_cue_is_delivery_removable(src):
@@ -5446,6 +5449,19 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 f"↺  {inserted} kayıp diyalog cue'su onarım kuyruğuna geri eklendi",
                 "warn",
             )
+    else:
+        repair_source_blocks = []
+
+    repair_frag_tags = {}
+    repair_fragment_groups = []
+    if repair_source_blocks:
+        try:
+            repair_frag_tags = _tag_fragments_gui(repair_source_blocks)
+            _repair_group_ids, repair_fragment_groups = _fragment_groups_gui(
+                repair_source_blocks, repair_frag_tags)
+        except Exception:
+            repair_frag_tags = {}
+            repair_fragment_groups = []
 
     hata_indices = []
     drop_positions = []
@@ -5543,7 +5559,15 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                         break
 
                 tr_items = [
-                    {"i": idx, "t": _clean_src(src)}
+                    {
+                        "i": idx,
+                        "t": _clean_src(src),
+                        **({"frag": repair_frag_tags.get(
+                            idx, repair_frag_tags.get(str(idx), "none"))}
+                           if repair_frag_tags.get(
+                               idx, repair_frag_tags.get(str(idx), "none")) != "none"
+                           else {}),
+                    }
                     for _pos, idx, _ts, src in pending
                 ]
                 attempt_locked_terms = _repair_relevant_locked_terms(
@@ -5582,6 +5606,40 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                     payload_data["repair_retry"] = retry_rows
                 if attempt_locked_terms:
                     payload_data["glossary"] = attempt_locked_terms
+                pending_ids = {str(idx) for _pos, idx, _ts, _src in pending}
+                fragment_groups = [
+                    group for group in repair_fragment_groups
+                    if pending_ids.intersection(
+                        {str(item) for item in group.get("items", [])})
+                ]
+                if fragment_groups:
+                    payload_data["sentence_groups"] = fragment_groups
+                    current_by_id = {str(idx): str(text or "")
+                                     for idx, _ts, text in out}
+                    repair_neighbors = []
+                    seen_neighbors = set()
+                    for group in fragment_groups:
+                        for neighbor_id in group.get("items", []):
+                            sid = str(neighbor_id)
+                            if sid in pending_ids or sid in seen_neighbors:
+                                continue
+                            candidate = current_by_id.get(sid, "")
+                            neighbor_src = raw_src_map.get(sid, "")
+                            if (not candidate or candidate.startswith("[HATA")
+                                    or "[ÇEVİRİ EKSİK]" in candidate
+                                    or _is_untranslated(
+                                        neighbor_src, candidate,
+                                        locked_terms=locked_terms,
+                                        source_language=src_lang)):
+                                continue
+                            repair_neighbors.append({
+                                "i": neighbor_id,
+                                "src": _clean_src(neighbor_src),
+                                "tr": candidate,
+                            })
+                            seen_neighbors.add(sid)
+                    if repair_neighbors:
+                        payload_data["repair_neighbors"] = repair_neighbors
                 positions = [
                     source_positions[str(idx)] for _pos, idx, _ts, _src in pending
                     if str(idx) in source_positions

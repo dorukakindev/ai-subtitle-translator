@@ -190,6 +190,37 @@ class PersistentRepairRetryTest(unittest.TestCase):
         self.assertEqual(result[0][2], "Gerrit Dou resim yaptı")
         self.assertEqual(advisories, [])
 
+    def test_fragment_repair_keeps_translated_sentence_neighbors_in_payload(self):
+        source_cues = [
+            ("4", "00:00:01,000 --> 00:00:02,000",
+             "After twenty one years of blockade, the effort and kindness"),
+            ("5", "00:00:02,001 --> 00:00:03,000",
+             "of Pierre-André Boutang and other friends,"),
+            ("6", "00:00:03,001 --> 00:00:04,000",
+             "allowed composing a new complete negative print."),
+        ]
+        raw = {str(idx): text for idx, _ts, text in source_cues}
+        blocks = [
+            ("4", source_cues[0][1], "[HATA]"),
+            ("5", source_cues[1][1], "Pierre-André Boutang ve diğer dostların"),
+            ("6", source_cues[2][1], "çabası yeni bir negatif kopya hazırlanmasını sağladı."),
+        ]
+        with patch("subtitle_translator_gui._safe_chat_create", return_value=_response([
+                {"i": "4", "t": "Yirmi bir yıllık ablukanın ardından"},
+        ])) as create:
+            _result, repaired = gui._repair_untranslated_sync(
+                blocks, raw, object(), "English", "Turkish",
+                source_cues=source_cues)
+
+        self.assertEqual(repaired, 1)
+        payload = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        self.assertEqual(payload["tr"][0]["frag"], "start")
+        self.assertEqual(payload["sentence_groups"], [
+            {"id": "fg_4_6", "items": ["4", "5", "6"]},
+        ])
+        self.assertEqual(
+            [str(item["i"]) for item in payload["repair_neighbors"]], ["5", "6"])
+
     def test_ambiguous_memory_lock_is_removed_inside_repair(self):
         source = "It's a different part of psychedelic history."
         candidate = "Bu, psikedelik tarihinin farklı bir bölümü."
