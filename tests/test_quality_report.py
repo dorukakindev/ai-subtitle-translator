@@ -199,6 +199,32 @@ class PassTraceTest(unittest.TestCase):
 
 
 class BuildQualityReportTextTest(unittest.TestCase):
+    def test_report_only_consistency_is_not_counted_as_applied(self):
+        row = {
+            "name": "film.srt", "total": 20, "cons": 7,
+            "rev": 2, "pass_fix": 3,
+            "pass_status": {"Consistency": {
+                "status": "completed", "report_only": True,
+                "suggested": 7,
+            }},
+        }
+
+        txt = gui.build_quality_report_text(
+            [row], "gpt-5.4-mini", "Turkish", "sync", 100)
+
+        self.assertIn("Tutarlılık önerisi (uygulanmadı)", txt)
+        self.assertNotIn("Tutarlılık düzeltmesi", txt)
+        self.assertEqual(gui._quality_report_applied_fix_count([row]), 5)
+
+    def test_applied_consistency_remains_an_applied_fix(self):
+        row = {"name": "film.srt", "total": 20, "cons": 4}
+
+        txt = gui.build_quality_report_text(
+            [row], "gpt-5.4-mini", "Turkish", "sync", 100)
+
+        self.assertIn("Tutarlılık düzeltmesi", txt)
+        self.assertEqual(gui._quality_report_applied_fix_count([row]), 4)
+
     def test_empty_run_replaces_stale_latest_quality_report(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

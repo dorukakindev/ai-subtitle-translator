@@ -11573,7 +11573,10 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         lines.append(f"\n• {r['name']}  ({r.get('total', 0)} satır)")
         for key, lbl in fields:
             if key in r:
-                lines.append(f"   {lbl.ljust(width)} : {r[key]}")
+                shown_label = lbl
+                if key == "cons" and _report_only_consistency_suggestions(r):
+                    shown_label = "Tutarlılık önerisi (uygulanmadı)"
+                lines.append(f"   {shown_label.ljust(width)} : {r[key]}")
         hata_idxs = r.get("hata_indices")
         if hata_idxs:
             idx_str = ", ".join(str(i) for i in sorted(hata_idxs))
@@ -11643,7 +11646,10 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     for key, _lbl in fields:
         if key in {"cps_avg", "cps_max"}:
             continue
-        vals = [r[key] for r in rows if key in r]
+        vals = [r[key] for r in rows
+                if key in r and not (
+                    key == "cons" and
+                    _report_only_consistency_suggestions(r))]
         if vals:
             sums[key] = sum(vals)
     cps_rows = [
@@ -11663,6 +11669,12 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         else f"{lbl}: {sums[key]}"
         for key, lbl in fields if key in sums
     ]
+    report_only_consistency = sum(
+        _report_only_consistency_suggestions(r) for r in rows)
+    if report_only_consistency:
+        parts.append(
+            "Tutarlılık önerisi (uygulanmadı): "
+            f"{report_only_consistency}")
     trace_sums = {}
     for r in rows:
         for name, count in (r.get("pass_trace") or {}).items():
@@ -11717,6 +11729,23 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     lines.append(
         f"Oturum token toplamı: {total_tokens:,}  (~${actual_cost:.4f}{unknown_note})")
     return "\n".join(lines)
+
+
+def _report_only_consistency_suggestions(row: dict) -> int:
+    status = (row.get("pass_status") or {}).get("Consistency") or {}
+    if not isinstance(status, dict) or not status.get("report_only"):
+        return 0
+    return int(status.get("suggested", row.get("cons", 0)) or 0)
+
+
+def _quality_report_applied_fix_count(rows: list) -> int:
+    total = 0
+    for row in rows or []:
+        total += sum(int(row.get(key, 0) or 0)
+                     for key in ("rev", "pass_fix"))
+        if not _report_only_consistency_suggestions(row):
+            total += int(row.get("cons", 0) or 0)
+    return total
 
 
 _LOG_PID_RE = re.compile(r"\.pid(\d+)\.log$")
@@ -15770,10 +15799,7 @@ class App(ctk.CTk):
                 record["reports"].append(report.group(1).strip())
 
     def _record_quality_report(self, rows: list, report_paths: list):
-        fix_keys = ("cons", "rev", "pass_fix")
-        fixes = 0
-        for row in rows or []:
-            fixes += sum(int(row.get(key, 0) or 0) for key in fix_keys)
+        fixes = _quality_report_applied_fix_count(rows)
         rows_by_name = {
             str(row.get("name", "")): row
             for row in (rows or []) if row.get("name")
