@@ -2926,6 +2926,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^|\n)\s*(?:[\w-]+\.)+(?:com|net|org|info|tv|io|ru|pt|it)"
     r"(?:/\S*)?\s*(?:$|\n)|"
     r"\bcopyright\s*(?:(?:©|\(c\))\s*)?\d{4}\b|"
+    r"\brevised\s+(?:\w+\s+)?subtitles?\s*\n\s*by\s+\S+|"
     r"#[\w-]*fansubs?\b|\bfansubs?\b|"
     r"\bsubtitles?\s+by\b|\bsubtitled\s+by\b|\btranslation\s+by\b|\btranslated\s+by\b|"
     r"\bocr\s+(?:by|:)\s*\S|\bsubti(?:tl|fl)ing\s*:\s*\S|"
@@ -3080,7 +3081,10 @@ def _delivery_credit_line_indexes(text: str) -> set[int]:
 
 
 def _delivery_source_is_all_credit(text: str) -> bool:
-    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    value = str(text or "").strip()
+    if _DELIVERY_CREDIT_STRONG_RE.fullmatch(value):
+        return True
+    lines = [line for line in value.splitlines() if line.strip()]
     if not lines:
         return False
     if (len(lines) > 1

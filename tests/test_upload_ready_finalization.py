@@ -780,6 +780,16 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         ]
         self.assertEqual(title_texts, ["BAĞIMLI"])
 
+    def test_multiline_revised_subtitle_credit_is_removed(self):
+        credit = "Revised English subtitles\nby sineintegral@KG"
+        self.assertTrue(gui._source_cue_is_delivery_removable(credit))
+        result = gui._prepare_upload_ready_blocks(
+            [("1528", "01:30:00,000 --> 01:30:02,000", "[ÇEVİRİ EKSİK]")],
+            "Turkish",
+            source_cues=[("1528", "01:30:00,000 --> 01:30:02,000", credit)],
+        )
+        self.assertFalse(any("EKSİK" in text for _idx, _ts, text in result))
+
     def test_embedded_source_credit_lines_do_not_remove_real_title(self):
         source = [("26", "00:00:02,000 --> 00:00:05,000",
                    "~ RUN MELOS! ~\nSubtitles by Odyssey\nOCR by Inactive (Subs.com.ru)")]
