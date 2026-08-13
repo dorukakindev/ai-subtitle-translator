@@ -96,6 +96,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "lookahead_lines": 15,
                 "scene_gap_seconds": 3.0,
                 "temperature": 0.2,
+                "max_retry": 1,
                 "critic": True,
                 "main_custom": True,
                 "main_custom_model": "gpt-5.4",

@@ -992,6 +992,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "lookahead_lines": 15,
     "scene_gap_seconds": 3.0,
     "temperature": 0.2,
+    "max_retry": 1,
     "critic": True,
     **RESELLER_ROUTING_DEFAULTS,
     "polish": False,
@@ -12530,7 +12531,7 @@ class App(ctk.CTk):
         self._lookahead_lines   = LOOKAHEAD_LINES
         self._max_workers       = 4
         self._temperature       = 0.2
-        self._max_retry         = 3
+        self._max_retry         = 1
         self._scene_gap_seconds = SCENE_GAP_SEC
         self._merge_max_chars   = MERGE_MAX_CHARS    # parçalı cue birleştirme eşikleri
         self._merge_max_gap_ms  = MERGE_MAX_GAP_MS
