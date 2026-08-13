@@ -421,6 +421,16 @@ class EllipsisFragmentGuiTest(unittest.TestCase):
         self.assertEqual(tags["1"], "none")
         self.assertEqual(tags["2"], "none")
 
+    def test_title_abbreviation_before_surname_stays_one_sentence(self):
+        tags = self._tags("I spoke to Dr.", "Smith yesterday.")
+        self.assertEqual(tags["1"], "start")
+        self.assertEqual(tags["2"], "end")
+
+    def test_title_abbreviation_before_new_reply_stays_separate(self):
+        tags = self._tags("Yes, Dr.", "No, that is impossible.")
+        self.assertEqual(tags["1"], "none")
+        self.assertEqual(tags["2"], "none")
+
 
 class EllipsisFragmentHybridTest(unittest.TestCase):
     class Cue:
@@ -451,6 +461,16 @@ class EllipsisFragmentHybridTest(unittest.TestCase):
 
     def test_closing_parenthesis_preserves_sentence_boundary(self):
         tags = self._tags("(Is that true?)", "Yes.")
+        self.assertEqual(tags[1], "none")
+        self.assertEqual(tags[2], "none")
+
+    def test_title_abbreviation_before_surname_stays_one_sentence(self):
+        tags = self._tags("I spoke to Dr.", "Smith yesterday.")
+        self.assertEqual(tags[1], "start")
+        self.assertEqual(tags[2], "end")
+
+    def test_title_abbreviation_before_new_reply_stays_separate(self):
+        tags = self._tags("Yes, Dr.", "No, that is impossible.")
         self.assertEqual(tags[1], "none")
         self.assertEqual(tags[2], "none")
 

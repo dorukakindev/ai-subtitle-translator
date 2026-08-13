@@ -380,6 +380,23 @@ def _ellipsis_continues(cur: str, nxt: str) -> bool:
     return bool(n) and (n.startswith('...') or n.startswith('…') or n[0].islower())
 
 
+def _abbreviation_continues(cur: str, nxt: str) -> bool:
+    current = str(cur or "").rstrip().rstrip('"\'»”)]} ')
+    if not re.search(
+            r"(?:^|\s)(?:(?i:Mr|Mrs|Ms|Dr|Prof|Rev|Fr|Sr|Jr|St)|[A-Z])\.$",
+            current):
+        return False
+    following = str(nxt or "").lstrip('"\'«“([{ ')
+    match = re.match(r"([^\W\d_][\w'’\-]*)", following, re.UNICODE)
+    if not match or not match.group(1)[0].isupper():
+        return False
+    return match.group(1).casefold() not in {
+        "no", "yes", "okay", "well", "but", "and", "so", "anyway",
+        "then", "what", "why", "who", "how", "i", "we", "he", "she",
+        "it", "they", "you",
+    }
+
+
 def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
     """Detect multi-line sentence fragments among subtitle cues.
     Returns {cue.index: tag} where tag is:
@@ -398,7 +415,8 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
         if not _ends_sentence(t):
             return False
         nxt = _clean_source_text(cues[k + 1].text) if k + 1 < n else ""
-        return not _ellipsis_continues(t, nxt)
+        return not (_ellipsis_continues(t, nxt)
+                    or _abbreviation_continues(t, nxt))
 
     def _scene_break_before(k: int) -> bool:
         if k <= 0 or gap_limit <= 0:

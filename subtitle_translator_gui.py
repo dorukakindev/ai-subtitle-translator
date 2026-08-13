@@ -4097,6 +4097,23 @@ def _ellipsis_continues_gui(cur: str, nxt: str) -> bool:
     return bool(n) and (n.startswith('...') or n.startswith('…') or n[0].islower())
 
 
+def _abbreviation_continues_gui(cur: str, nxt: str) -> bool:
+    current = str(cur or "").rstrip().rstrip('"\'»”)]} ')
+    if not re.search(
+            r"(?:^|\s)(?:(?i:Mr|Mrs|Ms|Dr|Prof|Rev|Fr|Sr|Jr|St)|[A-Z])\.$",
+            current):
+        return False
+    following = str(nxt or "").lstrip('"\'«“([{ ')
+    match = re.match(r"([^\W\d_][\w'’\-]*)", following, re.UNICODE)
+    if not match or not match.group(1)[0].isupper():
+        return False
+    return match.group(1).casefold() not in {
+        "no", "yes", "okay", "well", "but", "and", "so", "anyway",
+        "then", "what", "why", "who", "how", "i", "we", "he", "she",
+        "it", "they", "you",
+    }
+
+
 def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
     """Detect multi-line sentence fragments among (idx, ts, text) blocks.
     Returns {idx: 'none'|'start'|'mid'|'end'}."""
@@ -4110,7 +4127,8 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
         if not _ends_sentence_gui(t):
             return False
         nxt = _clean_src(blocks[k + 1][2]) if k + 1 < n else ""
-        return not _ellipsis_continues_gui(t, nxt)
+        return not (_ellipsis_continues_gui(t, nxt)
+                    or _abbreviation_continues_gui(t, nxt))
 
     def _scene_break_before(k: int) -> bool:
         if k <= 0 or gap_limit <= 0:
