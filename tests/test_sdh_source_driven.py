@@ -22,6 +22,27 @@ def _src(**kw):
 
 
 class SdhSourceDrivenTest(unittest.TestCase):
+    def test_bare_french_sdh_is_removed_from_whole_and_mixed_cues(self):
+        self.assertTrue(sdh.src_is_sfx_only("Musique douce instrumentale"))
+        self.assertTrue(sdh.src_is_sfx_only("La porte s'ouvre"))
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Yumuşak müzik"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "Fısıldar\nUzun kalmayacağım."),
+        ]
+        src_map = {
+            "1": "Musique douce instrumentale",
+            "2": "Elle chuchote\nJe reste pas longtemps.",
+        }
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result, [("2", blocks[1][1], "Fısıldar\nUzun kalmayacağım.")])
+
+    def test_bare_french_sdh_line_is_removed_from_mixed_cue(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000",
+                   "Gerilim müziği\nAh, onu değil!")]
+        src_map = {"1": "Musique inquiétante\nAh, pas ça !"}
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(result[0][2], "Ah, onu değil!")
+
     def test_common_english_sdh_phrases_are_source_sfx(self):
         samples = [
             "[thundering]", "[raining]", "[train whistles]",
@@ -49,6 +70,16 @@ class SdhSourceDrivenTest(unittest.TestCase):
         for sample in samples:
             with self.subTest(sample=sample):
                 self.assertTrue(sdh.src_is_sfx_only(sample), msg=sample)
+
+    def test_verified_pumpkin_eater_and_russian_sdh_are_source_sfx(self):
+        samples = [
+            "(SLAMS DRAWER SHUT)", "(PIANO BEING TUNED)",
+            "(PAGES FLICKING LOUDLY)", "- (CHURCH BELLS)\n- (CHATTERING)",
+            "(CHURCH BELL)", "(KEY TURNING IN LOCK)", "Музыка!",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertTrue(sdh.src_is_sfx_only(sample))
 
     def test_chevron_speaker_markers_stripped(self):
         blocks = [

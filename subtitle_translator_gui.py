@@ -2975,10 +2975,12 @@ _DELIVERY_LANGUAGE_LABEL_RE = re.compile(
 _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     r"^(?:"
     r"(?:(?:petit|leger)\s+)?gemissement\s+de\s+(?:douleur|plaisir)|"
-    r"musique\s+(?:d'intrigue|intrigante|inquietante(?:\s+au\s+piano)?|"
-    r"douce\s+au\s+violon)|"
+    r"musique(?:\s+(?:douce|joyeuse|gaie|triste|melancolique|rythmee|"
+    r"instrumentale|populaire|inquietante|d'intrigue|intrigante|"
+    r"de\s+bal|au\s+piano|au\s+violon)){1,4}|"
     r"(?:il|elle)\s+rit|chants?\s+(?:des\s+)?oiseaux|"
-    r"on\s+frappe\s+aux\s+carreaux|"
+    r"on\s+frappe(?:\s+aux\s+carreaux)?|"
+    r"(?:une?|la)\s+porte\s+s'ouvre|(?:il|elle)\s+soupire|rire\s+nerveux|"
     r"elle\s+ouvre\s+le\s+robinet\s+l'eau\s+coule|"
     r"grondement\s+du\s+moteur|moteurs?\s+de\s+machines|smacks"
     r")[.!…]?\s*$",
@@ -3106,6 +3108,14 @@ def _is_delivery_sdh_only(text: str) -> bool:
             r"(?:muffled\s+(?:speaking|voice)|(?:speaking|speaks)\s+(?:native|foreign)\s+"
             r"language|conversing\s+in\s+(?:a\s+)?(?:native|foreign)\s+language|"
             r"frog\s+croaks?)\s*[.!]*", bare_english_sdh, re.IGNORECASE):
+        return True
+    bare_folded = sdh_cleaner._ascii_fold(value).strip().rstrip(".!…")
+    if re.fullmatch(
+            r"(?:(?:yumusak|neseli|huzunlu|ritmik|gerilimli?)\s+)+"
+            r"(?:enstrumantal\s+|halk\s+|piyano\s+)?muzik|"
+            r"(?:enstrumantal|halk|piyano)\s+muzik|"
+            r"kapi\s+(?:acilir|aciliyor|caliniyor)|ic\s+ceker|sinirli\s+gulus",
+            bare_folded, re.IGNORECASE):
         return True
     if re.fullmatch(r"[\s*♪♫_]+", value) and re.search(r"[*♪♫_]", value):
         return True
@@ -11109,12 +11119,14 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
         source_text = str((source_map or {}).get(str(idx), "") or "")
         if not source_text:
             continue
-        target_lines = {
-            _delivery_visible_line(line).casefold()
+        target_visible_lines = [
+            _delivery_visible_line(line)
             for line in str(target_text or "").splitlines()
             if _delivery_visible_line(line)
-        }
-        for source_line in source_text.splitlines():
+        ]
+        target_lines = {line.casefold() for line in target_visible_lines}
+        source_lines = source_text.splitlines()
+        for source_line_no, source_line in enumerate(source_lines):
             visible = _delivery_visible_line(source_line)
             if (not visible or visible.casefold() not in target_lines
                     or _source_cue_is_delivery_removable(visible)):
@@ -11129,7 +11141,21 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                 and bool(re.search(r"[^\x00-\x7f]", visible))
                 and not bool(re.search(r"[.!?…]\s*$", visible))
             )
-            if reason and not foreign_name_line:
+            matching_targets = [
+                line for line in target_visible_lines
+                if line.casefold() == visible.casefold()
+            ]
+            list_tail_proper_name = (
+                source_is_english and reason == "identical_source"
+                and source_line_no > 0 and "," in source_text
+                and bool(re.fullmatch(r"[A-Za-z][A-Za-z'’.-]{2,}[.!?…]*", visible))
+                and any(line[:1].isupper() for line in matching_targets)
+                and any(
+                    _delivery_visible_line(sibling).casefold() not in target_lines
+                    for sibling in source_lines if _delivery_visible_line(sibling)
+                )
+            )
+            if reason and not foreign_name_line and not list_tail_proper_name:
                 flagged.append(str(idx))
                 break
     return flagged

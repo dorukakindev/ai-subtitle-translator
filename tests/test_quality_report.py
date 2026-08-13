@@ -765,6 +765,15 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
         self.assertEqual(flagged, [])
 
+    def test_delivery_fragment_guard_preserves_translated_list_tail_place_name(self):
+        flagged = gui._delivery_untranslated_fragment_ids(
+            [("254", "00:19:38,124 --> 00:19:39,876",
+              "Offenbach, kumbara,\nDortmund...")],
+            {"254": "Offenbach, piggy bank,\ndortmund..."},
+            target_language="Turkish", source_language="English")
+
+        self.assertEqual(flagged, [])
+
     def test_file_process_report_contains_full_pass_history(self):
         row = {
             "name": "episode.srt",

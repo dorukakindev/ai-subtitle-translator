@@ -77,7 +77,7 @@ _SDH_KEYWORDS = {
     "door", "knock", "knocks", "phone", "ringing", "beeping", "alarm",
     "thunder", "thundering", "thunderclap", "explosion", "gunshot", "siren", "engine", "crowd",
     "noise", "silence", "chatter", "conversation", "inaudible", "indistinct", "overlapping",
-    "chord",
+    "chord", "lock",
     "continues", "distant", "nearby", "indistinctly", "overhead", "honk",
     # Turkish captions
     "alkis", "alkislar", "alkisliyor", "tezahurat", "yuhalama",
@@ -257,7 +257,7 @@ _SDH_ACTION_VERBS = {
     "burbling", "sploshing", "slices", "fluttering", "snorts", "cooing",
     "babbling", "whimpering", "rattle", "neighs", "bangs", "clangs",
     "scrapes", "stomp", "bubbling", "snoring", "whinnies", "whinny",
-    "blaring", "slaps", "gasps", "grunts",
+    "blaring", "slaps", "gasps", "grunts", "shut", "tuned", "flicking", "turning",
     "screams", "growls", "groans", "sighs", "chattering",
     "vomits", "vomiting", "breathes", "breathing", "weeps", "weeping",
     "yelps", "yelping", "orgasms", "orgasming", "bursts", "dialling",
@@ -274,7 +274,7 @@ _SDH_SOUND_NOUNS = {
     "crash", "slam", "bang", "boom", "thud", "click", "beep", "buzz",
     "rumble", "scream", "shout", "whisper", "knock", "ring", "grunt",
     "zip", "siren", "sirens", "thud", "feedback", "ringtone", "yelp",
-    "gong", "gongs",
+    "gong", "gongs", "bell", "bells",
 }
 
 _KNOWN_LANGUAGES = {
@@ -745,6 +745,22 @@ def _is_translation_failure_marker(text: str) -> bool:
 # sdh_cleaner.py, gui modülüne bağımlı olmamalı).
 SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
 _VTT_VOICE_TAG_RE = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
+_BARE_FRENCH_SDH_RE = re.compile(
+    r"^(?:"
+    r"musique(?:\s+(?:douce|joyeuse|gaie|triste|melancolique|rythmee|"
+    r"instrumentale|populaire|inquietante|d'intrigue|intrigante|"
+    r"de\s+bal|au\s+piano|au\s+violon)){1,4}|"
+    r"on\s+frappe|(?:une?|la)\s+porte\s+s'ouvre|"
+    r"(?:il|elle)\s+soupire|rire\s+nerveux"
+    r")[.!…]?\s*$",
+    re.IGNORECASE,
+)
+_BARE_CYRILLIC_SDH_RE = re.compile(r"^музыка[.!…]?\s*$", re.IGNORECASE)
+
+
+def _src_is_bare_sdh_line(src_text: str) -> bool:
+    value = re.sub(r"<[^>\n]+>", "", str(src_text or ""))
+    return bool(_BARE_FRENCH_SDH_RE.fullmatch(_ascii_fold(value).strip()))
 
 
 def src_is_sfx_only(src_text: str) -> bool:
@@ -757,6 +773,10 @@ def src_is_sfx_only(src_text: str) -> bool:
     text = re.sub(r"\s*\n\s*", " ", text)
     if not text:
         return False
+    if _BARE_CYRILLIC_SDH_RE.fullmatch(text):
+        return True
+    if _src_is_bare_sdh_line(text):
+        return True
     spans = _bracket_group_spans(text)
     residue = _replace_bracket_groups(text, lambda _raw: "")
     residue = MUSIC_NOTE_RE.sub("", residue).replace("_", "").strip()
@@ -1013,6 +1033,8 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
                 else [src_text] * len(target_lines)
             )
             for line, source_line in zip(target_lines, aligned_source):
+                if _src_is_bare_sdh_line(source_line):
+                    continue
                 cleaned = strip_labels_by_source(line, source_line)
                 if cleaned:
                     lines.append(cleaned)

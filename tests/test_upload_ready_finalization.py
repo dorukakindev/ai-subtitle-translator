@@ -708,6 +708,18 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_bare_french_and_turkish_sdh_are_delivery_removable(self):
+        for source in (
+                "Musique douce instrumentale", "Musique gaie populaire",
+                "On frappe", "La porte s'ouvre", "Elle soupire", "Rire nerveux"):
+            with self.subTest(source=source):
+                self.assertTrue(gui._source_cue_is_delivery_removable(source))
+        for target in ("Yumuşak enstrümantal müzik", "Kapı açılıyor",
+                       "İç çeker", "Sinirli gülüş"):
+            with self.subTest(target=target):
+                self.assertTrue(gui._is_delivery_sdh_only(target))
+        self.assertFalse(gui._is_delivery_sdh_only("Müzik"))
+
     def test_ordinal_list_heading_is_not_removed_as_speaker_label(self):
         self.assertFalse(gui._source_cue_is_delivery_removable("Second:"))
         result = gui._prepare_upload_ready_blocks(
