@@ -66,6 +66,7 @@ class SharedMeaningReadabilityRuleTest(unittest.TestCase):
         self.assertIn(expected, sync_prompt)
         self.assertIn(expected, hybrid_prompt)
         self.assertIn("<=42 visible characters per line", expected)
+        self.assertIn("never swap whole clause translations", expected)
 
 
 class SharedTransliterationGuardTest(unittest.TestCase):

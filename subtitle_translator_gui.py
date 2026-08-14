@@ -3064,6 +3064,12 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     r")[.!…]?\s*$",
     re.IGNORECASE,
 )
+_DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
+    r"^(?:APPLAUSE|SINGING|(?:SHE|HE|THEY|CHOIR|MUSICIANS?)\s+"
+    r"(?:ALL\s+)?(?:SINGS?|CHANTS?|PLAYS?)|BELLS?\s+(?:RINGS?|TOLLS?|CHIMES?)|"
+    r"(?:UP-TEMPO\s+)?MUSIC\s+PLAYS?|HE\s+SINGS?,\s*DRUMBEAT)$",
+    re.IGNORECASE,
+)
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
 
 
@@ -3228,6 +3234,7 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
             or _delivery_source_is_all_credit(value)
             or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
+            or _DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(value.strip())
             or _DELIVERY_BARE_SOURCE_SDH_RE.fullmatch(
                 sdh_cleaner._ascii_fold(value).strip())):
         return True
@@ -5401,6 +5408,8 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
             r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
             str(source_text or "")))
         tokens = {token.rstrip(".'’-") for token in tokens}
+        tokens = {re.sub(r"['’]s$", "", token, flags=re.IGNORECASE)
+                  for token in tokens}
         tokens = {
             token for token in tokens
             if token and (token[0].isdigit()
@@ -7810,6 +7819,10 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                 continue
             if _align_ratio(ta.lower(), tb.lower()) < tr_thresh:
                 continue
+            raw_sa = _align_visible(src_map.get(seq[a][0], "")).casefold()
+            raw_sb = _align_visible(src_map.get(seq[b][0], "")).casefold()
+            if raw_sa and raw_sa == raw_sb:
+                continue  # aynı kaynak SDH/ilahî cue'su temizlenince boşalsa da meşru tekrar
             sa = _source_dialogue(src_map.get(seq[a][0], "")).lower()
             sb = _source_dialogue(src_map.get(seq[b][0], "")).lower()
             if sa and sb and _align_ratio(sa, sb) >= src_thresh:
@@ -8262,10 +8275,11 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                                 matched_size = len(cluster)
                             break
                 def _term_form(value):
-                    return value.casefold().translate(str.maketrans({
-                        "w": "v", "ş": "s", "ç": "c", "ğ": "g",
+                    folded = value.casefold().translate(str.maketrans({
+                        "w": "v", "c": "k", "ş": "s", "ç": "k", "ğ": "g",
                         "ı": "i", "ö": "o", "ü": "u",
                     }))
+                    return re.sub(r"(.)\1+", r"\1", folded)
 
                 term_form = _term_form(term)
                 similar = max(
@@ -8285,7 +8299,7 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                     matched or (
                         similar
                         if similarity >= 0.72 or transliteration_hint
-                        else (cand_words[0] if len(cand_words) == 1 else None)
+                        else None
                     )
                 ), cid
                 if found_token:

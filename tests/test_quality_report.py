@@ -743,6 +743,33 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["expected_removed_ids"], [
             str(i) for i in range(1, 13)])
 
+    def test_delivery_audit_treats_bare_uppercase_singing_and_bells_as_sdh(self):
+        descriptions = [
+            "APPLAUSE", "SINGING", "SHE SINGS", "BELL TOLLS",
+            "BELLS RING", "UP-TEMPO MUSIC PLAYS", "CHOIR SINGS",
+            "HE SINGS, DRUMBEAT", "THEY ALL SING",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text("\n\n".join(
+                f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\n{text}"
+                for i, text in enumerate(descriptions, 1)
+            ) + "\n\n10\n00:00:10,000 --> 00:00:10,500\nRUN!\n",
+                encoding="utf-8")
+            output.write_text(
+                "10\n00:00:10,000 --> 00:00:10,500\nKOŞ!\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English",
+                source_language="English")
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], [
+            str(i) for i in range(1, 10)])
+
     def test_delivery_owner_audit_ignores_sentence_final_name_punctuation(self):
         items = [
             {"i": "1", "t": "Burası Yeha'nın kutsal tepesidir."},
@@ -751,6 +778,19 @@ class BuildQualityReportTextTest(unittest.TestCase):
         sources = {
             "1": "This is the sacred hill of Yeha.",
             "2": "So was Yeha built by an Arabian empire?",
+        }
+
+        self.assertEqual(
+            gui._chunk_content_owner_mismatch_ids(items, sources), set())
+
+    def test_delivery_owner_audit_normalizes_english_possessive_name(self):
+        items = [{
+            "i": "382",
+            "t": "Ayat'ın bombasının kurbanlarından biri İsrailli bir kızdı.",
+        }]
+        sources = {
+            "372": "Samir's daughter, Ayat, detonated a bomb in an Israeli supermarket.",
+            "382": "One of the victims of Ayat's bomb was a teenage Israeli girl.",
         }
 
         self.assertEqual(

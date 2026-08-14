@@ -92,6 +92,13 @@ class WqxTokenR2Test(unittest.TestCase):
     def test_proper_noun_starting_uppercase_not_flagged(self):
         self.assertEqual(ht.find_garble_tokens("Wolfgang geldi."), [])
 
+    def test_source_bound_foreign_noun_with_turkish_plural_is_not_flagged(self):
+        self.assertEqual(
+            ht.find_garble_tokens(
+                "Bütün gurdwaralar yiyecek verir.",
+                "All gurdwaras serve food."),
+            [])
+
 
 class StraySuffixR3Test(unittest.TestCase):
     def test_broken_deki_flagged(self):

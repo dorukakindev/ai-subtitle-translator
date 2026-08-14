@@ -6118,11 +6118,23 @@ def find_garble_tokens(text, source_text: str = "") -> list:
 
     for m in _GARBLE_WQX_RE.finditer(s):
         tok = m.group(0)
+        source_value = str(source_text or "")
+        source_bound_turkish_plural = False
+        token_folded = tok.casefold()
+        for suffix in ("lar", "ler"):
+            if token_folded.endswith(suffix) and len(token_folded) > len(suffix) + 2:
+                stem = token_folded[:-len(suffix)]
+                if re.search(
+                        rf"(?<![A-Za-z]){re.escape(stem)}(?:s|es)?(?![A-Za-z])",
+                        source_value, re.IGNORECASE):
+                    source_bound_turkish_plural = True
+                    break
         # Tek harfli "x"/"w"/"q" matematik sembolü/değişken/kısaltma olabilir
         # (gerçek garble değil) — yalnızca 2+ harfli token'lar (ör. "simwolika",
         # "wedges") sayılır.
         if (len(tok) < 2 or tok.lower() in _GARBLE_WQX_ALLOWLIST
                 or tok[:1].isupper()
+                or source_bound_turkish_plural
                 # Scientific/local terms such as coquiando or bratwurst can
                 # legitimately be preserved from the source.  This exemption
                 # is deliberately source-bound; an invented q/w/x word still
@@ -6384,7 +6396,8 @@ def _glossary_token_matches_key(word: str, key_tokens: set[str], raw_value: str 
     for suff in _TR_APOSTROPHIC_SUFFIXES:
         if wl.endswith(suff):
             stem = wl[:-len(suff)]
-            if stem in key_tokens:
+            if stem in key_tokens or (
+                    suff in {"lar", "ler"} and (stem + "s") in key_tokens):
                 return True
 
     if _glossary_plural_s_with_turkish_suffix(w, key_tokens, raw_value):
@@ -6450,7 +6463,7 @@ def _glossary_wqx_token(value: str, glossary_key: str | None = None) -> str | No
             w for w in hits
             if not (
                 (
-                    w[:1].isupper()
+                    (w[:1].isupper() or w.casefold().endswith(("lar", "ler")))
                     and _glossary_token_matches_key(w, key_tokens, raw_value=value)
                 )
                 or _glossary_plural_s_with_turkish_suffix(

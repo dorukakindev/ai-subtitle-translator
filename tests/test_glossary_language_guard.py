@@ -217,6 +217,16 @@ class WqxTargetGuardTest(unittest.TestCase):
         cleaned = ht.sanitize_glossary_for_turkish(real_glossary)
         self.assertEqual(cleaned, {"Newsweeks": "Newsweek'ler"})
 
+    def test_plural_source_key_exempts_attached_turkish_plural(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "gurdwaras": "gurdwaralar",
+            "faith": "inanç",
+        })
+        self.assertEqual(cleaned, {
+            "gurdwaras": "gurdwaralar",
+            "faith": "inanç",
+        })
+
     def test_actual_foreign_drift_still_caught_even_if_key_shares_a_word(self):
         # Kaynakla hedef kelime kümesi FARKLIYSA (gerçek çeviri denenmiş ama
         # yabancı dile kaymışsa) istisna devreye girmemeli.

@@ -435,6 +435,38 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_calcutta_transliteration_ignores_nearby_hindu_terms(self):
+        blocks = _b(
+            (1, "Hindistan'ın Kalküta kentine gidiyorum."),
+            (2, "Hindu dinindeki rolünü araştırıyorum."),
+            (3, "Kalküta'da törene katıldım."),
+            (4, "Hindistan'daki Kalküta halkıyla konuştum."),
+        )
+        src = _s(**{
+            "1": "I'm off to Calcutta in India.",
+            "2": "I want to learn about the Hindu role.",
+            "3": "I attended the ceremony in Calcutta.",
+            "4": "I spoke to people in Calcutta, India.",
+        })
+
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
+    def test_jewish_does_not_bind_to_nearby_purim(self):
+        blocks = _b(
+            (1, "Purim, Yahudilerin bayramıdır."),
+            (2, "Yahudi topluluğu kutlama yaptı."),
+            (3, "Purim sırasında Yahudi geleneklerini gördüm."),
+            (4, "Yahudi inancını daha iyi anlamaya çalıştım."),
+        )
+        src = _s(**{
+            "1": "Purim is a Jewish festival.",
+            "2": "The Jewish community celebrated.",
+            "3": "During Purim I saw Jewish traditions.",
+            "4": "I tried to understand the Jewish faith.",
+        })
+
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
     def test_turkish_dotted_i_stopword_is_not_a_princess_rendering(self):
         blocks = _b(
             (1, "Prenses geldi."),

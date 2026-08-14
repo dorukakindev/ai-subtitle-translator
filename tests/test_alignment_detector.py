@@ -208,6 +208,22 @@ class AdjacentDuplicateTest(unittest.TestCase):
         findings = gui.detect_alignment_issues(blocks, src)
         self.assertFalse(any(f["type"] == "adjacent_duplicate" for f in findings))
 
+    def test_identical_bare_sdh_source_repeat_is_benign(self):
+        blocks = _b(
+            (34, "GOSPEL İLAHİLERİ"),
+            (35, "Bu akşam Jared konuk vaiz."),
+            (36, "GOSPEL İLAHİLERİ"),
+        )
+        src = _s(**{
+            "34": "GOSPEL SINGING",
+            "35": "Tonight Jared is guest preacher.",
+            "36": "GOSPEL SINGING",
+        })
+
+        findings = gui.detect_alignment_issues(blocks, src)
+
+        self.assertFalse(any(f["type"] == "adjacent_duplicate" for f in findings))
+
     def test_same_source_words_in_different_order_are_benign(self):
         blocks = _b(
             (67, "Aziz Anthony'nin Baştan Çıkarılışı."),

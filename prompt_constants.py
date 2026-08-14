@@ -62,7 +62,9 @@ def meaning_readability_rule(target_language: str) -> str:
         "Duration/CPS beats source length: keep the translation concise for the cue duration; aim for <=21 CPS "
         "and stay <=24 CPS when possible. When a cue already spans multiple display lines, balance them naturally "
         "and aim for about <=42 visible characters per line. Never drop names, numbers, facts, negation, or "
-        "speaker ownership merely to meet CPS or line-width targets. Never map source words one by one."
+        "speaker ownership merely to meet CPS or line-width targets. In a sentence split across cues, keep each "
+        "clause's meaning on its own cue ID; never swap whole clause translations between adjacent cue IDs merely "
+        "to obtain a more natural target-language word order. Never map source words one by one."
     )
 
 
