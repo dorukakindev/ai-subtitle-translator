@@ -49,7 +49,7 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "[Chanting of holy verses in praise of Lord Vishnu]",
             "[engine starts]", "[car honks]", "[all laugh]",
             "[indistinct conversation]", "[Eli breathing heavily]",
-            "[inhales, shivers]",
+            "[inhales, shivers]", "[Clearing throat]", "[Devils exclaim]",
         ]
         for sample in samples:
             self.assertTrue(sdh.src_is_sfx_only(sample), msg=sample)

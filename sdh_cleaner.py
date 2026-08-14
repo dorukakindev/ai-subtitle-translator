@@ -247,8 +247,8 @@ _SDH_ACTION_VERBS = {
     "whoops", "roars", "splashing", "calls", "swelling", "plays",
     "turns", "rewinds", "whirs", "strikes", "rattling", "bugles",
     "passing", "howls", "climbs", "spits", "sloshes", "exclaiming",
-    "exclaims", "squeaking", "grinds", "blows", "continue",
-    "laughs", "scoffs", "clears", "sniffles", "sobs", "chiming",
+    "exclaim", "exclaims", "squeaking", "grinds", "blows", "continue",
+    "laughs", "scoffs", "clear", "clearing", "clears", "sniffles", "sobs", "chiming",
     "trilling", "speaking", "speaks", "conversing", "konusur", "konusuyor",
     "kapanir", "kapaniyor",
     "thudding", "clattering", "pattering", "smacking", "sloshing",
@@ -276,7 +276,7 @@ _SDH_SOUND_NOUNS = {
     "crash", "slam", "bang", "boom", "thud", "click", "beep", "buzz",
     "rumble", "scream", "shout", "whisper", "knock", "ring", "grunt",
     "zip", "siren", "sirens", "thud", "feedback", "ringtone", "yelp",
-    "gong", "gongs", "bell", "bells", "blast", "rhythm", "cry",
+    "gong", "gongs", "bell", "bells", "blast", "rhythm", "cry", "throat",
 }
 
 _KNOWN_LANGUAGES = {
