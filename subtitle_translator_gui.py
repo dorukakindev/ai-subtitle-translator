@@ -5385,13 +5385,13 @@ def _chunk_leak_source_text(chunk_src_map: dict, item_id) -> str:
 
 def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[str]:
     owner_stopwords = {
-        "a", "an", "and", "are", "but", "can", "could", "did",
+        "a", "aah", "ahh", "an", "and", "are", "argh", "but", "can", "could", "did",
         "do", "does", "for", "from", "had", "has", "have", "he",
         "hello", "her", "here", "his", "how", "i", "if", "in", "is", "it",
         "its", "my", "no", "ok", "our",
         "not", "now", "oh", "or", "please", "she", "that", "the",
         "their", "then", "there", "they", "this", "to", "was", "we", "were",
-        "what", "when", "where", "who", "why", "will", "would", "yes",
+        "ugh", "what", "when", "where", "who", "why", "will", "would", "yes",
         "you",
     }
     owner_tokens = {}

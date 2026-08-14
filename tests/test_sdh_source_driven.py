@@ -169,6 +169,26 @@ class SdhSourceDrivenTest(unittest.TestCase):
             '"Dışarı çık."',
         )
 
+    def test_numbered_and_multiline_role_labels_are_stripped(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000",
+             "[Kötü Kız Kardeş #1]\nBuradan git!"),
+            ("2", "00:00:02,000 --> 00:00:03,000",
+             "[Şeytan Richard]\nBana bak."),
+            ("3", "00:00:03,000 --> 00:00:04,000",
+             "[McKay]\nBiraz cesaret."),
+        ]
+        src_map = _src(**{
+            "1": "[Evil Sister #1]\nGo away!",
+            "2": "[Devil Richard]\nLook at me.",
+            "3": "[McKay]\nA little courage.",
+        })
+
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+
+        self.assertEqual([text for _idx, _ts, text in result], [
+            "Buradan git!", "Bana bak.", "Biraz cesaret."])
+
     def test_comma_quote_source_label_plain_translation_label_stripped(self):
         blocks = [(
             "1",

@@ -413,9 +413,13 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
     base = re.sub(
         r"\s+(?:on\s+tv|over\s+comm|over\s+pa|on\s+recording)\s*$",
         "", inner, flags=re.IGNORECASE)
-    base = re.sub(r"\s+\d+\s*$", "", base).strip()
+    numbered_speaker = bool(re.search(r"\s+#?\s*\d+\s*$", base))
+    base = re.sub(r"\s+#?\s*\d+\s*$", "", base).strip()
     base_key = _descriptor_key(base)
     if base_key in _SPEAKER_WORDS:
+        return True
+    if (numbered_speaker and 1 <= len(base.split()) <= 5
+            and (base[:1].isupper() or base.isupper())):
         return True
     if (role_suffix and len(base.split()) == 1
             and (base.istitle() or base.isupper())):
@@ -435,7 +439,7 @@ def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
     if len(words) == 1:
         w = words[0]
         if (w.casefold() not in _KNOWN_LANGUAGES
-                and w.isalpha() and (w.isupper() or w.istitle())):
+                and w.isalpha() and (w.isupper() or w[:1].isupper())):
             return True
 
     return False
@@ -916,6 +920,11 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         colon_follows = src_line[end:].lstrip().startswith(":")
         is_descriptor = is_sdh_descriptor(inner)
         is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
+        structural_speaker = (
+            not src_line[:start].strip()
+            and bool(re.match(r"\s*\r?\n", src_line[end:]))
+            and not _is_heading_label(inner)
+        )
         followed_by_dialogue = bool(
             src_line[end:].lstrip()
             and not src_line[end:].lstrip().startswith(("[", "(")))
@@ -924,7 +933,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
             and source_has_descriptor and not is_descriptor
             and not followed_by_dialogue
         )
-        if (is_descriptor or is_speaker) and not ambiguous_mixed_label:
+        if (is_descriptor or is_speaker or structural_speaker) and not ambiguous_mixed_label:
             source_groups.append(raw)
             source_remove_flags.append(True)
         else:
@@ -967,6 +976,9 @@ def _source_has_split_speaker_prefix(src_text: str) -> bool:
     if len(lines) < 2:
         return False
     first = lines[0].strip()
+    bracketed = re.fullmatch(r"[\[(]([^\])\n]{1,40})[\])]", first)
+    if bracketed and not _is_heading_label(bracketed.group(1)):
+        return True
     letters = [ch for ch in first if ch.isalpha()]
     if not letters or len(first) > 40 or not all(ch.isupper() for ch in letters):
         return False
@@ -984,6 +996,9 @@ def _strip_split_speaker_prefix(tr_text: str, src_text: str) -> str:
     if not lines:
         return tr_text
     first = lines[0].strip()
+    bracketed = re.fullmatch(r"[\[(]([^\])\n]{1,40})[\])]", first)
+    if bracketed and not _is_heading_label(bracketed.group(1)):
+        return "\n".join(lines[1:])
     letters = [ch for ch in first if ch.isalpha()]
     if (letters and len(first) <= 40
             and all(ch.isupper() for ch in letters)

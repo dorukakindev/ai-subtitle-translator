@@ -776,6 +776,7 @@ class BuildQualityReportTextTest(unittest.TestCase):
             {"i": "1", "t": "Parmaklarım--parmaklarım. Ah, parmaklarım!"},
             {"i": "2", "t": "Canım, neredeydin? Her yere baktım."},
             {"i": "3", "t": "Ah, evet! Aşığız."},
+            {"i": "7", "t": "Aah! Geri dönün!"},
         ]
         sources = {
             "1": "My--my fingers. Oh, my fingers!",
@@ -783,6 +784,8 @@ class BuildQualityReportTextTest(unittest.TestCase):
             "3": "Oh, yes! We're in love.",
             "4": "Ah.",
             "5": "Her scheme was simple and terrible.",
+            "6": "Aah!",
+            "7": "Argh! Come back!",
         }
 
         self.assertEqual(
