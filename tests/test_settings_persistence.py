@@ -139,6 +139,18 @@ class SettingsPersistenceTest(unittest.TestCase):
         self.assertEqual(gui._normalize_api_base_url("https://api.example.com/v1/"),
                          "https://api.example.com/v1")
 
+    def test_shuai_openai_routes_are_normalized_to_v1_root(self):
+        self.assertEqual(
+            gui._normalize_api_base_url("https://api.shuaiapi.com"),
+            "https://api.shuaiapi.com/v1")
+        self.assertEqual(
+            gui._normalize_api_base_url(
+                "https://cdn.shuaiapi.com/v1/chat/completions"),
+            "https://cdn.shuaiapi.com/v1")
+        self.assertEqual(
+            gui._normalize_api_base_url("https://oai.sb/v1/"),
+            "https://oai.sb/v1")
+
     def test_saved_false_passes_stay_disabled_on_load(self):
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / ".gui_settings.json"

@@ -41,6 +41,19 @@ class RetryAfterParsingTest(unittest.TestCase):
         self.assertEqual(quota["reason"], "kota veya bakiye tükendi")
         self.assertEqual(rate["reason"], "hız veya eşzamanlılık sınırı")
 
+    def test_shuai_structured_429_quota_is_not_retried(self):
+        error = SimpleNamespace(
+            status_code=429,
+            body={"error": {"code": "insufficient_quota"}},
+        )
+
+        self.assertFalse(provider_retry._is_transient_provider_error(error))
+        self.assertEqual(
+            provider_retry._provider_error_context(error)["reason"],
+            "kota veya bakiye tükendi",
+        )
+        self.assertFalse(gui._should_offer_provider_recovery(error))
+
     def test_shuai_chinese_quota_error_is_not_retried_or_mislabeled(self):
         class ApiError(RuntimeError):
             status_code = 403

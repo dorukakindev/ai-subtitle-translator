@@ -270,6 +270,20 @@ def _status_code(exc) -> int | None:
         return int(match.group(1)) if match else None
 
 
+def _provider_error_text(exc) -> str:
+    parts = [str(exc or "")]
+    body = getattr(exc, "body", None)
+    if body:
+        try:
+            parts.append(json.dumps(body, ensure_ascii=False))
+        except TypeError:
+            parts.append(str(body))
+    response_text = getattr(getattr(exc, "response", None), "text", None)
+    if response_text:
+        parts.append(str(response_text))
+    return " ".join(parts).casefold()
+
+
 def _headers(exc):
     for owner in (exc, getattr(exc, "response", None)):
         headers = getattr(owner, "headers", None)
@@ -477,7 +491,7 @@ def _upstream_request_id(value) -> str:
 
 def _provider_error_context(exc) -> dict:
     status = _status_code(exc)
-    text = str(exc or "").casefold()
+    text = _provider_error_text(exc)
     if any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS):
         reason = "kota veya bakiye tükendi"
     elif status == 429 or "rate limit" in text:
@@ -869,7 +883,7 @@ def configure_provider_wait_hooks(cancel_check=None, wait_callback=None):
 
 
 def _is_transient_provider_error(exc) -> bool:
-    text = str(exc or "").lower()
+    text = _provider_error_text(exc)
     status = _status_code(exc)
     temporary_unavailable = "temporarily unavailable" in text
     if (status in {400, 401, 403, 404, 409, 422}

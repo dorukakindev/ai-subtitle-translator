@@ -38,7 +38,7 @@ from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
                                transliteration_guard_rule)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
-from provider_retry import ProviderWaitCancelled
+from provider_retry import ProviderWaitCancelled, _provider_error_text
 import video_subtitles as video_tracks
 
 # Tahmini 1M Token fiyatları (Input/Output $)
@@ -448,6 +448,14 @@ def _normalize_api_base_url(value: str) -> str:
         return ""
     if _api_base_url_has_embedded_secret(url):
         return ""
+    try:
+        parsed = urlparse(url)
+        if (parsed.hostname or "").casefold() in {
+                "api.shuaiapi.com", "oai.sb", "api.oai.sb", "cdn.shuaiapi.com"}:
+            return parsed._replace(
+                path="/v1", params="", query="", fragment="").geturl()
+    except Exception:
+        pass
     return url
 
 
@@ -7220,7 +7228,7 @@ def _should_offer_provider_recovery(exc) -> bool:
 
 
 def _is_permanent_provider_error(exc) -> bool:
-    text = str(exc or "").lower()
+    text = _provider_error_text(exc)
     status = getattr(exc, "status_code", None)
     if status is None:
         status = getattr(getattr(exc, "response", None), "status_code", None)
