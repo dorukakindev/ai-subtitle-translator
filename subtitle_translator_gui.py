@@ -3065,9 +3065,14 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
-    r"^(?:APPLAUSE|SINGING|(?:SHE|HE|THEY|CHOIR|MUSICIANS?)\s+"
-    r"(?:ALL\s+)?(?:SINGS?|CHANTS?|PLAYS?)|BELLS?\s+(?:RINGS?|TOLLS?|CHIMES?)|"
-    r"(?:UP-TEMPO\s+)?MUSIC\s+PLAYS?|HE\s+SINGS?,\s*DRUMBEAT)$",
+    r"^(?:APPLAUSE|SINGING|CHANTING|(?:CHEERFUL\s+)?HYMN\s+MUSIC|"
+    r"(?:SHE|HE|THEY|CHOIR|MUSICIANS?)\s+(?:ALL\s+)?"
+    r"(?:SINGS?|CHANTS?|PLAYS?)(?:\s+(?:A\s+)?HYMN)?|THEY\s+LAUGH|"
+    r"BELLS?\s+(?:RINGS?|TOLLS?|CHIMES?)|(?:UP-TEMPO\s+)?MUSIC\s+PLAYS?|"
+    r"HE\s+SINGS?,\s*DRUMBEAT|WOMEN\s+UL+ULATING|READS\s+IN\s+HEBREW|"
+    r"PROPELLER\s+STUTTERS|ANNOUNCEMENT\s+ON\s+PA\s+SYSTEM|"
+    r"VENDOR\s+CALLING\s+OUT|DEEP,?\s+RESONATING\s+NOTES|"
+    r"SPEAKING\s+GEORGIAN)$",
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
@@ -3234,7 +3239,8 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
             or _delivery_source_is_all_credit(value)
             or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
-            or _DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(value.strip())
+            or _DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(
+                value.strip().strip("[](){} "))
             or _DELIVERY_BARE_SOURCE_SDH_RE.fullmatch(
                 sdh_cleaner._ascii_fold(value).strip())):
         return True

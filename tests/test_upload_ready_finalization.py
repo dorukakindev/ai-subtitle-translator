@@ -742,6 +742,16 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             "[ Speaks native language ]"))
 
+    def test_bare_documentary_sdh_is_expected_delivery_removal(self):
+        for source in (
+                "(WOMeN ULLULATING)", "(ReADS IN HeBReW)",
+                "(PROPELLER STUTTERS)", "(ANNOUNCEMENT ON PA SYSTEM)",
+                "(VENDOR CALLING OUT)", "(DEEP, RESONATING NOTES)",
+                "(SPEAKING GEORGIAN)", "CHEERFUL HYMN MUSIC", "CHANTING",
+                "THEY SING A HYMN", "THEY LAUGH"):
+            with self.subTest(source=source):
+                self.assertTrue(gui._source_cue_is_delivery_removable(source))
+
     def test_foreign_speech_mouthing_and_action_sdh_are_removable(self):
         for source in (
                 "[SPEAKS IN FOREIGN LANGUAGE]",
