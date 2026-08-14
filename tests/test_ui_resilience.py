@@ -73,11 +73,44 @@ class AdvancedSettingsCancelTest(unittest.TestCase):
         })
         self.assertIn("Sınırlı bağlam", detail)
 
+    def test_saved_advanced_settings_are_clamped_to_ui_limits(self):
+        normalized = gui._normalize_advanced_settings({
+            "_chunk_size": 999,
+            "_context_lines": -20,
+            "_lookahead_lines": 500,
+            "_max_workers": -1,
+            "_temperature": 7.5,
+            "_max_retry": 0,
+            "_scene_gap_seconds": 99,
+        })
+        self.assertEqual(normalized, {
+            "_chunk_size": 100,
+            "_context_lines": 1,
+            "_lookahead_lines": 20,
+            "_max_workers": 1,
+            "_temperature": 1.0,
+            "_max_retry": 1,
+            "_scene_gap_seconds": 5.0,
+        })
+
+    def test_invalid_types_fall_back_to_recommended_values(self):
+        normalized = gui._normalize_advanced_settings({
+            "_chunk_size": "500",
+            "_max_workers": True,
+            "_temperature": float("nan"),
+            "_scene_gap_seconds": float("inf"),
+        })
+        self.assertEqual(normalized["_chunk_size"], 25)
+        self.assertEqual(normalized["_max_workers"], 4)
+        self.assertEqual(normalized["_temperature"], 0.2)
+        self.assertEqual(normalized["_scene_gap_seconds"], 3.0)
+
     def test_dialog_keeps_guidance_and_recommended_reset_visible(self):
         src = inspect.getsource(gui.App._show_advanced_settings)
         self.assertIn("Bağlam ve parçalama", src)
         self.assertIn("API ve performans", src)
         self.assertIn("Önerilen ayarlara dön", src)
+        self.assertIn("centered_dialog_geometry", src)
         self.assertIn("_update_summary", src)
         self.assertIn("_reset_recommended", src)
 

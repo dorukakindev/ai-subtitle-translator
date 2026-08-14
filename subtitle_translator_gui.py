@@ -4169,15 +4169,38 @@ ADVANCED_SETTINGS_RECOMMENDED = {
     "_max_retry": 1,
     "_scene_gap_seconds": SCENE_GAP_SEC,
 }
+ADVANCED_SETTINGS_LIMITS = {
+    "_chunk_size": (10, 100, int),
+    "_context_lines": (1, 30, int),
+    "_lookahead_lines": (1, 20, int),
+    "_max_workers": (1, 16, int),
+    "_temperature": (0.0, 1.0, float),
+    "_max_retry": (1, 10, int),
+    "_scene_gap_seconds": (0.5, 5.0, float),
+}
+
+
+def _normalize_advanced_settings(values: dict) -> dict:
+    normalized = {}
+    for name, (minimum, maximum, cast) in ADVANCED_SETTINGS_LIMITS.items():
+        fallback = ADVANCED_SETTINGS_RECOMMENDED[name]
+        raw = values.get(name, fallback)
+        if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+                or not math.isfinite(float(raw))):
+            raw = fallback
+        value = cast(max(minimum, min(maximum, raw)))
+        normalized[name] = round(value, 1) if cast is float else value
+    return normalized
 
 
 def _advanced_settings_summary(values: dict) -> tuple[str, str]:
-    chunk = int(values.get("_chunk_size", CHUNK) or CHUNK)
-    context = int(values.get("_context_lines", CONTEXT_LINES) or CONTEXT_LINES)
-    lookahead = int(values.get("_lookahead_lines", LOOKAHEAD_LINES) or LOOKAHEAD_LINES)
-    workers = int(values.get("_max_workers", 4) or 4)
-    retry = int(values.get("_max_retry", 1) or 1)
-    gap = float(values.get("_scene_gap_seconds", SCENE_GAP_SEC) or SCENE_GAP_SEC)
+    safe = _normalize_advanced_settings(values)
+    chunk = safe["_chunk_size"]
+    context = safe["_context_lines"]
+    lookahead = safe["_lookahead_lines"]
+    workers = safe["_max_workers"]
+    retry = safe["_max_retry"]
+    gap = safe["_scene_gap_seconds"]
     if context >= 25 and lookahead >= 10:
         strength = "Güçlü bağlam"
     elif context >= 15 and lookahead >= 6:
@@ -20873,21 +20896,18 @@ class App(ctk.CTk):
                 self.auto_resume_crash_var.set(bool(d["auto_resume_crash"]))
             if d.get("workflow_profile") in (*WORKFLOW_PROFILES.keys(), "Özel"):
                 self.workflow_profile_var.set(d["workflow_profile"])
-            # Load advanced settings
-            if isinstance(d.get("chunk_size"), int):
-                self._chunk_size = d["chunk_size"]
-            if isinstance(d.get("context_lines"), int):
-                self._context_lines = max(1, d["context_lines"])
-            if isinstance(d.get("lookahead_lines"), int):
-                self._lookahead_lines = max(1, d["lookahead_lines"])
-            if isinstance(d.get("max_workers"), int):
-                self._max_workers = d["max_workers"]
-            if isinstance(d.get("temperature"), (int, float)):
-                self._temperature = float(d["temperature"])
-            if isinstance(d.get("max_retry"), int):
-                self._max_retry = d["max_retry"]
-            if isinstance(d.get("scene_gap_seconds"), (int, float)):
-                self._scene_gap_seconds = float(d["scene_gap_seconds"])
+            advanced = _normalize_advanced_settings({
+                "_chunk_size": d.get("chunk_size", self._chunk_size),
+                "_context_lines": d.get("context_lines", self._context_lines),
+                "_lookahead_lines": d.get("lookahead_lines", self._lookahead_lines),
+                "_max_workers": d.get("max_workers", self._max_workers),
+                "_temperature": d.get("temperature", self._temperature),
+                "_max_retry": d.get("max_retry", self._max_retry),
+                "_scene_gap_seconds": d.get(
+                    "scene_gap_seconds", self._scene_gap_seconds),
+            })
+            for name, value in advanced.items():
+                setattr(self, name, value)
             if isinstance(d.get("window_geometry"), str):
                 self._restored_geometry = d["window_geometry"]
             
@@ -21293,8 +21313,13 @@ class App(ctk.CTk):
             return
         dlg = ctk.CTkToplevel(self)
         dlg.title("Gelişmiş Ayarlar")
-        dlg.geometry("610x760")
         dlg.minsize(540, 640)
+        dlg.transient(self)
+        self.update_idletasks()
+        dlg.geometry(centered_dialog_geometry(
+            self.winfo_rootx(), self.winfo_rooty(),
+            max(self.winfo_width(), 1), max(self.winfo_height(), 1),
+            610, 760))
         dlg.grab_set()
         dlg.lift()
         dlg.focus_force()
@@ -21402,7 +21427,7 @@ class App(ctk.CTk):
                     padx=14, pady=(0, 4))
 
             def on_slider_change(val):
-                val = round(float(val), 1) if is_float else int(val)
+                val = round(float(val), 1) if is_float else int(round(float(val)))
                 setattr(self, var_name, val)
                 val_lbl.configure(text=str(val))
                 _update_summary()
