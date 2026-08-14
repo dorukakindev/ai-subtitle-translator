@@ -435,6 +435,22 @@ class MixedTermDetectionTest(unittest.TestCase):
         })
         self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
 
+    def test_turkish_dotted_i_stopword_is_not_a_princess_rendering(self):
+        blocks = _b(
+            (1, "Prenses geldi."),
+            (2, "Prenses konuştu."),
+            (3, "Prenses ayrıldı."),
+            (4, "İşte geldi."),
+            (5, "İşte konuştu."),
+            (6, "İşte ayrıldı."),
+        )
+        src = _s(**{
+            str(i): f"The Princess appeared in scene {i}."
+            for i in range(1, 7)
+        })
+
+        self.assertEqual(gui.detect_mixed_term_renderings(blocks, src), [])
+
 
 class ScanIntegrationTest(unittest.TestCase):
     def test_scan_reports_mixed_term_warning(self):

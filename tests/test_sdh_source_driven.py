@@ -71,6 +71,12 @@ class SdhSourceDrivenTest(unittest.TestCase):
             with self.subTest(sample=sample):
                 self.assertTrue(sdh.src_is_sfx_only(sample), msg=sample)
 
+    def test_mojibake_music_ornament_does_not_turn_sfx_into_dialogue(self):
+        for sample in ("Âª[playing]", "Aª[violin playing]", "ª[piano playing]"):
+            with self.subTest(sample=sample):
+                self.assertTrue(sdh.src_is_sfx_only(sample))
+        self.assertFalse(sdh.src_is_sfx_only("1ª classe"))
+
     def test_verified_pumpkin_eater_and_russian_sdh_are_source_sfx(self):
         samples = [
             "(SLAMS DRAWER SHUT)", "(PIANO BEING TUNED)",

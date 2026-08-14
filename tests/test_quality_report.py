@@ -771,6 +771,23 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(
             gui._chunk_content_owner_mismatch_ids(items, sources), set())
 
+    def test_delivery_owner_audit_ignores_short_interjections_and_possessives(self):
+        items = [
+            {"i": "1", "t": "Parmaklarım--parmaklarım. Ah, parmaklarım!"},
+            {"i": "2", "t": "Canım, neredeydin? Her yere baktım."},
+            {"i": "3", "t": "Ah, evet! Aşığız."},
+        ]
+        sources = {
+            "1": "My--my fingers. Oh, my fingers!",
+            "2": "Dearest, where have you been? I looked everywhere.",
+            "3": "Oh, yes! We're in love.",
+            "4": "Ah.",
+            "5": "Her scheme was simple and terrible.",
+        }
+
+        self.assertEqual(
+            gui._chunk_content_owner_mismatch_ids(items, sources), set())
+
     def test_delivery_audit_treats_verified_bare_french_sdh_as_expected(self):
         descriptions = [
             "Musique d'intrigue", "Il rit", "Smacks",

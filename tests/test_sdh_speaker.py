@@ -13,6 +13,14 @@ class TestSdhSpeaker(unittest.TestCase):
         self.assertEqual(strip_sdh_line("[MUSIC]"), "")
         self.assertEqual(strip_sdh_line("<i>Hello</i>", strip_format_tags=False), "<i>Hello</i>")
 
+    def test_storyteller_role_labels_and_mojibake_music_ornaments_are_cleaned(self):
+        self.assertEqual(strip_sdh_line("[cook]\nGo on, get out!"),
+                         "Go on, get out!")
+        self.assertEqual(strip_sdh_line("[Storyteller] Once upon a time."),
+                         "Once upon a time.")
+        self.assertEqual(strip_sdh_line("Âª[violin playing]"), "")
+        self.assertEqual(strip_sdh_line("1ª classe"), "1ª classe")
+
     def test_casing_variations_cleaned(self):
         self.assertEqual(strip_sdh_line("[glass breaking] John wakes up."), "John wakes up.")
         self.assertEqual(strip_sdh_line("[Glass breaking] John wakes up."), "John wakes up.")

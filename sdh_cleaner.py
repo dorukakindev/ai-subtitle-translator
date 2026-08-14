@@ -121,8 +121,8 @@ _SPEAKER_WORDS = {
     "adam", "kadin", "erkek", "cocuk", "anlatici", "sunucu", "konusmaci",
     "ses", "dis ses", "roportajci", "muhabir", "kalabalik",
     "doctor", "nurse", "officer", "teacher", "judge",
-    "king", "queen", "soldier", "captain", "priest",
-    "baby", "patient",
+    "king", "queen", "prince", "princess", "soldier", "captain", "priest",
+    "cook", "minister", "storyteller", "maid", "servant", "baby", "patient",
 }
 
 _TR_ASCII_MAP = str.maketrans({
@@ -396,6 +396,10 @@ def _strip_standalone_music_notes(line: str) -> str:
     return value
 
 
+def _strip_mojibake_music_ornament(text: str) -> str:
+    return re.sub(r"^\s*(?:Âª|Aª|ª)\s*(?=[\[(])", "", str(text or ""))
+
+
 def _is_speaker_name(inner: str, colon_follows: bool = False) -> bool:
     if not inner:
         return False
@@ -461,7 +465,7 @@ def _strip_speaker_prefix(line: str) -> str:
 
 
 def strip_sdh_line(line: str, strip_format_tags: bool = True) -> str:
-    line = str(line or "")
+    line = _strip_mojibake_music_ornament(line)
     line = CHEVRON_SPEAKER_RE.sub("", line)
     line = _strip_speaker_prefix(line)
     if strip_format_tags:
@@ -773,7 +777,8 @@ def _src_is_bare_sdh_line(src_text: str) -> bool:
 def src_is_sfx_only(src_text: str) -> bool:
     """Kaynak cue'su tamamen parantez/köşeli parantez/nota mı (gerçek diyalog
     kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
-    text = re.sub(r'\{\\[^}]*\}', '', str(src_text or ''))
+    text = _strip_mojibake_music_ornament(
+        re.sub(r'\{\\[^}]*\}', '', str(src_text or '')))
     text = _VTT_VOICE_TAG_RE.sub('', text)
     text = CHEVRON_SPEAKER_RE.sub("", text).strip()
     text = re.sub(r"(?m)^\s*[-–—]\s*(?=[\[(])", "", text)

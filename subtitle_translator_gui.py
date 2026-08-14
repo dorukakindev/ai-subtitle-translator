@@ -5387,9 +5387,10 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
     owner_stopwords = {
         "a", "an", "and", "are", "but", "can", "could", "did",
         "do", "does", "for", "from", "had", "has", "have", "he",
-        "hello", "here", "how", "i", "if", "in", "is", "it", "no", "ok",
+        "hello", "her", "here", "his", "how", "i", "if", "in", "is", "it",
+        "its", "my", "no", "ok", "our",
         "not", "now", "oh", "or", "please", "she", "that", "the",
-        "then", "there", "they", "this", "to", "was", "we", "were",
+        "their", "then", "there", "they", "this", "to", "was", "we", "were",
         "what", "when", "where", "who", "why", "will", "would", "yes",
         "you",
     }
@@ -5403,7 +5404,9 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         tokens = {
             token for token in tokens
             if token and (token[0].isdigit()
-                          or token.casefold() not in owner_stopwords)
+                          or (len(re.sub(r"[^\w]+", "", token,
+                                         flags=re.UNICODE)) >= 3
+                              and token.casefold() not in owner_stopwords))
         }
         owner_tokens[str(idx)] = tokens
         for token in tokens:
@@ -8109,13 +8112,19 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
     ordered_ids = sorted(seq.keys(), key=lambda i: int(i) if i.isdigit() else 0)
     pos_of = {i: p for p, i in enumerate(ordered_ids)}
 
+    def _stop_key(value: str) -> str:
+        folded = unicodedata.normalize("NFKD", str(value or "").casefold())
+        return "".join(
+            ch for ch in folded if not unicodedata.combining(ch)).replace("ı", "i")
+
+    stop_keys = {_stop_key(item) for item in (
+        ht._CONTENT_DRIFT_STOPS | _MIXED_TERM_EXTRA_STOPS)}
+
     def _is_stop(w: str) -> bool:
-        wl = w.lower()
-        stops = ht._CONTENT_DRIFT_STOPS | _MIXED_TERM_EXTRA_STOPS
-        if wl in stops:
+        if _stop_key(w) in stop_keys:
             return True
         if w.startswith("I") and len(w) > 1:
-            return ("l" + w[1:].lower()) in stops
+            return _stop_key("l" + w[1:]) in stop_keys
         return False
 
     def _line_is_all_caps(text: str) -> bool:
