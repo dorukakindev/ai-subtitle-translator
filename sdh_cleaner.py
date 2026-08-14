@@ -223,6 +223,7 @@ def _ascii_fold(value: str) -> str:
 
 def _descriptor_key(value: str) -> str:
     value = _ascii_fold(value)
+    value = re.sub(r"(?<!\w)0wn(?!\w)", "own", value)
     value = MUSIC_NOTE_RE.sub(" ", value)
     value = re.sub(r"[\[\](){}]+", " ", value)
     value = re.sub(r"[_\-–—:;,.!?]+", " ", value)
@@ -263,6 +264,7 @@ _SDH_ACTION_VERBS = {
     "yelps", "yelping", "orgasms", "orgasming", "bursts", "dialling",
     "dialing", "kissing", "chokes", "choking", "sniffs", "sniffing",
     "wails", "wailing", "yawns", "yawning", "whirrs", "bleeping",
+    "play", "tolling", "beating", "jingle", "blasts",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -274,7 +276,7 @@ _SDH_SOUND_NOUNS = {
     "crash", "slam", "bang", "boom", "thud", "click", "beep", "buzz",
     "rumble", "scream", "shout", "whisper", "knock", "ring", "grunt",
     "zip", "siren", "sirens", "thud", "feedback", "ringtone", "yelp",
-    "gong", "gongs", "bell", "bells",
+    "gong", "gongs", "bell", "bells", "blast", "rhythm", "cry",
 }
 
 _KNOWN_LANGUAGES = {
@@ -284,6 +286,7 @@ _KNOWN_LANGUAGES = {
     "tagalog", "swahili", "persian", "danish", "norwegian", "finnish", "czech",
     "hungarian", "romanian", "ukrainian", "cantonese", "mandarin",
     "urdu", "punjabi", "bengali", "tamil", "telugu", "foreign",
+    "welsh", "gaelic",
 }
 
 
@@ -323,8 +326,12 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     # Language descriptor check: [speaking French], [speaks Latin], [in Spanish]
     if len(words) >= 2 and words[0] in ("speaking", "speaks", "in") and words[1] in _KNOWN_LANGUAGES:
         return True
-    if ("in" in words and words[-1] in _KNOWN_LANGUAGES
+    if (words[-1] in _KNOWN_LANGUAGES
             and any(word in _SDH_ACTION_VERBS for word in words)):
+        return True
+    if (len(words) >= 3 and words[-2:] == ["own", "language"]
+            and any(word in {"speaking", "speaks", "conversing"}
+                    for word in words[:-2])):
         return True
 
     words_no_digits = [w for w in words if not w.isdigit()]

@@ -386,6 +386,29 @@ class AutomaticRetryTest(unittest.TestCase):
             self.assertEqual(stub._selected_files, [])
             self.assertEqual(scheduled, [])
 
+    def test_review_phase_is_terminal_even_if_ui_recorded_error_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "review.srt"
+            source.write_text("x", encoding="utf-8")
+            scheduled = []
+            stub = SimpleNamespace(
+                _active_snapshot={"auto_retry_files": True},
+                _auto_retry_attempts={}, _selected_files=[],
+                _log=lambda *args: None,
+                after=lambda *args: scheduled.append(args),
+            )
+            record = {
+                "run_id": "review-run", "status": "başarısız",
+                "settings": {"auto_retry_files": True, "mode": "sync"},
+                "files": {str(source): {
+                    "status": "error", "phase": "İnceleme gerekli"}},
+            }
+
+            self.assertFalse(
+                gui.App._schedule_failed_file_retry(stub, record))
+            self.assertEqual(stub._selected_files, [])
+            self.assertEqual(scheduled, [])
+
     def test_only_failed_files_are_queued_for_retry(self):
         with tempfile.TemporaryDirectory() as tmp:
             failed = Path(tmp) / "failed.srt"

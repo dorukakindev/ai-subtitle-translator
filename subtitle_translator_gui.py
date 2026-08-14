@@ -5387,7 +5387,7 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
     owner_stopwords = {
         "a", "an", "and", "are", "but", "can", "could", "did",
         "do", "does", "for", "from", "had", "has", "have", "he",
-        "hello", "here", "how", "i", "if", "in", "is", "it", "no",
+        "hello", "here", "how", "i", "if", "in", "is", "it", "no", "ok",
         "not", "now", "oh", "or", "please", "she", "that", "the",
         "then", "there", "they", "this", "to", "was", "we", "were",
         "what", "when", "where", "who", "why", "will", "would", "yes",
@@ -5399,9 +5399,11 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         tokens = set(re.findall(
             r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
             str(source_text or "")))
+        tokens = {token.rstrip(".'’-") for token in tokens}
         tokens = {
             token for token in tokens
-            if token[0].isdigit() or token.casefold() not in owner_stopwords
+            if token and (token[0].isdigit()
+                          or token.casefold() not in owner_stopwords)
         }
         owner_tokens[str(idx)] = tokens
         for token in tokens:
@@ -6930,6 +6932,17 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             f"Subtitle Sample:\n{sample[:2400]}..."
         )
 
+    if best_detail:
+        result = best_detail["category"]
+        if log_fn:
+            confidence = best_detail.get("confidence")
+            suffix = f" (güven %{confidence * 100:.0f})" if confidence is not None else ""
+            log_fn(
+                f"İçerik Türü Analizi: ikinci değerlendirme sonuç vermedi; "
+                f"ilk eşleşme '{result}' kullanılacak{suffix}.",
+                "warn",
+            )
+        return best_detail if return_details else result
     if log_fn:
         log_fn("İçerik türü otomatik tespit edilemedi — Otomatik kullanılacak", "warn")
     fallback = {"category": "Otomatik", "confidence": None}
@@ -9093,17 +9106,6 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 ratio_issues.append((str(idx), round(ratio, 2)))
                 warnings += 1
 
-    if best_detail:
-        result = best_detail["category"]
-        if log_fn:
-            confidence = best_detail.get("confidence")
-            suffix = f" (güven %{confidence * 100:.0f})" if confidence is not None else ""
-            log_fn(
-                f"İçerik Türü Analizi: ikinci değerlendirme sonuç vermedi; "
-                f"ilk eşleşme '{result}' kullanılacak{suffix}.",
-                "warn",
-            )
-        return best_detail if return_details else result
     if log_fn:
         fname = Path(fp).name
         if untranslated:
@@ -9550,10 +9552,11 @@ def _file_recovery_is_retryable(state: dict) -> bool:
     state = state or {}
     if state.get("status") in {"done", "skip", "review"}:
         return False
-    phase = str(state.get("phase") or "").casefold()
-    return not any(marker in phase for marker in (
+    phase = sdh_cleaner._ascii_fold(str(state.get("phase") or ""))
+    return not any(sdh_cleaner._ascii_fold(marker) in phase for marker in (
         "kaynak değişti", "hedef değişti", "çıktı değişti",
         "geçerli altyazı bloğu yok", "sıradan kaldırıldı",
+        "inceleme gerekli",
     ))
 
 

@@ -707,6 +707,70 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
 
+    def test_delivery_audit_treats_ocr_and_documentary_sdh_as_expected(self):
+        descriptions = [
+            "(pIpeS AND DRUMS pLAY)",
+            "(SINGING, BeLL TOLLING)",
+            "(SPEAKS 0WN LANGUAGE)",
+            "(HUGE BLAST)",
+            "(DRUM BEATING QUICK RHYTHM)",
+            "(HARNESS BELLS JINGLE)",
+            "(MEN CONVERSING IN OWN LANGUAGE)",
+            "(PLAINTIVE CRY)",
+            "(DR ADRIMI-SISMANI SPEAKING GREEK)",
+            "(FOGHORN BLASTS)",
+            "(SPEAKS WELSH)",
+            "(SPEAKS GAELIC)",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.srt"
+            output = Path(td) / "output.srt"
+            source.write_text("\n\n".join(
+                f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},500\n{text}"
+                for i, text in enumerate(descriptions, 1)
+            ) + "\n\n13\n00:00:13,000 --> 00:00:13,500\nHello\n",
+                encoding="utf-8")
+            output.write_text(
+                "13\n00:00:13,000 --> 00:00:13,500\nMerhaba\n",
+                encoding="utf-8")
+
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), target_language="English",
+                source_language="English")
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], [
+            str(i) for i in range(1, 13)])
+
+    def test_delivery_owner_audit_ignores_sentence_final_name_punctuation(self):
+        items = [
+            {"i": "1", "t": "Burası Yeha'nın kutsal tepesidir."},
+            {"i": "2", "t": "Yeha başka bir yerde yeniden anılıyor."},
+        ]
+        sources = {
+            "1": "This is the sacred hill of Yeha.",
+            "2": "So was Yeha built by an Arabian empire?",
+        }
+
+        self.assertEqual(
+            gui._chunk_content_owner_mismatch_ids(items, sources), set())
+
+    def test_delivery_owner_audit_ignores_quote_and_stopword_punctuation(self):
+        items = [
+            {"i": "1", "t": "Yunancada petaxa, atmak demek."},
+            {"i": "2", "t": "Argonotlar Amazonların yanından geçer ve ok atan kuşları savuşturur."},
+            {"i": "3", "t": "Tamam."},
+        ]
+        sources = {
+            "1": "''Petaxa'' is to throw in Greek.",
+            "2": "The Argonauts pass Amazons.",
+            "3": "OK.",
+        }
+
+        self.assertEqual(
+            gui._chunk_content_owner_mismatch_ids(items, sources), set())
+
     def test_delivery_audit_treats_verified_bare_french_sdh_as_expected(self):
         descriptions = [
             "Musique d'intrigue", "Il rit", "Smacks",
