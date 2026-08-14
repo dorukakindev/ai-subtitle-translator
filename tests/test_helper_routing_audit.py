@@ -14,6 +14,49 @@ import subtitle_translator_gui as gui
 
 class HelperRoutingAuditTests(unittest.TestCase):
 
+    def test_openai_helper_normalizes_documented_shuai_root(self):
+        config = helper_models.HelperModelConfig(
+            label="Özel (Custom)", provider="openai",
+            model="gpt-5.4", base_url="https://api.shuaiapi.com")
+        stub = SimpleNamespace(
+            _active_snapshot=None,
+            _helper_model_config=lambda _role: config,
+        )
+
+        self.assertEqual(
+            gui.App._helper_api_base_url(stub, "critic"),
+            "https://api.shuaiapi.com/v1",
+        )
+
+    def test_openai_helper_strips_full_shuai_chat_endpoint(self):
+        config = helper_models.HelperModelConfig(
+            label="Özel (Custom)", provider="openai",
+            model="gpt-5.4", base_url=(
+                "https://cdn.shuaiapi.com/v1/chat/completions"))
+        stub = SimpleNamespace(
+            _active_snapshot=None,
+            _helper_model_config=lambda _role: config,
+        )
+
+        self.assertEqual(
+            gui.App._helper_api_base_url(stub, "analysis"),
+            "https://cdn.shuaiapi.com/v1",
+        )
+
+    def test_anthropic_helper_route_remains_messages_endpoint(self):
+        config = helper_models.HelperModelConfig(
+            label="Özel (Custom)", provider="anthropic",
+            model="claude-sonnet", base_url="https://example.test/v1")
+        stub = SimpleNamespace(
+            _active_snapshot=None,
+            _helper_model_config=lambda _role: config,
+        )
+
+        self.assertEqual(
+            gui.App._helper_api_base_url(stub, "critic"),
+            "https://example.test/v1/messages",
+        )
+
     def test_claim1_polish_pass_in_sync_hybrid_uses_polish_key(self):
         """Claim 1: Verify Polish Pass in _write_results and _run_sync_hybrid resolves 'polish' key, not 'analysis'."""
         import inspect

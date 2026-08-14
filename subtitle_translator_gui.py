@@ -20224,9 +20224,12 @@ class App(ctk.CTk):
         cfg = self._helper_model_config(role)
         url = cfg.base_url
         if url:
-            url = url.rstrip("/")
-            if cfg.provider == "anthropic" and not url.lower().endswith("/messages"):
-                url += "/messages"
+            if cfg.provider == "anthropic":
+                url = url.rstrip("/")
+                if not url.lower().endswith("/messages"):
+                    url += "/messages"
+            else:
+                url = _normalize_api_base_url(url)
         return url
 
     def _helper_api_model(self, role: str):
