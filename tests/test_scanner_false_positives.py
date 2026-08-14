@@ -146,6 +146,34 @@ class ScannerFalsePositiveTest(unittest.TestCase):
         ]
         self.assertEqual(_scan(src, blk), 0)
 
+    def test_tag_wrapped_music_interjection_is_not_untranslated(self):
+        source = (
+            "248\n00:10:00,000 --> 00:10:02,000\n"
+            "<i>♪ Hey, hey ♪</i>\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "source.srt"
+            path.write_text(source, encoding="utf-8")
+            warnings = gui.scan_translation_quality(
+                str(path),
+                [("248", "00:10:00,000 --> 00:10:02,000", "♪ Hey, hey ♪")],
+                src_clean_map={"248": "♪ Hey, hey ♪"},
+                source_language="English",
+            )
+        self.assertEqual(warnings, 0)
+
+    def test_short_tag_question_translation_is_not_length_outlier(self):
+        src = {
+            "476": "do you think a working girl is just sitting around",
+            "477": "waiting at your disposal, huh?",
+        }
+        blk = [
+            ("476", "00:20:00,000 --> 00:20:03,000",
+             "Bir hayat kadınının emrinde öylece oturup beklediğini mi sanıyorsun,"),
+            ("477", "00:20:03,000 --> 00:20:04,000", "ha?"),
+        ]
+        self.assertEqual(_scan(src, blk), 0)
+
     def test_isolated_truncation_remains_length_outlier(self):
         src = {"1": "This complete sentence contains important information."}
         blk = [("1", "00:00:01,000 --> 00:00:03,000", "Bu")]

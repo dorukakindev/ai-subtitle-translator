@@ -8798,8 +8798,11 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     if source_rows:
         mapped = _delivery_source_map(blocks, source_rows)
         aligned_orig = {
-            str(idx): str(
-                mapped.get(str(idx), orig_by_timestamp.get(str(ts), "")) or "")
+            str(idx): re.sub(
+                r'</?[a-zA-Z][^>]*>', '',
+                str(mapped.get(
+                    str(idx), orig_by_timestamp.get(str(ts), "")) or "")
+            ).strip()
             for idx, ts, _text in blocks
         }
 
@@ -8876,6 +8879,24 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 return True
         return False
 
+    def _ratio_is_short_tag_translation(src_text: str, tr_text: str) -> bool:
+        src_norm = re.sub(r"[^a-z\s?'’-]", " ", str(src_text or "").lower())
+        src_norm = re.sub(r"\s+", " ", src_norm).strip()
+        tr_norm = re.sub(r"[^a-zçğıöşü\s]", " ", str(tr_text or "").lower())
+        tr_norm = re.sub(r"\s+", " ", tr_norm).strip()
+        source_tags = (
+            "huh", "right", "okay", "ok", "you know", "understand",
+        )
+        target_tags = {
+            "ha", "değil mi", "tamam mı", "anladın mı", "duydun mu",
+            "biliyor musun",
+        }
+        return (
+            any(re.search(rf"(?:^|\s){re.escape(tag)}\s*\?$", src_norm)
+                for tag in source_tags)
+            and tr_norm in target_tags
+        )
+
     for pos, (idx, ts, tr_text) in enumerate(blocks):
         if tr_text == "[HATA]":
             continue
@@ -8895,7 +8916,8 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         if tr_text and len(src_text) > 4:  # skip trivially short
             ratio = len(tr_text) / len(src_text)
             if ((ratio < 0.12 or ratio > 5.0)
-                    and not _ratio_is_neighbor_redistribution(pos, ratio)):
+                    and not _ratio_is_neighbor_redistribution(pos, ratio)
+                    and not _ratio_is_short_tag_translation(src_text, tr_text)):
                 ratio_issues.append((str(idx), round(ratio, 2)))
                 warnings += 1
 
