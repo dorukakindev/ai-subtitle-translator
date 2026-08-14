@@ -56,6 +56,31 @@ class AdvancedSettingsCancelTest(unittest.TestCase):
         self.assertIn("command=_cancel", src)
         self.assertIn("command=_save", src)
 
+    def test_recommended_settings_explain_context_budget(self):
+        headline, detail = gui._advanced_settings_summary(
+            gui.ADVANCED_SETTINGS_RECOMMENDED)
+        self.assertIn("25 cue / istek", headline)
+        self.assertIn("30 önceki + 15 sonraki", headline)
+        self.assertIn("4 paralel işçi", headline)
+        self.assertIn("Güçlü bağlam", detail)
+        self.assertIn("3.0 sn sahne eşiği", detail)
+        self.assertIn("1 hedefli yanıt denemesi", detail)
+
+    def test_summary_marks_small_context_as_limited(self):
+        _, detail = gui._advanced_settings_summary({
+            "_context_lines": 10,
+            "_lookahead_lines": 5,
+        })
+        self.assertIn("Sınırlı bağlam", detail)
+
+    def test_dialog_keeps_guidance_and_recommended_reset_visible(self):
+        src = inspect.getsource(gui.App._show_advanced_settings)
+        self.assertIn("Bağlam ve parçalama", src)
+        self.assertIn("API ve performans", src)
+        self.assertIn("Önerilen ayarlara dön", src)
+        self.assertIn("_update_summary", src)
+        self.assertIn("_reset_recommended", src)
+
 
 class EstimateFailureTest(unittest.TestCase):
     def test_estimate_exception_replaces_calculating_message(self):

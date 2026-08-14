@@ -4160,6 +4160,37 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
     )
 
 SCENE_GAP_SEC    = 3.0   # seconds; larger gap = new scene → reset rolling context
+ADVANCED_SETTINGS_RECOMMENDED = {
+    "_chunk_size": CHUNK,
+    "_context_lines": CONTEXT_LINES,
+    "_lookahead_lines": LOOKAHEAD_LINES,
+    "_max_workers": 4,
+    "_temperature": 0.2,
+    "_max_retry": 1,
+    "_scene_gap_seconds": SCENE_GAP_SEC,
+}
+
+
+def _advanced_settings_summary(values: dict) -> tuple[str, str]:
+    chunk = int(values.get("_chunk_size", CHUNK) or CHUNK)
+    context = int(values.get("_context_lines", CONTEXT_LINES) or CONTEXT_LINES)
+    lookahead = int(values.get("_lookahead_lines", LOOKAHEAD_LINES) or LOOKAHEAD_LINES)
+    workers = int(values.get("_max_workers", 4) or 4)
+    retry = int(values.get("_max_retry", 1) or 1)
+    gap = float(values.get("_scene_gap_seconds", SCENE_GAP_SEC) or SCENE_GAP_SEC)
+    if context >= 25 and lookahead >= 10:
+        strength = "Güçlü bağlam"
+    elif context >= 15 and lookahead >= 6:
+        strength = "Dengeli bağlam"
+    else:
+        strength = "Sınırlı bağlam"
+    headline = (
+        f"{chunk} cue / istek  ·  {context} önceki + {lookahead} sonraki  ·  "
+        f"{workers} paralel işçi")
+    detail = (
+        f"{strength}  ·  {gap:.1f} sn sahne eşiği  ·  "
+        f"{retry} hedefli yanıt denemesi")
+    return headline, detail
 # Bir "çok satırlı cümle" fragman grubu en fazla bu kadar cue sürebilir. Daha uzun
 # kapanmayan bir dizi gerçek bir cümle değildir → dosyada noktalama yok demektir
 # (ör. otomatik üretilmiş altyazı). O durumda frag mantığı güvenilmez; grubu bağımsız
@@ -21256,13 +21287,14 @@ class App(ctk.CTk):
 
     # ── Advanced Settings Dialog ──────────────────────────────────────────────
     def _show_advanced_settings(self):
-        """Display advanced settings dialog with 7 sliders."""
+        """Display advanced settings with plain-language guidance."""
         if getattr(self, "_is_running", False):
             self._log("Çeviri sırasında gelişmiş ayarlar değiştirilemez.", "warn")
             return
         dlg = ctk.CTkToplevel(self)
         dlg.title("Gelişmiş Ayarlar")
-        dlg.geometry("500x600")
+        dlg.geometry("610x760")
+        dlg.minsize(540, 640)
         dlg.grab_set()
         dlg.lift()
         dlg.focus_force()
@@ -21283,86 +21315,167 @@ class App(ctk.CTk):
             dlg.destroy()
 
         dlg.grid_columnconfigure(0, weight=1)
-        r = 0
+        dlg.grid_rowconfigure(2, weight=1)
 
-        # Header
-        hdr = ctk.CTkFrame(dlg, fg_color=ACCENT, corner_radius=10, height=50)
-        hdr.grid(row=r, column=0, sticky="ew", padx=12, pady=(12,12))
-        hdr.grid_propagate(False)
-        r += 1
-        ctk.CTkLabel(hdr, text="⚙️ Gelişmiş Ayarlar",
-                     font=ctk.CTkFont("Segoe UI", 14, "bold"),
-                     text_color="white").pack(pady=12)
+        hdr = ctk.CTkFrame(
+            dlg, fg_color=PANEL, corner_radius=14,
+            border_width=1, border_color=BORDER)
+        hdr.grid(row=0, column=0, sticky="ew", padx=18, pady=(18, 10))
+        hdr.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            hdr, text="ÇEVİRİ MOTORU", text_color=ACCENT,
+            font=ctk.CTkFont("Consolas", 10, "bold")).grid(
+                row=0, column=0, sticky="w", padx=18, pady=(15, 2))
+        ctk.CTkLabel(
+            hdr, text="Gelişmiş ayarlar", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 20, "bold")).grid(
+                row=1, column=0, sticky="w", padx=18)
+        ctk.CTkLabel(
+            hdr,
+            text="Bağlam genişliğini, istek boyutunu ve hata toleransını ince ayarla.",
+            text_color=FG2, anchor="w", justify="left",
+            font=ctk.CTkFont("Segoe UI", 11)).grid(
+                row=2, column=0, sticky="ew", padx=18, pady=(4, 15))
 
-        # Scrollable frame for sliders
+        summary = ctk.CTkFrame(
+            dlg, fg_color=ACCENT_SOFT, corner_radius=12,
+            border_width=1, border_color=ACCENT)
+        summary.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
+        summary.grid_columnconfigure(0, weight=1)
+        summary_title = ctk.CTkLabel(
+            summary, text="", text_color=FG, anchor="w",
+            font=ctk.CTkFont("Segoe UI", 12, "bold"))
+        summary_title.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 2))
+        summary_detail = ctk.CTkLabel(
+            summary, text="", text_color=INFO_BLUE, anchor="w",
+            font=ctk.CTkFont("Segoe UI", 10))
+        summary_detail.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
+
         scroll = ctk.CTkScrollableFrame(dlg, fg_color="transparent",
                                         scrollbar_button_color=BORDER,
                                         scrollbar_button_hover_color=ACCENT)
-        scroll.grid(row=r, column=0, sticky="nsew", padx=12, pady=(0,12))
-        r += 1
+        scroll.grid(row=2, column=0, sticky="nsew", padx=18, pady=(0, 10))
         scroll.grid_columnconfigure(0, weight=1)
-        dlg.grid_rowconfigure(r-1, weight=1)
 
-        def create_slider(label, var_name, min_val, max_val, current_val, step=1, is_float=False):
-            """Create a labeled slider with value display."""
-            fr = ctk.CTkFrame(scroll, fg_color="transparent")
-            fr.pack(fill="x", padx=4, pady=(8,2))
+        slider_widgets = {}
+
+        def _current_values():
+            return {name: getattr(self, name) for name in _adv_attrs}
+
+        def _update_summary():
+            headline, detail = _advanced_settings_summary(_current_values())
+            summary_title.configure(text=headline)
+            summary_detail.configure(text=detail)
+
+        def section(title, description):
+            ctk.CTkLabel(
+                scroll, text=title.upper(), text_color=ACCENT, anchor="w",
+                font=ctk.CTkFont("Consolas", 10, "bold")).pack(
+                    fill="x", padx=2, pady=(12, 2))
+            ctk.CTkLabel(
+                scroll, text=description, text_color=FG2, anchor="w",
+                justify="left", wraplength=510,
+                font=ctk.CTkFont("Segoe UI", 10)).pack(
+                    fill="x", padx=2, pady=(0, 5))
+
+        def create_slider(label, description, var_name, min_val, max_val,
+                          current_val, step=1, is_float=False):
+            fr = ctk.CTkFrame(
+                scroll, fg_color=CARD, corner_radius=10,
+                border_width=1, border_color=BORDER_SOFT)
+            fr.pack(fill="x", padx=2, pady=4)
             fr.grid_columnconfigure(0, weight=1)
 
-            lbl_fr = ctk.CTkFrame(fr, fg_color="transparent")
-            lbl_fr.grid(row=0, column=0, sticky="ew")
-            lbl_fr.grid_columnconfigure(0, weight=1)
-            ctk.CTkLabel(lbl_fr, text=label,
-                         font=ctk.CTkFont("Segoe UI", 12),
-                         text_color=FG).pack(side="left")
-
-            val_lbl = ctk.CTkLabel(lbl_fr, text=str(current_val),
-                                   font=ctk.CTkFont("Segoe UI", 11),
-                                   text_color=ACCENT, width=50)
-            val_lbl.pack(side="right")
+            ctk.CTkLabel(
+                fr, text=label, text_color=FG, anchor="w",
+                font=ctk.CTkFont("Segoe UI", 12, "bold")).grid(
+                    row=0, column=0, sticky="w", padx=14, pady=(11, 1))
+            val_lbl = ctk.CTkLabel(
+                fr, text=str(current_val), text_color=ACCENT,
+                fg_color=ACCENT_SOFT, corner_radius=8, width=58, height=25,
+                font=ctk.CTkFont("Consolas", 11, "bold"))
+            val_lbl.grid(row=0, column=1, sticky="e", padx=14, pady=(9, 1))
+            ctk.CTkLabel(
+                fr, text=description, text_color=FG2, anchor="w",
+                justify="left", font=ctk.CTkFont("Segoe UI", 9)).grid(
+                    row=1, column=0, columnspan=2, sticky="ew",
+                    padx=14, pady=(0, 4))
 
             def on_slider_change(val):
-                if is_float:
-                    val = float(val)
-                else:
-                    val = int(val)
+                val = round(float(val), 1) if is_float else int(val)
                 setattr(self, var_name, val)
                 val_lbl.configure(text=str(val))
+                _update_summary()
 
             slider = ctk.CTkSlider(fr, from_=min_val, to=max_val,
                                    number_of_steps=int((max_val - min_val) / step),
                                    command=on_slider_change,
                                    fg_color=BORDER, progress_color=ACCENT)
             slider.set(current_val)
-            slider.grid(row=1, column=0, sticky="ew", pady=(2,6))
+            slider.grid(row=2, column=0, columnspan=2, sticky="ew",
+                        padx=14, pady=(3, 12))
+            slider_widgets[var_name] = (slider, val_lbl, is_float)
 
-        # Add sliders
-        create_slider("CHUNK_SIZE (satır/batch)", "_chunk_size", 10, 100, self._chunk_size, 5)
-        create_slider("CONTEXT_LINES (önceki)", "_context_lines", 1, 30, self._context_lines, 1)
-        create_slider("LOOKAHEAD_LINES (sonraki)", "_lookahead_lines", 1, 20, self._lookahead_lines, 1)
-        create_slider("Max Workers (thread)", "_max_workers", 1, 16, self._max_workers, 1)
-        create_slider("Temperature (yaratıcılık, gpt-5.x/o-serisi modellerde etkisiz)",
-                      "_temperature", 0.0, 1.0, self._temperature, 0.1, True)
-        create_slider("Max Retry (yeniden deneme)", "_max_retry", 1, 10, self._max_retry, 1)
-        create_slider("Scene Gap (saniye)", "_scene_gap_seconds", 0.5, 5.0, self._scene_gap_seconds, 0.5, True)
+        section(
+            "Bağlam ve parçalama",
+            "Cümle devamlarının ve sahne geçişlerinin modele nasıl sunulacağını belirler.")
+        create_slider(
+            "Chunk boyutu", "Bir API isteğinde çevrilen cue sayısı.",
+            "_chunk_size", 10, 100, self._chunk_size, 5)
+        create_slider(
+            "Önceki bağlam", "Modelin geriye dönüp okuyacağı kaynak cue sayısı.",
+            "_context_lines", 1, 30, self._context_lines)
+        create_slider(
+            "Sonraki bağlam", "Cümle devamları için ileri okuma cue sayısı.",
+            "_lookahead_lines", 1, 20, self._lookahead_lines)
+        create_slider(
+            "Sahne ayrımı", "Bu süreden uzun boşluk yeni sahne kabul edilir.",
+            "_scene_gap_seconds", 0.5, 5.0, self._scene_gap_seconds, 0.5, True)
 
-        # Buttons
+        section(
+            "API ve performans",
+            "Sağlayıcı yükünü ve başarısız yanıt karşısındaki yerel davranışı belirler.")
+        create_slider(
+            "Paralel işçi", "Aynı anda çalışan istek sayısı; sağlayıcı limitini etkiler.",
+            "_max_workers", 1, 16, self._max_workers)
+        create_slider(
+            "Sıcaklık", "GPT-5.x ve o-serisi modellerde sağlayıcı tarafından yok sayılır.",
+            "_temperature", 0.0, 1.0, self._temperature, 0.1, True)
+        create_slider(
+            "Hedefli yanıt denemesi", "Bozuk veya eksik model yanıtı için yerel deneme sayısı.",
+            "_max_retry", 1, 10, self._max_retry)
+
+        def _reset_recommended():
+            for name, value in ADVANCED_SETTINGS_RECOMMENDED.items():
+                setattr(self, name, value)
+                slider, value_label, is_float = slider_widgets[name]
+                slider.set(value)
+                shown = round(float(value), 1) if is_float else int(value)
+                value_label.configure(text=str(shown))
+            _update_summary()
+
+        _update_summary()
+
         btn_fr = ctk.CTkFrame(dlg, fg_color="transparent")
-        btn_fr.grid(row=r, column=0, sticky="ew", padx=12, pady=(0,12))
-        r += 1
-        btn_fr.grid_columnconfigure((0,1), weight=1)
+        btn_fr.grid(row=3, column=0, sticky="ew", padx=18, pady=(0, 18))
+        btn_fr.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkButton(btn_fr, text="✓ Kaydet", height=36,
-                      font=ctk.CTkFont("Segoe UI", 12),
-                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=_save
-                      ).grid(row=0, column=0, sticky="ew", padx=(0,4))
-
-        ctk.CTkButton(btn_fr, text="✕ İptal", height=36,
-                      font=ctk.CTkFont("Segoe UI", 12),
-                      fg_color=CARD, hover_color=BORDER,
-                      command=_cancel
-                      ).grid(row=0, column=1, sticky="ew", padx=(4,0))
+        ctk.CTkButton(
+            btn_fr, text="Önerilen ayarlara dön", height=38, width=175,
+            font=ctk.CTkFont("Segoe UI", 10, "bold"),
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER,
+            command=_reset_recommended).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            btn_fr, text="İptal", height=38, width=92,
+            font=ctk.CTkFont("Segoe UI", 11),
+            fg_color=CARD, hover_color=CARD_HOVER,
+            command=_cancel).grid(row=0, column=1, padx=(10, 8))
+        ctk.CTkButton(
+            btn_fr, text="Ayarları kaydet", height=38, width=145,
+            font=ctk.CTkFont("Segoe UI", 11, "bold"),
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=_save).grid(row=0, column=2)
         dlg.protocol("WM_DELETE_WINDOW", _cancel)
 
     def _restore_advanced_settings(self, snapshot):
