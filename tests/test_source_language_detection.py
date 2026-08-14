@@ -217,6 +217,39 @@ class SourceLanguageDetectionTest(unittest.TestCase):
                 object(), [("1", "", "Come stai?")], "test-model")
         self.assertEqual(detected, "Italian")
 
+    def test_language_sample_is_distributed_and_drops_sdh_credits(self):
+        cues = [(str(i), "", f"Dialogue line {i}") for i in range(90)]
+        cues[0] = ("0", "", "[MUSIC]")
+        cues[45] = ("45", "", "Translator: John Doe")
+        sample = gui._distributed_language_sample(cues, max_lines=9, max_chars=4000)
+        lines = sample.splitlines()
+        self.assertLessEqual(len(lines), 9)
+        self.assertTrue(any("Dialogue line 1" in line for line in lines))
+        self.assertTrue(any("Dialogue line 44" in line or "Dialogue line 46" in line
+                            for line in lines))
+        self.assertTrue(any("Dialogue line 89" in line for line in lines))
+        self.assertNotIn("MUSIC", sample)
+        self.assertNotIn("Translator", sample)
+
+    def test_single_detector_prompt_uses_clean_distributed_sample(self):
+        with patch.object(
+            gui, "_safe_chat_create",
+            return_value=_response(json.dumps({"language": "English"})),
+        ) as call:
+            detected = gui.detect_source_language_with_ai(
+                object(),
+                [("1", "", "[MUSIC]"), ("2", "", "Hello there."),
+                 ("3", "", "Translator: John Doe"), ("4", "", "How are you?")],
+                "test-model",
+                filename="movie.fre.srt",
+            )
+        self.assertEqual(detected, "English")
+        messages = call.call_args.kwargs["messages"]
+        self.assertNotIn("[MUSIC]", messages[1]["content"])
+        self.assertNotIn("Translator: John Doe", messages[1]["content"])
+        self.assertIn("trust the dialogue", messages[1]["content"])
+        self.assertIn(gui.UNTRUSTED_REFERENCE_RULE, messages[0]["content"])
+
     def test_filename_fallback_recognizes_explicit_release_labels(self):
         cases = {
             "Blind Vaysha 2016 1080i HDTV x264 SiSO - eng.srt": "English",
@@ -653,7 +686,7 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertEqual(results["unknown.srt"], "French")
         self.assertEqual(calls, ["unknown.srt"])
 
-    def test_single_file_detector_samples_only_eighteen_lines(self):
+    def test_single_file_detector_samples_thirty_distributed_lines(self):
         captured = {}
 
         def fake_create(client, **kwargs):
@@ -670,7 +703,9 @@ class SourceLanguageDetectionTest(unittest.TestCase):
 
         self.assertEqual(detected, "French")
         prompt = captured["messages"][1]["content"]
-        self.assertEqual(prompt.count("ligne unique"), 18)
+        self.assertEqual(prompt.count("ligne unique"), 30)
+        self.assertIn("ligne unique 0", prompt)
+        self.assertIn("ligne unique 99", prompt)
 
     def test_same_basename_different_paths_do_not_mix_up(self):
         """Files sharing basename (e.g. dirA/sub.srt vs dirB/sub.srt) map independently."""

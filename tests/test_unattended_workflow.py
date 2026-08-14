@@ -36,6 +36,22 @@ class ContentConfidenceTest(unittest.TestCase):
         self.assertEqual(detail["category"], "Belgesel")
         self.assertEqual(detail["confidence"], 0.92)
 
+    def test_detector_normalizes_category_with_appended_description(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                '{"category": "Film: Conventional scripted fiction whose dominant '
+                'need is general cinematic dialogue", "confidence": 0.86}')))],
+            usage=None,
+        )
+        with patch("hybrid_translate._safe_chat_create", return_value=response):
+            detail = gui.detect_content_type_with_ai(
+                None,
+                [("1", "00:00:01,000", "A scripted dialogue sample.")],
+                "test",
+                return_details=True,
+            )
+        self.assertEqual(detail, {"category": "Film", "confidence": 0.86})
+
 
 class WorkflowProfilesTest(unittest.TestCase):
     def test_maximum_profile_uses_deep_analysis_without_expensive_passes(self):

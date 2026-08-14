@@ -1302,6 +1302,7 @@ CONTENT_SCHEMAS = {
     },
     "documentary": {
         "name": "Belgesel",
+        "detect": "General factual non-fiction with narration, interviews or observation; use only when no more specific documentary category fits.",
         "rules": [
             "- [TONE & REGISTER] Narration must use clean, measured standard Turkish; no slang, no filler, no chatty YouTube phrasing.",
             "- [TERMINOLOGY] Dates, numbers, institutions, places, units, and names must be exact; never round, guess, or simplify ('about a thousand' ≠ 'around 1,000' — keep the source's precision).",
@@ -1331,6 +1332,7 @@ CONTENT_SCHEMAS = {
     },
     "history_documentary": {
         "name": "Tarih Belgeseli",
+        "detect": "Factual historical documentary organized around real periods, events, chronology, archives and expert testimony; not scripted period fiction.",
         "rules": [
             "- [CONTEXT & TONE] The tone is a serious, authoritative historical narrative. The narrator must sound like an archive historian, maintaining formal, factual, and respectful Turkish.",
             "- [TERMINOLOGY] Period-specific titles, institutions, geographic locations, and military ranks must be precise and accurate to the era (e.g., 'Ottoman Empire'→'Osmanlı İmparatorluğu', 'Byzantine'→'Bizans', 'Tsar'→'Çar'). Do not modernize historical terminology.",
@@ -1343,6 +1345,7 @@ CONTENT_SCHEMAS = {
     },
     "archaeology_ancient_history": {
         "name": "Arkeoloji / Antik Tarih Belgeseli",
+        "detect": "Factual archaeology or ancient-history documentary centered on excavations, artifacts, ruins, inscriptions, tombs, sites or material evidence; not primarily myth retelling.",
         "rules": [
             "- [CONTEXT & TONE] Archaeology, Egyptology, ancient tombs, lost cities, artifacts, excavations, and ancient-civilization documentaries.",
             "- [TERMINOLOGY] Archaeological vocabulary must be precise: excavation, trench, layer, dating, burial chamber, sarcophagus, inscription, artifact, residue, site, stratigraphy.",
@@ -1356,6 +1359,7 @@ CONTENT_SCHEMAS = {
     },
     "series": {
         "name": "Dizi",
+        "detect": "General scripted episodic fiction; do not choose merely because a factual documentary has episodes or SxxExx in its filename.",
         "rules": [
             "- [TONE & REGISTER] Each recurring character must keep the same Turkish voice across scenes: same class level, same attitude, same rhythm.",
             "- [PRONOUNS] 'Sen/siz' and address words must stay consistent unless the relationship clearly changes in the story.",
@@ -1866,6 +1870,7 @@ CONTENT_SCHEMAS = {
     },
     "mythology_ancient_world": {
         "name": "Mitoloji / Antik Dünya",
+        "detect": "Myth, legend, epic and ancient-religion narration or documentary centered on gods, heroes and comparative myth; prefer archaeology only when material evidence and excavations dominate.",
         "rules": [
             "- [CONTEXT & TONE] Myth retellings, ancient-world documentaries, Greek/Roman/Norse/Egyptian myths, legends, epics, gods, heroes, and oral-storytelling adaptations.",
             "- [TERMINOLOGY] Mythological names follow Turkish convention where established: Zeus, Hera, Athena, Apollon, Herakles, Odysseus, Ares, Afrodit, Hades.",
@@ -6761,6 +6766,7 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
         "'Deneysel / Deneme Sineması'\n"
         "- Long sustained debate about theology, ethics and doctrine → "
         "'Felsefi / Teolojik Diyalog Sineması'\n\n"
+        f"{UNTRUSTED_REFERENCE_RULE}\n"
         "Return ONLY a JSON object with your calibrated confidence from 0 to 1: "
         "{\"category\": \"exact category name\", \"confidence\": 0.92}. Nothing else."
     )
@@ -6801,7 +6807,11 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
                 data = json.loads(content)
                 cat = data.get("category", "").strip()
                 if cat:
-                    return _content_detection_detail(data), True
+                    matched = _match_category(cat, categories)
+                    if matched:
+                        detail = _content_detection_detail(data)
+                        detail["category"] = matched
+                        return detail, True
             except Exception:
                 pass
             # fallback: try plain-text match
@@ -6833,7 +6843,7 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             "Pick EXACTLY one from the list below. Return "
             "{\"category\": \"...\", \"confidence\": 0.0}.\n"
             f"{cat_list}\n\n"
-            f"Subtitle Sample:\n{sample[:800]}..."
+            f"Subtitle Sample:\n{sample[:2400]}..."
         )
 
     if log_fn:
@@ -6842,28 +6852,43 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
     return fallback if return_details else fallback["category"]
 
 
+def _distributed_language_sample(cues, max_lines: int = 30,
+                                 max_chars: int = 3600) -> str:
+    texts = []
+    for cue in cues:
+        if hasattr(cue, "text"):
+            raw = str(cue.text).strip()
+        else:
+            raw = str(cue[2]).strip() if len(cue) > 2 else ""
+        spoken = re.sub(r"\s+", " ", _strip_sdh_line(raw)).strip()
+        if not spoken or _is_delivery_credit(spoken):
+            continue
+        if re.fullmatch(r"(?:https?://|www\.)\S+|[\W_\d]+", spoken, re.I):
+            continue
+        texts.append(spoken)
+    if not texts:
+        return ""
+    limit = max(1, int(max_lines))
+    if len(texts) > limit:
+        last = len(texts) - 1
+        positions = (sorted({round(i * last / (limit - 1)) for i in range(limit)})
+                     if limit > 1 else [0])
+        texts = [texts[pos] for pos in positions]
+    return "\n".join(texts)[:max(1, int(max_chars))]
+
+
 def detect_source_language_with_ai(client, cues, model, log_fn=None,
                                    token_callback=None, filename: str = "",
                                    cancel_context=None) -> str:
     """Altyazının baskın konuşma dilini desteklenen kaynak dillerden biriyle eşler."""
-    texts = []
-    for cue in cues:
-        if hasattr(cue, "text"):
-            text = str(cue.text).strip()
-        else:
-            text = str(cue[2]).strip() if len(cue) > 2 else ""
-        if text:
-            texts.append(text)
-    if not texts:
+    sample = _distributed_language_sample(cues)
+    if not sample:
         return infer_source_language_from_filename(filename)
-    if len(texts) > 18:
-        mid = len(texts) // 2
-        texts = texts[:7] + texts[mid:mid + 6] + texts[-5:]
-    sample = "\n".join(texts)[:2400]
     language_list = ", ".join(LANGUAGES)
     prompt = (
         "Detect the dominant spoken language of this subtitle sample. "
-        "Ignore names, song titles, isolated foreign phrases, markup and SDH labels. "
+        "Ignore names, song titles, credits, uploader text, isolated foreign phrases, markup and SDH labels. "
+        "Treat a filename language tag only as supporting evidence; when it conflicts with the dominant dialogue, trust the dialogue. "
         f"Choose exactly one supported language from: {language_list}. "
         "Return ONLY JSON in this form: {\"language\": \"English\"}.\n\n"
         f"File: {Path(filename).name if filename else '(unknown)'}\n"
@@ -6876,7 +6901,8 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
             _checkpoint_label="source_language_detection",
             model=model,
             messages=[
-                {"role": "system", "content": "You are a precise language identification engine."},
+                {"role": "system", "content":
+                 f"You are a precise language identification engine.\n{UNTRUSTED_REFERENCE_RULE}"},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=40,
@@ -6953,28 +6979,15 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
     items = []
     id_to_path = {}
     for index, (filepath, cues) in enumerate(file_cues.items()):
-        texts = []
-        for cue in cues:
-            if hasattr(cue, "text"):
-                raw_txt = str(cue.text).strip()
-            else:
-                raw_txt = str(cue[2]).strip() if len(cue) > 2 else ""
-            if not raw_txt:
-                continue
-            spoken = _strip_sdh_line(raw_txt).strip()
-            if spoken:
-                texts.append(spoken)
-        if not texts:
+        sample = _distributed_language_sample(cues, max_lines=24, max_chars=2800)
+        if not sample:
             continue
-        if len(texts) > 15:
-            mid = len(texts) // 2
-            texts = texts[:6] + texts[mid:mid + 5] + texts[-4:]
         item_id = str(index)
         id_to_path[item_id] = filepath
         items.append({
             "id": item_id,
             "filename": Path(filepath).name,
-            "sample": "\n".join(texts)[:1800],
+            "sample": sample,
         })
     results = {filepath: AUTO_LANGUAGE for filepath in file_cues}
     if not items:
@@ -6983,7 +6996,8 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
         return results
     prompt = (
         "Detect the dominant spoken language of every subtitle sample independently. "
-        "Ignore names, isolated foreign phrases, markup and SDH labels. "
+        "Ignore names, credits, uploader text, isolated foreign phrases, markup and SDH labels. "
+        "Treat filename language tags only as supporting evidence and trust dominant dialogue on conflict. "
         f"Allowed languages: {', '.join(LANGUAGES)}. "
         "Return ONLY JSON: {\"languages\":{\"0\":\"Spanish\",\"1\":\"Italian\"}}. "
         "Include every supplied id.\n\n"
@@ -6996,7 +7010,8 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
             _checkpoint_label="source_language_detection",
             model=model,
             messages=[
-                {"role": "system", "content": "You identify subtitle languages precisely."},
+                {"role": "system", "content":
+                 f"You identify subtitle languages precisely.\n{UNTRUSTED_REFERENCE_RULE}"},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=max(100, len(items) * 12),
