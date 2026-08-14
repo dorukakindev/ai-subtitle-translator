@@ -1148,7 +1148,10 @@ def _content_detection_detail(value) -> dict:
         category = normalize_schema_name(value or "Otomatik")
         raw_confidence = None
     try:
-        confidence = max(0.0, min(1.0, float(raw_confidence)))
+        confidence = float(raw_confidence)
+        if 1.0 < confidence <= 100.0 and confidence.is_integer():
+            confidence /= 100.0
+        confidence = max(0.0, min(1.0, confidence))
     except (TypeError, ValueError):
         confidence = None
     return {"category": category, "confidence": confidence}
@@ -1273,6 +1276,7 @@ CONTENT_SCHEMAS = {
     },
     "reality": {
         "name": "Reality Show",
+        "detect": "Unscripted television built around contestants, challenges, confessionals, observation or interpersonal conflict.",
         "rules": [
             "- [CONTEXT & TONE] Keep insults, swearing, and yelling at full heat; 'What the hell is wrong with you?' must stay aggressive, not polite Turkish.",
             "- [TONE & REGISTER] Confrontational lines must stay sharp; 'Shut up', 'Back off', 'Don't test me' must not be softened or formal.",
@@ -1289,6 +1293,7 @@ CONTENT_SCHEMAS = {
     },
     "reality_street": {
         "name": "Reality / Sokak Argosu",
+        "detect": "Unscripted reality, dating, street-interview or internet format dominated by slang, profanity, chaotic conflict and highly colloquial speech.",
         "rules": [
             "- [CONTEXT & TONE] For crude dating shows, mansion competitions, street interviews, and internet reality formats with heavy slang/AAVE; this is rougher than normal Reality Show.",
             "- [TONE & REGISTER] Keep speech chaotic, vulgar, and performative when the source is; do not clean it into standard TV Turkish.",
@@ -1319,6 +1324,7 @@ CONTENT_SCHEMAS = {
     },
     "society_politics_documentary": {
         "name": "Siyaset / Toplum Belgeseli",
+        "detect": "Factual documentary about politics, society, institutions, civil rights, media or public history; not scripted political fiction.",
         "rules": [
             "- [CONTEXT & TONE] Political, social history, censorship, civil rights, media, institutions, public intellectuals, and cultural conflict documentaries.",
             "- [TONE & REGISTER] Narration is analytical and clear; avoid sensational news tone and avoid academic stiffness unless the source is academic.",
@@ -1483,6 +1489,7 @@ CONTENT_SCHEMAS = {
     },
     "action_crime": {
         "name": "Aksiyon / Suç",
+        "detect": "Scripted crime, police, gangster, heist, chase or action fiction where investigation, violence or criminal operations dominate.",
         "rules": [
             "- [FLOW & TIMING] Action lines are short, hard, and waste no time; suppress the urge to complete sentences or smooth out clipped exchanges.",
             "- [TERMINOLOGY] Use correct Turkish police/legal terminology: tanık, şüpheli, sanık, savcı, gözaltı, ihbar, suç ortağı, soruşturma — never generic 'kişi', 'olay', 'iş'.",
@@ -1497,6 +1504,7 @@ CONTENT_SCHEMAS = {
     },
     "romance_drama": {
         "name": "Romantik Drama",
+        "detect": "Scripted fiction whose central dramatic engine is a romantic relationship, courtship, separation, jealousy or intimate partnership.",
         "rules": [
             "- [TONE & REGISTER] Intimate conversation tone dominates: short, halting lines with strong undertone — never pad them into flowing prose.",
             "- [TERMINOLOGY] Love confessions must avoid generic Turkish clichés; 'Seni seviyorum' is not auto-inserted everywhere — preserve the specific phrasing of the source.",
@@ -1528,6 +1536,7 @@ CONTENT_SCHEMAS = {
     },
     "musical": {
         "name": "Müzikal / Şarkı",
+        "detect": "Stage or screen musical, concert film or song-led work where lyrics and musical performance are structurally central, not incidental.",
         "rules": [
             "- [FLOW & TIMING] Song lyrics translation: meaning integrity ALWAYS outweighs rhyme — do not warp meaning to force a rhyme.",
             "- [FLOW & TIMING] Syllable/meter count should approximate the source line when sung; melodic flow must survive the translation.",
@@ -1543,6 +1552,7 @@ CONTENT_SCHEMAS = {
     },
     "comedy": {
         "name": "Komedi (Sitcom)",
+        "detect": "Scripted situation comedy with recurring characters, comic setups, punch lines and often episodic or laugh-track rhythm.",
         "rules": [
             "- [CONTEXT & TONE] This mode targets sitcoms and traditional ensemble comedies (Seinfeld, Friends, The Office, Brooklyn Nine-Nine, Modern Family, Yasak Elma, Avrupa Yakası).",
             "- [FLOW & TIMING] Keep the joke beat in the same place; if the laugh lands on the final word, the Turkish must also land there.",
@@ -1559,6 +1569,7 @@ CONTENT_SCHEMAS = {
     },
     "sketch_comedy": {
         "name": "Sketch Komedi / Absürt",
+        "detect": "Short-form sketches, parody, surreal comedy segments or absurdist comic scenes rather than one continuous sitcom narrative.",
         "rules": [
             "- [CONTEXT & TONE] Treat this as sketch/absurdist comedy translation mode (I Think You Should Leave, Key & Peele, SNL, Monty Python, Adult Swim shorts).",
             "- [DIALECT & CHARACTER] Each sketch character has an exaggerated one-note voice (clueless CEO, panicked guest, fake host); keep that exaggeration in Turkish — do not flatten.",
@@ -1576,6 +1587,7 @@ CONTENT_SCHEMAS = {
     },
     "standup": {
         "name": "Stand-up Komedi",
+        "detect": "A comedian performing jokes and stories directly to a live audience; not a documentary about a comedian.",
         "rules": [
             "- [TONE & REGISTER] Single-performer voice addressed to a live audience — keep the rhythm of a person on stage thinking out loud, never write it like an essay.",
             "- [FLOW & TIMING] Personal story segments flow conversationally; do not literary-ize them, keep the 'I was at the airport last week and...' breath.",
@@ -1591,6 +1603,7 @@ CONTENT_SCHEMAS = {
     },
     "comedy_biography_documentary": {
         "name": "Komedyen Biyografisi / Stand-up Belgeseli",
+        "detect": "Factual biography or documentary about a comedian or comedy scene, mixing interviews, narration and archival performance clips.",
         "rules": [
             "- [CONTEXT & TONE] Biographical documentaries about comedians, comedy history, stand-up culture, censorship, clubs, writers' rooms, and performance careers.",
             "- [TONE & REGISTER] Distinguish documentary narration from quoted stage material: narration is reflective, stage clips keep joke timing and profanity.",
@@ -1604,6 +1617,7 @@ CONTENT_SCHEMAS = {
     },
     "cyberpunk_sci_fi": {
         "name": "Siberpunk / Distopya",
+        "detect": "Scripted dystopian or cyberpunk fiction centered on surveillance, oppressive systems, networks, AI, body modification or technological alienation.",
         "rules": [
             "- [CONTEXT & TONE] Keep the grim, technological, neon-noir tone. Corporations are oppressive, tech is ubiquitous, life is cheap.",
             "- [TERMINOLOGY] Tech jargon, implants, netrunning, corporate titles, AI, and hacking terms must sound like established sci-fi Turkish (e.g., 'Ağ' for net, 'Siber-implant' for cyberware).",
@@ -1616,6 +1630,7 @@ CONTENT_SCHEMAS = {
     },
     "animation_kids": {
         "name": "Çocuk / Çizgi Dizi",
+        "detect": "Episodic child-oriented cartoon or animated television with simple dialogue, recurring characters and young-audience pacing.",
         "rules": [
             "- [TONE & REGISTER] Keep the tone bright, energetic, and accessible for children. Use natural, modern Turkish without overly archaic words.",
             "- [TERMINOLOGY] Catchphrases, magic spells, animal sounds, and character nicknames must be localized to fun, memorable Turkish equivalents.",
@@ -1645,6 +1660,7 @@ CONTENT_SCHEMAS = {
     },
     "kids_animation": {
         "name": "Çocuk Animasyonu",
+        "detect": "Child-oriented animated film or special; choose the episodic cartoon category for recurring television episodes.",
         "rules": [
             "- [TONE & REGISTER] Target audience 4-12: clear vocabulary, short rhythmic sentences, no abstract or literary phrasing.",
             "- [CONTEXT & TONE] Educational-entertainment balance: deliver moral lessons through story, never as didactic statements.",
@@ -1662,6 +1678,7 @@ CONTENT_SCHEMAS = {
     },
     "adult_animation": {
         "name": "Yetişkin Animasyonu",
+        "detect": "Non-anime animation made primarily for adults, including satire, mature drama, profanity or adult comedy.",
         "rules": [
             "- [CONTEXT & TONE] Target: Rick and Morty, BoJack Horseman, Family Guy, South Park, Bob's Burgers — not anime, not sketch comedy, not regular sitcom.",
             "- [TONE & REGISTER] Adult irony tone preserved: sexual, political, existential, nihilist, and disturbing themes are normal here, never softened.",
@@ -1678,6 +1695,7 @@ CONTENT_SCHEMAS = {
     },
     "frp": {
         "name": "FRP / Masaustu Rol Yapma",
+        "detect": "Actual-play tabletop role-playing, game-master narration, dice mechanics and in-character fantasy roleplay.",
         "rules": [
             "- [CONTEXT & TONE] Specialist FRP / tabletop / grimdark translation mode for Warhammer 40K, Trench Crusade, D&D Dark Sun, Forgotten Realms, and similar settings.",
             "- [TERMINOLOGY] Preserve lore continuity like a setting bible: faction names, orders, legions, chapters, realms, deities, classes, and campaign-specific terminology must stay consistent.",
@@ -1694,6 +1712,7 @@ CONTENT_SCHEMAS = {
     },
     "warhammer40k": {
         "name": "Warhammer 40K / Grimdark",
+        "detect": "Warhammer 40K or closely related grimdark lore, actual play or fiction with franchise-specific factions, ranks and terminology.",
         "rules": [
             "- [CONTEXT & TONE] Treat this as Warhammer 40,000 (40K) grimdark science-fantasy: gothic militarism, Imperial bureaucracy, religious-zealot fervor, sacred machine-cult technology, and the constant dread of Chaos, the Warp, and xenos.",
             "- [TERMINOLOGY] Keep iconic 40K terminology STABLE and recognizable; do NOT invent Turkish words for established lore. Leave proper-noun terminology unchanged: Astartes, Space Marine, Adeptus Mechanicus, Adeptus Astartes, Astra Militarum, Inquisition, Primarch, Commissar, psyker, servitor, servo-skull, gene-seed, bolter, chainsword, lasgun, power armour, the Warp, daemon, xenos, Ork, Aeldari/Eldar, Tyranid, Necron, T'au.",
@@ -1776,6 +1795,7 @@ CONTENT_SCHEMAS = {
     },
     "youtube_edu": {
         "name": "YouTube / Eğitim",
+        "detect": "Online educational or explainer video addressing viewers directly with lessons, demonstrations or accessible factual instruction.",
         "rules": [
             "- [TONE & REGISTER] The voice should sound like a smart friend explaining something cool, not a stiff teacher and not a formal documentary.",
             "- [PRONOUNS] Direct viewer address should default to 'sen', 'biz', and 'hadi'; formal 'siz' usually breaks the channel voice.",
@@ -1789,6 +1809,7 @@ CONTENT_SCHEMAS = {
     },
     "youtube": {
         "name": "YouTube / Street",
+        "detect": "Informal creator video, vlog, street interview, prank or social-media format with direct audience address and internet slang.",
         "rules": [
             "- [TONE & REGISTER] The voice must sound like spontaneous street/internet Turkish, not standard TV Turkish and not translationese.",
             "- [TERMINOLOGY] Never transliterate slang; map 'bro'→kanka/kardeşim, 'no cap'→harbi/yalansız, 'for real'→harbiden, 'lowkey'→içten içe/hafiften, 'y'all'→millet/sizler, 'ain't' to Turkish vibe-equivalents.",
@@ -1802,6 +1823,7 @@ CONTENT_SCHEMAS = {
     },
     "podcast_interview": {
         "name": "Podcast / Mülakat",
+        "detect": "Long-form interview, podcast or seated conversation driven by host-guest questions rather than documentary narration.",
         "rules": [
             "- [FLOW & TIMING] Long-form conversation tone: natural flow with breaks, restarts, and overlap — never tidy into perfect sentences.",
             "- [DIALECT & CHARACTER] Host vs guest voices stay differentiated: host probes and steers, guest opens up and shares — do not merge them.",
@@ -1819,6 +1841,7 @@ CONTENT_SCHEMAS = {
     },
     "news": {
         "name": "Haber / Aktüalite",
+        "detect": "News bulletin, current-affairs report, live correspondent coverage, press conference or topical broadcast journalism.",
         "rules": [
             "- [TERMINOLOGY] Formal news register: muhabir, sunucu, kaynak, açıklama, iddia, taraf, görgü tanığı, çevre kaynakları — professional journalism terminology.",
             "- [TONE & REGISTER] Fact vs claim distinction MUST survive translation: 'X dedi' vs 'X olduğu iddia ediliyor' vs 'X olduğu bildirildi' — the certainty/uncertainty level is mandatory.",
@@ -1835,6 +1858,7 @@ CONTENT_SCHEMAS = {
     },
     "gaming": {
         "name": "Oyun Yayını / Streamer",
+        "detect": "Video-game stream, gameplay commentary, esports broadcast or streamer conversation tied directly to play.",
         "rules": [
             "- [TONE & REGISTER] Streamer voice: single performer talking to chat/audience, narrating gameplay while reacting to viewers.",
             "- [PRONOUNS] Twitch/YouTube chat interaction: 'chat, görüyor musunuz?', 'yorumlardan yazın', 'donate geldi' — keep second-person engagement.",
@@ -1851,6 +1875,7 @@ CONTENT_SCHEMAS = {
     },
     "academic_lecture": {
         "name": "Akademik Ders / Felsefe / Mitoloji",
+        "detect": "University lecture, conference talk or classroom-style academic exposition; choose mythology for narrative/documentary myth presentation rather than a formal lecture.",
         "rules": [
             "- [CONTEXT & TONE] Academic lecture translation mode for philosophy, mythology, classics, theology, and humanities seminars (university lectures, conference talks).",
             "- [TONE & REGISTER] Register is academic-formal but NOT theatrical: a real lecturer's voice — measured, precise, occasionally passionate.",
@@ -1884,6 +1909,7 @@ CONTENT_SCHEMAS = {
     },
     "esoteric_occult": {
         "name": "Ezoterik / Okült",
+        "detect": "Specialist discussion, instruction or documentary centered on occult, hermetic, mystical, ritual, tarot, astrology, kabbalah or alchemical systems.",
         "rules": [
             "- [CONTEXT & TONE] Specialist esoteric, occult, hermetic, mystical, and spiritual translation mode covering tarot, astrology, kabbalah, alchemy, shamanism, demonology.",
             "- [TERMINOLOGY] Preserve tradition-specific terminology: sephirot, qliphoth, ain soph, gematria, Major/Minor Arcana, suits, decans, transits, retrograde, sigil, talisman, athame, athanor, prima materia, magnum opus.",
@@ -1933,6 +1959,7 @@ CONTENT_SCHEMAS = {
     },
     "war_military": {
         "name": "Savaş / Askeri",
+        "detect": "Scripted war or military fiction centered on combat, command, units, operations and soldier dialogue; factual war history belongs to Tarih Belgeseli.",
         "rules": [
             "- [TERMINOLOGY] Ranks use Turkish military equivalents consistently: private→er, corporal→onbaşı, sergeant→çavuş, lieutenant→teğmen, captain→yüzbaşı, major→binbaşı, colonel→albay, general→general.",
             "- [TONE & REGISTER] Orders are crisp imperatives: 'Mevzilen', 'Ateş', 'Siper al', 'İlerle', 'Geri çekil', 'Ateşi kes'.",
@@ -1948,6 +1975,7 @@ CONTENT_SCHEMAS = {
     },
     "sports": {
         "name": "Spor / Maç Yayını",
+        "detect": "Live or recorded sports commentary, match coverage, studio analysis or athlete-focused competition program.",
         "rules": [
             "- [TONE & REGISTER] Turkish sports broadcasting register: energetic but professional spiker voice — excitement is real but vocabulary is precise.",
             "- [TERMINOLOGY] Use the Turkish sports community's actual terminology: ofsayt, korner, penaltı, faul, ribaund, smaç, blok, ace, tie-break, brek, grid, pole pozisyonu, pit.",
@@ -1962,6 +1990,7 @@ CONTENT_SCHEMAS = {
     },
     "food_travel": {
         "name": "Yemek / Seyahat",
+        "detect": "Food, cooking, restaurant or travel program with host narration, destinations, recipes or culinary terminology.",
         "rules": [
             "- [TERMINOLOGY] Dish names keep their original form with an optional Turkish gloss on first mention: 'coq au vin (şarapta tavuk)', 'pad thai', 'ceviche' — NEVER invent literal translations.",
             "- [TERMINOLOGY] Cooking techniques use real Turkish kitchen vocabulary: soteleme, karamelize etme, mühürleme, benmari, marine etme, kısık ateşte pişirme.",
@@ -1976,6 +2005,7 @@ CONTENT_SCHEMAS = {
     },
     "true_crime": {
         "name": "Suç Belgeseli / True Crime",
+        "detect": "Factual investigation of real crimes, victims, suspects and evidence; not scripted crime or police fiction.",
         "rules": [
             "- [CONTEXT & TONE] True-crime documentary about REAL cases (not fiction): real victims, perpetrators and investigators — translate with gravity.",
             "- [TERMINOLOGY] Keep legal/forensic/police terminology accurate: 'suspect'→'şüpheli', 'defendant'→'sanık', 'prosecutor'→'savcı', 'indictment'→'iddianame', 'verdict'→'karar', 'conviction'→'mahkumiyet', 'parole'→'şartlı tahliye', 'autopsy'→'otopsi', 'coroner'→'adli tabip', 'first-degree murder'→'birinci derece cinayet'.",
@@ -2003,6 +2033,7 @@ CONTENT_SCHEMAS = {
     },
     "art_culture": {
         "name": "Sanat / Kültür Belgeseli",
+        "detect": "Factual documentary about visual art, architecture, museums, cultural history or artistic movements; artist biography may use its dedicated category.",
         "rules": [
             "- [CONTEXT & TONE] Art / culture documentary (painting, sculpture, architecture, art history) — register is cultured, appreciative and precise, like a museum guide.",
             "- [TERMINOLOGY] Artist names, artwork titles, museums and places stay as written; use the established Turkish title of a famous work if one exists ('The Starry Night'→'Yıldızlı Gece').",
@@ -2015,6 +2046,7 @@ CONTENT_SCHEMAS = {
     },
     "gonzo_science": {
         "name": "Gonzo Bilim / Kimya Belgeseli",
+        "detect": "Presenter-led participatory documentary about drugs, chemistry, pharmacology, ethnobotany or experimental science, especially Hamilton-style investigation.",
         "rules": [
             "- [CONTEXT & TONE] Gonzo science, chemistry, and drug-culture investigative documentary (Hamilton's Pharmacopeia, Vice investigative science, drug anthropology and ethnobotany).",
             "- [TERMINOLOGY] Scientific, chemical, and botanical terminology must be absolutely precise: keep chemical names (5-MeO-DMT, ketamine, psilocybin, xenon), plant/animal species (*Bufo alvarius*, *Lophophora williamsii*), and pharmacological terms (agonist, reuptake inhibitor, receptor) scientifically accurate.",
@@ -2028,6 +2060,7 @@ CONTENT_SCHEMAS = {
     },
     "gonzo_subculture": {
         "name": "Gonzo / Katılımcı Belgesel",
+        "detect": "Presenter personally enters a fringe group, unusual community or risky situation and becomes part of the factual investigation.",
         "rules": [
             "- [CONTEXT & TONE] Gonzo/Participatory investigative documentary (e.g., Louis Theroux, Vice). The host immerses themselves into bizarre, fringe, or extreme subcultures. Tone is curious, informal, sometimes ironic or slightly awkward.",
             "- [TONE & REGISTER] Host's voice-over and interactions should NOT sound like a formal, stiff nature documentary. Keep the host's personal, conversational, and slightly vulnerable or self-deprecating tone intact.",
@@ -2040,6 +2073,7 @@ CONTENT_SCHEMAS = {
     },
     "shockumentary": {
         "name": "Şok Belgeseli (Mondo)",
+        "detect": "Mondo or sensational shock documentary built around taboo customs, graphic spectacle, exploitation or allegedly real extreme footage.",
         "rules": [
             "- [CONTEXT & TONE] Shockumentary / Mondo film genre (e.g., Mondo Cane, Faces of Death). Exploitative, sensational, and often staged documentary focusing on taboo subjects, bizarre customs, and graphic violence.",
             "- [TONE & REGISTER] The narrator's tone must be pseudo-scientific, detached, overly dramatic, or cynically moralizing. Keep the sensationalist and slightly judgmental undertone.",
@@ -2052,6 +2086,7 @@ CONTENT_SCHEMAS = {
     },
     "collector_reality": {
         "name": "Koleksiyoncu / Meraklı Eşya Reality",
+        "detect": "Unscripted shop, auction or collector reality program about antiques, oddities, memorabilia, negotiation and appraisal.",
         "rules": [
             "- [CONTEXT & TONE] Collector/dealer/appraisal reality: curiosity shops, pawn/antique dealers, pickers, and storage auctions (Oddities, Pawn Stars, American Pickers, Storage Wars, Antiques Roadshow). It blends casual banter, object-history exposition, and haggling.",
             "- [TONE & REGISTER] Dealer/host and shop-floor banter stays casual, quick, and playful — do NOT elevate everyday shop chatter into documentary formality.",
@@ -2068,6 +2103,7 @@ CONTENT_SCHEMAS = {
     },
     "talk_show": {
         "name": "Talk Show / Gece Programı",
+        "detect": "Studio host format with celebrity guests, monologue, desk chat, recurring segments and audience interaction.",
         "rules": [
             "- [CONTEXT & TONE] Late-night / daytime talk show: host monologue, desk bits, celebrity interviews, and audience interaction (Fallon, Kimmel, Graham Norton, and Turkish equivalents).",
             "- [FLOW & TIMING] Monologue jokes keep setup→punch timing; the punch word stays in the punch position, never followed by an explanatory clause.",
@@ -2083,6 +2119,7 @@ CONTENT_SCHEMAS = {
     },
     "game_show": {
         "name": "Yarışma / Bilgi Yarışması",
+        "detect": "Quiz or competition show governed by rounds, questions, scores, prizes, host instructions and contestant answers.",
         "rules": [
             "- [CONTEXT & TONE] Game/quiz show: host patter, quiz questions, contestant tension, and prize reveals (Jeopardy, Who Wants to Be a Millionaire, Wheel of Fortune, family game shows).",
             "- [TONE & REGISTER] Host register is upbeat, encouraging, and theatrical without being cheesy; keep the showman energy in natural Turkish.",
@@ -2097,6 +2134,7 @@ CONTENT_SCHEMAS = {
     },
     "nature_wildlife": {
         "name": "Doğa / Yaban Hayatı Belgeseli",
+        "detect": "Factual nature or wildlife documentary centered on animals, ecosystems, habitats and natural behavior.",
         "rules": [
             "- [CONTEXT & TONE] Nature/wildlife documentary (Attenborough-style, Planet Earth, National Geographic wildlife): the narrator's wonder is restrained and authoritative, never a children's storybook.",
             "- [TONE & REGISTER] Narration uses clean, measured, evocative standard Turkish; awe is conveyed through precision and rhythm, not exclamation marks.",
@@ -2111,6 +2149,7 @@ CONTENT_SCHEMAS = {
     },
     "religious_faith": {
         "name": "Dini İçerik / Vaaz",
+        "detect": "Sermon, worship service, devotional teaching, scripture exposition or direct faith instruction; not scripted theological fiction.",
         "rules": [
             "- [CONTEXT & TONE] Religious/faith content: sermons, homilies, televangelism, religious ceremony, scripture reading, and faith-based programming — the register is reverent and exhortative.",
             "- [TONE & REGISTER] The preaching/sermon voice keeps its rhetorical rise-and-fall, direct address, and moral exhortation; do not flatten it into neutral lecture Turkish.",
@@ -6719,32 +6758,49 @@ def _resolve_analysis_depth_choice(value: str, default_value: str = "Standart") 
     return ht.analysis_depth_label(raw)
 
 
+def _distributed_content_sample(cues, max_lines: int = 120,
+                                max_chars: int = 14000) -> str:
+    texts = []
+    for cue in cues:
+        if hasattr(cue, "text"):
+            raw = str(cue.text).strip()
+        else:
+            raw = str(cue[2]).strip() if len(cue) > 2 else ""
+        spoken = re.sub(r"\s+", " ", _strip_sdh_line(raw)).strip()
+        if not spoken or _is_delivery_credit(spoken):
+            continue
+        texts.append(spoken)
+    if not texts:
+        return ""
+    limit = max(1, int(max_lines))
+    if len(texts) > limit:
+        window_count = min(8, limit)
+        window_size = max(1, limit // window_count)
+        last_start = max(0, len(texts) - window_size)
+        starts = (sorted({round(i * last_start / (window_count - 1))
+                          for i in range(window_count)})
+                  if window_count > 1 else [0])
+        sampled = []
+        seen = set()
+        for start in starts:
+            for pos in range(start, min(len(texts), start + window_size)):
+                if pos not in seen:
+                    sampled.append(texts[pos])
+                    seen.add(pos)
+        texts = sampled[:limit]
+    return "\n".join(texts)[:max(1, int(max_chars))]
+
+
 def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback=None,
                                  filename: str = "", return_details: bool = False,
                                  cancel_context=None):
     """Detects content type from sampled subtitle cues using the selected OpenAI model.
     Baş+orta+son örnekleme: tür sinyali her zaman ilk sahnede olmaz (örn. aksiyonla
     açılan romantik dram)."""
-    sample_texts = []
-    for c in cues:
-        if hasattr(c, 'text'):
-            txt = c.text.strip()
-        else:
-            txt = c[2].strip() if len(c) > 2 else ""
-        if txt:
-            sample_texts.append(txt)
-
-    if not sample_texts:
+    sample = _distributed_content_sample(cues)
+    if not sample:
         empty = {"category": "Otomatik", "confidence": None}
         return empty if return_details else empty["category"]
-    if len(sample_texts) > 180:
-        mid = len(sample_texts) // 2
-        sample_lines = (sample_texts[:80]
-                        + sample_texts[mid:mid + 60]
-                        + sample_texts[-40:])
-    else:
-        sample_lines = sample_texts
-    sample = "\n".join(sample_lines)
 
     categories = _detect_categories()
     cat_list = "\n".join(_detect_category_lines())
@@ -6756,12 +6812,15 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
         "translation needs, not by isolated vocabulary or setting. A hospital setting alone is "
         "not a medical procedural; dialogue about cinema inside fiction is not a film documentary; "
         "historical setting alone does not override philosophical, political, experimental, or "
-        "artist-biography form.\n\n"
+        "artist-biography form. First decide whether the work is factual non-fiction, scripted "
+        "fiction, animation, live performance, broadcast, online creator content or interactive "
+        "play. Then choose the most specific category supported repeatedly across the whole sample. "
+        "Use Film, Dizi or Belgesel only as fallbacks when no specialized category is sustained.\n\n"
         "Examples:\n"
         "- Sample with scripted dialogue, laugh track, multiple episodes → 'Komedi (Sitcom)'\n"
         "- Sample with presenter, hidden-camera reactions, challenge segments → 'Reality Show'\n"
-        "- Sample with narrative voiceover, archival footage, historical events → 'Belgesel'\n"
-        "- Sample with formal interview, talking heads, news-style editing → 'Söyleşi / Podcast'\n"
+        "- Sample with narrative voiceover, archival footage, historical events → 'Tarih Belgeseli'\n"
+        "- Long host-guest questions and answers without documentary narration → 'Podcast / Mülakat'\n"
         "- Fragmented collage mixing fiction, archive, intertitles and essay voice → "
         "'Deneysel / Deneme Sineması'\n"
         "- Long sustained debate about theology, ethics and doctrine → "
@@ -6824,15 +6883,40 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
                 log_fn(f"İçerik türü tespit hatası: {e}", "warn")
             return None, False
 
+    best_detail = None
     for attempt in range(2):
         detail, ok = _call(prompt)
         if detail:
-            result = detail["category"]
+            confidence = detail.get("confidence")
+            previous_confidence = (best_detail or {}).get("confidence")
+            if (best_detail is None or confidence is not None and
+                    (previous_confidence is None or confidence > previous_confidence)):
+                best_detail = detail
+            if attempt == 0 and confidence is not None and confidence < 0.70:
+                if log_fn:
+                    log_fn(
+                        f"İçerik türü güveni düşük (%{confidence * 100:.0f}); "
+                        "dosyanın geneline göre bir kez daha karşılaştırılıyor...",
+                        "warn",
+                    )
+                prompt = (
+                    f"The first classification was '{detail['category']}' with low confidence "
+                    f"({confidence:.2f}). Re-evaluate the work from its FORM and sustained signals "
+                    "across all sampled sections, not isolated words, setting or filename. "
+                    "Choose the most specific justified category; use a general fallback only if "
+                    "no specialized category dominates. Return ONLY "
+                    "{\"category\":\"exact category name\",\"confidence\":0.0}.\n\n"
+                    f"Categories:\n{cat_list}\n\nSubtitle Sample:\n{sample}"
+                )
+                continue
+            chosen = best_detail or detail
+            result = chosen["category"]
             if log_fn:
-                confidence = detail.get("confidence")
-                suffix = f" (güven %{confidence * 100:.0f})" if confidence is not None else ""
+                chosen_confidence = chosen.get("confidence")
+                suffix = (f" (güven %{chosen_confidence * 100:.0f})"
+                          if chosen_confidence is not None else "")
                 log_fn(f"İçerik Türü Analizi: '{result}' olarak tespit edildi{suffix}.", "ok")
-            return detail if return_details else result
+            return chosen if return_details else result
         if not ok:
             break
         # Retry: remind model about format
@@ -9009,6 +9093,17 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 ratio_issues.append((str(idx), round(ratio, 2)))
                 warnings += 1
 
+    if best_detail:
+        result = best_detail["category"]
+        if log_fn:
+            confidence = best_detail.get("confidence")
+            suffix = f" (güven %{confidence * 100:.0f})" if confidence is not None else ""
+            log_fn(
+                f"İçerik Türü Analizi: ikinci değerlendirme sonuç vermedi; "
+                f"ilk eşleşme '{result}' kullanılacak{suffix}.",
+                "warn",
+            )
+        return best_detail if return_details else result
     if log_fn:
         fname = Path(fp).name
         if untranslated:

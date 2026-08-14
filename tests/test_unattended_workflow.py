@@ -19,6 +19,11 @@ class ContentConfidenceTest(unittest.TestCase):
             gui._content_detection_detail("Film"),
             {"category": "Film", "confidence": None},
         )
+        self.assertEqual(
+            gui._content_detection_detail(
+                {"category": "Film", "confidence": 86}),
+            {"category": "Film", "confidence": 0.86},
+        )
 
     def test_detector_can_return_category_and_confidence(self):
         response = SimpleNamespace(
@@ -51,6 +56,41 @@ class ContentConfidenceTest(unittest.TestCase):
                 return_details=True,
             )
         self.assertEqual(detail, {"category": "Film", "confidence": 0.86})
+
+    def test_low_confidence_result_is_reconsidered_once(self):
+        responses = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                    '{"category":"Film","confidence":0.12}')))], usage=None),
+            SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                    '{"category":"Politik / Toplumsal Sanat Sineması",'
+                    '"confidence":0.91}')))], usage=None),
+        ]
+        with patch("hybrid_translate._safe_chat_create", side_effect=responses) as call:
+            detail = gui.detect_content_type_with_ai(
+                None,
+                [(str(i), "", f"A sustained political dialogue {i}.")
+                 for i in range(40)],
+                "test",
+                return_details=True,
+            )
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(
+            detail,
+            {"category": "Politik / Toplumsal Sanat Sineması", "confidence": 0.91},
+        )
+
+    def test_content_sample_is_clean_and_spans_full_file(self):
+        cues = [(str(i), "", f"Scene dialogue {i}") for i in range(400)]
+        cues[0] = ("0", "", "[MUSIC]")
+        cues[200] = ("200", "", "Translator: John Doe")
+        sample = gui._distributed_content_sample(cues, max_lines=40, max_chars=20000)
+        self.assertNotIn("MUSIC", sample)
+        self.assertNotIn("Translator", sample)
+        self.assertIn("Scene dialogue 1", sample)
+        self.assertIn("Scene dialogue 399", sample)
+        self.assertTrue(any(f"Scene dialogue {i}" in sample for i in range(150, 250)))
 
 
 class WorkflowProfilesTest(unittest.TestCase):

@@ -176,6 +176,27 @@ class MatchCategoryTest(unittest.TestCase):
         self.assertIn("hospital setting alone is not a medical procedural", messages[0]["content"])
         self.assertIn("Felsefi / Teolojik Diyalog Sineması:", messages[1]["content"])
 
+    def test_every_detectable_schema_has_a_detection_definition(self):
+        missing = [
+            schema["name"] for schema in gui.CONTENT_SCHEMAS.values()
+            if schema["name"] != "Otomatik" and not str(schema.get("detect") or "").strip()
+        ]
+        self.assertEqual(missing, [])
+
+    def test_content_examples_use_real_exact_schema_names(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content='{"category": "Belgesel", "confidence": 0.9}'))],
+            usage=None,
+        )
+        with patch("hybrid_translate._safe_chat_create", return_value=response) as call:
+            gui.detect_content_type_with_ai(
+                None, [("1", "", "Narrated factual sample")], "test")
+        system_prompt = call.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("'Tarih Belgeseli'", system_prompt)
+        self.assertIn("'Podcast / Mülakat'", system_prompt)
+        self.assertNotIn("'Söyleşi / Podcast'", system_prompt)
+
 
 class SchemaNameNormalizeTest(unittest.TestCase):
     def test_normalizes_legacy_auto_value(self):
