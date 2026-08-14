@@ -240,6 +240,13 @@ def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
     chunk_count = (
         int(analysis_chunks) if analysis_chunks is not None
         else ((len(cues) + chunk_size - 1) // chunk_size) if cues else 0)
+    uncovered = sorted(cue_ids - covered)
+    uncovered_ranges = []
+    for cue_id in uncovered:
+        if not uncovered_ranges or cue_id > uncovered_ranges[-1][1] + 1:
+            uncovered_ranges.append([cue_id, cue_id])
+        else:
+            uncovered_ranges[-1][1] = cue_id
     return {
         "depth": depth_key,
         "complete": bool(complete and not getattr(context, "_analysis_degraded", False)),
@@ -252,6 +259,11 @@ def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
         "scenes": valid_scenes,
         "scene_covered_cues": len(covered),
         "scene_coverage_pct": round(100.0 * len(covered) / len(cue_ids), 1) if cue_ids else 0.0,
+        "scene_uncovered_cues": len(uncovered),
+        "scene_uncovered_ranges": [
+            str(start) if start == end else f"{start}-{end}"
+            for start, end in uncovered_ranges
+        ],
         "referent_scenes": referent_scenes,
         "goal_scenes": goal_scenes,
         "idioms": len(idioms or {}),
@@ -285,6 +297,13 @@ def analysis_effectiveness_log_line(metrics: dict) -> str:
         line += (
             f" | prompt disi birakilan catismalar: "
             f"{len(term_conflicts)} terim/{len(character_conflicts)} karakter")
+    uncovered = int(m.get("scene_uncovered_cues", 0) or 0)
+    if uncovered:
+        ranges = list(m.get("scene_uncovered_ranges") or [])
+        detail = ",".join(str(value) for value in ranges[:20])
+        if len(ranges) > 20:
+            detail += f",+{len(ranges) - 20} aralik"
+        line += f" | sahne plani disinda {uncovered} cue [{detail or '-'}]"
     return line
 
 
@@ -947,7 +966,9 @@ def save_context_cache(context, filepath: str, character_examples: dict = None,
         "tone":               context.tone,
         "characters":         [{"name": c.name, "speaking_style": c.speaking_style}
                                for c in context.characters],
-        "recurring_terms":    context.recurring_terms,
+        "recurring_terms":    _sanitize_analysis_recurring_terms(
+            context.recurring_terms, target_language=target_language or "tr",
+            log_fn=log_fn),
         "scene_notes":        context.scene_notes,
         "character_examples": character_examples or {},
         "pronoun_map":        pronoun_map or {},
@@ -1044,7 +1065,7 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
             tone=d.get("tone", ""),
             characters=[CharacterVoice(name=c["name"], speaking_style=c["speaking_style"])
                         for c in d.get("characters", [])],
-            recurring_terms=sanitize_glossary_for_turkish(
+            recurring_terms=_sanitize_analysis_recurring_terms(
                 d.get("recurring_terms", {}),
                 target_language=(d.get("target_language") or expected_target or "tr"),
             ),
@@ -2979,7 +3000,9 @@ def _analyze_context_openai_compatible(
             f"Analysis depth: {analysis_depth_label(depth_key)}. Spend the extra token budget on "
             "translation-critical decisions, not generic plot recap.\n"
             "- In recurring_terms, include names, nicknames, brands, lore terms, slang, catchphrases, "
-            "relationship labels, and repeated jokes that need consistent Turkish handling.\n"
+            "fixed titles, and repeated jokes that need consistent Turkish handling. Never turn a generic "
+            "kinship word into a speaker-dependent possessive (for example son->oğlum); omit it unless the "
+            "source phrase itself contains the possessive.\n"
             "- In characters, distinguish narrator voice, quoted dialogue, on-screen text, interviews, "
             "songs/lyrics, and group speakers when visible.\n"
             f"- In scene_notes, include cue ranges when useful and call out register, chronology, ambiguity, "
@@ -3087,7 +3110,7 @@ def _analyze_context_openai_compatible(
                 speaking_style=str(item.get("speaking_style", "")).strip(),
             ))
 
-    recurring_terms = sanitize_glossary_for_turkish(
+    recurring_terms = _sanitize_analysis_recurring_terms(
         data.get("recurring_terms", {}), target_language=target_language, log_fn=log_fn
     )
     if not isinstance(recurring_terms, dict):
@@ -3472,7 +3495,7 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     if not memories:
         return ContextMemory(source_language="en", summary="")
     if len(memories) == 1:
-        memories[0].recurring_terms = sanitize_glossary_for_turkish(
+        memories[0].recurring_terms = _sanitize_analysis_recurring_terms(
             getattr(memories[0], "recurring_terms", {}),
             target_language=target_language, log_fn=log_fn,
         )
@@ -3538,7 +3561,7 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
         setting=next((m.setting for m in memories if m.setting), ""),
         tone=next((m.tone for m in memories if m.tone), ""),
         characters=merged_chars,
-        recurring_terms=sanitize_glossary_for_turkish(
+        recurring_terms=_sanitize_analysis_recurring_terms(
             merged_terms, target_language=target_language, log_fn=log_fn
         ),
         scene_notes=merged_notes,
@@ -6886,6 +6909,57 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
             "warn",
         )
     return cleaned
+
+
+_ANALYSIS_GENERIC_KINSHIP_TERMS = frozenset({
+    "aunt", "brother", "child", "children", "daughter", "father",
+    "grandfather", "grandmother", "husband", "mother", "parent", "parents",
+    "sister", "son", "uncle", "wife",
+})
+_ANALYSIS_POSSESSIVE_KINSHIP_RE = re.compile(
+    r"(?<!\w)(?:"
+    r"oğl(?:um|un|u|umuz|unuz|arı)|"
+    r"kız(?:ım|ın|ı|ımız|ınız|ları)|"
+    r"anne(?:m|n|si|miz|niz|leri)|"
+    r"baba(?:m|n|sı|mız|nız|ları)|"
+    r"karı(?:m|n|sı|mız|nız|ları)|"
+    r"koca(?:m|n|sı|mız|nız|ları)|"
+    r"kardeş(?:im|in|i|imiz|iniz|leri)|"
+    r"teyze(?:m|n|si|miz|niz|leri)|"
+    r"hala(?:m|n|sı|mız|nız|ları)|"
+    r"amca(?:m|n|sı|mız|nız|ları)|"
+    r"dayı(?:m|n|sı|mız|nız|ları)|"
+    r"büyükanne(?:m|n|si|miz|niz|leri)|"
+    r"büyükbaba(?:m|n|sı|mız|nız|ları)|"
+    r"çocuğ(?:um|un|u|umuz|unuz)|çocukları"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_analysis_recurring_terms(glossary: dict | None,
+                                       target_language: str = "tr",
+                                       log_fn=None) -> dict:
+    cleaned = sanitize_glossary_for_turkish(
+        glossary, target_language=target_language, log_fn=log_fn)
+    if str(target_language or "tr").strip().lower() not in _GLOSSARY_GUARD_TURKISH_TARGETS:
+        return cleaned
+    result = {}
+    dropped = []
+    for source, target in cleaned.items():
+        source_key = " ".join(str(source or "").strip().casefold().split())
+        if (source_key in _ANALYSIS_GENERIC_KINSHIP_TERMS
+                and _ANALYSIS_POSSESSIVE_KINSHIP_RE.search(str(target or ""))):
+            dropped.append(f"{source}->{target}")
+            continue
+        result[source] = target
+    if dropped and log_fn:
+        log_fn(
+            "Yardımcı analiz terim guard: bağlama bağlı iyelikli karar kilitli "
+            "terimlerden çıkarıldı: " + ", ".join(dropped),
+            "warn",
+        )
+    return result
 
 
 def quality_glossary_for_source(text: str) -> dict:

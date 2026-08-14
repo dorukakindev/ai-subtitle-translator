@@ -35,6 +35,8 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
         self.assertEqual(metrics["pronoun_pairs"], 1)
         self.assertEqual(metrics["scenes"], 2)
         self.assertEqual(metrics["scene_coverage_pct"], 80.0)
+        self.assertEqual(metrics["scene_uncovered_cues"], 1)
+        self.assertEqual(metrics["scene_uncovered_ranges"], ["5"])
         self.assertEqual(metrics["referent_scenes"], 1)
         self.assertEqual(metrics["goal_scenes"], 1)
         self.assertEqual(metrics["idioms"], 1)
@@ -49,6 +51,10 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
             "prompt disi birakilan catismalar: 1 terim/1 karakter",
             ht.analysis_effectiveness_log_line(metrics),
         )
+        self.assertIn(
+            "sahne plani disinda 1 cue [5]",
+            ht.analysis_effectiveness_log_line(metrics),
+        )
 
     def test_quality_report_includes_comparable_output_load(self):
         lines = gui._quality_feature_audit({
@@ -58,6 +64,8 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
                 "depth": "maximum", "analysis_chunks": 3, "terms": 67,
                 "characters": 7, "pronoun_pairs": 4, "scenes": 144,
                 "scene_coverage_pct": 98.5, "referent_scenes": 82,
+                "scene_uncovered_cues": 3,
+                "scene_uncovered_ranges": ["101-103"],
                 "goal_scenes": 43, "idioms": 8, "cultural_refs": 5,
                 "term_conflicts": ["faith", "church"],
                 "character_style_conflicts": ["Hazel"],
@@ -79,6 +87,11 @@ class AnalysisEffectivenessReportingTest(unittest.TestCase):
         self.assertIn(
             "Analiz çatışmaları (prompt/cache dışında bırakıldı): "
             "terim [faith,church]; karakter üslubu [Hazel]",
+            lines,
+        )
+        self.assertIn(
+            "Sahne planı kapsam boşluğu: 3 cue [101-103] — "
+            "bu cue'larda genel/canlı bağlam kullanıldı",
             lines,
         )
 

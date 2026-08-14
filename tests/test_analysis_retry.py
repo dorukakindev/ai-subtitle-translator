@@ -477,6 +477,30 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
         self.assertIsNone(result)
         pronoun.assert_not_called()
 
+    def test_analysis_terms_drop_context_bound_kinship_possessive(self):
+        import hybrid_translate as ht
+
+        logs = []
+        result = ht._sanitize_analysis_recurring_terms(
+            {
+                "son": "oğlum",
+                "church": "kilise",
+                "my son": "oğlum",
+                "daughter": "kız",
+            },
+            target_language="tr",
+            log_fn=lambda message, level="info": logs.append((level, message)),
+        )
+
+        self.assertEqual(result, {
+            "church": "kilise",
+            "my son": "oğlum",
+            "daughter": "kız",
+        })
+        self.assertTrue(any(
+            "son->oğlum" in message and "iyelikli" in message
+            for _level, message in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

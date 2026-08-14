@@ -10847,6 +10847,15 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 f"{int(metrics.get('goal_scenes', 0) or 0)} konuşmacı hedefi, "
                 f"{int(metrics.get('idioms', 0) or 0)} deyim, "
                 f"{int(metrics.get('cultural_refs', 0) or 0)} kültürel referans")
+            uncovered = int(metrics.get("scene_uncovered_cues", 0) or 0)
+            if uncovered:
+                ranges = list(metrics.get("scene_uncovered_ranges") or [])
+                detail = ",".join(str(value) for value in ranges[:30])
+                if len(ranges) > 30:
+                    detail += f",+{len(ranges) - 30} aralık"
+                lines.append(
+                    f"Sahne planı kapsam boşluğu: {uncovered} cue "
+                    f"[{detail or '-'}] — bu cue'larda genel/canlı bağlam kullanıldı")
             term_conflicts = list(metrics.get("term_conflicts") or [])
             character_conflicts = list(metrics.get("character_style_conflicts") or [])
             if term_conflicts or character_conflicts:
