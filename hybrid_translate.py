@@ -5615,7 +5615,6 @@ _LOCAL_FIXES = [
     ), 'böyle şeyler yani.'),
     # S04E02/E05/E09/E16 — Typo cleanup
     (re.compile(r'\bmikrofom\b', re.I), 'mikrofon'),
-    (re.compile(r'\bona\s+de\b', re.I), 'ona da'),
     (re.compile(r'\bWoodstoc[\u0027\u2019]a\b', re.I), "Woodstock'a"),
 ]
 
@@ -11541,7 +11540,7 @@ _CONTEXT_SENSITIVE_LOCAL_FIX_PATTERNS = frozenset({
 # alter a valid word, title or term and must see the matching source before it
 # is allowed to touch a real subtitle line.
 _LOCAL_FIX_SAFE_WITHOUT_SOURCE_PATTERNS = frozenset({
-    r'\bevett\b', r'\bttek\b', r'\bmikrofom\b', r'\bona\s+de\b',
+    r'\bevett\b', r'\bttek\b', r'\bmikrofom\b',
     r'\byasadÄ±klarÄ±\b', r'\byasadÄ±ÄŸÄ±\b', r'\bmetafoor\b',
 })
 

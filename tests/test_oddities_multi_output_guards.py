@@ -135,14 +135,13 @@ class TypoFixTest(unittest.TestCase):
         r = _APPLY('mikrofom')
         self.assertEqual(r, 'mikrofon')
 
-    def test_ona_de_fixed(self):
-        r = _APPLY('ona de')
-        self.assertEqual(r, 'ona da')
+    def test_ona_de_imperative_preserved(self):
+        r = _APPLY('ona de ki')
+        self.assertEqual(r, 'ona de ki')
 
-    def test_ona_de_uppercase_fixed(self):
+    def test_ona_de_uppercase_imperative_preserved(self):
         r = _APPLY('ONA DE')
-        self.assertNotIn('ONA DE', r)
-        self.assertIn(' da', r)
+        self.assertEqual(r, 'ONA DE')
 
     def test_woodstoc_a_fixed(self):
         r = _APPLY("Woodstoc'a")
