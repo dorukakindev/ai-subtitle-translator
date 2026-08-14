@@ -81,6 +81,37 @@ class ProviderModelPreflightTest(unittest.TestCase):
             gui._visible_model_ids(sdk_response), {"gpt-5.4", "gpt-5.4-mini"})
         self.assertEqual(gui._visible_model_ids(dict_response), {"gpt-5.4"})
 
+    def test_documented_alternate_shuai_hosts_are_preflight_routes(self):
+        for base_url in (
+                "https://oai.sb/v1",
+                "https://api.oai.sb/v1",
+                "https://cdn.shuaiapi.com/v1"):
+            with self.subTest(base_url=base_url):
+                app = self._app_stub()
+                listed = SimpleNamespace(data=[SimpleNamespace(id="gpt-5.4")])
+                request_client = mock.MagicMock()
+                request_client.models.list.return_value = listed
+                client = mock.MagicMock()
+                client.with_options.return_value = request_client
+
+                with mock.patch.object(gui, "OpenAI", return_value=client):
+                    ok = gui.App._provider_model_preflight(app, [(
+                        "Ana ceviri", "key", base_url, "gpt-5.4")])
+
+                self.assertTrue(ok)
+                request_client.models.list.assert_called_once_with()
+
+    def test_unrelated_shuai_substring_does_not_trigger_preflight(self):
+        app = self._app_stub()
+
+        with mock.patch.object(gui, "OpenAI") as openai:
+            ok = gui.App._provider_model_preflight(app, [(
+                "Ana ceviri", "key", "https://shuaiapi.com.evil.test/v1",
+                "gpt-5.4")])
+
+        self.assertTrue(ok)
+        openai.assert_not_called()
+
     @staticmethod
     def _app_stub():
         app = SimpleNamespace()

@@ -441,6 +441,18 @@ def _write_sanitized_settings_backup(src_path: Path, keep_last: int = 3) -> Path
     return bak
 
 
+_SHUAI_API_HOSTS = frozenset({
+    "api.shuaiapi.com", "oai.sb", "api.oai.sb", "cdn.shuaiapi.com",
+})
+
+
+def _is_shuai_api_route(value: str) -> bool:
+    try:
+        return (urlparse(str(value or "")).hostname or "").casefold() in _SHUAI_API_HOSTS
+    except Exception:
+        return False
+
+
 def _normalize_api_base_url(value: str) -> str:
     """Normalize the optional main API base URL field."""
     url = (value or "").strip().rstrip("/")
@@ -450,8 +462,7 @@ def _normalize_api_base_url(value: str) -> str:
         return ""
     try:
         parsed = urlparse(url)
-        if (parsed.hostname or "").casefold() in {
-                "api.shuaiapi.com", "oai.sb", "api.oai.sb", "cdn.shuaiapi.com"}:
+        if (parsed.hostname or "").casefold() in _SHUAI_API_HOSTS:
             return parsed._replace(
                 path="/v1", params="", query="", fragment="").geturl()
     except Exception:
@@ -21718,8 +21729,7 @@ class App(ctk.CTk):
 
     def _provider_model_preflight(self, targets: list) -> bool:
         shuai_targets = [
-            target for target in targets
-            if "shuaiapi.com" in target[2].casefold()
+            target for target in targets if _is_shuai_api_route(target[2])
         ]
         if not shuai_targets:
             return True
