@@ -205,6 +205,27 @@ class SubtitlePreflightTest(unittest.TestCase):
             self.assertNotIn(
                 "duplicate_title_year", {item["code"] for item in issues})
 
+    def test_part_of_series_episodes_are_not_grouped_as_duplicate_movies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "the.tribal.eye.(1975).eng.1cd.(3599524)"
+            root.mkdir()
+            first = root / "The.Tribal.Eye.Part1of7.Behind.The.Mask.English.srt"
+            second = root / "The.Tribal.Eye.Part2of7.Crooked.Beak.Of.Heaven.English.srt"
+            first.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nFirst episode.\n",
+                encoding="utf-8",
+            )
+            second.write_text(
+                "1\n00:00:02,000 --> 00:00:04,000\nSecond episode.\n",
+                encoding="utf-8",
+            )
+
+            issues = gui.scan_subtitle_preflight(
+                [str(first), str(second)], str(root), str(root / "out"))
+
+            self.assertNotIn(
+                "duplicate_title_year", {item["code"] for item in issues})
+
     def test_binary_control_data_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

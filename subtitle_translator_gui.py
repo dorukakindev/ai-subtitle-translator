@@ -3824,7 +3824,8 @@ def _upload_filename_issue(path) -> str:
 
 _MOVIE_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 _SERIES_PATH_RE = re.compile(
-    r"(?i)(?:^|[ ._\-])(?:s\d{1,2}(?:e\d{1,3})?|season|sezon)(?=$|[ ._\-])")
+    r"(?i)(?:^|[ ._\-])(?:s\d{1,2}(?:e\d{1,3})?|season|sezon|"
+    r"(?:part|pt)\s*\d{1,3}\s*of\s*\d{1,3})(?=$|[ ._\-])")
 
 
 def _selected_movie_title_year_identity(path) -> tuple[str, str]:
