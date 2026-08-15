@@ -708,6 +708,26 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_delivery_audit_rejects_source_derived_voice_over_label(self):
+        with TemporaryDirectory() as td:
+            source_path = Path(td) / "source.srt"
+            output_path = Path(td) / "output.srt"
+            source_path.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "YOUSEF, VOICE-OVER: I carried the holy fire.\n",
+                encoding="utf-8",
+            )
+            output_path.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "YOUSEF, SES ÜSTÜ: Kutsal ateşi taşıdım.\n",
+                encoding="utf-8",
+            )
+
+            audit = gui._subtitle_delivery_audit(str(source_path), str(output_path))
+
+        self.assertEqual(audit["residual_speaker_label_ids"], ["1"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
+
     def test_arabic_translator_credit_is_delivery_removable(self):
         for source in (
                 "ترجم من قبل: ناجي بهنان",

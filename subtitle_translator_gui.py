@@ -11587,6 +11587,12 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         for text in output_texts)
     residual_credit_cues = sum(_is_delivery_credit(text) for text in output_texts)
     residual_sdh_cues = sum(_is_delivery_sdh_only(text) for text in output_texts)
+    residual_speaker_label_ids = [
+        str(idx) for idx, _ts, text in output_dialogue
+        if sdh_cleaner._src_has_plain_speaker_label(
+            output_source_map.get(str(idx), ""))
+        and sdh_cleaner._TR_PLAIN_SPEAKER_LABEL_RE.search(str(text or ""))
+    ]
     residual_literal_newline_cues = sum(
         "\\n" in text and "\\n" not in output_source_map.get(str(idx), "")
         for idx, _ts, text in output_dialogue)
@@ -11660,10 +11666,13 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("signature_overlap", output_id=output_id)
     for output_id in serialized_json_residue_ids:
         _add_review_detail("serialized_json_residue", output_id=output_id)
+    for output_id in residual_speaker_label_ids:
+        _add_review_detail("residual_speaker_label", output_id=output_id)
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         delivery_owner_mismatch_ids, untranslated_fragment_ids,
         residual_credit_cues, residual_sdh_cues, residual_position_tags,
+        residual_speaker_label_ids,
         residual_format_tags, residual_literal_newline_cues, hatted_letters,
         residual_control_chars,
         serialized_json_residue_ids,
@@ -11686,6 +11695,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_sdh_cues": residual_sdh_cues,
+        "residual_speaker_label_ids": residual_speaker_label_ids,
         "residual_literal_newline_cues": residual_literal_newline_cues,
         "residual_position_tags": residual_position_tags,
         "residual_format_tags": residual_format_tags,
@@ -11726,6 +11736,7 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("unresolved_markers"),
         audit.get("residual_credit_cues"),
         audit.get("residual_sdh_cues"),
+        audit.get("residual_speaker_label_ids"),
         audit.get("residual_literal_newline_cues"),
         audit.get("residual_position_tags"),
         audit.get("residual_format_tags"),
