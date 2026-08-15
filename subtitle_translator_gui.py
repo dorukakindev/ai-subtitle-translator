@@ -3076,7 +3076,10 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"VENDOR\s+CALLING\s+OUT|DEEP,?\s+RESONATING\s+NOTES|"
     r"SPEAKING\s+GEORGIAN|"
     r"(?:[A-Z][A-Z'\-]*(?:\s+[A-Z][A-Z'\-]*){0,4}\s+)?"
-    r"SPEAKING\s+NATIVE\s+LANGUAGE)$",
+    r"SPEAKING\s+NATIVE\s+LANGUAGE|"
+    r"(?:SPEAKS?|SPEAKING|PEOPLE\s+CHATTING)(?:\s+IN)?\s+"
+    r"(?:DOGON|KWAK['’]WALA|SPANISH|QUECHUA|INDIAN\s+TONGUE)|"
+    r"SHE\s+(?:WAILS|PANTS)|WOMEN\s+ALL\s+SCREAM)$",
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
@@ -3232,6 +3235,8 @@ def _is_delivery_sdh_only(text: str) -> bool:
 
 def _source_cue_is_delivery_removable(text: str) -> bool:
     value = str(text or "")
+    value = re.sub(r"</?(?:font|i|b|u)\b[^>]*>", "", value,
+                   flags=re.IGNORECASE)
     if re.fullmatch(r"[\s.…,!?;:—–-]+", value):
         return True
     if re.fullmatch(

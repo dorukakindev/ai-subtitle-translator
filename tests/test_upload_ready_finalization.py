@@ -775,6 +775,14 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
                 "[JAVIER SPEAKING\nNATIVE LANGUAGE]",
                 "[WALKIE-TALKIE BEEPS]\n[SPEAKING\nNATIVE LANGUAGE]",
                 "[MEN CHANT]",
+                "(Speaking Dogon)",
+                "(Speaks Kwak'wala)",
+                "(People chatting in Spanish)",
+                "(Speaking in Quechua)",
+                "(Speaking in Indian tongue)",
+                '<font color="#ffffff">SHE WAILS</font>',
+                '<font color="#ffffff">WOMEN ALL SCREAM</font>',
+                '<font color="#ffffff">SHE PANTS</font>',
         ):
             with self.subTest(source=source):
                 self.assertTrue(gui._source_cue_is_delivery_removable(source))
