@@ -5121,7 +5121,8 @@ _MUSIC_ONLY_RE = re.compile(
 
 
 _SDH_ONLY_SRC_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
-_PARTIAL_ENGLISH_LEAK_RE = re.compile(r'\b(?:Egyptian|creation|mythology)\b', re.I)
+_PARTIAL_ENGLISH_LEAK_RE = re.compile(
+    r'\b(?:Egyptian|creation|mythology|Europeans?|Americans?)\b', re.I)
 _PARTIAL_ENGLISH_LEAK_PHRASE_RE = re.compile(
     r"\bIn\s+(?:18|19|20)\d{2}\b"
     r"|\bInstitute\s+for\s+Learning\s+and\s+Brain(?:\s+Sciences)?\b"
@@ -11438,7 +11439,7 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
 
 def _delivery_visible_line(text: str) -> str:
     value = re.sub(r"\{\\[^}]*\}", "", str(text or ""))
-    value = re.sub(r"</?(?:i|b|u)>", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"</?[a-zA-Z][^>]*>", "", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -11493,7 +11494,38 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                     for sibling in source_lines if _delivery_visible_line(sibling)
                 )
             )
-            if reason and not foreign_name_line and not list_tail_proper_name:
+            quote_body = visible.strip().strip('"“”').strip()
+            quote_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", quote_body)
+            quoted_foreign_reference = (
+                source_is_english and reason == "identical_source"
+                and visible.strip()[:1] in {'"', '“'}
+                and visible.strip()[-1:] in {'"', '”'}
+                and len(quote_words) >= 4
+                and not {
+                    word.casefold() for word in quote_words
+                }.intersection({
+                    "the", "a", "an", "and", "or", "but", "in", "on", "at",
+                    "to", "for", "of", "with", "by", "from", "as", "is", "was",
+                    "are", "were", "be", "have", "has", "had", "do", "does",
+                    "did", "will", "would", "could", "should", "can", "must",
+                    "not", "i", "you", "he", "she", "it", "we", "they", "my",
+                    "your", "his", "her", "our", "their", "this", "that", "please",
+                    "stop", "wait", "go", "come", "get", "make", "know", "want",
+                    "need", "look", "see", "say", "tell", "let", "good", "bad",
+                })
+            )
+            foreign_term_context = (
+                source_is_english and reason == "identical_source"
+                and source_line_no > 0
+                and bool(re.fullmatch(
+                    r"[a-zà-öø-ÿ][a-zà-öø-ÿ'’.-]{3,}[,;:.]?", visible))
+                and bool(re.search(
+                    r"\b(?:Greek|Latin|French|Italian|Spanish|Portuguese|German|"
+                    r"Arabic|Hebrew|Sanskrit|Japanese|Chinese|Russian)\b",
+                    "\n".join(source_lines[:source_line_no]), re.I))
+            )
+            if (reason and not foreign_name_line and not list_tail_proper_name
+                    and not quoted_foreign_reference and not foreign_term_context):
                 flagged.append(str(idx))
                 break
     return flagged

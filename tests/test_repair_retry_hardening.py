@@ -481,6 +481,8 @@ class IdentityInterjectionRegressionTest(unittest.TestCase):
             ("on the West African coast", "West African coast'ta"),
             ("Canadian municipalities want them.",
              "Canadian municipalities parkları için istiyor."),
+            ("It was unknown among Europeans.",
+             "Europeans arasında bilinmeyen bir şeydi."),
         )
         for source, translation in cases:
             with self.subTest(source=source):

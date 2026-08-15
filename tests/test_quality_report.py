@@ -907,6 +907,33 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
         self.assertEqual(flagged, [])
 
+    def test_delivery_fragment_guard_preserves_explicit_foreign_references(self):
+        flagged = gui._delivery_untranslated_fragment_ids(
+            [
+                ("1", "00:00:01,000 --> 00:00:02,000",
+                 '<font color="#ffff00">"Palaion drama proton paredidaxan."</font>'),
+                ("2", "00:00:02,000 --> 00:00:03,000",
+                 '<font color="#ffff00">Oyuncu anlamındaki Yunanca sözcük,</font>\n'
+                 '<font color="#ffff00">hypokrites,</font>'),
+            ],
+            {
+                "1": '<font color="#ffff00">"Palaion drama proton paredidaxan."</font>',
+                "2": '<font color="#ffff00">The Greek word for actor,</font>\n'
+                     '<font color="#ffff00">hypokrites,</font>',
+            },
+            target_language="Turkish", source_language="English")
+
+        self.assertEqual(flagged, [])
+
+    def test_delivery_fragment_guard_still_flags_quoted_english_sentence(self):
+        flagged = gui._delivery_untranslated_fragment_ids(
+            [("1", "00:00:01,000 --> 00:00:02,000",
+              '"This is a full English sentence."')],
+            {"1": '"This is a full English sentence."'},
+            target_language="Turkish", source_language="English")
+
+        self.assertEqual(flagged, ["1"])
+
     def test_file_process_report_contains_full_pass_history(self):
         row = {
             "name": "episode.srt",
