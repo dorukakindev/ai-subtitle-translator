@@ -3818,11 +3818,17 @@ def _upload_filename_issue(path) -> str:
             "Dosya adı DOS 8.3 biçiminde kısalmış; gerçek dizi adı ile "
             "sezon/bölüm numarası yüklemeden önce doğrulanmalı.")
     episode_match = re.search(
-        r"(?i)(?:^|[ ._\-])(?:episode|ep|bölüm)\s*(\d{1,3})(?=$|[ ._\-])",
+        r"(?i)(?:^|[ ._\-])(?:"
+        r"(?:episode|ep|bölüm|part|pt|parte)\s*(\d{1,3})"
+        r"|(?:part|pt|parte)?\s*(\d{1,3})\s*of\s*\d{1,3}"
+        r")(?=$|[ ._\-])",
         stem)
+    episode_number = next((
+        group for group in episode_match.groups() if group), None
+    ) if episode_match else None
     episode_hint = (
-        f" (beklenen: S{season:02d}E{int(episode_match.group(1)):02d})"
-        if episode_match else "")
+        f" (beklenen: S{season:02d}E{int(episode_number):02d})"
+        if episode_number else "")
     return (
         "Dizi altyazısı dosya adında SxxExx sezon/bölüm kimliği taşımıyor"
         f"{episode_hint}; yüklemeden önce dizi adıyla birlikte eklenmeli.")
@@ -3831,7 +3837,8 @@ def _upload_filename_issue(path) -> str:
 _MOVIE_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 _SERIES_PATH_RE = re.compile(
     r"(?i)(?:^|[ ._\-])(?:s\d{1,2}(?:e\d{1,3})?|season|sezon|"
-    r"(?:part|pt)\s*\d{1,3}\s*of\s*\d{1,3})(?=$|[ ._\-])")
+    r"(?:part|pt|parte)\s*\d{1,3}(?:\s*of\s*\d{1,3})?|"
+    r"\d{1,3}\s*of\s*\d{1,3})(?=$|[ ._\-])")
 
 
 def _selected_movie_title_year_identity(path) -> tuple[str, str]:

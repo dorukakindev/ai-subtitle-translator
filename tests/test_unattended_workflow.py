@@ -226,6 +226,29 @@ class SubtitlePreflightTest(unittest.TestCase):
             self.assertNotIn(
                 "duplicate_title_year", {item["code"] for item in issues})
 
+    def test_number_of_and_parte_series_are_not_grouped_as_duplicate_movies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "the.mahabharata.(1989).eng.1cd"
+            root.mkdir()
+            paths = [
+                root / "The Mahabharata Parte 1 - ENG.srt",
+                root / "The Mahabharata Parte 2 - ENG.srt",
+                root / "The.Dark.Ages.1of4.Clash.srt",
+                root / "The.Dark.Ages.2of4.Barbarians.srt",
+            ]
+            for number, path in enumerate(paths, 1):
+                path.write_text(
+                    f"1\n00:00:0{number},000 --> 00:00:0{number + 1},000\n"
+                    f"Episode {number}.\n",
+                    encoding="utf-8",
+                )
+
+            issues = gui.scan_subtitle_preflight(
+                [str(path) for path in paths], str(root), str(root / "out"))
+
+            self.assertNotIn(
+                "duplicate_title_year", {item["code"] for item in issues})
+
     def test_binary_control_data_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
