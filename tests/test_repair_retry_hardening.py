@@ -494,6 +494,17 @@ class IdentityInterjectionRegressionTest(unittest.TestCase):
             "identical_source",
         )
 
+    def test_ritual_toasts_are_valid_identity_translations(self):
+        for text in (
+                "L'CHAIM.\nHA HA HA!",
+                "♪ MAZEL TOV ♪\nMAZEL TOV! AH!"):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    gui._untranslated_reason(
+                        text, text, source_language="English"),
+                    "",
+                )
+
     def test_real_repair_flow_accepts_identity_interjections_without_retry(self):
         source = {"96": "Hey, hey!", "981": "Jack, hey.", "1441": "Hey, hey."}
         blocks = [(idx, _TS, "[HATA]") for idx in source]

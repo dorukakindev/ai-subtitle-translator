@@ -857,16 +857,19 @@ def _src_has_plain_speaker_label(src_line: str) -> bool:
 
 _SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?m)(?:^|(?<=[.!?…]))\s*(?:-\s*)?"
-    r"(?:[A-Z][A-Z0-9 .'\-]{1,30}|"
+    r"(?:[A-Z][A-Z0-9 .'\-]{1,30}(?:,\s*(?:VOICE[- ]OVER|V\.?O\.?))?|"
     r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}):\s*"
 )
 _TR_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?m)(^|(?<=[.!?…]))(\s*(?:-\s*)?)"
-    r"(?:[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*(?=\S)|"
-    r"[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'\-]{1,30}:\s*$)"
+    r"(?:[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
+    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*(?=\S)|"
+    r"[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'\-]{1,30}"
+    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*$)"
 )
 _TR_LABEL_ONLY_RE = re.compile(
-    r"^\s*(?:-\s*)?[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}:\s*$")
+    r"^\s*(?:-\s*)?[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
+    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*$")
 _SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
     r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
 )

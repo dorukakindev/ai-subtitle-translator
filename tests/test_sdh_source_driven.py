@@ -141,6 +141,21 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "Her şey burada başladı.",
         )
 
+    def test_voice_over_speaker_label_stripped_by_source(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "YOUSEF, SES ÜSTÜ: Kutsal ateşi taşıdım.",
+        )]
+        src_map = _src(**{
+            "1": "YOUSEF, VOICE-OVER: I carried the holy fire.",
+        })
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Kutsal ateşi taşıdım.",
+        )
+
     def test_title_case_and_inline_speaker_labels_stripped(self):
         blocks = [(
             "1",

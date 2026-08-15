@@ -5319,6 +5319,18 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
     identity_tokens = re.findall(r"[^\W\d_]+", str(src_text), re.UNICODE)
+    identity_words = src_norm.split()
+    identity_content_words = [
+        token for token in identity_words
+        if token not in {"ah", "ha", "haha"}
+    ]
+    identity_is_cultural_expression = any(
+        identity_content_words
+        and len(identity_content_words) % len(phrase) == 0
+        and identity_content_words
+        == list(phrase) * (len(identity_content_words) // len(phrase))
+        for phrase in (("lchaim",), ("mazel", "tov"))
+    )
     identity_is_short_interjection = bool(
         identity_tokens and len(identity_tokens) <= 4
         and any(token.casefold() in _IDENTITY_INTERJECTIONS for token in identity_tokens)
@@ -5329,6 +5341,7 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
         )
     )
     if (src_norm == tr_norm and src_norm not in _LOANWORDS
+            and not identity_is_cultural_expression
             and not identity_is_short_interjection):
         if not _src_is_sdh_only(src_text):
             if _src_all_caps:
