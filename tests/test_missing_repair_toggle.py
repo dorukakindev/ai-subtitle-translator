@@ -86,6 +86,26 @@ class MissingRepairToggleTest(unittest.TestCase):
         self.assertIn("Translate this line.", rendered)
         self.assertIn("API'ye gönderilmedi", rendered)
 
+    def test_disabled_repair_preserves_existing_candidate_for_manual_review(self):
+        client = MagicMock()
+        reviews = []
+        blocks, repaired = gui._repair_untranslated_sync(
+            [("30", "00:00:01,000 --> 00:00:02,000",
+              "“Bana bar bar bar gibi geliyor” dermiş.")],
+            {"30": 'well, the Greeks said, "It all sounds like bar bar bar."'},
+            client,
+            "English",
+            "Turkish",
+            advisory_reviews_out=reviews,
+            enabled=False,
+        )
+
+        self.assertEqual(repaired, 0)
+        self.assertEqual(
+            blocks[0][2], "“Bana bar bar bar gibi geliyor” dermiş.")
+        self.assertEqual(reviews[0]["reason"], "automatic_repair_disabled")
+        client.chat.completions.create.assert_not_called()
+
     def test_disabled_chunk_repair_logs_leaking_cue_and_token(self):
         app = gui.App.__new__(gui.App)
         app._active_snapshot = {"repair_missing": False}

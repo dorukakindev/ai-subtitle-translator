@@ -6412,7 +6412,8 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
         if str(_idx) in advisory_accepted_ids:
             continue
         text = str(out[block_pos][2] or "")
-        if (not text.startswith("[HATA")
+        if (enabled
+                and not text.startswith("[HATA")
                 and "[ÇEVİRİ EKSİK]" not in text
                 and _is_untranslated(
                     src, text, locked_terms=locked_terms,
