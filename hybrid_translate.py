@@ -3581,9 +3581,9 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
             character_conflicts, key=_analysis_name_identity)
         if log_fn:
             log_fn(
-                "YardÄ±mcÄ± analiz karakter Ã¼slubu Ã§atÄ±ÅŸmasÄ±: "
+                "Yardımcı analiz karakter üslubu çatışması: "
                 + ", ".join(merged._analysis_character_conflicts)
-                + " â€” belirsiz Ã¼slup prompt'a alÄ±nmadÄ±",
+                + " — belirsiz üslup prompt'a alınmadı",
                 "warn",
             )
     return merged

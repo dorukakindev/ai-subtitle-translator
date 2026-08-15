@@ -142,12 +142,22 @@ class AnalyzeWithHelperRetryTest(unittest.TestCase):
             "subtitle_localizer": fake_pkg,
             "subtitle_localizer.models": fake_models,
         }), patch.object(ht, "_ensure_path", lambda: None):
-            merged = ht._merge_memories(memories, target_language="tr")
+            logs = []
+            merged = ht._merge_memories(
+                memories,
+                target_language="tr",
+                log_fn=lambda message, *_args: logs.append(message),
+            )
 
         self.assertEqual([item.name for item in merged.characters], ["Alex"])
         self.assertEqual(merged.characters[0].speaking_style, "")
         self.assertEqual(merged._analysis_character_conflicts, ["Alex"])
         self.assertEqual(memories[0].characters[0].speaking_style, "formal")
+        self.assertIn(
+            "Yardımcı analiz karakter üslubu çatışması: Alex",
+            "\n".join(logs),
+        )
+        self.assertNotIn("Ã", "\n".join(logs))
 
     def test_failed_auxiliary_component_is_retried_once(self):
         import hybrid_translate as ht

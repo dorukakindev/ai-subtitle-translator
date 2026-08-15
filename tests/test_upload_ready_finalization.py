@@ -708,6 +708,13 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_arabic_translator_credit_is_delivery_removable(self):
+        for source in (
+                "ترجم من قبل: ناجي بهنان",
+                "ترجم من قبل: عبد الرحمن كلاس"):
+            with self.subTest(source=source):
+                self.assertTrue(gui._source_cue_is_delivery_removable(source))
+
     def test_release_site_promos_are_removed_but_film_credits_remain(self):
         for source in (
                 "Downloaded from\nYTS.MX",
