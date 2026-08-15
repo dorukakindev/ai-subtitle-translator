@@ -94,13 +94,18 @@ class TerraGuiRecoveryHardeningTest(unittest.TestCase):
                 "3\n00:00:05,000 --> 00:00:06,000\n-[ <i>Muffled speaking</i>]\n\n"
                 "4\n00:00:07,000 --> 00:00:08,000\n-[ <i>Conversing in\n"
                 "foreign language]</i>\n\n"
-                "5\n00:00:09,000 --> 00:00:10,000\n<i>(Rooster crows)</i>\n",
+                "5\n00:00:09,000 --> 00:00:10,000\n<i>(Rooster crows)</i>\n\n"
+                "6\n00:00:11,000 --> 00:00:12,000\nNeigh!\n\n"
+                "7\n00:00:13,000 --> 00:00:14,000\nTHUNDER RUMBLES\n\n"
+                "8\n00:00:15,000 --> 00:00:16,000\nSEAGULLS CRY\n\n"
+                "9\n00:00:17,000 --> 00:00:18,000\nMEN SHOUT\n",
                 encoding="utf-8")
             output.write_text("", encoding="utf-8")
             audit = gui._subtitle_delivery_audit(source, output)
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(
-            audit["expected_removed_ids"], ["1", "2", "3", "4", "5"])
+            audit["expected_removed_ids"],
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9"])
 
 
 if __name__ == "__main__":
