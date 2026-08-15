@@ -3066,14 +3066,17 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
-    r"^(?:APPLAUSE|SINGING|CHANTING|(?:CHEERFUL\s+)?HYMN\s+MUSIC|"
+    r"^(?:APPLAUSE|SINGING|CHANTING|(?:MEN\s+)?CHANT|"
+    r"(?:CHEERFUL\s+)?HYMN\s+MUSIC|WALKIE-TALKIE\s+BEEPS|"
     r"(?:SHE|HE|THEY|CHOIR|MUSICIANS?)\s+(?:ALL\s+)?"
     r"(?:SINGS?|CHANTS?|PLAYS?)(?:\s+(?:A\s+)?HYMN)?|THEY\s+LAUGH|"
     r"BELLS?\s+(?:RINGS?|TOLLS?|CHIMES?)|(?:UP-TEMPO\s+)?MUSIC\s+PLAYS?|"
     r"HE\s+SINGS?,\s*DRUMBEAT|WOMEN\s+UL+ULATING|READS\s+IN\s+HEBREW|"
     r"PROPELLER\s+STUTTERS|ANNOUNCEMENT\s+ON\s+PA\s+SYSTEM|"
     r"VENDOR\s+CALLING\s+OUT|DEEP,?\s+RESONATING\s+NOTES|"
-    r"SPEAKING\s+GEORGIAN)$",
+    r"SPEAKING\s+GEORGIAN|"
+    r"(?:[A-Z][A-Z'\-]*(?:\s+[A-Z][A-Z'\-]*){0,4}\s+)?"
+    r"SPEAKING\s+NATIVE\s+LANGUAGE)$",
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
@@ -3249,6 +3252,12 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
     if (speaker_stripped != value.strip()
             and (_is_delivery_sdh_only(speaker_stripped)
                  or _src_is_sdh_only(speaker_stripped))):
+        return True
+    groups = re.findall(r"\[([^\]]*)\]|\(([^)]*)\)", value)
+    if (groups
+            and not re.sub(r"\[[^\]]*\]|\([^)]*\)", "", value).strip()
+            and all(_DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(
+                (square or paren).strip()) for square, paren in groups)):
         return True
     probe = [("1", "00:00:00,000 --> 00:00:00,001", value)]
     return not clean_sdh(probe, src_map={"1": value}, source_driven=True)
