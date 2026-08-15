@@ -475,6 +475,22 @@ class RepairFlowParityTest(unittest.TestCase):
 
 
 class IdentityInterjectionRegressionTest(unittest.TestCase):
+    def test_verified_documentary_english_residue_is_not_silently_accepted(self):
+        cases = (
+            ("British troops came here.", "British birlikleri buraya geldi."),
+            ("on the West African coast", "West African coast'ta"),
+            ("Canadian municipalities want them.",
+             "Canadian municipalities parkları için istiyor."),
+        )
+        for source, translation in cases:
+            with self.subTest(source=source):
+                self.assertTrue(gui._untranslated_reason(source, translation))
+        self.assertEqual(
+            gui._untranslated_reason(
+                "I am in British Columbia.", "British Columbia'dayım."),
+            "",
+        )
+
     def test_quoted_date_only_cues_are_valid_identity_translations(self):
         for text in ('"12/8/54."', '"9/9/54."', "'03-11-1986'"):
             with self.subTest(text=text):

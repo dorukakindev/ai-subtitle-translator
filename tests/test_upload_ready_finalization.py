@@ -783,6 +783,7 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
                 '<font color="#ffffff">SHE WAILS</font>',
                 '<font color="#ffffff">WOMEN ALL SCREAM</font>',
                 '<font color="#ffffff">SHE PANTS</font>',
+                '<font color="#ffffff">BATTLE CRIES ECHO</font>',
         ):
             with self.subTest(source=source):
                 self.assertTrue(gui._source_cue_is_delivery_removable(source))

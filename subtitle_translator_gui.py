@@ -3079,7 +3079,8 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"SPEAKING\s+NATIVE\s+LANGUAGE|"
     r"(?:SPEAKS?|SPEAKING|PEOPLE\s+CHATTING)(?:\s+IN)?\s+"
     r"(?:DOGON|KWAK['’]WALA|SPANISH|QUECHUA|INDIAN\s+TONGUE)|"
-    r"SHE\s+(?:WAILS|PANTS)|WOMEN\s+ALL\s+SCREAM)$",
+    r"SHE\s+(?:WAILS|PANTS)|WOMEN\s+ALL\s+SCREAM|"
+    r"BATTLE\s+CRIES\s+ECHO)$",
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
@@ -5125,7 +5126,11 @@ _PARTIAL_ENGLISH_LEAK_PHRASE_RE = re.compile(
     r"\bIn\s+(?:18|19|20)\d{2}\b"
     r"|\bInstitute\s+for\s+Learning\s+and\s+Brain(?:\s+Sciences)?\b"
     r"|\bmedical\s+student(?:['’]s)?\s+disease\b"
-    r"|\bThe\s+[A-Z][\w'’\-]+\s+couple\b",
+    r"|\bThe\s+[A-Z][\w'’\-]+\s+couple\b"
+    r"|\bWest\s+African\s+coast\b|\bWest\s+Africa\b"
+    r"|\bCanadian\s+municipalities\b|\bCalifornian\s+millionaires\b"
+    r"|\bEuropeans,\s+British,\s+Spanish\b"
+    r"|\bBritish\b(?!\s+Columbia)",
     re.I,
 )
 
