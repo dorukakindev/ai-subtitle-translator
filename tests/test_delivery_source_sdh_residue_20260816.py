@@ -36,6 +36,16 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
         audit = self._audit("He cries every night.", "Her gece ağlar.")
         self.assertEqual(audit["residual_sdh_cues"], 0)
 
+    def test_documentary_action_descriptors_are_removable(self):
+        for source_text in (
+                "(Ghostly wail)", "(Birds squawk)",
+                "(Man reading Nahuatl poem)",
+                "(Men chatting quietly in Spanish)",
+                "(Men chatting quietly)", "(Big Ben chimes)"):
+            with self.subTest(source_text=source_text):
+                self.assertTrue(
+                    gui._source_cue_is_delivery_removable(source_text))
+
 
 if __name__ == "__main__":
     unittest.main()
