@@ -517,6 +517,34 @@ class SdhSourceDrivenTest(unittest.TestCase):
             blocks, src_map=src_map, source_driven=True)
         self.assertEqual(result[0][2], "Yargıç şuna karar verdi:")
 
+    def test_plain_source_speaker_does_not_delete_translated_colon_sentence(self):
+        blocks = [
+            ("157", "00:00:01,000 --> 00:00:02,000", "Bunun ilginç yanı şu:"),
+            ("930", "00:00:02,000 --> 00:00:03,000", "Şimdi şöyle düşünün:"),
+        ]
+        src_map = _src(**{
+            "157": "Matt: the interesting one about this",
+            "930": "Nicholas: so, if you imagine, you know,",
+        })
+        result = sdh.clean_sdh_blocks(
+            blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            {idx: text for idx, _ts, text in result},
+            {
+                "157": "Bunun ilginç yanı şu:",
+                "930": "Şimdi şöyle düşünün:",
+            },
+        )
+
+    def test_matching_plain_speaker_label_only_is_still_removed(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Matt:")]
+        src_map = _src(**{"1": "Matt: hello there."})
+        self.assertEqual(
+            sdh.clean_sdh_blocks(
+                blocks, src_map=src_map, source_driven=True),
+            [],
+        )
+
     def test_numbered_sheriff_and_tv_speaker_labels_are_stripped(self):
         blocks = [
             ("3", "00:00:01,000 --> 00:00:02,000",

@@ -879,6 +879,20 @@ _SRC_QUOTED_SPEAKER_PREFIX_RE = re.compile(
 )
 
 
+def _target_is_source_speaker_label_only(tr_line: str, src_line: str) -> bool:
+    if not _TR_LABEL_ONLY_RE.fullmatch(str(tr_line or "")):
+        return False
+    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(str(src_line or ""))
+    if not source_match:
+        return False
+    source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
+    target_label = str(tr_line or "").strip().lstrip("-").rstrip(":").strip()
+    source_key = _ascii_fold(source_label)
+    target_key = _ascii_fold(target_label)
+    mapped = _SPEAKER_LABEL_TRANSLATIONS.get(source_key, source_label)
+    return target_key in {source_key, _ascii_fold(mapped)}
+
+
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     """Kaynak satırında (cue'nun kaynak metninde) parantez/köşeli grup VARSA,
     çeviri satırındaki tüm parantez/köşeli gruplarını sök (kalan repliği bırak).
@@ -904,7 +918,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
             or _SRC_BRACKET_SPEAKER_PREFIX_RE.search(src_line)
             or _SRC_QUOTED_SPEAKER_PREFIX_RE.search(src_line)):
         if (_src_has_plain_speaker_label(src_line)
-                and _TR_LABEL_ONLY_RE.fullmatch(tr_line)):
+                and _target_is_source_speaker_label_only(tr_line, src_line)):
             return ""
         tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
