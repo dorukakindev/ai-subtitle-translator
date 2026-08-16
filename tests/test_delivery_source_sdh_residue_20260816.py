@@ -68,7 +68,7 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 "LOUD DRUMMING", "GOSPEL SINGING",
                 "THE SINGING CONTINUES", "HE SINGS IN ARABIC",
                 "BELLS RING, DRUMS BEAT", "THEY CHANT AND DRUM",
-                "HE CHANTS IN GE'EZ LANGUAGE", "HE BLOWS HORN"):
+                "HE CHANTS IN GE'EZ LANGUAGE", "HE BLOWS HORN", "UH!"):
             with self.subTest(source_text=source_text):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))
