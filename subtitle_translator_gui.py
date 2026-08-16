@@ -3336,6 +3336,18 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
             r"\s*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|"
             r"ninth|tenth)\s*:\s*", value, re.IGNORECASE):
         return False
+    compact = re.sub(r"\s*\r?\n\s*", " ", value).strip()
+    if (re.fullmatch(r"\(\s*chanting\s+[A-Z][A-Za-z' -]{1,40}\s*\)",
+                     compact, re.IGNORECASE)
+            or re.fullmatch(r"they continue to sing\s+['\"].+['\"]",
+                            compact, re.IGNORECASE)
+            or re.fullmatch(r"e-?mail\s+subtitling@bbc\.co\.uk", compact,
+                            re.IGNORECASE)
+            or re.fullmatch(
+                r"(?:the conversation continues with the open university\.?|"
+                r"go to the address below and follow the links to the open university\.?)",
+                compact, re.IGNORECASE)):
+        return True
     arabic_lines = [line.strip() for line in value.splitlines() if line.strip()]
     arabic_academic_card = (
         len(arabic_lines) == 2 and value.lstrip().startswith(('"', '“'))

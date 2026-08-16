@@ -783,6 +783,16 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertFalse(gui._source_cue_is_delivery_removable(
             "Slovenský filmový ústav\npresents"))
 
+    def test_named_chant_bbc_credit_and_open_university_cta_are_removable(self):
+        for source in (
+                "(Chanting Hercules)",
+                'THEY CONTINUE TO SING\n"Viderunt Omnes"',
+                "E-mail subtitling@bbc.co.uk",
+                "The conversation continues with the\nOpen University.",
+                "Go to the address below and follow\nthe links to the Open University."):
+            with self.subTest(source=source):
+                self.assertTrue(gui._source_cue_is_delivery_removable(source))
+
     def test_bare_french_and_turkish_sdh_are_delivery_removable(self):
         for source in (
                 "Musique douce instrumentale", "Musique gaie populaire",
