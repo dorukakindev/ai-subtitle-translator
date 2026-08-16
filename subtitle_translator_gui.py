@@ -12229,6 +12229,105 @@ def _delivery_audit_log_details(audit: dict, limit: int = 12) -> list[str]:
     return lines
 
 
+def _build_line_by_line_audit_package(
+        source_path: str, output_path: str, target_language="Turkish",
+        source_language=None, delivery_audit=None,
+        scene_gap_sec: float = 3.0) -> str:
+    source_rows = list(parse_subtitle(str(source_path), source_language))
+    output_rows = [
+        (idx, ts, str(text or ""))
+        for idx, ts, text in parse_subtitle(str(output_path), target_language)
+        if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
+    ]
+    audit = dict(delivery_audit or _subtitle_delivery_audit(
+        source_path, output_path, target_language, source_language))
+    output_by_ts = {str(ts): (str(idx), text) for idx, ts, text in output_rows}
+    group_by_id, _groups = _fragment_groups_gui(source_rows)
+    group_by_id = {str(key): str(value) for key, value in group_by_id.items()}
+    scene_by_id = {}
+    scene_no = 1
+    previous_end = None
+    gap_ms = max(0, int(float(scene_gap_sec or 0.0) * 1000))
+    for idx, ts, _text in source_rows:
+        try:
+            start_ms, end_ms = _srt_timestamp_bounds(ts)
+        except Exception:
+            start_ms = end_ms = None
+        if (previous_end is not None and start_ms is not None
+                and start_ms - previous_end >= gap_ms):
+            scene_no += 1
+        scene_by_id[str(idx)] = f"scene_{scene_no}"
+        if end_ms is not None:
+            previous_end = end_ms
+    lines = [
+        "SATIR SATIR KAYNAK-HEDEF DENETİM PAKETİ",
+        "Bu dosya yalnız rapordur; altyazıyı değiştirmez ve API çağrısı yapmaz.",
+        f"Kaynak: {source_path}",
+        f"Çıktı: {output_path}",
+        f"Kaynak SHA-256: {audit.get('source_sha256') or '-'}",
+        f"Çıktı SHA-256: {audit.get('output_sha256') or '-'}",
+        f"Teslim durumu: {audit.get('status') or 'unavailable'}",
+        f"Kaynak cue: {len(source_rows)} | İmza dışı hedef cue: {len(output_rows)}",
+        "Durumlar: mevcut | beklenen_temizlik | eksik_supheli",
+        "=" * 96,
+    ]
+    for idx, ts, source_text in source_rows:
+        cue_id = str(idx)
+        target = output_by_ts.get(str(ts))
+        if target is not None:
+            target_id, target_text = target
+            status = "mevcut"
+        elif _source_cue_is_delivery_removable(source_text):
+            target_id, target_text = "-", "[BEKLENEN TEMİZLİK]"
+            status = "beklenen_temizlik"
+        else:
+            target_id, target_text = "-", "[HEDEFTE YOK — KAYNAK KONTROLÜ GEREKİR]"
+            status = "eksik_supheli"
+        source_visible = " / ".join(str(source_text or "").splitlines()).strip()
+        target_visible = " / ".join(str(target_text or "").splitlines()).strip()
+        lines.extend([
+            f"#{cue_id} | {ts} | hedef=#{target_id} | "
+            f"{scene_by_id.get(cue_id, 'scene_?')} | "
+            f"cümle={group_by_id.get(cue_id, 'tek')} | durum={status}",
+            f"KAYNAK : {source_visible}",
+            f"TÜRKÇE : {target_visible}",
+            "-" * 96,
+        ])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_deep_delivery_risk_jsonl(stats: dict) -> str:
+    stats = dict(stats or {})
+    rows = _deep_delivery_risk_rows(stats)
+    records = [{
+        "type": "meta",
+        "report_only": True,
+        "risk_clusters": len(rows),
+        "processed_cues": int(stats.get("processed_cues", 0) or 0),
+        "total_cues": int(stats.get("total_cues", 0) or 0),
+        "coverage_pct": float(stats.get("processed_coverage_pct", 0.0) or 0.0),
+    }]
+    for row in rows:
+        records.append({
+            "type": "semantic_cluster",
+            "cluster": row.get("cluster"),
+            "status": row.get("status"),
+            "score": row.get("score"),
+            "confidence": row.get("confidence"),
+            "ids": list(row.get("ids") or []),
+            "reasons": list(row.get("reasons") or []),
+            "items": list(row.get("items") or []),
+            "changes": dict(row.get("changes") or {}),
+        })
+    for finding in stats.get("alignment_findings") or []:
+        records.append({"type": "alignment", **dict(finding)})
+    for cue_id in stats.get("owner_mismatch_ids") or []:
+        records.append({"type": "owner_mismatch", "cue_id": str(cue_id)})
+    return "\n".join(
+        json.dumps(record, ensure_ascii=False, sort_keys=True, default=str)
+        for record in records) + "\n"
+
+
 def _file_process_report_text(row: dict, run_id: str = "") -> str:
     audit = row.get("delivery_audit") or {}
     lines = [
@@ -12298,6 +12397,15 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
             if isinstance(value, list):
                 value = ", ".join(value) if value else "yok"
             lines.append(f"- {label}: {value}")
+    lines.extend([
+        "",
+        "DENETİM PAKETLERİ",
+        f"- Satır satır kaynak-hedef: "
+        f"{row.get('line_by_line_audit_path') or 'yazılmadı'}",
+    ])
+    if row.get("line_by_line_audit_error"):
+        lines.append(
+            f"- Satır satır paket hatası: {row['line_by_line_audit_error']}")
     lines.extend(["", "CUE BAZLI PASS DEĞİŞİKLİKLERİ"])
     history = row.get("pass_history") or {}
     if not history:
@@ -23658,6 +23766,9 @@ class App(ctk.CTk):
         report_path = (
             Path(out_path).parent / "Raporlar"
             / f"{Path(out_path).stem}.derin_teslim_anlam_taramasi.txt")
+        risk_path = (
+            Path(out_path).parent / "Raporlar"
+            / f"{Path(out_path).stem}.anlam_riskleri.jsonl")
         if status_out is not None:
             status_out.clear()
             status_out.update({
@@ -23668,6 +23779,7 @@ class App(ctk.CTk):
         if (not self._deep_delivery_semantic_enabled()
                 or not src_clean_map or not blocks):
             report_path.unlink(missing_ok=True)
+            risk_path.unlink(missing_ok=True)
             if status_out is not None:
                 status_out["status"] = "skipped"
             return 0
@@ -23733,6 +23845,7 @@ class App(ctk.CTk):
             if result != list(blocks):
                 raise RuntimeError("report_only_result_changed")
             stats["critic_status"] = dict(critic_status or {})
+            stats["total_cues"] = len(blocks)
             stats["alignment_findings"] = list(alignment_findings)
             stats["owner_mismatch_ids"] = sorted(
                 _chunk_content_owner_mismatch_ids(
@@ -23757,18 +23870,23 @@ class App(ctk.CTk):
                 report_path,
                 build_deep_delivery_semantic_report(stats, blocks),
                 encoding="utf-8")
+            atomic_write_text(
+                risk_path, _build_deep_delivery_risk_jsonl(stats),
+                encoding="utf-8")
             if getattr(self, "_active_run_record", None):
                 with self._run_record_lock:
                     reports = self._active_run_record.setdefault("reports", [])
-                    if str(report_path) not in reports:
-                        reports.append(str(report_path))
+                    for generated_path in (report_path, risk_path):
+                        if str(generated_path) not in reports:
+                            reports.append(str(generated_path))
             stage_state = str((status_out or {}).get("status") or "completed")
             _record_file_stage_if_available(
                 self, progress_path, "Derin Teslim Anlam Taraması", stage_state)
             self._log(
                 f"Derin teslim raporu: {report_path.name} — "
                 f"{processed}/{len(blocks)} cue (hedef %{target_coverage * 100:.0f}), "
-                f"{int(stats.get('suggested', 0) or 0)} doğrulanmış öneri",
+                f"{int(stats.get('suggested', 0) or 0)} doğrulanmış öneri; "
+                f"tam risk listesi: {risk_path.name}",
                 "ok" if complete else "warn")
             return int(stats.get("suggested", 0) or 0)
         except RequestCancelled:
@@ -23785,6 +23903,13 @@ class App(ctk.CTk):
                     "# Derin Teslim Anlam Taraması\n"
                     "# KAPSAM EKSİK — altyazı değiştirilmedi.\n"
                     f"Hata: {exc}\n",
+                    encoding="utf-8")
+                atomic_write_text(
+                    risk_path,
+                    json.dumps({
+                        "type": "meta", "report_only": True,
+                        "status": "failed", "error": str(exc),
+                    }, ensure_ascii=False, sort_keys=True) + "\n",
                     encoding="utf-8")
             except Exception as report_exc:
                 self._log(
@@ -26301,14 +26426,14 @@ class App(ctk.CTk):
             for source_row in rows:
                 row = dict(source_row)
                 source_path = str(row.get("source_path") or "")
+                delivery_source_path = str(
+                    row.get("delivery_source_path") or source_path)
                 if row.get("delivery_audit_skip"):
                     row["delivery_audit"] = {
                         "status": "unavailable",
                         "reason": "postprocess_not_written",
                     }
                 else:
-                    delivery_source_path = str(
-                        row.get("delivery_source_path") or source_path)
                     row["delivery_audit"] = _subtitle_delivery_audit(
                         delivery_source_path, row.get("output_path", ""),
                         self.tgt_var.get(), self._effective_file_source_language(
@@ -26351,6 +26476,36 @@ class App(ctk.CTk):
                     self._record_file_status(
                         source_path, terminal_phase, terminal_status)
                     row["timing"] = self._file_timing_snapshot(source_path)
+                output_path = str(row.get("output_path") or "")
+                if (not row.get("delivery_audit_skip")
+                        and Path(delivery_source_path).is_file()
+                        and Path(output_path).is_file()):
+                    try:
+                        line_report_dir = Path(output_path).parent / "Raporlar"
+                        line_report_dir.mkdir(parents=True, exist_ok=True)
+                        line_report_path = line_report_dir / (
+                            f"{Path(output_path).stem}.satir_satir_denetim.txt")
+                        atomic_write_text(
+                            line_report_path,
+                            _build_line_by_line_audit_package(
+                                delivery_source_path, output_path,
+                                self.tgt_var.get(),
+                                self._effective_file_source_language(
+                                    delivery_source_path, self.src_var.get()),
+                                row.get("delivery_audit"),
+                                self._run_scene_gap()),
+                            encoding="utf-8")
+                        row["line_by_line_audit_path"] = str(line_report_path)
+                        self._log(
+                            f"Satır satır denetim paketi: "
+                            f"{line_report_path.name} (API kullanımı yok)",
+                            "ok")
+                    except Exception as line_report_error:
+                        row["line_by_line_audit_error"] = str(line_report_error)
+                        self._log(
+                            f"Satır satır denetim paketi yazılamadı: "
+                            f"{Path(output_path).name}: {line_report_error}",
+                            "err")
                 row["feature_audit"] = _quality_feature_audit(row, snapshot)
                 report_rows.append(row)
             with self._token_lock:
@@ -26407,6 +26562,10 @@ class App(ctk.CTk):
                     detail_path, _file_process_report_text(row, run_id),
                     encoding="utf-8")
                 report_paths.append(detail_path)
+                line_report_path = Path(str(
+                    row.get("line_by_line_audit_path") or ""))
+                if line_report_path.is_file():
+                    report_paths.append(line_report_path)
             guard_rows = []
             for row in report_rows:
                 events = (row.get("pass_trace") or {}).get("__guard_events__") or []

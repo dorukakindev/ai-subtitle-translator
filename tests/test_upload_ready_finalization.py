@@ -1024,6 +1024,56 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         )
         self.assertFalse(any("Wildblood" in text for _idx, _ts, text in result))
 
+class LineByLineAuditPackageTest(unittest.TestCase):
+    def test_package_aligns_every_source_cue_and_marks_missing_dialogue(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.srt"
+            output = root / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nI need\n\n"
+                "2\n00:00:02,100 --> 00:00:03,000\nto leave.\n\n"
+                "3\n00:00:10,000 --> 00:00:11,000\n(Door slams)\n\n"
+                "4\n00:00:11,100 --> 00:00:12,000\nWhere are you?\n\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nGitmem\n\n"
+                "2\n00:00:02,100 --> 00:00:03,000\ngerekiyor.\n\n",
+                encoding="utf-8")
+
+            report = gui._build_line_by_line_audit_package(
+                str(source), str(output), "Turkish", "English")
+
+        self.assertIn("#1 |", report)
+        self.assertIn("cümle=fg_1_2", report)
+        self.assertIn("scene_2", report)
+        self.assertIn("#3 |", report)
+        self.assertIn("durum=beklenen_temizlik", report)
+        self.assertIn("#4 |", report)
+        self.assertIn("durum=eksik_supheli", report)
+        self.assertIn("[HEDEFTE YOK", report)
+
+    def test_risk_jsonl_keeps_more_than_top_twenty(self):
+        details = [
+            {
+                "status": "suggested", "cluster": f"cluster_{idx}",
+                "ids": [str(idx)], "reason": "subject drift",
+                "changes": {str(idx): {
+                    "source": f"source {idx}", "before": f"before {idx}",
+                    "after": f"after {idx}",
+                }},
+            }
+            for idx in range(25)
+        ]
+        payload = gui._build_deep_delivery_risk_jsonl({
+            "details": details, "processed_cues": 25,
+            "total_cues": 25, "processed_coverage_pct": 100.0,
+        })
+        records = [line for line in payload.splitlines() if line.strip()]
+        self.assertEqual(len(records), 26)
+        self.assertIn('"risk_clusters": 25', records[0])
+        self.assertIn('"cluster": "cluster_24"', payload)
+
 
 if __name__ == "__main__":
     unittest.main()
