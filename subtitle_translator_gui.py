@@ -3317,6 +3317,9 @@ def _is_delivery_sdh_only(text: str) -> bool:
             r"(?:muffled\s+(?:speaking|voice)|(?:speaking|speaks)\s+(?:in\s+)?"
             r"(?:native|foreign)\s+language|conversing\s+in\s+(?:a\s+)?"
             r"(?:native|foreign)\s+language|mouthing\s+words|clamou?r|"
+            r"(?:he|she|they|all)\s+(?:laughs?|exhales?)|"
+            r"(?:gentle\s+)?laughter|theme\s+music(?:\s+and\s+applause)?|"
+            r"pulsing|"
             r"(?:[\w'-]+\s+)?(?:eats?|chews?)\s+(?:noisily|loudly)|"
             r"frog\s+croaks?|rooster\s+crows?)\s*[.!]*",
             bare_english_sdh, re.IGNORECASE):
