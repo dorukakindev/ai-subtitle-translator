@@ -11124,6 +11124,68 @@ def _deep_delivery_segment_coverage(blocks, processed_ids) -> list[dict]:
     return result
 
 
+def _deep_delivery_risk_category(reason: str) -> str:
+    token = str(reason or "").casefold()
+    groups = (
+        ("özne/nesne/kişi", ("subject", "object", "speaker", "person", "referent", "pronoun")),
+        ("olumsuzluk/kip/zaman", ("negat", "polarity", "modal", "tense", "kip", "zaman")),
+        ("sayı/özel ad/terim", ("number", "name", "proper", "term", "gloss", "canon")),
+        ("fragment/yarım cümle", ("fragment", "predicate", "dangling", "sentence", "linebreak")),
+        ("eksik/taşınmış/tekrarlanmış anlam", (
+            "missing", "duplicate", "owner", "alignment", "shift", "outlier", "absorbed")),
+        ("kaynakta olmayan bilgi", ("invent", "source_absent", "source-absent", "expansion")),
+    )
+    for title, markers in groups:
+        if any(marker in token for marker in markers):
+            return title
+    return "diğer"
+
+
+def _deep_delivery_risk_rows(stats: dict) -> list[dict]:
+    context = dict(stats.get("cluster_context") or {})
+    rows = []
+    for detail in stats.get("details") or []:
+        status = str(detail.get("status") or "")
+        if status not in {"suggested", "rejected"}:
+            continue
+        confidence_values = []
+        for value in dict(detail.get("confidence") or {}).values():
+            try:
+                confidence_values.append(min(1.0, max(0.0, float(value))))
+            except (TypeError, ValueError):
+                pass
+        confidence = max(confidence_values) if confidence_values else (
+            0.65 if status == "suggested" else 0.45)
+        cluster = str(detail.get("cluster") or "?")
+        reasons = list(dict(detail.get("reasons") or {}).values())
+        if detail.get("reason"):
+            reasons.append(str(detail.get("reason")))
+        affected = [str(value) for value in detail.get("ids") or []]
+        changes = dict(detail.get("changes") or {})
+        items = list(context.get(cluster, []))
+        if not items:
+            items = [
+                {
+                    "id": sid,
+                    "source": dict(changes.get(sid) or {}).get("source", ""),
+                    "translation": dict(changes.get(sid) or {}).get("before", ""),
+                    "frag": "none", "suspect": True,
+                }
+                for sid in affected
+            ]
+        suspect_count = sum(
+            1 for item in items if item.get("suspect"))
+        score = min(100, round(confidence * 70 + min(20, len(affected) * 4)
+                               + min(10, suspect_count * 2)))
+        rows.append({
+            "cluster": cluster, "status": status, "score": score,
+            "confidence": confidence, "ids": affected, "reasons": reasons,
+            "items": items,
+            "changes": changes,
+        })
+    return sorted(rows, key=lambda row: (-row["score"], row["cluster"]))
+
+
 def build_deep_delivery_semantic_report(stats: dict, blocks) -> str:
     stats = dict(stats or {})
     total = len(blocks or [])
@@ -11135,7 +11197,8 @@ def build_deep_delivery_semantic_report(stats: dict, blocks) -> str:
         item["processed"] == item["total"] for item in segments))
     lines = [
         "# Derin Teslim Anlam Taraması",
-        "# YALNIZ RAPOR: bu aşama altyazı metnini değiştirmez.",
+        "# YALNIZ RAPOR: bu aşama altyazı metnini değiştirmez, yeniden çeviri yapmaz,",
+        "# öneri uygulamaz, karantinaya almaz veya YÜKLEMEYE HAZIR kararını değiştirmez.",
         f"# Durum: {'TAM KAPSAM' if complete else 'KAPSAM EKSİK'} | "
         f"İşlenen: {processed}/{total} (%{coverage:.1f}) | "
         f"Küme: {int(stats.get('clusters', 0) or 0)} | "
@@ -11147,23 +11210,88 @@ def build_deep_delivery_semantic_report(stats: dict, blocks) -> str:
             f"(%{item['coverage_pct']:.1f})" for item in segments),
         "",
     ]
-    for detail in stats.get("details") or []:
-        cluster = detail.get("cluster") or ",".join(detail.get("clusters") or []) or "?"
-        status = str(detail.get("status") or "?")
-        reason = str(detail.get("reason") or "").strip()
-        lines.append(f"[{cluster}] {status}" + (f": {reason}" if reason else ""))
-        ids = [str(value) for value in detail.get("ids") or []]
-        if ids:
-            lines.append("  cue: " + ", ".join(ids))
-        reasons = dict(detail.get("reasons") or {})
-        changes = dict(detail.get("changes") or {})
-        for sid in ids:
-            change = dict(changes.get(sid) or {})
-            lines.append(f"  [{sid}] kaynak: {change.get('source', '')}")
-            lines.append(f"       mevcut: {change.get('before', '')}")
-            lines.append(f"       öneri : {change.get('after', '')}")
-            if reasons.get(sid):
-                lines.append(f"       neden : {reasons[sid]}")
+    critic = dict(stats.get("critic_status") or {})
+    lines.extend([
+        "## Critic Özeti (yalnız rapor)",
+        f"Önerilen: {int(critic.get('suggested', 0) or 0)} | "
+        f"Guard reddi: {int(critic.get('rejected_count', 0) or 0)} | "
+        f"Uygulanan: {int(critic.get('changed', 0) or 0)} | "
+        f"Rapor modu: {'evet' if critic.get('report_only', True) else 'hayır'}",
+    ])
+    rejected_reasons = dict(critic.get("rejected_reasons") or {})
+    if rejected_reasons:
+        lines.append("Guard nedenleri: " + ", ".join(
+            f"{key}={value}" for key, value in sorted(rejected_reasons.items())))
+
+    fragment_total = int(stats.get("fragment_groups_total", 0) or 0)
+    fragment_done = int(stats.get("fragment_groups_processed", 0) or 0)
+    sentence_total = int(stats.get("sentence_groups_total", stats.get("clusters", 0)) or 0)
+    sentence_done = int(stats.get("sentence_groups_processed", 0) or 0)
+    lines.extend([
+        "",
+        "## Cümle/Fragment Kapsamı",
+        f"Cümle kümeleri: {sentence_done}/{sentence_total} | "
+        f"Fragment grupları: {fragment_done}/{fragment_total}",
+    ])
+    for group in stats.get("fragment_groups_incomplete") or []:
+        lines.append(
+            f"Eksik fragment {group.get('group', '?')}: "
+            f"üyeler={','.join(group.get('items') or [])}; "
+            f"işlenmeyen={','.join(group.get('missing') or [])}")
+
+    alignment = list(stats.get("alignment_findings") or [])
+    owner_ids = [str(value) for value in stats.get("owner_mismatch_ids") or []]
+    lines.extend(["", "## Deterministik Teslim Adayları (yalnız inceleme)"])
+    if not alignment and not owner_ids:
+        lines.append("Eksik diyalog, içerik kayması veya cue sahiplik adayı bulunmadı.")
+    for finding in alignment:
+        ids = finding.get("ids") or [finding.get("idx")]
+        ids = [str(value) for value in ids if value is not None]
+        lines.append(
+            f"{finding.get('type', 'issue')}: cue={','.join(ids) or '?'}; "
+            f"ayrıntı={finding.get('detail', '')}")
+    if owner_ids:
+        lines.append("Doğru ID / yanlış cue içeriği adayları: " + ", ".join(owner_ids))
+
+    risk_counts = {}
+    for row in _deep_delivery_risk_rows(stats):
+        reasons = row["reasons"] or ["other"]
+        for category in {_deep_delivery_risk_category(reason) for reason in reasons}:
+            risk_counts[category] = risk_counts.get(category, 0) + 1
+    for finding in alignment:
+        category = _deep_delivery_risk_category(finding.get("type"))
+        risk_counts[category] = risk_counts.get(category, 0) + 1
+    if owner_ids:
+        risk_counts["eksik/taşınmış/tekrarlanmış anlam"] = (
+            risk_counts.get("eksik/taşınmış/tekrarlanmış anlam", 0) + len(owner_ids))
+    lines.extend(["", "## Risk Türleri"])
+    lines.append(", ".join(
+        f"{name}: {count}" for name, count in sorted(risk_counts.items()))
+        if risk_counts else "Kaynakla doğrulanmış risk bulunmadı.")
+
+    lines.extend(["", "## En Riskli 20 Küme"])
+    risk_rows = _deep_delivery_risk_rows(stats)[:20]
+    if not risk_rows:
+        lines.append("Raporlanacak riskli küme bulunmadı.")
+    for rank, row in enumerate(risk_rows, 1):
+        lines.append(
+            f"{rank}. [{row['cluster']}] risk={row['score']}/100 | "
+            f"güven=%{row['confidence'] * 100:.0f} | durum={row['status']} | "
+            f"cue={','.join(row['ids']) or '?'}")
+        if row["reasons"]:
+            lines.append("   neden: " + " | ".join(row["reasons"]))
+        affected = set(row["ids"])
+        for item in row["items"]:
+            sid = str(item.get("id", "?"))
+            marker = "*" if sid in affected else "-"
+            lines.append(
+                f"   {marker} [{sid}] frag={item.get('frag', 'none')} "
+                f"şüpheli={'evet' if item.get('suspect') else 'hayır'}")
+            lines.append(f"       kaynak: {item.get('source', '')}")
+            lines.append(f"       mevcut: {item.get('translation', '')}")
+            change = dict(row["changes"].get(sid) or {})
+            if change.get("after"):
+                lines.append(f"       öneri : {change.get('after')}")
     if int(stats.get("suggested", 0) or 0) == 0:
         lines.append("Kaynakla doğrulanmış bir anlam düzeltme önerisi bulunmadı.")
     return "\n".join(lines).rstrip() + "\n"
@@ -14485,7 +14613,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(critic_fr, text="Critic Pass",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Seçili yardımcı model hataları otomatik düzeltir:\ntransliterasyon, yanlış register.",
+        ctk.CTkLabel(sb, text="Seçili yardımcı model şüpheli anlam, bağlam ve\nterim noktalarını yalnız raporlar; altyazıyı değiştirmez.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -23377,7 +23505,8 @@ class App(ctk.CTk):
     def _maybe_deep_delivery_semantic_audit(
             self, out_path, src_clean_map, blocks, src_lang=None, cues=None,
             changed_ids=None, source_path=None, locked_terms=None,
-            analysis_result=None, status_out: dict | None = None) -> int:
+            analysis_result=None, critic_status=None,
+            status_out: dict | None = None) -> int:
         report_path = (
             Path(out_path).parent / "Raporlar"
             / f"{Path(out_path).stem}.derin_teslim_anlam_taramasi.txt")
@@ -23404,7 +23533,8 @@ class App(ctk.CTk):
             extra_reasons = {
                 str(sid): {"POST_PASS_CHANGED"} for sid in (changed_ids or [])
             }
-            for finding in detect_alignment_issues(blocks, src_clean_map):
+            alignment_findings = detect_alignment_issues(blocks, src_clean_map)
+            for finding in alignment_findings:
                 reason = f"ALIGNMENT_{str(finding.get('type', 'issue')).upper()}"
                 for sid in finding.get("ids") or [finding.get("idx")]:
                     if sid is not None:
@@ -23453,6 +23583,12 @@ class App(ctk.CTk):
             )
             if result != list(blocks):
                 raise RuntimeError("report_only_result_changed")
+            stats["critic_status"] = dict(critic_status or {})
+            stats["alignment_findings"] = list(alignment_findings)
+            stats["owner_mismatch_ids"] = sorted(
+                _chunk_content_owner_mismatch_ids(
+                    [{"i": str(idx), "t": text} for idx, _ts, text in blocks],
+                    src_clean_map))
             processed = int(stats.get("processed_cues", 0) or 0)
             complete = processed == len(blocks)
             if status_out is not None:
@@ -24766,15 +24902,13 @@ class App(ctk.CTk):
                             cancel_context=self.__dict__.get(
                                 "_helper_request_canceller"),
                             status_out=_critic_status,
-                            apply_changes=not bool(self._snap_get(
-                                "quality_report_only", True)))
+                            apply_changes=False)
                         if self._stop_flag:
                             break
                         self._write_critic_change_report(
                             fp, _critic_change_log,
                             _critic_status.get("rejected_candidates", []),
-                            report_only=bool(self._snap_get(
-                                "quality_report_only", True)),
+                            report_only=True,
                             source_cues=orig_cues,
                             translation_blocks=_before_critic)
                         if _pass_failed(_critic_status):
@@ -28919,7 +29053,7 @@ class App(ctk.CTk):
             _qc_fixes = 0
             _qc_auto_fixes = 0
 
-            # ── Critic Pass (otomatik düzeltme) ──────────────────────────────
+            # ── Critic Pass (yalnız rapor) ──────────────────────────────────
             if self.critic_var.get() and sorted_blocks and _quality_api_allowed:
                 self._set_phase("Critic Pass", f"{fname}  —  {len(sorted_blocks)} satır")
                 self._update_file_progress(filepath, "Critic Pass", 89)
@@ -28948,8 +29082,7 @@ class App(ctk.CTk):
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
                         status_out=_critic_status,
-                        apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)),
+                        apply_changes=False,
                     )
                     _pass_status["Critic"] = dict(_critic_status)
                     if self._stop_flag:
@@ -28960,8 +29093,7 @@ class App(ctk.CTk):
                     self._write_critic_change_report(
                         out_path, _critic_change_log,
                         _critic_status.get("rejected_candidates", []),
-                        report_only=bool(self._snap_get(
-                            "quality_report_only", True)),
+                        report_only=True,
                         source_cues=cues,
                         translation_blocks=_before_pass)
                 except RequestCancelled:
@@ -29301,6 +29433,7 @@ class App(ctk.CTk):
                     analysis_result=(context, char_examples, pronoun_map,
                                      character_styles, scene_emotions,
                                      idiom_map, cultural_refs),
+                    critic_status=_pass_status.get("Critic"),
                     status_out=_deep_status)
                 _pass_status["Deep-Delivery-Semantic"] = dict(_deep_status)
                 _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
@@ -30767,8 +30900,7 @@ class App(ctk.CTk):
                                     cancel_context=self.__dict__.get(
                                         "_helper_request_canceller"),
                                     status_out=_critic_status,
-                                    apply_changes=not bool(self._snap_get(
-                                        "quality_report_only", True)))
+                                    apply_changes=False)
                                 _pass_status["Critic"] = dict(_critic_status)
                                 if self._stop_flag:
                                     break
@@ -30780,8 +30912,7 @@ class App(ctk.CTk):
                                 self._write_critic_change_report(
                                     output_path, _critic_change_log,
                                     _critic_status.get("rejected_candidates", []),
-                                    report_only=bool(self._snap_get(
-                                        "quality_report_only", True)))
+                                    report_only=True)
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
                                 _before_pass = list(pp)
@@ -31020,6 +31151,7 @@ class App(ctk.CTk):
                                 source_path=str(_src_path),
                                 locked_terms=_locked_terms,
                                 analysis_result=_analysis_result,
+                                critic_status=_pass_status.get("Critic"),
                                 status_out=_deep_status)
                             _pass_status["Deep-Delivery-Semantic"] = dict(
                                 _deep_status)
@@ -31590,8 +31722,7 @@ class App(ctk.CTk):
                         cancel_context=self.__dict__.get(
                             "_helper_request_canceller"),
                         status_out=_critic_status,
-                        apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)))
+                        apply_changes=False)
                     _pass_status["Critic"] = dict(_critic_status)
                     if self._stop_flag:
                         break
@@ -31603,8 +31734,7 @@ class App(ctk.CTk):
                     self._write_critic_change_report(
                         out_path, _critic_change_log,
                         _critic_status.get("rejected_candidates", []),
-                        report_only=bool(self._snap_get(
-                            "quality_report_only", True)),
+                        report_only=True,
                         source_cues=_src_cues,
                         translation_blocks=_before_pass)
                 except Exception as e:
@@ -31841,6 +31971,7 @@ class App(ctk.CTk):
                     changed_ids=_pass_history.keys(), source_path=fp,
                     locked_terms=_locked_terms_for(fp),
                     analysis_result=_analysis_result,
+                    critic_status=_pass_status.get("Critic"),
                     status_out=_deep_status)
                 _pass_status["Deep-Delivery-Semantic"] = dict(_deep_status)
                 _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
@@ -33070,8 +33201,7 @@ class App(ctk.CTk):
                                 cancel_context=self.__dict__.get(
                                     "_helper_request_canceller"),
                                 status_out=_critic_status,
-                                apply_changes=not bool(self._snap_get(
-                                    "quality_report_only", True)))
+                                apply_changes=False)
                             _pass_status["Critic"] = dict(_critic_status)
                             if self._stop_flag:
                                 break
@@ -33083,8 +33213,7 @@ class App(ctk.CTk):
                             self._write_critic_change_report(
                                 out_path, _critic_change_log,
                                 _critic_status.get("rejected_candidates", []),
-                                report_only=bool(self._snap_get(
-                                    "quality_report_only", True)),
+                                report_only=True,
                                 source_cues=cues,
                                 translation_blocks=_before_pass)
                         if self.polish_var.get() and pp_blocks:
@@ -33364,6 +33493,7 @@ class App(ctk.CTk):
                         changed_ids=_pass_history.keys(), source_path=filepath,
                         locked_terms=_locked_terms,
                         analysis_result=_full_analysis,
+                        critic_status=_pass_status.get("Critic"),
                         status_out=_deep_status)
                     _pass_status["Deep-Delivery-Semantic"] = dict(_deep_status)
                     _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
