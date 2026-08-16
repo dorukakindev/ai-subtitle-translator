@@ -36,6 +36,24 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
         audit = self._audit("He cries every night.", "Her gece ağlar.")
         self.assertEqual(audit["residual_sdh_cues"], 0)
 
+    def test_standalone_proper_name_is_not_untranslated_fragment(self):
+        audit = self._audit("James haywood...", "James Haywood...")
+        self.assertEqual(audit["untranslated_fragment_ids"], [])
+
+    def test_repeated_inline_object_term_is_not_untranslated_fragment(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Üzeriniz kazınıyor,\nstrigil..."),
+            ("2", "00:00:02,100 --> 00:00:03,000", "Strigil kullanılır."),
+        ]
+        source_map = {
+            "1": "You get strigiled off,\nstrigil...",
+            "2": "Use the strigil.",
+        }
+        self.assertEqual(
+            gui._delivery_untranslated_fragment_ids(
+                blocks, source_map, source_language="English"),
+            [])
+
     def test_documentary_action_descriptors_are_removable(self):
         for source_text in (
                 "(Ghostly wail)", "(Birds squawk)",

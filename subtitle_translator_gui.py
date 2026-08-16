@@ -12,7 +12,7 @@ import threading
 import traceback
 import unicodedata
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qsl, urlparse
@@ -11482,6 +11482,12 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
     if normalize_language_name(target_language, allow_auto=False) != "Turkish":
         return []
     flagged = []
+    visible_target_words = Counter(
+        word.casefold()
+        for _idx, _timestamp, target_text in blocks or []
+        for line in str(target_text or "").splitlines()
+        for word in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+", _delivery_visible_line(line))
+    )
     for idx, _timestamp, target_text in blocks or []:
         source_text = str((source_map or {}).get(str(idx), "") or "")
         if not source_text:
@@ -11557,8 +11563,32 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                     r"Arabic|Hebrew|Sanskrit|Japanese|Chinese|Russian)\b",
                     "\n".join(source_lines[:source_line_no]), re.I))
             )
+            standalone_proper_name = (
+                source_is_english and reason == "identical_source"
+                and any(bool(re.fullmatch(
+                    r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*"
+                    r"(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*){1,4}[.!?…]*",
+                    candidate)) for candidate in matching_targets)
+                and not {word.casefold() for word in re.findall(
+                    r"[A-Za-zÀ-ÖØ-öø-ÿ]+", visible)}.intersection({
+                        "good", "morning", "thank", "thanks", "hello", "please",
+                        "come", "look", "wait", "stop", "help", "yes", "no",
+                    })
+            )
+            repeated_inline_term = (
+                source_is_english and reason == "identical_source"
+                and source_line_no > 0 and len(target_visible_lines) > 1
+                and bool(re.fullmatch(r"[a-z][a-z'’-]{3,}[.!?…]*", visible))
+                and visible_target_words.get(
+                    visible.casefold().strip(".,;:!?…\"'“”"), 0) > 1
+                and visible.casefold().strip(".,;:!?…\"'“”") not in {
+                    "running", "walking", "speaking", "singing", "laughing",
+                    "crying", "shouting", "whispering", "chanting", "music",
+                }
+            )
             if (reason and not foreign_name_line and not list_tail_proper_name
-                    and not quoted_foreign_reference and not foreign_term_context):
+                    and not quoted_foreign_reference and not foreign_term_context
+                    and not standalone_proper_name and not repeated_inline_term):
                 flagged.append(str(idx))
                 break
     return flagged
