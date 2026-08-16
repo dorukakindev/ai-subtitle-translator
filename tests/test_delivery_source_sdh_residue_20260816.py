@@ -90,6 +90,7 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 "THE SPEAK IN TONGUES", "SHE CRIES",
                 "MUEZZIN CHANTS", "DRUM RHYTHMS AND CHANTING",
                 "LOUD DRUMMING", "GOSPEL SINGING",
+                "Old men smirking.",
                 "THE SINGING CONTINUES", "HE SINGS IN ARABIC",
                 "BELLS RING, DRUMS BEAT", "THEY CHANT AND DRUM",
                 "HE CHANTS IN GE'EZ LANGUAGE", "HE BLOWS HORN", "UH!"):
