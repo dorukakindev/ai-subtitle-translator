@@ -565,6 +565,7 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(audit["extra_dialogue_ids"], ["4"])
         self.assertTrue(gui._delivery_audit_has_hard_error(audit))
         self.assertEqual(audit["residual_credit_cues"], 1)
+        self.assertEqual(audit["residual_credit_ids"], ["4"])
         self.assertEqual(audit["residual_position_tags"], 1)
         self.assertEqual(audit["hatted_letters"], 1)
         self.assertEqual(audit["delivery_signatures"], 2)

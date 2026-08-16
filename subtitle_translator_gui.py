@@ -12023,12 +12023,18 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     unresolved_markers = sum(
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
         for text in output_texts)
-    residual_credit_cues = sum(_is_delivery_credit(text) for text in output_texts)
-    residual_sdh_cues = sum(
-        _is_delivery_sdh_only(text)
+    residual_credit_ids = [
+        str(idx) for idx, _ts, text in output_dialogue
+        if _is_delivery_credit(text)
+    ]
+    residual_sdh_ids = [
+        str(idx) for idx, _ts, text in output_dialogue
+        if _is_delivery_sdh_only(text)
         or _source_cue_is_delivery_removable(
             output_source_map.get(str(idx), ""))
-        for idx, _ts, text in output_dialogue)
+    ]
+    residual_credit_cues = len(residual_credit_ids)
+    residual_sdh_cues = len(residual_sdh_ids)
     residual_speaker_label_ids = [
         str(idx) for idx, _ts, text in output_dialogue
         if sdh_cleaner._src_has_plain_speaker_label(
@@ -12108,6 +12114,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("signature_overlap", output_id=output_id)
     for output_id in serialized_json_residue_ids:
         _add_review_detail("serialized_json_residue", output_id=output_id)
+    for output_id in residual_credit_ids:
+        _add_review_detail("residual_credit", output_id=output_id)
+    for output_id in residual_sdh_ids:
+        _add_review_detail("residual_sdh", output_id=output_id)
     for output_id in residual_speaker_label_ids:
         _add_review_detail("residual_speaker_label", output_id=output_id)
     needs_review = any((
@@ -12136,7 +12146,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "untranslated_fragment_ids": untranslated_fragment_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
+        "residual_credit_ids": residual_credit_ids,
         "residual_sdh_cues": residual_sdh_cues,
+        "residual_sdh_ids": residual_sdh_ids,
         "residual_speaker_label_ids": residual_speaker_label_ids,
         "residual_literal_newline_cues": residual_literal_newline_cues,
         "residual_position_tags": residual_position_tags,
@@ -12201,12 +12213,18 @@ def _delivery_audit_log_details(audit: dict, limit: int = 12) -> list[str]:
     details = audit.get("review_details") or []
     for detail in details[:max(0, int(limit))]:
         reason = str(detail.get("reason", "review") or "review")
-        sid = str(detail.get("source_id", "?") or "?")
+        sid = str(
+            detail.get("source_id") or detail.get("output_id") or "?")
         source = " ".join(str(detail.get("source", "") or "").split())
+        target = " ".join(str(detail.get("target", "") or "").split())
         if len(source) > 120:
             source = source[:117] + "..."
+        if len(target) > 120:
+            target = target[:117] + "..."
+        target_detail = f" | çıktı='{target}'" if target else ""
         lines.append(
-            f"Teslim denetimi ayrıntısı [{reason}] #{sid}: kaynak='{source}'")
+            f"Teslim denetimi ayrıntısı [{reason}] #{sid}: "
+            f"kaynak='{source}'{target_detail}")
     remaining = max(0, len(details) - len(lines))
     if remaining:
         lines.append(
@@ -12379,7 +12397,10 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("untranslated_fragment_ids", "Satır içinde çevrilmeden kalan kaynak kimlikleri"),
         ("unresolved_markers", "Eksik çeviri işaretleri"),
         ("residual_credit_cues", "Kalan eski kredi cue'ları"),
+        ("residual_credit_ids", "Kalan eski kredi kimlikleri"),
         ("residual_sdh_cues", "Kalan SDH cue'ları"),
+        ("residual_sdh_ids", "Kalan SDH kimlikleri"),
+        ("residual_speaker_label_ids", "Kalan konuşmacı etiketi kimlikleri"),
         ("residual_literal_newline_cues", "Düz metin \\n kalıntısı olan cue'lar"),
         ("residual_position_tags", "Kalan konum kodları"),
         ("hatted_letters", "Şapkalı harfler"),

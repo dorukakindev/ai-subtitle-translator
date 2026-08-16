@@ -24,6 +24,14 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
         audit = self._audit("(MEN SPEAKING SPANISH QUIETLY)",
                             "Adamlar İspanyolca alçak sesle sohbet ediyor")
         self.assertEqual(audit["residual_sdh_cues"], 1)
+        self.assertEqual(audit["residual_sdh_ids"], ["1"])
+        self.assertIn({
+            "reason": "residual_sdh",
+            "source_id": "",
+            "output_id": "1",
+            "source": "(MEN SPEAKING SPANISH QUIETLY)",
+            "target": "Adamlar İspanyolca alçak sesle sohbet ediyor",
+        }, audit["review_details"])
         self.assertTrue(gui._delivery_audit_has_hard_error(audit))
 
     def test_dialogue_shifted_into_sdh_timestamp_is_not_accepted(self):
@@ -35,6 +43,7 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
     def test_normal_dialogue_source_is_not_sdh(self):
         audit = self._audit("He cries every night.", "Her gece ağlar.")
         self.assertEqual(audit["residual_sdh_cues"], 0)
+        self.assertEqual(audit["residual_sdh_ids"], [])
 
     def test_standalone_proper_name_is_not_untranslated_fragment(self):
         audit = self._audit("James haywood...", "James Haywood...")
@@ -120,6 +129,20 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
             lines,
             ["Teslim denetimi ayrıntısı [missing_dialogue] #250: "
              "kaynak='for women.'"])
+
+    def test_delivery_log_uses_output_id_and_prints_target(self):
+        lines = gui._delivery_audit_log_details({
+            "review_details": [{
+                "reason": "residual_sdh",
+                "output_id": "84",
+                "source": "(SPEAKING GEORGIAN)",
+                "target": "Gürcüce konuşuluyor",
+            }],
+        })
+        self.assertEqual(
+            lines,
+            ["Teslim denetimi ayrıntısı [residual_sdh] #84: "
+             "kaynak='(SPEAKING GEORGIAN)' | çıktı='Gürcüce konuşuluyor'"])
 
 
 if __name__ == "__main__":
