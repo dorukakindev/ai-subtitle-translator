@@ -992,7 +992,31 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 8
+QUALITY_PROFILE_VERSION = 9
+DEEP_DELIVERY_COVERAGE_OPTIONS = {
+    "Ekonomik (%35)": 0.35,
+    "Tam (%100)": 1.0,
+}
+DEEP_DELIVERY_COVERAGE_DEFAULT = "Ekonomik (%35)"
+
+
+def _deep_delivery_coverage_value(value) -> float:
+    if isinstance(value, str) and value in DEEP_DELIVERY_COVERAGE_OPTIONS:
+        return DEEP_DELIVERY_COVERAGE_OPTIONS[value]
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return DEEP_DELIVERY_COVERAGE_OPTIONS[DEEP_DELIVERY_COVERAGE_DEFAULT]
+    return min(1.0, max(0.05, numeric))
+
+
+def _deep_delivery_coverage_label(value) -> str:
+    numeric = _deep_delivery_coverage_value(value)
+    return min(
+        DEEP_DELIVERY_COVERAGE_OPTIONS,
+        key=lambda label: abs(DEEP_DELIVERY_COVERAGE_OPTIONS[label] - numeric))
+
+
 RESELLER_ROUTING_DEFAULTS = {
     "main_custom": True,
     "main_custom_model": "gpt-5.4",
@@ -1021,6 +1045,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "backtrans": False,
     "semantic_reconcile": False,
     "deep_delivery_semantic": True,
+    "deep_delivery_coverage": 0.35,
     "review_pass": False,
     "chain_ctx": True,
     "clean_sdh": True,
@@ -1054,6 +1079,7 @@ WORKFLOW_PROFILES = {
         "backtrans_var": False,
         "semantic_reconcile_var": False,
         "deep_delivery_semantic_var": True,
+        "deep_delivery_coverage_var": DEEP_DELIVERY_COVERAGE_DEFAULT,
         "review_pass_var": False,
         "term_normalize_var": True,
         "quality_report_only_var": True,
@@ -1075,6 +1101,7 @@ WORKFLOW_PROFILES = {
         "backtrans_var": False,
         "semantic_reconcile_var": False,
         "deep_delivery_semantic_var": True,
+        "deep_delivery_coverage_var": DEEP_DELIVERY_COVERAGE_DEFAULT,
         "review_pass_var": False,
         "term_normalize_var": True,
         "quality_report_only_var": True,
@@ -1096,6 +1123,7 @@ WORKFLOW_PROFILES = {
         "backtrans_var": False,
         "semantic_reconcile_var": False,
         "deep_delivery_semantic_var": False,
+        "deep_delivery_coverage_var": DEEP_DELIVERY_COVERAGE_DEFAULT,
         "review_pass_var": False,
         "term_normalize_var": True,
         "quality_report_only_var": True,
@@ -1181,8 +1209,13 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
     if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
         return False
     previous_version = settings.get("quality_profile_version")
+    if previous_version == 8:
+        settings.setdefault("deep_delivery_coverage", 0.35)
+        settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
+        return True
     if previous_version == 7:
         settings["deep_delivery_semantic"] = True
+        settings["deep_delivery_coverage"] = 0.35
         settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
         return True
     if previous_version == 5:
@@ -1198,6 +1231,7 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
             "backtrans": False,
             "semantic_reconcile": False,
             "deep_delivery_semantic": True,
+            "deep_delivery_coverage": 0.35,
             "review_pass": False,
             "term_normalize": True,
             "quality_report_only": True,
@@ -7818,7 +7852,8 @@ _BATCH_RUN_CONTEXT_KEYS = (
     "same_folder", "mode", "auto_glossary", "term_normalize", "quality_report_only",
     "repair_missing", "critic",
     "polish", "native", "qc", "condense", "backtrans",
-    "semantic_reconcile", "deep_delivery_semantic", "review", "twowave",
+    "semantic_reconcile", "deep_delivery_semantic", "deep_delivery_coverage",
+    "review", "twowave",
     "clean_sdh", "linebreak",
     "chain_ctx", "style", "analysis_depth", "file_analysis_depths", "content_type",
     "main_model_name", "main_api_base_url", "helper_models", "helper_urls",
@@ -11191,15 +11226,20 @@ def build_deep_delivery_semantic_report(stats: dict, blocks) -> str:
     total = len(blocks or [])
     processed = int(stats.get("processed_cues", 0) or 0)
     coverage = float(stats.get("processed_coverage_pct", 0.0) or 0.0)
+    target = float(stats.get("target_coverage_pct", 100.0) or 100.0)
+    required = min(total, math.ceil(total * min(100.0, max(0.0, target)) / 100.0))
     segments = _deep_delivery_segment_coverage(
         blocks, stats.get("processed_ids") or [])
-    complete = bool(total == processed and all(
-        item["processed"] == item["total"] for item in segments))
+    complete = processed >= required
+    coverage_label = (
+        "TAM KAPSAM" if complete and target >= 99.5
+        else "PLANLANAN KAPSAM TAMAM" if complete
+        else "KAPSAM EKSİK")
     lines = [
         "# Derin Teslim Anlam Taraması",
         "# YALNIZ RAPOR: bu aşama altyazı metnini değiştirmez, yeniden çeviri yapmaz,",
         "# öneri uygulamaz, karantinaya almaz veya YÜKLEMEYE HAZIR kararını değiştirmez.",
-        f"# Durum: {'TAM KAPSAM' if complete else 'KAPSAM EKSİK'} | "
+        f"# Durum: {coverage_label} | Hedef: %{target:.0f} | "
         f"İşlenen: {processed}/{total} (%{coverage:.1f}) | "
         f"Küme: {int(stats.get('clusters', 0) or 0)} | "
         f"API isteği: {int(stats.get('api_requests', 0) or 0)} | "
@@ -14712,13 +14752,24 @@ class App(ctk.CTk):
             dds_fr, text="Derin Teslim Anlam Taraması",
             font=ctk.CTkFont("Segoe UI", 12), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
+        self.deep_delivery_coverage_var = ctk.StringVar(
+            value=DEEP_DELIVERY_COVERAGE_DEFAULT)
+        ctk.CTkOptionMenu(
+            sb, variable=self.deep_delivery_coverage_var,
+            values=list(DEEP_DELIVERY_COVERAGE_OPTIONS),
+            fg_color=CARD, button_color=BORDER,
+            button_hover_color=ACCENT_HOVER,
+            dropdown_fg_color=CARD, text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 11), height=30,
+            command=lambda _value: self._mark_workflow_custom(),
+        ).grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
         ctk.CTkLabel(
             sb,
-            text="Final altyazının tamamını kaynakla; cümle/fragment,\n"
+            text="Final altyazıyı kaynakla; cümle/fragment,\n"
                  "komşu cue ve sahne bağlamında inceler. Özne-nesne,\n"
                  "kip/olumsuzluk, eksik-tekrar anlam ve Critic bozmasını\n"
                  "cue numarasıyla raporlar; metni asla değiştirmez.\n"
-                 "(%100 kapsam, yüksek ek maliyet)",
+                 "Ekonomik yaklaşık %35, Tam %100 kapsamdır.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260,
         ).grid(row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -16199,6 +16250,10 @@ class App(ctk.CTk):
             "deep_delivery_semantic": bool(
                 getattr(self, "deep_delivery_semantic_var", None) is None
                 or self.deep_delivery_semantic_var.get()),
+            "deep_delivery_coverage": _deep_delivery_coverage_value(
+                self.deep_delivery_coverage_var.get()
+                if getattr(self, "deep_delivery_coverage_var", None)
+                else 0.35),
             "review": self.review_pass_var.get(),
             "twowave": self.twowave_var.get(),
             "clean_sdh": self.clean_sdh_var.get(),
@@ -16295,7 +16350,8 @@ class App(ctk.CTk):
             "profanity", "same_folder", "auto_glossary", "term_normalize",
             "repair_missing",
             "critic", "polish", "native", "qc", "condense", "backtrans",
-            "semantic_reconcile", "deep_delivery_semantic", "review",
+            "semantic_reconcile", "deep_delivery_semantic",
+            "deep_delivery_coverage", "review",
             "twowave", "clean_sdh",
             "linebreak", "ai_segment", "merge_cues", "chain_ctx",
             "precontext", "series_memory", "season_canon", "media_mode",
@@ -18706,7 +18762,8 @@ class App(ctk.CTk):
                     "profanity", "same_folder", "auto_glossary", "term_normalize",
                     "repair_missing",
                     "critic", "polish", "native", "qc", "condense", "backtrans",
-                    "semantic_reconcile", "deep_delivery_semantic", "review",
+                    "semantic_reconcile", "deep_delivery_semantic",
+                    "deep_delivery_coverage", "review",
                     "twowave", "clean_sdh",
                     "linebreak", "ai_segment", "merge_cues", "chain_ctx",
                     "precontext", "series_memory", "season_canon", "media_mode",
@@ -21007,6 +21064,10 @@ class App(ctk.CTk):
             "deep_delivery_semantic": bool(
                 getattr(self, "deep_delivery_semantic_var", None) is None
                 or self.deep_delivery_semantic_var.get()),
+            "deep_delivery_coverage": _deep_delivery_coverage_value(
+                self.deep_delivery_coverage_var.get()
+                if getattr(self, "deep_delivery_coverage_var", None)
+                else 0.35),
             "backup_raw": self.backup_raw_var.get(),
             "auto_glossary": self.auto_glossary_var.get(),
             "linebreak": self.linebreak_var.get(),
@@ -21440,6 +21501,9 @@ class App(ctk.CTk):
             if "deep_delivery_semantic" in d:
                 self.deep_delivery_semantic_var.set(
                     bool(d["deep_delivery_semantic"]))
+            if "deep_delivery_coverage" in d:
+                self.deep_delivery_coverage_var.set(
+                    _deep_delivery_coverage_label(d["deep_delivery_coverage"]))
             if "auto_glossary" in d:
                 self.auto_glossary_var.set(bool(d["auto_glossary"]))
             if "linebreak" in d:
@@ -22447,9 +22511,13 @@ class App(ctk.CTk):
         deep_delivery_var = self.__dict__.get("deep_delivery_semantic_var")
         if deep_delivery_var is not None and deep_delivery_var.get():
             ds_m = self._helper_api_model("critic")
+            coverage_var = self.__dict__.get("deep_delivery_coverage_var")
+            coverage = _deep_delivery_coverage_value(
+                coverage_var.get() if coverage_var is not None else 0.35)
             ds_cost, unknown = add_estimate(
                 details, "Derin Teslim Anlam Taraması", ds_m,
-                self._helper_api_base_url("critic"), 2.4, 0.25)
+                self._helper_api_base_url("critic"),
+                2.4 * coverage, 0.25 * coverage)
             total_cost += ds_cost
             unknown_cost |= unknown
 
@@ -23502,6 +23570,18 @@ class App(ctk.CTk):
         return bool(App._run_setting(
             self, "deep_delivery_semantic", "deep_delivery_semantic_var", True))
 
+    def _deep_delivery_target_coverage(self) -> float:
+        snapshot = self.__dict__.get("_active_snapshot")
+        if isinstance(snapshot, dict) and "deep_delivery_coverage" in snapshot:
+            value = snapshot["deep_delivery_coverage"]
+        else:
+            var = self.__dict__.get("deep_delivery_coverage_var")
+            try:
+                value = var.get()
+            except Exception:
+                value = 0.35
+        return _deep_delivery_coverage_value(value)
+
     def _maybe_deep_delivery_semantic_audit(
             self, out_path, src_clean_map, blocks, src_lang=None, cues=None,
             changed_ids=None, source_path=None, locked_terms=None,
@@ -23540,12 +23620,13 @@ class App(ctk.CTk):
                     if sid is not None:
                         extra_reasons.setdefault(str(sid), set()).add(reason)
             cancel_context = self.__dict__.get("_helper_request_canceller")
+            target_coverage = self._deep_delivery_target_coverage()
             progress_path = str(source_path or out_path)
             _record_file_stage_if_available(
                 self, progress_path, "Derin Teslim Anlam Taraması", "running")
             self._set_phase(
                 "Derin Teslim Anlam Taraması",
-                f"{Path(progress_path).name} — kaynakla tam dosya karşılaştırması")
+                f"{Path(progress_path).name} — kaynakla %{target_coverage * 100:.0f} kapsam")
             self._update_file_progress(
                 progress_path, "Derin Teslim Anlam Taraması", 99)
             result, stats = ht.semantic_reconciliation_pass(
@@ -23560,7 +23641,7 @@ class App(ctk.CTk):
                 changed_ids=changed_ids,
                 extra_suspect_reasons=extra_reasons,
                 locked_terms=locked_terms,
-                target_coverage=1.0,
+                target_coverage=target_coverage,
                 analysis_context_hint=ht.build_polish_context_hint(
                     analysis_result, run_tgt_lang),
                 scene_plan=(
@@ -23590,7 +23671,8 @@ class App(ctk.CTk):
                     [{"i": str(idx), "t": text} for idx, _ts, text in blocks],
                     src_clean_map))
             processed = int(stats.get("processed_cues", 0) or 0)
-            complete = processed == len(blocks)
+            required = min(len(blocks), math.ceil(len(blocks) * target_coverage))
+            complete = processed >= required
             if status_out is not None:
                 status_out.update({
                     "suggested": int(stats.get("suggested", 0) or 0),
@@ -23599,6 +23681,7 @@ class App(ctk.CTk):
                     "total_cues": len(blocks),
                     "coverage_pct": float(
                         stats.get("processed_coverage_pct", 0.0) or 0.0),
+                    "target_coverage_pct": target_coverage * 100.0,
                     "coverage_complete": complete,
                 })
             report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -23616,7 +23699,7 @@ class App(ctk.CTk):
                 self, progress_path, "Derin Teslim Anlam Taraması", stage_state)
             self._log(
                 f"Derin teslim raporu: {report_path.name} — "
-                f"{processed}/{len(blocks)} cue, "
+                f"{processed}/{len(blocks)} cue (hedef %{target_coverage * 100:.0f}), "
                 f"{int(stats.get('suggested', 0) or 0)} doğrulanmış öneri",
                 "ok" if complete else "warn")
             return int(stats.get("suggested", 0) or 0)
@@ -32427,6 +32510,7 @@ class App(ctk.CTk):
                 for key in (
                     "critic", "polish", "native", "qc", "condense",
                     "backtrans", "semantic_reconcile", "deep_delivery_semantic",
+                    "deep_delivery_coverage",
                     "review", "twowave",
                     "clean_sdh", "linebreak", "term_normalize", "repair_missing",
                 )

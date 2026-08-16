@@ -104,6 +104,17 @@ class DeepDeliverySemanticCoreTest(unittest.TestCase):
         self.assertIn("son 3/3 (%100.0)", report)
         self.assertIn("altyazı metnini değiştirmez", report)
 
+    def test_economical_target_is_reported_as_completed_plan(self):
+        blocks = [(str(i), "t", f"Çeviri {i}") for i in range(1, 11)]
+        stats = {
+            "clusters": 2, "api_requests": 1, "processed_cues": 4,
+            "processed_coverage_pct": 40.0, "target_coverage_pct": 35.0,
+            "processed_ids": ["1", "4", "7", "10"],
+            "suggested": 0, "rejected": 0, "details": [],
+        }
+        report = gui.build_deep_delivery_semantic_report(stats, blocks)
+        self.assertIn("Durum: PLANLANAN KAPSAM TAMAM | Hedef: %35", report)
+
     def test_report_contains_neighbors_risk_confidence_critic_and_fragment_scope(self):
         blocks = [(str(i), "t", f"Mevcut {i}") for i in range(1, 5)]
         stats = {
@@ -160,7 +171,7 @@ class DeepDeliverySemanticCoreTest(unittest.TestCase):
 
 
 class DeepDeliverySemanticGuiTest(unittest.TestCase):
-    def test_wrapper_requests_full_report_only_coverage_and_writes_report(self):
+    def test_wrapper_requests_economical_report_only_coverage_and_writes_report(self):
         app = gui.App.__new__(gui.App)
         app._active_snapshot = {
             "deep_delivery_semantic": True,
@@ -211,7 +222,7 @@ class DeepDeliverySemanticGuiTest(unittest.TestCase):
 
         self.assertEqual(suggested, 1)
         self.assertEqual(blocks[0][2], "Mevcut.")
-        self.assertEqual(semantic.call_args.kwargs["target_coverage"], 1.0)
+        self.assertEqual(semantic.call_args.kwargs["target_coverage"], 0.35)
         self.assertFalse(semantic.call_args.kwargs["apply_changes"])
         self.assertEqual(
             semantic.call_args.kwargs["checkpoint_label"],
@@ -220,6 +231,11 @@ class DeepDeliverySemanticGuiTest(unittest.TestCase):
         self.assertTrue(report_exists)
         self.assertIn("mevcut: Mevcut.", report_text)
         self.assertIn("Önerilen: 2 | Guard reddi: 1 | Uygulanan: 0", report_text)
+
+    def test_full_coverage_selection_is_available(self):
+        app = gui.App.__new__(gui.App)
+        app._active_snapshot = {"deep_delivery_coverage": 1.0}
+        self.assertEqual(app._deep_delivery_target_coverage(), 1.0)
 
     def test_all_four_delivery_flows_call_deep_audit(self):
         for name in (

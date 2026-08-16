@@ -3,11 +3,14 @@ import unittest
 from pathlib import Path
 
 from subtitle_translator_gui import (
+    DEEP_DELIVERY_COVERAGE_DEFAULT,
     MEDIA_MODE_DEFAULTS,
     QUALITY_PROFILE_DEFAULTS,
     QUALITY_PROFILE_VERSION,
     WORKFLOW_PROFILES,
     _apply_quality_profile_defaults,
+    _deep_delivery_coverage_label,
+    _deep_delivery_coverage_value,
 )
 
 
@@ -43,6 +46,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "self.native_var = ctk.BooleanVar(value=False)",
             "self.semantic_reconcile_var = ctk.BooleanVar(value=False)",
             "self.deep_delivery_semantic_var = ctk.BooleanVar(value=True)",
+            "value=DEEP_DELIVERY_COVERAGE_DEFAULT",
             "self.term_normalize_var = ctk.BooleanVar(value=True)",
             "self.season_canon_var = ctk.BooleanVar(value=False)",
             'self.media_mode_var = ctk.StringVar(value="Dizi")',
@@ -112,6 +116,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "backtrans": False,
                 "semantic_reconcile": False,
                 "deep_delivery_semantic": True,
+                "deep_delivery_coverage": 0.35,
                 "review_pass": False,
                 "chain_ctx": True,
                 "clean_sdh": True,
@@ -152,6 +157,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                     "semantic_reconcile", "review_pass"):
             self.assertFalse(settings[key])
         self.assertTrue(settings["deep_delivery_semantic"])
+        self.assertEqual(settings["deep_delivery_coverage"], 0.35)
         self.assertTrue(settings["main_custom"])
         for role in ("analysis", "critic", "polish", "qc"):
             self.assertEqual(
@@ -203,6 +209,9 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         self.assertTrue(profile["term_normalize_var"])
         self.assertTrue(profile["quality_report_only_var"])
         self.assertTrue(profile["deep_delivery_semantic_var"])
+        self.assertEqual(
+            profile["deep_delivery_coverage_var"],
+            DEEP_DELIVERY_COVERAGE_DEFAULT)
         self.assertTrue(profile["chain_ctx_var"])
         for key in ("polish_var", "native_var", "backtrans_var",
                     "semantic_reconcile_var", "review_pass_var", "qc_var",
@@ -218,11 +227,29 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "critic_var", "polish_var", "native_var", "backtrans_var",
             "semantic_reconcile_var", "review_pass_var",
             "deep_delivery_semantic_var",
+            "deep_delivery_coverage_var",
             "term_normalize_var", "quality_report_only_var",
             "repair_missing_var", "chain_ctx_var", "clean_sdh_var",
             "linebreak_var", "qc_var",
         ):
             self.assertEqual(maximum[key], normal[key], key)
+
+    def test_deep_delivery_coverage_defaults_to_economical_and_allows_full(self):
+        self.assertEqual(_deep_delivery_coverage_value(None), 0.35)
+        self.assertEqual(_deep_delivery_coverage_value("Ekonomik (%35)"), 0.35)
+        self.assertEqual(_deep_delivery_coverage_value("Tam (%100)"), 1.0)
+        self.assertEqual(_deep_delivery_coverage_label(1.0), "Tam (%100)")
+
+    def test_v8_migration_adds_economical_coverage_without_overriding_toggle(self):
+        settings = {
+            "quality_profile_version": 8,
+            "deep_delivery_semantic": False,
+            "critic": True,
+        }
+        self.assertTrue(_apply_quality_profile_defaults(settings))
+        self.assertFalse(settings["deep_delivery_semantic"])
+        self.assertEqual(settings["deep_delivery_coverage"], 0.35)
+        self.assertEqual(settings["quality_profile_version"], QUALITY_PROFILE_VERSION)
 
 
 if __name__ == "__main__":
