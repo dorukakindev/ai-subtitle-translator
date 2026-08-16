@@ -141,6 +141,19 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "Her şey burada başladı.",
         )
 
+    def test_hyphenated_titlecase_speaker_label_stripped_by_source(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "Mary-Ann: Cadılar kol geziyor.",
+        )]
+        src_map = _src(**{"1": "Mary-ann: witches prowl."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Cadılar kol geziyor.",
+        )
+
     def test_voice_over_speaker_label_stripped_by_source(self):
         blocks = [(
             "1",
