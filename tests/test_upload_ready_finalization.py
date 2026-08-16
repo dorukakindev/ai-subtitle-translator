@@ -788,6 +788,12 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertTrue(gui._source_cue_is_delivery_removable(source))
 
+    def test_multiline_translated_native_language_label_is_residual_sdh(self):
+        self.assertTrue(gui._is_delivery_sdh_only(
+            "[JAVIER YEREL DİLDE\nKONUŞUYOR]"))
+        self.assertFalse(gui._is_delivery_sdh_only(
+            "[Javier yerel dilde bir şey\nsöylemek istiyor.]"))
+
     def test_bare_documentary_sdh_is_expected_delivery_removal(self):
         for source in (
                 "(WOMeN ULLULATING)", "(ReADS IN HeBReW)",

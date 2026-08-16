@@ -3223,8 +3223,10 @@ def _is_delivery_sdh_only(text: str) -> bool:
         return True
     if re.fullmatch(r"[\s*♪♫_]+", value) and re.search(r"[*♪♫_]", value):
         return True
-    tokens = list(_DELIVERY_SDH_TOKEN_RE.finditer(value))
-    if not tokens or "".join(match.group(0) for match in tokens).strip() != value:
+    token_value = re.sub(r"\s*\r?\n\s*", " ", value)
+    tokens = list(_DELIVERY_SDH_TOKEN_RE.finditer(token_value))
+    if (not tokens
+            or "".join(match.group(0) for match in tokens).strip() != token_value):
         return False
     return all(
         sdh_cleaner.is_sdh_descriptor(match.group(2), bare_text=False)
