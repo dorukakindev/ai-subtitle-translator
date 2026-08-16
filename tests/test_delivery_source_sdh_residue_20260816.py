@@ -73,6 +73,16 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))
 
+    def test_arabic_academic_lower_third_is_removable(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            '"البروفيسور (أندرو تيفيرسون)\nجامعة (كينغستون)"'))
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            '"د. (ليز غلوين)\nكلية (لندن)"'))
+
+    def test_arabic_dialogue_about_university_is_not_removable(self):
+        self.assertFalse(gui._source_cue_is_delivery_removable(
+            "قال البروفيسور إنه عاد إلى الجامعة."))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3269,9 +3269,16 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
             r"\s*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|"
             r"ninth|tenth)\s*:\s*", value, re.IGNORECASE):
         return False
+    arabic_lines = [line.strip() for line in value.splitlines() if line.strip()]
+    arabic_academic_card = (
+        len(arabic_lines) == 2 and value.lstrip().startswith(('"', '“'))
+        and bool(re.search(r"(?:البروفيسور(?:ة)?|د\.|دكتور)", value))
+        and bool(re.search(r"(?:جامعة|كلية)", value))
+    )
     if (_is_delivery_sdh_only(value)
             or _src_is_sdh_only(value)
             or _delivery_source_is_all_credit(value)
+            or arabic_academic_card
             or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
             or _DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(
