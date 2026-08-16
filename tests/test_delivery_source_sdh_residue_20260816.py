@@ -45,6 +45,21 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
         self.assertEqual(audit["residual_sdh_cues"], 0)
         self.assertEqual(audit["residual_sdh_ids"], [])
 
+    def test_foreign_script_is_a_delivery_hard_error(self):
+        audit = self._audit(
+            "The third one is in the storehouse!",
+            "Üçüncüsü ambarдa!",
+        )
+        self.assertEqual(audit["foreign_script_ids"], ["1"])
+        self.assertIn({
+            "reason": "foreign_script",
+            "source_id": "",
+            "output_id": "1",
+            "source": "The third one is in the storehouse!",
+            "target": "Üçüncüsü ambarдa!",
+        }, audit["review_details"])
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
+
     def test_standalone_proper_name_is_not_untranslated_fragment(self):
         audit = self._audit("James haywood...", "James Haywood...")
         self.assertEqual(audit["untranslated_fragment_ids"], [])
@@ -78,6 +93,17 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 "THE SINGING CONTINUES", "HE SINGS IN ARABIC",
                 "BELLS RING, DRUMS BEAT", "THEY CHANT AND DRUM",
                 "HE CHANTS IN GE'EZ LANGUAGE", "HE BLOWS HORN", "UH!"):
+            with self.subTest(source_text=source_text):
+                self.assertTrue(
+                    gui._source_cue_is_delivery_removable(source_text))
+
+    def test_production_and_multiline_subtitle_credits_are_removable(self):
+        for source_text in (
+                "Screenplay: Paavo Haavikko",
+                "Music: Aulis Sallinen",
+                "Production Designer: Ensio Suominen",
+                "Director: Kalle Holmberg",
+                "Subtitles: Arto Vartiainen\nBroadcast Text"):
             with self.subTest(source_text=source_text):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))

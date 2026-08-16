@@ -239,6 +239,32 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertNotIn("Some_User", joined)
         self.assertIn("Gerçek diyalog.", joined)
 
+    def test_source_production_cards_and_multiline_subtitle_credit_are_removed(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "Real dialogue."),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Screenplay: Paavo Haavikko"),
+            ("3", "00:00:05,100 --> 00:00:06,000", "Music: Aulis Sallinen"),
+            ("4", "00:00:06,100 --> 00:00:07,000", "Production Designer: Ensio Suominen"),
+            ("5", "00:00:07,100 --> 00:00:08,000", "Director: Kalle Holmberg"),
+            ("6", "00:00:08,100 --> 00:00:09,000",
+             "Subtitles: Arto Vartiainen\nBroadcast Text"),
+        ]
+        blocks = [
+            ("1", source[0][1], "Gerçek diyalog."),
+            ("2", source[1][1], "Paavo Haavikko"),
+            ("3", source[2][1], "Aulis Sallinen"),
+            ("4", source[3][1], "Ensio Suominen"),
+            ("5", source[4][1], "Kalle Holmberg"),
+            ("6", source[5][1], "Yayın Metni"),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = [text for _idx, _ts, text in result
+                    if text != "discord: ceviri2"]
+
+        self.assertEqual(dialogue, ["Gerçek diyalog."])
+
     def test_translator_credit_is_removed_but_translation_dialogue_is_kept(self):
         source = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Translator: John Doe"),

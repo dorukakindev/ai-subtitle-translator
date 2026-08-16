@@ -3076,6 +3076,24 @@ _DELIVERY_CREDIT_LABEL_RE = re.compile(
     r"^\s*(?:subtitles?|subtitler|subs?|translation|timing|typeset(?:ting)?|"
     r"encod(?:ed|er)?|script|metni|translator|çevir(?:i|en|men))\s*:\s*(.+?)\s*$",
     re.IGNORECASE | re.DOTALL)
+_DELIVERY_SOURCE_PRODUCTION_CREDIT_RE = re.compile(
+    r"^\s*(?:screenplay|music|production\s+designer|director)\s*:\s*"
+    r"[^\r\n]{2,100}\s*$",
+    re.IGNORECASE,
+)
+_DELIVERY_SOURCE_SUBTITLE_CREDIT_RE = re.compile(
+    r"^\s*subtitles?\s*:\s*[^\r\n]{2,100}\r?\n\s*broadcast\s+text\s*$",
+    re.IGNORECASE,
+)
+_NON_TURKISH_SCRIPT_RE = re.compile(
+    r"[\u0600-\u06FF"
+    r"\u0900-\u097F"
+    r"\u0B80-\u0BFF"
+    r"\u0400-\u04FF"
+    r"\u4E00-\u9FFF"
+    r"\u3040-\u30FF"
+    r"\uAC00-\uD7AF]"
+)
 _DELIVERY_SDH_TOKEN_RE = re.compile(
     r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
 _DELIVERY_TURKISH_SDH_RE = re.compile(
@@ -3347,6 +3365,9 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
                 r"(?:the conversation continues with the open university\.?|"
                 r"go to the address below and follow the links to the open university\.?)",
                 compact, re.IGNORECASE)):
+        return True
+    if (_DELIVERY_SOURCE_PRODUCTION_CREDIT_RE.fullmatch(value)
+            or _DELIVERY_SOURCE_SUBTITLE_CREDIT_RE.fullmatch(value)):
         return True
     arabic_lines = [line.strip() for line in value.splitlines() if line.strip()]
     arabic_academic_card = (
@@ -9152,6 +9173,22 @@ def _source_map_for_quality_blocks(blocks: list, cues: list) -> dict:
     }
 
 
+def _foreign_script_ids(blocks: list) -> list[str]:
+    ids = []
+    for idx, _ts, text in blocks:
+        value = str(text or "")
+        if not value or value == "[HATA]":
+            continue
+        try:
+            import hybrid_translate as ht
+            value = ht.normalize_latin_homoglyphs(value)
+        except Exception:
+            pass
+        if _NON_TURKISH_SCRIPT_RE.search(value):
+            ids.append(str(idx))
+    return ids
+
+
 def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                              src_clean_map: dict = None,
                              issue_fn=None, *, locked_terms=None,
@@ -9327,26 +9364,8 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 f"({sample}{more})")
 
     # Non-Latin script detection (Arabic, Tamil, Devanagari, Cyrillic, CJK, etc.)
-    _NON_LATIN = re.compile(
-        r'[\u0600-\u06FF'   # Arabic
-        r'\u0900-\u097F'    # Devanagari
-        r'\u0B80-\u0BFF'    # Tamil
-        r'\u0400-\u04FF'    # Cyrillic
-        r'\u4E00-\u9FFF'    # CJK
-        r'\u3040-\u30FF'    # Hiragana/Katakana
-        r'\uAC00-\uD7AF]'   # Hangul
-    )
-    script_issues = []
-    for (idx, ts, tr_text) in blocks:
-        if tr_text and tr_text != "[HATA]":
-            try:
-                import hybrid_translate as ht
-                tr_text = ht.normalize_latin_homoglyphs(str(tr_text))
-            except Exception:
-                tr_text = str(tr_text)
-        if tr_text and tr_text != "[HATA]" and _NON_LATIN.search(tr_text):
-            script_issues.append(str(idx))
-            warnings += 1
+    script_issues = _foreign_script_ids(blocks)
+    warnings += len(script_issues)
     if log_fn and script_issues:
         sample = ", ".join(script_issues[:5])
         more   = f" …+{len(script_issues)-5}" if len(script_issues) > 5 else ""
@@ -12008,6 +12027,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             missing_dialogue.append(source_idx)
     extras.sort()
     output_texts = [text for _idx, _ts, text in output_dialogue]
+    foreign_script_ids = _foreign_script_ids(output_dialogue)
     output_source_map = _delivery_source_map(output_dialogue, source_rows)
     owner_source_map = _delivery_owner_source_map(
         source_rows, source_to_output_ids)
@@ -12120,6 +12140,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("residual_sdh", output_id=output_id)
     for output_id in residual_speaker_label_ids:
         _add_review_detail("residual_speaker_label", output_id=output_id)
+    for output_id in foreign_script_ids:
+        _add_review_detail("foreign_script", output_id=output_id)
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         delivery_owner_mismatch_ids, untranslated_fragment_ids,
@@ -12127,6 +12149,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         residual_speaker_label_ids,
         residual_format_tags, residual_literal_newline_cues, hatted_letters,
         residual_control_chars,
+        foreign_script_ids,
         serialized_json_residue_ids,
         signature_mismatch, duplicate_cue_ids, unnumbered_cue_lines,
         invalid_timestamp_ids,
@@ -12154,6 +12177,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "residual_position_tags": residual_position_tags,
         "residual_format_tags": residual_format_tags,
         "residual_control_chars": residual_control_chars,
+        "foreign_script_ids": foreign_script_ids,
         "serialized_json_residue_ids": serialized_json_residue_ids,
         "hatted_letters": hatted_letters,
         "delivery_signatures": delivery_signatures,
@@ -12195,6 +12219,7 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("residual_position_tags"),
         audit.get("residual_format_tags"),
         audit.get("residual_control_chars"),
+        audit.get("foreign_script_ids"),
         audit.get("serialized_json_residue_ids"),
         audit.get("hatted_letters"),
         audit.get("signature_mismatch"),
@@ -12401,6 +12426,7 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("residual_sdh_cues", "Kalan SDH cue'ları"),
         ("residual_sdh_ids", "Kalan SDH kimlikleri"),
         ("residual_speaker_label_ids", "Kalan konuşmacı etiketi kimlikleri"),
+        ("foreign_script_ids", "Türkçe dışı alfabe kimlikleri"),
         ("residual_literal_newline_cues", "Düz metin \\n kalıntısı olan cue'lar"),
         ("residual_position_tags", "Kalan konum kodları"),
         ("hatted_letters", "Şapkalı harfler"),
