@@ -28,7 +28,7 @@ class PipelinePassParityTest(unittest.TestCase):
                 {keyword.arg for keyword in node.keywords},
                 f"line {node.lineno}: {name}",
             )
-        self.assertEqual(found, 11)
+        self.assertEqual(found, 12)
 
     def test_post_process_resolves_real_source_without_reusing_target(self):
         """Existing translated SRT must not be reused as its own source."""

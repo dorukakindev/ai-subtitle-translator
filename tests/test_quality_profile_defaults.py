@@ -42,6 +42,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "self.critic_var = ctk.BooleanVar(value=True)",
             "self.native_var = ctk.BooleanVar(value=False)",
             "self.semantic_reconcile_var = ctk.BooleanVar(value=False)",
+            "self.deep_delivery_semantic_var = ctk.BooleanVar(value=True)",
             "self.term_normalize_var = ctk.BooleanVar(value=True)",
             "self.season_canon_var = ctk.BooleanVar(value=False)",
             'self.media_mode_var = ctk.StringVar(value="Dizi")',
@@ -110,6 +111,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "qc": False,
                 "backtrans": False,
                 "semantic_reconcile": False,
+                "deep_delivery_semantic": True,
                 "review_pass": False,
                 "chain_ctx": True,
                 "clean_sdh": True,
@@ -149,6 +151,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         for key in ("polish", "native", "qc", "backtrans",
                     "semantic_reconcile", "review_pass"):
             self.assertFalse(settings[key])
+        self.assertTrue(settings["deep_delivery_semantic"])
         self.assertTrue(settings["main_custom"])
         for role in ("analysis", "critic", "polish", "qc"):
             self.assertEqual(
@@ -199,6 +202,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         self.assertTrue(profile["critic_var"])
         self.assertTrue(profile["term_normalize_var"])
         self.assertTrue(profile["quality_report_only_var"])
+        self.assertTrue(profile["deep_delivery_semantic_var"])
         self.assertTrue(profile["chain_ctx_var"])
         for key in ("polish_var", "native_var", "backtrans_var",
                     "semantic_reconcile_var", "review_pass_var", "qc_var",
@@ -213,6 +217,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         for key in (
             "critic_var", "polish_var", "native_var", "backtrans_var",
             "semantic_reconcile_var", "review_pass_var",
+            "deep_delivery_semantic_var",
             "term_normalize_var", "quality_report_only_var",
             "repair_missing_var", "chain_ctx_var", "clean_sdh_var",
             "linebreak_var", "qc_var",

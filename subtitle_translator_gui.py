@@ -72,7 +72,7 @@ API_PROFILE_PROVIDERS = {
 API_PROFILE_ROLE_LABELS = {
     "main": "Ana ceviri",
     "analysis": "Yardimci analiz",
-    "critic": "Critic + Native + Nihai Anlam",
+    "critic": "Critic + Derin Teslim + Nihai Anlam",
     "polish": "Polish + Kisaltma",
     "qc": "QC + son duzeltmeler",
 }
@@ -94,7 +94,8 @@ def _provider_preflight_targets(snapshot: dict) -> list:
         if snapshot.get("hybrid_mode"):
             enabled_roles.add("analysis")
         if any(snapshot.get(key) for key in (
-                "critic", "native", "semantic_reconcile", "review")):
+                "critic", "native", "semantic_reconcile",
+                "deep_delivery_semantic", "review")):
             enabled_roles.add("critic")
         if snapshot.get("polish") or snapshot.get("condense"):
             enabled_roles.add("polish")
@@ -991,7 +992,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 7
+QUALITY_PROFILE_VERSION = 8
 RESELLER_ROUTING_DEFAULTS = {
     "main_custom": True,
     "main_custom_model": "gpt-5.4",
@@ -1019,6 +1020,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "qc": False,
     "backtrans": False,
     "semantic_reconcile": False,
+    "deep_delivery_semantic": True,
     "review_pass": False,
     "chain_ctx": True,
     "clean_sdh": True,
@@ -1051,6 +1053,7 @@ WORKFLOW_PROFILES = {
         "native_var": False,
         "backtrans_var": False,
         "semantic_reconcile_var": False,
+        "deep_delivery_semantic_var": True,
         "review_pass_var": False,
         "term_normalize_var": True,
         "quality_report_only_var": True,
@@ -1071,6 +1074,7 @@ WORKFLOW_PROFILES = {
         "native_var": False,
         "backtrans_var": False,
         "semantic_reconcile_var": False,
+        "deep_delivery_semantic_var": True,
         "review_pass_var": False,
         "term_normalize_var": True,
         "quality_report_only_var": True,
@@ -1091,6 +1095,7 @@ WORKFLOW_PROFILES = {
         "native_var": False,
         "backtrans_var": False,
         "semantic_reconcile_var": False,
+        "deep_delivery_semantic_var": False,
         "review_pass_var": False,
         "term_normalize_var": True,
         "quality_report_only_var": True,
@@ -1113,6 +1118,8 @@ _BOUNDARY_QUALITY_VARS = {
     "condense": ("condense_var", "Okuma Hızı Kısaltma"),
     "backtrans": ("backtrans_var", "Geri Çeviri"),
     "semantic_reconcile": ("semantic_reconcile_var", "Nihai Anlam Mutabakatı"),
+    "deep_delivery_semantic": (
+        "deep_delivery_semantic_var", "Derin Teslim Anlam Taraması"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
     "quality_report_only": ("quality_report_only_var", "Kalite/Teslim Yalnız Rapor"),
@@ -1174,6 +1181,10 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
     if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
         return False
     previous_version = settings.get("quality_profile_version")
+    if previous_version == 7:
+        settings["deep_delivery_semantic"] = True
+        settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
+        return True
     if previous_version == 5:
         settings.update(RESELLER_ROUTING_DEFAULTS)
     if previous_version in {5, 6}:
@@ -1186,6 +1197,7 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
             "qc": False,
             "backtrans": False,
             "semantic_reconcile": False,
+            "deep_delivery_semantic": True,
             "review_pass": False,
             "term_normalize": True,
             "quality_report_only": True,
@@ -7806,7 +7818,8 @@ _BATCH_RUN_CONTEXT_KEYS = (
     "same_folder", "mode", "auto_glossary", "term_normalize", "quality_report_only",
     "repair_missing", "critic",
     "polish", "native", "qc", "condense", "backtrans",
-    "semantic_reconcile", "review", "twowave", "clean_sdh", "linebreak",
+    "semantic_reconcile", "deep_delivery_semantic", "review", "twowave",
+    "clean_sdh", "linebreak",
     "chain_ctx", "style", "analysis_depth", "file_analysis_depths", "content_type",
     "main_model_name", "main_api_base_url", "helper_models", "helper_urls",
     "api_key_fingerprint", "resume_origin_run_id",
@@ -10053,6 +10066,7 @@ def _timing_phase_label(phase: str) -> str:
     folded = value.casefold()
     aliases = (
         ("çeviri hafızası", "Çeviri Hafızası"),
+        ("derin teslim anlam", "Derin Teslim Anlam Taraması"),
         ("nihai mutabakat", "Nihai Anlam Mutabakatı"),
         ("final tutarlılık", "Final Tutarlılık"),
         ("tutarlılık", "Tutarlılık Taraması"),
@@ -11052,6 +11066,7 @@ _PASS_USAGE_ALIASES = {
     "QC": "QC",
     "Term-Normalize": "Terim Normalizasyonu",
     "Final-Semantic": "Nihai Anlam Mutabakatı",
+    "Deep-Delivery-Semantic": "Derin Teslim Anlam Taraması",
 }
 
 
@@ -11087,6 +11102,71 @@ def _pass_efficiency_rows(row: dict) -> list[dict]:
                 round(tokens / suggested, 2) if suggested else None),
         })
     return result
+
+
+def _deep_delivery_segment_coverage(blocks, processed_ids) -> list[dict]:
+    ids = [str(block[0]) for block in (blocks or [])]
+    processed = {str(value) for value in (processed_ids or [])}
+    total = len(ids)
+    bounds = (
+        ("baş", 0, total // 3),
+        ("orta", total // 3, (total * 2) // 3),
+        ("son", (total * 2) // 3, total),
+    )
+    result = []
+    for name, start, end in bounds:
+        segment = ids[start:end]
+        done = sum(1 for sid in segment if sid in processed)
+        result.append({
+            "name": name, "processed": done, "total": len(segment),
+            "coverage_pct": (done * 100.0 / len(segment)) if segment else 100.0,
+        })
+    return result
+
+
+def build_deep_delivery_semantic_report(stats: dict, blocks) -> str:
+    stats = dict(stats or {})
+    total = len(blocks or [])
+    processed = int(stats.get("processed_cues", 0) or 0)
+    coverage = float(stats.get("processed_coverage_pct", 0.0) or 0.0)
+    segments = _deep_delivery_segment_coverage(
+        blocks, stats.get("processed_ids") or [])
+    complete = bool(total == processed and all(
+        item["processed"] == item["total"] for item in segments))
+    lines = [
+        "# Derin Teslim Anlam Taraması",
+        "# YALNIZ RAPOR: bu aşama altyazı metnini değiştirmez.",
+        f"# Durum: {'TAM KAPSAM' if complete else 'KAPSAM EKSİK'} | "
+        f"İşlenen: {processed}/{total} (%{coverage:.1f}) | "
+        f"Küme: {int(stats.get('clusters', 0) or 0)} | "
+        f"API isteği: {int(stats.get('api_requests', 0) or 0)} | "
+        f"Doğrulanmış öneri: {int(stats.get('suggested', 0) or 0)} | "
+        f"Reddedilen küme: {int(stats.get('rejected', 0) or 0)}",
+        "# Baş/orta/son: " + " | ".join(
+            f"{item['name']} {item['processed']}/{item['total']} "
+            f"(%{item['coverage_pct']:.1f})" for item in segments),
+        "",
+    ]
+    for detail in stats.get("details") or []:
+        cluster = detail.get("cluster") or ",".join(detail.get("clusters") or []) or "?"
+        status = str(detail.get("status") or "?")
+        reason = str(detail.get("reason") or "").strip()
+        lines.append(f"[{cluster}] {status}" + (f": {reason}" if reason else ""))
+        ids = [str(value) for value in detail.get("ids") or []]
+        if ids:
+            lines.append("  cue: " + ", ".join(ids))
+        reasons = dict(detail.get("reasons") or {})
+        changes = dict(detail.get("changes") or {})
+        for sid in ids:
+            change = dict(changes.get(sid) or {})
+            lines.append(f"  [{sid}] kaynak: {change.get('source', '')}")
+            lines.append(f"       mevcut: {change.get('before', '')}")
+            lines.append(f"       öneri : {change.get('after', '')}")
+            if reasons.get(sid):
+                lines.append(f"       neden : {reasons[sid]}")
+    if int(stats.get("suggested", 0) or 0) == 0:
+        lines.append("Kaynakla doğrulanmış bir anlam düzeltme önerisi bulunmadı.")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 _REQUIRED_QUALITY_PASS_KEYS = frozenset({
@@ -11401,6 +11481,20 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     else:
         lines.append("Auto-Glossary: kapalı")
 
+    deep_status = pass_status.get("Deep-Delivery-Semantic")
+    if isinstance(deep_status, dict) and deep_status.get("status") != "skipped":
+        processed = int(deep_status.get("processed_cues", 0) or 0)
+        total = int(deep_status.get("total_cues", 0) or 0)
+        pct = float(deep_status.get("coverage_pct", 0.0) or 0.0)
+        lines.append(
+            f"Derin teslim anlam kapsamı: {processed}/{total} cue (%{pct:.1f}); "
+            f"doğrulanmış öneri {int(deep_status.get('suggested', 0) or 0)}; "
+            "çıktı değiştirilmedi")
+        if total and not deep_status.get("coverage_complete"):
+            lines.append(
+                "Derin teslim anlam uyarısı: tam dosya kapsamı tamamlanmadı; "
+                "rapor eksik kabul edilmeli")
+
     series_enabled = bool(snapshot.get("series_memory"))
     series_status = pass_status.get("Series-Memory")
     if not series_enabled:
@@ -11432,6 +11526,9 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         ("QC", bool(snapshot.get("qc")), ("QC auto", "QC")),
         ("Nihai Anlam Mutabakatı", bool(snapshot.get("semantic_reconcile")),
          ("Final-Semantic",)),
+        ("Derin Teslim Anlam Taraması",
+         bool(snapshot.get("deep_delivery_semantic")),
+         ("Deep-Delivery-Semantic",)),
         ("Geri Çeviri", bool(snapshot.get("backtrans")),
          ("Backtranslation",)),
         ("Terim Normalizasyonu", bool(snapshot.get("term_normalize")),
@@ -13180,6 +13277,7 @@ class App(ctk.CTk):
             "condense": "condense_var",
             "backtrans": "backtrans_var",
             "semantic_reconcile": "semantic_reconcile_var",
+            "deep_delivery_semantic": "deep_delivery_semantic_var",
             "review": "review_pass_var",
             "twowave": "twowave_var",
             "clean_sdh": "clean_sdh_var",
@@ -14472,6 +14570,30 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
+
+        self.deep_delivery_semantic_var = ctk.BooleanVar(value=True)
+        dds_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        dds_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
+        dds_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(
+            dds_fr, text="", variable=self.deep_delivery_semantic_var,
+            width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
+            command=self._sync_helper_role_controls,
+        ).grid(row=0, column=0)
+        ctk.CTkLabel(
+            dds_fr, text="Derin Teslim Anlam Taraması",
+            font=ctk.CTkFont("Segoe UI", 12), text_color=FG2,
+        ).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(
+            sb,
+            text="Final altyazının tamamını kaynakla; cümle/fragment,\n"
+                 "komşu cue ve sahne bağlamında inceler. Özne-nesne,\n"
+                 "kip/olumsuzluk, eksik-tekrar anlam ve Critic bozmasını\n"
+                 "cue numarasıyla raporlar; metni asla değiştirmez.\n"
+                 "(%100 kapsam, yüksek ek maliyet)",
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            justify="left", wraplength=260,
+        ).grid(row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
         # Ham Çeviri Yedeği (kalite geçişlerinden önceki çeviriyi .ham.srt'e kaydeder)
         self.backup_raw_var = ctk.BooleanVar(value=True)
@@ -15946,6 +16068,9 @@ class App(ctk.CTk):
             "semantic_reconcile": (self.semantic_reconcile_var.get()
                                    if getattr(self, "semantic_reconcile_var", None)
                                    else True),
+            "deep_delivery_semantic": bool(
+                getattr(self, "deep_delivery_semantic_var", None) is None
+                or self.deep_delivery_semantic_var.get()),
             "review": self.review_pass_var.get(),
             "twowave": self.twowave_var.get(),
             "clean_sdh": self.clean_sdh_var.get(),
@@ -16003,6 +16128,7 @@ class App(ctk.CTk):
             "native_var": "native", "qc_var": "qc",
             "condense_var": "condense", "backtrans_var": "backtrans",
             "semantic_reconcile_var": "semantic_reconcile",
+            "deep_delivery_semantic_var": "deep_delivery_semantic",
             "review_pass_var": "review", "twowave_var": "twowave",
             "clean_sdh_var": "clean_sdh", "linebreak_var": "linebreak",
             "ai_segment_var": "ai_segment", "merge_cues_var": "merge_cues",
@@ -16041,7 +16167,8 @@ class App(ctk.CTk):
             "profanity", "same_folder", "auto_glossary", "term_normalize",
             "repair_missing",
             "critic", "polish", "native", "qc", "condense", "backtrans",
-            "semantic_reconcile", "review", "twowave", "clean_sdh",
+            "semantic_reconcile", "deep_delivery_semantic", "review",
+            "twowave", "clean_sdh",
             "linebreak", "ai_segment", "merge_cues", "chain_ctx",
             "precontext", "series_memory", "season_canon", "media_mode",
             "main_model_name",
@@ -18451,7 +18578,8 @@ class App(ctk.CTk):
                     "profanity", "same_folder", "auto_glossary", "term_normalize",
                     "repair_missing",
                     "critic", "polish", "native", "qc", "condense", "backtrans",
-                    "semantic_reconcile", "review", "twowave", "clean_sdh",
+                    "semantic_reconcile", "deep_delivery_semantic", "review",
+                    "twowave", "clean_sdh",
                     "linebreak", "ai_segment", "merge_cues", "chain_ctx",
                     "precontext", "series_memory", "season_canon", "media_mode",
                     "main_model_name",
@@ -20748,6 +20876,9 @@ class App(ctk.CTk):
             "native": self.native_var.get(),
             "backtrans": self.backtrans_var.get(),
             "semantic_reconcile": self.semantic_reconcile_var.get(),
+            "deep_delivery_semantic": bool(
+                getattr(self, "deep_delivery_semantic_var", None) is None
+                or self.deep_delivery_semantic_var.get()),
             "backup_raw": self.backup_raw_var.get(),
             "auto_glossary": self.auto_glossary_var.get(),
             "linebreak": self.linebreak_var.get(),
@@ -20978,8 +21109,18 @@ class App(ctk.CTk):
     def _helper_role_is_enabled(self, role: str) -> bool:
         if role == "analysis":
             return True
+        if role == "critic":
+            return any(
+                bool(var and var.get())
+                for var in (
+                    getattr(self, "critic_var", None),
+                    getattr(self, "native_var", None),
+                    getattr(self, "semantic_reconcile_var", None),
+                    getattr(self, "deep_delivery_semantic_var", None),
+                    getattr(self, "review_pass_var", None),
+                )
+            )
         role_var = {
-            "critic": getattr(self, "critic_var", None),
             "polish": getattr(self, "polish_var", None),
             "qc": getattr(self, "qc_var", None),
         }.get(role)
@@ -21168,6 +21309,9 @@ class App(ctk.CTk):
                 self.backtrans_var.set(bool(d["backtrans"]))
             if "semantic_reconcile" in d:
                 self.semantic_reconcile_var.set(bool(d["semantic_reconcile"]))
+            if "deep_delivery_semantic" in d:
+                self.deep_delivery_semantic_var.set(
+                    bool(d["deep_delivery_semantic"]))
             if "auto_glossary" in d:
                 self.auto_glossary_var.set(bool(d["auto_glossary"]))
             if "linebreak" in d:
@@ -22022,13 +22166,15 @@ class App(ctk.CTk):
                 return None
         hybrid = self.mode_var.get() == "batch" and self.hybrid_var.get()
         if hybrid or any((self.critic_var.get(), self.polish_var.get(),
-                          self.native_var.get(), self.qc_var.get())):
+                          self.native_var.get(), self.qc_var.get(),
+                          self.deep_delivery_semantic_var.get())):
             roles = []
             if hybrid:                                  roles.append("analysis")
             if self.critic_var.get():                  roles.append("critic")
             if self.polish_var.get():                  roles.append("polish")
             if self.native_var.get():                  roles.append("critic")
             if self.qc_var.get():                      roles.append("qc")
+            if self.deep_delivery_semantic_var.get():  roles.append("critic")
             for role in roles:
                 hkey = self._helper_api_key(role)
                 if not hkey or len(hkey) < 10:
@@ -22168,6 +22314,15 @@ class App(ctk.CTk):
                 details, "Native Reader", nt_m,
                 self._helper_api_base_url("critic"), 2.0, 0.1)
             total_cost += nt_cost
+            unknown_cost |= unknown
+
+        deep_delivery_var = self.__dict__.get("deep_delivery_semantic_var")
+        if deep_delivery_var is not None and deep_delivery_var.get():
+            ds_m = self._helper_api_model("critic")
+            ds_cost, unknown = add_estimate(
+                details, "Derin Teslim Anlam Taraması", ds_m,
+                self._helper_api_base_url("critic"), 2.4, 0.25)
+            total_cost += ds_cost
             unknown_cost |= unknown
 
         if self.qc_var.get():
@@ -23214,6 +23369,141 @@ class App(ctk.CTk):
             return bool(self.semantic_reconcile_var.get())
         except Exception:
             return True
+
+    def _deep_delivery_semantic_enabled(self) -> bool:
+        return bool(App._run_setting(
+            self, "deep_delivery_semantic", "deep_delivery_semantic_var", True))
+
+    def _maybe_deep_delivery_semantic_audit(
+            self, out_path, src_clean_map, blocks, src_lang=None, cues=None,
+            changed_ids=None, source_path=None, locked_terms=None,
+            analysis_result=None, status_out: dict | None = None) -> int:
+        report_path = (
+            Path(out_path).parent / "Raporlar"
+            / f"{Path(out_path).stem}.derin_teslim_anlam_taramasi.txt")
+        if status_out is not None:
+            status_out.clear()
+            status_out.update({
+                "status": "not_started", "successful_chunks": 0,
+                "failed_chunks": 0, "total_chunks": 0, "changed": 0,
+                "suggested": 0, "report_only": True,
+            })
+        if (not self._deep_delivery_semantic_enabled()
+                or not src_clean_map or not blocks):
+            report_path.unlink(missing_ok=True)
+            if status_out is not None:
+                status_out["status"] = "skipped"
+            return 0
+        try:
+            import hybrid_translate as ht
+            run_src_lang = src_lang or self._snap_get("src_lang", "English")
+            run_tgt_lang = self._snap_get("tgt_lang", "Turkish")
+            if locked_terms is None:
+                locked_terms = self._get_locked_terms_dict(
+                    source_path, run_tgt_lang)
+            extra_reasons = {
+                str(sid): {"POST_PASS_CHANGED"} for sid in (changed_ids or [])
+            }
+            for finding in detect_alignment_issues(blocks, src_clean_map):
+                reason = f"ALIGNMENT_{str(finding.get('type', 'issue')).upper()}"
+                for sid in finding.get("ids") or [finding.get("idx")]:
+                    if sid is not None:
+                        extra_reasons.setdefault(str(sid), set()).add(reason)
+            cancel_context = self.__dict__.get("_helper_request_canceller")
+            progress_path = str(source_path or out_path)
+            _record_file_stage_if_available(
+                self, progress_path, "Derin Teslim Anlam Taraması", "running")
+            self._set_phase(
+                "Derin Teslim Anlam Taraması",
+                f"{Path(progress_path).name} — kaynakla tam dosya karşılaştırması")
+            self._update_file_progress(
+                progress_path, "Derin Teslim Anlam Taraması", 99)
+            result, stats = ht.semantic_reconciliation_pass(
+                src_map=src_clean_map,
+                tr_blocks=blocks,
+                api_key=self._helper_api_key("critic"),
+                base_url=self._helper_api_base_url("critic"),
+                model=self._helper_api_model("critic"),
+                src_lang=run_src_lang,
+                tgt_lang=run_tgt_lang,
+                cues=cues,
+                changed_ids=changed_ids,
+                extra_suspect_reasons=extra_reasons,
+                locked_terms=locked_terms,
+                target_coverage=1.0,
+                analysis_context_hint=ht.build_polish_context_hint(
+                    analysis_result, run_tgt_lang),
+                scene_plan=(
+                    analysis_result[4]
+                    if analysis_result and len(analysis_result) > 4 else None),
+                scene_gap_sec=self._run_scene_gap(),
+                log_fn=self._log,
+                token_callback=App._token_callback_for_pass(
+                    self, self._helper_api_model("critic"),
+                    "Derin Teslim Anlam Taraması",
+                    base_url=self._helper_api_base_url("critic"),
+                    file_path=progress_path),
+                cancel_context=cancel_context,
+                progress_callback=App._pass_progress_callback(
+                    self, source_path, "Derin Teslim Anlam Taraması", 98.0, 99.5),
+                status_out=status_out,
+                apply_changes=False,
+                pass_label="Derin teslim anlam taraması",
+                checkpoint_label="deep_delivery_semantic",
+            )
+            if result != list(blocks):
+                raise RuntimeError("report_only_result_changed")
+            processed = int(stats.get("processed_cues", 0) or 0)
+            complete = processed == len(blocks)
+            if status_out is not None:
+                status_out.update({
+                    "suggested": int(stats.get("suggested", 0) or 0),
+                    "report_only": True,
+                    "processed_cues": processed,
+                    "total_cues": len(blocks),
+                    "coverage_pct": float(
+                        stats.get("processed_coverage_pct", 0.0) or 0.0),
+                    "coverage_complete": complete,
+                })
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                report_path,
+                build_deep_delivery_semantic_report(stats, blocks),
+                encoding="utf-8")
+            if getattr(self, "_active_run_record", None):
+                with self._run_record_lock:
+                    reports = self._active_run_record.setdefault("reports", [])
+                    if str(report_path) not in reports:
+                        reports.append(str(report_path))
+            stage_state = str((status_out or {}).get("status") or "completed")
+            _record_file_stage_if_available(
+                self, progress_path, "Derin Teslim Anlam Taraması", stage_state)
+            self._log(
+                f"Derin teslim raporu: {report_path.name} — "
+                f"{processed}/{len(blocks)} cue, "
+                f"{int(stats.get('suggested', 0) or 0)} doğrulanmış öneri",
+                "ok" if complete else "warn")
+            return int(stats.get("suggested", 0) or 0)
+        except RequestCancelled:
+            if status_out is not None:
+                status_out["status"] = "cancelled"
+            raise
+        except Exception as exc:
+            if status_out is not None:
+                status_out.update({"status": "failed", "error": str(exc)})
+            try:
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(
+                    report_path,
+                    "# Derin Teslim Anlam Taraması\n"
+                    "# KAPSAM EKSİK — altyazı değiştirilmedi.\n"
+                    f"Hata: {exc}\n",
+                    encoding="utf-8")
+            except Exception as report_exc:
+                self._log(
+                    f"Derin teslim hata raporu yazılamadı: {report_exc}", "warn")
+            self._log(f"Derin teslim anlam taraması tamamlanamadı: {exc}", "warn")
+            return 0
 
     def _maybe_semantic_reconciliation(self, out_path, src_clean_map, blocks,
                                        src_lang=None, cues=None, changed_ids=None,
@@ -29001,6 +29291,21 @@ class App(ctk.CTk):
                 self._update_file_progress(
                     filepath, "Nihai yapı koruması başarısız", 100, "error")
                 continue
+            if _quality_api_allowed:
+                _deep_status = {}
+                self._maybe_deep_delivery_semantic_audit(
+                    out_path, {str(c.index): _clean_src(c.text) for c in cues},
+                    sorted_blocks, src_lang=file_src, cues=cues,
+                    changed_ids=_pass_history.keys(), source_path=filepath,
+                    locked_terms=_locked_terms,
+                    analysis_result=(context, char_examples, pronoun_map,
+                                     character_styles, scene_emotions,
+                                     idiom_map, cultural_refs),
+                    status_out=_deep_status)
+                _pass_status["Deep-Delivery-Semantic"] = dict(_deep_status)
+                _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
+            if self._stop_flag:
+                break
             _final_guard_reason = _batch_write_guard_reason(
                 filepath, out_path, _expected_source_hash, _output_baseline)
             if _final_guard_reason:
@@ -30706,6 +31011,21 @@ class App(ctk.CTk):
                             pp, _ = _finalize_translation_blocks(
                                 pp, _raw_map, source_cues=_orig_cues,
                                 log_fn=self._log)
+                            _deep_status = {}
+                            self._maybe_deep_delivery_semantic_audit(
+                                output_path, _src_map, pp,
+                                src_lang=source_language or self._snap_get(
+                                    "src_lang", "English"),
+                                cues=_orig_cues, changed_ids=_pass_history.keys(),
+                                source_path=str(_src_path),
+                                locked_terms=_locked_terms,
+                                analysis_result=_analysis_result,
+                                status_out=_deep_status)
+                            _pass_status["Deep-Delivery-Semantic"] = dict(
+                                _deep_status)
+                            _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
+                            if self._stop_flag:
+                                break
                             _hata_n_pre, _ = _count_hata_cps(pp)
                             _has_missing = _hata_n_pre > 0
                             _guard_reason = _batch_write_guard_reason(
@@ -31513,6 +31833,19 @@ class App(ctk.CTk):
                     fp, "Nihai yapı koruması başarısız", "error")
                 _failed_files.append(fp)
                 continue
+            if _quality_api_allowed:
+                _deep_status = {}
+                self._maybe_deep_delivery_semantic_audit(
+                    out_path, src_blocks, sorted_blocks,
+                    src_lang=_file_src_lang, cues=_src_cues,
+                    changed_ids=_pass_history.keys(), source_path=fp,
+                    locked_terms=_locked_terms_for(fp),
+                    analysis_result=_analysis_result,
+                    status_out=_deep_status)
+                _pass_status["Deep-Delivery-Semantic"] = dict(_deep_status)
+                _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
+            if self._stop_flag:
+                break
             final_guard_reason = _batch_write_guard_reason(
                 fp, out_path, expected_source_hash, baseline)
             if final_guard_reason:
@@ -31962,7 +32295,8 @@ class App(ctk.CTk):
                 key: _snapshot.get(key)
                 for key in (
                     "critic", "polish", "native", "qc", "condense",
-                    "backtrans", "semantic_reconcile", "review", "twowave",
+                    "backtrans", "semantic_reconcile", "deep_delivery_semantic",
+                    "review", "twowave",
                     "clean_sdh", "linebreak", "term_normalize", "repair_missing",
                 )
             },
@@ -33022,6 +33356,19 @@ class App(ctk.CTk):
                     self._record_file_status(
                         filepath, "Nihai yapı koruması başarısız", "error")
                     continue
+                if _quality_api_allowed:
+                    _deep_status = {}
+                    self._maybe_deep_delivery_semantic_audit(
+                        out_path, _src_map, _final_blocks,
+                        src_lang=file_src, cues=cues,
+                        changed_ids=_pass_history.keys(), source_path=filepath,
+                        locked_terms=_locked_terms,
+                        analysis_result=_full_analysis,
+                        status_out=_deep_status)
+                    _pass_status["Deep-Delivery-Semantic"] = dict(_deep_status)
+                    _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
+                if self._stop_flag:
+                    break
                 _hata_n_pre, _ = _count_hata_cps(_final_blocks)
                 _has_missing = _hata_n_pre > 0
                 _guard_reason = _batch_write_guard_reason(

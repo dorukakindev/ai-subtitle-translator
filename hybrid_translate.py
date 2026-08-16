@@ -8479,6 +8479,9 @@ def semantic_reconciliation_pass(
     scene_gap_sec: float = SCENE_GAP_SEC,
     progress_callback=None,
     status_out: dict | None = None,
+    apply_changes: bool = True,
+    pass_label: str = "Nihai anlam mutabakatı",
+    checkpoint_label: str = "semantic_reconciliation",
 ) -> tuple[list, dict]:
     """Final cross-cue semantic check with fail-closed, cluster-atomic fixes."""
     if status_out is not None:
@@ -8525,6 +8528,8 @@ def semantic_reconciliation_pass(
         "api_requests": len(batches),
         "proposed": 0,
         "fixed": 0,
+        "suggested": 0,
+        "report_only": not apply_changes,
         "rejected": 0,
         "reflow_recovered": 0,
         "details": [],
@@ -8534,7 +8539,7 @@ def semantic_reconciliation_pass(
     result = list(tr_blocks or [])
     if log_fn and clusters:
         log_fn(
-            f"Nihai anlam mutabakatı planı: {len(clusters)} küme, "
+            f"{pass_label} planı: {len(clusters)} küme, "
             f"{len(covered_ids)}/{len(tr_blocks)} cue (%{coverage_pct:.1f}), "
             f"yaklaşık {len(batches)} ek API isteği",
             "warn" if coverage_pct >= 60.0 else "info",
@@ -8573,6 +8578,9 @@ def semantic_reconciliation_pass(
         fragment_members_by_id = {}
     all_cluster_ids = {cluster["cluster"] for cluster in clusters}
     processed_covered_ids = set()
+    block_position = {
+        str(block[0]): pos for pos, block in enumerate(tr_blocks or [])
+    }
     cancelled = False
     successful_batches = 0
     partial_batches = 0
@@ -8580,9 +8588,11 @@ def semantic_reconciliation_pass(
         f"You are the final bilingual subtitle semantic reconciler for {src_lang} to {tgt_lang}. "
         "Inspect each small cluster across neighboring cues. Correct only real meaning errors: "
         "missing or duplicated meaning across adjacent cues, a correction swallowed by a neighbor, "
-        "source-absent parenthetical explanations, numbers or polarity, spelled letters, wordplay, "
-        "unclear referents, missing predicates, and meaning distributed unnaturally across a complete "
-        "multi-cue sentence. Some clusters are broad adaptive review samples rather than known errors; "
+        "source-absent explanations or invented facts, speaker/person or subject/object swaps, numbers, "
+        "negation, tense or modality drift, spelled letters, wordplay, unclear referents, missing "
+        "predicates, and meaning distributed unnaturally across a complete multi-cue sentence. Treat "
+        "post-pass changed cues as possible Critic or later-pass regressions and verify them from source. "
+        "Some clusters are broad adaptive review samples rather than known errors; "
         "leave them unchanged unless a concrete source-backed defect exists. Do not rewrite for style. "
         "Preserve every cue id one-to-one. When a cluster is misdistributed, jointly retranslate "
         "the affected cues from their corresponding source text while keeping every id and timestamp. "
@@ -8645,7 +8655,7 @@ def semantic_reconciliation_pass(
             resp = _safe_chat_create(
                 client,
                 cancel_context=cancel_context,
-                _checkpoint_label="semantic_reconciliation",
+                _checkpoint_label=checkpoint_label,
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -8676,7 +8686,7 @@ def semantic_reconciliation_pass(
                 })
                 if log_fn:
                     log_fn(
-                        f"Nihai anlam mutabakatı JSON'u kısmi kurtarıldı; "
+                        f"{pass_label} JSON'u kısmi kurtarıldı; "
                         f"{len(parsed)} tamamlanmış küme doğrulanacak.", "warn")
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
@@ -8712,7 +8722,7 @@ def semantic_reconciliation_pass(
                         retry_resp = _safe_chat_create(
                             client,
                             cancel_context=cancel_context,
-                            _checkpoint_label="semantic_reconciliation_missing",
+                            _checkpoint_label=f"{checkpoint_label}_missing",
                             model=model,
                             messages=[
                                 {"role": "system", "content": system_prompt},
@@ -8743,7 +8753,7 @@ def semantic_reconciliation_pass(
                         })
                         if log_fn:
                             log_fn(
-                                f"Nihai anlam mutabakatı kesik JSON: kalan "
+                                f"{pass_label} kesik JSON: kalan "
                                 f"{len(missing_clusters)} küme yeniden alınamadı ({retry_count}/3): "
                                 f"{retry_exc}", "warn")
                         continue
@@ -8790,14 +8800,14 @@ def semantic_reconciliation_pass(
                     })
                 if log_fn:
                     log_fn(
-                        f"Nihai anlam mutabakatı kalıcı API yetkilendirme hatası "
+                        f"{pass_label} kalıcı API yetkilendirme hatası "
                         f"nedeniyle durduruldu; {skipped} kalan küme denenmedi: {exc}",
                         "warn",
                     )
                 break
             stats["rejected"] += len(batch)
             if log_fn:
-                log_fn(f"Nihai anlam mutabakatı yanıtı atlandı: {exc}", "warn")
+                log_fn(f"{pass_label} yanıtı atlandı: {exc}", "warn")
             if progress_callback:
                 try:
                     progress_callback(batch_pos + 1, len(batches), "completed")
@@ -8813,6 +8823,10 @@ def semantic_reconciliation_pass(
             if item.get("id") is not None
         })
         stats["processed_cues"] = len(processed_covered_ids)
+        stats["processed_ids"] = sorted(
+            processed_covered_ids,
+            key=lambda value: block_position.get(str(value), len(tr_blocks)),
+        )
         stats["processed_coverage_pct"] = (
             stats["processed_cues"] * 100.0 / len(tr_blocks)
             if tr_blocks else 0.0
@@ -9048,15 +9062,18 @@ def semantic_reconciliation_pass(
                                          "ids": sorted(proposals)})
                 continue
 
-            result = candidate
-            before_reason_map = _semantic_reason_map(
-                result, validator_cues, locked_terms,
-                scene_gap_sec=scene_gap_sec)
-            stats["fixed"] += len(proposals)
-            stats["reflow_recovered"] += reflow_recovered
+            if apply_changes:
+                result = candidate
+                before_reason_map = _semantic_reason_map(
+                    result, validator_cues, locked_terms,
+                    scene_gap_sec=scene_gap_sec)
+                stats["fixed"] += len(proposals)
+                stats["reflow_recovered"] += reflow_recovered
+            else:
+                stats["suggested"] += len(proposals)
             stats["details"].append({
                 "cluster": cluster_id,
-                "status": "applied",
+                "status": "applied" if apply_changes else "suggested",
                 "ids": sorted(proposals),
                 "reasons": proposal_reasons,
                 "changes": {
@@ -9080,13 +9097,15 @@ def semantic_reconciliation_pass(
         stats["reflow_recovered"] = 0
         stats["details"].append({"status": "cancelled"})
         if log_fn:
-            log_fn("Nihai anlam mutabakatÄ± durduruldu; kÄ±smi deÄŸiÅŸiklikler uygulanmadÄ±", "warn")
+            log_fn(f"{pass_label} durduruldu; kısmi sonuçlar uygulanmadı", "warn")
         if status_out is not None:
             status_out.update({
                 "status": "cancelled",
                 "successful_chunks": successful_batches,
                 "failed_chunks": max(0, len(batches) - successful_batches),
                 "changed": 0,
+                "suggested": 0,
+                "report_only": not apply_changes,
             })
         return list(tr_blocks or []), stats
 
@@ -9102,15 +9121,21 @@ def semantic_reconciliation_pass(
             "successful_chunks": successful_batches,
             "failed_chunks": failed_batches,
             "changed": int(stats.get("fixed", 0)),
+            "suggested": int(stats.get("suggested", 0)),
+            "report_only": not apply_changes,
         })
     if log_fn:
-        log_fn(
-            f"Nihai anlam mutabakatı: {stats['clusters']} küme, "
-            f"{stats['suspects']} şüpheli cue, {stats['fixed']} düzeltme, "
-            f"{stats['rejected']} reddedilen küme",
-            "ok" if stats["fixed"] else "info",
+        outcome = (
+            f"{stats['suggested']} doğrulanmış öneri; altyazı değiştirilmedi"
+            if not apply_changes else f"{stats['fixed']} düzeltme"
         )
-    return result, stats
+        log_fn(
+            f"{pass_label}: {stats['clusters']} küme, "
+            f"{stats['suspects']} şüpheli cue, {outcome}, "
+            f"{stats['rejected']} reddedilen küme",
+            "warn" if stats["suggested"] else ("ok" if stats["fixed"] else "info"),
+        )
+    return result if apply_changes else list(tr_blocks or []), stats
 
 
 def _salvage_json_objects(raw: str) -> list:
