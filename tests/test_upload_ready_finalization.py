@@ -462,6 +462,26 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
 
+    def test_delivery_audit_accepts_documentary_work_and_water_sounds(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "MONASTIC CHANTING"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "HAMMERING"),
+            ("3", "00:00:06,000 --> 00:00:07,000", "WATER SPLASHES"),
+        ]
+        delivered = gui._prepare_upload_ready_blocks(
+            source, "Turkish", source_cues=source)
+
+        with TemporaryDirectory() as root:
+            source_path = Path(root, "source.srt")
+            output_path = Path(root, "output.srt")
+            gui.write_srt(source_path, source, "English")
+            gui.write_srt(output_path, delivered, "Turkish")
+            audit = gui._subtitle_delivery_audit(source_path, output_path)
+
+        self.assertEqual(audit["status"], "ok")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2", "3"])
+
     def test_delivery_audit_accepts_bare_french_stage_direction(self):
         source = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Petit gémissement de douleur"),
