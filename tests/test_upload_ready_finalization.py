@@ -801,6 +801,7 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
                 "(VENDOR CALLING OUT)", "(DEEP, RESONATING NOTES)",
                 "(SPEAKING GEORGIAN)", "CHEERFUL HYMN MUSIC", "CHANTING",
                 "THEY SING A HYMN", "THEY LAUGH", "[PEOPLE CHANT]",
+                "[PEOPLE CHEER]",
                 "[REPEATING\nIN HEBREW]", "[SHEEP BAAS]"):
             with self.subTest(source=source):
                 self.assertTrue(gui._source_cue_is_delivery_removable(source))
