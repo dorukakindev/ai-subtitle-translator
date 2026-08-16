@@ -78,10 +78,22 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
             '"البروفيسور (أندرو تيفيرسون)\nجامعة (كينغستون)"'))
         self.assertTrue(gui._source_cue_is_delivery_removable(
             '"د. (ليز غلوين)\nكلية (لندن)"'))
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            '"بروفسور (ديان بوركيس)\nكلية (كيبل)، (أوكسفورد)"'))
+
+    def test_arabic_author_title_card_is_removable(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            '"(دراكولا)\nتأليف (برام ستوكر)"'))
 
     def test_arabic_dialogue_about_university_is_not_removable(self):
         self.assertFalse(gui._source_cue_is_delivery_removable(
             "قال البروفيسور إنه عاد إلى الجامعة."))
+
+    def test_parenthesized_arabic_dialogue_is_not_sdh(self):
+        self.assertFalse(gui._source_cue_is_delivery_removable(
+            "(لا يمكننا مخالفة الآلهة.)"))
+        self.assertFalse(gui._source_cue_is_delivery_removable("(اعتقلوهم!)"))
+        self.assertFalse(gui._source_cue_is_delivery_removable("(أرجوك، ماء.)"))
 
 
 if __name__ == "__main__":

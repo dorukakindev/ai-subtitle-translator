@@ -3272,13 +3272,31 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
     arabic_lines = [line.strip() for line in value.splitlines() if line.strip()]
     arabic_academic_card = (
         len(arabic_lines) == 2 and value.lstrip().startswith(('"', '“'))
-        and bool(re.search(r"(?:البروفيسور(?:ة)?|د\.|دكتور)", value))
+        and bool(re.search(r"(?:(?:ال)?بروفيسور(?:ة)?|بروفسور|د\.|دكتور)", value))
         and bool(re.search(r"(?:جامعة|كلية)", value))
     )
+    arabic_author_card = (
+        len(arabic_lines) == 2 and value.lstrip().startswith(('"', '“'))
+        and "تأليف" in value
+    )
+    arabic_parenthesized_dialogue = False
+    arabic_parenthesized = re.fullmatch(r"\s*\(([^()]+)\)\s*", value)
+    if arabic_parenthesized:
+        arabic_body = arabic_parenthesized.group(1).strip()
+        arabic_words = re.findall(r"[\u0600-\u06ff]+", arabic_body)
+        arabic_parenthesized_dialogue = (
+            bool(arabic_words)
+            and (arabic_body.endswith(("!", "؟"))
+                 or (arabic_body.endswith(".")
+                     and (len(arabic_words) >= 3 or "،" in arabic_body)))
+        )
+    if arabic_parenthesized_dialogue:
+        return False
     if (_is_delivery_sdh_only(value)
             or _src_is_sdh_only(value)
             or _delivery_source_is_all_credit(value)
             or arabic_academic_card
+            or arabic_author_card
             or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
             or _DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(
