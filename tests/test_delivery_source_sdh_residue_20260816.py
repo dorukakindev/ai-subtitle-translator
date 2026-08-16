@@ -73,6 +73,19 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))
 
+    def test_bare_live_log_sdh_descriptors_are_removable(self):
+        for source_text in (
+                "BABY CRIES", "MAN SINGS", "HE SINGS PLAINSONG",
+                "CHEERING", "SINGING CONTINUES", "SINGING ENDS",
+                "ELECTRONIC DANCE MUSIC PLAYS", "HE PLAYS A NOTE",
+                "HE PLAYS THE NOTE ON THE MOUTH ORGAN",
+                "VOICES GRADUALLY RISE\nIN A LOUD CRESCENDO",
+                "[NON-ENGLISH SPEECH]", "NGAKPA: [NON-ENGLISH SPEECH]",
+                "STANDCHEN: [NON-ENGLISH SPEECH]"):
+            with self.subTest(source_text=source_text):
+                self.assertTrue(
+                    gui._source_cue_is_delivery_removable(source_text))
+
     def test_arabic_academic_lower_third_is_removable(self):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             '"البروفيسور (أندرو تيفيرسون)\nجامعة (كينغستون)"'))
@@ -94,6 +107,19 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
             "(لا يمكننا مخالفة الآلهة.)"))
         self.assertFalse(gui._source_cue_is_delivery_removable("(اعتقلوهم!)"))
         self.assertFalse(gui._source_cue_is_delivery_removable("(أرجوك، ماء.)"))
+
+    def test_delivery_log_details_include_reason_id_and_source(self):
+        lines = gui._delivery_audit_log_details({
+            "review_details": [{
+                "reason": "missing_dialogue",
+                "source_id": "250",
+                "source": "for women.",
+            }],
+        })
+        self.assertEqual(
+            lines,
+            ["Teslim denetimi ayrıntısı [missing_dialogue] #250: "
+             "kaynak='for women.'"])
 
 
 if __name__ == "__main__":

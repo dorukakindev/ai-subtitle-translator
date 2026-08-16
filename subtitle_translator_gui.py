@@ -3112,7 +3112,8 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
-    r"^(?:U+H+|APPLAUSE|SINGING|(?:MONASTIC\s+)?CHANTING|SHOUTING|HAMMERING|"
+    r"^(?:U+H+|APPLAUSE|CHEERING|SINGING(?:\s+(?:CONTINUES|ENDS))?|"
+    r"(?:MONASTIC\s+)?CHANTING|SHOUTING|HAMMERING|BABY\s+CRIES|"
     r"WATER\s+SPLASHES|EXPLOSIONS?|CALL\s+TO\s+PRAYER|"
     r"(?:ALL\s+)?EXCHANGING\s+GREETINGS|PLUCKS?\s+STRINGS?|"
     r"(?:MAN|WOMAN|INTERPRETER)\s+TRANSLAT(?:ES|ING)"
@@ -3120,9 +3121,13 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"TRANSLATION\s*:|"
     r"(?:MEN|PEOPLE)\s+(?:CHANT|CHEER)|"
     r"(?:CHEERFUL\s+)?HYMN\s+MUSIC|WALKIE-TALKIE\s+BEEPS|"
-    r"(?:SHE|HE|THEY|CHOIR|MUSICIANS?)\s+(?:ALL\s+)?"
-    r"(?:SINGS?|CHANTS?|PLAYS?)(?:\s+(?:A\s+)?HYMN)?|THEY\s+LAUGH|"
-    r"BELLS?\s+(?:RINGS?|TOLLS?|CHIMES?)|(?:UP-TEMPO\s+)?MUSIC\s+PLAYS?|"
+    r"(?:SHE|HE|THEY|MAN|WOMAN|BABY|CHOIR|MUSICIANS?)\s+(?:ALL\s+)?"
+    r"(?:SINGS?|CHANTS?)(?:\s+(?:A\s+)?HYMN|\s+PLAINSONG)?|"
+    r"(?:SHE|HE|THEY|MAN|WOMAN|MUSICIANS?)\s+PLAYS?\s+(?:A|THE)\s+NOTE"
+    r"(?:\s+ON\s+THE\s+MOUTH\s+ORGAN)?|THEY\s+LAUGH|"
+    r"BELLS?\s+(?:RINGS?|TOLLS?|CHIMES?)|"
+    r"(?:(?:UP-TEMPO|ELECTRONIC\s+DANCE|THREATENING|DRAMATIC|SOFT|LOUD)\s+)?"
+    r"MUSIC\s+PLAYS?|"
     r"HE\s+SINGS?,\s*DRUMBEAT|WOMEN\s+UL+ULATING|"
     r"(?:READS|REPEATING)\s+IN\s+HEBREW|SHEEP\s+BAAS?|"
     r"PROPELLER\s+STUTTERS|ANNOUNCEMENT\s+ON\s+PA\s+SYSTEM|"
@@ -3149,6 +3154,9 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"BATTLE\s+CRIES\s+ECHO|NEIGH|THUNDER\s+RUMBLES|"
     r"SEAGULLS\s+CRY|MEN\s+SHOUT|WOL(?:F|VES)\s+(?:CRY|CRIES|HOWLS?)|"
     r"HORSE\s+WHINNIES|(?:HUNNIC\s+)?BATTLE\s+CRIES|"
+    r"VOICES\s+GRADUALLY\s+RISE\s+IN\s+A\s+LOUD\s+CRESCENDO|"
+    r"(?:[A-Z][A-Z0-9'’.-]*(?:\s+[A-Z][A-Z0-9'’.-]*){0,3}:\s*)?"
+    r"\[?NON-ENGLISH\s+SPEECH\]?|"
     r"OWL\s+HOOTS\s+AND\s+WOLF\s+HOWLS)\s*[.!…]*$",
     re.IGNORECASE,
 )
@@ -12159,6 +12167,41 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("duplicate_cue_ids"),
         audit.get("unnumbered_cue_lines"),
     ))
+
+
+def _delivery_audit_log_details(audit: dict, limit: int = 12) -> list[str]:
+    if not isinstance(audit, dict):
+        return ["Teslim denetimi ayrıntısı: rapor verisi kullanılamıyor."]
+    lines = []
+    details = audit.get("review_details") or []
+    for detail in details[:max(0, int(limit))]:
+        reason = str(detail.get("reason", "review") or "review")
+        sid = str(detail.get("source_id", "?") or "?")
+        source = " ".join(str(detail.get("source", "") or "").split())
+        if len(source) > 120:
+            source = source[:117] + "..."
+        lines.append(
+            f"Teslim denetimi ayrıntısı [{reason}] #{sid}: kaynak='{source}'")
+    remaining = max(0, len(details) - len(lines))
+    if remaining:
+        lines.append(
+            f"Teslim denetimi ayrıntısı: {remaining} ek bulgu kalite raporunda.")
+    if not lines:
+        fields = (
+            ("extra_dialogue_ids", "extra_dialogue"),
+            ("timestamp_mismatch_ids", "timestamp_mismatch"),
+            ("untranslated_fragment_ids", "untranslated_fragment"),
+            ("invalid_timestamp_ids", "invalid_timestamp"),
+            ("duplicate_cue_ids", "duplicate_cue_id"),
+        )
+        for key, label in fields:
+            ids = [str(value) for value in (audit.get(key) or [])]
+            if ids:
+                shown = ", ".join(ids[:12])
+                suffix = f" (+{len(ids) - 12})" if len(ids) > 12 else ""
+                lines.append(
+                    f"Teslim denetimi ayrıntısı [{label}]: {shown}{suffix}")
+    return lines
 
 
 def _file_process_report_text(row: dict, run_id: str = "") -> str:
@@ -29592,6 +29635,8 @@ class App(ctk.CTk):
                     self._log(
                         f"{fname}: yazılan SRT yapısal teslim denetiminden geçmedi.",
                         "err")
+                    for _detail in _delivery_audit_log_details(_written_audit):
+                        self._log(_detail, "warn")
             # Rapor satırı
             _pass_fix = sum(
                 1 for block in sorted_blocks
@@ -31325,6 +31370,9 @@ class App(ctk.CTk):
                                             f"{Path(output_path).name}: yazılan SRT "
                                             "yapısal teslim denetiminden geçmedi.",
                                             "err")
+                                        for _detail in _delivery_audit_log_details(
+                                                _written_audit):
+                                            self._log(_detail, "warn")
                                 _resume_quality_failed = (
                                     _delivery_scan_failed
                                     or _quality_pass_has_hard_failure(_pass_status))
@@ -32134,6 +32182,8 @@ class App(ctk.CTk):
                     self._log(
                         f"{Path(fp).name}: yazılan SRT yapısal teslim "
                         "denetiminden geçmedi.", "err")
+                    for _detail in _delivery_audit_log_details(_written_audit):
+                        self._log(_detail, "warn")
             total_warnings += w
             _pass_fix = sum(
                 1 for block in sorted_blocks
@@ -33700,6 +33750,8 @@ class App(ctk.CTk):
                         self._log(
                             f"{fname}: yazılan SRT yapısal teslim denetiminden "
                             "geçmedi.", "err")
+                        for _detail in _delivery_audit_log_details(_written_audit):
+                            self._log(_detail, "warn")
                 _hybrid_quality_failed = (
                     _delivery_scan_failed
                     or _quality_pass_has_hard_failure(_pass_status))
