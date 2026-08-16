@@ -856,7 +856,7 @@ def _src_has_plain_speaker_label(src_line: str) -> bool:
 
 
 _SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
-    r"(?m)(?:^|(?<=[.!?…]))\s*(?:-\s*)?"
+    r"(?m)(?:^|(?<=[.!?…]))\s*(?:(?:>>|&gt;&gt;)\s*)?(?:-\s*)?"
     r"(?:[A-Z][A-Z0-9 .'\-]{1,30}(?:,\s*(?:VOICE[- ]OVER|V\.?O\.?))?|"
     r"[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?){0,2}):\s*"
 )

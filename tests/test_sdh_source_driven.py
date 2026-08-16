@@ -141,6 +141,32 @@ class SdhSourceDrivenTest(unittest.TestCase):
             "Her şey burada başladı.",
         )
 
+    def test_chevron_speaker_label_stripped_by_source(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "SIRENS: Gel, Ulysses.",
+        )]
+        src_map = _src(**{"1": ">> SIRENS: Come, Ulysses."})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Gel, Ulysses.",
+        )
+
+    def test_encoded_chevron_speaker_label_stripped_by_source(self):
+        blocks = [(
+            "1",
+            "00:00:01,000 --> 00:00:02,000",
+            "İKİSİ BİRLİKTE: Vay!",
+        )]
+        src_map = _src(**{"1": "&gt;&gt; BOTH: Whoa!"})
+        result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
+        self.assertEqual(
+            dict((b[0], b[2]) for b in result)["1"],
+            "Vay!",
+        )
+
     def test_hyphenated_titlecase_speaker_label_stripped_by_source(self):
         blocks = [(
             "1",
