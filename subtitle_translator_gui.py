@@ -11659,7 +11659,11 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
         for text in output_texts)
     residual_credit_cues = sum(_is_delivery_credit(text) for text in output_texts)
-    residual_sdh_cues = sum(_is_delivery_sdh_only(text) for text in output_texts)
+    residual_sdh_cues = sum(
+        _is_delivery_sdh_only(text)
+        or _source_cue_is_delivery_removable(
+            output_source_map.get(str(idx), ""))
+        for idx, _ts, text in output_dialogue)
     residual_speaker_label_ids = [
         str(idx) for idx, _ts, text in output_dialogue
         if sdh_cleaner._src_has_plain_speaker_label(
