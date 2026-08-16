@@ -802,7 +802,10 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
                 "(SPEAKING GEORGIAN)", "CHEERFUL HYMN MUSIC", "CHANTING",
                 "THEY SING A HYMN", "THEY LAUGH", "[PEOPLE CHANT]",
                 "[PEOPLE CHEER]", "HEAVY CREAKING DOOR OPENS",
-                "HEAVY DOOR CLOSES", "DOOR CREAKS",
+                "HEAVY DOOR CLOSES", "DOOR CREAKS", "WOLF CRIES",
+                "HORSE WHINNIES", "SHOUTING", "WOLF HOWLS",
+                "TRANSLATION:", "HUNNIC BATTLE CRIES", "BATTLE CRIES",
+                "OWL HOOTS AND WOLF HOWLS",
                 "[REPEATING\nIN HEBREW]", "[SHEEP BAAS]"):
             with self.subTest(source=source):
                 self.assertTrue(gui._source_cue_is_delivery_removable(source))
