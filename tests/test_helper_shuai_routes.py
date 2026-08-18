@@ -15,6 +15,9 @@ class _Var:
     def get(self):
         return self.value
 
+    def set(self, value):
+        self.value = value
+
 
 class _HttpError(RuntimeError):
     def __init__(self, status, message):
@@ -54,6 +57,54 @@ class HelperShuaiRouteTest(unittest.TestCase):
         self.assertEqual(
             gui.App._helper_api_base_url(stub, "critic"),
             "https://oai.sb/v1")
+
+    def test_main_route_selection_updates_only_main_url(self):
+        main_url = _Var("https://api.shuaiapi.com/v1")
+        helper_route = _Var(gui.SHUAI_ROUTE_DISPLAY["CF optimize"])
+        saved = []
+        stub = SimpleNamespace(
+            main_shuai_route_var=_Var(gui.SHUAI_ROUTE_DISPLAY["Global"]),
+            main_custom_url_var=main_url,
+            helper_shuai_route_var=helper_route,
+            helper_shuai_failover_var=_Var(True),
+            _save_settings=lambda save_credentials=False: saved.append(
+                save_credentials),
+            _log=lambda *_args: None,
+        )
+
+        gui.App._on_main_shuai_route_change(stub)
+
+        self.assertEqual(main_url.get(), "https://oai.sb/v1")
+        self.assertEqual(
+            helper_route.get(), gui.SHUAI_ROUTE_DISPLAY["CF optimize"])
+        self.assertEqual(saved, [False])
+
+    def test_custom_main_url_is_shown_as_custom_without_touching_helper(self):
+        main_route = _Var(gui.SHUAI_ROUTE_DISPLAY["CF optimize"])
+        helper_route = _Var(gui.SHUAI_ROUTE_DISPLAY["Global"])
+        stub = SimpleNamespace(
+            main_shuai_route_var=main_route,
+            main_custom_url_var=_Var("https://provider.example/v1"),
+            helper_shuai_route_var=helper_route,
+        )
+
+        gui.App._sync_main_shuai_route_display(stub)
+
+        self.assertEqual(main_route.get(), gui.SHUAI_CUSTOM_ROUTE_DISPLAY)
+        self.assertEqual(helper_route.get(), gui.SHUAI_ROUTE_DISPLAY["Global"])
+
+    def test_changing_main_preference_clears_sticky_main_route(self):
+        first = provider_retry.SHUAI_API_ROUTE_OPTIONS[0][1]
+        second = provider_retry.SHUAI_API_ROUTE_OPTIONS[1][1]
+        provider_retry.configure_shuai_route_failover(
+            True, first, main_preferred_url=first)
+        provider_retry._SHUAI_LAST_WORKING_ROUTES["main"] = first
+
+        provider_retry.configure_shuai_route_failover(
+            True, first, main_preferred_url=second)
+
+        self.assertEqual(
+            provider_retry._shuai_route_candidates(second, "main")[0], second)
 
     def test_same_shuai_key_is_reused_across_route_hosts(self):
         stub = SimpleNamespace(

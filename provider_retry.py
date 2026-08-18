@@ -48,7 +48,10 @@ _SHUAI_ROUTE_HOSTS = frozenset(
     urlparse(url).hostname for _label, url in SHUAI_API_ROUTE_OPTIONS)
 _SHUAI_FAILOVER_LOCK = threading.Lock()
 _SHUAI_FAILOVER_ENABLED = False
-_SHUAI_FAILOVER_PREFERRED = SHUAI_API_ROUTE_OPTIONS[0][1]
+_SHUAI_FAILOVER_PREFERRED_ROUTES = {
+    "main": SHUAI_API_ROUTE_OPTIONS[0][1],
+    "helper": SHUAI_API_ROUTE_OPTIONS[0][1],
+}
 _SHUAI_LAST_WORKING_ROUTES = {"main": "", "helper": ""}
 _SHUAI_FAILOVER_LOG = None
 _SHUAI_ROUTE_COOLDOWN_SECONDS = 300.0
@@ -82,17 +85,29 @@ def shuai_api_route_label(value) -> str:
     return SHUAI_API_ROUTE_OPTIONS[0][0]
 
 
-def configure_shuai_route_failover(enabled=True, preferred_url="", log_fn=None):
-    global _SHUAI_FAILOVER_ENABLED, _SHUAI_FAILOVER_PREFERRED
+def configure_shuai_route_failover(
+        enabled=True, preferred_url="", log_fn=None,
+        main_preferred_url=""):
+    global _SHUAI_FAILOVER_ENABLED
     global _SHUAI_FAILOVER_LOG
     preferred = normalize_shuai_api_route(preferred_url)
     if not preferred:
         preferred = SHUAI_API_ROUTE_OPTIONS[0][1]
+    main_preferred = normalize_shuai_api_route(main_preferred_url)
+    if not main_preferred:
+        main_preferred = _SHUAI_FAILOVER_PREFERRED_ROUTES["main"]
     with _SHUAI_FAILOVER_LOCK:
-        if not enabled or preferred != _SHUAI_FAILOVER_PREFERRED:
+        if (not enabled
+                or preferred != _SHUAI_FAILOVER_PREFERRED_ROUTES["helper"]):
             _SHUAI_LAST_WORKING_ROUTES["helper"] = ""
+        if (not enabled
+                or main_preferred != _SHUAI_FAILOVER_PREFERRED_ROUTES["main"]):
+            _SHUAI_LAST_WORKING_ROUTES["main"] = ""
         _SHUAI_FAILOVER_ENABLED = bool(enabled)
-        _SHUAI_FAILOVER_PREFERRED = preferred
+        _SHUAI_FAILOVER_PREFERRED_ROUTES.update({
+            "main": main_preferred,
+            "helper": preferred,
+        })
         if log_fn is not None:
             _SHUAI_FAILOVER_LOG = log_fn
 
@@ -133,7 +148,7 @@ def _shuai_route_candidates(current_url, scope: str = "helper") -> tuple[str, ..
     with _SHUAI_FAILOVER_LOCK:
         if not _SHUAI_FAILOVER_ENABLED:
             return (current,)
-        preferred = (_SHUAI_FAILOVER_PREFERRED if scope == "helper" else current)
+        preferred = _SHUAI_FAILOVER_PREFERRED_ROUTES.get(scope, current)
         last_working = _SHUAI_LAST_WORKING_ROUTES.get(scope, "")
         now = time.monotonic()
         available = [

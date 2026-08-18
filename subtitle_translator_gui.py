@@ -1121,6 +1121,7 @@ SHUAI_ROUTE_DISPLAY = {
 }
 SHUAI_ROUTE_URL_BY_DISPLAY = {
     SHUAI_ROUTE_DISPLAY[label]: url for label, url in SHUAI_API_ROUTE_OPTIONS}
+SHUAI_CUSTOM_ROUTE_DISPLAY = "Özel URL · alttaki adres"
 DEEP_DELIVERY_COVERAGE_DEFAULT = "Ekonomik (%35)"
 
 
@@ -14650,7 +14651,20 @@ class App(ctk.CTk):
                      fg_color=CARD, border_color=BORDER, text_color=FG)
         self.main_custom_model_entry.pack(fill="x", padx=4, pady=(0,2))
 
-        ctk.CTkLabel(self.main_custom_frame, text="API URL (taban adres, /chat/completions olmadan)", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
+        ctk.CTkLabel(self.main_custom_frame, text="Ana çeviri API rotası", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
+        self.main_shuai_route_var = ctk.StringVar(
+            value=SHUAI_ROUTE_DISPLAY["CF optimize"])
+        self.main_shuai_route_combo = ctk.CTkComboBox(
+            self.main_custom_frame, variable=self.main_shuai_route_var,
+            values=[*SHUAI_ROUTE_URL_BY_DISPLAY, SHUAI_CUSTOM_ROUTE_DISPLAY],
+            height=32, font=ctk.CTkFont("Segoe UI", 11),
+            fg_color=CARD, border_color=BORDER, button_color=BORDER,
+            button_hover_color=ACCENT, dropdown_fg_color=CARD,
+            text_color=FG, state="readonly",
+            command=lambda _choice: self._on_main_shuai_route_change())
+        self.main_shuai_route_combo.pack(fill="x", padx=4, pady=(0,2))
+
+        ctk.CTkLabel(self.main_custom_frame, text="Özel / seçili API URL (taban adres)", font=ctk.CTkFont("Segoe UI", 11), text_color=FG2).pack(anchor="w", padx=4, pady=(2,1))
         self.main_custom_url_var = ctk.StringVar(value="https://api.shuaiapi.com/v1")
         self.main_custom_url_entry = ctk.CTkEntry(self.main_custom_frame, textvariable=self.main_custom_url_var, height=32,
                      font=ctk.CTkFont("Segoe UI", 11),
@@ -14677,7 +14691,7 @@ class App(ctk.CTk):
         # rengi vb. bozulur). try/except: tests/customtkinter.py (saf-mantık
         # testleri için hafif stub) ._entry'yi sahte bir fonksiyona düşürür —
         # gerçek Tk yoksa bu bağ isteğe bağlıdır, sessizce atlanır.
-        for _mc_w in (self.main_custom_model_entry, self.main_custom_url_entry):
+        for _mc_w in (self.main_custom_model_entry,):
             try:
                 _mc_w._entry.bind(
                     "<FocusOut>",
@@ -14685,6 +14699,11 @@ class App(ctk.CTk):
                     add="+")
             except Exception:
                 pass
+        try:
+            self.main_custom_url_entry._entry.bind(
+                "<FocusOut>", self._on_main_custom_url_focus_out, add="+")
+        except Exception:
+            pass
         try:
             self.main_custom_key_entry._entry.bind(
                 "<FocusOut>", self._on_main_custom_key_focus_out, add="+")
@@ -15410,7 +15429,7 @@ class App(ctk.CTk):
                          font=ctk.CTkFont("Segoe UI", 11),
                          fg_color=CARD, border_color=BORDER, text_color=FG).pack(fill="x", padx=4, pady=(0,2))
 
-        hf_lbl("Reseller API rotası")
+        hf_lbl("Pass / analiz API rotası")
         self.helper_shuai_route_var = ctk.StringVar(
             value=SHUAI_ROUTE_DISPLAY["CF optimize"])
         self.helper_shuai_route_combo = ctk.CTkComboBox(
@@ -15424,7 +15443,7 @@ class App(ctk.CTk):
         self.helper_shuai_route_combo.pack(fill="x", padx=4, pady=(0, 2))
         self.helper_shuai_failover_var = ctk.BooleanVar(value=True)
         self.helper_shuai_failover_switch = ctk.CTkSwitch(
-            hfr, text="Shuai isteklerinde otomatik rota geçişi",
+            hfr, text="Ana + pass API otomatik rota geçişi",
             variable=self.helper_shuai_failover_var,
             command=self._on_helper_shuai_route_change,
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
@@ -21669,13 +21688,51 @@ class App(ctk.CTk):
             route = normalize_shuai_api_route(choice)
         return route or SHUAI_API_ROUTE_OPTIONS[0][1]
 
+    def _main_shuai_route_url(self) -> str:
+        var = getattr(self, "main_shuai_route_var", None)
+        choice = var.get() if var is not None else ""
+        route = SHUAI_ROUTE_URL_BY_DISPLAY.get(choice, "")
+        if route:
+            return route
+        url_var = getattr(self, "main_custom_url_var", None)
+        current = url_var.get() if url_var is not None else ""
+        return normalize_shuai_api_route(current)
+
+    def _sync_main_shuai_route_display(self) -> None:
+        var = getattr(self, "main_shuai_route_var", None)
+        url_var = getattr(self, "main_custom_url_var", None)
+        if var is None or url_var is None:
+            return
+        route = normalize_shuai_api_route(url_var.get())
+        if not route:
+            var.set(SHUAI_CUSTOM_ROUTE_DISPLAY)
+            return
+        label = shuai_api_route_label(route)
+        var.set(SHUAI_ROUTE_DISPLAY.get(label, SHUAI_CUSTOM_ROUTE_DISPLAY))
+
     def _configure_helper_shuai_route(self) -> None:
         var = getattr(self, "helper_shuai_failover_var", None)
         enabled = True if var is None else bool(var.get())
         configure_shuai_route_failover(
             enabled=enabled,
             preferred_url=App._helper_shuai_route_url(self),
+            main_preferred_url=App._main_shuai_route_url(self),
             log_fn=getattr(self, "_log", None))
+
+    def _on_main_shuai_route_change(self) -> None:
+        route = SHUAI_ROUTE_URL_BY_DISPLAY.get(
+            self.main_shuai_route_var.get(), "")
+        if route:
+            self.main_custom_url_var.set(route)
+        App._configure_helper_shuai_route(self)
+        save = getattr(self, "_save_settings", None)
+        if callable(save):
+            save(save_credentials=False)
+
+    def _on_main_custom_url_focus_out(self, _event=None) -> None:
+        App._sync_main_shuai_route_display(self)
+        App._configure_helper_shuai_route(self)
+        self._save_settings(save_credentials=False)
 
     def _on_helper_shuai_route_change(self) -> None:
         App._configure_helper_shuai_route(self)
@@ -22184,6 +22241,7 @@ class App(ctk.CTk):
             "main_custom": self.main_custom_var.get(),
             "main_custom_model": self.main_custom_model_var.get(),
             "main_custom_url": self.main_custom_url_var.get(),
+            "main_shuai_route": App._main_shuai_route_url(self),
             "helper_shuai_route": App._helper_shuai_route_url(self),
             "helper_shuai_failover": bool(
                 getattr(self, "helper_shuai_failover_var", None) is None
@@ -22611,6 +22669,11 @@ class App(ctk.CTk):
                 self.main_custom_model_var.set(str(d["main_custom_model"]))
             if "main_custom_url" in d:
                 self.main_custom_url_var.set(str(d["main_custom_url"]))
+            elif normalize_shuai_api_route(d.get("main_shuai_route")):
+                self.main_custom_url_var.set(normalize_shuai_api_route(
+                    d.get("main_shuai_route")))
+            App._sync_main_shuai_route_display(self)
+            App._configure_helper_shuai_route(self)
             if "main_custom" in d:
                 self.main_custom_var.set(bool(d["main_custom"]))
                 self._sync_main_custom_visibility()
