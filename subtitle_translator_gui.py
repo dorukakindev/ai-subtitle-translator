@@ -11935,6 +11935,14 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         if not enabled and not status_info and not trace_changed:
             lines.append(f"{title}: kapalı")
             continue
+        if status_info and status_info.get("status") == "user_skipped":
+            successful = int(status_info.get("successful_chunks", 0) or 0)
+            total = int(status_info.get("total_chunks", 0) or 0)
+            coverage = float(status_info.get("coverage_pct", 0.0) or 0.0)
+            lines.append(
+                f"{title}: kullanıcı atladı; API paket kapsamı "
+                f"{successful}/{total} (%{coverage:.1f}); ana çeviri korundu")
+            continue
         if status_info and status_info.get("status") in {
                 "failed", "partial", "cancelled"}:
             state = status_info["status"]
@@ -15753,6 +15761,16 @@ class App(ctk.CTk):
             state="disabled",
             command=self._toggle_pause_between_files)
         self.pause_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
+
+        self.skip_pass_btn = ctk.CTkButton(
+            sb, text="\u21b7  Bu Pass'i Atla", height=38,
+            font=ctk.CTkFont("Segoe UI", 12),
+            fg_color=CARD, hover_color=BORDER,
+            border_width=1, border_color=BORDER_SOFT,
+            text_color=WARN, state="disabled",
+            command=self._skip_current_pass)
+        self.skip_pass_btn.grid(
+            row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.skip_file_btn = ctk.CTkButton(
             sb, text="↷  Bu Dosyayı Atla", height=38,
@@ -19583,6 +19601,9 @@ class App(ctk.CTk):
         skip_btn = getattr(self, "skip_file_btn", None)
         if skip_btn is not None:
             skip_btn.configure(state="normal" if running else "disabled")
+        skip_pass_btn = getattr(self, "skip_pass_btn", None)
+        if skip_pass_btn is not None:
+            skip_pass_btn.configure(state="disabled")
         adv_btn = getattr(self, "adv_settings_btn", None)
         if adv_btn is not None:
             adv_btn.configure(state=s)
@@ -19608,6 +19629,8 @@ class App(ctk.CTk):
             self._helper_request_canceller = RunRequestCanceller()
             self._current_file_path = ""
             self._skip_current_file_path = ""
+            self._current_skippable_pass = ""
+            self._skip_current_pass_request = None
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
@@ -19684,6 +19707,8 @@ class App(ctk.CTk):
             self._helper_request_canceller = None
             self._current_file_path = ""
             self._skip_current_file_path = ""
+            self._current_skippable_pass = ""
+            self._skip_current_pass_request = None
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._stop_elapsed_timer()
@@ -24353,6 +24378,74 @@ class App(ctk.CTk):
 
         return "continue"
 
+    def _begin_skippable_pass(self, filepath: str, pass_name: str):
+        self._current_file_path = str(filepath or "")
+        self._current_skippable_pass = str(pass_name or "")
+        self._skip_current_pass_request = None
+        skip_btn = getattr(self, "skip_pass_btn", None)
+        if skip_btn is not None:
+            _post_ui(self, skip_btn.configure, state="normal")
+
+    def _skip_current_pass(self):
+        if not getattr(self, "_is_running", False):
+            return
+        filepath = str(getattr(self, "_current_file_path", "") or "")
+        pass_name = str(getattr(self, "_current_skippable_pass", "") or "")
+        if not filepath or not pass_name:
+            self._log(
+                "Atlanabilecek etkin bir pass yok; ana çeviri ve zorunlu "
+                "aşamalar bu düğmeyle atlanamaz.", "warn")
+            return
+        request = (os.path.normcase(os.path.abspath(filepath)), pass_name)
+        if getattr(self, "_skip_current_pass_request", None) == request:
+            return
+        self._skip_current_pass_request = request
+        canceller = self.__dict__.get("_helper_request_canceller")
+        if canceller is not None:
+            canceller.cancel()
+        skip_btn = getattr(self, "skip_pass_btn", None)
+        if skip_btn is not None:
+            skip_btn.configure(state="disabled")
+        self._log(
+            f"{pass_name} kullanıcı tarafından atlanıyor: {Path(filepath).name}. "
+            "Yarım öneriler uygulanmayacak; ana çeviri korunup nihai yazıma "
+            "devam edilecek.", "warn")
+        self._set_status(f"{pass_name} atlanıyor: {Path(filepath).name}")
+
+    def _complete_pass_skip(
+            self, filepath: str, pass_name: str,
+            status_out: dict | None = None) -> bool:
+        normalized = os.path.normcase(os.path.abspath(str(filepath)))
+        request = getattr(self, "_skip_current_pass_request", None)
+        requested = request == (normalized, str(pass_name))
+        if App._file_skip_requested(self, filepath):
+            requested = False
+        if requested:
+            status = status_out if isinstance(status_out, dict) else {}
+            successful = int(status.get("successful_chunks", 0) or 0)
+            total = int(status.get("total_chunks", 0) or 0)
+            coverage = (100.0 * successful / total) if total else 0.0
+            status.update({
+                "status": "user_skipped",
+                "skip_reason": "user",
+                "successful_chunks": successful,
+                "total_chunks": total,
+                "coverage_pct": round(coverage, 1),
+                "changed": 0,
+            })
+            self._log(
+                f"{pass_name} atlandı; API paket kapsamı {successful}/{total} "
+                f"(%{coverage:.1f}). Ana çeviri değiştirilmeden kalan yerel "
+                "aşamalar ve nihai yazım devam ediyor.", "warn")
+            self._helper_request_canceller = RunRequestCanceller()
+        self._skip_current_pass_request = None
+        if str(getattr(self, "_current_skippable_pass", "")) == str(pass_name):
+            self._current_skippable_pass = ""
+        skip_btn = getattr(self, "skip_pass_btn", None)
+        if skip_btn is not None:
+            _post_ui(self, skip_btn.configure, state="disabled")
+        return requested
+
     def _skip_current_file(self):
         if not getattr(self, "_is_running", False):
             return
@@ -24364,6 +24457,7 @@ class App(ctk.CTk):
         if str(getattr(self, "_skip_current_file_path", "") or "") == filepath:
             return
         self._skip_current_file_path = filepath
+        self._skip_current_pass_request = None
         canceller = self.__dict__.get("_helper_request_canceller")
         if canceller is not None:
             canceller.cancel()
@@ -24388,6 +24482,8 @@ class App(ctk.CTk):
         self._update_file_progress(filepath, "Kullanıcı atladı", 100, "skip")
         self._skip_current_file_path = ""
         self._current_file_path = ""
+        self._current_skippable_pass = ""
+        self._skip_current_pass_request = None
         if getattr(self, "_is_running", False) and not self._stop_flag:
             self._helper_request_canceller = RunRequestCanceller()
             skip_btn = getattr(self, "skip_file_btn", None)
@@ -26178,6 +26274,7 @@ class App(ctk.CTk):
                         _before_critic = list(blocks)
                         _critic_change_log = []
                         _critic_status = {}
+                        App._begin_skippable_pass(self, fp, "Critic Pass")
                         blocks = ht.critic_pass_with_helper(
                             cues=orig_cues, tr_blocks=blocks,
                             helper_api_key=helper_keys.get("critic", ""),
@@ -26199,6 +26296,8 @@ class App(ctk.CTk):
                                 "_helper_request_canceller"),
                             status_out=_critic_status,
                             apply_changes=False)
+                        App._complete_pass_skip(
+                            self, fp, "Critic Pass", _critic_status)
                         if self._stop_flag:
                             break
                         self._write_critic_change_report(
@@ -26206,12 +26305,23 @@ class App(ctk.CTk):
                             _critic_status.get("rejected_candidates", []),
                             report_only=True,
                             source_cues=orig_cues,
-                            translation_blocks=_before_critic)
+                            translation_blocks=_before_critic,
+                            status=_critic_status)
                         if _pass_failed(_critic_status):
                             postprocess_failed = True
+                    except RequestCancelled:
+                        if App._complete_pass_skip(
+                                self, fp, "Critic Pass", _critic_status):
+                            blocks = _before_critic
+                        else:
+                            raise
                     except Exception as e:
-                        self._log(f"Critic Pass hatası: {e}", "warn")
-                        postprocess_failed = True
+                        if App._complete_pass_skip(
+                                self, fp, "Critic Pass", _critic_status):
+                            blocks = _before_critic
+                        else:
+                            self._log(f"Critic Pass hatası: {e}", "warn")
+                            postprocess_failed = True
 
                 # Polish Pass
                 if do_polish and orig_cues:
@@ -26638,7 +26748,7 @@ class App(ctk.CTk):
     def _write_critic_change_report(
             self, fp, applied_records: list, rejected_records: list | None = None,
             report_only: bool = False, source_cues=None,
-            translation_blocks=None):
+            translation_blocks=None, status: dict | None = None):
         """Critic Pass tarafından fiilen değiştirilen satırları TEK bir txt
         dosyasına (kaynak/öncesi/sonrası/sebep) yazar — QC değişiklik raporuyla
         aynı motivasyon (bkz. _write_qc_change_report yukarıda): Critic 150-200
@@ -26651,13 +26761,16 @@ class App(ctk.CTk):
             applied_records, source_cues, translation_blocks)
         rejected_records = _candidate_records_with_context(
             rejected_records, source_cues, translation_blocks)
-        if not applied_records and not rejected_records:
+        status = dict(status or {})
+        user_skipped = status.get("status") == "user_skipped"
+        if not applied_records and not rejected_records and not user_skipped:
             report_path.unlink(missing_ok=True)
             return
         try:
             report_path.parent.mkdir(parents=True, exist_ok=True)
             lines = [
                 f"Critic Denetimi — {Path(fp).name}",
+                f"Durum: {status.get('status', 'completed')}",
                 f"Toplam: {len(applied_records)} satır",
                 (f"Yalnız raporlanan: {len(applied_records)} | "
                  f"Korunan/reddedilen: {len(rejected_records)}"
@@ -26665,6 +26778,16 @@ class App(ctk.CTk):
                  f"Uygulanan: {len(applied_records)} | Korunan/reddedilen: {len(rejected_records)}"),
                 "=" * 60, "",
             ]
+            if user_skipped:
+                successful = int(status.get("successful_chunks", 0) or 0)
+                total = int(status.get("total_chunks", 0) or 0)
+                coverage = float(status.get("coverage_pct", 0.0) or 0.0)
+                lines.extend([
+                    "KULLANICI TARAFINDAN ATLANDI",
+                    f"Tamamlanan API paketi: {successful}/{total} (%{coverage:.1f})",
+                    "Yarım Critic önerileri uygulanmadı; ana çeviri korundu ve nihai yazım devam etti.",
+                    "-" * 60, "",
+                ])
             if applied_records:
                 lines.extend([
                     "YALNIZ RAPORLANAN ÖNERİLER" if report_only else "UYGULANAN DÜZELTMELER",
@@ -30398,6 +30521,7 @@ class App(ctk.CTk):
                 _before_pass = list(sorted_blocks)
                 _critic_change_log = []
                 _critic_status = {}
+                App._begin_skippable_pass(self, filepath, "Critic Pass")
                 try:
                     sorted_blocks = ht.critic_pass_with_helper(
                         cues=cues,
@@ -30421,6 +30545,8 @@ class App(ctk.CTk):
                         status_out=_critic_status,
                         apply_changes=False,
                     )
+                    App._complete_pass_skip(
+                        self, filepath, "Critic Pass", _critic_status)
                     _pass_status["Critic"] = dict(_critic_status)
                     if self._stop_flag:
                         break
@@ -30432,19 +30558,29 @@ class App(ctk.CTk):
                         _critic_status.get("rejected_candidates", []),
                         report_only=True,
                         source_cues=cues,
-                        translation_blocks=_before_pass)
+                        translation_blocks=_before_pass,
+                        status=_critic_status)
                 except RequestCancelled:
-                    if App._complete_file_skip(self, filepath):
+                    if App._complete_pass_skip(
+                            self, filepath, "Critic Pass", _critic_status):
+                        sorted_blocks = _before_pass
+                        _pass_status["Critic"] = dict(_critic_status)
+                    elif App._complete_file_skip(self, filepath):
                         skipped_files.append(filepath)
                         continue
-                    raise
+                    else:
+                        raise
                 except Exception as critic_error:
                     sorted_blocks = _before_pass
-                    _pass_status["Critic"] = {
-                        "status": "failed", "error": str(critic_error)}
-                    self._log_exc(
-                        f"[{fname}] Critic Pass başarısız; ana çeviri korundu",
-                        critic_error)
+                    if App._complete_pass_skip(
+                            self, filepath, "Critic Pass", _critic_status):
+                        _pass_status["Critic"] = dict(_critic_status)
+                    else:
+                        _pass_status["Critic"] = {
+                            "status": "failed", "error": str(critic_error)}
+                        self._log_exc(
+                            f"[{fname}] Critic Pass başarısız; ana çeviri korundu",
+                            critic_error)
 
             # ── Polish Pass (gpt-5.4-mini doğallaştırma) ─────────────────────
             if self.polish_var.get() and sorted_blocks and _quality_api_allowed:
@@ -32236,6 +32372,8 @@ class App(ctk.CTk):
                                 _before_pass = list(pp)
                                 _critic_change_log = []
                                 _critic_status = {}
+                                App._begin_skippable_pass(
+                                    self, str(_src_path), "Critic Pass")
                                 pp = ht.critic_pass_with_helper(
                                     cues=_orig_cues, tr_blocks=pp,
                                     helper_api_key=self._helper_api_key("critic"),
@@ -32256,6 +32394,9 @@ class App(ctk.CTk):
                                         "_helper_request_canceller"),
                                     status_out=_critic_status,
                                     apply_changes=False)
+                                App._complete_pass_skip(
+                                    self, str(_src_path), "Critic Pass",
+                                    _critic_status)
                                 _pass_status["Critic"] = dict(_critic_status)
                                 if self._stop_flag:
                                     break
@@ -32267,7 +32408,7 @@ class App(ctk.CTk):
                                 self._write_critic_change_report(
                                     output_path, _critic_change_log,
                                     _critic_status.get("rejected_candidates", []),
-                                    report_only=True)
+                                    report_only=True, status=_critic_status)
                             if self.polish_var.get() and pp:
                                 self._set_status("Doğallaştırma...")
                                 _before_pass = list(pp)
@@ -33062,6 +33203,7 @@ class App(ctk.CTk):
                     _before_pass = list(sorted_blocks)
                     _critic_change_log = []
                     _critic_status = {}
+                    App._begin_skippable_pass(self, fp, "Critic Pass")
                     sorted_blocks = ht.critic_pass_with_helper(
                         cues=_src_cues, tr_blocks=sorted_blocks,
                         helper_api_key=self._helper_api_key("critic"),
@@ -33082,6 +33224,8 @@ class App(ctk.CTk):
                             "_helper_request_canceller"),
                         status_out=_critic_status,
                         apply_changes=False)
+                    App._complete_pass_skip(
+                        self, fp, "Critic Pass", _critic_status)
                     _pass_status["Critic"] = dict(_critic_status)
                     if self._stop_flag:
                         break
@@ -33095,11 +33239,24 @@ class App(ctk.CTk):
                         _critic_status.get("rejected_candidates", []),
                         report_only=True,
                         source_cues=_src_cues,
-                        translation_blocks=_before_pass)
+                        translation_blocks=_before_pass,
+                        status=_critic_status)
+                except RequestCancelled:
+                    if App._complete_pass_skip(
+                            self, fp, "Critic Pass", _critic_status):
+                        sorted_blocks = _before_pass
+                        _pass_status["Critic"] = dict(_critic_status)
+                    else:
+                        raise
                 except Exception as e:
-                    _pass_status["Critic"] = {
-                        "status": "failed", "error": str(e)}
-                    self._log(f"Critic Pass hatası: {e}", "warn")
+                    if App._complete_pass_skip(
+                            self, fp, "Critic Pass", _critic_status):
+                        sorted_blocks = _before_pass
+                        _pass_status["Critic"] = dict(_critic_status)
+                    else:
+                        _pass_status["Critic"] = {
+                            "status": "failed", "error": str(e)}
+                        self._log(f"Critic Pass hatası: {e}", "warn")
             if App._complete_file_skip(self, fp):
                 _skipped_files.append(fp)
                 continue
@@ -34559,6 +34716,8 @@ class App(ctk.CTk):
                             _before_pass = list(pp_blocks)
                             _critic_change_log = []
                             _critic_status = {}
+                            App._begin_skippable_pass(
+                                self, filepath, "Critic Pass")
                             pp_blocks = ht.critic_pass_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
@@ -34577,6 +34736,9 @@ class App(ctk.CTk):
                                     "_helper_request_canceller"),
                                 status_out=_critic_status,
                                 apply_changes=False)
+                            App._complete_pass_skip(
+                                self, filepath, "Critic Pass",
+                                _critic_status)
                             _pass_status["Critic"] = dict(_critic_status)
                             if self._stop_flag:
                                 break
@@ -34590,7 +34752,8 @@ class App(ctk.CTk):
                                 _critic_status.get("rejected_candidates", []),
                                 report_only=True,
                                 source_cues=cues,
-                                translation_blocks=_before_pass)
+                                translation_blocks=_before_pass,
+                                status=_critic_status)
                         if self.polish_var.get() and pp_blocks:
                             self._record_file_status(
                                 filepath, "Polish Pass", "running")

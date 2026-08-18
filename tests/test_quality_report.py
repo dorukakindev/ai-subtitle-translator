@@ -371,6 +371,22 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Native Okuyucu: çalıştı") for line in audit))
 
+    def test_user_skipped_critic_reports_coverage_without_hard_failure(self):
+        status = {"Critic": {
+            "status": "user_skipped", "successful_chunks": 4,
+            "total_chunks": 10, "coverage_pct": 40.0,
+        }}
+        audit = gui._quality_feature_audit({
+            "run_status": "done", "pass_trace": {}, "pass_status": status,
+        }, {"critic": True})
+
+        self.assertIn(
+            "Critic Pass: kullanıcı atladı; API paket kapsamı 4/10 (%40.0); "
+            "ana çeviri korundu", audit)
+        self.assertFalse(any(
+            line == "Critic Pass: çalıştı, 0 cue değiştirdi" for line in audit))
+        self.assertFalse(gui._quality_pass_has_hard_failure(status))
+
     def test_consistency_failure_overrides_zero_change_trace(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",
