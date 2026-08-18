@@ -38,7 +38,11 @@ from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
                                transliteration_guard_rule)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
-from provider_retry import ProviderWaitCancelled, _provider_error_text
+from provider_retry import (ProviderWaitCancelled, SHUAI_API_ROUTE_OPTIONS,
+                            _provider_error_text,
+                            configure_shuai_route_failover,
+                            normalize_shuai_api_route,
+                            shuai_api_route_label)
 import video_subtitles as video_tracks
 
 # Tahmini 1M Token fiyatları (Input/Output $)
@@ -344,24 +348,18 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
         pass
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
-    from provider_retry import chat_create_with_compat
-    if cancel_context is None:
-        return chat_create_with_compat(
-            client, model, kwargs, requested_format=requested_format,
-            checkpoint_label=checkpoint_label)
-    cancel_context.register(client)
+    from provider_retry import chat_create_with_shuai_failover
     try:
-        result = chat_create_with_compat(
+        result = chat_create_with_shuai_failover(
             client, model, kwargs, requested_format=requested_format,
-            checkpoint_label=checkpoint_label)
-        cancel_context.raise_if_cancelled()
+            checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+        if cancel_context is not None:
+            cancel_context.raise_if_cancelled()
         return result
     except Exception as exc:
-        if cancel_context.is_cancelled():
+        if cancel_context is not None and cancel_context.is_cancelled():
             raise RequestCancelled("request cancelled") from exc
         raise
-    finally:
-        cancel_context.unregister(client)
 
 
 _CLEAN_CHAT_FINISH_REASONS = {"", "stop", "end_turn", "completed"}
@@ -1102,6 +1100,14 @@ DEEP_DELIVERY_COVERAGE_OPTIONS = {
     "Ekonomik (%35)": 0.35,
     "Tam (%100)": 1.0,
 }
+SHUAI_ROUTE_DISPLAY = {
+    "CF optimize": "CF optimize · api.shuaiapi.com",
+    "Global": "Global · oai.sb",
+    "Asya Pasifik CDN 2": "Asya Pasifik CDN 2 · api.oai.sb",
+    "Asya Pasifik CDN": "Asya Pasifik CDN · cdn.shuaiapi.com",
+}
+SHUAI_ROUTE_URL_BY_DISPLAY = {
+    SHUAI_ROUTE_DISPLAY[label]: url for label, url in SHUAI_API_ROUTE_OPTIONS}
 DEEP_DELIVERY_COVERAGE_DEFAULT = "Ekonomik (%35)"
 
 
@@ -15390,6 +15396,55 @@ class App(ctk.CTk):
             ctk.CTkEntry(c_frame, textvariable=kvar, show="•", height=32,
                          font=ctk.CTkFont("Segoe UI", 11),
                          fg_color=CARD, border_color=BORDER, text_color=FG).pack(fill="x", padx=4, pady=(0,2))
+
+        hf_lbl("Reseller API rotası")
+        self.helper_shuai_route_var = ctk.StringVar(
+            value=SHUAI_ROUTE_DISPLAY["CF optimize"])
+        self.helper_shuai_route_combo = ctk.CTkComboBox(
+            hfr, variable=self.helper_shuai_route_var,
+            values=list(SHUAI_ROUTE_URL_BY_DISPLAY), height=36,
+            font=ctk.CTkFont("Segoe UI", 11), fg_color=CARD,
+            border_color=BORDER, button_color=BORDER,
+            button_hover_color=ACCENT, dropdown_fg_color=CARD,
+            text_color=FG, state="readonly",
+            command=lambda _choice: self._on_helper_shuai_route_change())
+        self.helper_shuai_route_combo.pack(fill="x", padx=4, pady=(0, 2))
+        self.helper_shuai_failover_var = ctk.BooleanVar(value=True)
+        self.helper_shuai_failover_switch = ctk.CTkSwitch(
+            hfr, text="Shuai isteklerinde otomatik rota geçişi",
+            variable=self.helper_shuai_failover_var,
+            command=self._on_helper_shuai_route_change,
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            progress_color=ACCENT)
+        self.helper_shuai_failover_switch.pack(
+            fill="x", padx=4, pady=(2, 4))
+        test_route_row = ctk.CTkFrame(hfr, fg_color="transparent")
+        test_route_row.pack(fill="x", padx=4, pady=(0, 4))
+        test_route_row.grid_columnconfigure(0, weight=1)
+        self.helper_api_test_role_var = ctk.StringVar(
+            value=self.helper_roles["critic"])
+        ctk.CTkComboBox(
+            test_route_row, variable=self.helper_api_test_role_var,
+            values=list(self.helper_roles.values()), height=32,
+            font=ctk.CTkFont("Segoe UI", 10), fg_color=CARD,
+            border_color=BORDER, button_color=BORDER,
+            button_hover_color=ACCENT, dropdown_fg_color=CARD,
+            text_color=FG, state="readonly").grid(
+                row=0, column=0, sticky="ew", padx=(0, 5))
+        ctk.CTkButton(
+            test_route_row, text="API'yi Dene", width=92, height=32,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=self._show_helper_api_translation_test).grid(
+                row=0, column=1, sticky="e")
+        ctk.CTkLabel(
+            hfr,
+            text=("Yerleşik Reseller modellerinde kullanılır. Özel model veya "
+                  "API profili kendi URL'sini korur. Geçiş ana ve yardımcı "
+                  "Shuai isteklerini bağlantı kesintisine karşı korur."),
+            font=ctk.CTkFont("Segoe UI", 9), text_color=FG2,
+            justify="left", wraplength=260).pack(
+                fill="x", padx=4, pady=(0, 5))
+        self._configure_helper_shuai_route()
         self._sync_helper_role_controls()
         hf_lbl("Analiz derinligi")
         self.analysis_depth_var = ctk.StringVar(value="Gelişmiş")
@@ -16538,6 +16593,7 @@ class App(ctk.CTk):
         saf Python nesnesi olarak kopyasını oluşturur. Worker thread'ler Tk variable .get()
         veya widget okumaları yapmak yerine bu snapshot'ı kullanır.
         """
+        App._configure_helper_shuai_route(self)
         srt_files = self._get_srt_files()
         file_schemas = {}
         file_glossaries = {}
@@ -16605,6 +16661,10 @@ class App(ctk.CTk):
             "workflow_profile": (
                 self.workflow_profile_var.get()
                 if getattr(self, "workflow_profile_var", None) else "Özel"),
+            "helper_shuai_route": App._helper_shuai_route_url(self),
+            "helper_shuai_failover": bool(
+                getattr(self, "helper_shuai_failover_var", None) is None
+                or self.helper_shuai_failover_var.get()),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
             "quality_report_only": bool(
                 getattr(self, "quality_report_only_var", None) is None
@@ -17664,8 +17724,8 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    def _show_api_translation_test_dialog(self):
-        """Seçili ana sağlayıcı/model için dosyasız gerçek çeviri isteği gönderir."""
+    def _show_api_translation_test_dialog(self, helper_role=None):
+        """Seçili ana veya yardımcı model için dosyasız gerçek istek gönderir."""
         if (getattr(self, "_is_running", False)
                 or getattr(self, "_folder_scan_busy", False)
                 or getattr(self, "_api_translation_test_busy", False)):
@@ -17680,19 +17740,30 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        api_key = self._main_api_key()
-        model = str(self._main_model_name() or "").strip()
-        base_url = self._main_api_base_url()
+        helper_role = str(helper_role or "").strip()
+        role_label = self.helper_roles.get(helper_role, "")
+        if helper_role:
+            api_key = self._helper_api_key(helper_role)
+            model = str(self._helper_api_model(helper_role) or "").strip()
+            base_url = self._helper_api_base_url(helper_role)
+            test_name = role_label or API_PROFILE_ROLE_LABELS.get(
+                helper_role, helper_role)
+        else:
+            api_key = self._main_api_key()
+            model = str(self._main_model_name() or "").strip()
+            base_url = self._main_api_base_url()
+            test_name = "Ana model"
         source_language = self.src_var.get()
         target_language = self.tgt_var.get()
         temperature = self._temperature
         if not api_key:
             messagebox.showerror(
-                "API Çeviri Testi", "Ana çeviri için API anahtarı girilmemiş.")
+                "API Çeviri Testi",
+                f"{test_name} için API anahtarı girilmemiş.")
             return
         if not model:
             messagebox.showerror(
-                "API Çeviri Testi", "Ana çeviri modeli seçilmemiş.")
+                "API Çeviri Testi", f"{test_name} seçilmemiş.")
             return
 
         endpoint = _api_translation_test_endpoint_label(base_url)
@@ -17716,12 +17787,12 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Consolas", 10, "bold"), text_color="white",
         ).pack(fill="x", padx=15, pady=(12, 0))
         ctk.CTkLabel(
-            header, text="Ana model bağlantısını dene", anchor="w",
+            header, text=f"{test_name} bağlantısını dene", anchor="w",
             font=ctk.CTkFont("Segoe UI", 17, "bold"), text_color="white",
         ).pack(fill="x", padx=15, pady=(1, 0))
         ctk.CTkLabel(
             header,
-            text=("Seçili modelle gerçek bir çeviri isteği gönderir. "
+            text=("Seçili model ve API rotasıyla gerçek bir çeviri isteği gönderir. "
                   "Dosya oluşturmaz, ayarları değiştirmez."),
             anchor="w", justify="left", wraplength=630,
             font=ctk.CTkFont("Segoe UI", 11), text_color="white",
@@ -17733,6 +17804,7 @@ class App(ctk.CTk):
         info.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
         info.grid_columnconfigure(1, weight=1)
         for row, (label, value) in enumerate((
+            ("ROL", test_name),
             ("MODEL", model),
             ("API ROTASI", endpoint),
             ("ÇEVİRİ", f"{source_language} → {target_language}"),
@@ -17839,18 +17911,23 @@ class App(ctk.CTk):
                     usage = f" · {total} token" if total else " · token bilgisi dönmedi"
                     if cached:
                         usage += f" ({cached} cache)"
+                    used_endpoint = _api_translation_test_endpoint_label(
+                        getattr(response, "shuai_route_used", "") or base_url)
+                    route_note = (
+                        f"\n\nGerçek yanıt rotası: {used_endpoint}"
+                        if used_endpoint != endpoint else "")
                     if structured:
                         rendered = "\n\n".join(
                             f"{pos}. Kaynak: {source}\n   Çeviri: {translation}"
                             for pos, (source, translation) in enumerate(
-                                zip(lines, content), 1))
+                                zip(lines, content), 1)) + route_note
                         status = f"✓ API yanıt verdi — {elapsed:.1f} sn{usage}"
                         status_color = GREEN
                     else:
                         rendered = (
                             "API yanıt verdi; ancak testin JSON biçimi beklenenden farklıydı. "
                             "Bağlantı çalışıyor, fakat yanıt biçimi ayrıca incelenmeli.\n\n"
-                            f"Ham yanıt:\n{content}")
+                            f"Ham yanıt:\n{content}{route_note}")
                         status = (
                             f"△ API yanıt verdi — biçim beklenenden farklı · "
                             f"{elapsed:.1f} sn{usage}")
@@ -17859,7 +17936,8 @@ class App(ctk.CTk):
                         status_label.configure(text=status, text_color=status_color)
                         _set_result(rendered)
                     self._log(
-                        f"🧪 API çeviri testi başarılı: {model} @ {endpoint}, "
+                        f"🧪 {test_name} API testi başarılı: "
+                        f"{model} @ {used_endpoint}, "
                         f"{elapsed:.1f} sn, {len(lines)} satır{usage}", "ok")
                 else:
                     if cancelled:
@@ -17878,7 +17956,8 @@ class App(ctk.CTk):
                         status_label.configure(text=status, text_color=color)
                         _set_result(detail)
                     self._log(
-                        f"🧪 API çeviri testi başarısız: {model} @ {endpoint} — {detail}",
+                        f"🧪 {test_name} API testi başarısız: "
+                        f"{model} @ {endpoint} — {detail}",
                         level)
             finally:
                 cancel_context["value"] = None
@@ -17904,7 +17983,8 @@ class App(ctk.CTk):
                 text_color=ACCENT)
             _set_result("Gerçek API isteği gönderiliyor…")
             self._log(
-                f"🧪 API çeviri testi başladı: {model} @ {endpoint} ({len(lines)} satır)",
+                f"🧪 {test_name} API testi başladı: "
+                f"{model} @ {endpoint} ({len(lines)} satır)",
                 "info")
 
             def _worker():
@@ -17914,7 +17994,9 @@ class App(ctk.CTk):
                         api_key=api_key, base_url=base_url if base_url else None)
                     response = _safe_chat_create(
                         client, cancel_context=canceller,
-                        _checkpoint_label="api_translation_test",
+                        _checkpoint_label=(
+                            f"helper_api_test_{helper_role}"
+                            if helper_role else "api_translation_test"),
                         model=model,
                         messages=_build_api_translation_test_messages(
                             source_language, target_language, lines),
@@ -17924,8 +18006,10 @@ class App(ctk.CTk):
                         timeout=45.0)
                     _report_response_usage(
                         _app_token_callback(
-                            self, model, "API Çeviri Testi", base_url=base_url),
-                        response, log_fn=self._log, pass_name="API Çeviri Testi")
+                            self, model, f"{test_name} API Testi",
+                            base_url=base_url),
+                        response, log_fn=self._log,
+                        pass_name=f"{test_name} API Testi")
                     text = _validated_chat_content(response)
                     translated, structured = _parse_api_translation_test_content(
                         text, len(lines))
@@ -17968,7 +18052,10 @@ class App(ctk.CTk):
 
         def _open_file_preview():
             _close_dialog()
-            self._test_translate()
+            if helper_role:
+                self._show_api_translation_test_dialog()
+            else:
+                self._test_translate()
 
         one_btn = ctk.CTkButton(
             buttons, text="1 satırı dene", fg_color=ACCENT,
@@ -17979,7 +18066,9 @@ class App(ctk.CTk):
             hover_color=GREEN_HOVER, command=lambda: _run_test(2))
         two_btn.grid(row=0, column=1, sticky="ew", padx=4)
         preview_btn = ctk.CTkButton(
-            buttons, text="Dosyadan önizle", fg_color=CARD,
+            buttons,
+            text="Ana API testi" if helper_role else "Dosyadan önizle",
+            fg_color=CARD,
             hover_color=CARD_HOVER, command=_open_file_preview)
         preview_btn.grid(row=0, column=2, sticky="ew", padx=4)
         cancel_btn = ctk.CTkButton(
@@ -21523,6 +21612,35 @@ class App(ctk.CTk):
             f"{len(paths)} klasör eklendi: +{added} yeni, toplam {total} dosya")
         return added
 
+    def _helper_shuai_route_url(self) -> str:
+        var = getattr(self, "helper_shuai_route_var", None)
+        choice = var.get() if var is not None else ""
+        route = SHUAI_ROUTE_URL_BY_DISPLAY.get(choice, "")
+        if not route:
+            route = normalize_shuai_api_route(choice)
+        return route or SHUAI_API_ROUTE_OPTIONS[0][1]
+
+    def _configure_helper_shuai_route(self) -> None:
+        var = getattr(self, "helper_shuai_failover_var", None)
+        enabled = True if var is None else bool(var.get())
+        configure_shuai_route_failover(
+            enabled=enabled,
+            preferred_url=App._helper_shuai_route_url(self),
+            log_fn=getattr(self, "_log", None))
+
+    def _on_helper_shuai_route_change(self) -> None:
+        App._configure_helper_shuai_route(self)
+        save = getattr(self, "_save_settings", None)
+        if callable(save):
+            save(save_credentials=False)
+
+    def _show_helper_api_translation_test(self) -> None:
+        selected = self.helper_api_test_role_var.get()
+        role = next(
+            (key for key, label in self.helper_roles.items()
+             if label == selected), "critic")
+        self._show_api_translation_test_dialog(helper_role=role)
+
     def _helper_model_config(self, role: str):
         assignments = self.__dict__.get("_api_key_assignments", {})
         profiles = self.__dict__.get("_api_key_profiles", {})
@@ -21562,6 +21680,18 @@ class App(ctk.CTk):
                 return urls[role]
         cfg = self._helper_model_config(role)
         url = cfg.base_url
+        assigned = getattr(self, "_api_key_assignments", {}).get(role)
+        custom_active = (
+            role in getattr(self, "helper_model_vars", {})
+            and self._is_custom_helper_label(self.helper_model_vars[role].get()))
+        builtin_shuai = (
+            hasattr(self, "helper_shuai_route_var")
+            and assigned not in getattr(self, "_api_key_profiles", {})
+            and not custom_active
+            and cfg.provider == "openai"
+            and bool(normalize_shuai_api_route(url)))
+        if builtin_shuai:
+            url = App._helper_shuai_route_url(self)
         if url:
             if cfg.provider == "anthropic":
                 url = url.rstrip("/")
@@ -21608,10 +21738,18 @@ class App(ctk.CTk):
                 main_custom = bool(
                     getattr(self, "_main_custom_active", None)
                     and self._main_custom_active())
+                main_url_fn = getattr(self, "_main_api_base_url", None)
+                main_url = (
+                    main_url_fn()
+                    if callable(main_url_fn) else "")
                 main_host = (
-                    urlparse(self._main_api_base_url() or "").hostname or ""
+                    urlparse(main_url or "").hostname or ""
                 ).casefold() if main_custom else ""
-                if main_custom and main_host == helper_host:
+                same_shuai_service = (
+                    _is_shuai_api_route(helper_url)
+                    and _is_shuai_api_route(main_url))
+                if same_shuai_service or (
+                        main_custom and main_host == helper_host):
                     return self._main_api_key()
                 return ""
         if not k:
@@ -21819,6 +21957,10 @@ class App(ctk.CTk):
             "main_custom": self.main_custom_var.get(),
             "main_custom_model": self.main_custom_model_var.get(),
             "main_custom_url": self.main_custom_url_var.get(),
+            "helper_shuai_route": App._helper_shuai_route_url(self),
+            "helper_shuai_failover": bool(
+                getattr(self, "helper_shuai_failover_var", None) is None
+                or self.helper_shuai_failover_var.get()),
             "api_key_profiles": api_profiles,
             "api_key_assignments": _sanitize_api_key_assignments(
                 getattr(self, "_api_key_assignments", {}),
@@ -22126,6 +22268,17 @@ class App(ctk.CTk):
                     self.model_250k_var.set(loaded_model)
                 self._update_active_model()
             if "api_url" in d:                     self.api_url_var.set(_normalize_api_base_url(d["api_url"]))
+            saved_shuai_route = normalize_shuai_api_route(
+                d.get("helper_shuai_route"))
+            if saved_shuai_route and hasattr(self, "helper_shuai_route_var"):
+                label = shuai_api_route_label(saved_shuai_route)
+                self.helper_shuai_route_var.set(
+                    SHUAI_ROUTE_DISPLAY.get(label, label))
+            if ("helper_shuai_failover" in d
+                    and hasattr(self, "helper_shuai_failover_var")):
+                self.helper_shuai_failover_var.set(
+                    bool(d["helper_shuai_failover"]))
+            App._configure_helper_shuai_route(self)
             if d.get("src_lang") in SOURCE_LANGUAGES: self.src_var.set(d["src_lang"])
             if d.get("tgt_lang") in LANGUAGES:     self.tgt_var.set(d["tgt_lang"])
             if d.get("mode") in ("batch","sync"):  self.mode_var.set(d["mode"])

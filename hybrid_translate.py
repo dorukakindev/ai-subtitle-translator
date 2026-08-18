@@ -2715,24 +2715,18 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     kwargs = _normalize_chat_create_kwargs(model, kwargs)
 
     kwargs.setdefault("timeout", API_REQUEST_TIMEOUT_SECONDS)
-    from provider_retry import chat_create_with_compat
-    if cancel_context is None:
-        return chat_create_with_compat(
-            client, model, kwargs, requested_format=requested_format,
-            checkpoint_label=checkpoint_label)
-    cancel_context.register(client)
+    from provider_retry import chat_create_with_shuai_failover
     try:
-        result = chat_create_with_compat(
+        result = chat_create_with_shuai_failover(
             client, model, kwargs, requested_format=requested_format,
-            checkpoint_label=checkpoint_label)
-        cancel_context.raise_if_cancelled()
+            checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+        if cancel_context is not None:
+            cancel_context.raise_if_cancelled()
         return result
     except Exception as exc:
-        if cancel_context.is_cancelled():
+        if cancel_context is not None and cancel_context.is_cancelled():
             raise RequestCancelled("request cancelled") from exc
         raise
-    finally:
-        cancel_context.unregister(client)
 
 
 def _normalize_chat_create_kwargs(model: str, kwargs: dict) -> dict:

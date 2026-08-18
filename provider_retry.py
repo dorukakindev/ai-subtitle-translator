@@ -37,6 +37,104 @@ _RESPONSE_CHECKPOINT = None
 _RESPONSE_CHECKPOINT_GENERATION = 0
 _REQUEST_CONTEXT = threading.local()
 
+SHUAI_API_ROUTE_OPTIONS = (
+    ("CF optimize", "https://api.shuaiapi.com/v1"),
+    ("Global", "https://oai.sb/v1"),
+    ("Asya Pasifik CDN 2", "https://api.oai.sb/v1"),
+    ("Asya Pasifik CDN", "https://cdn.shuaiapi.com/v1"),
+)
+_SHUAI_ROUTE_HOSTS = frozenset(
+    urlparse(url).hostname for _label, url in SHUAI_API_ROUTE_OPTIONS)
+_SHUAI_FAILOVER_LOCK = threading.Lock()
+_SHUAI_FAILOVER_ENABLED = False
+_SHUAI_FAILOVER_PREFERRED = SHUAI_API_ROUTE_OPTIONS[0][1]
+_SHUAI_LAST_WORKING_ROUTE = ""
+_SHUAI_FAILOVER_LOG = None
+
+
+def normalize_shuai_api_route(value) -> str:
+    raw = str(value or "").strip()
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = (parsed.hostname or "").casefold()
+    if host not in _SHUAI_ROUTE_HOSTS:
+        return ""
+    return f"https://{host}/v1"
+
+
+def shuai_api_route_label(value) -> str:
+    normalized = normalize_shuai_api_route(value)
+    for label, url in SHUAI_API_ROUTE_OPTIONS:
+        if url == normalized:
+            return label
+    return SHUAI_API_ROUTE_OPTIONS[0][0]
+
+
+def configure_shuai_route_failover(enabled=True, preferred_url="", log_fn=None):
+    global _SHUAI_FAILOVER_ENABLED, _SHUAI_FAILOVER_PREFERRED
+    global _SHUAI_LAST_WORKING_ROUTE, _SHUAI_FAILOVER_LOG
+    preferred = normalize_shuai_api_route(preferred_url)
+    if not preferred:
+        preferred = SHUAI_API_ROUTE_OPTIONS[0][1]
+    with _SHUAI_FAILOVER_LOCK:
+        if not enabled or preferred != _SHUAI_FAILOVER_PREFERRED:
+            _SHUAI_LAST_WORKING_ROUTE = ""
+        _SHUAI_FAILOVER_ENABLED = bool(enabled)
+        _SHUAI_FAILOVER_PREFERRED = preferred
+        if log_fn is not None:
+            _SHUAI_FAILOVER_LOG = log_fn
+
+
+def _shuai_route_candidates(current_url) -> tuple[str, ...]:
+    current = normalize_shuai_api_route(current_url)
+    if not current:
+        return ()
+    with _SHUAI_FAILOVER_LOCK:
+        if not _SHUAI_FAILOVER_ENABLED:
+            return (current,)
+        preferred = _SHUAI_FAILOVER_PREFERRED
+        last_working = _SHUAI_LAST_WORKING_ROUTE
+    order = []
+    if current == preferred and last_working:
+        order.append(last_working)
+    order.append(current)
+    order.extend(url for _label, url in SHUAI_API_ROUTE_OPTIONS)
+    return tuple(dict.fromkeys(order))
+
+
+def _shuai_failover_error(exc) -> bool:
+    status = _status_code(exc)
+    return bool(
+        _is_transient_provider_error(exc)
+        or status in {404, 405, 421, 520, 521, 522, 523}
+    )
+
+
+def _shuai_log(message: str, level: str = "info") -> None:
+    with _SHUAI_FAILOVER_LOCK:
+        callback = _SHUAI_FAILOVER_LOG
+    if callback:
+        try:
+            callback(message, level)
+        except TypeError:
+            try:
+                callback(message)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+def _openai_client_for_route(client, route: str):
+    try:
+        return client.with_options(base_url=route, max_retries=0)
+    except Exception:
+        from openai import OpenAI
+        api_key = getattr(client, "api_key", "")
+        getter = getattr(api_key, "get_secret_value", None)
+        if callable(getter):
+            api_key = getter()
+        return OpenAI(api_key=api_key, base_url=route, max_retries=0)
+
 
 def _response_checkpoint_namespace_dir(root: Path, namespace: str) -> Path:
     digest = hashlib.sha256(str(namespace).encode("utf-8", "replace")).hexdigest()
@@ -1129,13 +1227,16 @@ def provider_call_with_retry(call, client, model: str, request_context=None,
         retry_delays=retry_delays)
 
 
-def _chat_create_once(client, kwargs: dict, request_context=None):
+def _chat_create_once(client, kwargs: dict, request_context=None,
+                      cancel_check=None, retry_delays=None):
     request_client = _without_sdk_retries(client)
     return _provider_call_once(
         lambda: request_client.chat.completions.create(**kwargs),
         client,
         kwargs.get("model", ""),
         request_context,
+        cancel_check=cancel_check,
+        retry_delays=retry_delays,
     )
 
 
@@ -1150,10 +1251,12 @@ def _without_sdk_retries(client):
 
 
 def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
-                                      requested_format=None, request_context=None):
+                                      requested_format=None, request_context=None,
+                                      cancel_check=None, retry_delays=None):
     plain = copy.deepcopy(kwargs)
     if not _is_custom_gpt5(client, model):
-        return _chat_create_once(client, plain, request_context)
+        return _chat_create_once(
+            client, plain, request_context, cancel_check, retry_delays)
 
     structured = copy.deepcopy(plain)
     if requested_format is not None:
@@ -1161,36 +1264,42 @@ def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
     else:
         structured = _translation_schema_kwargs(structured)
     if structured is None:
-        return _chat_create_once(client, plain, request_context)
+        return _chat_create_once(
+            client, plain, request_context, cancel_check, retry_delays)
 
     key = _structured_key(client, model)
     with _STRUCTURED_LOCK:
         state = _STRUCTURED_STATES.get(key)
         probe_lock = _STRUCTURED_PROBE_LOCKS.setdefault(key, threading.Lock())
     if state is False:
-        return _chat_create_once(client, plain, request_context)
+        return _chat_create_once(
+            client, plain, request_context, cancel_check, retry_delays)
 
     lock = probe_lock if state is None else threading.Lock()
     with lock:
         with _STRUCTURED_LOCK:
             state = _STRUCTURED_STATES.get(key)
         if state is False:
-            return _chat_create_once(client, plain, request_context)
+            return _chat_create_once(
+                client, plain, request_context, cancel_check, retry_delays)
         try:
-            result = _chat_create_once(client, structured, request_context)
+            result = _chat_create_once(
+                client, structured, request_context, cancel_check, retry_delays)
         except Exception as exc:
             if not _structured_unsupported(exc):
                 raise
             with _STRUCTURED_LOCK:
                 _STRUCTURED_STATES[key] = False
-            return _chat_create_once(client, plain, request_context)
+            return _chat_create_once(
+                client, plain, request_context, cancel_check, retry_delays)
         with _STRUCTURED_LOCK:
             _STRUCTURED_STATES[key] = True
         return result
 
 
 def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None,
-                            checkpoint_label=""):
+                            checkpoint_label="", cancel_check=None,
+                            retry_delays=None):
     checkpoint_config = _response_checkpoint_snapshot()
     cached = _response_checkpoint_lookup(
         client, model, kwargs, requested_format=requested_format,
@@ -1204,9 +1313,81 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
         client, model, kwargs, requested_format, checkpoint_label)[:16]
     result = _chat_create_with_compat_uncached(
         client, model, kwargs, requested_format=requested_format,
-        request_context=request_context)
+        request_context=request_context, cancel_check=cancel_check,
+        retry_delays=retry_delays)
     _response_checkpoint_save(
         client, model, kwargs, result, requested_format=requested_format,
         checkpoint_label=checkpoint_label,
         checkpoint_config=checkpoint_config)
     return result
+
+
+def chat_create_with_shuai_failover(
+        client, model: str, kwargs: dict, requested_format=None,
+        checkpoint_label="", cancel_context=None):
+    routes = _shuai_route_candidates(getattr(client, "base_url", ""))
+    cancel_check = (
+        cancel_context.is_cancelled if cancel_context is not None else None)
+    if len(routes) <= 1:
+        if cancel_context is not None:
+            cancel_context.raise_if_cancelled()
+            cancel_context.register(client)
+        try:
+            return chat_create_with_compat(
+                client, model, kwargs, requested_format=requested_format,
+                checkpoint_label=checkpoint_label, cancel_check=cancel_check)
+        finally:
+            if cancel_context is not None:
+                cancel_context.unregister(client)
+
+    original = normalize_shuai_api_route(getattr(client, "base_url", ""))
+    for route in routes:
+        route_client = client if route == original else _openai_client_for_route(
+            client, route)
+        if cancel_context is not None:
+            cancel_context.raise_if_cancelled()
+            cancel_context.register(route_client)
+        try:
+            result = chat_create_with_compat(
+                route_client, model, kwargs, requested_format=requested_format,
+                checkpoint_label=checkpoint_label, cancel_check=cancel_check,
+                retry_delays=())
+        except Exception as exc:
+            if cancel_context is not None and cancel_context.is_cancelled():
+                raise
+            if not _shuai_failover_error(exc):
+                raise
+            _shuai_log(
+                f"Shuai rota yanıt vermedi: {urlparse(route).hostname}; "
+                "sıradaki rota deneniyor.", "warn")
+        else:
+            global _SHUAI_LAST_WORKING_ROUTE
+            with _SHUAI_FAILOVER_LOCK:
+                _SHUAI_LAST_WORKING_ROUTE = route
+            try:
+                setattr(result, "shuai_route_used", route)
+                setattr(result, "shuai_route_requested", original)
+            except Exception:
+                pass
+            if route != original:
+                _shuai_log(
+                    f"Shuai otomatik rota geçişi başarılı: "
+                    f"{urlparse(route).hostname}", "ok")
+            return result
+        finally:
+            if cancel_context is not None:
+                cancel_context.unregister(route_client)
+
+    _shuai_log(
+        "Dört Shuai rotası da ilk denemede yanıt vermedi; "
+        "normal 30/60/120 saniye yeniden deneme düzenine geçiliyor.", "warn")
+    if cancel_context is not None:
+        cancel_context.raise_if_cancelled()
+        cancel_context.register(client)
+    try:
+        return chat_create_with_compat(
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label, cancel_check=cancel_check)
+    finally:
+        if cancel_context is not None:
+            cancel_context.unregister(client)
