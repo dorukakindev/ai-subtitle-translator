@@ -3580,6 +3580,23 @@ def _delivery_removable_source_ids(source_cues) -> set:
     return removable
 
 
+def _delivery_removable_source_timestamps(source_cues, removable_ids: set) -> set:
+    timestamps = set()
+    for cue in source_cues or []:
+        try:
+            if hasattr(cue, "text"):
+                cue_id = str(cue.index)
+                timestamp = f"{cue.start} --> {cue.end}"
+            else:
+                cue_id = str(cue[0])
+                timestamp = str(cue[1])
+        except Exception:
+            continue
+        if cue_id in removable_ids:
+            timestamps.add(timestamp)
+    return timestamps
+
+
 def _restore_source_linebreaks(text: str, source_text: str) -> str:
     value = str(text or "")
     source = str(source_text or "")
@@ -3823,6 +3840,9 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     blocks = list(blocks or [])
     removable_source_ids = (
         _delivery_removable_source_ids(source_cues) if source_cues else set())
+    removable_source_timestamps = (
+        _delivery_removable_source_timestamps(
+            source_cues, removable_source_ids) if source_cues else set())
     quote_markers_fixed = 0
     if source_cues:
         src_map = _delivery_source_map(blocks, source_cues)
@@ -3850,7 +3870,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     sdh_removed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
-        if source_cues and str(idx) in removable_source_ids:
+        if source_cues and str(ts) in removable_source_timestamps:
             continue
         value = str(text or "")
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):

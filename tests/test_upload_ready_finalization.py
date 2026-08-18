@@ -6,6 +6,26 @@ import subtitle_translator_gui as gui
 
 
 class UploadReadyFinalizationTest(unittest.TestCase):
+    def test_removed_source_id_does_not_delete_renumbered_dialogue(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "First dialogue."),
+            ("2", "00:00:03,100 --> 00:00:04,000", "[MUSIC]"),
+            ("3", "00:00:04,100 --> 00:00:05,000", "Third dialogue."),
+        ]
+        blocks = [
+            ("1", source[0][1], "Birinci diyalog."),
+            ("2", source[2][1], "Üçüncü diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = [
+            text for _idx, _ts, text in result
+            if text != "discord: ceviri2"
+        ]
+
+        self.assertEqual(dialogue, ["Birinci diyalog.", "Üçüncü diyalog."])
+
     def test_real_delivery_cases_are_cleaned_and_signed_idempotently(self):
         blocks = [
             ("1", "00:00:03,000 --> 00:00:04,000", "Hâlâ buradayım."),
