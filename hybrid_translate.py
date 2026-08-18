@@ -3018,6 +3018,9 @@ def _analyze_context_openai_compatible(
         f"Source language hint: {source_language}\n"
         f"Target language: {target_language}\n"
         f"Style: {style}\n"
+        "Every recurring_terms value must be one exact target-language rendering only: no quotes, "
+        "alternatives, slashes, explanations, usage notes, or instructions. If one rendering cannot be "
+        "locked safely across contexts, omit that term.\n"
         f"{depth_guidance}"
         f"Glossary: {json.dumps(glossary or {}, ensure_ascii=False)[:1200]}\n\n"
         "Required JSON shape:\n"
@@ -6791,10 +6794,11 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
             continue
         value_s = str(value)
         quoted_target = re.fullmatch(
-            r'\s*["“]([^"”/\r\n]+)["”]\s*;\s*([^"“”/]+)',
+            r'''\s*(?:["“]([^"”/\r\n]+)["”]|'([^'/\r\n]+)')\s*;\s*'''
+            r'''([^"“”'/]+)''',
             value_s, flags=re.DOTALL)
         if quoted_target:
-            value_s = quoted_target.group(1).strip()
+            value_s = (quoted_target.group(1) or quoted_target.group(2)).strip()
         replacements = {
             "basrahibe": "başrahibe", "kardes": "kardeş",
             "tanri": "tanrı", "carmih": "çarmıh", "sarap": "şarap",

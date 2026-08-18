@@ -307,6 +307,13 @@ class GlossaryGlossOrInstructionGuardTest(unittest.TestCase):
         })
         self.assertEqual(cleaned, {"DMT": "DMT"})
 
+    def test_single_quoted_exact_target_is_salvaged_before_instruction(self):
+        cleaned = ht.sanitize_glossary_for_turkish({
+            "rationalism": "'Rasyonalizm'; felsefi terim olarak korunmalı.",
+            "what we know": "'Bildiğimiz şeyler' veya bağlamda 'bildiklerimiz'.",
+        })
+        self.assertEqual(cleaned, {"rationalism": "Rasyonalizm"})
+
     def test_live_psychedelic_alternatives_are_not_locked(self):
         glossary = {
             "psychedelic": "“psikedelik”; “halüsinojenik” ile bağlama göre ayrıştırılmalı.",

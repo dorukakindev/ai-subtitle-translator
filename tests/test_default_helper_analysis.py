@@ -350,7 +350,7 @@ class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
         )
 
         with patch("openai.OpenAI"), \
-             patch.object(ht, "_safe_chat_create", return_value=response):
+             patch.object(ht, "_safe_chat_create", return_value=response) as chat:
             memory = ht._analyze_context_openai_compatible(
                 cues,
                 api_key="key",
@@ -363,6 +363,10 @@ class DefaultHelperAnalysisHardeningTest(unittest.TestCase):
             )
 
         self.assertEqual(memory.recurring_terms, {"Osprey": "Osprey"})
+        prompt = chat.call_args.kwargs["messages"][-1]["content"]
+        self.assertIn(
+            "one exact target-language rendering only", prompt)
+        self.assertIn("If one rendering cannot be locked safely", prompt)
 
     def test_cultural_reference_prompt_forbids_factual_substitution(self):
         cue = SimpleNamespace(text="The Yankees won.", index=1)
