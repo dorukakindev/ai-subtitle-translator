@@ -456,12 +456,10 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 fn(client, model="gpt-5.4", messages=[])
-        self.assertEqual(before.call_count, 4)
-        self.assertEqual(record.call_count, 4)
+        self.assertEqual(before.call_count, 11)
+        self.assertEqual(record.call_count, 11)
         self.assertEqual(wait.call_args_list, [
-            mock.call(error, 1, 3),
-            mock.call(error, 2, 3),
-            mock.call(error, 3, 3),
+            mock.call(error, attempt, 10) for attempt in range(1, 11)
         ])
 
     def test_hybrid_wrapper_records_reseller_429(self):
@@ -498,11 +496,11 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(waits, [
-            (30.0, 1, 3),
-            (60.0, 2, 3),
-            (120.0, 3, 3),
+            (5.0, 1, 10),
+            (5.0, 2, 10),
+            (5.0, 3, 10),
         ])
-        retry_success.assert_called_once_with(3, 3)
+        retry_success.assert_called_once_with(3, 10)
 
     def test_temporary_channel_403_is_retried_by_safe_chat_wrapper(self):
         client = mock.MagicMock()
@@ -523,7 +521,7 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(client.chat.completions.create.call_count, 2)
-        wait.assert_called_once_with(error, 1, 3)
+        wait.assert_called_once_with(error, 1, 10)
 
     def test_transient_error_hint_does_not_force_120_second_first_wait(self):
         class TemporaryError(RuntimeError):
@@ -539,7 +537,7 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
         ):
             provider_retry._wait_for_transient_retry(error, 1, 3)
 
-        self.assertEqual(waits, [(30.0, 1, 3)])
+        self.assertEqual(waits, [(5.0, 1, 3)])
 
     def test_structured_retry_after_extends_transient_wait(self):
         error = SimpleNamespace(
@@ -591,7 +589,7 @@ class SafeChatCooldownIntegrationTest(unittest.TestCase):
 
         self.assertIs(result, response)
         self.assertEqual(client.chat.completions.create.call_count, 2)
-        wait.assert_called_once_with(error, 1, 3)
+        wait.assert_called_once_with(error, 1, 10)
 
     def test_disabled_auto_group_configuration_is_not_retried(self):
         client = mock.MagicMock()

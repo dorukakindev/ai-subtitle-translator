@@ -23,9 +23,13 @@ class _HttpError(RuntimeError):
 
 
 class HelperShuaiRouteTest(unittest.TestCase):
+    def setUp(self):
+        provider_retry.reset_shuai_route_metrics()
+
     def tearDown(self):
         provider_retry.configure_shuai_route_failover(
             False, provider_retry.SHUAI_API_ROUTE_OPTIONS[0][1])
+        provider_retry.reset_shuai_route_metrics()
 
     def test_route_normalization_accepts_only_known_hosts(self):
         self.assertEqual(
@@ -140,6 +144,50 @@ class HelperShuaiRouteTest(unittest.TestCase):
         self.assertTrue(all(retry == () for _url, retry in calls[:4]))
         self.assertIsNone(calls[-1][1])
 
+    def test_requested_retry_schedule_is_used(self):
+        self.assertEqual(
+            provider_retry.TRANSIENT_RETRY_DELAYS,
+            (5.0, 5.0, 5.0, 10.0, 30.0,
+             35.0, 40.0, 45.0, 45.0, 50.0))
+
+    def test_rate_limited_route_enters_cooldown(self):
+        first = provider_retry.SHUAI_API_ROUTE_OPTIONS[0][1]
+        provider_retry.configure_shuai_route_failover(True, first)
+        provider_retry._shuai_record_route_result(
+            first, False, 1.2, exc=_HttpError(429, "rate limit"))
+        candidates = provider_retry._shuai_route_candidates(first, "helper")
+        self.assertNotIn(first, candidates)
+        row = provider_retry.shuai_route_metrics_snapshot()[0]
+        self.assertEqual(row["rate_limits"], 1)
+        self.assertGreater(row["cooldown_remaining"], 299)
+
+    def test_only_one_unknown_route_probe_is_claimed(self):
+        route = provider_retry.SHUAI_API_ROUTE_OPTIONS[0][1]
+        self.assertTrue(provider_retry._shuai_claim_route(route))
+        self.assertFalse(provider_retry._shuai_claim_route(route))
+        provider_retry._shuai_release_route_probe(route)
+        self.assertTrue(provider_retry._shuai_claim_route(route))
+
+    def test_route_probe_failure_is_not_terminal_in_api_events(self):
+        captured = []
+        error = _HttpError(429, "rate limit")
+        with patch.object(
+                provider_retry, "before_provider_request"), patch.object(
+                provider_retry._REGISTRY, "request_started", return_value="r1"), patch.object(
+                provider_retry._REGISTRY, "request_finished",
+                side_effect=lambda _client, _success, _model, details,
+                request_id=None: captured.append(dict(details))), patch.object(
+                provider_retry, "record_provider_failure"):
+            with self.assertRaises(_HttpError):
+                provider_retry._provider_call_once(
+                    lambda: (_ for _ in ()).throw(error),
+                    SimpleNamespace(base_url="https://api.shuaiapi.com/v1"),
+                    "gpt-5.4",
+                    request_context={"shuai_route_failover_pending": True},
+                    retry_delays=())
+        self.assertTrue(captured[-1]["will_retry"])
+        self.assertTrue(captured[-1]["shuai_route_failover"])
+
     def test_helper_test_role_dispatches_to_live_dialog(self):
         called = []
         stub = SimpleNamespace(
@@ -151,6 +199,17 @@ class HelperShuaiRouteTest(unittest.TestCase):
         )
         gui.App._show_helper_api_translation_test(stub)
         self.assertEqual(called, ["analysis"])
+
+    def test_best_route_uses_fastest_successful_probe(self):
+        best = gui._best_shuai_probe_result([
+            {"route": "https://oai.sb/v1", "success": True,
+             "duration_seconds": 2.5},
+            {"route": "https://api.oai.sb/v1", "success": False,
+             "duration_seconds": 0.2},
+            {"route": "https://cdn.shuaiapi.com/v1", "success": True,
+             "duration_seconds": 1.1},
+        ])
+        self.assertEqual(best["route"], "https://cdn.shuaiapi.com/v1")
 
     def test_live_dialog_uses_selected_helper_credentials(self):
         source = inspect.getsource(gui.App._show_api_translation_test_dialog)

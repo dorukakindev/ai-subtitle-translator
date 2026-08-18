@@ -41,7 +41,9 @@ from request_cancellation import RequestCancelled, RunRequestCanceller
 from provider_retry import (ProviderWaitCancelled, SHUAI_API_ROUTE_OPTIONS,
                             _provider_error_text,
                             configure_shuai_route_failover,
+                            format_shuai_route_metrics,
                             normalize_shuai_api_route,
+                            reset_shuai_route_metrics,
                             shuai_api_route_label)
 import video_subtitles as video_tracks
 
@@ -579,6 +581,17 @@ def _parse_api_translation_test_content(content: str, expected_count: int) -> tu
                     return ordered, True
             start = candidate.find("{", start + 1)
     return [raw], False
+
+
+def _best_shuai_probe_result(results: list[dict]) -> dict | None:
+    successful = [
+        dict(item) for item in (results or [])
+        if item.get("success") and normalize_shuai_api_route(item.get("route"))
+    ]
+    if not successful:
+        return None
+    return min(successful, key=lambda item: float(
+        item.get("duration_seconds", float("inf"))))
 
 
 def _api_translation_test_error_text(exc: Exception) -> str:
@@ -15436,11 +15449,18 @@ class App(ctk.CTk):
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
             command=self._show_helper_api_translation_test).grid(
                 row=0, column=1, sticky="e")
+        self.helper_route_compare_btn = ctk.CTkButton(
+            hfr, text="4 Rotayı Karşılaştır", height=32,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
+            command=self._compare_helper_shuai_routes)
+        self.helper_route_compare_btn.pack(
+            fill="x", padx=4, pady=(0, 4))
         ctk.CTkLabel(
             hfr,
             text=("Yerleşik Reseller modellerinde kullanılır. Özel model veya "
-                  "API profili kendi URL'sini korur. Geçiş ana ve yardımcı "
-                  "Shuai isteklerini bağlantı kesintisine karşı korur."),
+                  "API profili kendi URL'sini korur. Başarılı rota sabitlenir; "
+                  "429 veren rota 5 dakika dinlendirilir."),
             font=ctk.CTkFont("Segoe UI", 9), text_color=FG2,
             justify="left", wraplength=260).pack(
                 fill="x", padx=4, pady=(0, 5))
@@ -15714,6 +15734,16 @@ class App(ctk.CTk):
             state="disabled",
             command=self._toggle_pause_between_files)
         self.pause_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
+
+        self.skip_file_btn = ctk.CTkButton(
+            sb, text="↷  Bu Dosyayı Atla", height=38,
+            font=ctk.CTkFont("Segoe UI", 12),
+            fg_color=CARD, hover_color=BORDER,
+            border_width=1, border_color=BORDER_SOFT,
+            text_color=WARN, state="disabled",
+            command=self._skip_current_file)
+        self.skip_file_btn.grid(
+            row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.stop_btn = ctk.CTkButton(
             sb, text="■  Durdur", height=38,
@@ -17454,6 +17484,8 @@ class App(ctk.CTk):
                     "attempt": int(info.get("attempt") or info.get("next_attempt") or 0),
                     "max_attempts": int(info.get("max_attempts") or 0),
                     "will_retry": bool(info.get("will_retry", False)),
+                    "shuai_route_failover": bool(
+                        info.get("shuai_route_failover", False)),
                     "status_code": info.get("status_code"),
                     "reason": str(info.get("reason") or ""),
                     "request_id": str(info.get("request_id") or ""),
@@ -17617,7 +17649,11 @@ class App(ctk.CTk):
             reason = str(info.get("reason") or "API hatası")
             status = info.get("status_code")
             suffix = f" (HTTP {status})" if status else ""
-            retry_note = "yeniden denenecek" if info.get("will_retry") else "kalıcı hata"
+            route_failover = bool(info.get("shuai_route_failover"))
+            retry_note = (
+                "yedek Shuai rotası denenecek" if route_failover
+                else "yeniden denenecek" if info.get("will_retry")
+                else "kalıcı hata")
             self._log(
                 f"{operation}: API isteği başarısız — {reason}{suffix}; {retry_note}"
                 f"{f' · {context}' if context else ''}",
@@ -19517,11 +19553,17 @@ class App(ctk.CTk):
         test_btn = getattr(self, "test_btn", None)
         if test_btn is not None:
             test_btn.configure(state=s)
+        compare_btn = getattr(self, "helper_route_compare_btn", None)
+        if compare_btn is not None:
+            compare_btn.configure(state=s)
         self.resume_btn.configure(state=s)
         self.jsonl_btn.configure(state=s)
         self.postprocess_btn.configure(state=s)
         self.stop_btn.configure(state="normal" if running else "disabled")
         self.pause_btn.configure(state="normal" if running else "disabled")
+        skip_btn = getattr(self, "skip_file_btn", None)
+        if skip_btn is not None:
+            skip_btn.configure(state="normal" if running else "disabled")
         adv_btn = getattr(self, "adv_settings_btn", None)
         if adv_btn is not None:
             adv_btn.configure(state=s)
@@ -19539,11 +19581,14 @@ class App(ctk.CTk):
         else:
             App._cancel_motion_animation(self, snap=True)
         if running and not getattr(self, "_run_state_initialized", False):
+            reset_shuai_route_metrics()
             self._auto_retry_blocked_by_permanent_provider = False
             self._season_canon_done = False
             self._season_canon_finalizing = False
             self._run_state_initialized = True
             self._helper_request_canceller = RunRequestCanceller()
+            self._current_file_path = ""
+            self._skip_current_file_path = ""
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
@@ -19592,6 +19637,8 @@ class App(ctk.CTk):
                 if self._sleep_prevention_active:
                     self._log("Çeviri boyunca Windows uyku modu engellendi.", "info")
         elif not running:
+            for route_line in format_shuai_route_metrics():
+                self._log(f"Shuai rota özeti: {route_line}", "info")
             finalizer = getattr(self, "_finalize_run_record", None)
             finalized_record = None
             if callable(finalizer):
@@ -19616,6 +19663,8 @@ class App(ctk.CTk):
             App._unfreeze_run_variable_reads(self)
             self._active_snapshot = None
             self._helper_request_canceller = None
+            self._current_file_path = ""
+            self._skip_current_file_path = ""
             self._run_series_memory = {}
             self._run_precontext_data = {}
             self._stop_elapsed_timer()
@@ -21640,6 +21689,184 @@ class App(ctk.CTk):
             (key for key, label in self.helper_roles.items()
              if label == selected), "critic")
         self._show_api_translation_test_dialog(helper_role=role)
+
+    def _compare_helper_shuai_routes(self) -> None:
+        if getattr(self, "_is_running", False):
+            messagebox.showwarning(
+                "Shuai Rota Karşılaştırması",
+                "Çeviri sürerken rota testi başlatılamaz.")
+            return
+        if getattr(self, "_api_translation_test_busy", False):
+            messagebox.showwarning(
+                "Shuai Rota Karşılaştırması",
+                "Başka bir canlı API testi sürüyor.")
+            return
+        selected = self.helper_api_test_role_var.get()
+        role = next(
+            (key for key, label in self.helper_roles.items()
+             if label == selected), "critic")
+        api_key = self._helper_api_key(role)
+        model = self._helper_api_model(role)
+        if not api_key:
+            messagebox.showwarning(
+                "Shuai Rota Karşılaştırması",
+                "Seçili yardımcı rol için API anahtarı bulunamadı.")
+            return
+
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Shuai Rota Karşılaştırması")
+        dlg.geometry("620x410")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            dlg, text="4 Shuai rotası — gerçek kısa çeviri isteği",
+            font=ctk.CTkFont("Segoe UI", 17, "bold"), text_color=FG,
+        ).grid(row=0, column=0, sticky="w", padx=24, pady=(22, 4))
+        ctk.CTkLabel(
+            dlg,
+            text=(f"{self.helper_roles.get(role, role)} · {model}\n"
+                  "Her rota bir kez denenir; otomatik yedek rotaya geçmez."),
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", padx=24, pady=(0, 14))
+
+        table = ctk.CTkFrame(
+            dlg, fg_color=PANEL, corner_radius=10,
+            border_width=1, border_color=BORDER_SOFT)
+        table.grid(row=2, column=0, sticky="ew", padx=24)
+        table.grid_columnconfigure(0, weight=1)
+        status_labels = {}
+        for row, (label, route) in enumerate(SHUAI_API_ROUTE_OPTIONS):
+            host = urlparse(route).hostname or route
+            ctk.CTkLabel(
+                table, text=f"{label}\n{host}", anchor="w", justify="left",
+                font=ctk.CTkFont("Segoe UI", 10), text_color=FG,
+            ).grid(row=row, column=0, sticky="ew", padx=14, pady=9)
+            status = ctk.CTkLabel(
+                table, text="Bekliyor", width=210, anchor="e",
+                font=ctk.CTkFont("Consolas", 10), text_color=FG2)
+            status.grid(row=row, column=1, sticky="e", padx=14, pady=9)
+            status_labels[route] = status
+
+        result_state = {"best": None}
+        button_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        button_row.grid(row=3, column=0, sticky="ew", padx=24, pady=18)
+        button_row.grid_columnconfigure(0, weight=1)
+
+        def _use_best():
+            best = result_state.get("best")
+            if not best:
+                return
+            label = shuai_api_route_label(best["route"])
+            self.helper_shuai_route_var.set(
+                SHUAI_ROUTE_DISPLAY.get(label, label))
+            self._on_helper_shuai_route_change()
+            self._log(
+                f"Shuai karşılaştırması: {best['host']} seçildi "
+                f"({best['duration_seconds']:.1f} sn).", "ok")
+            dlg.destroy()
+
+        use_btn = ctk.CTkButton(
+            button_row, text="En İyi Rotayı Kullan", height=36,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            state="disabled", command=_use_best)
+        use_btn.grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            button_row, text="Kapat", width=100, height=36,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER_SOFT,
+            command=dlg.destroy).grid(row=0, column=1, sticky="e")
+
+        canceller = RunRequestCanceller()
+        self._api_translation_test_busy = True
+        self._api_translation_test_canceller = canceller
+        compare_btn = getattr(self, "helper_route_compare_btn", None)
+        if compare_btn is not None:
+            compare_btn.configure(state="disabled")
+
+        def _finish(results):
+            best = _best_shuai_probe_result(results)
+            result_state["best"] = best
+            if best:
+                use_btn.configure(state="normal")
+                status_labels[best["route"]].configure(
+                    text=f"EN İYİ · {best['duration_seconds']:.1f} sn",
+                    text_color=GREEN)
+            self._api_translation_test_busy = False
+            self._api_translation_test_canceller = None
+            if compare_btn is not None:
+                compare_btn.configure(state="normal")
+
+        def _worker():
+            from provider_retry import chat_create_with_compat
+            import hybrid_translate as ht
+            messages = _build_api_translation_test_messages(
+                "English", "Turkish", list(_API_TRANSLATION_TEST_DEFAULT_LINES))
+            results = []
+            for _label, route in SHUAI_API_ROUTE_OPTIONS:
+                if canceller.is_cancelled():
+                    break
+                _post_ui(self, status_labels[route].configure,
+                         text="Deneniyor...", text_color=YELLOW)
+                client = OpenAI(
+                    api_key=api_key, base_url=route, max_retries=0)
+                canceller.register(client)
+                started = time.monotonic()
+                try:
+                    kwargs = ht._normalize_chat_create_kwargs(model, {
+                        "messages": messages,
+                        "max_tokens": 180,
+                        "timeout": 60,
+                    })
+                    response = chat_create_with_compat(
+                        client, model, kwargs,
+                        checkpoint_label="shuai_route_comparison",
+                        cancel_check=canceller.is_cancelled,
+                        retry_delays=())
+                    duration = time.monotonic() - started
+                    content = _validated_chat_content(response)
+                    _lines, valid = _parse_api_translation_test_content(
+                        content, len(_API_TRANSLATION_TEST_DEFAULT_LINES))
+                    if not valid:
+                        raise RuntimeError("yanıt geldi ancak çeviri JSON'u geçersiz")
+                    result = {
+                        "route": route, "host": urlparse(route).hostname or route,
+                        "success": True, "duration_seconds": duration,
+                    }
+                    results.append(result)
+                    _post_ui(self, status_labels[route].configure,
+                             text=f"Başarılı · {duration:.1f} sn",
+                             text_color=GREEN)
+                except Exception as exc:
+                    duration = time.monotonic() - started
+                    results.append({
+                        "route": route, "host": urlparse(route).hostname or route,
+                        "success": False, "duration_seconds": duration,
+                        "error": _api_translation_test_error_text(exc),
+                    })
+                    _post_ui(self, status_labels[route].configure,
+                             text=f"Başarısız · {duration:.1f} sn",
+                             text_color=RED)
+                finally:
+                    canceller.unregister(client)
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+            _post_ui(self, _finish, results)
+
+        def _close():
+            canceller.cancel()
+            self._api_translation_test_busy = False
+            self._api_translation_test_canceller = None
+            if compare_btn is not None:
+                compare_btn.configure(state="normal")
+            dlg.destroy()
+
+        dlg.protocol("WM_DELETE_WINDOW", _close)
+        App._start_worker(self, _worker)
 
     def _helper_model_config(self, role: str):
         assignments = self.__dict__.get("_api_key_assignments", {})
@@ -24039,6 +24266,7 @@ class App(ctk.CTk):
             "stopped":  Kullanıcı 'Durdur' düğmesine bastı (self._stop_flag True oldu).
         """
         import time
+        self._current_file_path = ""
         if getattr(self, "_stop_flag", False) or file_index >= total_files - 1:
             return "stopped" if getattr(self, "_stop_flag", False) else "continue"
 
@@ -24061,6 +24289,48 @@ class App(ctk.CTk):
             App._refresh_quality_settings_at_boundary(self)
 
         return "continue"
+
+    def _skip_current_file(self):
+        if not getattr(self, "_is_running", False):
+            return
+        filepath = str(getattr(self, "_current_file_path", "") or "")
+        if not filepath:
+            self._log(
+                "Atlanacak etkin dosya henüz yok; istek uygulanmadı.", "warn")
+            return
+        if str(getattr(self, "_skip_current_file_path", "") or "") == filepath:
+            return
+        self._skip_current_file_path = filepath
+        canceller = self.__dict__.get("_helper_request_canceller")
+        if canceller is not None:
+            canceller.cancel()
+        skip_btn = getattr(self, "skip_file_btn", None)
+        if skip_btn is not None:
+            skip_btn.configure(state="disabled")
+        self._log(
+            f"Kullanıcı bu dosyayı atladı: {Path(filepath).name}. Etkin API "
+            "isteği iptal ediliyor; kalan pass'ler ve nihai yazım yapılmayacak.",
+            "warn")
+        self._set_status(f"Atlanıyor: {Path(filepath).name}")
+
+    def _file_skip_requested(self, filepath: str) -> bool:
+        requested = str(getattr(self, "_skip_current_file_path", "") or "")
+        return bool(requested and os.path.normcase(os.path.abspath(requested))
+                    == os.path.normcase(os.path.abspath(str(filepath))))
+
+    def _complete_file_skip(self, filepath: str) -> bool:
+        if not App._file_skip_requested(self, filepath):
+            return False
+        self._record_file_status(filepath, "Kullanıcı atladı", "skip")
+        self._update_file_progress(filepath, "Kullanıcı atladı", 100, "skip")
+        self._skip_current_file_path = ""
+        self._current_file_path = ""
+        if getattr(self, "_is_running", False) and not self._stop_flag:
+            self._helper_request_canceller = RunRequestCanceller()
+            skip_btn = getattr(self, "skip_file_btn", None)
+            if skip_btn is not None:
+                _post_ui(self, skip_btn.configure, state="normal")
+        return True
 
     def _stop(self):
         self._stop_flag = True
@@ -29428,6 +29698,7 @@ class App(ctk.CTk):
             if self._is_queued_file_removed(filepath):
                 skipped_files.append(filepath)
                 continue
+            self._current_file_path = filepath
             fname = Path(filepath).name
             file_src = self._effective_file_source_language(filepath, src)
             _file_pm = self._project_memory_for(filepath, file_src)
@@ -29602,6 +29873,9 @@ class App(ctk.CTk):
                                 "_helper_request_canceller"))
                         schema_dict = self._schema_by_name(detected_name)
                     except RequestCancelled:
+                        if App._complete_file_skip(self, filepath):
+                            skipped_files.append(filepath)
+                            continue
                         raise
                     except Exception as e:
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
@@ -30034,6 +30308,9 @@ class App(ctk.CTk):
                     "warn",
                 )
             _quality_api_allowed = bool(sorted_blocks)
+            if App._complete_file_skip(self, filepath):
+                skipped_files.append(filepath)
+                continue
             # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
             self._update_file_progress(filepath, "Tutarlılık taraması", 87)
             _before_consistency = list(sorted_blocks)
@@ -30094,6 +30371,9 @@ class App(ctk.CTk):
                         source_cues=cues,
                         translation_blocks=_before_pass)
                 except RequestCancelled:
+                    if App._complete_file_skip(self, filepath):
+                        skipped_files.append(filepath)
+                        continue
                     raise
                 except Exception as critic_error:
                     sorted_blocks = _before_pass
@@ -30130,6 +30410,9 @@ class App(ctk.CTk):
                     if _polish_status.get("status") == "completed":
                         self._log("Polish Pass tamamlandı", "ok")
                 except RequestCancelled:
+                    if App._complete_file_skip(self, filepath):
+                        skipped_files.append(filepath)
+                        continue
                     raise
                 except Exception as polish_error:
                     sorted_blocks = _before_pass
@@ -30175,6 +30458,9 @@ class App(ctk.CTk):
                         _pass_trace, "Native", _before_pass, sorted_blocks,
                         _pass_history)
                 except RequestCancelled:
+                    if App._complete_file_skip(self, filepath):
+                        skipped_files.append(filepath)
+                        continue
                     raise
                 except Exception as native_error:
                     sorted_blocks = _before_pass
@@ -30394,6 +30680,9 @@ class App(ctk.CTk):
                     sorted_blocks, _pass_history)
             if self._stop_flag:
                 break
+            if App._complete_file_skip(self, filepath):
+                skipped_files.append(filepath)
+                continue
             sorted_blocks = _restore_quality_failure_blocks(
                 sorted_blocks, _quality_failed_blocks, _quality_original_order)
             if App._run_setting(self, "clean_sdh", "clean_sdh_var", True):
@@ -30436,6 +30725,10 @@ class App(ctk.CTk):
                 _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
             if self._stop_flag:
                 break
+            if App._complete_file_skip(self, filepath):
+                skipped_files.append(filepath)
+                continue
+            self._current_file_path = ""
             _final_guard_reason = _batch_write_guard_reason(
                 filepath, out_path, _expected_source_hash, _output_baseline)
             if _final_guard_reason:
@@ -32536,6 +32829,7 @@ class App(ctk.CTk):
             if self._is_queued_file_removed(fp):
                 _skipped_files.append(fp)
                 continue
+            self._current_file_path = fp
             self._record_file_status(fp, "Sonuçları Hazırlama", "running")
             saved_out = (output_paths or {}).get(fp) or (output_paths or {}).get(str(fp))
             out_path = (Path(saved_out) if saved_out else
@@ -32743,6 +33037,9 @@ class App(ctk.CTk):
                     _pass_status["Critic"] = {
                         "status": "failed", "error": str(e)}
                     self._log(f"Critic Pass hatası: {e}", "warn")
+            if App._complete_file_skip(self, fp):
+                _skipped_files.append(fp)
+                continue
             if (self.polish_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
                 try:
@@ -32768,6 +33065,9 @@ class App(ctk.CTk):
                     _pass_status["Polish"] = {
                         "status": "failed", "error": str(e)}
                     self._log(f"Polish Pass hatası: {e}", "warn")
+            if App._complete_file_skip(self, fp):
+                _skipped_files.append(fp)
+                continue
             if (self.native_var.get() and sorted_blocks
                     and _quality_api_allowed and not self._stop_flag):
                 try:
@@ -32806,6 +33106,9 @@ class App(ctk.CTk):
                     _pass_status["Native"] = {
                         "status": "failed", "error": str(e)}
                     self._log(f"Native Pass hatası: {e}", "warn")
+            if App._complete_file_skip(self, fp):
+                _skipped_files.append(fp)
+                continue
             if (sorted_blocks and _quality_api_allowed and not self._stop_flag
                     and (self.critic_var.get() or self.polish_var.get()
                          or self.native_var.get())):
@@ -32979,6 +33282,10 @@ class App(ctk.CTk):
                 _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
             if self._stop_flag:
                 break
+            if App._complete_file_skip(self, fp):
+                _skipped_files.append(fp)
+                continue
+            self._current_file_path = ""
             final_guard_reason = _batch_write_guard_reason(
                 fp, out_path, expected_source_hash, baseline)
             if final_guard_reason:

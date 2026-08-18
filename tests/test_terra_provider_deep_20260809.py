@@ -29,7 +29,7 @@ class DirectProviderRetryRegressionTest(unittest.TestCase):
                 client, model="custom-claude", messages=[], timeout=9)
         self.assertEqual(result, "ok")
         self.assertEqual(call.call_count, 2)
-        wait.assert_called_once_with(error, 1, 3)
+        wait.assert_called_once_with(error, 1, 10)
 
     def test_hybrid_direct_anthropic_retries_transient_failure(self):
         self._assert_direct_retry(hybrid_translate._safe_chat_create)

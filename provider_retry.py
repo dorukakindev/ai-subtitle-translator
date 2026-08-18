@@ -19,7 +19,8 @@ _RETRY_DELAY_RE = re.compile(
     r'(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec(?:onds?)?)?'
 )
 
-TRANSIENT_RETRY_DELAYS = (30.0, 60.0, 120.0)
+TRANSIENT_RETRY_DELAYS = (5.0, 5.0, 5.0, 10.0, 30.0,
+                          35.0, 40.0, 45.0, 45.0, 50.0)
 PROVIDER_CIRCUIT_FAILURE_THRESHOLD = 3
 PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 60.0
 RESPONSE_CHECKPOINT_VER = 1
@@ -48,8 +49,20 @@ _SHUAI_ROUTE_HOSTS = frozenset(
 _SHUAI_FAILOVER_LOCK = threading.Lock()
 _SHUAI_FAILOVER_ENABLED = False
 _SHUAI_FAILOVER_PREFERRED = SHUAI_API_ROUTE_OPTIONS[0][1]
-_SHUAI_LAST_WORKING_ROUTE = ""
+_SHUAI_LAST_WORKING_ROUTES = {"main": "", "helper": ""}
 _SHUAI_FAILOVER_LOG = None
+_SHUAI_ROUTE_COOLDOWN_SECONDS = 300.0
+_SHUAI_TRANSIENT_COOLDOWN_SECONDS = 30.0
+_SHUAI_ROUTE_STATES = {
+    url: {
+        "health": "unknown", "cooldown_until": 0.0, "probing": False,
+        "attempts": 0, "successes": 0, "failures": 0, "rate_limits": 0,
+        "failovers": 0, "total_tokens": 0, "duration_seconds": 0.0,
+        "last_error": "",
+    }
+    for _label, url in SHUAI_API_ROUTE_OPTIONS
+}
+_SHUAI_ROUTE_CONDITION = threading.Condition(_SHUAI_FAILOVER_LOCK)
 
 
 def normalize_shuai_api_route(value) -> str:
@@ -71,34 +84,174 @@ def shuai_api_route_label(value) -> str:
 
 def configure_shuai_route_failover(enabled=True, preferred_url="", log_fn=None):
     global _SHUAI_FAILOVER_ENABLED, _SHUAI_FAILOVER_PREFERRED
-    global _SHUAI_LAST_WORKING_ROUTE, _SHUAI_FAILOVER_LOG
+    global _SHUAI_FAILOVER_LOG
     preferred = normalize_shuai_api_route(preferred_url)
     if not preferred:
         preferred = SHUAI_API_ROUTE_OPTIONS[0][1]
     with _SHUAI_FAILOVER_LOCK:
         if not enabled or preferred != _SHUAI_FAILOVER_PREFERRED:
-            _SHUAI_LAST_WORKING_ROUTE = ""
+            _SHUAI_LAST_WORKING_ROUTES["helper"] = ""
         _SHUAI_FAILOVER_ENABLED = bool(enabled)
         _SHUAI_FAILOVER_PREFERRED = preferred
         if log_fn is not None:
             _SHUAI_FAILOVER_LOG = log_fn
 
 
-def _shuai_route_candidates(current_url) -> tuple[str, ...]:
+def _shuai_route_scope(checkpoint_label: str = "") -> str:
+    label = str(checkpoint_label or "").strip().casefold()
+    main_prefixes = (
+        "main_translation", "translation_preview", "translation_repair",
+        "translation_json_repair", "translation_subgroup_recovery",
+        "ai_segmentation",
+    )
+    return "main" if label.startswith(main_prefixes) else "helper"
+
+
+def _shuai_route_score(route: str, preferred: str, last_working: str) -> tuple:
+    state = _SHUAI_ROUTE_STATES.get(route) or {}
+    attempts = int(state.get("attempts", 0) or 0)
+    successes = int(state.get("successes", 0) or 0)
+    failures = int(state.get("failures", 0) or 0)
+    avg = (
+        float(state.get("duration_seconds", 0.0) or 0.0) / successes
+        if successes else 999999.0
+    )
+    success_rate = successes / max(1, successes + failures)
+    return (
+        0 if route == last_working else 1,
+        0 if route == preferred else 1,
+        -success_rate if attempts else 0.0,
+        int(state.get("rate_limits", 0) or 0),
+        avg,
+    )
+
+
+def _shuai_route_candidates(current_url, scope: str = "helper") -> tuple[str, ...]:
     current = normalize_shuai_api_route(current_url)
     if not current:
         return ()
     with _SHUAI_FAILOVER_LOCK:
         if not _SHUAI_FAILOVER_ENABLED:
             return (current,)
-        preferred = _SHUAI_FAILOVER_PREFERRED
-        last_working = _SHUAI_LAST_WORKING_ROUTE
-    order = []
-    if current == preferred and last_working:
-        order.append(last_working)
-    order.append(current)
-    order.extend(url for _label, url in SHUAI_API_ROUTE_OPTIONS)
-    return tuple(dict.fromkeys(order))
+        preferred = (_SHUAI_FAILOVER_PREFERRED if scope == "helper" else current)
+        last_working = _SHUAI_LAST_WORKING_ROUTES.get(scope, "")
+        now = time.monotonic()
+        available = [
+            url for _label, url in SHUAI_API_ROUTE_OPTIONS
+            if float(_SHUAI_ROUTE_STATES[url].get("cooldown_until", 0.0) or 0.0)
+            <= now
+        ]
+        if not available:
+            return ()
+        return tuple(sorted(
+            dict.fromkeys(available),
+            key=lambda route: _shuai_route_score(route, preferred, last_working)))
+
+
+def _shuai_claim_route(route: str) -> bool:
+    with _SHUAI_ROUTE_CONDITION:
+        state = _SHUAI_ROUTE_STATES[route]
+        now = time.monotonic()
+        if float(state.get("cooldown_until", 0.0) or 0.0) > now:
+            return False
+        needs_probe = state.get("health") != "healthy"
+        if needs_probe and state.get("probing"):
+            return False
+        if needs_probe:
+            state["probing"] = True
+        return True
+
+
+def _response_total_tokens(response) -> int:
+    usage = response.get("usage") if isinstance(response, dict) else getattr(
+        response, "usage", None)
+    if isinstance(usage, dict):
+        return int(usage.get("total_tokens", 0) or 0)
+    return int(getattr(usage, "total_tokens", 0) or 0) if usage else 0
+
+
+def _shuai_record_route_result(route: str, success: bool, duration: float,
+                               response=None, exc=None) -> None:
+    with _SHUAI_ROUTE_CONDITION:
+        state = _SHUAI_ROUTE_STATES[route]
+        state["attempts"] = int(state.get("attempts", 0) or 0) + 1
+        state["duration_seconds"] = round(
+            float(state.get("duration_seconds", 0.0) or 0.0)
+            + max(0.0, float(duration or 0.0)), 3)
+        state["probing"] = False
+        if success:
+            state["health"] = "healthy"
+            state["cooldown_until"] = 0.0
+            state["successes"] = int(state.get("successes", 0) or 0) + 1
+            state["total_tokens"] = int(state.get("total_tokens", 0) or 0) + (
+                _response_total_tokens(response))
+            state["last_error"] = ""
+        else:
+            status = _status_code(exc)
+            state["health"] = "cooldown"
+            state["failures"] = int(state.get("failures", 0) or 0) + 1
+            if status == 429:
+                state["rate_limits"] = int(state.get("rate_limits", 0) or 0) + 1
+            cooldown = (
+                _SHUAI_ROUTE_COOLDOWN_SECONDS if status == 429
+                else _SHUAI_TRANSIENT_COOLDOWN_SECONDS)
+            state["cooldown_until"] = time.monotonic() + cooldown
+            state["last_error"] = _provider_error_text(exc)
+        _SHUAI_ROUTE_CONDITION.notify_all()
+
+
+def _shuai_release_route_probe(route: str) -> None:
+    with _SHUAI_ROUTE_CONDITION:
+        state = _SHUAI_ROUTE_STATES[route]
+        state["probing"] = False
+        _SHUAI_ROUTE_CONDITION.notify_all()
+
+
+def reset_shuai_route_metrics() -> None:
+    with _SHUAI_ROUTE_CONDITION:
+        for state in _SHUAI_ROUTE_STATES.values():
+            state.update({
+                "health": "unknown", "cooldown_until": 0.0,
+                "probing": False, "attempts": 0, "successes": 0,
+                "failures": 0, "rate_limits": 0, "failovers": 0,
+                "total_tokens": 0, "duration_seconds": 0.0,
+                "last_error": "",
+            })
+        _SHUAI_LAST_WORKING_ROUTES.update({"main": "", "helper": ""})
+        _SHUAI_ROUTE_CONDITION.notify_all()
+
+
+def shuai_route_metrics_snapshot() -> list[dict]:
+    with _SHUAI_FAILOVER_LOCK:
+        now = time.monotonic()
+        rows = []
+        for label, route in SHUAI_API_ROUTE_OPTIONS:
+            state = dict(_SHUAI_ROUTE_STATES[route])
+            state.update({
+                "label": label, "route": route,
+                "host": urlparse(route).hostname or route,
+                "cooldown_remaining": max(
+                    0.0, float(state.get("cooldown_until", 0.0) or 0.0) - now),
+            })
+            state.pop("probing", None)
+            rows.append(state)
+        return rows
+
+
+def format_shuai_route_metrics() -> list[str]:
+    result = []
+    for row in shuai_route_metrics_snapshot():
+        attempts = int(row.get("attempts", 0) or 0)
+        if not attempts:
+            continue
+        successes = int(row.get("successes", 0) or 0)
+        avg = float(row.get("duration_seconds", 0.0) or 0.0) / max(1, attempts)
+        result.append(
+            f"{row['host']}: {successes}/{attempts} başarılı, "
+            f"429={int(row.get('rate_limits', 0) or 0)}, "
+            f"geçiş={int(row.get('failovers', 0) or 0)}, "
+            f"ort. {avg:.1f} sn, token={int(row.get('total_tokens', 0) or 0)}")
+    return result
 
 
 def _shuai_failover_error(exc) -> bool:
@@ -1187,7 +1340,11 @@ def _provider_call_once(call, client, model: str, request_context=None,
                 retryable = attempt < total and _is_transient_provider_error(exc)
                 details.update(_provider_error_context(exc))
                 details["duration_seconds"] = round(time.monotonic() - started, 3)
-                details["will_retry"] = bool(retryable)
+                route_failover = bool(
+                    base_context.get("shuai_route_failover_pending")
+                    and _shuai_failover_error(exc))
+                details["will_retry"] = bool(retryable or route_failover)
+                details["shuai_route_failover"] = route_failover
                 _REGISTRY.request_finished(
                     client, False, model, details, request_id=request_id)
                 record_provider_failure(client, exc, model, details)
@@ -1299,7 +1456,7 @@ def _chat_create_with_compat_uncached(client, model: str, kwargs: dict,
 
 def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=None,
                             checkpoint_label="", cancel_check=None,
-                            retry_delays=None):
+                            retry_delays=None, request_context_extra=None):
     checkpoint_config = _response_checkpoint_snapshot()
     cached = _response_checkpoint_lookup(
         client, model, kwargs, requested_format=requested_format,
@@ -1309,6 +1466,7 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
         return cached
     request_context = _provider_request_context(
         client, model, checkpoint_label)
+    request_context.update(dict(request_context_extra or {}))
     request_context["request_fingerprint"] = _response_checkpoint_key(
         client, model, kwargs, requested_format, checkpoint_label)[:16]
     result = _chat_create_with_compat_uncached(
@@ -1325,10 +1483,15 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
 def chat_create_with_shuai_failover(
         client, model: str, kwargs: dict, requested_format=None,
         checkpoint_label="", cancel_context=None):
-    routes = _shuai_route_candidates(getattr(client, "base_url", ""))
+    scope = _shuai_route_scope(checkpoint_label)
+    routes = _shuai_route_candidates(
+        getattr(client, "base_url", ""), scope=scope)
+    original = normalize_shuai_api_route(getattr(client, "base_url", ""))
+    with _SHUAI_FAILOVER_LOCK:
+        failover_enabled = bool(_SHUAI_FAILOVER_ENABLED)
     cancel_check = (
         cancel_context.is_cancelled if cancel_context is not None else None)
-    if len(routes) <= 1:
+    if not original or not failover_enabled:
         if cancel_context is not None:
             cancel_context.raise_if_cancelled()
             cancel_context.register(client)
@@ -1340,30 +1503,45 @@ def chat_create_with_shuai_failover(
             if cancel_context is not None:
                 cancel_context.unregister(client)
 
-    original = normalize_shuai_api_route(getattr(client, "base_url", ""))
+    claimed_any = False
     for route in routes:
+        if not _shuai_claim_route(route):
+            continue
+        claimed_any = True
         route_client = client if route == original else _openai_client_for_route(
             client, route)
         if cancel_context is not None:
             cancel_context.raise_if_cancelled()
             cancel_context.register(route_client)
+        started = time.monotonic()
         try:
             result = chat_create_with_compat(
                 route_client, model, kwargs, requested_format=requested_format,
                 checkpoint_label=checkpoint_label, cancel_check=cancel_check,
-                retry_delays=())
+                retry_delays=(), request_context_extra={
+                    "shuai_route_failover_pending": True,
+                    "shuai_route": urlparse(route).hostname or route,
+                })
         except Exception as exc:
             if cancel_context is not None and cancel_context.is_cancelled():
+                _shuai_release_route_probe(route)
                 raise
             if not _shuai_failover_error(exc):
+                _shuai_release_route_probe(route)
                 raise
+            _shuai_record_route_result(
+                route, False, time.monotonic() - started, exc=exc)
             _shuai_log(
                 f"Shuai rota yanıt vermedi: {urlparse(route).hostname}; "
                 "sıradaki rota deneniyor.", "warn")
         else:
-            global _SHUAI_LAST_WORKING_ROUTE
+            _shuai_record_route_result(
+                route, True, time.monotonic() - started, response=result)
             with _SHUAI_FAILOVER_LOCK:
-                _SHUAI_LAST_WORKING_ROUTE = route
+                _SHUAI_LAST_WORKING_ROUTES[scope] = route
+                if route != original:
+                    state = _SHUAI_ROUTE_STATES[route]
+                    state["failovers"] = int(state.get("failovers", 0) or 0) + 1
             try:
                 setattr(result, "shuai_route_used", route)
                 setattr(result, "shuai_route_requested", original)
@@ -1378,16 +1556,47 @@ def chat_create_with_shuai_failover(
             if cancel_context is not None:
                 cancel_context.unregister(route_client)
 
-    _shuai_log(
-        "Dört Shuai rotası da ilk denemede yanıt vermedi; "
-        "normal 30/60/120 saniye yeniden deneme düzenine geçiliyor.", "warn")
+    if not claimed_any and routes:
+        _shuai_log(
+            "Shuai rota sağlık denemesi başka bir iş parçacığında sürüyor; "
+            "aynı hatalı rotaya yeni istek yollamadan sonuç bekleniyor.", "info")
+        with _SHUAI_ROUTE_CONDITION:
+            while any(
+                    _SHUAI_ROUTE_STATES[route].get("probing")
+                    for route in routes):
+                if cancel_check and cancel_check():
+                    raise ProviderWaitCancelled(
+                        "API isteği kullanıcı tarafından durduruldu")
+                _SHUAI_ROUTE_CONDITION.wait(timeout=0.25)
+        return chat_create_with_shuai_failover(
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+
+    if claimed_any:
+        _shuai_log(
+            "Kullanılabilir Shuai rotaları ilk denemede yanıt vermedi; "
+            "normal 5/5/5/10/30/35/40/45/45/50 saniye yeniden deneme "
+            "düzenine geçiliyor.", "warn")
+    else:
+        _shuai_log(
+            "Shuai rotaları soğuma süresinde veya başka bir istekçe "
+            "doğrulanıyor; normal yeniden deneme düzenine geçiliyor.", "warn")
     if cancel_context is not None:
         cancel_context.raise_if_cancelled()
         cancel_context.register(client)
+    started = time.monotonic()
     try:
-        return chat_create_with_compat(
+        result = chat_create_with_compat(
             client, model, kwargs, requested_format=requested_format,
             checkpoint_label=checkpoint_label, cancel_check=cancel_check)
+        _shuai_record_route_result(
+            original, True, time.monotonic() - started, response=result)
+        return result
+    except Exception as exc:
+        if not (cancel_context is not None and cancel_context.is_cancelled()):
+            _shuai_record_route_result(
+                original, False, time.monotonic() - started, exc=exc)
+        raise
     finally:
         if cancel_context is not None:
             cancel_context.unregister(client)
