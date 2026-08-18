@@ -40,6 +40,55 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
         self.assertEqual(audit["residual_sdh_cues"], 1)
         self.assertTrue(gui._delivery_audit_has_hard_error(audit))
 
+    def test_split_sdh_descriptor_is_expected_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.srt"
+            output = root / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "[ WOMAN SINGING IN FOREIGN\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\nLANGUAGE ]\n\n"
+                "3\n00:00:03,000 --> 00:00:04,000\nHello.\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:03,000 --> 00:00:04,000\nMerhaba.\n",
+                encoding="utf-8")
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), source_language="English")
+        self.assertEqual(audit["expected_removed_ids"], ["1", "2"])
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+
+    def test_speaker_marker_before_sdh_descriptor_is_removable(self):
+        self.assertTrue(gui._source_cue_is_delivery_removable(
+            ">> [ SPEAKING NATIVE LANGUAGE ]"))
+        self.assertEqual(
+            gui._delivery_removable_source_ids([
+                ("1", "00:00:01,000 --> 00:00:02,000",
+                 ">> [ CHANTING IN NATIVE"),
+                ("2", "00:00:02,000 --> 00:00:03,000", "LANGUAGE ]"),
+            ]),
+            {"1", "2"},
+        )
+
+    def test_split_sdh_descriptor_is_removed_before_delivery(self):
+        source = [
+            ("1", "00:00:01,000 --> 00:00:02,000",
+             "[ AMY ARENA'S \"LIQUID REALITY\""),
+            ("2", "00:00:02,000 --> 00:00:03,000", "PLAYS ]"),
+            ("3", "00:00:03,000 --> 00:00:04,000", "Hello."),
+        ]
+        delivered = gui._prepare_upload_ready_blocks(
+            [(idx, ts, "Müzik çalıyor" if idx != "3" else "Merhaba.")
+             for idx, ts, _text in source],
+            source_cues=source,
+        )
+        dialogue = [
+            text for _idx, _ts, text in delivered
+            if not gui._DELIVERY_SIGNATURE_RE.fullmatch(str(text).strip())
+        ]
+        self.assertEqual(dialogue, ["Merhaba."])
+
     def test_normal_dialogue_source_is_not_sdh(self):
         audit = self._audit("He cries every night.", "Her gece ağlar.")
         self.assertEqual(audit["residual_sdh_cues"], 0)
