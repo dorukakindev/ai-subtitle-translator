@@ -123,6 +123,23 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertIn("Gerçek diyalog.", joined)
         self.assertNotIn("DiMEDIA", joined)
 
+    def test_source_rocket_launch_sdh_is_removed(self):
+        source = [
+            ("1", "00:00:02,000 --> 00:00:03,000", "(rocket blasting off)"),
+            ("2", "00:00:04,000 --> 00:00:05,000", "Real dialogue."),
+        ]
+        blocks = [
+            ("1", source[0][1], "(roket kalkışı)"),
+            ("2", source[1][1], "Gerçek diyalog."),
+        ]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        joined = "\n".join(text for _i, _ts, text in result)
+
+        self.assertNotIn("roket kalkışı", joined)
+        self.assertIn("Gerçek diyalog.", joined)
+
     def test_french_subtitle_company_credit_is_removed_from_source(self):
         blocks = [
             ("1", "00:00:02,000 --> 00:00:03,000", "Altyazi : TransPerfect Media"),

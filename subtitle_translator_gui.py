@@ -3314,7 +3314,7 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"VOICES\s+GRADUALLY\s+RISE\s+IN\s+A\s+LOUD\s+CRESCENDO|"
     r"(?:[A-Z][A-Z0-9'’.-]*(?:\s+[A-Z][A-Z0-9'’.-]*){0,3}:\s*)?"
     r"\[?NON-ENGLISH\s+SPEECH\]?|"
-    r"OWL\s+HOOTS\s+AND\s+WOLF\s+HOWLS)\s*[.!…]*$",
+    r"OWL\s+HOOTS\s+AND\s+WOLF\s+HOWLS|ROCKET\s+BLASTING\s+OFF)\s*[.!…]*$",
     re.IGNORECASE,
 )
 _DELIVERY_ASS_COMMAND_RE = re.compile(r"\\[a-z][a-z0-9]*", re.IGNORECASE)
