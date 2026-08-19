@@ -32,17 +32,25 @@ class MissingPredicateTest(unittest.TestCase):
         ]
         self.assertEqual(g._missing_predicate_ids(blocks), ["80"])
 
-    def test_infinitive_ending_is_flagged(self):
-        blocks = [
-            ("10", "ts", "Tek amaçları o kapıyı açmak."),
-            ("11", "ts", "Ama başaramadılar."),
-        ]
+    def test_bare_infinitive_is_a_valid_nominal_predicate(self):
+        # Gerçek teslim dosyalarından: bunların hepsi doğru Türkçe.
+        for text in ("Amaçlarımız en iyi kanalı kurmak.",
+                     "Sıradaki hedefimiz bir sonraki plakayı almak.",
+                     "Saeli kullanmak daha fazla güvenlik demek.",
+                     "Ben de işeyeceğim, beklemekten."):
+            with self.subTest(text=text):
+                blocks = [("10", "ts", text), ("11", "ts", "Sonraki cümle.")]
+                self.assertEqual(g._missing_predicate_ids(blocks), [])
+
+    def test_case_marked_verbal_noun_is_flagged(self):
+        blocks = [("10", "ts", "Onun oraya gelmesini."),
+                  ("11", "ts", "Sonraki cümle.")]
         self.assertEqual(g._missing_predicate_ids(blocks), ["10"])
 
     def test_continuation_cue_is_not_flagged(self):
         blocks = [
-            ("10", "ts", "Tek amaçları o kapıyı açmak."),
-            ("11", "ts", "ve içeri girmekti."),
+            ("10", "ts", "Arabanın hastaneye gitmesine."),
+            ("11", "ts", "izin verilmedi."),
         ]
         self.assertEqual(g._missing_predicate_ids(blocks), [])
 
@@ -218,6 +226,38 @@ class DeliveryScanInReportTest(unittest.TestCase):
         text = g.build_quality_report_text(
             [row], "gpt-5.4", "Turkish", "sync", 10)
         self.assertNotIn("Teslim taraması:", text)
+
+class SourceResidueScopeTest(unittest.TestCase):
+    """Kaynakta büyük harfli geçen özel adlar kalıntı DEĞİLDİR."""
+
+    def _run(self, tr, src):
+        blocks = [("1", "ts", tr)]
+        return g._source_residue_with_turkish_suffix(blocks, {"1": src})
+
+    def test_capitalised_proper_nouns_are_not_residue(self):
+        for tr, src in (("Osaka'da yaşıyor.", "He lives in Osaka."),
+                        ("Twitter'da paylaştı.", "He posted it on Twitter."),
+                        ("Hanks'i gördüm.", "I saw Hanks."),
+                        ("Arizona'da büyüdüm.", "I grew up in Arizona.")):
+            with self.subTest(tr=tr):
+                self.assertEqual(self._run(tr, src), [])
+
+    def test_lowercase_source_word_is_residue(self):
+        found = self._run("Bir vending machine'den aldım.",
+                          "I bought it from a vending machine.")
+        self.assertEqual([f["stem"] for f in found], ["machine"])
+
+    def test_known_exonym_is_residue_even_when_capitalised(self):
+        found = self._run("Japan'da yaşıyor.", "He lives in Japan.")
+        self.assertEqual([f["stem"] for f in found], ["Japan"])
+
+    def test_locked_term_is_exempt(self):
+        blocks = [("1", "ts", "machine'den aldım.")]
+        self.assertEqual(
+            g._source_residue_with_turkish_suffix(
+                blocks, {"1": "from the machine"},
+                locked_terms={"machine": "machine"}),
+            [])
 
 if __name__ == "__main__":
     unittest.main()

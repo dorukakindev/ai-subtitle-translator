@@ -4215,7 +4215,13 @@ def _source_residue_with_turkish_suffix(blocks, src_map, locked_terms=None):
     """Kaynakta BİREBİR geçen bir kelimenin çeviride Türkçe ek almış hâlleri.
 
     'Ocidente'de', 'China'daki' gibi kalıntıları rapor eder. Kilitli sözlükteki
-    terimler (özel adlar) hariç tutulur — onların ek alması normaldir."""
+    terimler hariç tutulur — onların ek alması normaldir.
+
+    Ölçüt DAR: gövde ya bilinen bir exonim ('China' → Çin) ya da kaynakta YALNIZ
+    küçük harfle geçen bir ortak ad olmalı. Aksi hâlde her özel ad kalıntı sayılır;
+    gerçek dosyalarda "Osaka'da", "Twitter'da", "Hanks'i" gibi tamamen doğru
+    satırlar rapor doluyordu (bir dosyada 32 bulgunun tamamı yanlış pozitifti).
+    Sözlük kapsamı hiçbir zaman tam olmadığı için kilitli listeye güvenilemez."""
     locked = {
         str(key).casefold() for key in (locked_terms or {})
     }
@@ -4224,9 +4230,10 @@ def _source_residue_with_turkish_suffix(blocks, src_map, locked_terms=None):
         source = str((src_map or {}).get(str(idx), "") or "")
         if not source.strip():
             continue
-        source_words = {
-            word.casefold() for word in re.findall(r"[^\W\d_]{3,}", source)
-        }
+        source_words = {}
+        for word in re.findall(r"[^\W\d_]{3,}", source):
+            source_words.setdefault(word.casefold(), set()).add(
+                word[:1].isupper())
         for match in _APOSTROPHE_SUFFIX_TOKEN_RE.finditer(str(text or "")):
             stem, suffix = match.group(1), match.group(2)
             key = stem.casefold()
@@ -4234,6 +4241,8 @@ def _source_residue_with_turkish_suffix(blocks, src_map, locked_terms=None):
                 continue
             if not _TURKISH_SUFFIX_AFTER_APOSTROPHE.fullmatch(suffix):
                 continue
+            if key not in _FOREIGN_EXONYM_MAP and any(source_words[key]):
+                continue  # kaynakta büyük harfli → özel ad, ek alması normal
             findings.append({"id": str(idx), "token": match.group(0),
                              "stem": stem})
             break
@@ -4288,14 +4297,19 @@ def _partial_echo_ids(blocks, src_map=None) -> list:
 
 
 # ── Yüklemi kaybolan cue ────────────────────────────────────────────────────
-# Yüklemi kaybolan cue. Ölçüt DAR tutulur: yalnız FİİLİMSİ (mastar / -me-ma'lı ad)
-# ile biten cümleler. Düz ad çekimi ('eve', 'kapıyı') ölçüt yapılırsa 'Bugün eve
-# gitti.' gibi tamamen doğru cümleler işaretlenir — çekimli fiiller de ünlüyle
-# biter, ayırt edilemez.
+# Yüklemi kaybolan cue. Ölçüt ÇOK DAR tutulur: yalnız 3. tekil iyelikli fiilimsi
+# + hâl eki ("gitmesine", "yapmasını"). Bunlar yan cümle tümleçleridir, cümle
+# orada bitemez.
+#
+# Denenip ELENEN daha geniş ölçütler (gerçek teslim dosyalarında yanlış pozitif):
+#   - düz ad çekimi ("eve", "kapıyı") → "Bugün eve gitti." işaretleniyordu;
+#     çekimli fiiller de ünlüyle biter, ayırt edilemez.
+#   - çıplak mastar ("almak", "kurmak") → "Amacımız ... kurmak." Türkçede
+#     tamamen geçerli ad yüklemidir.
+#   - "-mekten/-meye" → "Ben de işeyecem, beklemekten." devrik cümlede yüklem
+#     zaten başta.
 _DANGLING_VERBAL_NOUN_RE = re.compile(
-    r"(?:m[ae]sine|m[ae]sına|m[ae]sini|m[ae]sını|m[ae]sinde|m[ae]sında|"
-    r"m[ae]kten|m[ae]ktan|m[ae]ye|m[ae]ya|m[ae]yi|m[ae]yı|m[ae]k)$",
-    re.UNICODE)
+    r"m[ae]s[ıi]n(?:[ae]|[ıi]|d[ae]|d[ae]n)$", re.UNICODE)
 _SENTENCE_END_PUNCT_RE = re.compile(r"[.!?…][\"'”’»]?$")
 
 
