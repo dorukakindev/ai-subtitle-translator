@@ -118,13 +118,18 @@ def parse_srt(filepath):
         with open(filepath, "r", encoding="utf-8-sig", errors="replace") as f:
             content = f.read().strip()
 
-    for block in content.split("\n\n"):
-        lines = block.strip().splitlines()
-        if len(lines) < 3:
+    # Kaba `split("\n\n")` + `len(lines) < 3` kontrolü CRLF, boşluk içeren ayraç
+    # satırları ve metni boş cue'larda blokları sessizce düşürüyordu. Zaman satırını
+    # ('-->') çıpa alarak ayrıştır: numarası eksik veya metni boş bloklar da korunur.
+    content = re.sub(r"\r\n?", "\n", content)
+    for raw_block in re.split(r"\n[ \t]*\n+", content):
+        lines = raw_block.strip("\n").splitlines()
+        ts_pos = next((pos for pos, line in enumerate(lines) if "-->" in line), None)
+        if ts_pos is None:
             continue
-        idx = lines[0].strip()
-        timestamp = lines[1].strip()
-        text = "\n".join(lines[2:]).strip()
+        idx = lines[ts_pos - 1].strip() if ts_pos > 0 else str(len(blocks) + 1)
+        timestamp = lines[ts_pos].strip()
+        text = "\n".join(lines[ts_pos + 1:]).strip()
         blocks.append((idx, timestamp, text))
     return blocks
 

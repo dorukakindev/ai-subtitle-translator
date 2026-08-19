@@ -23,7 +23,7 @@ KEY_TOKENS = [
     "pronouns and deictics",
     "Keep the same number of subtitle lines",
     "Do NOT invent pseudo-Turkish",
-    "<font ...>",
+    "<font>",   # 'kaynakta olmayan biçim etiketi ekleme' kuralı (iki promptta da)
     "False friends",
     "actually→aslında",
     "glossary target has the wrong sense",

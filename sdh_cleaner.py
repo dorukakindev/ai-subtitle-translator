@@ -551,6 +551,63 @@ def normalize_sdh_descriptors(text: str) -> str:
     return _replace_bracket_groups(str(text or ""), replace_descriptor)
 
 
+def strip_sdh_descriptors(text: str) -> str:
+    """SDH ses/efekt tanımlayıcılarını ÇEVİRMEK yerine tamamen kaldırır.
+
+    Proje kuralı: ses, dil ve konuşmacı etiketleri teslim altyazısında kalmaz
+    ('[LAUGHS]' → '[GÜLER]' değil, hiç). Satırı tümüyle boşaltacaksa satır olduğu
+    gibi bırakılır — bu aşamada cue düşürülemez, boş metin '[ÇEVİRİ EKSİK]' olarak
+    ekrana basılırdı; salt-SDH cue'ları zaten clean_sdh aşaması düşürür."""
+    def replace_descriptor(raw):
+        return "" if is_sdh_descriptor(raw[1:-1]) else raw
+
+    original = str(text or "")
+    out_lines = []
+    for line in original.split("\n"):
+        stripped = _replace_bracket_groups(line, replace_descriptor)
+        stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
+        # Etiket sökülünce yalnız diyalog tiresi kalan satır ekranda '-' olarak
+        # görünürdü; tamamen boşalmış say.
+        stripped = re.sub(r"^\s*[-–—]\s*$", "", stripped)
+        stripped = re.sub(r"\s{2,}", " ", stripped).strip()
+        if stripped:
+            out_lines.append(stripped)
+    return "\n".join(out_lines) if out_lines else original
+
+
+_STRIP_SPEAKER_COLON_RE = re.compile(
+    rf"^(\s*-?\s*)\[?\(?({_SPEAKER_LABEL_ALTS})"
+    rf"(?:\s+\(?(?:V\.?O\.?|O\.?S\.?|VO|OS)\)?)?\]?\)?\s*:\s*",
+    re.IGNORECASE,
+)
+_STRIP_SPEAKER_BRACKET_RE = re.compile(
+    rf"^(\s*-?\s*)[\[\(](?:{_SPEAKER_LABEL_ALTS})"
+    rf"(?:\s+\(?(?:V\.?O\.?|O\.?S\.?|VO|OS)\)?)?[\]\)]\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_speaker_labels(text: str) -> str:
+    """Konuşmacı etiketlerini Türkçeleştirmek yerine satır başından kaldırır.
+
+    'MAN:' → 'ADAM:' dönüşümü etiketi teslim dosyasında bırakıyordu; proje kuralı
+    etiketin tamamen silinmesi. Etiket satırdaki tek içerikse satır korunur."""
+    def strip_line(line: str) -> str:
+        for pattern in (_STRIP_SPEAKER_COLON_RE, _STRIP_SPEAKER_BRACKET_RE):
+            match = pattern.match(line)
+            if not match:
+                continue
+            rest = line[match.end():].strip()
+            if not rest:
+                return ""
+            return f"{match.group(1)}{rest}"
+        return line
+
+    original = str(text or "")
+    lines = [value for value in (strip_line(line) for line in original.split("\n")) if value]
+    return "\n".join(lines) if lines else original
+
+
 def _tr_upper(s: str) -> str:
     res = []
     for char in s:

@@ -3120,11 +3120,15 @@ def write_srt(filepath, blocks, target_language="Turkish"):
             text = unicodedata.normalize("NFC", str(text).strip()).replace("\t", " ")
             text = re.sub(r'\n{2,}', '\n', text)
             if is_turkish:
-                text = sdh_cleaner.normalize_sdh_descriptors(text)
-                text = sdh_cleaner.normalize_speaker_labels(text)
-                text = _translate_speaker_labels(text)
+                # Proje kuralı: ses/konuşmacı etiketleri Türkçeleştirilmez, SİLİNİR.
+                # Eskiden '[LAUGHS]' → '[GÜLER]', 'MAN:' → 'ADAM:' yapılıp teslim
+                # dosyasına yazılıyordu.
+                text = sdh_cleaner.strip_sdh_descriptors(text)
+                text = sdh_cleaner.strip_speaker_labels(text)
                 text = text.translate(_DELIVERY_HAT_MAP)
             if not text.strip():
+                # Dil bağımsız iç işaret: '[ÇEVİRİ EKSİK]' kodun 20'den fazla
+                # yerinde eksik-çeviri dedektörü olarak aranır, çevrilmemeli.
                 text = "[ÇEVİRİ EKSİK]"
             rows.append(f"{idx}\n{ts}\n{text}\n\n")
         atomic_write_text(out, "".join(rows))
@@ -4532,11 +4536,16 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         "- Keep names, brands, proper nouns unchanged\n"
         "- Keep the same number of subtitle lines inside each cue; preserve the existing \\n structure unless a "
         "minimal rebalance is needed for readable Turkish.\n"
-        "- Preserve ALL HTML-like inline tags exactly as-is: <i>...</i>, <b>...</b>, <u>...</u>, <font ...>\n"
-        "- Translate ALL [SFX] / [ACTION] tags to natural Turkish equivalents "
-        "(e.g. [LAUGHS]→[KAHKAHA], [SIGHS]→[İÇ ÇEKİŞ], [GASPS]→[NEFES KESİLİŞ], "
-        "[GAGGING]→[ÖĞÜRME], [CRYING]→[AĞLAMA], [GROANS]→[İNLEME], [WHISPERING]→[FISILDAMA])\n"
-        "- Never leave an [SFX] tag untranslated — always find a Turkish equivalent\n"
+        # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır
+        # (clean_translation_source_text) ve teslimde kaynaktan geri yüklenir. Modele
+        # 'etiketleri koru' demek görmediği etiketleri uydurmasına yol açıyordu.
+        "- Do NOT add formatting markup (<i>, <b>, <u>, <font>, {\\an8}) that is not present in "
+        "the source text; styling is restored automatically. If a <v Speaker> voice tag IS "
+        "present, keep it exactly as-is.\n"
+        "- [SFX] / [ACTION] / speaker tags ([LAUGHS], (SIGHS), MAN:, NARRATOR (V.O.):) are NOT "
+        "delivered subtitle text: copy each one through EXACTLY as it appears in the source, "
+        "untranslated, and translate only the real dialogue around it. Never invent a target-"
+        "language sound tag and never drop the cue — the delivery pass removes these tags itself.\n"
         "- CRITICAL: every numbered id in the payload MUST receive its own translation, even if its source "
         "is a single word, a short interjection ('Okay.', 'Yeah, yeah.', 'Oh.'), or a bracketed sound effect. "
         "NEVER merge a short cue's meaning into a neighboring id's translation, and NEVER leave a short cue's "

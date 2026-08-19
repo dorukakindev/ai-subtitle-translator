@@ -3773,7 +3773,11 @@ def build_system_prompt(
         "- Keep the same number of subtitle lines inside each cue; preserve the existing \\n structure unless a "
         "minimal rebalance is needed for readable Turkish.",
         "- Keep character names, brand names, and proper nouns unchanged",
-        "- Preserve ALL HTML-like inline tags exactly: <i>...</i>, <b>...</b>, <u>...</u>, <font ...>",
+        # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır;
+        # biçim teslimde kaynaktan geri yüklenir (bkz. restore_format_tags).
+        "- Do NOT add formatting markup (<i>, <b>, <u>, <font>, {\\an8}) that is not present in "
+        "the source text; styling is restored automatically. If a <v Speaker> voice tag IS "
+        "present, keep it exactly as-is.",
         "- Informal address (man, dude, buddy, bro) → 'dostum', 'arkadaşım', 'kanka' (NEVER 'kimse')",
         "- Titles/honorifics use Turkish convention, NOT literal: 'Mr. Smith'→'Bay Smith' or naturally "
         "'Smith Bey'; 'Mrs./Ms. Smith'→'Smith Hanım'; 'Dr. Brown'→'Doktor Brown'; 'Professor X'→'Profesör X'; "
@@ -3795,10 +3799,10 @@ def build_system_prompt(
         "'my friend'→'arkadaşım', 'my name'→'adım'",
         "- For technical terms NOT in the glossary, prefer internationally accepted loanwords "
         "('detonatör', 'dinamit', 'robot', 'laser') — do NOT invent Turkish equivalents",
-        "- Translate ALL [SFX]/[ACTION] tags to Turkish (e.g. [LAUGHS]→[KAHKAHA], "
-        "[SIGHS]→[İÇ ÇEKİŞ], [GASPS]→[NEFES KESİLİŞ], [GAGGING]→[ÖĞÜRME], "
-        "[CRYING]→[AĞLAMA], [GROANS]→[İNLEME], [WHISPERING]→[FISILDAMA]) — "
-        "never leave an [SFX] tag untranslated",
+        "- [SFX]/[ACTION]/speaker tags ([LAUGHS], (SIGHS), MAN:, NARRATOR (V.O.):) are NOT "
+        "delivered subtitle text: copy each one through EXACTLY as it appears in the source, "
+        "untranslated, and translate only the real dialogue around it. Never invent a target-"
+        "language sound tag and never drop the cue — the delivery pass removes these tags itself.",
         "- CRITICAL: every numbered id in the payload MUST receive its own translation, even if its source "
         "is a single word, a short interjection ('Okay.', 'Yeah, yeah.', 'Oh.'), or a bracketed sound effect. "
         "NEVER merge a short cue's meaning into a neighboring id's translation, and NEVER leave a short cue's "
@@ -3886,24 +3890,37 @@ def build_system_prompt(
 
 # ── Native Okuyucu Refleks Pass ──────────────────────────────────────────────
 
+def _native_reader_language_label(tgt_lang: str) -> str:
+    """İstemlerde kullanılacak hedef dil adı ('Türkçe' varsayılan)."""
+    value = str(tgt_lang or "").strip()
+    if not value or is_turkish_target(value):
+        return "Türkçe"
+    return value
+
+
 def _verify_native_candidates(
     client,
     helper_model: str,
     candidates: list[dict],
     token_callback=None,
     cancel_context=None,
+    tgt_lang: str = "Turkish",
 ) -> set[str]:
-    """Kaynakla doğrulanmayan Native yeniden yazımlarını fail-closed reddet."""
+    """Kaynakla doğrulanmayan Native yeniden yazımlarını fail-closed reddet.
+
+    Kriterler hedef dile göre kurulur: sabit 'Türkçe' metniyle Almanca/Fransızca
+    düzeltmeler hakem tarafından dil uymadığı için toptan reddediliyordu."""
     if not candidates:
         return set()
+    lang = _native_reader_language_label(tgt_lang)
     prompt = (
         "Sen altyazı son-kontrol editörüsün. Aşağıdaki Native Okuyucu önerilerini "
-        "İngilizce kaynak ve komşu bağlamla karşılaştır.\n"
+        "kaynak metin ve komşu bağlamla karşılaştır.\n"
         "Bir öneriyi SADECE şu iki koşul birlikte sağlanıyorsa kabul et:\n"
-        "1) Önceki Türkçe gerçekten yapay, bozuk veya bağlama uymuyor.\n"
-        "2) Yeni Türkçe kaynaktaki bütün anlamı, özneyi, yüklemi, zamanı, göndergeleri "
+        f"1) Önceki {lang} metin gerçekten yapay, bozuk veya bağlama uymuyor.\n"
+        f"2) Yeni {lang} metin kaynaktaki bütün anlamı, özneyi, yüklemi, zamanı, göndergeleri "
         "ve cümleler arası dağılımı koruyarak açıkça daha doğal hale getiriyor.\n"
-        "İki sürüm de kabul edilebilir Türkçeyse değişikliği reddet. Salt üslup tercihini, "
+        f"İki sürüm de kabul edilebilir {lang} ise değişikliği reddet. Salt üslup tercihini, "
         "eş anlamlı değişimini, daha konuşma dili olsun diye ekleme/çıkarma yapmayı reddet. "
         "Yazım hatası, anlamsız kalıp, yanlış ek, eksik kelime, şarkı/diyalog satırları "
         "arasında bozulan bütünlük veya komşu cue'dan anlam çalma varsa reddet. "
@@ -4133,7 +4150,8 @@ def native_reader_pass(
         payload_json = json.dumps(payload, ensure_ascii=False)
 
         frag_instruction = ""
-        if src_map:
+        # SOV yeniden dağıtım örneği Türkçeye özgü; başka hedef dillerde yanıltıcı olur.
+        if src_map and is_turkish_target(tgt_lang):
             frag_instruction = (
                 "- Cümle Akışı (Söz Dizimi): Eğer ardışık satırlarda 'frag' alanı varsa ('start', 'mid', 'end'), bu satırlar tek bir İngilizce cümlenin parçalarıdır. Türkçe çevirilerde İngilizce söz dizimi (SVO) sırası nedeniyle bilgi akışının 'sondan başa' gidiyor gibi durmasını (örn. erken yüklem kapanıp nesnelerin arkadan gelmesini) engelle. Bilgileri/kelimeleri bu satırlar arasında Türkçe kurallarına göre (SOV) yeniden dağıt. Cümle en son satırda ('end') yüklemle bitsin, önceki satırlar ('start', 'mid') Türkçe'de devam bekleyen yapıda olsun.\n"
                 "  Örnek:\n"
@@ -4145,13 +4163,20 @@ def native_reader_pass(
                 "      id: 3: Armageddon korkularıyla boğuştu.\n"
             )
 
+        native_lang = _native_reader_language_label(tgt_lang)
+        persona = (
+            "Sen Türkiye'de doğup büyümüş, sadece Türkçe okuyan bir film izleyicisisin."
+            if native_lang == "Türkçe" else
+            f"Sen yalnızca {native_lang} okuyan, {native_lang} dilini ana dili gibi bilen "
+            "bir film izleyicisisin."
+        )
         prompt = (
-            f"Sen Türkiye'de doğup büyümüş, sadece Türkçe okuyan bir film izleyicisisin.{context_info}\n"
+            f"{persona}{context_info}\n"
             f"{UNTRUSTED_REFERENCE_RULE}\n"
             f"Aşağıdaki altyazıları oku. Bazıları 'çevrilmiş gibi' duruyor — yani söz dizimi yapay, "
-            f"deyim akışı bozuk veya hiçbir Türk'ün söylemeyeceği kelime kalıpları var.\n\n"
+            f"deyim akışı bozuk veya bu dilde kimsenin söylemeyeceği kelime kalıpları var.\n\n"
             f"SADECE doğal olmayan satırları düzelt:\n"
-            f"- Doğal Türkçe konuşma sesine kavuştur\n"
+            f"- Doğal {native_lang} konuşma sesine kavuştur\n"
             f"- Anlamı değiştirme, sadece doğallığı artır\n"
             f"- Zaten iyi olan satırları değiştirme\n"
             f"- Bir 'frag' grubundaki tek satırı değiştiriyorsan grubun TÜM satırlarını "
@@ -4246,6 +4271,7 @@ def native_reader_pass(
                         neighbor_texts=neighbor_texts,
                         fragment_tag=frag_tags.get(old_idx, "none"),
                         locked_terms=locked_terms,
+                        tgt_lang=tgt_lang,
                     )
                     if not ok:
                         total_rejected += 1
@@ -4309,6 +4335,7 @@ def native_reader_pass(
                         review_items,
                         token_callback=token_callback,
                         cancel_context=cancel_context,
+                        tgt_lang=tgt_lang,
                     )
                 except RequestCancelled:
                     raise
@@ -4604,7 +4631,8 @@ def condense_fast_lines(
                     if new_cps < old_cps and new_cps <= max(cps_limit, CPS_WARN_LIMIT):
                         en_src = src_map.get(fid, "") if src_map else ""
                         ok, reason = validate_condense_candidate(
-                            old_text, short, en_src, locked_terms=locked_terms)
+                            old_text, short, en_src, locked_terms=locked_terms,
+                            tgt_lang=tgt_lang)
                         if not ok:
                             reject_counts[reason] = reject_counts.get(reason, 0) + 1
                             continue
@@ -6367,6 +6395,20 @@ _GLOSSARY_WQX_CHAR_RE = re.compile(r"[wqxWQX]")
 _GLOSSARY_GUARD_TURKISH_TARGETS = frozenset({"tr", "tur", "turkish", "türkçe", "turkce"})
 
 
+def is_turkish_target(tgt_lang) -> bool:
+    """Hedef dil Türkçe mi? Türkçeye özgü guard'lar (sen/siz, -me/-ma olumsuzluğu,
+    'Türkçe dışı sızıntı', şapkalı harf, yerel düzeltme tablosu) SADECE bu doğruyken
+    çalışmalı: Almanca/Fransızca/İspanyolca hedeflerde bunlar tanım gereği her satırı
+    hatalı sayıp Critic'i binlerce gereksiz istekle çalıştırıyordu.
+
+    Boş/bilinmeyen değer Türkçe kabul edilir — projenin varsayılan hedefi Türkçedir ve
+    çağıran taraf dili iletmediğinde eski davranış korunur."""
+    value = str(tgt_lang or "").strip().casefold()
+    if not value:
+        return True
+    return value in _GLOSSARY_GUARD_TURKISH_TARGETS
+
+
 
 _TR_APOSTROPHIC_SUFFIXES = frozenset({
     "in", "\u0131n", "un", "\u00fcn", "nin", "n\u0131n", "nun", "n\u00fcn",
@@ -7738,9 +7780,15 @@ def _has_identity_slur_loss(source_text: str, target_text: str) -> bool:
 
 def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                    series_terms: dict = None,
-                   scene_gap_sec: float = SCENE_GAP_SEC) -> list:
+                   scene_gap_sec: float = SCENE_GAP_SEC,
+                   tgt_lang: str = "") -> list:
     """Deterministic pre-check before Helper Critic Pass.
-    Returns list of (idx, ts, text, reason_str) for lines needing review."""
+    Returns list of (idx, ts, text, reason_str) for lines needing review.
+
+    tgt_lang Türkçe değilse Türkçeye özgü kurallar atlanır (bkz. is_turkish_target):
+    aksi hâlde Almanca/Fransızca çevirilerin İSTİSNASIZ tüm satırları 'Türkçe dışı
+    sızıntı' sayılıp Critic'e gönderiliyordu."""
+    turkish_target = is_turkish_target(tgt_lang)
     orig_dict: dict = {}
     orig_clean_dict: dict = {}
     speaker_by_id: dict = {}
@@ -7771,7 +7819,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             frag_group_ids = {}
 
     register_flips: dict[str, str] = {}
-    if speaker_by_id:
+    if speaker_by_id and turkish_target:
         speaker_markers: dict[str, dict[str, int]] = {}
         marker_by_id: dict[str, str] = {}
         for idx, _ts, text in tr_blocks:
@@ -7803,29 +7851,30 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             continue
         reasons = []
 
-        if _EN_LEFTOVER.search(text):
+        if turkish_target and _EN_LEFTOVER.search(text):
             reasons.append("EN_LEFTOVER")
 
-        if _ENGLISH_TURKISH_SUFFIX_LEFTOVER.search(text):
+        if turkish_target and _ENGLISH_TURKISH_SUFFIX_LEFTOVER.search(text):
             reasons.append("EN_TURKISH_SUFFIX_LEFTOVER")
 
-        if has_source_english_overlap(orig_clean_dict.get(str(idx), ""), text):
+        if turkish_target and has_source_english_overlap(
+                orig_clean_dict.get(str(idx), ""), text):
             reasons.append("SOURCE_ENGLISH_OVERLAP")
 
-        if _SOURCE_LANG_LEFTOVER.search(text):
+        if turkish_target and _SOURCE_LANG_LEFTOVER.search(text):
             reasons.append("SOURCE_LANG_LEFTOVER")
 
-        if has_non_turkish_target_leak(
+        if turkish_target and has_non_turkish_target_leak(
                 text, source_text=orig_clean_dict.get(str(idx), "")):
             reasons.append("NON_TURKISH_TARGET_LEAK")
 
         if _SFX_LEFTOVER_RE.search(text):
             reasons.append("SFX_LEFTOVER")
 
-        if _TR_ODDITY_RE.search(text):
+        if turkish_target and _TR_ODDITY_RE.search(text):
             reasons.append("TURKISH_ODDITY")
 
-        if _has_bad_turkish_case_flow(text):
+        if turkish_target and _has_bad_turkish_case_flow(text):
             reasons.append("BAD_TURKISH_CASE_FLOW")
 
         garble_hits = find_garble_tokens(
@@ -7835,7 +7884,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             reasons.append(f"GARBLE_TOKEN({tokens})")
 
         residue_hits = find_translatable_english_residue(
-            orig_clean_dict.get(str(idx), ""), text, glossary)
+            orig_clean_dict.get(str(idx), ""), text, glossary) if turkish_target else []
         if residue_hits:
             reasons.append(
                 "TRANSLATABLE_ENGLISH_RESIDUE(" + ",".join(residue_hits) + ")")
@@ -7848,7 +7897,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 reasons.append("SINGLE_LETTER_TARGET")
 
         orig_clean = orig_clean_dict.get(str(idx), "")
-        if orig_clean:
+        if orig_clean and turkish_target:
             src_intensity = _source_profanity_intensity(orig_clean)
             tr_intensity = _turkish_profanity_intensity(text)
             if src_intensity >= 2 and tr_intensity == 0:
@@ -7876,19 +7925,22 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                     tr_text_by_id.get(gid, "") for gid in group_ids
                     if tr_text_by_id.get(gid, "") not in ("[HATA]", "[ÇEVİRİ EKSİK]")
                 )
-            if _source_negation_requires_turkish_negation(neg_src) and not _has_turkish_negation(neg_tr):
+            if (turkish_target
+                    and _source_negation_requires_turkish_negation(neg_src)
+                    and not _has_turkish_negation(neg_tr)):
                 reasons.append("NEGATION_LOSS")
             if _question_mark_mismatch(orig_clean, text):
                 reasons.append("QUESTION_MARK_MISMATCH")
             if _numeric_token_mismatch(orig_clean, text):
                 reasons.append("NUMBER_MISMATCH")
-            if _spelled_number_mismatch(orig_clean, text):
+            if turkish_target and _spelled_number_mismatch(orig_clean, text):
                 reasons.append("SPELLED_NUMBER_MISMATCH")
             if _has_speaker_label(orig_clean) != _has_speaker_label(text):
                 reasons.append("SPEAKER_LABEL_MISMATCH")
             if _speaker_label_absorbed_text(orig_clean, text):
                 reasons.append("SPEAKER_LABEL_ABSORBED_TEXT")
-            reasons.extend(_common_term_mistranslation_reasons(orig_clean, text))
+            if turkish_target:
+                reasons.extend(_common_term_mistranslation_reasons(orig_clean, text))
             flip_reason = register_flips.get(str(idx))
             if flip_reason:
                 reasons.append(flip_reason)
@@ -7899,9 +7951,10 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 tag = frag_tags.get(int(idx))
             except Exception:
                 tag = None
-        if tag in ("start", "mid") and _looks_like_early_turkish_verb_closure(text):
+        if (turkish_target and tag in ("start", "mid")
+                and _looks_like_early_turkish_verb_closure(text)):
             reasons.append("EARLY_VERB_CLOSURE")
-        if _looks_like_dangling_turkish_fragment(text, tag):
+        if turkish_target and _looks_like_dangling_turkish_fragment(text, tag):
             reasons.append("DANGLING_TURKISH_FRAGMENT")
 
         if glossary and orig_dict:
@@ -7918,7 +7971,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                     reasons.append(f"SERIES_MEMORY_FLIP:{src_term}=>{tr_term}")
                     break
 
-        if orig_dict:
+        if orig_dict and turkish_target:
             src_text = orig_dict.get(str(idx), "")
             if src_text and _has_idiom_come_in_at_price(src_text, text):
                 reasons.append("IDIOM_MISTRANSLATION:come_in_at_price")
@@ -7938,11 +7991,11 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 reasons.append("GREEK_WORD_EXPLANATION_LOSS")
 
         # FOX_SLOTH_INCONSISTENCY: tilki derisi in sloth context
-        if _has_fox_sloth_inconsistency(text, tr_blocks, pos):
+        if turkish_target and _has_fox_sloth_inconsistency(text, tr_blocks, pos):
             reasons.append("FOX_SLOTH_INCONSISTENCY")
 
         # WEIRD_TURKISH_PHRASE: known unnatural Turkish patterns
-        if re.search(r'\bderece\s+köylerine\b', text, re.IGNORECASE):
+        if turkish_target and re.search(r'\bderece\s+köylerine\b', text, re.IGNORECASE):
             reasons.append("WEIRD_TURKISH_PHRASE:derece_köylerine")
 
         # NEIGHBOR_ECHO: checked against the NEXT block (add for non-last items)
@@ -11285,8 +11338,14 @@ def validate_polish_candidate(
     neighbor_texts: list[str] | None = None,
     fragment_tag: str = "",
     locked_terms: dict | None = None,
+    tgt_lang: str = "",
 ) -> tuple[bool, str]:
-    """Fail closed when a polish suggestion breaks subtitle structure or hard tokens."""
+    """Fail closed when a polish suggestion breaks subtitle structure or hard tokens.
+
+    Türkçe biçimbilimine bağlı denetimler (sen/siz, -me/-ma olumsuzluğu, Türkçe soru
+    eki, 'Türkçe dışı sızıntı') yalnız Türkçe hedefte çalışır; Almanca/Fransızca
+    hedeflerde bunlar her olumsuz cümleyi reddediyordu."""
+    turkish_target = is_turkish_target(tgt_lang)
     old = "" if original_text is None else str(original_text)
     new = "" if candidate_text is None else str(candidate_text)
     src = "" if source_text is None else str(source_text)
@@ -11324,7 +11383,7 @@ def validate_polish_candidate(
         return False, "word_merge"
     if _has_foreign_script_backslide(old, new):
         return False, "foreign_script"
-    if (not has_non_turkish_target_leak(old, source_text=src)
+    if (turkish_target and not has_non_turkish_target_leak(old, source_text=src)
             and has_non_turkish_target_leak(new, source_text=src)):
         return False, "non_turkish_target"
     if src and _has_source_echo(src, old, new):
@@ -11335,7 +11394,8 @@ def validate_polish_candidate(
         return False, "english_article_reimport"
     if src and _has_to_name_reimport(src, old, new):
         return False, "to_name_reimport"
-    if src and _source_negation_requires_turkish_negation(src) and not _has_turkish_negation(new):
+    if (turkish_target and src and _source_negation_requires_turkish_negation(src)
+            and not _has_turkish_negation(new)):
         return False, "source_negation"
     if src and _has_because_negation_scope_reversal(src, old, new):
         return False, "negation_scope"
@@ -11363,21 +11423,21 @@ def validate_polish_candidate(
         return False, "source_numbers"
     if src and _numeric_token_mismatch(src, new):
         return False, "source_numbers"
-    if _has_turkish_person_drift(old, new, src):
+    if turkish_target and _has_turkish_person_drift(old, new, src):
         return False, "person_drift"
     if _has_critical_fact_swap(old, new, src):
         return False, "critical_fact_swap"
     if src and _has_source_backed_tense_drift(src, old, new):
         return False, "source_tense"
-    if src and _has_source_backed_past_suffix_loss(src, old, new):
+    if turkish_target and src and _has_source_backed_past_suffix_loss(src, old, new):
         return False, "source_tense"
-    if src and _has_source_backed_plural_loss(src, old, new):
+    if turkish_target and src and _has_source_backed_plural_loss(src, old, new):
         return False, "plural_drift"
-    if src and _has_source_backed_possessive_drift(src, old, new):
+    if turkish_target and src and _has_source_backed_possessive_drift(src, old, new):
         return False, "possessive_drift"
     if _has_comparison_degree_drift(old, new):
         return False, "comparison_degree"
-    if _has_causative_want_backslide(old, new):
+    if turkish_target and _has_causative_want_backslide(old, new):
         return False, "causative_backslide"
     if src and _has_short_source_overexpansion(src, new):
         return False, "short_source_overexpansion"
@@ -11407,13 +11467,13 @@ def validate_polish_candidate(
         return False, "oddities_intro_idiom_regression"
     if _has_grandma_to_mother_regression(old, new):
         return False, "grandma_to_mother_regression"
-    if _has_unnecessary_da_deletion(old, new):
+    if turkish_target and _has_unnecessary_da_deletion(old, new):
         return False, "unnecessary_da_deletion"
     if _has_oddities_title_case_regression(old, new):
         return False, "oddities_title_case_regression"
     if _has_woodstock_regression(old, new):
         return False, "proper_noun_regression"
-    if _has_turkish_question_loss(old, new):
+    if turkish_target and _has_turkish_question_loss(old, new):
         return False, "turkish_question_loss"
     if _has_neighbor_echo(old, new, neighbor_texts):
         return False, "neighbor_echo"
@@ -11652,11 +11712,15 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
 
 def validate_condense_candidate(original_text: str, candidate_text: str,
                                 source_text: str = "",
-                                locked_terms: dict | None = None) -> tuple[bool, str]:
+                                locked_terms: dict | None = None,
+                                tgt_lang: str = "") -> tuple[bool, str]:
     """condense_fast_lines için DAR güvenlik doğrulaması. validate_polish_candidate'in
     yalnızca güvenlik-kritik, KISALTMAYLA ÇATIŞMAYAN alt-kümesi — kelime-kaybı/çok-kısa
     kontrolleri BİLEREK yok (condense kelime atmayı kasıtlı yapar). fail-closed:
-    (True,"") kabul, (False,reason) reddet → çağıran orijinali korur."""
+    (True,"") kabul, (False,reason) reddet → çağıran orijinali korur.
+
+    Türkçeye özgü olumsuzluk/sızıntı denetimleri yalnız Türkçe hedefte çalışır."""
+    turkish_target = is_turkish_target(tgt_lang)
     old = "" if original_text is None else str(original_text)
     new = "" if candidate_text is None else str(candidate_text)
     src = "" if source_text is None else str(source_text)
@@ -11682,10 +11746,11 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
         return False, "introduced_typo"
     if _has_foreign_script_backslide(old, new):
         return False, "foreign_script"
-    if (not has_non_turkish_target_leak(old, source_text=src)
+    if (turkish_target and not has_non_turkish_target_leak(old, source_text=src)
             and has_non_turkish_target_leak(new, source_text=src)):
         return False, "non_turkish_target"
-    if src and _source_negation_requires_turkish_negation(src) and not _has_turkish_negation(new):
+    if (turkish_target and src and _source_negation_requires_turkish_negation(src)
+            and not _has_turkish_negation(new)):
         return False, "source_negation"
     if src and _has_unanchored_negation_addition(src, old, new):
         return False, "source_negation_addition"
@@ -11725,13 +11790,20 @@ def _local_fix_source_evidence(pattern, source_text: str) -> bool:
 
 def _apply_local_fixes(text: str, allow_context_sensitive: bool = True,
                        source_text: str | None = None,
-                       locked_terms: dict | None = None) -> tuple[str, int]:
+                       locked_terms: dict | None = None,
+                       tgt_lang: str = "") -> tuple[str, int]:
     """Apply instant fixes, source-gating semantic legacy replacements when asked.
 
     Legacy callers retain their diagnostic/test behavior without ``source_text``.
     Real write paths pass it, so a post-pass cannot silently rewrite a valid
     title or locked term using a rule learned from an unrelated episode.
+
+    Tablo Türkçe hedefe göre yazılmıştır ('hell'→'cehennem', 'skelet'→'iskelet'):
+    başka bir hedef dilde çalıştırıldığında Almanca 'hell' (aydınlık) veya
+    Felemenkçe 'skelet' gibi ÖZ kelimeleri Türkçeyle eziyordu.
     """
+    if not is_turkish_target(tgt_lang):
+        return text, 0
     count = 0
     for pattern, replacement in _LOCAL_FIXES:
         if (not allow_context_sensitive
@@ -11783,13 +11855,19 @@ def consistency_sweep(
     min_words: int = 3,
     locked_terms: dict | None = None,
     apply_changes: bool = True,
+    tgt_lang: str = "",
 ) -> tuple:
     """Normalize recurring source phrases to their most common translation.
     By default, only normalizes when a strict majority (>50%) of occurrences agree.
     minority_threshold can loosen that rule by allowing a bounded non-winning share.
     Accepts cue objects (.index/.text) or (idx, ts, text) tuples.
-    Returns (corrected_tr_blocks, n_fixes)."""
+    Returns (corrected_tr_blocks, n_fixes).
+
+    Türkçe hedef dışında 'Türkçe dışı sızıntı' ve sen/siz register süzgeçleri
+    devre dışıdır — aksi hâlde her aday elenip sweep hiç çalışmıyordu."""
     from collections import Counter, defaultdict
+
+    turkish_target = is_turkish_target(tgt_lang)
 
     if not cues or not tr_blocks:
         return tr_blocks, 0
@@ -11825,13 +11903,13 @@ def consistency_sweep(
             continue  # all already consistent
         clean_common = [
             (tr, count) for tr, count in counter.most_common()
-            if not has_non_turkish_target_leak(tr)
+            if not (turkish_target and has_non_turkish_target_leak(tr))
         ]
         if not clean_common:
             continue
         registers = {
             register for tr, _count in clean_common
-            if (register := _turkish_second_person_register(tr))
+            if turkish_target and (register := _turkish_second_person_register(tr))
         }
         if len(registers) > 1:
             continue
@@ -12059,7 +12137,7 @@ def qc_auto_fix(
             if new_text and new_text != "[HATA]":
                 ok, _reason = validate_polish_candidate(
                     old_text, new_text, source_text=source,
-                    locked_terms=locked_terms)
+                    locked_terms=locked_terms, tgt_lang=tgt_lang)
                 if ok:
                     result[pos] = (old_idx, old_ts, new_text)
                     fixed += 1
@@ -12081,7 +12159,7 @@ def qc_auto_fix(
             if sugg_text and sugg_text != "[HATA]":
                 ok_sugg, _reason_sugg = validate_polish_candidate(
                     old_text, sugg_text, source_text=source,
-                    locked_terms=locked_terms)
+                    locked_terms=locked_terms, tgt_lang=tgt_lang)
                 if ok_sugg:
                     result[pos] = (old_idx, old_ts, sugg_text)
                     fixed += 1
@@ -12412,7 +12490,8 @@ def critic_pass_with_helper(
             continue
         fixed, n = _apply_local_fixes(
             text, allow_context_sensitive=False,
-            source_text=orig_dict.get(str(idx), ""), locked_terms=glossary)
+            source_text=orig_dict.get(str(idx), ""), locked_terms=glossary,
+            tgt_lang=tgt_lang)
         if n and not locked_term_violation(
                 orig_dict.get(str(idx), ""), fixed, glossary):
             if apply_changes:
@@ -12450,7 +12529,7 @@ def critic_pass_with_helper(
     validator_hits: set = set()
     v_reasons: dict = {}
     for v_idx, _, _, reason in run_validators(
-            result, cues, glossary, scene_gap_sec=gap_limit):
+            result, cues, glossary, scene_gap_sec=gap_limit, tgt_lang=tgt_lang):
         key = str(v_idx)
         validator_hits.add(key)
         v_reasons[key] = reason
@@ -12887,6 +12966,7 @@ def critic_pass_with_helper(
                             neighbor_texts=neighbor_texts,
                             fragment_tag=fragment_tag,
                             locked_terms=glossary,
+                            tgt_lang=tgt_lang,
                         )
                     if (not unchanged_anchor and not ok
                             and reason in _SEMANTIC_REWRITE_REJECTIONS):
@@ -12919,6 +12999,7 @@ def critic_pass_with_helper(
                                 neighbor_texts=neighbor_texts,
                                 fragment_tag=fragment_tag,
                                 locked_terms=glossary,
+                                tgt_lang=tgt_lang,
                             )
                             if ok2:
                                 ok, reason, final_text = True, reason2, reflowed
@@ -12974,7 +13055,7 @@ def critic_pass_with_helper(
                 )
                 joined_ok, _joined_reason = validate_polish_candidate(
                     old_joined, new_joined, source_text=source_joined,
-                    locked_terms=glossary)
+                    locked_terms=glossary, tgt_lang=tgt_lang)
                 if not joined_ok:
                     for group_id in group_ids:
                         invalid_fragment_group_reasons[group_id] = (
@@ -13726,13 +13807,15 @@ def _normalize_output_text(text: str, target_language: str = "Turkish",
         return text
     text, _ = _apply_local_fixes(
         text, allow_context_sensitive=False,
-        source_text=source_text, locked_terms=locked_terms)
+        source_text=source_text, locked_terms=locked_terms,
+        tgt_lang=target_language)
     try:
         import sdh_cleaner
     except Exception:
         return text
-    text = sdh_cleaner.normalize_sdh_descriptors(text)
-    text = sdh_cleaner.normalize_speaker_labels(text)
+    # Proje kuralı: SDH/konuşmacı etiketleri çevrilmez, silinir (bkz. write_srt).
+    text = sdh_cleaner.strip_sdh_descriptors(text)
+    text = sdh_cleaner.strip_speaker_labels(text)
     # That normalizer contains historical corpus substitutions (rat/client/
     # macabre/collection etc.).  It has no source input, so only retain it for
     # legacy direct callers; real output paths supply source_text and must not

@@ -80,7 +80,8 @@ class BatchRecoveryLostPersiaTests(unittest.TestCase):
     def test_final_write_cleanup_common_documentary_residue(self):
         text = "[Ali speaking]\n21 feet mesafe var. Babylon b\u00fcy\u00fckt\u00fc."
         out = ht._normalize_output_text(text)
-        self.assertIn("[Ali konu\u015fuyor]", out)
+        # SDH tan\u0131mlay\u0131c\u0131s\u0131 art\u0131k \u00e7evrilmiyor, tamamen siliniyor
+        self.assertNotIn("[Ali", out)
         self.assertIn("21 fit", out)
         self.assertIn("Babil", out)
         self.assertNotIn("speaking", out)

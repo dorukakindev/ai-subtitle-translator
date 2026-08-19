@@ -144,12 +144,11 @@ class MojibakePromptTest(unittest.TestCase):
         prompt = ht.build_system_prompt(ctx, "en", "tr", {"name": "Belgesel"})
         self.assertNotIn("â†", prompt)
         self.assertNotIn("Ã‡", prompt)
-        self.assertIn("[SIGHS]→[İÇ ÇEKİŞ]", prompt)
-        self.assertIn("[GASPS]→[NEFES KESİLİŞ]", prompt)
-        self.assertIn("[GAGGING]→[ÖĞÜRME]", prompt)
-        self.assertIn("[CRYING]→[AĞLAMA]", prompt)
-        self.assertIn("[GROANS]→[İNLEME]", prompt)
-        self.assertIn("[WHISPERING]→[FISILDAMA]", prompt)
+        # SDH etiketleri artık ÇEVRİLMİYOR, kaynaktaki hâliyle geçiriliyor
+        # (teslim aşaması siler) — bu yüzden istemde Türkçe ses etiketi örneği yok.
+        self.assertNotIn("[İÇ ÇEKİŞ]", prompt)
+        self.assertIn("[SFX]", prompt)
+        self.assertIn("NARRATOR (V.O.):", prompt)
         self.assertIn("KONUŞURUZ, DOSTUM", prompt)
         self.assertIn("'EXIT'→'ÇIKIŞ'", prompt)
         self.assertIn("'On my way'→'Yoldayım'", prompt)

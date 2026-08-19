@@ -60,15 +60,17 @@ class WriteSrtOutputTest(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         self.assertEqual(blocks[0][2], "[ÇEVİRİ EKSİK]")
 
-    def test_write_normalizes_english_sdh_descriptors(self):
+    def test_write_strips_english_sdh_descriptors(self):
+        """Proje kuralı: SDH/konuşmacı etiketleri Türkçeleştirilmez, silinir.
+        Satırda başka içerik yoksa cue korunur (clean_sdh aşaması düşürür)."""
         p = os.path.join(self.d, "sdh.srt")
         gui.write_srt(p, [
             ("1", "00:00:01,000 --> 00:00:02,000", "(AUDIENCE LAUGHING)"),
             ("2", "00:00:02,000 --> 00:00:03,000", "-(DISCO MUSIC PLAYING)\nAUDIENCE: Again!"),
         ])
         blocks = gui.parse_srt(p)
-        self.assertEqual(blocks[0][2], "(SEYİRCİ KAHKAHA ATIYOR)")
-        self.assertEqual(blocks[1][2], "-(DİSKO MÜZİĞİ ÇALIYOR)\nSEYİRCİ: Again!")
+        self.assertEqual(blocks[0][2], "(AUDIENCE LAUGHING)")
+        self.assertEqual(blocks[1][2], "Again!")
 
     def test_non_turkish_target_skips_turkish_output_rewrites(self):
         p = os.path.join(self.d, "english.srt")
@@ -118,8 +120,9 @@ class WriteSrtOutputTest(unittest.TestCase):
         self.assertEqual(sdh_cleaner.strip_sdh_line("\u266a"), "")
 
     def test_hybrid_output_normalizer_matches_write_cleanup(self):
+        # SDH/konu\u015fmac\u0131 etiketleri \u00e7evrilmez, silinir (write_srt ile ayn\u0131 kural).
         text = ht._normalize_output_text("(AUDIENCE LAUGHING)\nAUDIENCE:\to\u0308yle\n\nmi?")
-        self.assertEqual(text, "(SEYİRCİ KAHKAHA ATIYOR)\nSEYİRCİ: öyle\nmi?")
+        self.assertEqual(text, "öyle\nmi?")
 
     def test_hybrid_output_normalizer_cleans_latin_homoglyphs(self):
         text = ht._normalize_output_text("O da BАNA kavanozda şeyler getirdi.")

@@ -18,8 +18,10 @@ _SOURCE_MALFORMED_FORMAT_TAG = re.compile(
     re.IGNORECASE,
 )
 _VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
+# ruby/rt: Japonca WebVTT dosyalarında okunuş etiketleri. SRT'de karşılığı yok;
+# geri yüklenirlerse oynatıcılarda '<ruby>Türkçe</ruby>' olarak ekrana basılır.
 _VTT_SRT_UNSAFE_TAG = re.compile(
-    r'</?(?:c(?:\.[^\s>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?)\s*>',
+    r'</?(?:c(?:\.[^\s>]*)?|v(?:\s+[^>]*)?|lang(?:\s+[^>]*)?|ruby|rt)\s*>',
     re.IGNORECASE,
 )
 _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
@@ -104,9 +106,11 @@ def normalize_srt_timestamp_separators(text: str) -> str:
 
     def replace(match):
         lead, sh, sm, ss, sms, arrow, eh, em, es, ems, tail = match.groups()
+        # Saat 2 haneye tamamlanmalı: '0:01:23,456' biçimini donanımsal oynatıcılar
+        # ve bazı yazılımlar yüklemiyor.
         return (
-            f"{lead}{sh}:{sm}:{ss},{(sms + '000')[:3]}{arrow}"
-            f"{eh}:{em}:{es},{(ems + '000')[:3]}{tail}"
+            f"{lead}{int(sh):02d}:{sm}:{ss},{(sms + '000')[:3]}{arrow}"
+            f"{int(eh):02d}:{em}:{es},{(ems + '000')[:3]}{tail}"
         )
 
     return pattern.sub(replace, str(text or ""))
@@ -229,13 +233,46 @@ def _legacy_decode_penalty(text: str) -> int:
     return (c1 * 4) + internal_punctuation
 
 
+def _decode_embedded_controls(text: str, encoding: str) -> str | None:
+    out = []
+    for ch in text:
+        if "\x80" <= ch <= "\x9f":
+            try:
+                out.append(bytes((ord(ch),)).decode(encoding))
+            except UnicodeDecodeError:
+                return None
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _repair_embedded_mac_roman_controls(text: str) -> str:
+    """Latin-1 fallback'inde kontrol karakterine dönüşmüş baytları geri kazanır.
+
+    Bu baytlar İngilizce/Batı Avrupa altyazılarında çoğunlukla Windows-1252
+    noktalama işaretleridir (“ ” ’ – — …); koşulsuz MacRoman uygulamak onları
+    anlamsız 'ì', 'î', 'Ö' harflerine çeviriyordu. Ayırt edici sinyal konumdur:
+    MacRoman'da bu baytlar kelime İÇİNDEKİ aksanlı harflerdir (Rodr•guez), cp1252
+    noktalamasıysa ağırlıklı olarak kelime sınırlarında durur."""
     if sum("\x80" <= ch <= "\x9f" for ch in text) < 2:
         return text
-    repaired = "".join(
-        bytes((ord(ch),)).decode("mac_roman") if "\x80" <= ch <= "\x9f" else ch
-        for ch in text)
-    return repaired if _legacy_decode_penalty(repaired) < _legacy_decode_penalty(text) else text
+    base_penalty = _legacy_decode_penalty(text)
+    controls = [
+        pos for pos, ch in enumerate(text) if "\x80" <= ch <= "\x9f"
+    ]
+    inside_word = sum(
+        1 for pos in controls
+        if pos > 0 and pos + 1 < len(text)
+        and text[pos - 1].isalpha() and text[pos + 1].isalpha()
+    )
+    if inside_word < len(controls) / 2:
+        cp1252 = _decode_embedded_controls(text, "cp1252")
+        if cp1252 is not None and _legacy_decode_penalty(cp1252) <= base_penalty:
+            return cp1252
+    repaired = _decode_embedded_controls(text, "mac_roman")
+    if repaired is not None and _legacy_decode_penalty(repaired) < base_penalty:
+        return repaired
+    return text
 
 
 def _decode_cp1254_or_mac_roman(raw: bytes) -> str | None:
@@ -354,13 +391,16 @@ def _vtt_ts_to_srt(ts: str) -> str:
     return f"{int(hour or 0):02d}:{int(minute):02d}:{int(second):02d},{(ms + '000')[:3]}"
 
 def _ass_ts_to_srt(ts: str) -> str:
-    """ASS zaman damgasını (H:MM:SS.cc) SRT formatına çevirir."""
+    """ASS zaman damgasını (H:MM:SS.cc) SRT formatına çevirir.
+
+    Standart ASS santisaniye kullanır ama bazı araçlar 3 haneli milisaniye yazar;
+    o dosyalarda eskiden ham '1:23:45.678' değeri SRT'ye olduğu gibi geçiyordu."""
     ts = ts.strip()
     # H:MM:SS.cc → HH:MM:SS,mmm (centi-secs → milisecs)
-    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.(\d{1,2})$', ts)
+    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.(\d{1,3})$', ts)
     if m:
-        h, mm, s, cs = m.groups()
-        ms = int(cs.ljust(2, '0')) * 10
+        h, mm, s, frac = m.groups()
+        ms = int(frac.ljust(3, '0')) if len(frac) == 3 else int(frac.ljust(2, '0')) * 10
         return f'{int(h):02d}:{mm}:{s},{ms:03d}'
     return ts
 
@@ -456,6 +496,17 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
             line_lead = lm.group(0) if lm else ""
             tm = _TRAIL_OVERRIDE_RE.search(src_line)
             line_tail = tm.group(0) if tm else ""
+            # Satır bazlı HTML sarmalama: çok konuşmacılı bloklarda yalnızca BİR
+            # satır italik olabilir ('<i>- Telsiz: Sorun var.</i>' + '- Anlaşıldı.').
+            # Blok düzeyindeki all(wraps) kontrolü bu durumda başarısız olduğu için
+            # tek satırlık iç ses/telsiz italikleri kalıcı olarak siliniyordu.
+            line_body = src_line[len(line_lead):] if line_lead else src_line
+            if line_tail and line_body.endswith(line_tail):
+                line_body = line_body[:-len(line_tail)]
+            line_wrap = _match_full_wrap(line_body.strip())
+            if (line_wrap and out_line.strip()
+                    and not re.match(r'^\s*(?:\{\\[^}]*\})*\s*<[a-zA-Z]', out_line)):
+                out_line = f"{line_wrap[0]}{out_line.strip()}{line_wrap[2]}"
             if line_lead and not out_line.startswith(line_lead):
                 out_line = line_lead + out_line
             if line_tail and not out_line.endswith(line_tail):
@@ -487,12 +538,52 @@ def _clean_ass_text(text: str) -> str:
 
 
 def _format_ass_text(text: str) -> str:
-    """ASS satır kırma karakterlerini dönüştür ve yorumları kaldır, ancak biçim/konum etiketlerini (\\an8 vb.) koru."""
+    """ASS satır kırma karakterlerini dönüştür ve yorumları kaldır, ancak biçim/konum etiketlerini (\\an8 vb.) koru.
+
+    Dönüşümler yalnızca `{...}` override blokları DIŞINDA uygulanır: blok içine
+    satır sonu koymak `_ASS_OVERRIDE_BLOCK_RE`'nin bloğu tanımasını bozar ve
+    etiket kalıntıları teslim SRT'sine diyalog metni gibi sızar."""
     text = _ASS_COMMENT.sub('', text)
-    text = _ASS_SOFTLINE.sub('\n', text)
-    text = _ASS_HARDLINE.sub('\n', text)
-    text = _ASS_HSPACE.sub(' ', text)
-    return text.strip()
+
+    def _convert_outside_blocks(value: str) -> str:
+        parts = []
+        position = 0
+        for match in _ASS_OVERRIDE_BLOCK_RE.finditer(value):
+            parts.append(_convert_breaks(value[position:match.start()]))
+            parts.append(match.group(0))
+            position = match.end()
+        parts.append(_convert_breaks(value[position:]))
+        return "".join(parts)
+
+    def _convert_breaks(value: str) -> str:
+        value = _ASS_SOFTLINE.sub('\n', value)
+        value = _ASS_HARDLINE.sub('\n', value)
+        return _ASS_HSPACE.sub(' ', value)
+
+    return _convert_outside_blocks(text).strip()
+
+
+# ASS Name/Actor sütununda konuşmacı yerine sık sık stil veya teknik etiket bulunur.
+_ASS_TECHNICAL_NAMES = frozenset({
+    "default", "def", "main", "alt", "alternate", "sign", "signs", "sign_text",
+    "top", "bottom", "left", "right", "overlap", "staff", "caption", "captions",
+    "title", "titles", "text", "comment", "note", "notes", "credit", "credits",
+    "op", "ed", "opening", "ending", "karaoke", "song", "lyrics", "italics",
+    "flashback", "narration", "screen", "onscreen", "on-screen", "subtitle",
+    "subtitles", "dialogue", "dialog", "style", "fx", "effect", "effects",
+})
+
+
+def _ass_name_is_technical(name: str) -> bool:
+    key = re.sub(r"[\s_\-]+", "", str(name or "").strip().casefold())
+    if not key:
+        return False
+    if key in {re.sub(r"[\s_\-]+", "", value) for value in _ASS_TECHNICAL_NAMES}:
+        return True
+    # 'Sign 12', 'Default2', 'Caption-3' gibi numaralı stil türevleri
+    stripped = key.rstrip("0123456789")
+    return bool(stripped) and stripped != key and stripped in {
+        re.sub(r"[\s_\-]+", "", value) for value in _ASS_TECHNICAL_NAMES}
 
 
 def _ass_is_drawing_only(text: str) -> bool:
@@ -708,6 +799,11 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
             continue
         name = parts[name_i].strip() if name_i is not None else ""
         if not any(ch.isalpha() for ch in name):
+            name = ""
+        if _ass_name_is_technical(name):
+            # Aegisub'da Name sütunu sık sık stil/teknik etiket taşır ('Default',
+            # 'Sign', 'Main'). Bunlar konuşmacı değildir; ön ek olarak eklenirse
+            # çevrilip 'Default: Merhaba' diye teslim SRT'sine yazılıyordu.
             name = ""
         if name and not re.match(rf'^\s*{re.escape(name)}\s*:', text, re.IGNORECASE):
             # Name sütunu konuşmacı bağlamıdır. Analize/çeviriye ulaşır; kaynak
