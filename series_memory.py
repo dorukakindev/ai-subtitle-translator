@@ -35,6 +35,14 @@ _PUNTATA = re.compile(
     r'(?i)(?:^|[ ._\-])puntata[ ._\-]*(?P<ep>\d{1,3})(?:\D|$)')
 _N_OF_TOTAL = re.compile(
     r'(?i)(?:^|[ ._\-])(?P<ep>\d{1,3})[ ._\-]+of[ ._\-]+\d{1,3}(?:\D|$)')
+# 'Show Name Episode 05' / 'Show Name Ep 05' / 'Show Name Bölüm 05' → show + ep
+_EPISODE_WORD = re.compile(
+    r'(?i)^(?P<show>.+?)[ ._\-]+(?:episode|bölüm|bolum|ep)[ ._\-]*'
+    r'(?P<ep>\d{1,3})(?:\D|$)')
+# Anime yayın biçimi: 'Show Name - 05 [1080p]'. Ayraç olarak boşluklu tire şart —
+# 'Film - 2019' (4 hane) ve 'Show-05' gibi belirsiz adlar eşleşmez.
+_ANIME_DASH = re.compile(
+    r'^(?P<show>.+?) - (?P<ep>\d{1,3})(?:\s|$|[\[\(_])')
 
 
 def _slugify(show: str) -> str:
@@ -145,6 +153,14 @@ def parse_series_key(filename: str):
             match = rx.search(stem)
             if match:
                 return slug, season, int(match.group("ep"))
+    # Sezon bilgisi taşımayan biçimler (anime yayınları, 'Episode 05'): tek sezon
+    # varsayılır. Bunlar olmadan anime dosyalarında dizi hafızası hiç çalışmıyordu.
+    for rx in (_EPISODE_WORD, _ANIME_DASH):
+        m = rx.match(stem)
+        if m:
+            slug = root_info[1] if root_info else _slugify(m.group("show"))
+            season = root_info[2] if root_info else 1
+            return slug, season, int(m.group("ep"))
     return None
 
 
@@ -260,29 +276,32 @@ class SeriesMemory:
         }
         for key in ("terms", "characters"):
             values = dict(disk.get(key) or {})
+            # Karakterlerde `casefold()` yetmez: diskteki "Serif" ile yeni bölümdeki
+            # "Şerif" eşleşmeyip aynı karakter iki ayrı anahtarla kaydoluyor ve model
+            # sonraki bölümlerde çelişkili iki kural görüyordu (merge_characters
+            # zaten `_character_identity` kullanıyor — burası da aynı olmalı).
             known = {
                 (_term_identity(item) if key == "terms"
-                 else str(item).strip().casefold())
+                 else _character_identity(item))
                 for item in values
             }
             for item, value in dict(memory.get(key) or {}).items():
                 identity = (_term_identity(item) if key == "terms"
-                            else str(item).strip().casefold())
+                            else _character_identity(item))
                 if identity not in known:
                     values[item] = value
                     known.add(identity)
             merged[key] = values
         addresses = list(disk.get("address_map") or [])
         seen = {
-            (str(item.get("a") or "").strip().casefold(),
-             str(item.get("b") or "").strip().casefold())
+            (_character_identity(item.get("a")), _character_identity(item.get("b")))
             for item in addresses if isinstance(item, dict)
         }
         for item in list(memory.get("address_map") or []):
             if not isinstance(item, dict):
                 continue
-            key = (str(item.get("a") or "").strip().casefold(),
-                   str(item.get("b") or "").strip().casefold())
+            key = (_character_identity(item.get("a")),
+                   _character_identity(item.get("b")))
             if key not in seen:
                 addresses.append(item)
                 seen.add(key)
@@ -467,15 +486,18 @@ class SeriesMemory:
                 terms = dict(filtered) if isinstance(filtered, dict) else {}
             except Exception:
                 terms = {}
+        # Köken anahtarları `_character_identity` ile YAZILIYOR (bkz. merge_characters /
+        # merge_address_map); burada `casefold()` ile aramak Türkçe ve aksanlı adlarda
+        # (Şerif, İsmail, Hélène) hiç eşleşmiyor ve bölüm kesme mantığı bozuluyordu.
         chars = {
             name: meta for name, meta in chars.items()
-            if allowed(char_origins.get(str(name).strip().casefold()))
+            if allowed(char_origins.get(_character_identity(name)))
         }
         addr = [
             item for item in addr if isinstance(item, dict) and allowed(
                 addr_origins.get("\0".join((
-                    str(item.get("a") or "").strip().casefold(),
-                    str(item.get("b") or "").strip().casefold(),
+                    _character_identity(item.get("a")),
+                    _character_identity(item.get("b")),
                 )))
             )
         ]

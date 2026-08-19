@@ -24,6 +24,9 @@ BITMAP_SUBTITLE_CODECS = {
     "dvb_subtitle", "dvd_subtitle", "hdmv_pgs_subtitle", "xsub",
 }
 
+# Konum/stil etiketleri taşıyan akışlar: SRT'ye çevrilmeden ham kopyalanır.
+ASS_SUBTITLE_CODECS = {"ass", "ssa"}
+
 
 class VideoSubtitleError(RuntimeError):
     pass
@@ -258,15 +261,21 @@ def extract_subtitle_stream(
     ffmpeg = _tool_path("ffmpeg", which=which)
     stem = _safe_name(video.stem, "video")
     language = _safe_name(stream.language.lower(), "und")
-    output = _cache_root(video) / f"{stem}.track-{stream.index}.{language}.srt"
+    # ASS/SSA akışlarını SRT'ye dönüştürmek `{\an8}` gibi ekran konumlarını ve
+    # tabela stillerini ffmpeg'de kırpar; projenin parse_ass + _restore_tags_blocks
+    # motoru bunları geri yükleyemez. Bu akışları olduğu gibi kopyalayıp .ass yazıyoruz.
+    keep_ass = stream.codec.strip().lower() in ASS_SUBTITLE_CODECS
+    suffix = "ass" if keep_ass else "srt"
+    output = _cache_root(video) / f"{stem}.track-{stream.index}.{language}.{suffix}"
     sidecar = _origin_sidecar(output)
     if _cached_extraction_matches(output, video, stream):
         return output
     output.parent.mkdir(parents=True, exist_ok=True)
-    temp_output = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.tmp.srt")
+    temp_output = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.tmp.{suffix}")
     command = [
         ffmpeg, "-y", "-v", "error", "-i", str(video),
-        "-map", f"0:{stream.index}", "-c:s", "srt", str(temp_output),
+        "-map", f"0:{stream.index}",
+        "-c:s", "copy" if keep_ass else "srt", str(temp_output),
     ]
     try:
         result = _run(command, runner=runner, timeout=300)

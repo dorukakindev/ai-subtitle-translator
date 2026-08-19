@@ -2,6 +2,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,25 @@ def is_safe_batch_id(value) -> bool:
     return bool(_BATCH_ID_RE.fullmatch(str(value or "").strip()))
 
 
+_REPLACE_RETRIES = 5
+_REPLACE_BACKOFF_SEC = 0.12
+
+
+def _replace_with_retry(tmp: Path, path: Path) -> None:
+    """Windows'ta hedef dosya bir okuyucu/antivirüs tarafından tutuluyorsa
+    `tmp.replace(path)` PermissionError (WinError 32) fırlatır ve batch_id.txt /
+    .gui_settings.json gibi kritik durum kayıtları kaybolur. Kısa beklemeli
+    birkaç tur dene; son turda hatayı yine de yukarı ilet."""
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRIES - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SEC * (attempt + 1))
+
+
 def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +56,7 @@ def atomic_write_text(path, text: str, encoding: str = "utf-8") -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        tmp.replace(path)
+        _replace_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -50,7 +70,7 @@ def atomic_write_bytes(path, data: bytes) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        tmp.replace(path)
+        _replace_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
 

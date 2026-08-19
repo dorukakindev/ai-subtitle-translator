@@ -46,15 +46,26 @@ def _try_extract(text: str):
 
     return None
 
+def _timestamp_line(start, end) -> str:
+    """fmap kayıtları iki biçimde gelir: sync/batch `(idx, "a --> b", filepath)`
+    ve hibrit `(idx, start, end)`. Birincisinde zaman satırı zaten tamdır; körü
+    körüne "{start} --> {end}" yazmak `"a --> b --> D:\\dosya.srt"` üretirdi."""
+    start_text = str(start)
+    return start_text if "-->" in start_text else f"{start_text} --> {end}"
+
+
 def parse_chunk(raw: str, info: list, cid: str) -> dict:
     items = _try_extract(raw)
     trans_map = {}
     if items and isinstance(items, list):
         expected_ids = {str(entry[0]) for entry in info if isinstance(entry, (list, tuple)) and entry}
         for item in items:
+            # Boş dize (`t=""`) geçerlidir: model müzik/SDH satırını bilerek boş
+            # bırakabilir. Bunu geçersiz sayıp bütün chunk'ı reddetmek 10-15 doğru
+            # satırı birden [HATA] yapıyordu.
             if not (isinstance(item, dict) and "i" in item
-                    and isinstance(item.get("t"), str) and item["t"].strip()):
-                print(f"  [UYARI] {cid}: geÃ§ersiz veya boÅŸ cue yanÄ±tÄ± reddedildi")
+                    and isinstance(item.get("t"), str)):
+                print(f"  [UYARI] {cid}: geÃ§ersiz cue yanÄ±tÄ± reddedildi")
                 return {}
             item_id = str(item["i"])
             if item_id not in expected_ids or item_id in trans_map:
@@ -209,7 +220,7 @@ def main(fmap_files=None):
                 print(f"  [UYARI] {cid}: yinelenen custom_id; ilgili cue'lar [HATA] olarak korundu")
                 for entry in info:
                     idx, start, end = entry[0], entry[1], entry[2]
-                    srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    srt_blocks[idx] = (str(idx), _timestamp_line(start, end), "[HATA]")
                     total_hata += 1
                 chunk_fail += 1
                 continue
@@ -221,7 +232,7 @@ def main(fmap_files=None):
                     print(f"  [HATA] {cid}: {err_msg.get('message','')}")
                 for entry in info:
                     idx, start, end = entry[0], entry[1], entry[2]
-                    srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    srt_blocks[idx] = (str(idx), _timestamp_line(start, end), "[HATA]")
                     total_hata += 1
                 chunk_fail += 1
                 continue
@@ -241,7 +252,7 @@ def main(fmap_files=None):
                 print(f"  [UYARI] {cid}: yanıt metni alınamadı (eksik veya boş yanıt)")
                 for entry in info:
                     idx, start, end = entry[0], entry[1], entry[2]
-                    srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    srt_blocks[idx] = (str(idx), _timestamp_line(start, end), "[HATA]")
                     total_hata += 1
                 chunk_fail += 1
                 continue
@@ -250,7 +261,7 @@ def main(fmap_files=None):
             if not trans_map:
                 for entry in info:
                     idx, start, end = entry[0], entry[1], entry[2]
-                    srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                    srt_blocks[idx] = (str(idx), _timestamp_line(start, end), "[HATA]")
                     total_hata += 1
                 chunk_fail += 1
                 continue
@@ -261,7 +272,7 @@ def main(fmap_files=None):
                 text = trans_map.get(str(idx), "[HATA]")
                 if text == "[HATA]":
                     total_hata += 1
-                srt_blocks[idx] = (str(idx), f"{start} --> {end}", text)
+                srt_blocks[idx] = (str(idx), _timestamp_line(start, end), text)
 
         for cid, info in raw_fmap.items():
             if cid in seen_cids:
@@ -269,7 +280,7 @@ def main(fmap_files=None):
             print(f"  [UYARI] {cid}: batch sonucunda hiç bulunamadı; cue'lar [HATA] olarak korundu")
             for entry in info:
                 idx, start, end = entry[0], entry[1], entry[2]
-                srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+                srt_blocks[idx] = (str(idx), _timestamp_line(start, end), "[HATA]")
                 total_hata += 1
             chunk_fail += 1
 

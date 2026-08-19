@@ -46,8 +46,11 @@ class FallbackRoundtripTest(unittest.TestCase):
         self.assertIn("/inheritance:r", command)
         self.assertIn("*S-1-5-18:F", command)
         self.assertIn("*S-1-5-32-544:F", command)
+        # Kullanıcı hesabı da yetkilendirilmeli. Türkçe karakterli kullanıcı
+        # adlarında icacls Error 1332 verdiği için hesap tercihen SID ile verilir.
         self.assertTrue(any(
-            part.endswith(":F") and not part.startswith("*S-")
+            part.endswith(":F")
+            and part not in {"*S-1-5-18:F", "*S-1-5-32-544:F"}
             for part in command))
 
     @unittest.skipUnless(os.name == "nt", "Windows fallback ACL applies only on Windows")

@@ -83,23 +83,36 @@ def _is_missing_translation(target: str) -> bool:
     return text.startswith("[HATA") or text == "[ÇEVİRİ EKSİK]"
 
 
-def _is_safe_target(target: str, source_text: str = "") -> bool:
+_TURKISH_TARGET_KEYS = frozenset({"tr", "tur", "turkish", "türkçe", "turkce"})
+
+
+def _is_turkish_target(tgt_lang: str) -> bool:
+    return str(tgt_lang or "tr").strip().casefold() in _TURKISH_TARGET_KEYS
+
+
+def _is_safe_target(target: str, source_text: str = "", tgt_lang: str = "tr") -> bool:
     """Hedef metin sızıntı/bozuk-token içeriyorsa False — TM'ye KAYDETME (bkz.
     plans/future-quality-guards-brief.md Görev 2: geçmişte DB'ye giren hatalı bir
     çeviri, fuzzy/exact eşleşmeyle GELECEK bölümlere geri taşınır — guard'ları
     by-pass eden tek yol). hybrid_translate döngüsel import riskine karşı
     fonksiyon-içi lazy-import edilir. Guard çalışmazsa yalnız TM kaydı kapatılır;
-    lookup ve altyazı yazımı devam eder."""
+    lookup ve altyazı yazımı devam eder.
+
+    Türkçeye özgü denetimler yalnız Türkçe hedefte çalışır: Almanca/Fransızca
+    çeviriler `has_non_turkish_target_leak` için tanım gereği "sızıntı"dır ve o
+    dillerde TM'ye tek bir satır bile yazılamıyordu."""
     global _TM_GUARD_AVAILABLE, _TM_GUARD_WARNING_EMITTED
     if not _TM_GUARD_AVAILABLE:
         return False
+    turkish_target = _is_turkish_target(tgt_lang)
     try:
         import hybrid_translate as ht
-        if ht.has_non_turkish_target_leak(target, source_text=source_text):
+        if turkish_target and ht.has_non_turkish_target_leak(
+                target, source_text=source_text):
             return False
         if ht.find_garble_tokens(target, source_text=source_text):
             return False
-        if ht.find_translatable_english_residue(source_text, target):
+        if turkish_target and ht.find_translatable_english_residue(source_text, target):
             return False
     except Exception as exc:
         with _TM_GUARD_LOCK:
@@ -290,10 +303,13 @@ class TranslationMemory:
             return {}
         fingerprint = self._settings_fingerprint(
             model, profanity, schema_name, source_language, context_fingerprint)
-        uniq = {}
+        # `_hash` metni küçük harfe indirger: "Thank you." ve "THANK YOU." aynı
+        # hash'e düşer. Tek değer tutulursa ilk varyasyon eziliyor ve TM'de olduğu
+        # hâlde bulunamamış sayılıp API'ye gönderiliyordu — her varyasyonu sakla.
+        uniq: dict[str, list] = {}
         for s in sources:
             if s and s.strip():
-                uniq[self._hash(s, tgt_lang, fingerprint)] = s
+                uniq.setdefault(self._hash(s, tgt_lang, fingerprint), []).append(s)
         if not uniq:
             return {}
         result = {}
@@ -309,8 +325,7 @@ class TranslationMemory:
                     ph = ",".join("?" * len(batch))
                     for h, target in conn.execute(
                             f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
-                        src = uniq.get(h)
-                        if src is not None:
+                        for src in uniq.get(h, ()):
                             result[src] = target
         except Exception:
             return {}
@@ -323,17 +338,16 @@ class TranslationMemory:
                     conn = self._get_conn()
                     if conn is None:
                         return result
-                    uniq2 = {}
+                    uniq2: dict[str, list] = {}
                     for s in missing_sources:
-                        uniq2[self._hash(s, tgt_lang, "")] = s
+                        uniq2.setdefault(self._hash(s, tgt_lang, ""), []).append(s)
                     hashes2 = list(uniq2.keys())
                     for i in range(0, len(hashes2), 900):
                         batch = hashes2[i:i + 900]
                         ph = ",".join("?" * len(batch))
                         for h, target in conn.execute(
                                 f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
-                            src = uniq2.get(h)
-                            if src is not None:
+                            for src in uniq2.get(h, ()):
                                 result[src] = target
             except Exception:
                 return result
@@ -426,7 +440,7 @@ class TranslationMemory:
             return False
         if _s.lower() == _t.lower():
             return False
-        if not _is_safe_target(_t, _s):
+        if not _is_safe_target(_t, _s, tgt_lang):
             return False
         fingerprint = self._settings_fingerprint(
             model, profanity, schema_name, source_language, context_fingerprint)
@@ -462,7 +476,7 @@ class TranslationMemory:
                 continue
             if source.strip().lower() == target.strip().lower():
                 continue
-            if not _is_safe_target(target.strip(), source.strip()):
+            if not _is_safe_target(target.strip(), source.strip(), tgt_lang):
                 continue
             rows.append((
                 self._hash(source, tgt_lang, fingerprint),

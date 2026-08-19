@@ -153,17 +153,80 @@ def _read_fallback_store() -> dict:
     return data
 
 
-def _write_fallback_store(data: dict) -> None:
-    p = _fallback_path()
-    if os.name != "nt":
-        atomic_write_json(p, data)
-        return
+def _windows_current_user_sid() -> str:
+    """Geçerli kullanıcının değişmez SID'ini döndürür ('' = bulunamadı).
+
+    icacls'e kullanıcı ADI vermek Türkçe karakterli hesaplarda (Ömer, Çağrı,
+    Şükrü) OEM kod sayfası uyuşmazlığı yüzünden Error 1332 (ERROR_NONE_MAPPED)
+    üretiyor ve API anahtarı hiç kaydedilemiyordu. SID saf ASCII'dir."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return ""
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        advapi32.ConvertSidToStringSidW.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        token = wintypes.HANDLE()
+        TOKEN_QUERY, TokenUser = 0x0008, 1
+        if not advapi32.OpenProcessToken(
+                kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
+            return ""
+        try:
+            size = wintypes.DWORD(0)
+            advapi32.GetTokenInformation(token, TokenUser, None, 0, ctypes.byref(size))
+            if not size.value:
+                return ""
+            buffer = ctypes.create_string_buffer(size.value)
+            if not advapi32.GetTokenInformation(
+                    token, TokenUser, buffer, size, ctypes.byref(size)):
+                return ""
+            # TOKEN_USER == SID_AND_ATTRIBUTES; ilk alan PSID.
+            sid_ptr = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p)).contents
+            text_ptr = ctypes.c_wchar_p()
+            if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(text_ptr)):
+                return ""
+            try:
+                return str(text_ptr.value or "").strip()
+            finally:
+                kernel32.LocalFree(text_ptr)
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:
+        return ""
+
+
+def _windows_acl_principal() -> str:
+    """icacls'e verilecek hesap ifadesi — önce SID ('*S-1-5-21-...'), olmazsa ad."""
+    sid = _windows_current_user_sid()
+    if sid.upper().startswith("S-1-"):
+        return f"*{sid}"
     try:
         principal = os.getlogin().strip()
     except OSError:
         user = os.environ.get("USERNAME") or ""
         domain = os.environ.get("USERDOMAIN") or ""
         principal = f"{domain}\\{user}" if domain and user else user
+    return principal
+
+
+def _write_fallback_store(data: dict) -> None:
+    p = _fallback_path()
+    if os.name != "nt":
+        atomic_write_json(p, data)
+        return
+    principal = _windows_acl_principal()
     if not principal:
         raise OSError("fallback anahtar deposu iÃ§in Windows kullanÄ±cÄ±sÄ± bulunamadÄ±")
     tmp = p.with_name(f".{p.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")

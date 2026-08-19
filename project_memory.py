@@ -36,6 +36,31 @@ def _source_key(value: str) -> str:
     return _target_key(value or "en")
 
 
+# Analiz modeli karakter listesine sık sık unvan/meslek adı da koyar ("Doctor",
+# "Captain", "Narrator"). Bunlar `KARAKTERLER:` başlığıyla isteme enjekte edilince
+# model onları özel ad sanıp çevirmeden bırakıyor ("The doctor is here" →
+# "Doctor geldi"). Tek başına gelen genel adlar hafızaya alınmaz; "Doctor Who" veya
+# "Captain Ahab" gibi çok kelimeli gerçek adlar etkilenmez.
+_COMMON_NOUN_FILTER = frozenset({
+    "admiral", "agent", "boy", "boss", "captain", "chief", "colonel", "commander",
+    "cook", "corporal", "detective", "doc", "doctor", "driver", "father", "general",
+    "girl", "guard", "guy", "inspector", "judge", "kid", "king", "lady", "lieutenant",
+    "major", "man", "master", "mister", "mother", "narrator", "nurse", "officer",
+    "president", "priest", "professor", "queen", "reporter", "sergeant", "sheriff",
+    "sir", "soldier", "teacher", "waiter", "woman",
+    "adam", "anlatıcı", "başkan", "çocuk", "doktor", "hemşire", "kadın", "kaptan",
+    "komutan", "memur", "öğretmen", "polis", "şerif", "yüzbaşı",
+})
+
+
+def is_generic_character_name(name) -> bool:
+    """Tek kelimelik genel unvan/meslek adı mı (gerçek karakter adı değil)?"""
+    text = " ".join(str(name or "").strip().split())
+    if not text or " " in text:
+        return False
+    return text.casefold().strip(".,:;!?'\"") in _COMMON_NOUN_FILTER
+
+
 def is_self_translation(src, tgt) -> bool:
     """Kaynak==hedef mi (kelime kendine 'çevriliyor' → İngilizce sızıntısı)?
     İstisna: özel ad / kısaltma / büyük harf içeren terimler (Ayn Rand, IQ, marka
@@ -194,7 +219,7 @@ class ProjectMemory:
                 if not isinstance(name, str):
                     name = "" if name is None else str(name)
                 name = name.strip()
-                if name and name not in chars:
+                if name and not is_generic_character_name(name) and name not in chars:
                     chars[name] = name
             return self.save()
 

@@ -123,6 +123,9 @@ class VideoSubtitleTests(unittest.TestCase):
 
             self.assertEqual(first, second)
             self.assertEqual(len(calls), 1)
+            # ASS akışı SRT'ye dönüştürülmeden kopyalanmalı (konum etiketleri korunur)
+            self.assertEqual(first.suffix, ".ass")
+            self.assertIn("copy", calls[0])
 
     def test_corrupt_or_mismatched_cache_metadata_forces_reextraction(self):
         with tempfile.TemporaryDirectory() as td:
@@ -139,7 +142,7 @@ class VideoSubtitleTests(unittest.TestCase):
             with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
                 output = (
                     vs._cache_root(video)
-                    / "film.track-2.ita.srt"
+                    / "film.track-2.ita.ass"
                 )
                 output.parent.mkdir(parents=True)
                 output.write_text("stale subtitle", encoding="utf-8")

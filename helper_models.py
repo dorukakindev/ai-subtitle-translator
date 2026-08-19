@@ -457,14 +457,16 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     bedrock_messages = []
 
     def _to_bedrock_content(content):
+        # Bedrock `converse` metin bloğu için `length >= 1` şartı koyar; boş satırlar
+        # ValidationException ile çökertiyordu.
         if isinstance(content, str):
-            return [{"text": content}]
+            return [{"text": content or " "}]
         if isinstance(content, list):
             parts = []
             for part in content:
                 if isinstance(part, dict):
                     if part.get("type") == "text":
-                        parts.append({"text": part.get("text", "")})
+                        parts.append({"text": part.get("text") or " "})
                     elif part.get("type") == "image_url":
                         url = (part.get("image_url") or {}).get("url", "")
                         if url.startswith("data:") and "," in url:
@@ -477,9 +479,10 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
                                     "source": {"bytes": base64.b64decode(b64)},
                                 }
                             })
-            return parts or [{"text": ""}]
-        return [{"text": str(content)}]
+            return parts or [{"text": " "}]
+        return [{"text": str(content) or " "}]
 
+    conversation = []
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content", "")
@@ -488,10 +491,14 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
             if text:
                 system_prompts.append({"text": text})
         elif role in ("user", "assistant"):
-            bedrock_messages.append({
-                "role": role,
-                "content": _to_bedrock_content(content)
-            })
+            conversation.append({"role": role, "content": content})
+
+    # Converse API rollerin sırayla değişmesini şart koşar.
+    for msg in _coalesce_message_roles(conversation):
+        bedrock_messages.append({
+            "role": msg["role"],
+            "content": _to_bedrock_content(msg["content"]),
+        })
 
     converse_args = {
         "modelId": model_id,
@@ -570,6 +577,30 @@ def call_bedrock_converse(model_id: str, messages: list, temperature: float = No
     return DummyResponse(output_text, input_tokens, output_tokens, total_tokens, usage_available)
 
 
+def _coalesce_message_roles(messages: list, joiner: str = "\n\n") -> list:
+    """Ardışık aynı rolleri tek mesajda birleştirir.
+
+    Anthropic Messages ve Bedrock Converse API'leri rollerin user↔assistant
+    şeklinde sırayla değişmesini şart koşar; iki `user` mesajı üst üste
+    gönderildiğinde istek HTTP 400 / ValidationException ile reddedilir.
+    Yalnız düz metin içerikler birleştirilir; liste (çok parçalı) içerikler
+    olduğu gibi bırakılır."""
+    merged = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if (merged and merged[-1]["role"] == role
+                and isinstance(merged[-1]["content"], str) and isinstance(content, str)):
+            previous = merged[-1]["content"]
+            merged[-1] = {
+                "role": role,
+                "content": (previous + joiner + content) if previous else content,
+            }
+            continue
+        merged.append({"role": role, "content": content})
+    return merged
+
+
 def _anthropic_messages_url(base_url: str | None) -> str:
     """Anthropic-compatible bir taban URL'yi tekil /v1/messages uç noktasına getirir."""
     url = (base_url or "https://api.anthropic.com/v1").strip().rstrip("/")
@@ -605,6 +636,12 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
                 system_prompt = content
         else:
             anthropic_messages.append({"role": role, "content": content})
+
+    # Anthropic boş metin bloğu kabul etmez ve rollerin sırayla değişmesini ister.
+    anthropic_messages = _coalesce_message_roles(anthropic_messages)
+    for msg in anthropic_messages:
+        if isinstance(msg.get("content"), str) and not msg["content"].strip():
+            msg["content"] = " "
 
     data = {
         "model": model_id,

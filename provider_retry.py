@@ -1241,8 +1241,16 @@ def _translation_schema_kwargs(kwargs: dict) -> dict | None:
     if not ids:
         return None
     structured = copy.deepcopy(kwargs)
+    # Rolü mesaj listesinden devral: birçok özel proxy (OneAPI, NewAPI) `developer`
+    # rolünü tanımaz ve 400 döner. İstek zaten `developer` kullanıyorsa onu koru,
+    # kullanmıyorsa yapılandırılmış çıktı uğruna YENİ bir rol tanıtma.
+    instruction_role = (
+        "developer"
+        if any(message.get("role") == "developer" for message in messages)
+        else "system"
+    )
     instruction = {
-        "role": "developer",
+        "role": instruction_role,
         "content": (
             'Return one JSON object {"tr":[{"i":"...","t":"..."}]}. '
             "Include every input id exactly once and no other ids."
@@ -1299,6 +1307,8 @@ def _structured_unsupported(exc) -> bool:
         text += " " + str(response_text).lower()
     parameter = any(marker in text for marker in (
         "response_format", "json_schema", "structured output", "structured_output",
+        # Bazı proxy'ler yapılandırılmış çıktıya eşlik eden rol/mesaj alanına takılır
+        "'role'", '"role"', "messages[", "developer",
     ))
     unsupported = any(marker in text for marker in (
         "not support", "unsupported", "unknown parameter", "unrecognized",

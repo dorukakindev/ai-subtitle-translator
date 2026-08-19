@@ -2643,6 +2643,7 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
     is_bedrock = False
     is_anthropic = False
     explicit_openai = False
+    provider_base_url = ""
     try:
         from helper_models import normalize_helper_model_label, resolve_helper_model, _CONFIGS, _ALIASES
         norm_label = normalize_helper_model_label(model)
@@ -2650,8 +2651,10 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
         cfg = resolve_helper_model(norm_label)
         if cfg.provider == "bedrock":
             is_bedrock = True
+            provider_base_url = cfg.base_url
         elif cfg.provider == "anthropic":
             is_anthropic = True
+            provider_base_url = cfg.base_url
         elif cfg.provider == "openai" and is_known_model:
             explicit_openai = True
     except Exception:
@@ -2665,6 +2668,16 @@ def _safe_chat_create(client, cancel_context=None, **kwargs):
               or ("claude" in model_lower and "/messages" in base_url_lower)):
             if "bedrock" not in base_url_lower and "bedrock" not in model_lower:
                 is_anthropic = True
+
+    # İstemcinin base_url'i (çoğu zaman https://api.openai.com/v1) Anthropic/Bedrock
+    # biçimindeki isteği resmi OpenAI sunucusuna yollayıp 404/400 ürettiriyordu.
+    # Sağlayıcıya ait uç nokta biliniyorsa ve istemcininki uygun değilse onu kullan.
+    if provider_base_url:
+        if is_bedrock and "bedrock" not in base_url_lower:
+            base_url = provider_base_url
+        elif is_anthropic and not ("anthropic" in base_url_lower
+                                   or base_url_lower.endswith("/messages")):
+            base_url = provider_base_url
 
     if is_bedrock:
         api_key = getattr(client, "api_key", None)
