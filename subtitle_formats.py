@@ -301,6 +301,9 @@ _INVISIBLE_FORMAT_CHARS = frozenset(
     "​‌‍‎‏⁠⁡⁢⁣⁤"
     "‪‫‬‭‮⁦⁧⁨⁩"
     "﻿᠎"
+    # U+00AD (soft hyphen): bazı oynatıcılar kelime ortasında GÖRÜNÜR tire basıyor
+    # ('ay­nı' -> 'ay-nı'). Kaynakta satır kırma ipucu olarak duruyor, teslimde işi yok.
+    "­"
 )
 # Görünür boşluk gibi davranan ama SRT'de sorun çıkaran boşluk çeşitleri.
 _UNUSUAL_SPACE_CHARS = frozenset("       "

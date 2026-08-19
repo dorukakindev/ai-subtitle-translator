@@ -2464,9 +2464,71 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
     return '\n'.join(lines)
 
 
+# Satır bölme yerleşimi: 36 dosyada 1.046 ihlal sayıldı. İki satırlı bir cue'da
+# ikinci satır bağımlı bir kelimeyle başlıyorsa ('için', 'gibi', 'kadar') ya da
+# birinci satır bağlayıcı bir kelimeyle bitiyorsa ('ve', 'bir', 'çok') okuma akışı
+# kopuyor. Kelimeyi doğru tarafa taşımak yetiyor.
+_LINE_PULL_UP_WORDS = frozenset({
+    "için", "gibi", "ile", "göre", "kadar", "rağmen", "üzere", "dolayı",
+    "beraber", "birlikte", "ise", "bile", "dahi", "de", "da",
+    "mi", "mı", "mu", "mü", "midir", "mıdır", "mudur", "müdür",
+})
+_LINE_PUSH_DOWN_WORDS = frozenset({
+    "ve", "veya", "ya", "ile", "ki", "hem", "her", "bir", "bu", "şu",
+    "çok", "daha", "en", "tam", "hiç", "ne", "o",
+})
+_LINE_BALANCE_MAX = 58
+
+
+def _rebalance_line_break(text: str) -> str:
+    """İki satırlı bir cue'da sarkan edat/bağlacı doğru satıra taşır.
+
+    Satır doğal cümle sınırıyla (noktalama) bitiyorsa DOKUNULMAZ; taşıma sonucu
+    satır _LINE_BALANCE_MAX'i aşacaksa taşıma yapılmaz."""
+    value = str(text or "")
+    lines = value.split("\n")
+    if len(lines) != 2:
+        return value
+    first, second = lines[0].rstrip(), lines[1].lstrip()
+    if not first or not second:
+        return value
+    # Diyalog tiresi olan bloklarda satırlar ayrı konuşmacılardır.
+    if second.startswith(("-", "–", "—")):
+        return value
+    if re.search(r"[.!?…:;,]$", first):
+        return value
+
+    second_words = second.split()
+    first_words = first.split()
+    if second_words:
+        head = second_words[0].strip("\"'([{").casefold()
+        if (head in _LINE_PULL_UP_WORDS and len(second_words) > 1
+                and _visible_len(f"{first} {second_words[0]}") <= _LINE_BALANCE_MAX):
+            return f"{first} {second_words[0]}\n{' '.join(second_words[1:])}"
+    if first_words:
+        tail = first_words[-1].strip("\"')]}").casefold()
+        tail_is_number = bool(re.fullmatch(r"[\d.,]+", first_words[-1]))
+        if ((tail in _LINE_PUSH_DOWN_WORDS or tail_is_number)
+                and len(first_words) > 1
+                and _visible_len(f"{first_words[-1]} {second}") <= _LINE_BALANCE_MAX):
+            return f"{' '.join(first_words[:-1])}\n{first_words[-1]} {second}"
+    return value
+
+
+def _rebalance_line_breaks(blocks: list) -> tuple[list, int]:
+    """Tüm bloklara _rebalance_line_break uygular; (bloklar, düzeltme sayısı)."""
+    out, fixed = [], 0
+    for idx, ts, text in blocks or []:
+        value = _rebalance_line_break(text)
+        if value != str(text or ""):
+            fixed += 1
+        out.append((idx, ts, value))
+    return out, fixed
+
+
 def apply_line_breaks(blocks: list) -> list:
-    """Her bloğu en fazla _MAX_LINES satıra böler (EBU). Eğer blok CPS
-    sınırını aşıyorsa daha kısa satırlara bölmeye çalışır."""
+    """Her bloğu en fazla _MAX_LINES satıra böler (EBU) ve satır sonundaki
+    sarkan edat/bağlaçları doğru tarafa taşır (bkz. _rebalance_line_break)."""
     result = []
     for idx, ts, text in blocks:
         dur = None
@@ -2474,7 +2536,8 @@ def apply_line_breaks(blocks: list) -> list:
             dur = max(_ts_end_sec_gui(ts) - _ts_to_sec_gui(ts), 0.1)
         except Exception:
             pass
-        result.append((idx, ts, _break_to_line_budget(text, _MAX_LINES, duration=dur)))
+        value = _break_to_line_budget(text, _MAX_LINES, duration=dur)
+        result.append((idx, ts, _rebalance_line_break(value)))
     return result
 
 
@@ -3509,6 +3572,36 @@ def _is_delivery_sdh_only(text: str) -> bool:
     )
 
 
+# Eser künyesi: tırnak içinde BAŞLIK + yazar/tâlif atfı. Ekranda görünen içerik
+# olduğu için asla SDH sayılmaz (kişi+kurum künyesi bu kalıba uymaz, silinir).
+_WORK_ATTRIBUTION_QUOTES = "\"'\u201c\u201d\u00ab\u00bb\u2039\u203a\u2018\u2019"
+_WORK_ATTRIBUTION_AUTHOR_RE = re.compile(
+    r"(?:\bby\b|\bauthor(?:ed)?\b|\bwritten\s+by\b"
+    r"|\bt\u00e2lif\b|\btalif\b|\byazan\b|\beseri?\b"
+    r"|\bbay\b|\bbayan\b|\blord\b|\bdr\b"
+    r"|\u062a\u0623\u0644\u064a\u0641|\u0645\u0624\u0644\u0641)",
+    re.IGNORECASE,
+)
+_WORK_ATTRIBUTION_TITLE_RE = re.compile(
+    "[" + _WORK_ATTRIBUTION_QUOTES + "]"
+    "[^" + _WORK_ATTRIBUTION_QUOTES + "\n]{2,60}"
+    "[" + _WORK_ATTRIBUTION_QUOTES + "]"
+)
+
+
+def _looks_like_work_attribution(text: str) -> bool:
+    """'«Frankenstein», Bayan Shelley' gibi eser künyesi mi?
+
+    Tırnak içinde bir BAŞLIK ve ardından yazar atfı ister; kişi+kurum künyeleri
+    ('د. (ليز غلوين) / جامعة (لندن)') bu kalıba uymaz."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not value or len(value) > 120:
+        return False
+    if not _WORK_ATTRIBUTION_TITLE_RE.search(value):
+        return False
+    return bool(_WORK_ATTRIBUTION_AUTHOR_RE.search(value))
+
+
 def _source_cue_is_delivery_removable(text: str, *,
                                       allow_caps_heuristic: bool = False) -> bool:
     value = str(text or "")
@@ -3564,11 +3657,15 @@ def _source_cue_is_delivery_removable(text: str, *,
         )
     if arabic_parenthesized_dialogue:
         return False
+    if _looks_like_work_attribution(value):
+        # 'Başlık, tâlif/by Yazar' ekran yazısı SDH değil İÇERİKtir (Myths E01/E06'da
+        # 4 kitap künyesi silinmiş, E01'de sonraki cue öznesiz kalmıştı). Uzman
+        # ad-künyesi (kişi + üniversite) bu kalıba girmez, silinmeye devam eder.
+        return False
     if (_is_delivery_sdh_only(value)
             or _src_is_sdh_only(value)
             or _delivery_source_is_all_credit(value)
             or arabic_academic_card
-            or arabic_author_card
             or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
             or _DELIVERY_UNKNOWN_SOURCE_RE.fullmatch(value)
             or _DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(
@@ -3598,6 +3695,13 @@ def _source_cue_is_delivery_removable(text: str, *,
 # "rol kelimesi + kişi/şirket adı" kalıbı. İki nokta ZORUNLU DEĞİL — literal
 # liste her yeni kaynakta köstebek-vurmacaya dönüşüyordu ('Субтитры подготовлены
 # Red Bee Media Ltd', 'Tradução e Legendagem / Joana Barata / MOVIOLA').
+# Çıplak e-posta veya URL taşıyan cue: gerçek diyalogda neredeyse hiç geçmez,
+# kredi/künye cue'sunda hep geçer (Shock E08 'Эл. почта: subtitling@bbc.co.uk').
+_DELIVERY_CONTACT_ONLY_RE = re.compile(
+    r"^\s*(?:[^@\n]{1,40}[:\-–]\s*)?"
+    r"(?:[^\s@]+@[^\s@]+\.\w{2,}|(?:https?://|www\.)\S+)\s*$",
+    re.IGNORECASE,
+)
 _POSITIONAL_CREDIT_ROLE_RE = re.compile(
     r"(?:sub-?title|subtitling|caption(?:ing|s)?|translat(?:ion|ed|or)|"
     r"altyaz[ıi]|çeviri|çeviren|çevirmen|dublaj|"
@@ -3606,7 +3710,7 @@ _POSITIONAL_CREDIT_ROLE_RE = re.compile(
     r"subt[ií]tulos|traducci[oó]n|traductor|"
     r"legendagem|legendas|tradu[cç][aã]o|"
     r"sottotitoli|traduzione|"
-    r"субтитр\w*|перевод\w*|"
+    r"субтитр\w*|перевод\w*|эл\.?\s*почта|подготовлен\w*|"
     r"字幕|翻訳|번역)",
     re.IGNORECASE,
 )
@@ -3634,6 +3738,9 @@ def _looks_like_positional_credit(text: str) -> bool:
         return False
     if len(value.splitlines()) > 3:
         return False
+    # Sadece e-posta/URL taşıyan cue rol kelimesi aramadan kredidir.
+    if _DELIVERY_CONTACT_ONLY_RE.fullmatch(value):
+        return True
     role = _POSITIONAL_CREDIT_ROLE_RE.search(value)
     if not role:
         return False
@@ -3663,7 +3770,79 @@ def _positional_credit_ids(rows) -> set:
     for _pos, (idx, text) in candidates:
         if _looks_like_positional_credit(text):
             found.add(idx)
+    # Yalnız e-posta/URL taşıyan cue KONUMDAN bağımsız olarak kredidir.
+    for idx, text in rows:
+        value = re.sub(r"\s+", " ", re.sub(r"</?[a-zA-Z][^>]*>", " ", str(text or ""))).strip()
+        if value and _DELIVERY_CONTACT_ONLY_RE.fullmatch(value):
+            found.add(idx)
     return found
+
+
+_CUE_ID_LEAK_LINE_RE = re.compile(r"^\s*\d{1,4}\s*$")
+
+
+def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
+    """Metnine KENDİ cue numarasının komşusu sızmış cue'ları döner.
+
+    Gerçek olay: Mahabharata E01 #107 = 'Sadakati bu kadar yücelten sen,\n108',
+    Order E01 #81 = '...Leibniz ve Papin, 84'. JSON onarım/chunk ayrıştırma
+    yolunda id metne karışabiliyor. Yalnız KENDİ id'sinin ±tolerance komşusu olan
+    sayılar işaretlenir; '1969' gibi gerçek sayılar etkilenmez."""
+    leaked = []
+    for idx, _ts, text in blocks or []:
+        try:
+            own = int(str(idx).strip())
+        except (TypeError, ValueError):
+            continue
+        value = str(text or "")
+        lines = value.split("\n")
+        candidates = []
+        for line in lines:
+            if _CUE_ID_LEAK_LINE_RE.fullmatch(line):
+                candidates.append(line.strip())
+        tail = re.search(r"(?<![\d,.])(\d{1,4})\s*$", value.strip())
+        if tail:
+            candidates.append(tail.group(1))
+        for candidate in candidates:
+            try:
+                number = int(candidate)
+            except ValueError:
+                continue
+            if number != own and abs(number - own) <= tolerance:
+                leaked.append(str(idx))
+                break
+    return leaked
+
+
+def _midword_space_ids(blocks, src_map=None) -> list:
+    """'Piram itler' gibi kelime ortasında boşluk olan cue'ları döner.
+
+    Yalnız KAYNAKTA bitişik yazılan bir kelimenin çeviride ikiye bölündüğü
+    durumda işaretler; kaynak yoksa hiç işaretlemez, böylece 'her şey' gibi
+    meşru ayrı yazımlar etkilenmez."""
+    if not src_map:
+        return []
+    flagged = []
+    for idx, _ts, text in blocks or []:
+        value = _align_visible(str(text or ""))
+        source = _align_visible(str(src_map.get(str(idx), "")))
+        if not value or not source:
+            continue
+        source_keys = {
+            _shift_token_key(word)
+            for word in re.findall(r"[^\W\d_]{5,}", source)
+        }
+        if not source_keys:
+            continue
+        words = re.findall(r"[^\W\d_]+", value)
+        for left, right in zip(words, words[1:]):
+            joined = f"{left}{right}"
+            if len(joined) < 6:
+                continue
+            if _shift_token_key(joined) in source_keys:
+                flagged.append(str(idx))
+                break
+    return flagged
 
 
 def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
@@ -3676,17 +3855,19 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
     blocks = list(blocks or [])
     stats = {
         "missing": 0, "duplicates": 0, "cps": 0, "over_width": 0,
-        "over_lines": 0,
+        "over_lines": 0, "cue_id_leak": 0, "midword_space": 0,
     }
     for _idx, ts, text in blocks:
         value = str(text or "")
-        if value.startswith("[HATA") or value.strip() == "[ÇEVİRİ EKSİK]":
+        if (not value.strip() or value.startswith("[HATA")
+                or value.strip() == "[ÇEVİRİ EKSİK]"):
             stats["missing"] += 1
             continue
         lines = value.split("\n")
         if len(lines) > _MAX_LINES:
             stats["over_lines"] += 1
-        if any(len(line) > _LINE_THRESHOLD for line in lines):
+        # Genişlik GÖRÜNÜR karakterle ölçülür: '<i>' etiketleri ekranda yer kaplamaz.
+        if any(_visible_len(line) > _LINE_THRESHOLD for line in lines):
             stats["over_width"] += 1
         try:
             duration = max(_ts_end_sec_gui(ts) - _ts_to_sec_gui(ts), 0.1)
@@ -3695,6 +3876,9 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
         except Exception:
             pass
     stats["duplicates"] = _delivery_duplicate_count(blocks, source_cues)
+    src_map = _delivery_source_map(blocks, source_cues) if source_cues else {}
+    stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
+    stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     if log_fn:
         problems = [
             (stats["missing"], "eksik çeviri"),
@@ -3702,6 +3886,8 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
             (stats["cps"], f"CPS>{CPS_WARN_LIMIT}"),
             (stats["over_width"], f">{_LINE_THRESHOLD} karakter satır"),
             (stats["over_lines"], f">{_MAX_LINES} satır"),
+            (stats["cue_id_leak"], "metne sızmış cue numarası"),
+            (stats["midword_space"], "kelime ortası boşluk"),
         ]
         summary = ", ".join(
             f"{count} {label}" for count, label in problems if count)
@@ -4104,6 +4290,21 @@ def _tr_sentence_case(text: str) -> str:
     return "".join(out)
 
 
+_DELIVERY_TYPOGRAPHY_MAP = str.maketrans({
+    "’": "'", "‘": "'", "‛": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
+    "«": '"', "»": '"',
+})
+
+
+def _normalize_delivery_typography(text: str) -> str:
+    """Eğik tırnak/kesme ve Fransız tırnaklarını düz karşılıklarına indirir.
+
+    Aynı dosyada 'Camelot’taki' ile "Camelot'un" yan yana duruyordu; 36 dosyada
+    546 karakter. Türkçe altyazıda bu karakterlerin yeri yok, dönüşüm kayıpsız."""
+    return str(text or "").translate(_DELIVERY_TYPOGRAPHY_MAP)
+
+
 def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int]:
     """Kaynağı BAŞTAN SONA büyük harf olan dosyalarda çeviriyi cümle düzenine indirir.
 
@@ -4165,6 +4366,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         blocks = clean_sdh(blocks, src_map=sdh_src_map, source_driven=True)
         blocks, quote_markers_fixed = _normalize_delivery_ocr_quote_markers(
             blocks, src_map)
+        blocks, line_breaks_fixed = _rebalance_line_breaks(blocks)
+        if line_breaks_fixed and log_fn:
+            log_fn(
+                f"Teslim: {line_breaks_fixed} cue'da sarkan edat/bağlaç satır "
+                "sonundan taşındı", "info")
         if is_turkish:
             # Cümle düzenine indirme Türkçe harf kurallarına (I/İ) bağlı.
             blocks, caps_normalized = _normalize_all_caps_delivery(
@@ -4178,6 +4384,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     hats_removed = 0
     position_tags_removed = 0
     sdh_removed = 0
+    typography_fixed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
         if source_cues and str(ts) in removable_source_timestamps:
@@ -4200,6 +4407,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             # Şapkalı harf düzleştirme Türkçe teslim konvansiyonudur.
             hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
             value = value.translate(_DELIVERY_HAT_MAP)
+            typography_fixed_value = _normalize_delivery_typography(value)
+            typography_fixed += sum(
+                1 for before, after in zip(value, typography_fixed_value)
+                if before != after)
+            value = typography_fixed_value
         value = value.strip()
         if not value:
             # Kaynağı gerçek diyalogsa boş cue'yu SESSİZCE düşürme: görünür
@@ -4247,6 +4459,20 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 f"{_srt_ms_timestamp(head_start)} --> {_srt_ms_timestamp(head_end)}",
                 _DELIVERY_SIGNATURE,
             )
+        else:
+            # SIFIR-BAŞLANGIÇ İSTİSNASI: ilk gerçek cue 00:00:00,000'da başlıyorsa
+            # baş imzaya yer yok sayılıp imza TAMAMEN atlanıyordu (Insomniac 8
+            # bölümün 3'ü 2 imzayla teslim edildi). 1 ms'lik imza yazılır; bu
+            # bilinçli örtüşme teslim denetiminde beyaz listededir.
+            head_block = (
+                "",
+                f"{_srt_ms_timestamp(0)} --> {_srt_ms_timestamp(1)}",
+                _DELIVERY_SIGNATURE,
+            )
+            if log_fn:
+                log_fn(
+                    "Teslim: sıfır-başlangıç istisnası uygulandı "
+                    "(baş imza 00:00:00,000 --> 00:00:00,001)", "info")
         middle_slot = _delivery_middle_signature_slot(cleaned)
         if middle_slot:
             middle_pos, middle_start, middle_end = middle_slot
@@ -4294,7 +4520,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "
                 f"{sdh_removed} SDH/müzik cue'su temizlendi, "
-                f"{quote_markers_fixed} bozuk OCR tırnak işareti düzeltildi",
+                f"{quote_markers_fixed} bozuk OCR tırnak işareti, "
+                f"{typography_fixed} tipografik tırnak/kesme düzeltildi",
                 "ok",
             )
     return cleaned
@@ -4844,6 +5071,10 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         "(a captioning convention), write the translation in normal sentence case. "
         "Keep capitals only where they belong to the word itself (acronyms, proper "
         "nouns, on-screen signs).\n"
+        "- ALL-CAPS SOURCE PUNCTUATION: closed-caption sources often use a full stop "
+        "where speech has only a pause ('CAROL. BILL. THEIR SONS TOM AND JOHN.'). "
+        "Re-punctuate for the target language: turn such list/appositive stops into "
+        "commas and keep one final stop ('Carol, Bill, oğulları Tom ve John...').\n"
         "- Keep the same number of subtitle lines inside each cue; preserve the existing \\n structure unless a "
         "minimal rebalance is needed for readable Turkish.\n"
         # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır
@@ -8641,6 +8872,125 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
     return dup_ids
 
 
+# ── İçerik kayması (content offset) tespiti ──────────────────────────────────
+# Gerçek olay (2026-08-19 taraması): Shock E01 #123-149 (27 cue), Mahabharata E02
+# (16 cue), Myths E02 #552-574 (23 cue) — Türkçe metin ait olmadığı cue'ya yazılmış,
+# kaynak cümleleri tamamen kaybolmuştu. adjacent_duplicate hiçbirini yakalamadı;
+# uzunluk oranı 16'da yalnız 5'ini gördü.
+#
+# Sinyal: cue'nun AYIRT EDİCİ jetonları (rakam grupları, Latin özel adlar, ALL-CAPS
+# adlar) kendi kaynağında YOK ama komşu kaynaklarda (i±1..4) VAR. Aynı kaydırma
+# 3+ cue ardışık tekrarlıyorsa bu bir "kayma bölgesi"dir. Rapor amaçlıdır;
+# otomatik onarım yapılmaz.
+_SHIFT_DIGIT_RE = re.compile(r"(?<!\w)\d{2,4}(?!\w)")
+_SHIFT_WORD_RE = re.compile(r"[^\W\d_]{4,}", re.UNICODE)
+# Cümle başında büyük harfle yazılan sıradan kelimeler özel ad değildir.
+_SHIFT_TOKEN_STOPS = frozenset({
+    "ancak", "artik", "bazi", "belki", "bunlar", "burada", "cunku", "daha",
+    "degil", "diye", "evet", "gibi", "hayir", "henuz", "hicbir", "iste",
+    "kadar", "kendi", "sadece", "simdi", "sonra", "sunu", "tabii", "yani",
+    "this", "that", "there", "these", "those", "then", "they", "them",
+    "when", "where", "what", "with", "your", "yours", "here", "have",
+    "onlar", "bizim", "sizin", "benim", "bunun", "sunun",
+})
+
+
+def _shift_token_key(word: str) -> str:
+    """Aksan/büyük-küçük farkını siler ('Blériot' ve 'Bleriot' aynı jeton)."""
+    folded = unicodedata.normalize("NFKD", str(word or "").casefold())
+    return "".join(
+        char for char in folded if not unicodedata.combining(char)
+    ).replace("ı", "i")
+
+
+def _shift_tokens(text: str) -> set:
+    """Cue'nun kayma karşılaştırmasında kullanılacak ayırt edici jetonları.
+
+    Ayırt edici sayılanlar: 2-4 haneli sayı grupları ve ÖZEL AD adayları
+    (büyük harfle başlayan, tamamı büyük olmayan, >=4 harfli kelimeler).
+    Bunlar çeviride de kaynakta da aynı kalır — kaymayı gösteren çapa budur."""
+    value = _align_visible(str(text or ""))
+    tokens = set(_SHIFT_DIGIT_RE.findall(value))
+    for match in _SHIFT_WORD_RE.finditer(value):
+        word = match.group(0)
+        first = word[0]
+        if not first.isupper():
+            continue
+        if word.isupper() and len(word) < 3:
+            continue
+        key = _shift_token_key(word)
+        if key and key not in _SHIFT_TOKEN_STOPS:
+            tokens.add(key)
+    return tokens
+
+
+def _content_offset_regions(blocks: list, src_map: dict, window: int = 4,
+                            min_run: int = 3, max_gap: int = 3) -> list:
+    """Çevirisi komşu kaynağa ait olan ardışık cue bölgelerini döner.
+
+    Kanıtı olmayan cue'lar (özel ad/sayı taşımayan, ör. 'Her şey değişti.')
+    bölgeyi BÖLMEZ, yalnız saymaz — gerçek kayma bölgelerinde cue'ların ancak bir
+    kısmı çapa taşıyor. Bölgeyi kapatan tek şey doğru hizalanmış (offset 0) bir
+    cue ya da `max_gap` kadar art arda kanıtsız cue.
+
+    Döner: [{"offset": int, "ids": [id, ...]}, ...]
+    """
+    ordered = [
+        (str(idx), _shift_tokens(text), _shift_tokens(src_map.get(str(idx), "")))
+        for idx, _ts, text in blocks or []
+    ]
+    source_tokens = [row[2] for row in ordered]
+    offsets = []
+    for pos, (_idx, tr_tokens, own_tokens) in enumerate(ordered):
+        if not tr_tokens:
+            offsets.append(None)
+            continue
+        if tr_tokens & own_tokens:
+            offsets.append(0)
+            continue
+        best_offset, best_hits = None, 0
+        for delta in range(-window, window + 1):
+            if delta == 0:
+                continue
+            neighbor = pos + delta
+            if not 0 <= neighbor < len(source_tokens):
+                continue
+            hits = len(tr_tokens & source_tokens[neighbor])
+            if hits > best_hits or (hits == best_hits and hits
+                                    and best_offset is not None
+                                    and abs(delta) < abs(best_offset)):
+                best_hits, best_offset = hits, delta
+        offsets.append(best_offset if best_hits else None)
+
+    regions = []
+    run_offset, run_ids, gap = None, [], 0
+
+    def _close():
+        nonlocal run_offset, run_ids, gap
+        if run_offset is not None and len(run_ids) >= min_run:
+            regions.append({"offset": run_offset, "ids": list(run_ids)})
+        run_offset, run_ids, gap = None, [], 0
+
+    for pos, offset in enumerate(offsets):
+        if offset == 0:
+            _close()
+            continue
+        if offset is None:
+            if run_offset is not None:
+                gap += 1
+                if gap > max_gap:
+                    _close()
+            continue
+        if run_offset is None or offset != run_offset:
+            _close()
+            run_offset, run_ids, gap = offset, [ordered[pos][0]], 0
+        else:
+            run_ids.append(ordered[pos][0])
+            gap = 0
+    _close()
+    return regions
+
+
 def _content_shift_regions(seq: list, src_map: dict, window: int = 6,
                             min_offset: int = 2, min_run: int = 4) -> list:
     """seq: [(id_str, visible_tr), ...]. Kaynağa göre SÜREKLİ içerik-ötelemesi (id↔içerik
@@ -8864,6 +9214,19 @@ def detect_alignment_issues(blocks: list, src_map: dict, window: int = 6) -> lis
     if shift_ids:
         findings.append({"type": "content_shift", "ids": shift_ids,
                          "detail": f"{len(shift_ids)} cue kaynağa göre sürekli kaymış (id↔içerik ötelemesi)"})
+
+    # 6) content_offset — çevirinin ayırt edici jetonları (sayı/özel ad) KENDİ
+    # kaynağında değil komşu kaynakta (i±1..4) bulunuyor. content_shift yalnız
+    # sayı+ad çapası olan dar bir kalıba bakıyordu; bu tarama 27 cue'luk gerçek
+    # kayma bölgelerini (Shock E01 #123-149, Myths E02 #552-574) yakalar.
+    for region in _content_offset_regions(
+            [(idx, "", text) for idx, text in seq], src_map):
+        findings.append({
+            "type": "content_offset",
+            "ids": list(region["ids"]),
+            "detail": (f"{len(region['ids'])} cue içeriği {region['offset']:+d} "
+                       "cue kaymış görünüyor (çeviri komşu kaynağa ait)"),
+        })
 
     return findings
 
@@ -11243,7 +11606,8 @@ def _hata_index_entries(blocks) -> list:
     entries = []
     for idx, ts, text in blocks or []:
         value = str(text or "")
-        if not (value.startswith("[HATA") or value.strip() == "[ÇEVİRİ EKSİK]"):
+        if not (not value.strip() or value.startswith("[HATA")
+                or value.strip() == "[ÇEVİRİ EKSİK]"):
             continue
         stamp = str(ts or "").split("-->")[0].strip().split(",")[0]
         entries.append(f"{idx} ({stamp})" if stamp else str(idx))
@@ -11251,10 +11615,16 @@ def _hata_index_entries(blocks) -> list:
 
 
 def _count_hata_cps(blocks) -> tuple:
-    """(idx, ts, text) bloklarında eksik çeviri ve CPS aşımı sayısını döner."""
+    """(idx, ts, text) bloklarında eksik çeviri ve CPS aşımı sayısını döner.
+
+    BOŞ metin de eksik sayılır: write_srt boş cue'yu diske yazarken
+    '[ÇEVİRİ EKSİK]' yer tutucusuna çeviriyor. Sayım bunu görmediği için dosya
+    'tam' sayılıp yer tutucu NİHAİ dosyaya çıkabiliyordu."""
     hata = cps_n = 0
     for _idx, _ts, _txt in blocks:
-        if str(_txt).startswith("[HATA") or str(_txt).strip() == "[ÇEVİRİ EKSİK]":
+        _value = str(_txt or "")
+        if (not _value.strip() or _value.startswith("[HATA")
+                or _value.strip() == "[ÇEVİRİ EKSİK]"):
             hata += 1
             continue
         try:
@@ -11697,6 +12067,77 @@ def _recoverable_partial_output_path(report_dir, out_path, source_path,
                 report_dir, candidate, source_path, force_retranslate_paths):
             return candidate
     return None
+
+
+def promote_complete_partial_outputs(source_files, output_paths, target_language,
+                                     source_languages=None, log_fn=None,
+                                     apply_changes: bool = True) -> list:
+    """Aslında TAMAMLANMIŞ olan .partial.srt dosyalarını nihai konuma terfi ettirir.
+
+    Gerçek olay (2026-08-19): 4 bölüm aylarca "çevrilmemiş" görünüyordu; dördü de
+    %100 tam, temiz ve teslime hazırdı — sadece Raporlar/Kurtarma altında kalmış ve
+    imzaları eklenmemişti. Tamamlanmış iş sessizce kayboluyordu.
+
+    Terfi YALNIZCA şu koşullarda yapılır: nihai çıktı yok, kısmi dosya kaynağın
+    tüm cue'larını kapsıyor, hiçbir eksik-çeviri işareti/boş cue yok.
+    Döner: [{"source", "partial", "output", "cues"}] (terfi edilenler).
+    """
+    promoted = []
+    languages = dict(source_languages or {})
+    for source_path, out_path in zip(source_files, output_paths):
+        try:
+            out_file = Path(out_path)
+            if out_file.exists():
+                continue
+            partial = next(
+                (candidate for candidate in _partial_output_candidates(out_path)
+                 if Path(candidate).is_file()), None)
+            if partial is None:
+                continue
+            partial_blocks = list(parse_subtitle(str(partial)))
+            if not partial_blocks:
+                continue
+            cues = list(parse_subtitle(
+                str(source_path), languages.get(str(source_path))))
+            if not cues or not _existing_output_is_complete(partial_blocks, cues):
+                continue
+            if not apply_changes:
+                promoted.append({
+                    "source": str(source_path), "partial": str(partial),
+                    "output": str(out_file), "cues": len(partial_blocks)})
+                continue
+            delivery = _prepare_upload_ready_blocks(
+                partial_blocks, target_language=target_language,
+                log_fn=None, source_cues=cues)
+            write_srt(str(out_file), delivery, target_language)
+            audit = _subtitle_delivery_audit(
+                str(source_path), str(out_file), target_language,
+                languages.get(str(source_path)))
+            if _delivery_audit_has_hard_error(audit):
+                # Terfi güvenli değil: nihai dosyayı geri al, kısmi dosya kalsın.
+                try:
+                    out_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                if log_fn:
+                    log_fn(
+                        f"{out_file.name}: kısmi dosya tam görünüyordu ama teslim "
+                        "denetiminden geçmedi; terfi ettirilmedi.", "warn")
+                continue
+            _clear_unfinished_run_marker(out_file)
+            promoted.append({
+                "source": str(source_path), "partial": str(partial),
+                "output": str(out_file), "cues": len(partial_blocks)})
+            if log_fn:
+                log_fn(
+                    f"Tamamlanmış kısmi çıktı terfi ettirildi: {out_file.name} "
+                    f"({len(partial_blocks)} cue, kaynak: {Path(partial).name})",
+                    "ok")
+        except Exception as exc:
+            if log_fn:
+                log_fn(f"Kısmi çıktı terfi denemesi başarısız ({out_path}): {exc}",
+                       "warn")
+    return promoted
 
 
 def _cps_stats(blocks) -> tuple:
@@ -12675,6 +13116,11 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
     return flagged
 
 
+# Sıfır-başlangıç istisnasında baş imzanın bittiği an (ms). Bu pencere
+# diyalogla çakışsa bile teslim denetiminde hata sayılmaz.
+_ZERO_START_SIGNATURE_END_MS = 1
+
+
 def _subtitle_delivery_audit(source_path: str, output_path: str,
                              target_language="Turkish", source_language=None) -> dict:
     audit = {
@@ -12712,6 +13158,12 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         timed_output.append((str(output_idx), start, end, str(output_text or "")))
     for output_idx, start, end, output_text in timed_output:
         if not _DELIVERY_SIGNATURE_RE.fullmatch(output_text.strip()):
+            continue
+        if start == 0 and end <= _ZERO_START_SIGNATURE_END_MS:
+            # Sıfır-başlangıç istisnası: ilk cue 00:00:00,000'da başlayan
+            # dosyalarda baş imza 1 ms'lik bir pencereye yazılır. Bu BİLİNÇLİ
+            # örtüşmedir; aksi hâlde imza hiç eklenmiyordu (bkz.
+            # _prepare_upload_ready_blocks).
             continue
         if any(
                 other_idx != output_idx
@@ -12828,13 +13280,11 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     expected_signatures = 0
     if (output_dialogue and normalize_language_name(
             target_language, allow_auto=False) == "Turkish"):
-        try:
-            first_dialogue_start, _ = _srt_timestamp_bounds(output_dialogue[0][1])
-        except ValueError:
-            first_dialogue_start = 0
+        # Baş imza ARTIK HER ZAMAN yazılır: ilk cue 00:00:00,000'da başlasa bile
+        # 1 ms'lik pencereye konur (sıfır-başlangıç istisnası). Eskiden beklenti
+        # 'baş imza yoksa normaldir' diyordu ve eksik imzalı dosyalar FAIL vermiyordu.
         expected_signatures = (
-            1 + bool(first_dialogue_start > 0)
-            + bool(_delivery_middle_signature_slot(output_dialogue)))
+            2 + bool(_delivery_middle_signature_slot(output_dialogue)))
     signature_mismatch = delivery_signatures != expected_signatures
     source_text_by_id = {
         str(idx): str(text or "") for idx, _ts, text in source_rows}
@@ -30605,6 +31055,15 @@ class App(ctk.CTk):
                 out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                                  same_folder=self.same_folder_var.get(),
                                                  selected_roots=self._output_selection_roots())
+                # Nihai çıktı yok ama Kurtarma'daki kısmi dosya ASLINDA tamsa
+                # (kaynağın tüm cue'ları çevrilmiş, yer tutucu yok) yeniden
+                # çevirmek yerine terfi ettir — tamamlanmış iş sessizce
+                # kaybolmasın (2026-08-19: 4 bölüm aylarca böyle kalmıştı).
+                if not out_path.exists():
+                    promote_complete_partial_outputs(
+                        [filepath], [out_path], tgt,
+                        source_languages={str(filepath): file_src},
+                        log_fn=self._log)
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
@@ -34814,6 +35273,12 @@ class App(ctk.CTk):
                     input_dir, output_dir, filepath,
                     same_folder=self.same_folder_var.get(),
                     selected_roots=self._output_selection_roots())
+                # Kurtarma'daki kısmi dosya aslında tamsa terfi ettir (bkz. _run_sync).
+                if not existing_output.exists():
+                    promote_complete_partial_outputs(
+                        [filepath], [existing_output], tgt,
+                        source_languages={str(filepath): file_src},
+                        log_fn=self._log)
                 if existing_output.exists():
                     try:
                         existing_blocks = list(parse_subtitle(str(existing_output)))

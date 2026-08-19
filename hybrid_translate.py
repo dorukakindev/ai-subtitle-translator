@@ -3857,6 +3857,10 @@ def build_system_prompt(
         "(a captioning convention), write the translation in normal sentence case. "
         "Keep capitals only where they belong to the word itself (acronyms, proper "
         "nouns, on-screen signs).",
+        "- ALL-CAPS SOURCE PUNCTUATION: closed-caption sources often use a full stop "
+        "where speech has only a pause ('CAROL. BILL. THEIR SONS TOM AND JOHN.'). "
+        "Re-punctuate for the target language: turn such list/appositive stops into "
+        "commas and keep one final stop ('Carol, Bill, oğulları Tom ve John...').",
         # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır;
         # biçim teslimde kaynaktan geri yüklenir (bkz. restore_format_tags).
         "- Do NOT add formatting markup (<i>, <b>, <u>, <font>, {\\an8}) that is not present in "

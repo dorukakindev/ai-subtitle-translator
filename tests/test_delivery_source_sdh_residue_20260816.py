@@ -179,8 +179,13 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             '"بروفسور (ديان بوركيس)\nكلية (كيبل)، (أوكسفورد)"'))
 
-    def test_arabic_author_title_card_is_removable(self):
-        self.assertTrue(gui._source_cue_is_delivery_removable(
+    def test_arabic_author_title_card_is_content_not_sdh(self):
+        """Eser künyesi (başlık + tâlif/yazar) EKRAN İÇERİĞİdir, SDH değil.
+
+        Myths E01/E06'da 4 kitap künyesi silinmişti; E01'de silinen cue sonraki
+        cümleyi öznesiz bıraktı. Uzman künyesi (kişi + üniversite) silinmeye devam
+        eder — alttaki testler onu kilitliyor."""
+        self.assertFalse(gui._source_cue_is_delivery_removable(
             '"(دراكولا)\nتأليف (برام ستوكر)"'))
 
     def test_arabic_dialogue_about_university_is_not_removable(self):
