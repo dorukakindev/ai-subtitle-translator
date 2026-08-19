@@ -216,9 +216,13 @@ class SuffixHarmonyTest(unittest.TestCase):
     """Gövde değişince ek uyumu (Çin'deki / Batı'da)."""
 
     def test_harmony_cases(self):
+        # Kaynaştırma harfi (-y-/-n-) YENİ gövdeye göre seçilir: ünsüzle biten
+        # "Mısır" -y- almaz, ünlüyle biten "Doğu" alır.
         cases = {("Çin", "daki"): "deki", ("Batı", "de"): "da",
-                 ("Almanya", "dan"): "dan", ("Mısır", "yi"): "yı",
-                 ("Doğu", "ya"): "ya"}
+                 ("Almanya", "dan"): "dan", ("Mısır", "yi"): "ı",
+                 ("Hindistan", "ya"): "a", ("Doğu", "ya"): "ya",
+                 ("Amerika", "e"): "ya", ("Yunanistan", "yi"): "ı",
+                 ("Almanya", "in"): "nın", ("Çin", "nin"): "in"}
         for (stem, suffix), expected in cases.items():
             with self.subTest(stem=stem):
                 self.assertEqual(

@@ -87,5 +87,91 @@ class ScanLockedTermsTest(unittest.TestCase):
         self.assertGreaterEqual(loose["source_residue"], tight["source_residue"])
 
 
+class ForeignTitleFalsePositiveTest(unittest.TestCase):
+    def test_all_caps_abbreviation_is_not_a_title(self):
+        for text in ("MS hastası olduğunu söyledi.", "Bu bir MS taraması.",
+                     "MR çekildi bugün."):
+            with self.subTest(text=text):
+                self.assertEqual(g.normalize_foreign_titles(text), (text, 0))
+
+    def test_turkish_doctor_abbreviations_are_left_alone(self):
+        for text in ("Dr. Ahmet geldi.", "Prof. Dr. Ayşe Yılmaz konuştu."):
+            with self.subTest(text=text):
+                self.assertEqual(g.normalize_foreign_titles(text), (text, 0))
+
+    def test_real_foreign_titles_are_still_normalized(self):
+        self.assertEqual(g.normalize_foreign_titles("Mr. Yi dedi.")[0],
+                         "Bay Yi dedi.")
+        self.assertEqual(g.normalize_foreign_titles("Miss Xiao girdi.")[0],
+                         "Bayan Xiao girdi.")
+        self.assertEqual(g.normalize_foreign_titles("Professor Sun konuştu.")[0],
+                         "Profesör Sun konuştu.")
+
+
+class SuffixBufferLetterTest(unittest.TestCase):
+    def test_buffer_letter_follows_the_new_stem(self):
+        # 'India'ya' → 'Hindistan'a' (eskiden 'Hindistan'ya' yazılıyordu)
+        self.assertEqual(g.turkish_suffix_for_stem("Hindistan", "ya"), "a")
+        self.assertEqual(g.turkish_suffix_for_stem("Amerika", "e"), "ya")
+        self.assertEqual(g.turkish_suffix_for_stem("Yunanistan", "yi"), "ı")
+        self.assertEqual(g.turkish_suffix_for_stem("Almanya", "in"), "nın")
+        self.assertEqual(g.turkish_suffix_for_stem("Çin", "nin"), "in")
+
+    def test_exonym_end_to_end(self):
+        for text, expected in (
+                ("India'ya gitti.", "Hindistan'a gitti."),
+                ("China'daki fabrika.", "Çin'deki fabrika."),
+                ("Greece'in tarihi.", "Yunanistan'ın tarihi."),
+                ("Japan'a uçtu.", "Japonya'ya uçtu.")):
+            with self.subTest(text=text):
+                self.assertEqual(g.normalize_foreign_exonyms(text)[0], expected)
+
+
+class CapitalisedCommonNounApostropheTest(unittest.TestCase):
+    def test_source_lowercase_stem_loses_apostrophe_and_capital(self):
+        out, count = g.fix_source_lowercase_apostrophes(
+            "Beynin Dura'sı kesilir.", "The dura of the brain is cut.")
+        self.assertEqual((out, count), ("Beynin durası kesilir.", 1))
+
+    def test_line_initial_keeps_its_capital(self):
+        out, _ = g.fix_source_lowercase_apostrophes(
+            "Lamina'yı çıkardılar.", "They removed the lamina.")
+        self.assertEqual(out, "Laminayı çıkardılar.")
+
+    def test_proper_noun_is_untouched(self):
+        for tr, src in (("Bugün Ankara'ya gitti.", "He went to Ankara today."),
+                        ("O gün Lee'nin evindeydi.", "He was at Lee's house."),
+                        ("Sonra Roma'ya döndü.", "He returned to rome and Roma.")):
+            with self.subTest(tr=tr):
+                self.assertEqual(g.fix_source_lowercase_apostrophes(tr, src),
+                                 (tr, 0))
+
+    def test_possessive_suffix_is_recognised(self):
+        self.assertEqual(g.fix_common_noun_apostrophes("dura'sı kesildi")[0],
+                         "durası kesildi")
+        self.assertEqual(g.fix_common_noun_apostrophes("lamina'sını aldı")[0],
+                         "laminasını aldı")
+        self.assertEqual(g.fix_common_noun_apostrophes("d'Artagnan geldi")[0],
+                         "d'Artagnan geldi")
+
+
+class RepeatedHeadSyllableTest(unittest.TestCase):
+    def test_typo_is_found_when_correct_form_exists_in_file(self):
+        blocks = [("54", "ts", "15. yüzyıl Avrupası, neneredeyse karanlıktı."),
+                  ("55", "ts", "Neredeyse hiç kimse okuma bilmiyordu.")]
+        self.assertEqual(g._repeated_head_typo_ids(blocks),
+                         [("54", "neneredeyse", "neredeyse")])
+
+    def test_real_words_are_not_flagged(self):
+        blocks = [("1", "ts", "Kakaosunu içti ve dışarı çıktı."),
+                  ("2", "ts", "Babaannem bize geldi."),
+                  ("3", "ts", "Bir hayat kadınının emrinde beklemek.")]
+        self.assertEqual(g._repeated_head_typo_ids(blocks), [])
+
+    def test_silent_when_correct_form_is_absent(self):
+        blocks = [("1", "ts", "Bu neneredeyse tuhaf bir kelime."),
+                  ("2", "ts", "Başka bir cümle.")]
+        self.assertEqual(g._repeated_head_typo_ids(blocks), [])
+
 if __name__ == "__main__":
     unittest.main()

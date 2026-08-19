@@ -4059,8 +4059,18 @@ def turkish_suffix_for_stem(stem: str, suffix: str) -> str:
         return suffix
     hard = bool(stripped) and stripped[-1].casefold() in _TR_VOICELESS
     forms = _tr_suffix_forms(vowels[-1], hard)
+    # Kaynak sözcüğün ünlüyle bitip bitmemesi yeni gövdeyi bağlamaz: 'India'ya'
+    # → 'Hindistan'ya' oluyordu. Kaynaştırma harfi YENİ gövdeye göre seçilir.
+    ends_vowel = bool(stripped) and stripped[-1].casefold() in (
+        _TR_BACK_VOWELS + _TR_FRONT_VOWELS)
+    buffered = {"dat": "dat_y", "acc": "acc_y", "ins": "ins_y", "gen": "gen_n"}
+    plain = {value: key for key, value in buffered.items()}
     for keys, name in _TR_SUFFIX_KEYS:
         if key in keys:
+            if ends_vowel:
+                name = buffered.get(name, name)
+            else:
+                name = plain.get(name, name)
             return forms[name]
     return suffix
 
@@ -4069,22 +4079,24 @@ def turkish_suffix_for_stem(stem: str, suffix: str) -> str:
 # Gerçek olay (Witch Doctor E01, kaynak Portekizce): 'Ocidente'de', 'China'daki',
 # 'Mr. Yi', 'Miss Xiao', 'Professor Sun' teslim edilmişti. find_garble_tokens
 # bunları kaçırıyor çünkü hepsi DÜZGÜN YAZILMIŞ yabancı kelimeler.
+# Kısaltma unvanlar BÜYÜK/küçük duyarlı eşleşir: IGNORECASE ile 'MS hastası'
+# → 'Bayan hastası' oluyordu (MS = hastalık kısaltması). Ardından ÖZEL AD
+# gelmesi de şart — 'miss you' gibi diziler unvan değildir.
+# 'Dr.' ve 'Prof.' Türkçede zaten geçerli kısaltmalar; onlara dokunulmaz
+# ('Prof. Dr. Ayşe' → 'Prof. Doktor Ayşe' bozuk olurdu).
 _FOREIGN_TITLE_MAP = (
-    (re.compile(r"(?<!\w)Mr\.?(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
-    (re.compile(r"(?<!\w)Mrs\.?(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
-    (re.compile(r"(?<!\w)Miss(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
-    (re.compile(r"(?<!\w)Ms\.?(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+    (re.compile(r"(?<!\w)Mr\.?(?=\s+[^\W\d_])"), "Bay"),
+    (re.compile(r"(?<!\w)Mrs\.?(?=\s+[^\W\d_])"), "Bayan"),
+    (re.compile(r"(?<!\w)Miss(?=\s+[^\W\d_])"), "Bayan"),
+    (re.compile(r"(?<!\w)Ms\.?(?=\s+[^\W\d_])"), "Bayan"),
     (re.compile(r"(?<!\w)Professor(?=\s+[^\W\d_])", re.IGNORECASE), "Profesör"),
-    (re.compile(r"(?<!\w)Prof\.(?=\s+[^\W\d_])", re.IGNORECASE), "Prof."),
-    (re.compile(r"(?<!\w)Dr\.(?=\s+[^\W\d_])", re.IGNORECASE), "Doktor"),
     (re.compile(r"(?<!\w)Monsieur(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
     (re.compile(r"(?<!\w)Madame(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
     (re.compile(r"(?<!\w)Se[ñn]or(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
     (re.compile(r"(?<!\w)Se[ñn]ora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
     (re.compile(r"(?<!\w)Senhor(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
     (re.compile(r"(?<!\w)Senhora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
-)
-# Türkçe karşılığı yerleşik olan yabancı yer/yön adları (çekim ekiyle bırakılırsa
+)# Türkçe karşılığı yerleşik olan yabancı yer/yön adları (çekim ekiyle bırakılırsa
 # 'China'daki' gibi kalıntı oluşuyor).
 _FOREIGN_EXONYM_MAP = {
     "china": "Çin", "japan": "Japonya", "germany": "Almanya",
@@ -4097,7 +4109,12 @@ _FOREIGN_EXONYM_MAP = {
     "grécia": "Yunanistan", "grecia": "Yunanistan", "índia": "Hindistan",
 }
 _TURKISH_SUFFIX_AFTER_APOSTROPHE = re.compile(
-    r"(?:d[ae]ki|[dt][ae]n|[dt][ae]|[yn]?[ıiuü]|[yn]?[ae]|n[ıiuü]n|l[ae]r\w*)$",
+    # 3. tekil iyelik (-sı/-si) ve iyelik+hâl birleşimleri de tanınır:
+    # "Dura'sı", "lamina'sını" eskiden ek tanınmadığı için düzelmiyordu.
+    r"(?:d[ae]ki|[dt][ae]n|[dt][ae]"
+    r"|[yns]?[ıiuü]nd[ae]n|[yns]?[ıiuü]nd[ae]|[yns]?[ıiuü]n[ıiuü]"
+    r"|[yns]?[ıiuü]n[ae]|s[ıiuü]|[yn]?[ıiuü]|[yn]?[ae]|n[ıiuü]n"
+    r"|l[ae]r\w*)$",
     re.IGNORECASE,
 )
 _APOSTROPHE_SUFFIX_TOKEN_RE = re.compile(
@@ -4126,6 +4143,41 @@ def fix_common_noun_apostrophes(text: str) -> tuple[str, int]:
         return f"{stem}{suffix}"
 
     return _COMMON_NOUN_APOSTROPHE_RE.sub(_replace, str(text or "")), changed
+
+
+# Büyük harfle yazılmış ORTAK ad + kesme işareti: "Dura'sı" (#264), "Lamina'yı".
+# Kesme yalnız özel adlarda kullanılır; ölçüt KAYNAK metindir: aynı kelime
+# kaynakta küçük harfle geçiyorsa ortak addır (İngilizce 'the dura'). Satır
+# başındaki büyük harf meşrudur, ona dokunulmaz.
+_CAPITAL_APOSTROPHE_RE = re.compile(
+    r"(?<![^\W\d_])([A-ZÇĞİÖŞÜ][a-zçğıöşü]{2,})['\u2019]([a-zçğıöşü]{1,6})(?!\w)",
+    re.UNICODE)
+
+
+def fix_source_lowercase_apostrophes(text: str, source_text: str) -> tuple[str, int]:
+    """'Dura'sı' → 'durası' (kaynakta 'dura' küçük harfliyse)."""
+    value = str(text or "")
+    source = str(source_text or "")
+    if not value or not source:
+        return value, 0
+    changed = 0
+
+    def _replace(match):
+        nonlocal changed
+        stem, suffix = match.group(1), match.group(2)
+        if not _TURKISH_SUFFIX_AFTER_APOSTROPHE.fullmatch(suffix):
+            return match.group(0)
+        if not re.search(rf"(?<!\w){re.escape(stem.lower())}(?!\w)", source):
+            return match.group(0)  # kaynakta küçük harfle geçmiyor → özel ad
+        if re.search(rf"(?<!\w){re.escape(stem)}(?!\w)", source):
+            return match.group(0)  # kaynakta büyük harfle de geçiyor → karar verme
+        changed += 1
+        # Satır başındaki büyük harf meşrudur, korunur; kesme her hâlde düşer.
+        line_start = value.rfind("\n", 0, match.start()) + 1
+        at_line_start = not value[line_start:match.start()].strip()
+        return f"{stem if at_line_start else stem.lower()}{suffix}"
+
+    return _CAPITAL_APOSTROPHE_RE.sub(_replace, value), changed
 
 
 def normalize_foreign_titles(text: str) -> tuple[str, int]:
@@ -4322,6 +4374,38 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
     return locked
 
 
+# Baştaki hece iki kez yazılmış kelime ('neneredeyse'). Tek cue'ya bakarak karar
+# vermek imkânsız ('Kakaosunu' da aynı desende) — bu yüzden ölçüt DOSYA bazlı:
+# kırpılmış biçim ('neredeyse') aynı dosyada başka bir yerde geçiyorsa yazım
+# hatasıdır. Geçmiyorsa susulur.
+_HEAD_TYPO_MIN_TAIL = 5
+_HEAD_TYPO_WORD_RE = re.compile(r"[^\W\d_]{7,}", re.UNICODE)
+
+
+def _repeated_head_typo_ids(blocks) -> list:
+    """('cue', 'yazılan', 'olması gereken') üçlüleri."""
+    rows = list(blocks or [])
+    vocabulary = set()
+    for _idx, _ts, text in rows:
+        vocabulary.update(
+            word.casefold()
+            for word in re.findall(r"[^\W\d_]+", str(text or ""), re.UNICODE))
+    findings = []
+    for idx, _ts, text in rows:
+        for match in _HEAD_TYPO_WORD_RE.finditer(str(text or "")):
+            word = match.group(0)
+            folded = word.casefold()
+            for size in (2, 3):
+                if folded[:size] != folded[size:size * 2]:
+                    continue
+                trimmed = folded[size:]
+                if len(trimmed) - size < _HEAD_TYPO_MIN_TAIL:
+                    continue
+                if trimmed in vocabulary:
+                    findings.append((str(idx), word, trimmed))
+                    break
+    return findings
+
 def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
                           locked_terms=None) -> dict:
     """DİSKE YAZILAN blokları deterministik olarak tarar.
@@ -4335,7 +4419,7 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
         "missing": 0, "duplicates": 0, "cps": 0, "over_width": 0,
         "over_lines": 0, "cue_id_leak": 0, "midword_space": 0,
         "cue_fill": 0, "partial_echo": 0, "missing_predicate": 0,
-        "source_residue": 0, "register_mixed": False,
+        "source_residue": 0, "register_mixed": False, "syllable_typo": 0,
     }
     for _idx, ts, text in blocks:
         value = str(text or "")
@@ -4366,6 +4450,9 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     stats["missing_predicate"] = len(_missing_predicate_ids(blocks))
     stats["source_residue"] = len(
         _source_residue_with_turkish_suffix(blocks, src_map, locked_terms))
+    head_typos = _repeated_head_typo_ids(blocks)
+    stats["syllable_typo"] = len(head_typos)
+    stats["syllable_typo_details"] = head_typos
     register = detect_address_register_mix(blocks)
     stats["register_mixed"] = register["mixed"]
     stats["register"] = register
@@ -4382,11 +4469,15 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
             (stats["partial_echo"], "komşu cue'da kısmi yankı"),
             (stats["missing_predicate"], "yüklemsiz biten cue"),
             (stats["source_residue"], "Türkçe ekli kaynak kalıntısı"),
+            (stats["syllable_typo"], "hece tekrarı yazım hatası"),
         ]
         summary = ", ".join(
             f"{count} {label}" for count, label in problems if count)
         if summary:
             log_fn(f"Teslim taraması ({len(blocks)} cue): {summary}", "warn")
+        for cue_id, written, expected in head_typos[:8]:
+            log_fn(f"Teslim taraması: #{cue_id} '{written}' → '{expected}' "
+                   "(hece tekrarı).", "warn")
         for line in _cue_fill_report_lines(cue_fill):
             log_fn(line, "warn")
         if register["mixed"]:
@@ -4914,7 +5005,10 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                     _align_visible(source_text).casefold()):
                 value, _titles_fixed = normalize_foreign_titles(value)
                 value, _exonyms_fixed = normalize_foreign_exonyms(value)
-                foreign_terms_fixed += _titles_fixed + _exonyms_fixed
+                value, _caps_fixed = fix_source_lowercase_apostrophes(
+                    value, source_text)
+                foreign_terms_fixed += (
+                    _titles_fixed + _exonyms_fixed + _caps_fixed)
             # Şapkalı harf düzleştirme Türkçe teslim konvansiyonudur.
             value = value.translate(_DELIVERY_HAT_MAP)
             typography_fixed_value = _normalize_delivery_typography(value)
