@@ -14407,6 +14407,47 @@ def _detect_pass_overrides(history: dict, max_items: int = 5) -> tuple[int, str]
     return len(events), "; ".join(samples) + more
 
 
+# Teslim taraması bulguları RAPORA da yazılır. Eskiden yalnız log'a düşüyordu;
+# log'lar rotasyona giriyor ve kullanıcı koşu sonunda ceviri_raporu.txt okuyor,
+# yani 'bitişik yineleme' dışındaki on sınıf pratikte hiç görülmüyordu.
+_DELIVERY_SCAN_REPORT_FIELDS = (
+    ("over_width", "Aşırı uzun satır"),
+    ("over_lines", "Fazla satırlı cue"),
+    ("cue_id_leak", "Metne sızmış cue numarası"),
+    ("midword_space", "Kelime ortası boşluk"),
+    ("cue_fill", "Komşusuna taşınabilir aşırı dolu cue"),
+    ("partial_echo", "Komşu cue'da kısmi yankı"),
+    ("missing_predicate", "Yüklemsiz biten cue"),
+    ("source_residue", "Türkçe ekli kaynak kalıntısı"),
+    ("syllable_typo", "Hece tekrarı yazım hatası"),
+)
+
+
+def delivery_scan_report_lines(scan: dict) -> list:
+    """Rapor için teslim taraması satırları (yalnız sıfırdan büyük sınıflar).
+
+    Sütun genişliği kendi etiketlerinden hesaplanır; üstteki alan bloğunun
+    genişliğini bu uzun etiketler yüzünden büyütmek raporu okunmaz yapardı."""
+    scan = dict(scan or {})
+    width = max(len(label) for _, label in _DELIVERY_SCAN_REPORT_FIELDS)
+    lines = []
+    for key, label in _DELIVERY_SCAN_REPORT_FIELDS:
+        count = scan.get(key) or 0
+        if count:
+            lines.append(f"   {label.ljust(width)} : {count}")
+    register = scan.get("register") or {}
+    if scan.get("register_mixed"):
+        lines.append(
+            f"   {'Dosya içinde sen/siz karışık'.ljust(width)} : "
+            f"{register.get('informal', 0)} 'sen' / "
+            f"{register.get('formal', 0)} 'siz' cue")
+    for line in _cue_fill_report_lines(scan.get("cue_fill_details") or []):
+        lines.append(f"      - {line}")
+    for cue_id, written, expected in (
+            scan.get("syllable_typo_details") or [])[:8]:
+        lines.append(f"      - #{cue_id} '{written}' → '{expected}'")
+    return lines
+
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                               total_tokens: int, actual_cost: float = None,
                               unknown_cost_tokens: int = 0,
@@ -14467,6 +14508,10 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         passes = r.get("pass_coverage", "")
         if passes:
             lines.append(f"   {'Uygulanan geçişler'.ljust(width)} : {passes}")
+        scan_lines = delivery_scan_report_lines(r.get("delivery_scan"))
+        if scan_lines:
+            lines.append("   Teslim taraması:")
+            lines.extend(scan_lines)
         feature_audit = r.get("feature_audit") or []
         if feature_audit:
             lines.append("   İşlem dökümü:")
@@ -32833,6 +32878,7 @@ class App(ctk.CTk):
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "dup": _dup_n,
+                "delivery_scan": _delivery_scan,
                 "hata_indices": _hata_idx,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "pass_fix": _pass_fix,
@@ -35415,6 +35461,7 @@ class App(ctk.CTk):
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "dup": _dup_n,
+                "delivery_scan": _delivery_scan,
                 "hata_indices": _hata_idx,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "rev": _rev_fixes, "warn": w,
@@ -37098,6 +37145,7 @@ class App(ctk.CTk):
                     "total": len(_final_blocks),
                     "hata": _hata_n, "cps": _cps_n,
                     "dup": _dup_n,
+                    "delivery_scan": _delivery_scan,
                     "hata_indices": _hata_idx,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                     "cons": _cons_fixes, "pass_fix": _pass_fix,

@@ -173,5 +173,51 @@ class RepeatedHeadSyllableTest(unittest.TestCase):
                   ("2", "ts", "Başka bir cümle.")]
         self.assertEqual(g._repeated_head_typo_ids(blocks), [])
 
+class DeliveryScanInReportTest(unittest.TestCase):
+    SCAN = {
+        "missing": 0, "duplicates": 2, "cps": 5, "over_width": 3,
+        "over_lines": 0, "cue_id_leak": 0, "midword_space": 1,
+        "cue_fill": 2, "partial_echo": 1, "missing_predicate": 1,
+        "source_residue": 4, "register_mixed": True, "syllable_typo": 1,
+        "register": {"informal": 120, "formal": 300},
+        "syllable_typo_details": [("54", "neneredeyse", "neredeyse")],
+        "cue_fill_details": [],
+    }
+
+    def _report(self, scan):
+        row = {"name": "Test.srt", "total": 700, "hata": 0, "dup": 2,
+               "cps": 5, "delivery_scan": scan}
+        return g.build_quality_report_text(
+            [row], "gpt-5.4", "Turkish", "sync", 1000)
+
+    def test_nonzero_classes_reach_the_report(self):
+        text = self._report(self.SCAN)
+        for expected in ("Teslim taraması:", "Aşırı uzun satır",
+                         "Komşu cue'da kısmi yankı", "Yüklemsiz biten cue",
+                         "Türkçe ekli kaynak kalıntısı",
+                         "Dosya içinde sen/siz karışık",
+                         "#54 'neneredeyse' → 'neredeyse'"):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, text)
+
+    def test_zero_classes_are_not_listed(self):
+        text = self._report(self.SCAN)
+        self.assertNotIn("Fazla satırlı cue", text)
+        self.assertNotIn("Metne sızmış cue numarası", text)
+
+    def test_clean_file_gets_no_scan_section(self):
+        clean = {key: 0 for key in self.SCAN if key not in
+                 ("register", "register_mixed", "syllable_typo_details",
+                  "cue_fill_details")}
+        clean.update({"register_mixed": False, "register": {},
+                      "syllable_typo_details": [], "cue_fill_details": []})
+        self.assertNotIn("Teslim taraması:", self._report(clean))
+
+    def test_missing_scan_key_is_tolerated(self):
+        row = {"name": "Test.srt", "total": 10, "hata": 0}
+        text = g.build_quality_report_text(
+            [row], "gpt-5.4", "Turkish", "sync", 10)
+        self.assertNotIn("Teslim taraması:", text)
+
 if __name__ == "__main__":
     unittest.main()
