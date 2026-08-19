@@ -64,7 +64,7 @@ class AdvancedSettingsCancelTest(unittest.TestCase):
         self.assertIn("4 paralel işçi", headline)
         self.assertIn("Güçlü bağlam", detail)
         self.assertIn("3.0 sn sahne eşiği", detail)
-        self.assertIn("1 hedefli yanıt denemesi", detail)
+        self.assertIn("2 hedefli yanıt denemesi", detail)
 
     def test_summary_marks_small_context_as_limited(self):
         _, detail = gui._advanced_settings_summary({

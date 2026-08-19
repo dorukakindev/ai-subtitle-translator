@@ -37,7 +37,9 @@ from app_state import (_interprocess_lock, atomic_write_bytes, atomic_write_json
                        state_dir, state_path)
 from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
                                UNTRUSTED_REFERENCE_RULE, meaning_readability_rule,
-                               transliteration_guard_rule)
+                               transliteration_guard_rule,
+                               TRANSLATABLE_CAPITALISED_STOPS, FOREIGN_EXONYM_MAP,
+                               CANONICAL_TURKISH_NAMES)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
 from provider_retry import (ProviderWaitCancelled, SHUAI_API_ROUTE_OPTIONS,
@@ -213,6 +215,61 @@ def _desktop_directory() -> Path:
         if candidate.exists():
             return candidate
     return home / "Desktop"
+
+
+# Dosya adı gösterimi. İki ayrı sorun vardı (2026-08-20 ekran görüntüsü):
+#   1) kırpma SONDAN yapılıyordu, yani ayırt edici parça (S01E01) atılıp herkeste
+#      aynı olan kuyruk bırakılıyordu — üç bölüm de aynı görünüyordu,
+#   2) sürüm etiketleri (1080p, AMZN, WEB-DL, x264, grup adı) satırın yarısını
+#      yiyordu ve hiçbir bilgi taşımıyorlar.
+# Önce sürüm kuyruğu atılır, gerekirse ORTADAN kısaltılır.
+_RELEASE_TOKEN_RE = re.compile(
+    r"^(?:\d{3,4}[pi]|4k|uhd|web-?dl|web-?rip|webrip|bluray|blu-ray|bdrip|brrip|"
+    r"dvdrip|dvdscr|hdtv|hdrip|amzn|nf|dsnp|hulu|max|atvp|pcok|itunes|"
+    r"x26[45]|h\.?26[45]|hevc|avc|xvid|divx|"
+    r"aac\d?|ac3|eac3|dts|dd\+?\d?|ddp\d?|flac|opus|"
+    r"\d{1,2}bit|10bit|8bit|repack|proper|extended|remux|internal|limited|"
+    r"remastered|complete|multi|dual|subbed|dubbed)$",
+    re.IGNORECASE,
+)
+
+
+def _strip_release_tokens(stem: str) -> str:
+    """'Show.S01E01.Part.1.Sin.1080p.AMZN.WEB-DL.x264-GRP' → 'Show.S01E01.Part.1.Sin'."""
+    parts = str(stem or "").split(".")
+    if len(parts) < 4:
+        return str(stem or "")
+    for position, part in enumerate(parts):
+        head = part.split("-", 1)[0]
+        if _RELEASE_TOKEN_RE.match(part) or _RELEASE_TOKEN_RE.match(head):
+            if position >= 3:
+                return ".".join(parts[:position])
+            break
+    return str(stem or "")
+
+
+_SHORTEN_HEAD_RATIO = 0.62
+
+
+def _shorten_middle(name: str, limit: int = 70) -> str:
+    """Başı ve sonu koruyan tek elipsli kısaltma (kesme ORTADAN)."""
+    value = str(name or "")
+    if len(value) <= limit:
+        return value
+    budget = max(8, limit - 1)
+    head = max(1, int(budget * _SHORTEN_HEAD_RATIO))
+    tail = budget - head
+    return f"{value[:head]}…{value[-tail:]}" if tail > 0 else f"{value[:budget]}…"
+
+
+def display_file_name(path, limit: int = 70) -> str:
+    """Dosya listesinde gösterilecek ad: sürüm etiketleri atılmış, gerekirse kısa."""
+    name = Path(str(path or "")).name
+    stem, dot, extension = name.rpartition(".")
+    if not dot:
+        return _shorten_middle(name, limit)
+    trimmed = _strip_release_tokens(stem)
+    return _shorten_middle(f"{trimmed}.{extension}", limit)
 
 
 def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
@@ -1123,7 +1180,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 10
+QUALITY_PROFILE_VERSION = 11
 DEEP_DELIVERY_COVERAGE_OPTIONS = {
     "Ekonomik (%35)": 0.35,
     "Tam (%100)": 1.0,
@@ -1176,7 +1233,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "lookahead_lines": 15,
     "scene_gap_seconds": 3.0,
     "temperature": 0.2,
-    "max_retry": 1,
+    "max_retry": 2,
     "critic": True,
     **RESELLER_ROUTING_DEFAULTS,
     "polish": False,
@@ -1191,6 +1248,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "clean_sdh": True,
     "backup_raw": True,
     "term_normalize": True,
+    "term_normalize_apply": True,
     "quality_report_only": True,
     "repair_missing": False,
     "media_mode": "Dizi",
@@ -1222,6 +1280,7 @@ WORKFLOW_PROFILES = {
         "deep_delivery_coverage_var": DEEP_DELIVERY_COVERAGE_DEFAULT,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "term_normalize_apply_var": True,
         "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
@@ -1244,6 +1303,7 @@ WORKFLOW_PROFILES = {
         "deep_delivery_coverage_var": DEEP_DELIVERY_COVERAGE_DEFAULT,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "term_normalize_apply_var": True,
         "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
@@ -1266,6 +1326,7 @@ WORKFLOW_PROFILES = {
         "deep_delivery_coverage_var": DEEP_DELIVERY_COVERAGE_DEFAULT,
         "review_pass_var": False,
         "term_normalize_var": True,
+        "term_normalize_apply_var": True,
         "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
@@ -1290,6 +1351,7 @@ _BOUNDARY_QUALITY_VARS = {
         "deep_delivery_semantic_var", "Derin Teslim Anlam Taraması"),
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
+    "term_normalize_apply": ("term_normalize_apply_var", "Terim Norm. Uygula"),
     "quality_report_only": ("quality_report_only_var", "Kalite/Teslim Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
@@ -1349,6 +1411,15 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
     if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
         return False
     previous_version = settings.get("quality_profile_version")
+    if previous_version == 10:
+        # Ana çeviri yeniden deneme turu 1 → 2. Reseller hattı dalgalı
+        # (2026-08-20: 'bağlantı hatası; deneme 1/1' ile chunk düştü);
+        # sahne planı kendi merdiveninde 8. denemede geçebiliyordu.
+        if int(settings.get("max_retry", 1) or 1) <= 1:
+            settings["max_retry"] = 2
+        settings.setdefault("term_normalize_apply", True)
+        settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
+        return True
     if previous_version == 9:
         # Satır kırma varsayılanı AÇIK'a alındı: kapalıyken teslim dosyalarında
         # tek satırda 70-97 karakterlik cue'lar kalıyordu (EBU sınırı 42).
@@ -1381,6 +1452,8 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
             "deep_delivery_coverage": 0.35,
             "review_pass": False,
             "term_normalize": True,
+            "term_normalize_apply": True,
+            "max_retry": 2,
             "quality_report_only": True,
             "chain_ctx": True,
             "clean_sdh": True,
@@ -4140,16 +4213,7 @@ _FOREIGN_TITLE_MAP = (
     (re.compile(r"(?<!\w)Senhora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
 )# Türkçe karşılığı yerleşik olan yabancı yer/yön adları (çekim ekiyle bırakılırsa
 # 'China'daki' gibi kalıntı oluşuyor).
-_FOREIGN_EXONYM_MAP = {
-    "china": "Çin", "japan": "Japonya", "germany": "Almanya",
-    "greece": "Yunanistan", "egypt": "Mısır", "india": "Hindistan",
-    "spain": "İspanya", "france": "Fransa", "italy": "İtalya",
-    "england": "İngiltere", "europe": "Avrupa", "africa": "Afrika",
-    "america": "Amerika", "russia": "Rusya", "vienna": "Viyana",
-    "ocidente": "Batı", "occident": "Batı", "oriente": "Doğu",
-    "orient": "Doğu", "alemanha": "Almanya", "espanha": "İspanya",
-    "grécia": "Yunanistan", "grecia": "Yunanistan", "índia": "Hindistan",
-}
+_FOREIGN_EXONYM_MAP = FOREIGN_EXONYM_MAP
 _TURKISH_SUFFIX_AFTER_APOSTROPHE = re.compile(
     # 3. tekil iyelik (-sı/-si) ve iyelik+hâl birleşimleri de tanınır:
     # "Dura'sı", "lamina'sını" eskiden ek tanınmadığı için düzelmiyordu.
@@ -4390,37 +4454,7 @@ def _missing_predicate_ids(blocks) -> list:
 # kilitlenirse ana modele "çevirme" denmiş olur ve altyazıda 'Jesus', 'French',
 # 'King' İngilizce kalır (2026-08-20 canlı koşusu tam olarak bunu yaptı).
 # Sıklık tek başına özel ad kanıtı değildir; bu sınıflar hiç kilitlenmez.
-_AUTOLOCK_TRANSLATABLE_STOPS = frozenset({
-    # ulus / dil / bölge sıfatları
-    "french", "english", "german", "spanish", "italian", "greek", "roman",
-    "russian", "turkish", "chinese", "japanese", "arab", "arabic", "jewish",
-    "hebrew", "latin", "persian", "egyptian", "indian", "american", "british",
-    "irish", "scottish", "welsh", "dutch", "danish", "swedish", "norwegian",
-    "polish", "czech", "hungarian", "portuguese", "brazilian", "african",
-    "european", "asian", "western", "eastern", "northern", "southern",
-    "france", "england", "germany", "spain", "italy", "greece", "russia",
-    # din / mitoloji
-    "god", "jesus", "christ", "christian", "christianity", "catholic",
-    "protestant", "muslim", "islam", "islamic", "judaism", "buddha",
-    "buddhist", "hindu", "bible", "gospel", "testament", "church", "lord",
-    "saint", "pope", "devil", "satan", "heaven", "hell", "genesis", "eden",
-    "moses", "virgin", "apostle", "angel", "holy", "spirit", "ghost",
-    "prophet", "koran", "quran", "torah", "messiah", "trinity", "paradise",
-    # unvan / rütbe / akrabalık
-    "king", "queen", "prince", "princess", "duke", "duchess", "emperor",
-    "empress", "president", "doctor", "professor", "captain", "general",
-    "lady", "madam", "father", "mother", "brother", "sister", "uncle",
-    "aunt", "grandmother", "grandfather",
-    # sık büyük harfli ortak adlar
-    "earth", "moon", "sun", "nature", "state", "government", "parliament",
-    "court", "empire", "republic", "revolution", "world", "university",
-    "museum", "north", "south", "east", "west", "voiceover", "narrator",
-    "man", "woman", "boy", "girl", "people",
-    # gün / ay
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-    "sunday", "january", "february", "march", "april", "june", "july",
-    "august", "september", "october", "november", "december",
-})
+_AUTOLOCK_TRANSLATABLE_STOPS = TRANSLATABLE_CAPITALISED_STOPS
 
 _AUTOLOCK_MIN_OCCURRENCES = 3
 _AUTOLOCK_MIN_LENGTH = 4
@@ -4428,7 +4462,8 @@ _AUTOLOCK_WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
 
 
 def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
-                             min_count: int = _AUTOLOCK_MIN_OCCURRENCES) -> dict:
+                             min_count: int = _AUTOLOCK_MIN_OCCURRENCES,
+                             rejected_out: dict | None = None) -> dict:
     """Kaynakta 3+ kez geçen özel ad adaylarını kimlik eşlemesiyle döner.
 
     Kimlik eşlemesi ('Barthou' -> 'Barthou') sözlüğe girince karışık-terim
@@ -4444,7 +4479,14 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
       4. Türkçe karşılığı olan sınıflar (ulus/din/unvan; _AUTOLOCK_TRANSLATABLE_STOPS
          ve exonim tablosu),
       5. hiç TEK BAŞINA geçmeyen kelime ('Golden' hep 'Golden Dawn' içinde) — çok
-         kelimeli ad, tek tek kilitlenecek bir birim değildir."""
+         kelimeli ad, tek tek kilitlenecek bir birim değildir.
+
+    Yerleşik Türkçe karşılığı olan adlar (Sisyphus → Sisifos) elenmez, DOĞRU
+    hedefle kilitlenir: serbest bırakmak modelin tutarsız yazmasına açık kapı.
+
+    rejected_out verilirse {kelime: gerekçe} olarak elenenler yazılır — log'da
+    görünsün diye (bu sınıfın iki regresyonu da tek log satırından yakalandı).
+    """
     text = str(source_text or "")
     if not text.strip():
         return {}
@@ -4480,18 +4522,32 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
                 standalone[key] = standalone.get(key, 0) + 1
             counts.setdefault(f"__form__{key}", word)
     locked = {}
+    rejected = {} if rejected_out is None else rejected_out
     for key, count in counts.items():
         if key.startswith("__form__") or count < min_count:
             continue
-        if key in known or not midsentence.get(key):
+        form = counts[f"__form__{key}"]
+        if key in known:
+            continue
+        canonical = CANONICAL_TURKISH_NAMES.get(key)
+        if canonical:
+            locked[form] = canonical
+            continue
+        if not midsentence.get(key):
+            rejected[form] = "yalnız cümle başında"
             continue
         if not standalone.get(key):
+            rejected[form] = "hep çok kelimeli adın parçası"
             continue
-        if (key in lowercase_seen or key in _SHIFT_TOKEN_STOPS
-                or key in _AUTOLOCK_TRANSLATABLE_STOPS
-                or key in _FOREIGN_EXONYM_MAP):
+        if key in lowercase_seen:
+            rejected[form] = "kaynakta küçük harfle de geçiyor"
             continue
-        locked[counts[f"__form__{key}"]] = counts[f"__form__{key}"]
+        if key in _SHIFT_TOKEN_STOPS:
+            continue
+        if key in _AUTOLOCK_TRANSLATABLE_STOPS or key in _FOREIGN_EXONYM_MAP:
+            rejected[form] = "çevrilebilir sınıf"
+            continue
+        locked[form] = form
     return locked
 
 
@@ -4608,6 +4664,47 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
                 "işaretçisi taşıyor; tek hitap seçilmeli.", "warn")
     return stats
 
+
+def _delivery_scan_suspect_ids(blocks, source_cues) -> list:
+    """Teslim taramasının bulduğu cue'ları (id, gerekçe) çifti olarak döner.
+
+    Derin anlam taraması kapsamını (%35) körlemesine harcamak yerine önce bu
+    deterministik bulgulara yönlendirmek için kullanılır. API çağırmaz; hata
+    hâlinde sessizce boş döner — bu yalnız bir ÖNCELİK ipucudur, kapı değil."""
+    try:
+        stats = _scan_delivery_blocks(list(blocks or []), source_cues)
+    except Exception:
+        return []
+    suspects = []
+    for item in stats.get("cue_fill_details") or []:
+        cue_id = item.get("id") if isinstance(item, dict) else None
+        if cue_id is not None:
+            suspects.append((str(cue_id), "SCAN_CUE_FILL"))
+            previous = item.get("prev_id") if isinstance(item, dict) else None
+            if previous is not None:
+                suspects.append((str(previous), "SCAN_CUE_FILL"))
+    for word_row in stats.get("syllable_typo_details") or []:
+        if word_row:
+            suspects.append((str(word_row[0]), "SCAN_SYLLABLE_TYPO"))
+    register = stats.get("register") or {}
+    if stats.get("register_mixed"):
+        minority = ("informal_ids"
+                    if register.get("informal", 0) <= register.get("formal", 0)
+                    else "formal_ids")
+        for cue_id in register.get(minority) or []:
+            suspects.append((str(cue_id), "SCAN_ADDRESS_REGISTER"))
+    try:
+        src_map = _delivery_source_map(list(blocks or []), source_cues)
+    except Exception:
+        src_map = {}
+    for left, right in _partial_echo_ids(list(blocks or []), src_map):
+        suspects.append((str(left), "SCAN_PARTIAL_ECHO"))
+        suspects.append((str(right), "SCAN_PARTIAL_ECHO"))
+    for item in _source_residue_with_turkish_suffix(list(blocks or []), src_map):
+        suspects.append((str(item.get("id")), "SCAN_SOURCE_RESIDUE"))
+    for cue_id in _missing_predicate_ids(list(blocks or [])):
+        suspects.append((str(cue_id), "SCAN_MISSING_PREDICATE"))
+    return suspects
 
 def _delivery_duplicate_count(blocks, source_cues) -> int:
     """Teslim edilen dosyada BİTİŞİK yinelenen cue sayısı (deterministik).
@@ -5898,7 +5995,7 @@ ADVANCED_SETTINGS_RECOMMENDED = {
     "_lookahead_lines": LOOKAHEAD_LINES,
     "_max_workers": 4,
     "_temperature": 0.2,
-    "_max_retry": 1,
+    "_max_retry": 2,
     "_scene_gap_seconds": SCENE_GAP_SEC,
 }
 ADVANCED_SETTINGS_LIMITS = {
@@ -15573,7 +15670,7 @@ class App(ctk.CTk):
         self._lookahead_lines   = LOOKAHEAD_LINES
         self._max_workers       = 4
         self._temperature       = 0.2
-        self._max_retry         = 1
+        self._max_retry         = 2
         self._scene_gap_seconds = SCENE_GAP_SEC
         self._merge_max_chars   = MERGE_MAX_CHARS    # parçalı cue birleştirme eşikleri
         self._merge_max_gap_ms  = MERGE_MAX_GAP_MS
@@ -15747,6 +15844,7 @@ class App(ctk.CTk):
             "content_type": "content_type_var",
             "global_glossary_path": "glossary_var",
             "term_normalize": "term_normalize_var",
+            "term_normalize_apply": "term_normalize_apply_var",
             "quality_report_only": "quality_report_only_var",
             "repair_missing": "repair_missing_var",
             "critic": "critic_var",
@@ -16934,6 +17032,26 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
+
+        # Terim Normalizasyonu UYGULA — "Kalite/Teslim Yalnız Rapor" bu geçişi de
+        # kilitliyordu: doğrulamayı GEÇEN düzeltmeler bile uygulanmadan çöpe
+        # gidiyordu (2026-08-20 Crowley koşusu: Golden Dawn→Altın Şafak ve
+        # Alastair→Aleister önerileri doğruydu, ikisi de atıldı). Teslim koruması
+        # rapor modunda kalırken terim düzeltmesi ayrı kapıdan geçer.
+        self.term_normalize_apply_var = ctk.BooleanVar(value=True)
+        tna_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        tna_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
+        tna_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(tna_fr, text="", variable=self.term_normalize_apply_var,
+                      width=44, height=22,
+                      fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
+        ctk.CTkLabel(tna_fr, text="  └ Düzeltmeleri uygula",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(sb, text="Kapalıyken yalnızca rapor edilir. Uygulanan\ndüzeltmeler zaten iki katmanlı denetimden\ngeçer: plan sadece 'çevrilmeden kalmış' sınıfını\nseçer, aday da satır bazında doğrulanır.",
+                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+                     justify="left", wraplength=260).grid(
+                     row=r, column=0, sticky="w", padx=4, pady=(0, 8)); r += 1
 
         self.quality_report_only_var = ctk.BooleanVar(value=True)
         qro_fr = ctk.CTkFrame(sb, fg_color="transparent")
@@ -18237,9 +18355,7 @@ class App(ctk.CTk):
                 border_width=1, border_color=BORDER_SOFT)
             row_fr.pack(fill="x", padx=2, pady=(0, 3))
             row_fr.grid_columnconfigure(0, weight=1)
-            name = Path(fp).name
-            if len(name) > 40:
-                name = "…" + name[-37:]
+            name = display_file_name(fp)
             ctk.CTkLabel(row_fr, text=name,
                          font=ctk.CTkFont("Segoe UI", 11),
                          text_color=FG, anchor="w").grid(
@@ -18645,6 +18761,9 @@ class App(ctk.CTk):
                 getattr(self, "helper_shuai_failover_var", None) is None
                 or self.helper_shuai_failover_var.get()),
             "term_normalize": getattr(self, "term_normalize_var", None).get() if getattr(self, "term_normalize_var", None) else False,
+            "term_normalize_apply": bool(
+                getattr(self, "term_normalize_apply_var", None) is None
+                or self.term_normalize_apply_var.get()),
             "quality_report_only": bool(
                 getattr(self, "quality_report_only_var", None) is None
                 or self.quality_report_only_var.get()),
@@ -18714,6 +18833,7 @@ class App(ctk.CTk):
             "analysis_depth_var": "analysis_depth",
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
+            "term_normalize_apply_var": "term_normalize_apply",
             "quality_report_only_var": "quality_report_only",
             "repair_missing_var": "repair_missing",
             "prevent_sleep_var": "prevent_sleep",
@@ -19268,6 +19388,13 @@ class App(ctk.CTk):
         import datetime
         icons = {"ok": "✓", "err": "✗", "warn": "⚠", "info": "›"}
         icon  = icons.get(tag, " ")
+        # "Sabit terimler: {...}" satırı aynı analiz için hem hybrid_translate hem
+        # akış tarafından basılıyordu (2026-08-20 logunda 01:11 ve 01:14, birebir
+        # aynı içerik). Birebir tekrarı at; içerik değişirse yeniden yazılır.
+        if str(msg).startswith("Sabit terimler: "):
+            if str(msg) == self.__dict__.get("_last_locked_terms_line"):
+                return
+            self._last_locked_terms_line = str(msg)
         disk_msg = _sanitize_settings_backup_text(str(msg))
         disk_msg = "".join(
             char if ord(char) >= 32 or char in "\n\r\t"
@@ -21275,8 +21402,8 @@ class App(ctk.CTk):
                                 base_url=self._helper_api_base_url("polish"),
                                 file_path=source_path),
                             status_out=term_status,
-                            apply_changes=not bool(snapshot.get(
-                                "quality_report_only", True)))
+                            apply_changes=bool(snapshot.get(
+                                "term_normalize_apply", True)))
                         self._write_term_normalize_report(
                             output_path, term_status,
                             source_cues=source_blocks,
@@ -24148,6 +24275,7 @@ class App(ctk.CTk):
                 if getattr(self, "media_mode_var", None) else "Dizi"),
             "review_pass": self.review_pass_var.get(),
             "term_normalize": self.term_normalize_var.get(),
+            "term_normalize_apply": self.term_normalize_apply_var.get(),
             "quality_report_only": bool(
                 getattr(self, "quality_report_only_var", None) is None
                 or self.quality_report_only_var.get()),
@@ -24611,6 +24739,8 @@ class App(ctk.CTk):
                 self.condense_var.set(bool(d["condense"]))
             if "term_normalize" in d:
                 self.term_normalize_var.set(bool(d["term_normalize"]))
+            if "term_normalize_apply" in d:
+                self.term_normalize_apply_var.set(bool(d["term_normalize_apply"]))
             if "quality_report_only" in d:
                 self.quality_report_only_var.set(bool(d["quality_report_only"]))
             if "repair_missing" in d:
@@ -27010,6 +27140,13 @@ class App(ctk.CTk):
                 for sid in finding_ids:
                     if sid is not None:
                         extra_suspect_reasons.setdefault(str(sid), set()).add(reason)
+            # Deterministik teslim taraması ŞÜPHELİ CUE listesine beslenir.
+            # Bu tarama API kullanmaz ve zaten cue_fill / kısmi yankı / sen-siz
+            # azınlığı / kaynak kalıntısı gibi somut bulgular üretiyor; ama
+            # teslim ANINDA, yani bu geçişten SONRA koşuyordu. Aynı %35 bütçe
+            # artık önce bilinen-şüpheli cue'lara harcanır.
+            for sid, reason in _delivery_scan_suspect_ids(blocks, cues):
+                extra_suspect_reasons.setdefault(str(sid), set()).add(reason)
             cancel_context = self.__dict__.get("_helper_request_canceller")
             cancel_kwargs = (
                 {"cancel_context": cancel_context}
@@ -32783,8 +32920,8 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("polish"),
                             file_path=filepath),
                         status_out=_term_status,
-                        apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)))
+                        apply_changes=bool(self._snap_get(
+                            "term_normalize_apply", True)))
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
@@ -34541,8 +34678,8 @@ class App(ctk.CTk):
                                                      "polish"),
                                                  file_path=str(_src_path)),
                                              status_out=_term_status,
-                                             apply_changes=not bool(self._snap_get(
-                                                 "quality_report_only", True)))
+                                             apply_changes=bool(self._snap_get(
+                                                 "term_normalize_apply", True)))
                                         _pass_status["Term-Normalize"] = dict(_term_status)
                                         if self._stop_flag:
                                             break
@@ -35390,8 +35527,8 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("polish"),
                             file_path=fp),
                         status_out=_term_status,
-                        apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)))
+                        apply_changes=bool(self._snap_get(
+                            "term_normalize_apply", True)))
                     _pass_status["Term-Normalize"] = dict(_term_status)
                     _record_pass_change(
                         _pass_trace, "Term-Normalize", _before_termnorm,
@@ -36955,8 +37092,8 @@ class App(ctk.CTk):
                                 base_url=self._helper_api_base_url("polish"),
                                 file_path=filepath),
                             status_out=_term_status,
-                            apply_changes=not bool(self._snap_get(
-                                "quality_report_only", True)))
+                            apply_changes=bool(self._snap_get(
+                                "term_normalize_apply", True)))
                         _pass_status["Term-Normalize"] = dict(_term_status)
                         _record_pass_change(
                             _pass_trace, "Term-Normalize", _before_termnorm,

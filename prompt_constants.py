@@ -127,6 +127,11 @@ JSON_INSTRUCTION = (
     "FRAGMENT RULES:\n"
     "  - If a 'sentence_groups' entry is present, first reconstruct that source sentence from the listed tr item ids, "
     "then distribute the Turkish naturally back across those same item ids.\n"
+    "  - LENGTH BALANCE: split the Turkish across the group in proportion to each id's own "
+    "source length and its 'd' duration. A short continuation cue (source 'elements.', 0.4s) "
+    "must get a correspondingly short Turkish segment. Turkish puts the verb last, but that is "
+    "NOT a reason to pile the whole sentence onto the final short cue: move the earlier material "
+    "into the earlier, longer cues so every cue stays readable within its own duration.\n"
     "  - 'start': end the Turkish with a grammar structure that expects continuation "
     "(e.g. a relative clause opener, a conjunction, a comma \u2014 not a full stop)\n"
     "  - 'mid': bridge naturally from previous line into next\n"
@@ -145,3 +150,72 @@ JSON_INSTRUCTION = (
     'Output: JSON array [{"i":N,"t":"translated"}] \u2014 ONLY \'tr\' items, same count.\n'
     "Return ONLY the JSON array, nothing else."
 )
+
+
+# Turkcede karsiligi OLAN buyuk harfli siniflar ve yerlesik exonimler.
+# Bir sozluk girisi kaynak==hedef (kimlik) ise ana modele "bu kelimeyi cevirme"
+# denmis olur; bu siniflarda o talimat ceviriyi bozar (2026-08-20: Jesus, French,
+# King, Pyramid, Chamber Ingilizce kalmisti). Hem GUI auto-lock hem
+# hybrid_translate.sanitize_glossary_for_turkish TEK bu kaynaktan okur.
+TRANSLATABLE_CAPITALISED_STOPS = frozenset({
+    # ulus / dil / bölge sıfatları
+    "french", "english", "german", "spanish", "italian", "greek", "roman",
+    "russian", "turkish", "chinese", "japanese", "arab", "arabic", "jewish",
+    "hebrew", "latin", "persian", "egyptian", "indian", "american", "british",
+    "irish", "scottish", "welsh", "dutch", "danish", "swedish", "norwegian",
+    "polish", "czech", "hungarian", "portuguese", "brazilian", "african",
+    "european", "asian", "western", "eastern", "northern", "southern",
+    "france", "england", "germany", "spain", "italy", "greece", "russia",
+    # din / mitoloji
+    "god", "jesus", "christ", "christian", "christianity", "catholic",
+    "protestant", "muslim", "islam", "islamic", "judaism", "buddha",
+    "buddhist", "hindu", "bible", "gospel", "testament", "church", "lord",
+    "saint", "pope", "devil", "satan", "heaven", "hell", "genesis", "eden",
+    "moses", "virgin", "apostle", "angel", "holy", "spirit", "ghost",
+    "prophet", "koran", "quran", "torah", "messiah", "trinity", "paradise",
+    # unvan / rütbe / akrabalık
+    "king", "queen", "prince", "princess", "duke", "duchess", "emperor",
+    "empress", "president", "doctor", "professor", "captain", "general",
+    "lady", "madam", "father", "mother", "brother", "sister", "uncle",
+    "aunt", "grandmother", "grandfather",
+    # sık büyük harfli ortak adlar
+    "earth", "moon", "sun", "nature", "state", "government", "parliament",
+    "court", "empire", "republic", "revolution", "world", "university",
+    "museum", "north", "south", "east", "west", "voiceover", "narrator",
+    "man", "woman", "boy", "girl", "people",
+    # gün / ay
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "january", "february", "march", "april", "june", "july",
+    "august", "september", "october", "november", "december",
+})
+
+FOREIGN_EXONYM_MAP = {
+    "china": "Çin", "japan": "Japonya", "germany": "Almanya",
+    "greece": "Yunanistan", "egypt": "Mısır", "india": "Hindistan",
+    "spain": "İspanya", "france": "Fransa", "italy": "İtalya",
+    "england": "İngiltere", "europe": "Avrupa", "africa": "Afrika",
+    "america": "Amerika", "russia": "Rusya", "vienna": "Viyana",
+    "ocidente": "Batı", "occident": "Batı", "oriente": "Doğu",
+    "orient": "Doğu", "alemanha": "Almanya", "espanha": "İspanya",
+    "grécia": "Yunanistan", "grecia": "Yunanistan", "índia": "Hindistan",
+}
+
+
+# Türkçede YERLEŞİK yazımı olan mitolojik/dinî/tarihî adlar. Bunları serbest
+# bırakmak (stop listesi) modelin dosya içinde tutarsız yazmasına açık kapıdır;
+# doğru hedefle kilitlemek hem çeviriyi hem tutarlılığı garantiler.
+# Gerçek olay 2026-08-20: 'Sisyphus' kimlikle kilitlenip İngilizce kalıyordu.
+CANONICAL_TURKISH_NAMES = {
+    "sisyphus": "Sisifos", "icarus": "İkarus", "daedalus": "Daidalos",
+    "odysseus": "Odysseus", "achilles": "Akhilleus", "hercules": "Herakles",
+    "heracles": "Herakles", "aesop": "Ezop", "homer": "Homeros",
+    "plato": "Platon", "aristotle": "Aristoteles", "socrates": "Sokrates",
+    "pythagoras": "Pisagor", "archimedes": "Arşimet", "euclid": "Öklid",
+    "zeus": "Zeus", "prometheus": "Prometheus", "oedipus": "Oidipus",
+    "jesus": "İsa", "christ": "Mesih", "moses": "Musa", "abraham": "İbrahim",
+    "noah": "Nuh", "adam": "Âdem", "solomon": "Süleyman", "david": "Davut",
+    "joseph": "Yusuf", "jacob": "Yakup", "isaac": "İshak", "mary": "Meryem",
+    "gabriel": "Cebrail", "michael": "Mikail", "lucifer": "Lucifer",
+    "alexander": "İskender", "caesar": "Sezar", "constantine": "Konstantin",
+    "confucius": "Konfüçyüs", "genghis": "Cengiz", "columbus": "Kolomb",
+}

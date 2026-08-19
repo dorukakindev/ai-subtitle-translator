@@ -97,6 +97,7 @@ class _SettingsOnlyApp:
             "backup_raw_var": True,
             "review_pass_var": True,
             "term_normalize_var": False,
+            "term_normalize_apply_var": False,
             "twowave_var": False,
             "main_custom_var": False,
             "main_custom_model_var": "",

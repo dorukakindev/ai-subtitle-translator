@@ -53,6 +53,11 @@ _SHUAI_FAILOVER_PREFERRED_ROUTES = {
     "helper": SHUAI_API_ROUTE_OPTIONS[0][1],
 }
 _SHUAI_LAST_WORKING_ROUTES = {"main": "", "helper": ""}
+# Aktif rota duyurusu SCOPE BASINA BIR KEZ loglanir: her istek basarili
+# failover'da satir basmak oturum logunu ayni satirdan onlarcasiyla dolduruyor
+# ve gercek ilerleme gorunmez oluyordu (2026-08-20 ekran goruntusu).
+_SHUAI_ANNOUNCED_ROUTES = {"main": "", "helper": ""}
+_SHUAI_ANNOUNCE_COUNTS = {"main": 0, "helper": 0}
 _SHUAI_FAILOVER_LOG = None
 _SHUAI_ROUTE_COOLDOWN_SECONDS = 300.0
 _SHUAI_TRANSIENT_COOLDOWN_SECONDS = 30.0
@@ -100,9 +105,11 @@ def configure_shuai_route_failover(
         if (not enabled
                 or preferred != _SHUAI_FAILOVER_PREFERRED_ROUTES["helper"]):
             _SHUAI_LAST_WORKING_ROUTES["helper"] = ""
+            _SHUAI_ANNOUNCED_ROUTES["helper"] = ""
         if (not enabled
                 or main_preferred != _SHUAI_FAILOVER_PREFERRED_ROUTES["main"]):
             _SHUAI_LAST_WORKING_ROUTES["main"] = ""
+            _SHUAI_ANNOUNCED_ROUTES["main"] = ""
         _SHUAI_FAILOVER_ENABLED = bool(enabled)
         _SHUAI_FAILOVER_PREFERRED_ROUTES.update({
             "main": main_preferred,
@@ -233,6 +240,8 @@ def reset_shuai_route_metrics() -> None:
                 "last_error": "",
             })
         _SHUAI_LAST_WORKING_ROUTES.update({"main": "", "helper": ""})
+        _SHUAI_ANNOUNCED_ROUTES.update({"main": "", "helper": ""})
+        _SHUAI_ANNOUNCE_COUNTS.update({"main": 0, "helper": 0})
         _SHUAI_ROUTE_CONDITION.notify_all()
 
 
@@ -1573,9 +1582,27 @@ def chat_create_with_shuai_failover(
             except Exception:
                 pass
             if route != original:
-                _shuai_log(
-                    f"Shuai otomatik rota geçişi başarılı: "
-                    f"{urlparse(route).hostname}", "ok")
+                # Duyuru scope basina yalnizca rota DEGISTIGINDE. Ayni rotayla
+                # devam eden istekler sessiz sayilir; sonraki degisiklikte kac
+                # istegin o rotayi kullandigi tek satirda bildirilir.
+                with _SHUAI_FAILOVER_LOCK:
+                    announced = _SHUAI_ANNOUNCED_ROUTES.get(scope, "")
+                    if announced == route:
+                        _SHUAI_ANNOUNCE_COUNTS[scope] = int(
+                            _SHUAI_ANNOUNCE_COUNTS.get(scope, 0) or 0) + 1
+                        previous_count = None
+                    else:
+                        previous_count = int(
+                            _SHUAI_ANNOUNCE_COUNTS.get(scope, 0) or 0)
+                        _SHUAI_ANNOUNCED_ROUTES[scope] = route
+                        _SHUAI_ANNOUNCE_COUNTS[scope] = 1
+                if previous_count is not None:
+                    tail = (f" (onceki rota {previous_count} istekte kullanildi)"
+                            if previous_count else "")
+                    _shuai_log(
+                        f"Shuai otomatik rota gecisi basarili: "
+                        f"{urlparse(route).hostname}{tail}; ayni rotayla devam "
+                        "eden istekler tekrar loglanmaz.", "ok")
             return result
         finally:
             if cancel_context is not None:

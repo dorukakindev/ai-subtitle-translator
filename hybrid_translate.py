@@ -3218,18 +3218,32 @@ def _analyze_context_openai_compatible(
     # Model sözlüğe koymasa bile dosyada 3+ kez geçen özel adları KİLİTLE:
     # karışık-terim düzeltmesi sözlüğe çapalı çalıştığı için, sözlükte olmayan
     # ad ('Barthou' / 'Bartu') hiç toparlanamıyordu.
+    auto_rejected = {}
     try:
         from subtitle_translator_gui import auto_locked_proper_nouns
-        auto_locked = auto_locked_proper_nouns(source_blob, recurring_terms)
+        auto_locked = auto_locked_proper_nouns(
+            source_blob, recurring_terms, rejected_out=auto_rejected)
     except Exception:
         auto_locked = {}
     if auto_locked:
         recurring_terms = {**auto_locked, **recurring_terms}
         if log_fn:
-            sample = ", ".join(list(auto_locked)[:6])
+            sample = ", ".join(
+                key if key == value else f"{key}→{value}"
+                for key, value in list(auto_locked.items())[:6])
+            # Elenenler de yazılır: bu sınıfın iki regresyonu da (King/Pyramid,
+            # Jesus/French) tek log satırından yakalandı, gözlemlenebilirlik ucuz.
+            notable = {
+                word: reason for word, reason in auto_rejected.items()
+                if reason in ("çevrilebilir sınıf", "hep çok kelimeli adın parçası")
+            }
+            dropped = ""
+            if notable:
+                dropped = "; elendi: " + ", ".join(
+                    f"{word} ({reason})" for word, reason in list(notable.items())[:6])
             log_fn(
                 f"Sözlük: dosyada tekrar eden {len(auto_locked)} özel ad otomatik "
-                f"kilitlendi ({sample})", "info")
+                f"kilitlendi ({sample}){dropped}", "info")
     scene_notes = data.get("scene_notes", [])
     if not isinstance(scene_notes, list):
         scene_notes = []
@@ -3719,7 +3733,9 @@ def _infer_register(tone: str, schema: dict | None = None) -> str:
 from prompt_constants import (PROFANITY_RULES as _PROFANITY_RULES,
                               REGISTER_GUIDANCE as _REGISTER_GUIDANCE,
                               JSON_INSTRUCTION, UNTRUSTED_REFERENCE_RULE,
-                              meaning_readability_rule, transliteration_guard_rule)
+                              meaning_readability_rule, transliteration_guard_rule,
+                              TRANSLATABLE_CAPITALISED_STOPS as _TRANSLATABLE_CAPITALISED_STOPS,
+                              FOREIGN_EXONYM_MAP as _FOREIGN_EXONYM_MAP)
 
 
 def build_system_prompt(
@@ -6922,6 +6938,33 @@ def _roman_numeral_value(value: str) -> int | None:
     return total
 
 
+def _identity_lock_is_unsafe(key: str, value: str) -> str:
+    """Kimlik eşlemesi ('French' -> 'French') güvenli mi? Değilse gerekçe döner.
+
+    Kimlik eşlemesi ana modele "bu kelimeyi ÇEVİRME" talimatıdır. Türkçede
+    karşılığı olan sınıflarda (ulus/dil, dinî figür, unvan, exonim) bu talimat
+    doğrudan hatalı çıktı üretir — 2026-08-20 koşularında 'Jesus', 'French',
+    'King', 'Pyramid', 'Chamber' böyle İngilizce kalmıştı. Kaynağı ister analiz
+    modeli olsun ister auto-lock, kural aynı."""
+    source = str(key or "").strip()
+    target = str(value or "").strip()
+    if not source or source.casefold() != target.casefold():
+        return ""
+    tokens = re.findall(r"[^\W\d_]{3,}", source, re.UNICODE) or [source]
+    reasons = []
+    for token in tokens:
+        folded = token.casefold()
+        if folded in _TRANSLATABLE_CAPITALISED_STOPS:
+            reasons.append(f"cevrilebilir sinif: {token}")
+        elif folded in _FOREIGN_EXONYM_MAP:
+            reasons.append(f"yerlesik Turkce karsiligi var: {token}")
+    # Cok kelimeli adlarda TEK bir genel sozcuk yeterli degil: "West Block"
+    # icinde "West" gecer ama ad ozel addir. Hepsi cevrilebilir sinifsa
+    # ("Holy Ghost") kimlik eslemesi gercekten yanlistir.
+    if reasons and len(reasons) == len(tokens):
+        return reasons[0]
+    return ""
+
 def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = "tr",
                                    log_fn=None) -> dict:
     """Drop glossary targets that would force non-Turkish/Turkic drift into the output.
@@ -6952,6 +6995,7 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
     cleaned = {}
     dropped_terms = {}
     gloss_dropped_terms = {}
+    identity_dropped_terms = {}
     wqx_hits = {}
     for key, value in glossary.items():
         if not key or not value:
@@ -7014,6 +7058,12 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         # Kaynağın kendi kelimeleri aynen (özel isim) kaldıysa hiçbir dil-sızıntı
         # kontrolü çalıştırılmaz -- ancak seçenek/talimat içeren bir değer, kaynak
         # kelime kümesini de içeriyor diye bu istisnadan yararlanamaz.
+        identity_reason = _identity_lock_is_unsafe(key, value_s)
+        if identity_reason:
+            # Kimlik eslemesi = 'bu kelimeyi cevirme' talimati; cevrilebilir
+            # siniflarda cikti bozulur (2026-08-20: Jesus/French/King).
+            identity_dropped_terms[str(key)] = (value_s, identity_reason)
+            continue
         if not gloss_reason and _glossary_target_is_source_kept_asis(key, value_s):
             cleaned[str(key)] = value_s
             continue
@@ -7072,6 +7122,14 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
             "warn",
         )
 
+    if identity_dropped_terms and log_fn:
+        pairs = ", ".join(
+            f"{k} ({reason})" for k, (_v, reason) in identity_dropped_terms.items())
+        log_fn(
+            "Sozluk guard: kimlik eslemesi ana modele 'cevirme' der; Turkce "
+            f"karsiligi olan terim(ler) sozlukten dusuruldu: {pairs}",
+            "warn",
+        )
     if dropped_terms and log_fn:
         pairs = ", ".join(f"{k}->{v}" for k, v in dropped_terms.items())
         log_fn(f"Sozluk guard: supheli/yabanci hedef nedeniyle atilan terim(ler): {pairs}", "warn")

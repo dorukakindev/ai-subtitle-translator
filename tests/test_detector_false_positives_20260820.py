@@ -289,15 +289,37 @@ class AutoLockGuardTest(unittest.TestCase):
         locked = g.auto_locked_proper_nouns(self.PYRAMID)
         self.assertEqual(locked.get("Schumann"), "Schumann")
 
-    def test_translatable_capitalised_classes_are_never_locked(self):
-        # Canlı koşu 2026-08-20: bu üçü kimlikle kilitlenip İngilizce kalıyordu.
+    def test_translatable_capitalised_classes_are_never_identity_locked(self):
+        # Canlı koşu 2026-08-20: bunlar kimlikle kilitlenip İngilizce kalıyordu.
+        # 'Jesus' artık DOĞRU hedefle kilitlenir (İsa), 'French'/'King' elenir.
         source = ("Jesus spoke to the crowd. The French king listened. "
                   "Later Jesus left, and the French court followed the king. "
                   "Everyone praised Jesus, the French and the king alike.")
         locked = g.auto_locked_proper_nouns(source)
-        for word in ("Jesus", "French", "King", "king"):
+        self.assertEqual(locked.get("Jesus"), "İsa")
+        for word in ("French", "King", "king"):
             with self.subTest(word=word):
                 self.assertNotIn(word, locked)
+        for source_term, target in locked.items():
+            with self.subTest(term=source_term):
+                self.assertNotEqual(
+                    source_term.casefold(),
+                    "french" if target == source_term else "")
+
+    def test_canonical_names_lock_with_turkish_target(self):
+        source = ("Sisyphus pushed the rock. Every day Sisyphus climbed again. "
+                  "Camus wrote about Sisyphus and about Camus. Camus died.")
+        locked = g.auto_locked_proper_nouns(source)
+        self.assertEqual(locked.get("Sisyphus"), "Sisifos")
+        self.assertEqual(locked.get("Camus"), "Camus")
+
+    def test_rejections_are_reported_for_the_log(self):
+        source = ("Jesus met the French king. The French king spoke. "
+                  "The French king left with the king.")
+        rejected = {}
+        g.auto_locked_proper_nouns(source, rejected_out=rejected)
+        self.assertIn("French", rejected)
+        self.assertEqual(rejected["French"], "çevrilebilir sınıf")
 
     def test_word_that_never_stands_alone_is_not_locked(self):
         # 'Golden Dawn' çok kelimeli bir addır; 'Golden' tek başına kilitlenmez.
