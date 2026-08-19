@@ -942,6 +942,54 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
         self.assertEqual(flagged, [])
 
+    def test_delivery_fragment_guard_preserves_short_quote_and_company_name(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "- \"Gan bei\"."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "Lloyd's of London."),
+        ]
+        flagged = gui._delivery_untranslated_fragment_ids(
+            blocks,
+            {"1": "- \"Gan bei\".", "2": "Lloyd's of London."},
+            "Turkish", "English",
+        )
+        self.assertEqual(flagged, [])
+
+    def test_delivery_audit_ignores_prose_colons_as_speaker_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "source.srt"
+            out = Path(tmp) / "output.srt"
+            src.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "NTP: La forma en que lo veo es esta:\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\n"
+                "BUT I WON'T BE ME ANYMORE:\nI'LL BE DEAD.\n",
+                encoding="utf-8",
+            )
+            out.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n"
+                "Benim bakış açıma göre durum şu: devamı var.\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\n"
+                "Ama artık ben olmayacağım:\nölü olacağım.\n",
+                encoding="utf-8",
+            )
+            audit = gui._subtitle_delivery_audit(
+                str(src), str(out), "Turkish", "Spanish")
+        self.assertEqual(audit["residual_speaker_label_ids"], [])
+
+    def test_delivery_source_removes_spanish_subtitle_credits(self):
+        for value in (
+            "Una Traducción de Fry para\nSubs-Team",
+            "Subs-Team\nP r e s e n t ó :",
+            "NTP: Traducción: Juan C. Germi\n* Nordiken.net *",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(gui._source_cue_is_delivery_removable(value))
+
+    def test_delivery_source_removes_documentary_sdh_variants(self):
+        for value in ("[Hitting stone]", "[Arabic language]", "[revving of plane]"):
+            with self.subTest(value=value):
+                self.assertTrue(gui._source_cue_is_delivery_removable(value))
+
     def test_delivery_fragment_guard_still_flags_quoted_english_sentence(self):
         flagged = gui._delivery_untranslated_fragment_ids(
             [("1", "00:00:01,000 --> 00:00:02,000",

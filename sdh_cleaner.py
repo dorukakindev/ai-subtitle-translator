@@ -110,7 +110,7 @@ _SDH_KEYWORDS = {
     "voices", "echoing", "shrieks", "rattles", "backfires", "backfiring",
     "sputters", "sputtering", "audible", "dialogue", "dialonue", "cranks",
     "cranking", "revs", "idling", "chattering", "blowing", "distance",
-    "rumbles", "heavily",
+    "rumbles", "heavily", "hitting", "revving",
 }
 
 _SPEAKER_WORDS = {
@@ -839,6 +839,7 @@ _HEADING_LABEL_PATTERNS = (
     re.compile(r"^\s*(?:chapter|episode|part|act|scene|season|book|volume|b\u00f6l\u00fcm|kisim|k\u0131s\u0131m|sahne|sezon|cilt)\s*(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)?\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:breaking news|news flash|special report|live report|son dakika|son dakika haberi)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:location|date|time|konum|tarih|saat|note|warning|caution|notice|disclaimer)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:solution|destination|çözüm|varış\s+noktası)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:esteemed\s+sir|dear\s+sir|your\s+honou?r|superior\s+court)\s*$", re.IGNORECASE),
 )
 
@@ -858,6 +859,8 @@ def _src_has_plain_speaker_label(src_line: str) -> bool:
         return False
     if label.casefold() in {"translation", "translator"}:
         return False
+    if len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]+", label)) > 4:
+        return False
     return not _is_heading_label(label)
 
 
@@ -876,6 +879,10 @@ _TR_PLAIN_SPEAKER_LABEL_RE = re.compile(
 _TR_LABEL_ONLY_RE = re.compile(
     r"^\s*(?:-\s*)?[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
     r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*$")
+_TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE = re.compile(
+    r"(?m)(?:^|(?<=[.!?…]))\s*(?:-\s*)?"
+    r"(?P<label>[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
+    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?):\s*(?=\S)")
 _SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
     r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
 )
@@ -893,10 +900,37 @@ def _target_is_source_speaker_label_only(tr_line: str, src_line: str) -> bool:
         return False
     source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
     target_label = str(tr_line or "").strip().lstrip("-").rstrip(":").strip()
-    source_key = _ascii_fold(source_label)
-    target_key = _ascii_fold(target_label)
+    source_key = _plain_speaker_label_key(source_label)
+    target_key = _plain_speaker_label_key(target_label)
     mapped = _SPEAKER_LABEL_TRANSLATIONS.get(source_key, source_label)
-    return target_key in {source_key, _ascii_fold(mapped)}
+    return target_key in {source_key, _plain_speaker_label_key(mapped)}
+
+
+def _plain_speaker_label_key(value: str) -> str:
+    value = re.sub(r"^\s*(?:(?:>>|&gt;&gt;)\s*)?-?\s*", "", str(value or ""))
+    value = re.sub(
+        r",\s*(?:VOICE[- ]OVER|V\.?O\.?|VO|SES ÜSTÜ|DIŞ SES)\s*$",
+        "", value, flags=re.IGNORECASE)
+    return _ascii_fold(value.strip().rstrip(":").strip())
+
+
+def _target_has_source_plain_speaker_label(tr_line: str, src_line: str) -> bool:
+    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(str(src_line or ""))
+    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(str(tr_line or ""))
+    if not source_match or not target_match:
+        return False
+    source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
+    target_label = target_match.group("label").strip()
+    source_key = _plain_speaker_label_key(source_label)
+    target_key = _plain_speaker_label_key(target_label)
+    mapped_key = _plain_speaker_label_key(
+        _SPEAKER_LABEL_TRANSLATIONS.get(source_key, source_label))
+    aliases = {
+        "news anchor": {"haber sunucusu", "haber spikeri"},
+        "both": {"ikisi birlikte", "ikisi"},
+        "recording": {"kayit"},
+    }
+    return target_key in {source_key, mapped_key, *aliases.get(source_key, set())}
 
 
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
@@ -920,13 +954,17 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     src_line = str(src_line or "")
     if _SRC_NARRATOR_LABEL_RE.search(src_line):
         tr_line = _TR_NARRATOR_LABEL_RE.sub("", tr_line)
-    if (_src_has_plain_speaker_label(src_line)
-            or _SRC_BRACKET_SPEAKER_PREFIX_RE.search(src_line)
-            or _SRC_QUOTED_SPEAKER_PREFIX_RE.search(src_line)):
-        if (_src_has_plain_speaker_label(src_line)
+    plain_source_label = _src_has_plain_speaker_label(src_line)
+    bracket_or_quoted_source = bool(
+        _SRC_BRACKET_SPEAKER_PREFIX_RE.search(src_line)
+        or _SRC_QUOTED_SPEAKER_PREFIX_RE.search(src_line))
+    if plain_source_label or bracket_or_quoted_source:
+        if (plain_source_label
                 and _target_is_source_speaker_label_only(tr_line, src_line)):
             return ""
-        tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
+        if (bracket_or_quoted_source
+                or _target_has_source_plain_speaker_label(tr_line, src_line)):
+            tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""
     source_spans = _bracket_group_spans(src_line)

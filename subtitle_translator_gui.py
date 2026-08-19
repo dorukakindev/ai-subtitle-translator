@@ -3207,8 +3207,13 @@ _DELIVERY_SOURCE_PRODUCTION_CREDIT_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_SOURCE_SUBTITLE_CREDIT_RE = re.compile(
-    r"^\s*subtitles?\s*:\s*[^\r\n]{2,100}\r?\n\s*broadcast\s+text\s*$",
-    re.IGNORECASE,
+    r"^(?:\s*subtitles?\s*:\s*[^\r\n]{2,100}\r?\n\s*broadcast\s+text\s*|"
+    r"\s*(?:una\s+)?traducci[oó]n\s+de(?:\s*:\s*|\s+)[^\r\n]{2,100}"
+    r"(?:\r?\n\s*subs?-team)?\s*|"
+    r"\s*subs?-team\s+p\s*r\s*e\s*s\s*e\s*n\s*t\s*[oó]\s*:\s*|"
+    r"\s*NTP\s*:\s*traducci[oó]n\s*:\s*[^\r\n]{2,100}"
+    r"(?:\r?\n\s*\*?\s*[^\r\n]*\.(?:net|com|org)\s*\*?)?\s*)$",
+    re.IGNORECASE | re.DOTALL,
 )
 _NON_TURKISH_SCRIPT_RE = re.compile(
     r"[\u0600-\u06FF"
@@ -3233,9 +3238,10 @@ _DELIVERY_TURKISH_SDH_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_LANGUAGE_LABEL_RE = re.compile(
-    r"(?:latin|latince|french|fransizca|english|ingilizce|spanish|ispanyolca|"
+    r"(?:(?:latin|latince|french|fransizca|english|ingilizce|spanish|ispanyolca|"
     r"german|almanca|italian|italyanca|arabic|arapca|russian|rusca|"
-    r"portuguese|portekizce|japanese|japonca|chinese|cince|korean|korece|"
+    r"portuguese|portekizce|japanese|japonca|chinese|cince|korean|korece)"
+    r"(?:\s+(?:language|dili))?|"
     r"(?:african|afrika) (?:language|dili)(?: or glossolalia)?|"
     r"(?:language|dil)|glossolalia|unintelligible|anlasilmiyor)",
     re.IGNORECASE,
@@ -12066,13 +12072,14 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                     for sibling in source_lines if _delivery_visible_line(sibling)
                 )
             )
-            quote_body = visible.strip().strip('"“”').strip()
+            quote_probe = visible.strip().lstrip("-–— ").strip()
+            quote_body = quote_probe.rstrip(".!?…").strip().strip('"“”\'‘’').strip()
             quote_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", quote_body)
             quoted_foreign_reference = (
                 source_is_english and reason == "identical_source"
-                and visible.strip()[:1] in {'"', '“'}
-                and visible.strip()[-1:] in {'"', '”'}
-                and len(quote_words) >= 4
+                and quote_probe[:1] in {'"', '“', "'", '‘'}
+                and quote_probe.rstrip(".!?…").strip()[-1:] in {'"', '”', "'", '’'}
+                and len(quote_words) >= 1
                 and not {
                     word.casefold() for word in quote_words
                 }.intersection({
@@ -12100,7 +12107,8 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                 source_is_english and reason == "identical_source"
                 and any(bool(re.fullmatch(
                     r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*"
-                    r"(?:\s+[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*){1,4}[.!?…]*",
+                    r"(?:\s+(?:(?:of|the|and|de|del|van|von|da|di)\s+)?"
+                    r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*){1,4}[.!?…]*",
                     candidate)) for candidate in matching_targets)
                 and not {word.casefold() for word in re.findall(
                     r"[A-Za-zÀ-ÖØ-öø-ÿ]+", visible)}.intersection({
@@ -12255,7 +12263,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         str(idx) for idx, _ts, text in output_dialogue
         if sdh_cleaner._src_has_plain_speaker_label(
             output_source_map.get(str(idx), ""))
-        and sdh_cleaner._TR_PLAIN_SPEAKER_LABEL_RE.search(str(text or ""))
+        and sdh_cleaner._target_has_source_plain_speaker_label(
+            str(text or ""), output_source_map.get(str(idx), ""))
     ]
     residual_literal_newline_cues = sum(
         "\\n" in text and "\\n" not in output_source_map.get(str(idx), "")

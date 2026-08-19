@@ -602,6 +602,22 @@ class SdhSourceDrivenTest(unittest.TestCase):
             },
         )
 
+    def test_plain_source_prefix_does_not_delete_multiline_colon_prose(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000",
+             "Benim bakış açıma göre durum şu: bu\nyazı sistemlerinin ortak yanı"),
+            ("2", "00:00:02,000 --> 00:00:03,000",
+             "Ama artık ben olmayacağım:\nölü olacağım."),
+        ]
+        src_map = _src(**{
+            "1": "NTP: La forma en que lo veo es esta:",
+            "2": "BUT I WON'T BE ME ANYMORE:\nI'LL BE DEAD.",
+        })
+        self.assertEqual(
+            sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True),
+            blocks,
+        )
+
     def test_matching_plain_speaker_label_only_is_still_removed(self):
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Matt:")]
         src_map = _src(**{"1": "Matt: hello there."})
