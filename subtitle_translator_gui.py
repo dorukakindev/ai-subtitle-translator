@@ -4386,6 +4386,42 @@ def _missing_predicate_ids(blocks) -> list:
 # Gerçek olay (2026-08-20): 'Barthou/Bartu', 'Dahlia/Dalya', 'Lee' aynı dosyada iki
 # biçimde geçti; hiçbiri sözlükte olmadığı için _normalize_mixed_terms (sözlüğe
 # çapalı çalışır) onları toparlayamadı.
+# Büyük harfle yazılır ama Türkçede KARŞILIĞI OLAN sınıflar. Bunlar kimlikle
+# kilitlenirse ana modele "çevirme" denmiş olur ve altyazıda 'Jesus', 'French',
+# 'King' İngilizce kalır (2026-08-20 canlı koşusu tam olarak bunu yaptı).
+# Sıklık tek başına özel ad kanıtı değildir; bu sınıflar hiç kilitlenmez.
+_AUTOLOCK_TRANSLATABLE_STOPS = frozenset({
+    # ulus / dil / bölge sıfatları
+    "french", "english", "german", "spanish", "italian", "greek", "roman",
+    "russian", "turkish", "chinese", "japanese", "arab", "arabic", "jewish",
+    "hebrew", "latin", "persian", "egyptian", "indian", "american", "british",
+    "irish", "scottish", "welsh", "dutch", "danish", "swedish", "norwegian",
+    "polish", "czech", "hungarian", "portuguese", "brazilian", "african",
+    "european", "asian", "western", "eastern", "northern", "southern",
+    "france", "england", "germany", "spain", "italy", "greece", "russia",
+    # din / mitoloji
+    "god", "jesus", "christ", "christian", "christianity", "catholic",
+    "protestant", "muslim", "islam", "islamic", "judaism", "buddha",
+    "buddhist", "hindu", "bible", "gospel", "testament", "church", "lord",
+    "saint", "pope", "devil", "satan", "heaven", "hell", "genesis", "eden",
+    "moses", "virgin", "apostle", "angel", "holy", "spirit", "ghost",
+    "prophet", "koran", "quran", "torah", "messiah", "trinity", "paradise",
+    # unvan / rütbe / akrabalık
+    "king", "queen", "prince", "princess", "duke", "duchess", "emperor",
+    "empress", "president", "doctor", "professor", "captain", "general",
+    "lady", "madam", "father", "mother", "brother", "sister", "uncle",
+    "aunt", "grandmother", "grandfather",
+    # sık büyük harfli ortak adlar
+    "earth", "moon", "sun", "nature", "state", "government", "parliament",
+    "court", "empire", "republic", "revolution", "world", "university",
+    "museum", "north", "south", "east", "west", "voiceover", "narrator",
+    "man", "woman", "boy", "girl", "people",
+    # gün / ay
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "january", "february", "march", "april", "june", "july",
+    "august", "september", "october", "november", "december",
+})
+
 _AUTOLOCK_MIN_OCCURRENCES = 3
 _AUTOLOCK_MIN_LENGTH = 4
 _AUTOLOCK_WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
@@ -4396,16 +4432,19 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
     """Kaynakta 3+ kez geçen özel ad adaylarını kimlik eşlemesiyle döner.
 
     Kimlik eşlemesi ('Barthou' -> 'Barthou') sözlüğe girince karışık-terim
-    düzeltmesi ('Bartu') o terimi kilitli doğruya çekebiliyor.
+    düzeltmesi ('Bartu') o terimi kilitli doğruya çekebiliyor. Hedef sınıf
+    TEKRAR EDEN SOYADLARIDIR; sıklık tek başına özel ad kanıtı değildir.
 
-    ÜÇ ELEME (2026-08-20 gerçek koşusu: Gateways To The Otherworld dosyasında
-    'King', 'Pyramid', 'Chamber', 'Earth', 'Holy', 'Great' kimlikle kilitlenmiş,
-    yani ana modele "bunları ÇEVİRME" denmişti — sözlüğün kendisinde
-    'Great Pyramid': 'Büyük Piramit' yazarken):
+    BEŞ ELEME (2026-08-20 canlı koşuları: 'King', 'Pyramid', 'Chamber', 'Earth',
+    'German', 'Jesus', 'French', 'Golden', 'Dawn' kimlikle kilitlenmiş, yani ana
+    modele "bunları ÇEVİRME" denmişti):
       1. cümle başı: yalnız cümle İÇİNDE de büyük harfli adaylar,
       2. kaynakta küçük harfle DE geçen kelime ortak addır ('pyramid'/'Pyramid'),
-      3. sözlükteki çok kelimeli bir terimin parçası olan kelime
-         ("King's Chamber" varsa 'King' ayrıca kilitlenmez)."""
+      3. sözlükteki çok kelimeli bir terimin parçası ("King's Chamber" → 'King'),
+      4. Türkçe karşılığı olan sınıflar (ulus/din/unvan; _AUTOLOCK_TRANSLATABLE_STOPS
+         ve exonim tablosu),
+      5. hiç TEK BAŞINA geçmeyen kelime ('Golden' hep 'Golden Dawn' içinde) — çok
+         kelimeli ad, tek tek kilitlenecek bir birim değildir."""
     text = str(source_text or "")
     if not text.strip():
         return {}
@@ -4416,9 +4455,11 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             known.add(part.casefold())
     counts: dict = {}
     midsentence: dict = {}
+    standalone: dict = {}
     lowercase_seen = set()
     for sentence in re.split(r"(?<=[.!?…])\s+|\n", text):
         matches = list(_AUTOLOCK_WORD_RE.finditer(sentence))
+        forms = [match.group(0) for match in matches]
         for position, match in enumerate(matches):
             word = match.group(0)
             if len(word) < _AUTOLOCK_MIN_LENGTH:
@@ -4432,6 +4473,11 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             counts[key] = counts.get(key, 0) + 1
             if position > 0:
                 midsentence[key] = midsentence.get(key, 0) + 1
+            before_caps = position > 1 and forms[position - 1][:1].isupper()
+            after_caps = (position + 1 < len(forms)
+                          and forms[position + 1][:1].isupper())
+            if not before_caps and not after_caps:
+                standalone[key] = standalone.get(key, 0) + 1
             counts.setdefault(f"__form__{key}", word)
     locked = {}
     for key, count in counts.items():
@@ -4439,7 +4485,11 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             continue
         if key in known or not midsentence.get(key):
             continue
-        if key in lowercase_seen or key in _SHIFT_TOKEN_STOPS:
+        if not standalone.get(key):
+            continue
+        if (key in lowercase_seen or key in _SHIFT_TOKEN_STOPS
+                or key in _AUTOLOCK_TRANSLATABLE_STOPS
+                or key in _FOREIGN_EXONYM_MAP):
             continue
         locked[counts[f"__form__{key}"]] = counts[f"__form__{key}"]
     return locked

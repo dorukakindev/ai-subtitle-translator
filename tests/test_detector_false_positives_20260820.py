@@ -289,6 +289,26 @@ class AutoLockGuardTest(unittest.TestCase):
         locked = g.auto_locked_proper_nouns(self.PYRAMID)
         self.assertEqual(locked.get("Schumann"), "Schumann")
 
+    def test_translatable_capitalised_classes_are_never_locked(self):
+        # Canlı koşu 2026-08-20: bu üçü kimlikle kilitlenip İngilizce kalıyordu.
+        source = ("Jesus spoke to the crowd. The French king listened. "
+                  "Later Jesus left, and the French court followed the king. "
+                  "Everyone praised Jesus, the French and the king alike.")
+        locked = g.auto_locked_proper_nouns(source)
+        for word in ("Jesus", "French", "King", "king"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, locked)
+
+    def test_word_that_never_stands_alone_is_not_locked(self):
+        # 'Golden Dawn' çok kelimeli bir addır; 'Golden' tek başına kilitlenmez.
+        source = ("He joined the Golden Dawn in London. The Golden Dawn met "
+                  "there often. Members of the Golden Dawn kept notes. "
+                  "Mathers led them; Mathers wrote the rituals, and Mathers "
+                  "stayed for years.")
+        locked = g.auto_locked_proper_nouns(source)
+        self.assertNotIn("Golden", locked)
+        self.assertNotIn("Dawn", locked)
+        self.assertEqual(locked.get("Mathers"), "Mathers")
     def test_repeated_surnames_still_lock(self):
         source = ("Louis Barthou arrived in Marseille. The king met Barthou "
                   "there. Later Barthou was shot. Everyone mourned Barthou. "
