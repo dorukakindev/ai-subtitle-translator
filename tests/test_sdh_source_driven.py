@@ -346,6 +346,33 @@ class SdhSourceDrivenTest(unittest.TestCase):
         result = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
         self.assertNotIn("1", [b[0] for b in result])
 
+    def test_documentary_command_language_and_ritual_sdh_are_dropped(self):
+        cases = (
+            ("[foreign language]", "[YABANCI DİLDE]"),
+            ("[battle commands]", "[SAVAŞ KOMUTLARI]"),
+            ("[commands]", "[KOMUTLAR]"),
+            ("[religious ceremonies]", "[DİNİ TÖRENLER]"),
+            ("[bagpipers]", "[GAYDACILAR]"),
+            ("[drum roll]", "[DAVUL RULOSU]"),
+            ("[festivity]", "[ŞENLİK]"),
+            ("[banging hammer]", "[ÇEKİÇ DARBESİ]"),
+        )
+        for source, target in cases:
+            with self.subTest(source=source):
+                self.assertTrue(sdh.src_is_sfx_only(source))
+                result = sdh.clean_sdh_blocks(
+                    [("1", "00:00:01,000 --> 00:00:02,000", target)],
+                    src_map=_src(**{"1": source}), source_driven=True)
+                self.assertEqual(result, [])
+
+    def test_inline_rubbing_stone_label_is_stripped(self):
+        self.assertEqual(
+            sdh.strip_labels_by_source(
+                "birinin bunu yapmasıyla başladı: [taş ovalama]?",
+                "with somebody doing this: [rubbing stone]?"),
+            "birinin bunu yapmasıyla başladı: ?",
+        )
+
     def test_technical_or_dialogue_parentheses_are_not_sfx_only(self):
         for text in (
                 "[OK]", "(No.)", "(f(x))", "(Hey!)", "(#1 choice)",

@@ -316,7 +316,13 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
         return True
     if key in {
             "non english", "unintelligible speech", "indistinct speech",
-            "on tv", "on recording", "together", "clears throat"}:
+            "on tv", "on recording", "together", "clears throat",
+            "foreign language", "battle commands", "commands",
+            "religious ceremonies", "bagpipers", "drum roll", "festivity",
+            "banging hammer", "rubbing stone",
+            "yabanci dilde", "savas komutlari", "komutlar",
+            "dini torenler", "gaydacilar", "davul rulosu", "senlik",
+            "cekic darbesi", "tas ovalama"}:
         return True
 
     words = key.split()
