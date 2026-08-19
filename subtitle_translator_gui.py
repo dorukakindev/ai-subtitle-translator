@@ -2433,8 +2433,9 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
     """Bloğu en fazla max_lines satıra böler. Mevcut satırları korur ve kalan
     bütçe oldukça HER TUR en uzun satırı kırar — toplam satır sayısı ASLA
     max_lines'ı aşmaz (EBU). Zaten max_lines satıra ulaşmışsa dokunmaz
-    (model'in kendi kırmasına saygı). duration verilirse, CPS sınırını aşan
-    satırları da kırmaya çalışır."""
+    (model'in kendi kırmasına saygı). `duration` çağrı uyumluluğu için korunur
+    ama kullanılmaz: satır sayısını artırmak okuma hızını (CPS) değiştirmez;
+    CPS sorunları condense geçişinin işidir."""
     if not text:
         return text
     lines = text.split('\n')
