@@ -656,14 +656,19 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertFalse(any(text == "discord: ceviri2" for _i, _ts, text in result))
         self.assertEqual(result[0][2], "[ÇEVİRİ EKSİK]")
 
-    def test_non_turkish_output_is_unchanged(self):
+    def test_non_turkish_output_skips_turkish_specific_steps_only(self):
+        """Yabancı hedefte dil bağımsız temizlik ÇALIŞIR, Türkçeye özgü olan
+        adımlar (şapkalı harf düzleştirme, discord imzası) çalışmaz."""
         blocks = [
             ("1", "00:00:01,000 --> 00:00:02,000", r"{\pos(1,2)}Hâlâ"),
         ]
+        result = gui._prepare_upload_ready_blocks(blocks, "English")
         self.assertEqual(
-            gui._prepare_upload_ready_blocks(blocks, "English"),
-            blocks,
+            result,
+            [("1", "00:00:01,000 --> 00:00:02,000", "Hâlâ")],
         )
+        self.assertFalse(
+            any(text == gui._DELIVERY_SIGNATURE for _idx, _ts, text in result))
 
     def test_zero_start_does_not_get_overlapping_head_signature(self):
         blocks = [

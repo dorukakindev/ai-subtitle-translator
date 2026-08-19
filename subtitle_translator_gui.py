@@ -3666,6 +3666,50 @@ def _positional_credit_ids(rows) -> set:
     return found
 
 
+def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
+    """DİSKE YAZILAN blokları deterministik olarak tarar.
+
+    scan_translation_quality birleştirme ve teslim temizliği ÖNCESİ listeye bakar
+    (bkz. _maybe_merge_cues docstring'i): birleştirmenin ürettiği CPS aşımları,
+    teslimde düşen cue'lar ve kalan eksik-çeviri işaretleri hiçbir taramaya
+    girmiyordu. Bu tarama API kullanmaz, yalnız sayar ve loglar."""
+    blocks = list(blocks or [])
+    stats = {
+        "missing": 0, "duplicates": 0, "cps": 0, "over_width": 0,
+        "over_lines": 0,
+    }
+    for _idx, ts, text in blocks:
+        value = str(text or "")
+        if value.startswith("[HATA") or value.strip() == "[ÇEVİRİ EKSİK]":
+            stats["missing"] += 1
+            continue
+        lines = value.split("\n")
+        if len(lines) > _MAX_LINES:
+            stats["over_lines"] += 1
+        if any(len(line) > _LINE_THRESHOLD for line in lines):
+            stats["over_width"] += 1
+        try:
+            duration = max(_ts_end_sec_gui(ts) - _ts_to_sec_gui(ts), 0.1)
+            if len(value.replace("\n", "")) / duration > CPS_WARN_LIMIT:
+                stats["cps"] += 1
+        except Exception:
+            pass
+    stats["duplicates"] = _delivery_duplicate_count(blocks, source_cues)
+    if log_fn:
+        problems = [
+            (stats["missing"], "eksik çeviri"),
+            (stats["duplicates"], "bitişik yineleme"),
+            (stats["cps"], f"CPS>{CPS_WARN_LIMIT}"),
+            (stats["over_width"], f">{_LINE_THRESHOLD} karakter satır"),
+            (stats["over_lines"], f">{_MAX_LINES} satır"),
+        ]
+        summary = ", ".join(
+            f"{count} {label}" for count, label in problems if count)
+        if summary:
+            log_fn(f"Teslim taraması ({len(blocks)} cue): {summary}", "warn")
+    return stats
+
+
 def _delivery_duplicate_count(blocks, source_cues) -> int:
     """Teslim edilen dosyada BİTİŞİK yinelenen cue sayısı (deterministik).
 
@@ -3674,7 +3718,10 @@ def _delivery_duplicate_count(blocks, source_cues) -> int:
     sessizce teslime kadar geliyordu. Buradaki sayım kalite raporunda dosya
     başına ayrı bir satır olarak görünür."""
     try:
-        src_map = _source_map_for_quality_blocks(list(blocks), source_cues)
+        # Zaman aralığı tabanlı eşleme ŞART: parçalı cue birleştirme çıktı
+        # kimliklerini 1..N yeniden numaralandırıyor; id tabanlı eşleme birleşmiş
+        # dosyalarda cue'yu YANLIŞ kaynakla karşılaştırıyordu.
+        src_map = _delivery_source_map(list(blocks), source_cues)
         seq = [
             (str(idx), _align_visible(str(text or "")))
             for idx, _ts, text in blocks
@@ -4083,9 +4130,15 @@ def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int
 
 def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                                  log_fn=None, source_cues=None) -> list:
-    if normalize_language_name(target_language, allow_auto=False) != "Turkish":
-        return list(blocks or [])
+    """Diske yazılmadan önceki son teslim temizliği.
 
+    Türkçeye ÖZGÜ adımlar (şapkalı harf düzleştirme, cümle düzenine indirme,
+    Türkçe SDH kalıntısı, discord imzası) yalnız Türkçe hedefte çalışır; kaynak
+    güdümlü ve dil bağımsız adımlar (SDH/kredi cue'su düşürme, konum etiketi
+    temizliği, boş cue işaretleme) HER hedefte çalışır — eskiden ilk satırdaki
+    erken `return` yüzünden yabancı dil çıktılarında hiçbiri çalışmıyordu."""
+    is_turkish = normalize_language_name(
+        target_language, allow_auto=False) == "Turkish"
     blocks = list(blocks or [])
     removable_source_ids = (
         _delivery_removable_source_ids(source_cues) if source_cues else set())
@@ -4112,11 +4165,14 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         blocks = clean_sdh(blocks, src_map=sdh_src_map, source_driven=True)
         blocks, quote_markers_fixed = _normalize_delivery_ocr_quote_markers(
             blocks, src_map)
-        blocks, caps_normalized = _normalize_all_caps_delivery(blocks, src_map)
-        if caps_normalized and log_fn:
-            log_fn(
-                f"Teslim: {caps_normalized} satır BÜYÜK HARF kaynaktan normal "
-                "cümle düzenine indirildi", "info")
+        if is_turkish:
+            # Cümle düzenine indirme Türkçe harf kurallarına (I/İ) bağlı.
+            blocks, caps_normalized = _normalize_all_caps_delivery(
+                blocks, src_map)
+            if caps_normalized and log_fn:
+                log_fn(
+                    f"Teslim: {caps_normalized} satır BÜYÜK HARF kaynaktan normal "
+                    "cümle düzenine indirildi", "info")
 
     work = []
     hats_removed = 0
@@ -4140,9 +4196,17 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 line for i, line in enumerate(value_lines)
                 if i not in source_credit_lines
             )
-        hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
-        value = value.translate(_DELIVERY_HAT_MAP).strip()
+        if is_turkish:
+            # Şapkalı harf düzleştirme Türkçe teslim konvansiyonudur.
+            hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
+            value = value.translate(_DELIVERY_HAT_MAP)
+        value = value.strip()
         if not value:
+            # Kaynağı gerçek diyalogsa boş cue'yu SESSİZCE düşürme: görünür
+            # işaretle bırak ki hem raporda sayılsın hem dosya 'tam' sayılmasın.
+            if source_text.strip() and not _source_cue_is_delivery_removable(
+                    source_text):
+                work.append((idx, ts, "[ÇEVİRİ EKSİK]"))
             continue
         if _is_delivery_sdh_only(value):
             sdh_removed += 1
@@ -4165,7 +4229,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         str(text or "").startswith("[HATA")
         or "[ÇEVİRİ EKSİK]" in str(text or "")
         for _idx, _ts, text in cleaned)
-    if cleaned and not unresolved:
+    # discord imzası Türkçe teslim konvansiyonudur; yabancı dil çıktısına eklenmez.
+    if cleaned and not unresolved and is_turkish:
         if any(str(idx) == "0" for idx, _ts, _text in cleaned):
             cleaned = [
                 (str(int(str(idx)) + 1) if str(idx).isdigit() else idx, ts, text)
@@ -4208,7 +4273,15 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         cleaned = _normalize_delivery_ids(cleaned)
 
     if log_fn:
-        if unresolved:
+        if not is_turkish and cleaned:
+            log_fn(
+                f"Nihai teslim koruması ({target_language}): "
+                f"{credits_removed} kredi cue'su, {position_tags_removed} konum "
+                f"kodu, {sdh_removed} SDH cue'su temizlendi "
+                "(Türkçeye özgü adımlar atlandı)",
+                "ok",
+            )
+        elif unresolved:
             log_fn(
                 "Nihai teslim koruması: eksik çeviri işareti kaldığı için "
                 "baş/son imza eklenmedi",
@@ -7128,7 +7201,17 @@ def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
         sid = str(idx)
         source_ids.add(sid)
         if sid in existing:
-            ordered.append(existing[sid])
+            block = existing[sid]
+            # VAR AMA BOŞ cue de kayıptır: clean_sdh kaynağı gerçek diyalog olan
+            # boş çeviriyi onarım beklentisiyle korur, ama teslim hazırlığı boş
+            # metni düşürdüğü için satır sessizce yok oluyordu (üstelik [HATA]
+            # olmadığı için raporda da sayılmıyordu).
+            if (not str(block[2] or "").strip() and src.strip()
+                    and not _source_cue_is_delivery_removable(src)):
+                ordered.append((block[0], block[1], "[HATA]"))
+                inserted += 1
+            else:
+                ordered.append(block)
         elif src.strip() and not _source_cue_is_delivery_removable(src):
             ordered.append((idx, ts, "[HATA]"))
             inserted += 1
@@ -11149,6 +11232,24 @@ def _post_ui(self, fn, *args, **kwargs):
     if ui_q is not None:
         ui_q.put((fn, args, kwargs))
 
+def _hata_index_entries(blocks) -> list:
+    """Eksik çeviri kalan cue'ları '#id (00:12:34)' biçiminde döner.
+
+    Kalite raporu bu listeyi `hata_indices` alanından okuyordu ama HİÇBİR akış onu
+    doldurmuyordu: rapor yalnız sayıyı gösteriyor, hangi cue olduğunu asla
+    söylemiyordu. Zaman damgası da eklenir — parçalı cue birleştirme çıktı
+    kimliklerini yeniden numaralandırdığı için tek başına id kaynakla
+    karşılaştırmaya yetmiyor."""
+    entries = []
+    for idx, ts, text in blocks or []:
+        value = str(text or "")
+        if not (value.startswith("[HATA") or value.strip() == "[ÇEVİRİ EKSİK]"):
+            continue
+        stamp = str(ts or "").split("-->")[0].strip().split(",")[0]
+        entries.append(f"{idx} ({stamp})" if stamp else str(idx))
+    return entries
+
+
 def _count_hata_cps(blocks) -> tuple:
     """(idx, ts, text) bloklarında eksik çeviri ve CPS aşımı sayısını döner."""
     hata = cps_n = 0
@@ -13277,7 +13378,13 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                 lines.append(f"   {shown_label.ljust(width)} : {r[key]}")
         hata_idxs = r.get("hata_indices")
         if hata_idxs:
-            idx_str = ", ".join(str(i) for i in sorted(hata_idxs))
+            def _hata_sort_key(value):
+                # Girişler '412 (00:12:34)' olabilir; sayısal id'ye göre sırala.
+                match = re.match(r"\s*(\d+)", str(value))
+                return (0, int(match.group(1))) if match else (1, str(value))
+
+            idx_str = ", ".join(
+                str(i) for i in sorted(hata_idxs, key=_hata_sort_key))
             lines.append(f"   >>> [ÇEVİRİ EKSİK] kalan satır indeksleri: {idx_str}")
         passes = r.get("pass_coverage", "")
         if passes:
@@ -31532,7 +31639,9 @@ class App(ctk.CTk):
             # birleştirme/AI segmentasyonun ürettiği CPS ve cue değişimleri rapora
             # hiç yansımıyordu (rapor çıktıyla uyuşmuyordu).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-            _dup_n = _delivery_duplicate_count(_delivery_blocks, cues)
+            _delivery_scan = _scan_delivery_blocks(_delivery_blocks, cues, self._log)
+            _dup_n = _delivery_scan["duplicates"]
+            _hata_idx = _hata_index_entries(_delivery_blocks)
             _has_missing = _hata_n > 0
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
             self._record_file_status(filepath, "Dosya Yazımı", "running")
@@ -31635,6 +31744,7 @@ class App(ctk.CTk):
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "dup": _dup_n,
+                "hata_indices": _hata_idx,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "pass_fix": _pass_fix,
                 "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
@@ -34118,7 +34228,9 @@ class App(ctk.CTk):
                 source_cues=_src_cues)
             # İstatistikler teslim bloklarından sayılır (bkz. _run_sync).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-            _dup_n = _delivery_duplicate_count(_delivery_blocks, _src_cues)
+            _delivery_scan = _scan_delivery_blocks(_delivery_blocks, _src_cues, self._log)
+            _dup_n = _delivery_scan["duplicates"]
+            _hata_idx = _hata_index_entries(_delivery_blocks)
             _has_missing = _hata_n > 0
             _write_path = out_path
             if _has_missing:
@@ -34212,6 +34324,7 @@ class App(ctk.CTk):
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "dup": _dup_n,
+                "hata_indices": _hata_idx,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "rev": _rev_fixes, "warn": w,
                 "pass_fix": _pass_fix,
@@ -35706,7 +35819,9 @@ class App(ctk.CTk):
                         )
                     # İstatistikler diske yazılan teslim bloklarından (bkz. _run_sync)
                     _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-                    _dup_n = _delivery_duplicate_count(_delivery_blocks, cues)
+                    _delivery_scan = _scan_delivery_blocks(_delivery_blocks, cues, self._log)
+                    _dup_n = _delivery_scan["duplicates"]
+                    _hata_idx = _hata_index_entries(_delivery_blocks)
                     _cps_avg, _cps_max = _cps_stats(_delivery_blocks)
                     _pass_fix = sum(
                         1 for block in _final_blocks
@@ -35855,7 +35970,9 @@ class App(ctk.CTk):
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu).
                 # Sayım diske yazılan teslim bloklarından yapılır (bkz. _run_sync).
                 _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-                _dup_n = _delivery_duplicate_count(_delivery_blocks, cues)
+                _delivery_scan = _scan_delivery_blocks(_delivery_blocks, cues, self._log)
+                _dup_n = _delivery_scan["duplicates"]
+                _hata_idx = _hata_index_entries(_delivery_blocks)
                 _pass_fix = sum(
                     1 for block in _final_blocks
                     if _pre_pass.get(str(block[0])) not in (None, block[2]))
@@ -35880,6 +35997,7 @@ class App(ctk.CTk):
                     "total": len(_final_blocks),
                     "hata": _hata_n, "cps": _cps_n,
                     "dup": _dup_n,
+                    "hata_indices": _hata_idx,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                     "cons": _cons_fixes, "pass_fix": _pass_fix,
                     "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
