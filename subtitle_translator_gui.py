@@ -2526,6 +2526,47 @@ def _rebalance_line_breaks(blocks: list) -> tuple[list, int]:
     return out, fixed
 
 
+# İki satırlı ama satırları çok geniş cue. _break_to_line_budget zaten 2 satıra
+# ulaşmış cue'ya dokunmaz (satır sayısı EBU sınırında) — ama satır GENİŞLİĞİ
+# sınırını denetleyen kimse yoktu: gerçek koşuda 303 cue'nun 76'sında satır
+# 42 karakteri aşıyordu. Satır sayısını artırmadan kelimeleri iki satıra yeniden
+# dağıtmak çoğunu çözer; toplam 2*eşiği aşan cue'lar condense işidir.
+def _redistribute_two_lines(text: str, threshold: int = None) -> str:
+    """İki satırlı cue'da en uzun satırı daraltacak şekilde bölme noktasını taşır."""
+    limit = _LINE_THRESHOLD if threshold is None else threshold
+    value = str(text or "")
+    lines = value.split("\n")
+    if len(lines) != 2:
+        return value
+    if _is_dialogue_cue(value):
+        return value  # '- A' / '- B' iki ayrı konuşmacı, satırlar birleştirilemez
+    if "<" in value or "{" in value:
+        return value  # etiketli cue: kelimeleri taşımak italik sınırını kaydırır
+    first, second = lines[0].strip(), lines[1].strip()
+    if not first or not second:
+        return value
+    current = max(_visible_len(first), _visible_len(second))
+    if current <= limit:
+        return value
+    words = f"{first} {second}".split(" ")
+    if len(words) < 2:
+        return value
+    best, best_width = None, current
+    for cut in range(1, len(words)):
+        left = " ".join(words[:cut])
+        right = " ".join(words[cut:])
+        width = max(_visible_len(left), _visible_len(right))
+        if width < best_width:
+            best, best_width = (left, right), width
+    if best is None or best_width > limit:
+        # Hiçbir dağılım sınırı sağlamıyorsa (metin 2*eşikten uzun) modelin kendi
+        # anlamsal bölmesi korunur; bu bir condense işidir, teslim taraması raporlar.
+        return value
+    candidate = _rebalance_line_break(best[0] + "\n" + best[1])
+    if any(_visible_len(line) > limit for line in candidate.split("\n")):
+        return value  # dengeleme kelimeyi geri taşıyıp sınırı yeniden aşıyor
+    return candidate
+
 def apply_line_breaks(blocks: list) -> list:
     """Her bloğu en fazla _MAX_LINES satıra böler (EBU) ve satır sonundaki
     sarkan edat/bağlaçları doğru tarafa taşır (bkz. _rebalance_line_break)."""
@@ -2537,7 +2578,8 @@ def apply_line_breaks(blocks: list) -> list:
         except Exception:
             pass
         value = _break_to_line_budget(text, _MAX_LINES, duration=dur)
-        result.append((idx, ts, _rebalance_line_break(value)))
+        value = _rebalance_line_break(value)
+        result.append((idx, ts, _redistribute_two_lines(value)))
     return result
 
 

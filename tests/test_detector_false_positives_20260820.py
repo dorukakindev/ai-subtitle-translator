@@ -298,5 +298,45 @@ class AutoLockGuardTest(unittest.TestCase):
         self.assertEqual(locked.get("Barthou"), "Barthou")
         self.assertEqual(locked.get("Dahlia"), "Dahlia")
 
+class TwoLineWidthTest(unittest.TestCase):
+    """Model 2 satır ürettiğinde satır GENİŞLİĞİ denetlenmiyordu (gerçek koşu:
+    303 cue'nun 76'sında satır 42 karakteri aşıyordu)."""
+
+    def widths(self, value):
+        return [g._visible_len(line) for line in value.split("\n")]
+
+    def test_lopsided_two_line_cue_is_rebalanced(self):
+        value = ("Bu cümlenin ilk satırı gerçekten çok uzun ve sınırı aşıyor\n"
+                 "kısa")
+        out = g._redistribute_two_lines(value)
+        self.assertEqual(len(out.split("\n")), 2)
+        self.assertTrue(all(w <= g._LINE_THRESHOLD for w in self.widths(out)))
+
+    def test_dialogue_cue_is_never_rejoined(self):
+        value = ("- Sen ne yaptın burada bugün böyle uzun uzun konuşarak?\n"
+                 "- Hiçbir şey yapmadım.")
+        self.assertEqual(g._redistribute_two_lines(value), value)
+
+    def test_tagged_cue_is_left_alone(self):
+        value = "<i>Bu satır etiketli ve gerçekten çok uzun bir satır</i>\nkısa"
+        self.assertEqual(g._redistribute_two_lines(value), value)
+
+    def test_text_too_long_for_two_lines_keeps_model_break(self):
+        value = ("Bu iki satırın ikisi de kırk iki karakter sınırını aşıyor bak\n"
+                 "ve ikinci satır da aynı şekilde çok uzun duruyor işte")
+        self.assertEqual(g._redistribute_two_lines(value), value)
+
+    def test_compliant_cue_is_untouched(self):
+        value = "Zaten kısa bir satır\nikinci satır da kısa"
+        self.assertEqual(g._redistribute_two_lines(value), value)
+
+    def test_apply_line_breaks_uses_it(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:04,000",
+                   "Bu cümlenin ilk satırı gerçekten çok uzun ve sınırı aşıyor\nkısa")]
+        out = g.apply_line_breaks(blocks)
+        self.assertTrue(
+            all(g._visible_len(line) <= g._LINE_THRESHOLD
+                for line in out[0][2].split("\n")))
+
 if __name__ == "__main__":
     unittest.main()
