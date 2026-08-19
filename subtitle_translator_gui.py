@@ -3944,6 +3944,10 @@ _ADDRESS_INFORMAL_RE = re.compile(
     r"|(?<!\w)[^\W\d_]{2,}(?:dın|din|dun|dün|tın|tin|tun|tün)(?!\w)",
     re.IGNORECASE,
 )
+_ADDRESS_INFORMAL_PRONOUN_RE = re.compile(
+    r"(?<!\w)(?:sen|sana|seni|senin|seninle|sende|senden)(?!\w)",
+    re.IGNORECASE,
+)
 _ADDRESS_FORMAL_RE = re.compile(
     r"(?<!\w)(?:siz|size|sizi|sizin|sizinle|sizde|sizden)(?!\w)"
     r"|(?<!\w)[^\W\d_]{2,}(?:sınız|siniz|sunuz|sünüz)(?!\w)"
@@ -3970,22 +3974,19 @@ def detect_address_register_mix(blocks, minority_ratio: float = 0.10,
         value = str(text or "")
         if not value.strip() or value.startswith("[HATA"):
             continue
-        informal = [
-            match for match in _ADDRESS_INFORMAL_RE.findall(value) or []
-        ]
-        has_informal = any(
+        # Yalnız token bazlı sayım: 'resin', 'kesin', 'bütün' gibi hitap olmayan
+        # kelimeler _ADDRESS_FALSE_STEMS ile elenir. Ham regex sonucunu yedek
+        # olarak kullanmak bu elemeyi geçersiz kılar — kullanma.
+        has_informal = bool(_ADDRESS_INFORMAL_PRONOUN_RE.search(value)) or any(
             token.casefold() not in _ADDRESS_FALSE_STEMS
             for token in re.findall(r"[^\W\d_]+", value)
             if _ADDRESS_INFORMAL_RE.fullmatch(token)
-        ) or bool(re.search(
-            r"(?<!\w)(?:sen|sana|seni|senin|seninle|sende|senden)(?!\w)",
-            value, re.IGNORECASE))
+        )
         has_formal = bool(_ADDRESS_FORMAL_RE.search(value))
         if has_formal:
             formal_ids.append(str(idx))
-        elif has_informal or informal:
-            if not has_formal:
-                informal_ids.append(str(idx))
+        elif has_informal:
+            informal_ids.append(str(idx))
     informal_count, formal_count = len(informal_ids), len(formal_ids)
     total = informal_count + formal_count
     minority = min(informal_count, formal_count)
@@ -4234,17 +4235,23 @@ def _partial_echo_ids(blocks, src_map=None) -> list:
     return findings
 
 
-# ── Yüklemi kaybolan cue ─────────────────────────────────────────────────────
-# Death Scenes 3 #80: '...hastaneye gitmesine' — cümle yüklemsiz bitiyor.
-_DANGLING_CASE_END_RE = re.compile(
-    r"(?:[^\W\d_]+(?:ye|ya|[ae]|[ıiuü]|n[ıiuü]|[dt][ae]|[dt][ae]n|"
-    r"mesine|masına|mesini|masını|mek|mak|meye|maya))$",
+# ── Yüklemi kaybolan cue ────────────────────────────────────────────────────
+# Yüklemi kaybolan cue. Ölçüt DAR tutulur: yalnız FİİLİMSİ (mastar / -me-ma'lı ad)
+# ile biten cümleler. Düz ad çekimi ('eve', 'kapıyı') ölçüt yapılırsa 'Bugün eve
+# gitti.' gibi tamamen doğru cümleler işaretlenir — çekimli fiiller de ünlüyle
+# biter, ayırt edilemez.
+_DANGLING_VERBAL_NOUN_RE = re.compile(
+    r"(?:m[ae]sine|m[ae]sına|m[ae]sini|m[ae]sını|m[ae]sinde|m[ae]sında|"
+    r"m[ae]kten|m[ae]ktan|m[ae]ye|m[ae]ya|m[ae]yi|m[ae]yı|m[ae]k)$",
     re.UNICODE)
 _SENTENCE_END_PUNCT_RE = re.compile(r"[.!?…][\"'”’»]?$")
 
 
 def _missing_predicate_ids(blocks) -> list:
-    """İsim hâliyle/mastarla bitip sonraki cue'nun yeni cümle başlattığı cue'lar."""
+    """Fiilimsiyle bitip sonraki cue'nun yeni cümle başlattığı cue'lar.
+
+    Gerçek olay (Death Scenes 3 #80): '...hastaneye gitmesine.' — cümle yüklemsiz
+    bitiyor, kaynakta 'are unsuccessful' yüklemi var."""
     rows = list(blocks or [])
     findings = []
     for pos in range(len(rows) - 1):
@@ -4255,8 +4262,10 @@ def _missing_predicate_ids(blocks) -> list:
         if not _SENTENCE_END_PUNCT_RE.search(value):
             continue
         stripped = value.rstrip(".!?…\"'”’»").strip()
-        last_word = stripped.split()[-1].casefold() if stripped.split() else ""
-        if not last_word or not _DANGLING_CASE_END_RE.search(last_word):
+        words = stripped.split()
+        if not words:
+            continue
+        if not _DANGLING_VERBAL_NOUN_RE.search(words[-1].casefold()):
             continue
         next_value = _align_visible(str(rows[pos + 1][2] or "")).strip()
         first = next((char for char in next_value if char.isalpha()), "")
@@ -32623,7 +32632,9 @@ class App(ctk.CTk):
             # birleştirme/AI segmentasyonun ürettiği CPS ve cue değişimleri rapora
             # hiç yansımıyordu (rapor çıktıyla uyuşmuyordu).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-            _delivery_scan = _scan_delivery_blocks(_delivery_blocks, cues, self._log)
+            _delivery_scan = _scan_delivery_blocks(
+                _delivery_blocks, cues, self._log,
+                locked_terms=_locked_terms)
             _dup_n = _delivery_scan["duplicates"]
             _hata_idx = _hata_index_entries(_delivery_blocks)
             _has_missing = _hata_n > 0
@@ -35212,7 +35223,9 @@ class App(ctk.CTk):
                 source_cues=_src_cues)
             # İstatistikler teslim bloklarından sayılır (bkz. _run_sync).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-            _delivery_scan = _scan_delivery_blocks(_delivery_blocks, _src_cues, self._log)
+            _delivery_scan = _scan_delivery_blocks(
+                _delivery_blocks, _src_cues, self._log,
+                locked_terms=_locked_terms_for(fp))
             _dup_n = _delivery_scan["duplicates"]
             _hata_idx = _hata_index_entries(_delivery_blocks)
             _has_missing = _hata_n > 0
@@ -36809,7 +36822,9 @@ class App(ctk.CTk):
                         )
                     # İstatistikler diske yazılan teslim bloklarından (bkz. _run_sync)
                     _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-                    _delivery_scan = _scan_delivery_blocks(_delivery_blocks, cues, self._log)
+                    _delivery_scan = _scan_delivery_blocks(
+                        _delivery_blocks, cues, self._log,
+                        locked_terms=_locked_terms)
                     _dup_n = _delivery_scan["duplicates"]
                     _hata_idx = _hata_index_entries(_delivery_blocks)
                     _cps_avg, _cps_max = _cps_stats(_delivery_blocks)
@@ -36960,7 +36975,9 @@ class App(ctk.CTk):
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu).
                 # Sayım diske yazılan teslim bloklarından yapılır (bkz. _run_sync).
                 _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
-                _delivery_scan = _scan_delivery_blocks(_delivery_blocks, cues, self._log)
+                _delivery_scan = _scan_delivery_blocks(
+                    _delivery_blocks, cues, self._log,
+                    locked_terms=_locked_terms)
                 _dup_n = _delivery_scan["duplicates"]
                 _hata_idx = _hata_index_entries(_delivery_blocks)
                 _pass_fix = sum(
