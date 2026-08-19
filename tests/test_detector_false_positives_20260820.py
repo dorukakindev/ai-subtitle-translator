@@ -259,5 +259,44 @@ class SourceResidueScopeTest(unittest.TestCase):
                 locked_terms={"machine": "machine"}),
             [])
 
+class AutoLockGuardTest(unittest.TestCase):
+    """Gerçek koşu (2026-08-20): 'King', 'Pyramid', 'Chamber' kimlikle kilitlenip
+    ana modele "çevirme" denmişti."""
+
+    PYRAMID = (
+        "The Great Pyramid holds a secret. Inside the Great Pyramid there is a "
+        "chamber. The King's Chamber sits at the heart of the pyramid. "
+        "A second chamber lies below the Chamber of the Queen. The pyramid was "
+        "built for a king, and the Chamber was sealed. Schumann measured the "
+        "resonance. The Schumann resonance is a real phenomenon; Schumann "
+        "published his resonance figures, and the resonance is measurable."
+    )
+
+    def test_common_nouns_that_also_appear_lowercase_are_not_locked(self):
+        locked = g.auto_locked_proper_nouns(self.PYRAMID)
+        for word in ("Pyramid", "Chamber", "chamber", "pyramid", "Resonance"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, locked)
+
+    def test_glossary_phrase_components_are_not_locked(self):
+        locked = g.auto_locked_proper_nouns(
+            self.PYRAMID, {"King's Chamber": "Kral Odası",
+                           "Schumann resonance": "Şumann rezonansı"})
+        self.assertNotIn("King", locked)
+        self.assertNotIn("Schumann", locked)
+
+    def test_real_proper_nouns_are_still_locked(self):
+        locked = g.auto_locked_proper_nouns(self.PYRAMID)
+        self.assertEqual(locked.get("Schumann"), "Schumann")
+
+    def test_repeated_surnames_still_lock(self):
+        source = ("Louis Barthou arrived in Marseille. The king met Barthou "
+                  "there. Later Barthou was shot. Everyone mourned Barthou. "
+                  "The Black Dahlia case shocked the city. Police read the "
+                  "Dahlia files. Reporters called her the Dahlia for weeks.")
+        locked = g.auto_locked_proper_nouns(source)
+        self.assertEqual(locked.get("Barthou"), "Barthou")
+        self.assertEqual(locked.get("Dahlia"), "Dahlia")
+
 if __name__ == "__main__":
     unittest.main()

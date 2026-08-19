@@ -4354,20 +4354,35 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
     """Kaynakta 3+ kez geçen özel ad adaylarını kimlik eşlemesiyle döner.
 
     Kimlik eşlemesi ('Barthou' -> 'Barthou') sözlüğe girince karışık-terim
-    düzeltmesi ('Bartu') o terimi kilitli doğruya çekebiliyor. Cümle başında
-    büyük harfle yazılan sıradan kelimeler elenir: yalnız CÜMLE İÇİNDE de büyük
-    harfle geçen adaylar kilitlenir."""
+    düzeltmesi ('Bartu') o terimi kilitli doğruya çekebiliyor.
+
+    ÜÇ ELEME (2026-08-20 gerçek koşusu: Gateways To The Otherworld dosyasında
+    'King', 'Pyramid', 'Chamber', 'Earth', 'Holy', 'Great' kimlikle kilitlenmiş,
+    yani ana modele "bunları ÇEVİRME" denmişti — sözlüğün kendisinde
+    'Great Pyramid': 'Büyük Piramit' yazarken):
+      1. cümle başı: yalnız cümle İÇİNDE de büyük harfli adaylar,
+      2. kaynakta küçük harfle DE geçen kelime ortak addır ('pyramid'/'Pyramid'),
+      3. sözlükteki çok kelimeli bir terimin parçası olan kelime
+         ("King's Chamber" varsa 'King' ayrıca kilitlenmez)."""
     text = str(source_text or "")
     if not text.strip():
         return {}
     known = {str(key).casefold() for key in (existing or {})}
+    # Sözlükteki çok kelimeli terimlerin parçaları da "biliniyor" sayılır.
+    for key in list(existing or {}):
+        for part in re.findall(r"[^\W\d_]{3,}", str(key), re.UNICODE):
+            known.add(part.casefold())
     counts: dict = {}
     midsentence: dict = {}
+    lowercase_seen = set()
     for sentence in re.split(r"(?<=[.!?…])\s+|\n", text):
         matches = list(_AUTOLOCK_WORD_RE.finditer(sentence))
         for position, match in enumerate(matches):
             word = match.group(0)
-            if len(word) < _AUTOLOCK_MIN_LENGTH or not word[0].isupper():
+            if len(word) < _AUTOLOCK_MIN_LENGTH:
+                continue
+            if not word[0].isupper():
+                lowercase_seen.add(word.casefold())
                 continue
             if word.isupper():
                 continue
@@ -4382,7 +4397,7 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             continue
         if key in known or not midsentence.get(key):
             continue
-        if key in _SHIFT_TOKEN_STOPS:
+        if key in lowercase_seen or key in _SHIFT_TOKEN_STOPS:
             continue
         locked[counts[f"__form__{key}"]] = counts[f"__form__{key}"]
     return locked
