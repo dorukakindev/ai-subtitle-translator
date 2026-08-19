@@ -111,6 +111,33 @@ _SDH_KEYWORDS = {
     "sputters", "sputtering", "audible", "dialogue", "dialonue", "cranks",
     "cranking", "revs", "idling", "chattering", "blowing", "distance",
     "rumbles", "heavily", "hitting", "revving",
+    # Kaynak dosya İngilizce olmayabilir: Fransızca/Almanca/İspanyolca/İtalyanca
+    # SDH tanımlayıcıları da silinmeli ('[rires]', '[Lachen]', '[risas]').
+    # (Anahtarlar _descriptor_key ile aksansız/küçük harfe indirgenerek aranır.)
+    # Fransızca
+    "rires", "rire", "rit", "soupir", "soupire", "musique", "applaudissements",
+    "cris", "crie", "chuchote", "chuchotement", "sanglots", "pleure",
+    "bruit", "bruits", "silence", "porte", "telephone", "sonnerie", "coup de feu",
+    "tonnerre", "explosion", "pas", "vent", "pluie", "inaudible", "indistinct",
+    "haletant", "grogne", "toux", "tousse", "sifflement",
+    # Almanca
+    "lachen", "lacht", "gelachter", "seufzt", "seufzen", "musik", "applaus",
+    "schreit", "schreie", "flustert", "flustern", "weint", "schluchzt",
+    "gerausch", "gerausche", "stille", "tur", "telefon", "klingelt", "schuss",
+    "donner", "explosion", "schritte", "wind", "regen", "unverstandlich",
+    "keucht", "stohnt", "hustet", "pfeift", "atmet",
+    # İspanyolca / Portekizce
+    "risas", "rie", "risa", "suspira", "suspiro", "musica", "aplausos",
+    "grita", "gritos", "susurra", "susurro", "llora", "sollozos", "ruido",
+    "silencio", "puerta", "telefono", "timbre", "disparo", "trueno",
+    "explosion", "pasos", "viento", "lluvia", "inaudible", "jadea", "tose",
+    "gruñe", "gruñido", "risos", "chora", "porta", "telefone", "passos",
+    "vento", "chuva", "ruido de fundo",
+    # İtalyanca
+    "risate", "ride", "sospira", "sospiro", "musica di sottofondo", "applausi",
+    "urla", "grida", "sussurra", "piange", "singhiozza", "rumore", "silenzio",
+    "porta", "telefono", "squillo", "sparo", "tuono", "esplosione", "passi",
+    "vento", "pioggia", "incomprensibile", "ansima", "tossisce",
 }
 
 _SPEAKER_WORDS = {
@@ -926,20 +953,30 @@ _SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?:[A-Z][A-Z0-9 .'\-]{1,30}(?:,\s*(?:VOICE[- ]OVER|V\.?O\.?))?|"
     r"[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?){0,2}):\s*"
 )
+# Konuşmacı/dış ses etiketleri yalnız Türkçe harf kümesiyle aranınca Almanca
+# (ERZÄHLER:), Fransızca (NARRATEUR:) ve İspanyolca (NARRADOR:) etiketleri son
+# altyazıda kalıyordu: harf sınıfları Latin aksanlarını, dış ses ekleri de
+# yabancı karşılıklarını kapsar.
+_UPPER_LETTER = r"A-ZÇĞİÖŞÜÀ-ÖØ-Þ"
+_ANY_LETTER = r"A-Za-zÇĞİÖŞÜçğıöşüÀ-ÖØ-öø-ÿ"
+_VOICE_OVER_ALT = (
+    r"SES ÜSTÜ|DIŞ SES|ANLATICI|V\.?O\.?|VOICE[- ]OVER|OFF|AUS DEM OFF|"
+    r"ERZÄHLER(?:IN)?|VOIX OFF|EN OFF|FUERA DE CAMPO|VOCE FUORI CAMPO"
+)
 _TR_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?m)(^|(?<=[.!?…]))(\s*(?:-\s*)?)"
-    r"(?:[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
-    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*(?=\S)|"
-    r"[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9 .'\-]{1,30}"
-    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*$)"
+    rf"(?:[{_UPPER_LETTER}][{_ANY_LETTER}0-9 .'\-]{{1,30}}"
+    rf"(?:,\s*(?:{_VOICE_OVER_ALT}))?:\s*(?=\S)|"
+    rf"[{_UPPER_LETTER}][{_UPPER_LETTER}0-9 .'\-]{{1,30}}"
+    rf"(?:,\s*(?:{_VOICE_OVER_ALT}))?:\s*$)"
 )
 _TR_LABEL_ONLY_RE = re.compile(
-    r"^\s*(?:-\s*)?[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
-    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?:\s*$")
+    rf"^\s*(?:-\s*)?[{_UPPER_LETTER}][{_ANY_LETTER}0-9 .'\-]{{1,30}}"
+    rf"(?:,\s*(?:{_VOICE_OVER_ALT}))?:\s*$")
 _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE = re.compile(
     r"(?m)(?:^|(?<=[.!?…]))\s*(?:-\s*)?"
-    r"(?P<label>[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]{1,30}"
-    r"(?:,\s*(?:SES ÜSTÜ|DIŞ SES|V\.?O\.?))?):\s*(?=\S)")
+    rf"(?P<label>[{_UPPER_LETTER}][{_ANY_LETTER}0-9 .'\-]{{1,30}}"
+    rf"(?:,\s*(?:{_VOICE_OVER_ALT}))?):\s*(?=\S)")
 _SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
     r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
 )

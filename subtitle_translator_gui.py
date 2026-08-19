@@ -2379,10 +2379,26 @@ def clean_sdh(blocks, src_map=None, source_driven=False):
 
 # ── Satır kırma optimizasyonu ─────────────────────────────────────────────────
 _LINE_THRESHOLD = 42   # Netflix/EBU standardı: satır başına max 42 karakter
-_MAX_LINES      = 3    # Bir blokta en fazla bu kadar satır
+# Netflix/EBU: bir cue EN FAZLA 2 satırdır. Önceki 3 değeri, hem genişlik hem de
+# (yanlış hesaplanan) CPS zorlaması yüzünden ekranı gereksiz dikey metinle
+# kapatan üç satırlık bloklar üretiyordu — çift konuşmacılı repliklerde de.
+_MAX_LINES      = 2    # Bir blokta en fazla bu kadar satır
 
+# Satır kırmada bağlaç önceliği. Hedef dil ne olursa olsun aynı tablo kullanılınca
+# Almanca/Fransızca/İspanyolca altyazılarda kırma noktası tamlama ortasına düşüyordu;
+# tablo çok dillidir ve tüm hedeflerde birlikte denenir (yanlış-pozitif riski yok:
+# eşleşme yalnızca kırma noktasına küçük bir bonus verir).
 _CONJ_RE = re.compile(
-    r'\b(ve|ama|fakat|ya da|veya|ancak|çünkü|oysa|lakin|ki|ise|ile|üstelik)\b',
+    r'\b('
+    r've|ama|fakat|ya da|veya|ancak|çünkü|oysa|lakin|ki|ise|ile|üstelik'          # tr
+    r'|and|but|or|because|although|while|so that|which|that|if|when'              # en
+    r'|und|aber|oder|weil|denn|obwohl|während|dass|wenn|damit'                    # de
+    r'|et|mais|ou|car|parce que|bien que|pendant que|que|si|quand|lorsque'        # fr
+    r'|y|e|pero|o|u|porque|aunque|mientras|que|si|cuando'                         # es
+    r'|ma|però|perché|anche se|mentre|che|se|quando'                              # it
+    r'|mas|porque|embora|enquanto|quando'                                         # pt
+    r'|maar|omdat|terwijl|hoewel|wanneer'                                         # nl
+    r')\b',
     re.IGNORECASE
 )
 
@@ -2421,37 +2437,17 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
     satırları da kırmaya çalışır."""
     if not text:
         return text
-    cps_limit = CPS_WARN_LIMIT
     lines = text.split('\n')
     while len(lines) < max_lines:
         en_i = max(range(len(lines)), key=lambda i: len(lines[i]))
-        needs_cps_break = False
-        if duration and duration > 0 and len(lines) > 1:
-            # En yüksek CPS'li satırı bul
-            max_cps = 0
-            max_cps_i = 0
-            for i, l in enumerate(lines):
-                lc = len(l.replace("\n", ""))
-                if lc > 0 and duration > 0:
-                    seg_cps = lc / duration
-                    if seg_cps > max_cps:
-                        max_cps = seg_cps
-                        max_cps_i = i
-            if max_cps > cps_limit and max_cps_i != en_i:
-                en_i = max_cps_i
-                needs_cps_break = True
-        if not needs_cps_break and len(lines[en_i]) <= _LINE_THRESHOLD:
+        # Bir cue'yu daha fazla satıra bölmek OKUMA HIZINI (CPS) DEĞİŞTİRMEZ: aynı
+        # karakterler aynı süre boyunca ekranda kalır. Eski CPS zorlaması bu yüzden
+        # yalnızca gereksiz satır üretiyordu; kırma ölçütü satır genişliğidir.
+        if len(lines[en_i]) <= _LINE_THRESHOLD:
             break
         pos = _find_best_split(lines[en_i])
         if pos is None:
-            if needs_cps_break:
-                # CPS yüksek ama bölünecek yer yok — kalan son uygun yeri dene
-                for attempt_pos in range(len(lines[en_i]) // 2, len(lines[en_i])):
-                    if lines[en_i][attempt_pos] == ' ':
-                        pos = attempt_pos
-                        break
-            if pos is None:
-                break
+            break
         first  = lines[en_i][:pos].rstrip()
         second = lines[en_i][pos:].lstrip()
         if not first or not second:
@@ -5395,18 +5391,26 @@ def _candidate_records_with_context(records, source_cues, translation_blocks,
     return records
 
 
-def _append_candidate_context(lines: list, record: dict):
+def _append_candidate_context(lines: list, record: dict,
+                              target_language: str = ""):
     before = list(record.get("context_before") or [])
     after = list(record.get("context_after") or [])
     if not before and not after:
         return
+    # Başlık hedef dile göre: Almanca/Fransızca çevirilerde rapora 'Türkçe: Hallo'
+    # yazılıyordu.
+    target_label = normalize_language_name(
+        target_language, allow_auto=False) or "Hedef"
+    if target_label == "Turkish":
+        target_label = "Türkçe"
     lines.append("Komşu bağlam (öneri öncesindeki altyazı):")
     for label, rows in (("önce", before), ("sonra", after)):
         for row in rows:
             lines.append(
                 f"  {label} #{row.get('id', '?')} | Kaynak: "
                 f"{row.get('source', '')}")
-            lines.append(f"                 Türkçe: {row.get('translation', '')}")
+            lines.append(
+                f"{' ' * 17}{target_label}: {row.get('translation', '')}")
 
 
 def _raw_src_map_from_cues(cues) -> dict:
@@ -5667,8 +5671,15 @@ def _is_locked_identity_translation(src_text: str, tr_text: str,
     return False
 
 
+# 'In 1990' kalıbını hedef dilin KENDİSİ de kullanır (Almanca/Felemenkçe): bu
+# dillerde tamamen doğru cümleler 'İngilizce sızıntı' sayılıp onarım döngüsüne
+# sokuluyordu.
+_ENGLISH_LEAK_PHRASE_EXEMPT_TARGETS = frozenset({"de", "nl", "en"})
+
+
 def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
-                         source_language: str | None = None) -> str:
+                         source_language: str | None = None,
+                         target_language: str | None = None) -> str:
     if not src_text:
         return ""
     if not tr_text:
@@ -5692,9 +5703,14 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
         for word in sorted(leaked):
             if re.search(rf'\b{re.escape(word)}\b', tr_text, re.I):
                 return f"partial_english_token:{word}"
-        for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text):
-            if match.group(0).lower() in tr_text.lower():
-                return f"partial_english_phrase:{match.group(0)}"
+        phrase_check_applies = (
+            target_language is None
+            or _lang_iso639_1(target_language)
+            not in _ENGLISH_LEAK_PHRASE_EXEMPT_TARGETS)
+        if phrase_check_applies:
+            for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text):
+                if match.group(0).lower() in tr_text.lower():
+                    return f"partial_english_phrase:{match.group(0)}"
     try:
         import hybrid_translate as ht
         if ht.is_vocalization_only_text(src_text):
@@ -5761,10 +5777,11 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
 
 
 def _is_untranslated(src_text: str, tr_text: str, *, locked_terms=None,
-                     source_language: str | None = None) -> bool:
+                     source_language: str | None = None,
+                     target_language: str | None = None) -> bool:
     return bool(_untranslated_reason(
         src_text, tr_text, locked_terms=locked_terms,
-        source_language=source_language))
+        source_language=source_language, target_language=target_language))
 
 
 def _chunk_src_map_from_request(req: dict) -> dict:
@@ -6146,7 +6163,8 @@ def _repair_candidate_rejection_reason(src: str, candidate: str, *, src_lang: st
     if not value:
         return "empty_after_cleanup"
     untranslated = _untranslated_reason(
-        src, value, locked_terms=locked_terms, source_language=src_lang)
+        src, value, locked_terms=locked_terms, source_language=src_lang,
+        target_language=tgt_lang)
     if untranslated:
         return untranslated
     if (_lang_iso639_1(tgt_lang) == "tr"):
@@ -26946,6 +26964,7 @@ class App(ctk.CTk):
         rejected_records = _candidate_records_with_context(
             rejected_records, source_cues, translation_blocks)
         status = dict(status or {})
+        _report_target_language = App._snap_get(self, "tgt_lang", "Turkish")
         user_skipped = status.get("status") == "user_skipped"
         if not applied_records and not rejected_records and not user_skipped:
             report_path.unlink(missing_ok=True)
@@ -26975,7 +26994,8 @@ class App(ctk.CTk):
             if applied_records:
                 lines.extend([
                     "YALNIZ RAPORLANAN ÖNERİLER" if report_only else "UYGULANAN DÜZELTMELER",
-                    ("Bu öneriler altyazıya uygulanmadı; mevcut Türkçe aynen korundu."
+                    (f"Bu öneriler altyazıya uygulanmadı; mevcut çeviri "
+                     f"({_report_target_language}) aynen korundu."
                      if report_only else ""),
                     "-" * 60, "",
                 ])
@@ -26985,12 +27005,13 @@ class App(ctk.CTk):
                     lines.append(f"Kaynak : {rec['source']}")
                 lines.append(f"Önce   : {rec['before']}")
                 lines.append(f"Sonra  : {rec['after']}")
-                _append_candidate_context(lines, rec)
+                _append_candidate_context(lines, rec, _report_target_language)
                 lines.append("")
             if rejected_records:
                 lines.extend([
                     "KORUNAN / REDDEDİLEN ÖNERİLER",
-                    "Bu öneriler altyazıya uygulanmadı; mevcut Türkçe aynen korundu.",
+                    f"Bu öneriler altyazıya uygulanmadı; mevcut çeviri "
+                    f"({_report_target_language}) aynen korundu.",
                     "-" * 60, "",
                 ])
                 for rec in rejected_records:
@@ -26999,7 +27020,7 @@ class App(ctk.CTk):
                         lines.append(f"Kaynak : {rec['source']}")
                     lines.append(f"Mevcut : {rec.get('before', '')}")
                     lines.append(f"Öneri  : {rec.get('candidate', '')}")
-                    _append_candidate_context(lines, rec)
+                    _append_candidate_context(lines, rec, _report_target_language)
                     lines.append("")
             atomic_write_text(report_path, "\n".join(lines), encoding="utf-8")
             self._log(
@@ -27024,6 +27045,7 @@ class App(ctk.CTk):
             status.get("rejected_candidates"), source_cues,
             translation_blocks)
         response_issues = list(status.get("response_issues") or [])
+        _report_target_language = App._snap_get(self, "tgt_lang", "Turkish")
         if not safe and not rejected and not response_issues:
             report_path.unlink(missing_ok=True)
             return
@@ -27053,7 +27075,7 @@ class App(ctk.CTk):
                     lines.append(f"Kaynak : {record.get('source', '')}")
                     lines.append(f"Mevcut : {record.get('before', '')}")
                     lines.append(f"Öneri  : {record.get('candidate', '')}")
-                    _append_candidate_context(lines, record)
+                    _append_candidate_context(lines, record, _report_target_language)
                     lines.append("")
             if rejected:
                 lines.extend([
@@ -27067,7 +27089,7 @@ class App(ctk.CTk):
                     lines.append(f"Kaynak : {record.get('source', '')}")
                     lines.append(f"Mevcut : {record.get('before', '')}")
                     lines.append(f"Öneri  : {record.get('candidate', '')}")
-                    _append_candidate_context(lines, record)
+                    _append_candidate_context(lines, record, _report_target_language)
                     lines.append("")
             if response_issues:
                 lines.extend(["JSON / KİMLİK SORUNLARI", "-" * 60])
