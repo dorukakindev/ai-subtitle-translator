@@ -3215,6 +3215,21 @@ def _analyze_context_openai_compatible(
     }
     recurring_terms = drop_quoted_work_title_terms(
         recurring_terms, source_blob, log_fn=log_fn)
+    # Model sözlüğe koymasa bile dosyada 3+ kez geçen özel adları KİLİTLE:
+    # karışık-terim düzeltmesi sözlüğe çapalı çalıştığı için, sözlükte olmayan
+    # ad ('Barthou' / 'Bartu') hiç toparlanamıyordu.
+    try:
+        from subtitle_translator_gui import auto_locked_proper_nouns
+        auto_locked = auto_locked_proper_nouns(source_blob, recurring_terms)
+    except Exception:
+        auto_locked = {}
+    if auto_locked:
+        recurring_terms = {**auto_locked, **recurring_terms}
+        if log_fn:
+            sample = ", ".join(list(auto_locked)[:6])
+            log_fn(
+                f"Sözlük: dosyada tekrar eden {len(auto_locked)} özel ad otomatik "
+                f"kilitlendi ({sample})", "info")
     scene_notes = data.get("scene_notes", [])
     if not isinstance(scene_notes, list):
         scene_notes = []
@@ -3863,6 +3878,10 @@ def build_system_prompt(
         "where speech has only a pause ('CAROL. BILL. THEIR SONS TOM AND JOHN.'). "
         "Re-punctuate for the target language: turn such list/appositive stops into "
         "commas and keep one final stop ('Carol, Bill, oğulları Tom ve John...').",
+        "- NUMBERING AND LABEL PREFIXES: keep line-initial enumerators and labels "
+        "('One:', 'Two:', 'Problem:', 'Solution:', 'a)', 'b)') in the translation "
+        "('Bir:', 'İki:', 'Sorun:', 'Çözüm:'). They carry the list structure; dropping "
+        "them makes the passage unreadable as a list.",
         # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır;
         # biçim teslimde kaynaktan geri yüklenir (bkz. restore_format_tags).
         "- Do NOT add formatting markup (<i>, <b>, <u>, <font>, {\\an8}) that is not present in "

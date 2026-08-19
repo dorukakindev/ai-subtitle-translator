@@ -3202,6 +3202,12 @@ def write_srt(filepath, blocks, target_language="Turkish"):
                 text = sdh_cleaner.strip_sdh_descriptors(text)
                 text = sdh_cleaner.strip_speaker_labels(text)
                 text = text.translate(_DELIVERY_HAT_MAP)
+                # Bu ikisi YAZIM katmanında durur: _prepare_upload_ready_blocks'tan
+                # geçmeyen yollar (kısmi onarım, son-işlem) da kapsansın diye.
+                # Yalnız Türkçe noktalamaya dokunurlar, İngilizce kelimeye değil —
+                # bu yüzden 'çevrilmemiş satır' denetimini maskelemezler.
+                text = _normalize_delivery_typography(text)
+                text, _apostrophes = fix_common_noun_apostrophes(text)
             if not text.strip():
                 # Dil bağımsız iç işaret: '[ÇEVİRİ EKSİK]' kodun 20'den fazla
                 # yerinde eksik-çeviri dedektörü olarak aranır, çevrilmemeli.
@@ -3845,7 +3851,470 @@ def _midword_space_ids(blocks, src_map=None) -> list:
     return flagged
 
 
-def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
+# ── Cue çifti içinde metin dengesizliği (cue-fill) ───────────────────────────
+# Gerçek olay (Death Scenes 1992 #369): kaynak cümleyi öyle böler ki devam cue'su
+# tek kelimedir ('elements.'), Türkçe söz dizimi yüklemi sona attığı için çeviri
+# bütün cümleyi o 0,4 saniyelik cue'ya yığar → 305 kar/sn, okunamaz. Üç filmde 23
+# çift bulundu; hepsinde ÖNCEKİ cue 5-7 saniye ve boş duruyor, yani metin zaman
+# damgasına dokunulmadan geri taşınabilir.
+#
+# Otomatik onarım riskli (cümleyi bölmek gerekir) — sinyal RAPOR amaçlıdır.
+_CUE_FILL_MIN_CPS = 30.0        # okunamaz sayılan okuma hızı
+_CUE_FILL_LEN_RATIO = 2.2       # çeviri / kaynak uzunluk oranı
+_CUE_FILL_PREV_MAX_CPS = 20.0   # önceki cue'da yer olduğunu gösteren üst sınır
+
+
+def _cue_reading_speed(text: str, timestamp: str) -> float | None:
+    """Cue'nun görünür karakter / saniye hızı; süre çözülemezse None."""
+    try:
+        duration = _ts_end_sec_gui(timestamp) - _ts_to_sec_gui(timestamp)
+    except Exception:
+        return None
+    if duration <= 0:
+        return None
+    return _visible_len(str(text or "")) / duration
+
+
+def _cue_fill_imbalances(blocks: list, src_map: dict) -> list:
+    """Metni komşusuna taşınabilecek 'aşırı dolu' cue'ları döner.
+
+    Üç koşul birden aranır: cue hızı > 30 kar/sn, çeviri kaynak cue'sunun 2,2
+    katından uzun ve BİR ÖNCEKİ cue < 20 kar/sn (yani yer var).
+    Döner: [{"id", "prev_id", "cps", "chars", "duration", "prev_cps"}]
+    """
+    rows = list(blocks or [])
+    findings = []
+    for pos, (idx, ts, text) in enumerate(rows):
+        if pos == 0:
+            continue
+        value = str(text or "")
+        if not value.strip() or value.startswith("[HATA"):
+            continue
+        cps = _cue_reading_speed(value, ts)
+        if cps is None or cps <= _CUE_FILL_MIN_CPS:
+            continue
+        source = str(src_map.get(str(idx), "") or "")
+        if not source.strip():
+            continue
+        source_len = _visible_len(source)
+        if source_len <= 0 or _visible_len(value) < source_len * _CUE_FILL_LEN_RATIO:
+            continue
+        prev_idx, prev_ts, prev_text = rows[pos - 1]
+        prev_cps = _cue_reading_speed(prev_text, prev_ts)
+        if prev_cps is None or prev_cps >= _CUE_FILL_PREV_MAX_CPS:
+            continue
+        try:
+            duration = _ts_end_sec_gui(ts) - _ts_to_sec_gui(ts)
+        except Exception:
+            duration = 0.0
+        findings.append({
+            "id": str(idx),
+            "prev_id": str(prev_idx),
+            "cps": round(cps, 1),
+            "chars": _visible_len(value),
+            "duration": round(duration, 2),
+            "prev_cps": round(prev_cps, 1),
+        })
+    return findings
+
+
+def _cue_fill_report_lines(findings: list, limit: int = 8) -> list:
+    """'#369 (0,4 sn / 122 kar, 305 kar/sn) — metni #368'e kaydırın' satırları."""
+    lines = []
+    for item in list(findings)[:max(0, int(limit))]:
+        lines.append(
+            f"  #{item['id']} ({item['duration']:.1f} sn / {item['chars']} kar, "
+            f"{item['cps']:.0f} kar/sn) — metni #{item['prev_id']}'e kaydırın "
+            f"(orada {item['prev_cps']:.0f} kar/sn ile yer var)")
+    if len(findings) > limit:
+        lines.append(f"  … +{len(findings) - limit} cue daha")
+    return lines
+
+
+# ── Dosya içi sen/siz tutarlılığı ────────────────────────────────────────────
+# Gerçek olay (BBC Connections S01E10): dosyanın ilk yarısı 'siz', ortasından
+# itibaren 'sen' — 120 cue. Anlatıcı ve muhatap aynı, E01-E09 tamamen 'siz'.
+# Hitap haritası aşaması var ama YAZILAN dosya üzerinde tutarlılık kontrolü yoktu.
+#
+# EMİR KİPLERİ BİLEREK DIŞARIDA: 'bakın/yapın' 2. çoğul emir de olabilir, kibar
+# hitap da; sayıma alınınca her belgesel 'karışık' görünürdü.
+_ADDRESS_INFORMAL_RE = re.compile(
+    r"(?<!\w)(?:sen|sana|seni|senin|seninle|sende|senden)(?!\w)"
+    r"|(?<!\w)[^\W\d_]{2,}(?:sın|sin|sun|sün)(?!\w)"
+    r"|(?<!\w)[^\W\d_]{2,}(?:dın|din|dun|dün|tın|tin|tun|tün)(?!\w)",
+    re.IGNORECASE,
+)
+_ADDRESS_FORMAL_RE = re.compile(
+    r"(?<!\w)(?:siz|size|sizi|sizin|sizinle|sizde|sizden)(?!\w)"
+    r"|(?<!\w)[^\W\d_]{2,}(?:sınız|siniz|sunuz|sünüz)(?!\w)"
+    r"|(?<!\w)[^\W\d_]{2,}(?:dınız|diniz|dunuz|dünüz|tınız|tiniz)(?!\w)",
+    re.IGNORECASE,
+)
+# 'sin/sın' ile biten ama hitap olmayan sık kelimeler.
+_ADDRESS_FALSE_STEMS = frozenset({
+    "resin", "esin", "kesin", "basın", "yasin", "hüsün", "üstün", "bütün",
+    "düşün", "görüşün", "yazın", "kışın", "yarısın",
+})
+
+
+def detect_address_register_mix(blocks, minority_ratio: float = 0.10,
+                                min_total: int = 12) -> dict:
+    """Nihai dosyada 2. tekil ve 2. çoğul hitabın karışıp karışmadığını ölçer.
+
+    Döner: {"informal": n, "formal": n, "mixed": bool, "informal_ids", "formal_ids"}
+    'mixed' yalnız her iki taraf da anlamlı sayıdaysa ve azınlık payı eşiği
+    aşıyorsa True olur — tek tük istisna dosyayı 'karışık' yapmaz.
+    """
+    informal_ids, formal_ids = [], []
+    for idx, _ts, text in blocks or []:
+        value = str(text or "")
+        if not value.strip() or value.startswith("[HATA"):
+            continue
+        informal = [
+            match for match in _ADDRESS_INFORMAL_RE.findall(value) or []
+        ]
+        has_informal = any(
+            token.casefold() not in _ADDRESS_FALSE_STEMS
+            for token in re.findall(r"[^\W\d_]+", value)
+            if _ADDRESS_INFORMAL_RE.fullmatch(token)
+        ) or bool(re.search(
+            r"(?<!\w)(?:sen|sana|seni|senin|seninle|sende|senden)(?!\w)",
+            value, re.IGNORECASE))
+        has_formal = bool(_ADDRESS_FORMAL_RE.search(value))
+        if has_formal:
+            formal_ids.append(str(idx))
+        elif has_informal or informal:
+            if not has_formal:
+                informal_ids.append(str(idx))
+    informal_count, formal_count = len(informal_ids), len(formal_ids)
+    total = informal_count + formal_count
+    minority = min(informal_count, formal_count)
+    mixed = bool(
+        total >= min_total and minority >= 3
+        and minority / total >= minority_ratio)
+    return {
+        "informal": informal_count,
+        "formal": formal_count,
+        "mixed": mixed,
+        "informal_ids": informal_ids[:8],
+        "formal_ids": formal_ids[:8],
+    }
+
+
+_TR_BACK_VOWELS = "aıou"
+_TR_FRONT_VOWELS = "eiöü"
+_TR_VOICELESS = "pçtkfhsş"
+_TR_HIGH_VOWEL = {"a": "ı", "ı": "ı", "o": "u", "u": "u",
+                  "e": "i", "i": "i", "ö": "ü", "ü": "ü"}
+
+
+def _tr_suffix_forms(vowel: str, hard: bool) -> dict:
+    """Son ünlüye (ve sert ünsüze) göre ek biçimleri."""
+    low = "a" if vowel in _TR_BACK_VOWELS else "e"
+    high = _TR_HIGH_VOWEL.get(vowel, "i")
+    d = "t" if hard else "d"
+    return {
+        "loc_ki": f"{d}{low}ki",
+        "abl": f"{d}{low}n",
+        "loc": f"{d}{low}",
+        "gen_n": f"n{high}n",
+        "gen": f"{high}n",
+        "dat_y": f"y{low}",
+        "dat": low,
+        "acc_y": f"y{high}",
+        "acc": high,
+        "ins_y": f"yl{low}",
+        "ins": f"l{low}",
+        "plu": f"l{low}r",
+    }
+
+
+_TR_SUFFIX_KEYS = (
+    ({"daki", "deki", "taki", "teki"}, "loc_ki"),
+    ({"dan", "den", "tan", "ten"}, "abl"),
+    ({"da", "de", "ta", "te"}, "loc"),
+    ({"nin", "nın", "nun", "nün"}, "gen_n"),
+    ({"in", "ın", "un", "ün"}, "gen"),
+    ({"ye", "ya"}, "dat_y"),
+    ({"e", "a"}, "dat"),
+    ({"yi", "yı", "yu", "yü"}, "acc_y"),
+    ({"i", "ı", "u", "ü"}, "acc"),
+    ({"yle", "yla"}, "ins_y"),
+    ({"le", "la"}, "ins"),
+    ({"ler", "lar"}, "plu"),
+)
+
+
+def turkish_suffix_for_stem(stem: str, suffix: str) -> str:
+    """Gövde değişince eki ünlü/ünsüz uyumuna göre yeniden kurar.
+
+    'Çin' + 'daki' → 'deki', 'Batı' + 'de' → 'da'. Tanınmayan ek olduğu gibi
+    döner — yanlış bir uyum uydurmaktansa dokunmamak yeğdir."""
+    key = str(suffix or "").casefold()
+    stripped = str(stem or "").rstrip("'\u2019")
+    vowels = [char for char in stripped.casefold()
+              if char in _TR_BACK_VOWELS + _TR_FRONT_VOWELS]
+    if not vowels:
+        return suffix
+    hard = bool(stripped) and stripped[-1].casefold() in _TR_VOICELESS
+    forms = _tr_suffix_forms(vowels[-1], hard)
+    for keys, name in _TR_SUFFIX_KEYS:
+        if key in keys:
+            return forms[name]
+    return suffix
+
+
+# ── Kaynak dili kalıntısı (Türkçe ekli) ve yabancı unvanlar ──────────────────
+# Gerçek olay (Witch Doctor E01, kaynak Portekizce): 'Ocidente'de', 'China'daki',
+# 'Mr. Yi', 'Miss Xiao', 'Professor Sun' teslim edilmişti. find_garble_tokens
+# bunları kaçırıyor çünkü hepsi DÜZGÜN YAZILMIŞ yabancı kelimeler.
+_FOREIGN_TITLE_MAP = (
+    (re.compile(r"(?<!\w)Mr\.?(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
+    (re.compile(r"(?<!\w)Mrs\.?(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+    (re.compile(r"(?<!\w)Miss(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+    (re.compile(r"(?<!\w)Ms\.?(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+    (re.compile(r"(?<!\w)Professor(?=\s+[^\W\d_])", re.IGNORECASE), "Profesör"),
+    (re.compile(r"(?<!\w)Prof\.(?=\s+[^\W\d_])", re.IGNORECASE), "Prof."),
+    (re.compile(r"(?<!\w)Dr\.(?=\s+[^\W\d_])", re.IGNORECASE), "Doktor"),
+    (re.compile(r"(?<!\w)Monsieur(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
+    (re.compile(r"(?<!\w)Madame(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+    (re.compile(r"(?<!\w)Se[ñn]or(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
+    (re.compile(r"(?<!\w)Se[ñn]ora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+    (re.compile(r"(?<!\w)Senhor(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
+    (re.compile(r"(?<!\w)Senhora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
+)
+# Türkçe karşılığı yerleşik olan yabancı yer/yön adları (çekim ekiyle bırakılırsa
+# 'China'daki' gibi kalıntı oluşuyor).
+_FOREIGN_EXONYM_MAP = {
+    "china": "Çin", "japan": "Japonya", "germany": "Almanya",
+    "greece": "Yunanistan", "egypt": "Mısır", "india": "Hindistan",
+    "spain": "İspanya", "france": "Fransa", "italy": "İtalya",
+    "england": "İngiltere", "europe": "Avrupa", "africa": "Afrika",
+    "america": "Amerika", "russia": "Rusya", "vienna": "Viyana",
+    "ocidente": "Batı", "occident": "Batı", "oriente": "Doğu",
+    "orient": "Doğu", "alemanha": "Almanya", "espanha": "İspanya",
+    "grécia": "Yunanistan", "grecia": "Yunanistan", "índia": "Hindistan",
+}
+_TURKISH_SUFFIX_AFTER_APOSTROPHE = re.compile(
+    r"(?:d[ae]ki|[dt][ae]n|[dt][ae]|[yn]?[ıiuü]|[yn]?[ae]|n[ıiuü]n|l[ae]r\w*)$",
+    re.IGNORECASE,
+)
+_APOSTROPHE_SUFFIX_TOKEN_RE = re.compile(
+    r"(?<!\w)([^\W\d_]{3,})['\u2019]([^\W\d_]{1,6})(?!\w)", re.UNICODE)
+
+
+_COMMON_NOUN_APOSTROPHE_RE = re.compile(
+    r"(?<!\w)([a-zçğıöşü]{3,})['\u2019]([a-zçğıöşü]{1,6})(?!\w)", re.UNICODE)
+
+
+def fix_common_noun_apostrophes(text: str) -> tuple[str, int]:
+    """Ortak isimlerde kesme işaretini kaldırır: 'lamina'yı' → 'laminayı'.
+
+    Kesme yalnız ÖZEL adlarda kullanılır; Latince/tıbbi terimler de ekini
+    kesmesiz alır ('durası', 'pubise'). Gövde tamamen küçük harfliyse özel ad
+    değildir. Ek, tanınan Türkçe çekim eklerinden biri olmalı — 'd'Artagnan'
+    gibi yabancı yazımlar (gövde <3 harf) etkilenmez."""
+    changed = 0
+
+    def _replace(match):
+        nonlocal changed
+        stem, suffix = match.group(1), match.group(2)
+        if not _TURKISH_SUFFIX_AFTER_APOSTROPHE.fullmatch(suffix):
+            return match.group(0)
+        changed += 1
+        return f"{stem}{suffix}"
+
+    return _COMMON_NOUN_APOSTROPHE_RE.sub(_replace, str(text or "")), changed
+
+
+def normalize_foreign_titles(text: str) -> tuple[str, int]:
+    """'Mr. Yi' → 'Bay Yi', 'Professor Sun' → 'Profesör Sun'. (metin, sayı)."""
+    value = str(text or "")
+    changed = 0
+    for pattern, replacement in _FOREIGN_TITLE_MAP:
+        value, count = pattern.subn(replacement, value)
+        changed += count
+    return value, changed
+
+
+def normalize_foreign_exonyms(text: str) -> tuple[str, int]:
+    """'China'daki' → 'Çin'deki'. Yalnız yerleşik Türkçe karşılığı olanlar."""
+    value = str(text or "")
+    changed = 0
+
+    def _replace(match):
+        nonlocal changed
+        stem, suffix = match.group(1), match.group(2)
+        target = _FOREIGN_EXONYM_MAP.get(stem.casefold())
+        if not target:
+            return match.group(0)
+        changed += 1
+        # Gövde değişince ek de uyuma girmeli: 'China'daki' → 'Çin'deki'.
+        return f"{target}'{turkish_suffix_for_stem(target, suffix)}"
+
+    # YALNIZ ekli biçim düzeltilir ('China'daki' -> 'Çin'deki'). Çıplak kelimeye
+    # dokunmak 'Captain America' gibi eser/özel adları bozardı.
+    value = _APOSTROPHE_SUFFIX_TOKEN_RE.sub(_replace, value)
+    return value, changed
+
+
+def _source_residue_with_turkish_suffix(blocks, src_map, locked_terms=None):
+    """Kaynakta BİREBİR geçen bir kelimenin çeviride Türkçe ek almış hâlleri.
+
+    'Ocidente'de', 'China'daki' gibi kalıntıları rapor eder. Kilitli sözlükteki
+    terimler (özel adlar) hariç tutulur — onların ek alması normaldir."""
+    locked = {
+        str(key).casefold() for key in (locked_terms or {})
+    }
+    findings = []
+    for idx, _ts, text in blocks or []:
+        source = str((src_map or {}).get(str(idx), "") or "")
+        if not source.strip():
+            continue
+        source_words = {
+            word.casefold() for word in re.findall(r"[^\W\d_]{3,}", source)
+        }
+        for match in _APOSTROPHE_SUFFIX_TOKEN_RE.finditer(str(text or "")):
+            stem, suffix = match.group(1), match.group(2)
+            key = stem.casefold()
+            if key in locked or key not in source_words:
+                continue
+            if not _TURKISH_SUFFIX_AFTER_APOSTROPHE.fullmatch(suffix):
+                continue
+            findings.append({"id": str(idx), "token": match.group(0),
+                             "stem": stem})
+            break
+    return findings
+
+
+# ── Komşu cue'da kısmi yankı ─────────────────────────────────────────────────
+# adjacent_duplicate birebir aynı cue'yu görüyor ama KISMİ tekrarı kaçırıyor:
+# Witch Doctor #524/#525 son beş kelime birebir, Connections E10 #643/#644 aynı öbek.
+# Kaynak da tekrar ediyorsa (röportajda yinelenen soru) susulur.
+_PARTIAL_ECHO_MIN_TOKENS = 3
+_PARTIAL_ECHO_RATIO = 0.6
+
+
+def _echo_tokens(text: str) -> list:
+    return [
+        token.casefold()
+        for token in re.findall(r"[^\W\d_]{2,}", _align_visible(str(text or "")))
+    ]
+
+
+def _overlap_ratio(left: list, right: list) -> float:
+    if not left or not right:
+        return 0.0
+    shared = set(left) & set(right)
+    return len(shared) / min(len(set(left)), len(set(right)))
+
+
+def _partial_echo_ids(blocks, src_map=None) -> list:
+    """Komşu cue'da kısmi tekrar eden çiftleri döner ([(id, next_id), ...])."""
+    rows = list(blocks or [])
+    findings = []
+    for pos in range(len(rows) - 1):
+        idx, _ts, text = rows[pos]
+        next_idx, _next_ts, next_text = rows[pos + 1]
+        left, right = _echo_tokens(text), _echo_tokens(next_text)
+        # Kısa devam cue'ları da sayılmalı ('böyle olduğunu hatırlamıyorum.'
+        # yalnız 3 jeton taşır); ölçüt jeton SAYISI değil PAYLAŞILAN jeton sayısı.
+        shared = set(left) & set(right)
+        if len(shared) < _PARTIAL_ECHO_MIN_TOKENS:
+            continue
+        if _overlap_ratio(left, right) < _PARTIAL_ECHO_RATIO:
+            continue
+        if src_map:
+            src_left = _echo_tokens((src_map or {}).get(str(idx), ""))
+            src_right = _echo_tokens((src_map or {}).get(str(next_idx), ""))
+            if (src_left and src_right
+                    and _overlap_ratio(src_left, src_right) >= _PARTIAL_ECHO_RATIO):
+                continue  # kaynak da tekrar ediyor → meşru
+        findings.append((str(idx), str(next_idx)))
+    return findings
+
+
+# ── Yüklemi kaybolan cue ─────────────────────────────────────────────────────
+# Death Scenes 3 #80: '...hastaneye gitmesine' — cümle yüklemsiz bitiyor.
+_DANGLING_CASE_END_RE = re.compile(
+    r"(?:[^\W\d_]+(?:ye|ya|[ae]|[ıiuü]|n[ıiuü]|[dt][ae]|[dt][ae]n|"
+    r"mesine|masına|mesini|masını|mek|mak|meye|maya))$",
+    re.UNICODE)
+_SENTENCE_END_PUNCT_RE = re.compile(r"[.!?…][\"'”’»]?$")
+
+
+def _missing_predicate_ids(blocks) -> list:
+    """İsim hâliyle/mastarla bitip sonraki cue'nun yeni cümle başlattığı cue'lar."""
+    rows = list(blocks or [])
+    findings = []
+    for pos in range(len(rows) - 1):
+        idx, _ts, text = rows[pos]
+        value = _align_visible(str(text or "")).strip()
+        if not value or value.startswith("[HATA"):
+            continue
+        if not _SENTENCE_END_PUNCT_RE.search(value):
+            continue
+        stripped = value.rstrip(".!?…\"'”’»").strip()
+        last_word = stripped.split()[-1].casefold() if stripped.split() else ""
+        if not last_word or not _DANGLING_CASE_END_RE.search(last_word):
+            continue
+        next_value = _align_visible(str(rows[pos + 1][2] or "")).strip()
+        first = next((char for char in next_value if char.isalpha()), "")
+        if first and first.isupper():
+            findings.append(str(idx))
+    return findings
+
+
+# Analiz sözlüğü, model ne derse desin, dosyada TEKRAR EDEN özel adları kilitlemeli.
+# Gerçek olay (2026-08-20): 'Barthou/Bartu', 'Dahlia/Dalya', 'Lee' aynı dosyada iki
+# biçimde geçti; hiçbiri sözlükte olmadığı için _normalize_mixed_terms (sözlüğe
+# çapalı çalışır) onları toparlayamadı.
+_AUTOLOCK_MIN_OCCURRENCES = 3
+_AUTOLOCK_MIN_LENGTH = 4
+_AUTOLOCK_WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+
+
+def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
+                             min_count: int = _AUTOLOCK_MIN_OCCURRENCES) -> dict:
+    """Kaynakta 3+ kez geçen özel ad adaylarını kimlik eşlemesiyle döner.
+
+    Kimlik eşlemesi ('Barthou' -> 'Barthou') sözlüğe girince karışık-terim
+    düzeltmesi ('Bartu') o terimi kilitli doğruya çekebiliyor. Cümle başında
+    büyük harfle yazılan sıradan kelimeler elenir: yalnız CÜMLE İÇİNDE de büyük
+    harfle geçen adaylar kilitlenir."""
+    text = str(source_text or "")
+    if not text.strip():
+        return {}
+    known = {str(key).casefold() for key in (existing or {})}
+    counts: dict = {}
+    midsentence: dict = {}
+    for sentence in re.split(r"(?<=[.!?…])\s+|\n", text):
+        matches = list(_AUTOLOCK_WORD_RE.finditer(sentence))
+        for position, match in enumerate(matches):
+            word = match.group(0)
+            if len(word) < _AUTOLOCK_MIN_LENGTH or not word[0].isupper():
+                continue
+            if word.isupper():
+                continue
+            key = word.casefold()
+            counts[key] = counts.get(key, 0) + 1
+            if position > 0:
+                midsentence[key] = midsentence.get(key, 0) + 1
+            counts.setdefault(f"__form__{key}", word)
+    locked = {}
+    for key, count in counts.items():
+        if key.startswith("__form__") or count < min_count:
+            continue
+        if key in known or not midsentence.get(key):
+            continue
+        if key in _SHIFT_TOKEN_STOPS:
+            continue
+        locked[counts[f"__form__{key}"]] = counts[f"__form__{key}"]
+    return locked
+
+
+def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
+                          locked_terms=None) -> dict:
     """DİSKE YAZILAN blokları deterministik olarak tarar.
 
     scan_translation_quality birleştirme ve teslim temizliği ÖNCESİ listeye bakar
@@ -3856,6 +4325,8 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
     stats = {
         "missing": 0, "duplicates": 0, "cps": 0, "over_width": 0,
         "over_lines": 0, "cue_id_leak": 0, "midword_space": 0,
+        "cue_fill": 0, "partial_echo": 0, "missing_predicate": 0,
+        "source_residue": 0, "register_mixed": False,
     }
     for _idx, ts, text in blocks:
         value = str(text or "")
@@ -3879,6 +4350,16 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
     src_map = _delivery_source_map(blocks, source_cues) if source_cues else {}
     stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
+    cue_fill = _cue_fill_imbalances(blocks, src_map)
+    stats["cue_fill"] = len(cue_fill)
+    stats["cue_fill_details"] = cue_fill
+    stats["partial_echo"] = len(_partial_echo_ids(blocks, src_map))
+    stats["missing_predicate"] = len(_missing_predicate_ids(blocks))
+    stats["source_residue"] = len(
+        _source_residue_with_turkish_suffix(blocks, src_map, locked_terms))
+    register = detect_address_register_mix(blocks)
+    stats["register_mixed"] = register["mixed"]
+    stats["register"] = register
     if log_fn:
         problems = [
             (stats["missing"], "eksik çeviri"),
@@ -3888,11 +4369,22 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None) -> dict:
             (stats["over_lines"], f">{_MAX_LINES} satır"),
             (stats["cue_id_leak"], "metne sızmış cue numarası"),
             (stats["midword_space"], "kelime ortası boşluk"),
+            (stats["cue_fill"], "komşusuna taşınabilir aşırı dolu cue"),
+            (stats["partial_echo"], "komşu cue'da kısmi yankı"),
+            (stats["missing_predicate"], "yüklemsiz biten cue"),
+            (stats["source_residue"], "Türkçe ekli kaynak kalıntısı"),
         ]
         summary = ", ".join(
             f"{count} {label}" for count, label in problems if count)
         if summary:
             log_fn(f"Teslim taraması ({len(blocks)} cue): {summary}", "warn")
+        for line in _cue_fill_report_lines(cue_fill):
+            log_fn(line, "warn")
+        if register["mixed"]:
+            log_fn(
+                f"Teslim taraması: dosya içinde sen/siz karışık — "
+                f"{register['informal']} cue 'sen', {register['formal']} cue 'siz' "
+                "işaretçisi taşıyor; tek hitap seçilmeli.", "warn")
     return stats
 
 
@@ -4385,6 +4877,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     position_tags_removed = 0
     sdh_removed = 0
     typography_fixed = 0
+    foreign_terms_fixed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
         if source_cues and str(ts) in removable_source_timestamps:
@@ -4404,8 +4897,16 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 if i not in source_credit_lines
             )
         if is_turkish:
+            # Unvan/exonym düzeltmesi İngilizce kelimeye dokunduğu için, cue
+            # KAYNAĞIYLA BİREBİR AYNIYSA (hiç çevrilmemişse) uygulanmaz: aksi
+            # hâlde 'Mrs. Regnier's lawyer.' → 'Bayan Regnier's lawyer.' olur ve
+            # teslim denetiminin çevrilmemiş-parça guard'ını maskelerdi.
+            if source_text.strip() and _align_visible(value).casefold() != (
+                    _align_visible(source_text).casefold()):
+                value, _titles_fixed = normalize_foreign_titles(value)
+                value, _exonyms_fixed = normalize_foreign_exonyms(value)
+                foreign_terms_fixed += _titles_fixed + _exonyms_fixed
             # Şapkalı harf düzleştirme Türkçe teslim konvansiyonudur.
-            hats_removed += sum(value.count(char) for char in "âîûÂÎÛ")
             value = value.translate(_DELIVERY_HAT_MAP)
             typography_fixed_value = _normalize_delivery_typography(value)
             typography_fixed += sum(
@@ -4521,7 +5022,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 f"{position_tags_removed} konum/döndürme kodu, "
                 f"{sdh_removed} SDH/müzik cue'su temizlendi, "
                 f"{quote_markers_fixed} bozuk OCR tırnak işareti, "
-                f"{typography_fixed} tipografik tırnak/kesme düzeltildi",
+                f"{typography_fixed} tipografik tırnak/kesme, "
+                f"{foreign_terms_fixed} yabancı unvan/yer adı düzeltildi",
                 "ok",
             )
     return cleaned
@@ -5075,6 +5577,10 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         "where speech has only a pause ('CAROL. BILL. THEIR SONS TOM AND JOHN.'). "
         "Re-punctuate for the target language: turn such list/appositive stops into "
         "commas and keep one final stop ('Carol, Bill, oğulları Tom ve John...').\n"
+        "- NUMBERING AND LABEL PREFIXES: keep line-initial enumerators and labels "
+        "('One:', 'Two:', 'Problem:', 'Solution:', 'a)', 'b)') in the translation "
+        "('Bir:', 'İki:', 'Sorun:', 'Çözüm:'). They carry the list structure; dropping "
+        "them makes the passage unreadable as a list.\n"
         "- Keep the same number of subtitle lines inside each cue; preserve the existing \\n structure unless a "
         "minimal rebalance is needed for readable Turkish.\n"
         # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır
@@ -8962,12 +9468,31 @@ def _content_offset_regions(blocks: list, src_map: dict, window: int = 4,
                 best_hits, best_offset = hits, delta
         offsets.append(best_offset if best_hits else None)
 
+    positions = {row[0]: pos for pos, row in enumerate(ordered)}
+    source_texts = [str(src_map.get(row[0], "") or "") for row in ordered]
+
+    def _is_cue_fill_redistribution(ids: list) -> bool:
+        """Kısa 'kayma' aslında uzun cümlenin komşu cue'ya taşınması mı?
+
+        Gerçek olay (Death Scenes 1992 #370): kaynak cümle bölündüğü ve Türkçe
+        yüklemi sona attığı için içerik bir cue kaymış GÖRÜNÜR ama gerçek kayma
+        yoktur. Bölge 1-2 cue ve hemen öncesindeki kaynak cue cümleyi
+        BİTİRMİYORSA (noktalama yok) bu cue-fill sınıfıdır, kayma değil."""
+        if len(ids) > 2:
+            return False
+        first = positions.get(ids[0])
+        if first is None or first == 0:
+            return False
+        previous = source_texts[first - 1].strip()
+        return bool(previous) and not re.search(r"[.!?…][\"'”’»]?$", previous)
+
     regions = []
     run_offset, run_ids, gap = None, [], 0
 
     def _close():
         nonlocal run_offset, run_ids, gap
-        if run_offset is not None and len(run_ids) >= min_run:
+        if (run_offset is not None and len(run_ids) >= min_run
+                and not _is_cue_fill_redistribution(run_ids)):
             regions.append({"offset": run_offset, "ids": list(run_ids)})
         run_offset, run_ids, gap = None, [], 0
 
