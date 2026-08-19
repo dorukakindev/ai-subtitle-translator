@@ -294,16 +294,35 @@ def _decode_cp1254_or_mac_roman(raw: bytes) -> str | None:
 
 
 _NUL_HEX_ARTIFACT_RE = re.compile(r"\x00([0-9A-Fa-f]{2})")
+# Model çıktısında kelime İÇİNDE görülen görünmez karakterler (sıfır-genişlik,
+# BOM, yön işaretleri): ekranda hiçbir şey göstermez ama 'gülleleri' → 'gül​leri'
+# gibi kelimeyi böler, aramayı/karşılaştırmayı ve TM eşleşmesini bozar.
+_INVISIBLE_FORMAT_CHARS = frozenset(
+    "​‌‍‎‏⁠⁡⁢⁣⁤"
+    "‪‫‬‭‮⁦⁧⁨⁩"
+    "﻿᠎"
+)
+# Görünür boşluk gibi davranan ama SRT'de sorun çıkaran boşluk çeşitleri.
+_UNUSUAL_SPACE_CHARS = frozenset("       "
+                                 "       　")
 
 
 def normalize_subtitle_control_artifacts(text: str) -> str:
-    """Repair model-emitted NUL+hex escapes and remove other C0 controls."""
+    """Repair model-emitted NUL+hex escapes and remove other C0 controls.
+
+    Ayrıca sıfır-genişlik/BOM/yön işareti gibi görünmez biçim karakterlerini SİLER
+    ve alışılmadık boşlukları normal boşluğa indirger."""
     value = _NUL_HEX_ARTIFACT_RE.sub(
         lambda match: chr(int(match.group(1), 16)), str(text or ""))
-    return "".join(
-        char if ord(char) >= 32 or char in "\n\r\t" else " "
-        for char in value
-    )
+    out = []
+    for char in value:
+        if char in _INVISIBLE_FORMAT_CHARS:
+            continue
+        if char in _UNUSUAL_SPACE_CHARS:
+            out.append(" ")
+            continue
+        out.append(char if ord(char) >= 32 or char in "\n\r\t" else " ")
+    return "".join(out)
 
 
 def read_subtitle_text(filepath) -> str:

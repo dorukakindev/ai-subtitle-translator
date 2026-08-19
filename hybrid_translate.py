@@ -3852,6 +3852,11 @@ def build_system_prompt(
         "- Keep the same number of subtitle lines inside each cue; preserve the existing \\n structure unless a "
         "minimal rebalance is needed for readable Turkish.",
         "- Keep character names, brand names, and proper nouns unchanged",
+        # Kaynak baştan sona BÜYÜK HARF olabilir (closed-caption geleneği).
+        "- SOURCE CASE IS NOT EMPHASIS: when the source line is written in ALL CAPS "
+        "(a captioning convention), write the translation in normal sentence case. "
+        "Keep capitals only where they belong to the word itself (acronyms, proper "
+        "nouns, on-screen signs).",
         # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır;
         # biçim teslimde kaynaktan geri yüklenir (bkz. restore_format_tags).
         "- Do NOT add formatting markup (<i>, <b>, <u>, <font>, {\\an8}) that is not present in "

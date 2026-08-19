@@ -51,7 +51,9 @@ class QualityProfileDefaultsTest(unittest.TestCase):
             "self.season_canon_var = ctk.BooleanVar(value=False)",
             'self.media_mode_var = ctk.StringVar(value="Dizi")',
             "self.backup_raw_var = ctk.BooleanVar(value=True)",
-            "self.linebreak_var = ctk.BooleanVar(value=False)",
+            # Varsayılan AÇIK: kapalıyken 70-97 karakterlik tek satırlar teslime
+            # kadar geliyordu (EBU: satır başına 42 karakter).
+            "self.linebreak_var = ctk.BooleanVar(value=True)",
             "self.hybrid_var = ctk.BooleanVar(value=True)",
             "self.chain_ctx_var = ctk.BooleanVar(value=True)",
             'self.analysis_depth_var = ctk.StringVar(value="Gelişmiş")',
@@ -76,7 +78,8 @@ class QualityProfileDefaultsTest(unittest.TestCase):
         self.assertEqual(settings["content_type"], "Otomatik")
         self.assertTrue(settings["series_memory"])
         self.assertFalse(settings["season_canon"])
-        self.assertFalse(settings["linebreak"])
+        # Satır kırma varsayılanı AÇIK (EBU 42 karakter sınırı)
+        self.assertTrue(settings["linebreak"])
         self.assertEqual(settings["unrelated"], "kept")
 
         settings["mode"] = "batch"
@@ -128,7 +131,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "content_type": "Otomatik",
                 "series_memory": True,
                 "season_canon": False,
-                "linebreak": False,
+                "linebreak": True,
             },
         )
 

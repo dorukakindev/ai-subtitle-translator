@@ -1123,7 +1123,7 @@ CHUNK         = 25
 SYNC_CHUNK    = 40
 CONTEXT_LINES    = 30  # preceding lines sent as rolling context
 LOOKAHEAD_LINES  = 15  # next-chunk lines sent as read-ahead
-QUALITY_PROFILE_VERSION = 9
+QUALITY_PROFILE_VERSION = 10
 DEEP_DELIVERY_COVERAGE_OPTIONS = {
     "Ekonomik (%35)": 0.35,
     "Tam (%100)": 1.0,
@@ -1197,7 +1197,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "content_type": "Otomatik",
     "series_memory": True,
     "season_canon": False,
-    "linebreak": False,
+    "linebreak": True,
 }
 MEDIA_MODE_DEFAULTS = {
     "Dizi": {
@@ -1229,7 +1229,7 @@ WORKFLOW_PROFILES = {
         "series_memory_var": True,
         "season_canon_var": False,
         "clean_sdh_var": True,
-        "linebreak_var": False,
+        "linebreak_var": True,
         "qc_var": False,
     },
     "Normal": {
@@ -1251,7 +1251,7 @@ WORKFLOW_PROFILES = {
         "series_memory_var": True,
         "season_canon_var": False,
         "clean_sdh_var": True,
-        "linebreak_var": False,
+        "linebreak_var": True,
         "qc_var": False,
     },
     "Hızlı kontrol": {
@@ -1273,7 +1273,7 @@ WORKFLOW_PROFILES = {
         "series_memory_var": False,
         "season_canon_var": False,
         "clean_sdh_var": True,
-        "linebreak_var": False,
+        "linebreak_var": True,
         "qc_var": False,
     },
 }
@@ -1349,6 +1349,13 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
     if settings.get("quality_profile_version") == QUALITY_PROFILE_VERSION:
         return False
     previous_version = settings.get("quality_profile_version")
+    if previous_version == 9:
+        # Satır kırma varsayılanı AÇIK'a alındı: kapalıyken teslim dosyalarında
+        # tek satırda 70-97 karakterlik cue'lar kalıyordu (EBU sınırı 42).
+        # Yalnız bu anahtar güncellenir; diğer tercihlere dokunulmaz.
+        settings["linebreak"] = True
+        settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
+        return True
     if previous_version == 8:
         settings.setdefault("deep_delivery_coverage", 0.35)
         settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
@@ -3502,8 +3509,14 @@ def _is_delivery_sdh_only(text: str) -> bool:
     )
 
 
-def _source_cue_is_delivery_removable(text: str) -> bool:
+def _source_cue_is_delivery_removable(text: str, *,
+                                      allow_caps_heuristic: bool = False) -> bool:
     value = str(text or "")
+    if allow_caps_heuristic and sdh_cleaner.is_structural_sdh_label(value):
+        # Parantezsiz, tamamı büyük harfli ve cümle noktalamasıyla bitmeyen etiket
+        # ('ВОЙ СИРЕНЫ', 'АПЛОДИСМЕНТЫ', 'APPLAUSE'). Alfabeden bağımsız yapısal
+        # sinyal; dosyanın tamamı büyük harf değilse güvenli (bkz. çağıran).
+        return True
     value = re.sub(r"</?(?:font|i|b|u)\b[^>]*>", "", value,
                    flags=re.IGNORECASE)
     value = re.sub(r"^\s*>>\s*", "", value)
@@ -3574,8 +3587,123 @@ def _source_cue_is_delivery_removable(text: str) -> bool:
             and all(_DELIVERY_BARE_ENGLISH_SDH_RE.fullmatch(
                 (square or paren).strip()) for square, paren in groups)):
         return True
+    if allow_caps_heuristic and sdh_cleaner.src_is_sfx_only(
+            value, allow_caps_heuristic=True):
+        return True
     probe = [("1", "00:00:00,000 --> 00:00:00,001", value)]
     return not clean_sdh(probe, src_map={"1": value}, source_driven=True)
+
+
+# Konumsal imza tespiti: dosyanın başındaki/sonundaki birkaç cue'da geçen
+# "rol kelimesi + kişi/şirket adı" kalıbı. İki nokta ZORUNLU DEĞİL — literal
+# liste her yeni kaynakta köstebek-vurmacaya dönüşüyordu ('Субтитры подготовлены
+# Red Bee Media Ltd', 'Tradução e Legendagem / Joana Barata / MOVIOLA').
+_POSITIONAL_CREDIT_ROLE_RE = re.compile(
+    r"(?:sub-?title|subtitling|caption(?:ing|s)?|translat(?:ion|ed|or)|"
+    r"altyaz[ıi]|çeviri|çeviren|çevirmen|dublaj|"
+    r"sous[- ]?titr(?:age|es)|traduction|traducteur|"
+    r"untertitel|übersetzung|ubersetzung|"
+    r"subt[ií]tulos|traducci[oó]n|traductor|"
+    r"legendagem|legendas|tradu[cç][aã]o|"
+    r"sottotitoli|traduzione|"
+    r"субтитр\w*|перевод\w*|"
+    r"字幕|翻訳|번역)",
+    re.IGNORECASE,
+)
+_POSITIONAL_CREDIT_ATTRIB_RE = re.compile(
+    r"\b(?:by|von|par|por|di|da|de|door|av|"
+    r"tarafından|hazırlan\w*|подготовлен\w*|выполнен\w*)\b"
+    r"|[/|·•]"
+    r"|\b(?:ltd|inc|gmbh|s\.?a\.?|b\.?v\.?|media|studios?|group|team|"
+    r"fansub\w*|productions?|entertainment)\b",
+    re.IGNORECASE,
+)
+_POSITIONAL_CREDIT_EDGE_CUES = 3
+
+
+def _looks_like_positional_credit(text: str) -> bool:
+    """Dosya başı/sonundaki cue bir çevirmen/yapım imzası mı?
+
+    İki bağımsız kanıt ister: (1) rol kelimesi ('Субтитры', 'Legendagem',
+    'Altyazı', 'Subtitles'), (2) atıf işareti — 'by/tarafından/подготовлены'
+    benzeri bir edat, '/' ile ayrılmış ad listesi veya şirket son eki (Ltd, Media).
+    Böylece 'Altyazıyı okuyabiliyor musun?' gibi gerçek replikler etkilenmez."""
+    value = re.sub(r"</?[a-zA-Z][^>]*>", " ", str(text or ""))
+    value = re.sub(r"\s+", " ", value).strip()
+    if not value or len(value) > 140:
+        return False
+    if len(value.splitlines()) > 3:
+        return False
+    role = _POSITIONAL_CREDIT_ROLE_RE.search(value)
+    if not role:
+        return False
+    # 'Untertitel: ARD Text' — rol kelimesinin hemen ardından iki nokta ve ad
+    # geliyorsa atıf kanıtı aramaya gerek yok.
+    labelled = re.match(
+        r"^\s*\W*" + _POSITIONAL_CREDIT_ROLE_RE.pattern + r"\w*\s*:\s*\S",
+        value, re.IGNORECASE)
+    if not labelled and not _POSITIONAL_CREDIT_ATTRIB_RE.search(value):
+        return False
+    # Gerçek replikler soru/ünlem taşır ya da özne-yüklem kurar; imza kartları
+    # kısa ve isim ağırlıklıdır.
+    if re.search(r"[?!]", value):
+        return False
+    words = re.findall(r"[^\W\d_]+", value, re.UNICODE)
+    return 2 <= len(words) <= 14
+
+
+def _positional_credit_ids(rows) -> set:
+    """Dosyanın ilk/son birkaç cue'sunda konumsal imza tespiti yapar."""
+    rows = list(rows)
+    if not rows:
+        return set()
+    edge = _POSITIONAL_CREDIT_EDGE_CUES
+    candidates = list(enumerate(rows))[:edge] + list(enumerate(rows))[-edge:]
+    found = set()
+    for _pos, (idx, text) in candidates:
+        if _looks_like_positional_credit(text):
+            found.add(idx)
+    return found
+
+
+def _delivery_duplicate_count(blocks, source_cues) -> int:
+    """Teslim edilen dosyada BİTİŞİK yinelenen cue sayısı (deterministik).
+
+    `detect_alignment_issues` bu sınıfı zaten görüyordu ama bulgular yalnız
+    API tabanlı (isteğe bağlı) geçişlere besleniyordu; kapalıyken yinelemeler
+    sessizce teslime kadar geliyordu. Buradaki sayım kalite raporunda dosya
+    başına ayrı bir satır olarak görünür."""
+    try:
+        src_map = _source_map_for_quality_blocks(list(blocks), source_cues)
+        seq = [
+            (str(idx), _align_visible(str(text or "")))
+            for idx, _ts, text in blocks
+        ]
+        seq = [(idx, text) for idx, text in seq if text]
+        return len(set(_find_adjacent_duplicate_ids(seq, src_map)))
+    except Exception:
+        return 0
+
+
+def _source_caps_heuristic_allowed(texts, threshold: float = 0.60) -> bool:
+    """Yapısal 'tamamı büyük harf = SDH etiketi' sinyali bu dosyada kullanılabilir mi?
+
+    ABD closed-caption kaynakları bazen BAŞTAN SONA büyük harfle yazılır; orada bu
+    sinyal her cue'yu etiket sanıp dosyayı silerdi. Büyük harfli cue oranı eşiği
+    aşıyorsa heuristik devre dışı bırakılır."""
+    total = 0
+    caps = 0
+    for text in texts:
+        value = str(text or "").strip()
+        letters = [char for char in value if char.isalpha()]
+        if len(letters) < 4:
+            continue
+        total += 1
+        if all(char.isupper() for char in letters):
+            caps += 1
+    if total < 8:
+        return False
+    return (caps / total) <= threshold
 
 
 def _delivery_removable_source_ids(source_cues) -> set:
@@ -3588,9 +3716,14 @@ def _delivery_removable_source_ids(source_cues) -> set:
                 rows.append((str(cue[0]), str(cue[2] or "")))
         except Exception:
             continue
+    caps_heuristic = _source_caps_heuristic_allowed(
+        text for _idx, text in rows)
     removable = {
-        idx for idx, text in rows if _source_cue_is_delivery_removable(text)
+        idx for idx, text in rows
+        if _source_cue_is_delivery_removable(
+            text, allow_caps_heuristic=caps_heuristic)
     }
+    removable |= _positional_credit_ids(rows)
     for pos, (idx, text) in enumerate(rows):
         value = re.sub(r"^\s*>>\s*", "", text).strip()
         if (idx in removable or not value
@@ -3861,6 +3994,93 @@ def _normalize_delivery_ocr_quote_markers(blocks: list, src_map: dict) -> tuple[
     return normalized, changed
 
 
+_TR_LOWER_MAP = str.maketrans({"I": "ı", "İ": "i", "Ş": "ş", "Ç": "ç",
+                               "Ğ": "ğ", "Ö": "ö", "Ü": "ü"})
+# Cümle düzenine indirirken korunacak kısaltmalar (tamamı büyük kalır).
+_DELIVERY_KEEP_UPPER = frozenset({
+    "ABD", "AB", "BM", "NATO", "NASA", "FBI", "CIA", "KGB", "DNA", "RNA",
+    "TV", "DVD", "CD", "PC", "GPS", "UFO", "IQ", "AIDS", "HIV", "SSCB",
+    "TBMM", "TRT", "BBC", "CNN", "NBA", "NFL", "FIFA", "UEFA", "OK",
+})
+
+
+def _tr_sentence_case(text: str) -> str:
+    """Tamamı büyük harfle yazılmış Türkçe metni normal cümle düzenine indirir.
+
+    Türkçe'ye duyarlı: I→ı, İ→i. Kısaltmalar (_DELIVERY_KEEP_UPPER), rakam içeren
+    ve tek harflik token'lar olduğu gibi bırakılır."""
+    value = str(text or "")
+    if not value.strip():
+        return value
+
+    def _lower_token(token: str) -> str:
+        core = token.strip("\"'“”‘’()[]{}.,!?;:…-–—")
+        if not core:
+            return token
+        if any(ch.isdigit() for ch in core):
+            return token
+        # Türkçe ekler kesme işaretiyle bağlanır: "ABD'DE" → gövde "ABD" korunur,
+        # ek küçültülür.
+        apostrophe = re.search(r"['’]", core)
+        if apostrophe:
+            stem = core[:apostrophe.start()]
+            sep = apostrophe.group(0)
+            suffix = core[apostrophe.end():]
+        else:
+            stem, sep, suffix = core, "", ""
+        if stem in _DELIVERY_KEEP_UPPER:
+            if not sep:
+                return token
+            lowered_suffix = suffix.translate(_TR_LOWER_MAP).lower()
+            return token.replace(core, f"{stem}{sep}{lowered_suffix}")
+        if len(core) == 1 and core.isalpha():
+            return token
+        return token.translate(_TR_LOWER_MAP).lower()
+
+    lowered = " ".join(_lower_token(token) for token in value.split(" "))
+    # Satır yapısını koru (split(" ") newline'ları token içinde bıraktı)
+    out = []
+    capitalize_next = True
+    for char in lowered:
+        if capitalize_next and char.isalpha():
+            # Türkçe: 'i' büyük harfi 'İ'dir ('I' değil).
+            out.append("İ" if char == "i" else char.upper())
+            capitalize_next = False
+            continue
+        out.append(char)
+        if char in ".!?…" or char == "\n":
+            capitalize_next = True
+        elif char.isdigit():
+            # '1975 yılında oldu.' — cümle rakamla başlıyorsa sonraki kelime
+            # büyük harfle başlamamalı.
+            capitalize_next = False
+    return "".join(out)
+
+
+def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int]:
+    """Kaynağı BAŞTAN SONA büyük harf olan dosyalarda çeviriyi cümle düzenine indirir.
+
+    ABD closed-caption kaynakları büyük harfle yazılır; model bunu vurgu sanıp
+    Türkçeyi de büyük harfle üretiyor ve aynı dosyada caps/normal karışıyordu.
+    Yalnız KENDİ kaynağı da tamamı büyük harf olan cue'lara dokunulur."""
+    changed = 0
+    out = []
+    for idx, ts, text in blocks:
+        value = str(text or "")
+        letters = [char for char in value if char.isalpha()]
+        source_text = str(src_map.get(str(idx), "") or "")
+        source_letters = [char for char in source_text if char.isalpha()]
+        if (len(letters) >= 4 and all(char.isupper() for char in letters)
+                and len(source_letters) >= 4
+                and all(char.isupper() for char in source_letters)):
+            fixed = _tr_sentence_case(value)
+            if fixed != value:
+                changed += 1
+                value = fixed
+        out.append((idx, ts, value))
+    return out, changed
+
+
 def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                                  log_fn=None, source_cues=None) -> list:
     if normalize_language_name(target_language, allow_auto=False) != "Turkish":
@@ -3892,6 +4112,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         blocks = clean_sdh(blocks, src_map=sdh_src_map, source_driven=True)
         blocks, quote_markers_fixed = _normalize_delivery_ocr_quote_markers(
             blocks, src_map)
+        blocks, caps_normalized = _normalize_all_caps_delivery(blocks, src_map)
+        if caps_normalized and log_fn:
+            log_fn(
+                f"Teslim: {caps_normalized} satır BÜYÜK HARF kaynaktan normal "
+                "cümle düzenine indirildi", "info")
 
     work = []
     hats_removed = 0
@@ -4540,6 +4765,12 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         "ctx/next_ctx; if still unclear, keep the Turkish wording neutral rather than inventing a referent.\n"
         "- Match tone: casual stays casual, formal stays formal, humor stays humorous\n"
         "- Keep names, brands, proper nouns unchanged\n"
+        # Kaynak dosyalar (özellikle ABD closed-caption'ları) baştan sona BÜYÜK HARF
+        # olabilir; bu bir vurgu değil, altyazı geleneğidir.
+        "- SOURCE CASE IS NOT EMPHASIS: when the source line is written in ALL CAPS "
+        "(a captioning convention), write the translation in normal sentence case. "
+        "Keep capitals only where they belong to the word itself (acronyms, proper "
+        "nouns, on-screen signs).\n"
         "- Keep the same number of subtitle lines inside each cue; preserve the existing \\n structure unless a "
         "minimal rebalance is needed for readable Turkish.\n"
         # Kaynak metin modele gelmeden ÖNCE <i>/<b>/<u>/<font> etiketlerinden arındırılır
@@ -5678,6 +5909,38 @@ def _is_locked_identity_translation(src_text: str, tr_text: str,
 _ENGLISH_LEAK_PHRASE_EXEMPT_TARGETS = frozenset({"de", "nl", "en"})
 
 
+def _is_near_empty_translation(src_text: str, tr_text: str) -> bool:
+    """Kaynak tam cümleyken çeviri neredeyse boş mu ('.', 'bu.')?
+
+    Gerçek olay (Order & Disorder E02): üç cue'nun tüm içeriği '.' ve 'bu.' idi,
+    kaynakta tam cümle vardı. Uzunluk-oranı raporu bunu yalnız RAPORLUYOR;
+    burada 'çevrilmemiş' sayılması onarım döngüsünün kaynağa göre yeniden
+    çevirmesini sağlar."""
+    source = re.sub(r"\s+", " ", str(src_text or "")).strip()
+    target = re.sub(r"\s+", " ", str(tr_text or "")).strip()
+    if len(source) < 20:
+        return False
+    if _src_is_sdh_only(source) or _src_is_numeric_only(source):
+        return False
+    # Çok cue'ya yayılan cümlelerde bir cue MEŞRU olarak yalnız bir bağlaç/ek
+    # taşıyabilir ('...davranıyoruz,' + 'ama'). Bu yüzden yalnız KENDİ BAŞINA
+    # tam cümle olan kaynaklarda karar ver: büyük harfle başlayıp cümle
+    # noktalamasıyla bitmeli.
+    first_letter = next((ch for ch in source if ch.isalpha()), "")
+    if not first_letter or not first_letter.isupper():
+        return False
+    if not re.search(r"[.!?…][\"'”’»]?$", source):
+        return False
+    source_words = re.findall(r"[^\W\d_]+", source, re.UNICODE)
+    if len(source_words) < 4:
+        return False
+    visible_target = re.sub(r"[\s.,;:!?…\-–—\"'“”‘’()\[\]]+", "", target)
+    if not visible_target:
+        return True
+    return (len(target) < len(source) * 0.15
+            and len(re.findall(r"[^\W\d_]+", target, re.UNICODE)) <= 1)
+
+
 def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
                          source_language: str | None = None,
                          target_language: str | None = None) -> str:
@@ -5697,6 +5960,8 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
         return ""
     if _is_locked_identity_translation(src_text, tr_text, locked_terms):
         return ""
+    if _is_near_empty_translation(src_text, tr_text):
+        return "near_empty_translation"
     source_is_english = (
         source_language is None or _lang_iso639_1(source_language) == "en")
     if source_is_english:
@@ -8522,6 +8787,20 @@ def detect_alignment_issues(blocks: list, src_map: dict, window: int = 6) -> lis
 
 _MIXED_TERM_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
+
+def _mixed_term_candidate_token(word: str) -> bool:
+    """Karışık-terim taramasında bu token aday olabilir mi?
+
+    4 karakter alt sınırı kısaltmaları tamamen dışarıda bırakıyordu: kaynaktaki
+    'EUA' (4 cue) ile 'ABD' (2 cue) karışımı hiç görülmüyordu. Tamamı büyük harf
+    olan 2-3 harflik kısaltmalar da aday sayılır."""
+    value = str(word or "")
+    if not value or not value[0].isupper():
+        return False
+    if len(value) >= 4:
+        return True
+    return len(value) >= 2 and value.isupper()
+
 # ">>COLLINS:" / ">>NOORY:" gibi konuşmacı etiketlerini token'lamadan ÖNCE satırdan
 # sil — aksi hâlde konuşmacı adı yanlışlıkla 'özel-isim adayı' sayılıp gerçek
 # terimin (ör. Gobekli) karşılığını gölgeliyor (cand_words[0] yanlış seçilir).
@@ -8639,7 +8918,7 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
         for wi, w in enumerate(words):
             if w[0].islower():
                 lowercase_seen.add(w.lower())
-            if len(w) < 4 or not w[0].isupper() or _is_stop(w):
+            if not _mixed_term_candidate_token(w) or _is_stop(w):
                 continue
             total_count[w] = total_count.get(w, 0) + 1
             # Gerçek olay (Massacre in Rome, 2026-07-20): kaynak cue'da terim
@@ -8703,7 +8982,7 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
                 if not tr_text:
                     continue
                 cand_words = [w for w in _MIXED_TERM_WORD_RE.findall(tr_text)
-                             if len(w) >= 4 and w[0].isupper() and not _is_stop(w)]
+                             if _mixed_term_candidate_token(w) and not _is_stop(w)]
                 if not cand_words:
                     continue
                 exact = next((w for w in cand_words if w.lower() == term.lower()), None)
@@ -8787,12 +9066,66 @@ def detect_mixed_term_renderings(blocks: list, src_map: dict) -> list:
     kümede ≥2 örnek varsa bulgu. Döner: [{"term", "renderings": {gövde*: sayı, ...}}]."""
     clusters_by_term = _mixed_term_clusters(blocks, src_map)
     findings = []
+    seen_terms = set()
     for term, clusters in clusters_by_term.items():
         real_clusters = [c for c in clusters if len(c) >= 2]
         if len(real_clusters) >= 2:
             renderings = {f"{c[0][1]}*": len(c) for c in real_clusters}
             findings.append({"term": term, "renderings": renderings})
+            seen_terms.add(term.casefold())
+    for finding in _acronym_mixed_renderings(blocks, src_map):
+        if finding["term"].casefold() not in seen_terms:
+            findings.append(finding)
     return findings
+
+
+_ACRONYM_TERM_RE = re.compile(r"(?<!\w)([A-ZÇĞİÖŞÜ]{2,5})(?!\w)")
+
+
+def _acronym_mixed_renderings(blocks: list, src_map: dict) -> list:
+    """Kısaltmanın bazı cue'larda AYNEN bırakılıp bazılarında çevrildiğini yakalar.
+
+    Kümeleme motoru renderingleri yazım benzerliğiyle eşler; 'EUA' ile 'ABD'
+    arasında hiçbir yüzey benzerliği olmadığı için o yol bu sınıfı göremiyor.
+    Buradaki sinyal benzerlik değil VARLIK: kaynak kısaltması hedefte kimi cue'da
+    aynen duruyor, kimi cue'da hiç yok. İki taraf da >=2 örnekse bulgu."""
+    text_by_id = {
+        str(idx): _align_visible(str(text or "")) for idx, _ts, text in blocks
+    }
+    kept: dict = {}
+    replaced: dict = {}
+    for idx, source_text in (src_map or {}).items():
+        target = text_by_id.get(str(idx))
+        if not target:
+            continue
+        for term in set(_ACRONYM_TERM_RE.findall(str(source_text or ""))):
+            if term in _MIXED_TERM_ACRONYM_STOPS:
+                continue
+            bucket = kept if re.search(
+                rf"(?<!\w){re.escape(term)}(?!\w)", target) else replaced
+            bucket.setdefault(term, []).append(str(idx))
+    findings = []
+    for term, kept_ids in kept.items():
+        replaced_ids = replaced.get(term, [])
+        if len(kept_ids) >= 2 and len(replaced_ids) >= 2:
+            findings.append({
+                "term": term,
+                "renderings": {
+                    f"{term} (kaynakla aynı)": len(kept_ids),
+                    "çevrilmiş/farklı": len(replaced_ids),
+                },
+            })
+    return findings
+
+
+# Roma rakamları ve yaygın İngilizce büyük-harf kelimeler kısaltma sayılmaz.
+_MIXED_TERM_ACRONYM_STOPS = frozenset({
+    "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII",
+    "A", "AN", "AND", "THE", "OF", "TO", "IN", "ON", "AT", "IS", "IT", "OR",
+    "OK", "NO", "YES", "SO", "IF", "AS", "BY", "BE", "DO", "GO", "WE", "HE",
+    "SHE", "YOU", "MY", "ME", "US", "AM", "ARE", "WAS", "BUT", "NOT", "ALL",
+    "VE", "BU", "ŞU", "BİR", "DE", "DA", "Kİ",
+})
 
 
 def _mixed_term_suspect_ids(blocks: list, src_map: dict) -> set:
@@ -9584,14 +9917,16 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         if _source_cue_is_delivery_removable(src_text):
             continue
 
-        if _is_untranslated(
-                src_text, tr_text, locked_terms=locked_terms,
-                source_language=source_language):
+        _is_untranslated_cue = _is_untranslated(
+            src_text, tr_text, locked_terms=locked_terms,
+            source_language=source_language)
+        if _is_untranslated_cue:
             untranslated.append(str(idx))
             warnings += 1
 
-        # Length ratio check
-        if tr_text and len(src_text) > 4:  # skip trivially short
+        # Length ratio check — aynı cue zaten 'çevrilmemiş' sayıldıysa tekrar
+        # sayma (near_empty_translation ikisini birden tetikliyordu).
+        if tr_text and len(src_text) > 4 and not _is_untranslated_cue:
             ratio = len(tr_text) / len(src_text)
             if ((ratio < 0.12 or ratio > 5.0)
                     and not _ratio_is_neighbor_redistribution(pos, ratio)
@@ -10954,6 +11289,46 @@ def _partial_output_path(out_path) -> Path:
         path.parent / "Raporlar" / "Kurtarma"
         / f"{path.stem}.partial{path.suffix}"
     )
+
+
+def _write_unfinished_run_marker(out_path, partial_path, reason: str = "",
+                                 missing: int = 0, log_fn=None) -> Path | None:
+    """Nihai çıktının YANINA 'bu koşu tamamlanmadı' işareti bırakır.
+
+    Yarım kalan koşularda dosya yalnız Raporlar/Kurtarma altına yazılıyordu; teslim
+    klasöründe 'henüz çevrilmedi' ile 'çevrildi ve teslim edildi' ayırt edilemiyor,
+    eksik bölüm gözden kaçıyordu."""
+    try:
+        target = Path(out_path)
+        marker = target.with_name(f"{target.stem}.TAMAMLANMADI.txt")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "BU BÖLÜM TAMAMLANMADI — teslim edilebilir çıktı YOK.",
+            f"Beklenen çıktı : {target.name}",
+            f"Kısmi sonuç    : {Path(partial_path).as_posix()}",
+        ]
+        if missing:
+            lines.append(f"Eksik satır    : {missing}")
+        if reason:
+            lines.append(f"Neden          : {reason}")
+        lines.append(
+            "Yeniden çalıştırıldığında bu dosya otomatik olarak silinir.")
+        atomic_write_text(marker, "\n".join(lines) + "\n")
+        return marker
+    except Exception as exc:
+        if log_fn:
+            log_fn(f"Tamamlanmadı işareti yazılamadı: {exc}", "warn")
+        return None
+
+
+def _clear_unfinished_run_marker(out_path) -> None:
+    """Dosya başarıyla teslim edilince yarım-koşu işaretini kaldırır."""
+    try:
+        target = Path(out_path)
+        target.with_name(f"{target.stem}.TAMAMLANMADI.txt").unlink(
+            missing_ok=True)
+    except Exception:
+        pass
 
 
 def _legacy_partial_output_path(out_path) -> Path:
@@ -12862,6 +13237,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     import datetime as _dt
     fields = [
         ("hata",     "Eksik çeviri satırı"),
+        ("dup",      "Bitişik yinelenen cue"),
         ("cps",      f"CPS aşımı (>{CPS_WARN_LIMIT} k/sn)"),
         ("cps_avg",  "Ortalama CPS"),
         ("cps_max",  "Maksimum CPS"),
@@ -15409,8 +15785,10 @@ class App(ctk.CTk):
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
 
-        # Satır Kırma
-        self.linebreak_var = ctk.BooleanVar(value=False)
+        # Satır Kırma — VARSAYILAN AÇIK: kapalıyken tek satırda 70-97 karakterlik
+        # cue'lar teslime kadar geliyordu (EBU/Netflix: satır başına 42 karakter).
+        # Geçiş artık yalnız genişliğe bakar ve en fazla 2 satır üretir.
+        self.linebreak_var = ctk.BooleanVar(value=True)
         lb_fr = ctk.CTkFrame(sb, fg_color="transparent")
         lb_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,4)); r += 1
         lb_fr.grid_columnconfigure(1, weight=1)
@@ -31154,10 +31532,17 @@ class App(ctk.CTk):
             # birleştirme/AI segmentasyonun ürettiği CPS ve cue değişimleri rapora
             # hiç yansımıyordu (rapor çıktıyla uyuşmuyordu).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
+            _dup_n = _delivery_duplicate_count(_delivery_blocks, cues)
             _has_missing = _hata_n > 0
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
             self._record_file_status(filepath, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, tgt)
+            if _has_missing:
+                _write_unfinished_run_marker(
+                    out_path, _write_path, reason="eksik çeviri satırı kaldı",
+                    missing=_hata_n, log_fn=self._log)
+            else:
+                _clear_unfinished_run_marker(out_path)
             _quarantined = (
                 self._maybe_quarantine_incomplete_final(out_path)
                 if _has_missing else None)
@@ -31249,6 +31634,7 @@ class App(ctk.CTk):
                 "output_path": str(_write_path),
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
+                "dup": _dup_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "pass_fix": _pass_fix,
                 "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,
@@ -33732,12 +34118,19 @@ class App(ctk.CTk):
                 source_cues=_src_cues)
             # İstatistikler teslim bloklarından sayılır (bkz. _run_sync).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
+            _dup_n = _delivery_duplicate_count(_delivery_blocks, _src_cues)
             _has_missing = _hata_n > 0
             _write_path = out_path
             if _has_missing:
                 _write_path = _partial_output_path(out_path)
             self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
+            if _has_missing:
+                _write_unfinished_run_marker(
+                    out_path, _write_path, reason="eksik çeviri satırı kaldı",
+                    missing=_hata_n, log_fn=self._log)
+            else:
+                _clear_unfinished_run_marker(out_path)
             _quarantined = (
                 self._maybe_quarantine_incomplete_final(out_path)
                 if _has_missing else None)
@@ -33818,6 +34211,7 @@ class App(ctk.CTk):
                 "output_path": str(_write_path),
                 "total": len(sorted_blocks),
                 "hata": _hata_n, "cps": _cps_n,
+                "dup": _dup_n,
                 "cps_avg": _cps_avg, "cps_max": _cps_max,
                 "cons": _cons_fixes, "rev": _rev_fixes, "warn": w,
                 "pass_fix": _pass_fix,
@@ -35280,6 +35674,13 @@ class App(ctk.CTk):
                     source_cues=cues)
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)
+                if _has_missing:
+                    _write_unfinished_run_marker(
+                        out_path, _write_path,
+                        reason="eksik çeviri satırı kaldı",
+                        missing=_hata_n_pre, log_fn=self._log)
+                else:
+                    _clear_unfinished_run_marker(out_path)
                 _fingerprint_ok = _write_output_source_fingerprint(
                     report_dir, _write_path, expected_source_hash,
                     source_path=filepath)
@@ -35305,6 +35706,7 @@ class App(ctk.CTk):
                         )
                     # İstatistikler diske yazılan teslim bloklarından (bkz. _run_sync)
                     _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
+                    _dup_n = _delivery_duplicate_count(_delivery_blocks, cues)
                     _cps_avg, _cps_max = _cps_stats(_delivery_blocks)
                     _pass_fix = sum(
                         1 for block in _final_blocks
@@ -35453,6 +35855,7 @@ class App(ctk.CTk):
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu).
                 # Sayım diske yazılan teslim bloklarından yapılır (bkz. _run_sync).
                 _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
+                _dup_n = _delivery_duplicate_count(_delivery_blocks, cues)
                 _pass_fix = sum(
                     1 for block in _final_blocks
                     if _pre_pass.get(str(block[0])) not in (None, block[2]))
@@ -35476,6 +35879,7 @@ class App(ctk.CTk):
                     "output_path": str(out_path),
                     "total": len(_final_blocks),
                     "hata": _hata_n, "cps": _cps_n,
+                    "dup": _dup_n,
                     "cps_avg": _cps_avg, "cps_max": _cps_max,
                     "cons": _cons_fixes, "pass_fix": _pass_fix,
                     "qc_auto": _qc_auto_fixes, "qc": _qc_fixes, "warn": _w,

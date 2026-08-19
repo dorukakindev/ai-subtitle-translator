@@ -248,6 +248,58 @@ def _ascii_fold(value: str) -> str:
     return value.encode("ascii", "ignore").decode("ascii").lower()
 
 
+_SENTENCE_END_RE = re.compile(r"[.!?…]['\"”’»]?\s*$")
+
+
+def is_structural_sdh_label(text: str) -> bool:
+    """Beyaz listeye BAKMADAN, yapısal olarak SDH etiketi mi?
+
+    Ayırt edici sinyal biçimdir, kelime değil: satırın harfleri TAMAMEN büyük ve
+    satır cümle noktalamasıyla bitmiyorsa bu bir altyazı repliği değil, bir ses/
+    konuşmacı etiketidir ('АПЛОДИСМЕНТЫ', 'ВОЙ СИРЕНЫ', 'МУЗЫКА:', 'APPLAUSE').
+    Bu test alfabeden bağımsızdır — Kiril, Yunan ve Latin aynı kuralla yakalanır;
+    dile özel anahtar kelime listeleri her yeni kaynakta köstebek-vurmacaya
+    dönüşüyordu.
+
+    DİKKAT: Kaynağın TAMAMI büyük harfle yazılmış dosyalarda (ABD closed-caption
+    geleneği) bu sinyal anlamsızdır — çağıran taraf dosya düzeyinde oranı ölçüp
+    öyle kullanmalı (bkz. _delivery_removable_source_ids)."""
+    value = FORMAT_TAG_RE.sub("", str(text or ""))
+    value = MUSIC_NOTE_RE.sub(" ", value)
+    value = CHEVRON_SPEAKER_RE.sub("", value)
+    value = re.sub(r"^\s*[-–—]\s*", "", value).strip()
+    if not value or len(value) > 60 or "\n" in value:
+        return False
+    if _SENTENCE_END_RE.search(value):
+        return False
+    letters = [char for char in value if char.isalpha()]
+    if len(letters) < 2:
+        return False
+    if not all(char.isupper() for char in letters):
+        return False
+    # Sayı/zaman kartları ('1975', 'BERLIN 1961') etiket değil, ekran yazısıdır;
+    # bunlar çevrilmeli. Harf oranı çok düşükse dokunma.
+    return len(letters) >= max(2, len(re.sub(r"\s", "", value)) // 2)
+
+
+def strip_structural_sdh_label_prefix(text: str) -> str:
+    """'МУЗЫКА: gerçek replik' → 'gerçek replik' (etiket kısmı atılır).
+
+    Yalnız iki nokta ile ayrılmış, tamamı büyük harfli ÖN EK'i keser; kalan replik
+    korunur. Etiketten sonra içerik yoksa metin olduğu gibi bırakılır (cue'yu
+    burada silmek çağıranın işi)."""
+    value = str(text or "")
+    match = re.match(r"^(\s*(?:[-–—]\s*)?)([^\n:]{1,40}):\s*(?=\S)", value)
+    if not match:
+        return value
+    label = match.group(2).strip()
+    letters = [char for char in label if char.isalpha()]
+    if not letters or not all(char.isupper() for char in letters):
+        return value
+    rest = value[match.end():]
+    return f"{match.group(1)}{rest}" if rest.strip() else value
+
+
 def _descriptor_key(value: str) -> str:
     value = _ascii_fold(value)
     value = re.sub(r"(?<!\w)0wn(?!\w)", "own", value)
@@ -320,7 +372,13 @@ _KNOWN_LANGUAGES = {
 def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     key = _descriptor_key(content)
     if not key:
-        return True
+        # ASCII'ye indirgenince boşalan içerik = Latin dışı alfabe (Kiril, Yunan,
+        # Arap...). Parantez İÇİNDEYSE parantezin kendisi zaten yeterli sinyaldir.
+        # ÇIPLAK metinde ise koşulsuz 'evet' demek gerçek diyaloğu siliyordu
+        # ('МУЗЫКА: Что-то происходит' tamamen uçuyordu) — yapısal teste bırak.
+        if not bare_text:
+            return True
+        return is_structural_sdh_label(content)
     if _is_heading_label(content):
         return False
     raw_words = str(content or "").strip().split()
@@ -868,9 +926,14 @@ def _src_is_bare_sdh_line(src_text: str) -> bool:
     return bool(_BARE_FRENCH_SDH_RE.fullmatch(_ascii_fold(value).strip()))
 
 
-def src_is_sfx_only(src_text: str) -> bool:
+def src_is_sfx_only(src_text: str, allow_caps_heuristic: bool = False) -> bool:
     """Kaynak cue'su tamamen parantez/köşeli parantez/nota mı (gerçek diyalog
-    kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue."""
+    kelimesi YOK)? Boş kaynak SFX-only sayılmaz — bkz. _src_is_real_dialogue.
+
+    allow_caps_heuristic=True ise parantezsiz, tamamı büyük harfli ve cümle
+    noktalamasıyla bitmeyen etiketler de (Kiril 'ВОЙ СИРЕНЫ' dahil) SFX sayılır.
+    Bu yalnız kaynağın TAMAMI büyük harf OLMAYAN dosyalarda güvenlidir; kararı
+    çağıran taraf dosya düzeyinde verir."""
     text = _strip_mojibake_music_ornament(
         re.sub(r'\{\\[^}]*\}', '', str(src_text or '')))
     text = _VTT_VOICE_TAG_RE.sub('', text)
@@ -880,6 +943,8 @@ def src_is_sfx_only(src_text: str) -> bool:
     if not text:
         return False
     if _BARE_CYRILLIC_SDH_RE.fullmatch(text):
+        return True
+    if allow_caps_heuristic and is_structural_sdh_label(text):
         return True
     if _src_is_bare_sdh_line(text):
         return True
