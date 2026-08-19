@@ -380,6 +380,47 @@ def _locked_source_term_present(term: str, source_text: str) -> bool:
     return term_in_text(key, value.casefold())
 
 
+# Deyim kalıplarındaki yer tutucular — metinde birebir bulunmaları beklenmez.
+_IDIOM_PLACEHOLDER_WORDS = frozenset({
+    "someone", "somebody", "something", "sb", "sth", "one", "oneself",
+    "someone's", "somebody's", "one's", "your", "yours", "his", "her", "hers",
+    "their", "theirs", "my", "mine", "our", "ours", "its", "him", "them", "you",
+})
+_IDIOM_GAP = r"\W+(?:\w+\W+){0,2}"
+
+
+def idiom_source_present(term: str, text_lower: str) -> bool:
+    """Deyim kalıbı bu metinde geçiyor mu — çekimlenmiş biçimlere toleranslı.
+
+    Birebir eşleşme aranınca model'in ürettiği sözlük biçimi ('cut someone some
+    slack') metindeki gerçek kullanımla ('cut him some slack') eşleşmiyor ve deyim
+    haritasından sessizce siliniyordu. Yer tutucular atlanır, kalan içerik
+    kelimeleri SIRAYLA ve aralarında en fazla ikişer kelimeyle aranır."""
+    if term_in_text(term, text_lower):
+        return True
+    words = re.findall(r"[\w']+", str(term or "").casefold())
+    content = [word for word in words if word not in _IDIOM_PLACEHOLDER_WORDS]
+    if len(content) < 2 or len(words) < 2:
+        return False
+
+    def _word_pattern(word: str) -> str:
+        # Hafif çekim toleransı: spill→spilled, kick→kicked, make→making
+        alternatives = [re.escape(word) + r"(?:s|es|d|ed|ing)?"]
+        if len(word) > 3 and word.endswith("e"):
+            alternatives.append(re.escape(word[:-1]) + r"(?:ing|ed|es)")
+        if len(word) > 3 and word.endswith("y"):
+            alternatives.append(re.escape(word[:-1]) + r"(?:ies|ied)")
+        return "(?:" + "|".join(alternatives) + ")"
+
+    pattern = (r"(?<!\w)"
+               + _IDIOM_GAP.join(_word_pattern(word) for word in content)
+               + r"(?!\w)")
+    try:
+        return re.search(pattern, str(text_lower or ""), re.UNICODE) is not None
+    except re.error:
+        return False
+
+
 def _ends_sentence(text: str) -> bool:
     """True if text ends with sentence-closing punctuation (handles trailing quotes)."""
     bracket_trimmed = str(text or "").rstrip().rstrip(")]}")
@@ -1716,6 +1757,33 @@ def _generate_character_examples(
         return _analysis_aux_result(({}, {}), status, "character_examples", False)
 
 
+def _resolve_pronoun_pair(pair: str, chars: list) -> str | None:
+    """LLM'in döndürdüğü karakter ikilisi metnini kanonik 'A-B' anahtarına eşler.
+
+    Model ikiliyi bitişik tire dışında pek çok biçimde yazıyor: 'A - B', 'A -> B',
+    'A / B', 'A to B'. Eskiden yalnız birebir 'A-B' eşleşmesi kabul edildiği için
+    doğru tespit edilmiş sen/siz kararlarının neredeyse tamamı sessizce siliniyordu.
+    Ayrıca 'Jean-Luc' gibi tireli adları bölmemek için ayraçtan değil, bilinen
+    karakter adlarını metinde arayarak (uzun addan kısaya) çözer."""
+    text = _analysis_name_identity(pair)
+    if not text:
+        return None
+    found = []
+    for name in sorted(chars, key=lambda value: len(str(value)), reverse=True):
+        key = _analysis_name_identity(name)
+        if not key:
+            continue
+        position = text.find(key)
+        if position < 0:
+            continue
+        found.append((position, name))
+        text = text[:position] + ("\0" * len(key)) + text[position + len(key):]
+    if len(found) < 2:
+        return None
+    found.sort(key=lambda item: item[0])
+    return f"{found[0][1]}-{found[1][1]}"
+
+
 def _generate_pronoun_map(
     context,
     tgt_lang: str,
@@ -1789,14 +1857,10 @@ def _generate_pronoun_map(
             _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
                 pronoun_map=data.get("pronoun_map", {})
             )
-            valid_pairs = {
-                _analysis_name_identity(f"{left}-{right}"): f"{left}-{right}"
-                for left in chars for right in chars if left != right
-            }
             pronouns = {
-                valid_pairs[_analysis_name_identity(pair)]: form
+                resolved: form
                 for pair, form in pronouns.items()
-                if _analysis_name_identity(pair) in valid_pairs
+                if (resolved := _resolve_pronoun_pair(pair, chars))
             }
             return _analysis_aux_result(pronouns, status, "pronoun_map", True)
         except json.JSONDecodeError:
@@ -1811,14 +1875,10 @@ def _generate_pronoun_map(
                     _examples, pronouns, _styles, _idioms, _refs = _sanitize_analysis_aux(
                         pronoun_map=data.get("pronoun_map", {})
                     )
-                    valid_pairs = {
-                        _analysis_name_identity(f"{left}-{right}"): f"{left}-{right}"
-                        for left in chars for right in chars if left != right
-                    }
                     pronouns = {
-                        valid_pairs[_analysis_name_identity(pair)]: form
+                        resolved: form
                         for pair, form in pronouns.items()
-                        if _analysis_name_identity(pair) in valid_pairs
+                        if (resolved := _resolve_pronoun_pair(pair, chars))
                     }
                     return _analysis_aux_result(pronouns, status, "pronoun_map", True)
                 except Exception:
@@ -2192,7 +2252,7 @@ def _generate_idiom_map(
             )
             idioms = {
                 source: target for source, target in idioms.items()
-                if _locked_source_term_present(source, combined)
+                if idiom_source_present(source, combined.casefold())
             }
             return _analysis_aux_result(idioms, status, "idiom_map", True)
         except json.JSONDecodeError:
@@ -2208,7 +2268,7 @@ def _generate_idiom_map(
                     )
                     idioms = {
                         source: target for source, target in idioms.items()
-                        if _locked_source_term_present(source, combined)
+                        if idiom_source_present(source, combined.casefold())
                     }
                     return _analysis_aux_result(idioms, status, "idiom_map", True)
                 except Exception:
@@ -7042,14 +7102,59 @@ _EXPLICIT_SOURCE_YES_RE = re.compile(r"^\s*(?:[-–—]\s*)?(?:yes|oui|ja|sí|s�
 _EXPLICIT_SOURCE_NO_RE = re.compile(r"^\s*(?:[-–—]\s*)?(?:no|non|nein)\b", re.IGNORECASE)
 _EXPLICIT_TURKISH_YES_RE = re.compile(r"^\s*(?:[-–—]\s*)?evet\b", re.IGNORECASE)
 _EXPLICIT_TURKISH_NO_RE = re.compile(r"^\s*(?:[-–—]\s*)?hayır\b", re.IGNORECASE)
+# Hedef dile göre evet/hayır kalıpları. Yalnız Türkçe aranınca Almanca (Ja/Nein),
+# Fransızca (Oui/Non) veya İspanyolca (Sí/No) çevirilerde tersine dönmüş bir yanıt
+# hiç yakalanmıyordu.
+_EXPLICIT_TARGET_ANSWER_RES = {
+    "tr": (_EXPLICIT_TURKISH_YES_RE, _EXPLICIT_TURKISH_NO_RE),
+    "en": (re.compile(r"^\s*(?:[-–—]\s*)?(?:yes|yeah|yep)\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?(?:no|nope)\b", re.IGNORECASE)),
+    "de": (re.compile(r"^\s*(?:[-–—]\s*)?(?:ja|jawohl)\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?(?:nein|nee)\b", re.IGNORECASE)),
+    "fr": (re.compile(r"^\s*(?:[-–—]\s*)?(?:oui|ouais|si)\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?non\b", re.IGNORECASE)),
+    "es": (re.compile(r"^\s*(?:[-–—]\s*)?(?:sí|si)\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?no\b", re.IGNORECASE)),
+    "it": (re.compile(r"^\s*(?:[-–—]\s*)?(?:sì|si)\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?no\b", re.IGNORECASE)),
+    "pt": (re.compile(r"^\s*(?:[-–—]\s*)?sim\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?não\b", re.IGNORECASE)),
+    "nl": (re.compile(r"^\s*(?:[-–—]\s*)?ja\b", re.IGNORECASE),
+           re.compile(r"^\s*(?:[-–—]\s*)?nee\b", re.IGNORECASE)),
+}
+_TARGET_LANGUAGE_KEYS = {
+    "turkish": "tr", "türkçe": "tr", "turkce": "tr", "tur": "tr",
+    "english": "en", "eng": "en",
+    "german": "de", "deutsch": "de", "ger": "de", "deu": "de",
+    "french": "fr", "français": "fr", "francais": "fr", "fra": "fr",
+    "spanish": "es", "español": "es", "espanol": "es", "spa": "es",
+    "italian": "it", "italiano": "it", "ita": "it",
+    "portuguese": "pt", "português": "pt", "por": "pt",
+    "dutch": "nl", "nederlands": "nl", "nld": "nl",
+}
 
 
-def _has_explicit_answer_polarity_flip(source_text: str, translated_text: str) -> bool:
+def _target_language_key(tgt_lang: str) -> str:
+    """Hedef dil adını/kodunu iki harfli anahtara indirger ('' = tanınmadı)."""
+    value = str(tgt_lang or "").strip().casefold()
+    if not value:
+        return "tr"
+    if value in _TARGET_LANGUAGE_KEYS:
+        return _TARGET_LANGUAGE_KEYS[value]
+    return value if value in _EXPLICIT_TARGET_ANSWER_RES else ""
+
+
+def _has_explicit_answer_polarity_flip(source_text: str, translated_text: str,
+                                       tgt_lang: str = "") -> bool:
     src = str(source_text or "")
     tr = str(translated_text or "")
+    patterns = _EXPLICIT_TARGET_ANSWER_RES.get(_target_language_key(tgt_lang))
+    if not patterns:
+        return False
+    yes_re, no_re = patterns
     return bool(
-        (_EXPLICIT_SOURCE_YES_RE.search(src) and _EXPLICIT_TURKISH_NO_RE.search(tr))
-        or (_EXPLICIT_SOURCE_NO_RE.search(src) and _EXPLICIT_TURKISH_YES_RE.search(tr))
+        (_EXPLICIT_SOURCE_YES_RE.search(src) and no_re.search(tr))
+        or (_EXPLICIT_SOURCE_NO_RE.search(src) and yes_re.search(tr))
     )
 
 
@@ -7939,8 +8044,15 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 reasons.append("SPEAKER_LABEL_MISMATCH")
             if _speaker_label_absorbed_text(orig_clean, text):
                 reasons.append("SPEAKER_LABEL_ABSORBED_TEXT")
+            # Evet/hayır tersine dönmesi her hedef dilde denetlenir (kalıplar dile göre).
+            if _has_explicit_answer_polarity_flip(orig_clean, text, tgt_lang):
+                reasons.append("EXPLICIT_ANSWER_POLARITY_FLIP")
             if turkish_target:
-                reasons.extend(_common_term_mistranslation_reasons(orig_clean, text))
+                reasons.extend(
+                    reason for reason
+                    in _common_term_mistranslation_reasons(orig_clean, text)
+                    if reason != "EXPLICIT_ANSWER_POLARITY_FLIP"
+                )
             flip_reason = register_flips.get(str(idx))
             if flip_reason:
                 reasons.append(flip_reason)
@@ -11399,7 +11511,7 @@ def validate_polish_candidate(
         return False, "source_negation"
     if src and _has_because_negation_scope_reversal(src, old, new):
         return False, "negation_scope"
-    if src and _has_explicit_answer_polarity_flip(src, new):
+    if src and _has_explicit_answer_polarity_flip(src, new, tgt_lang):
         return False, "source_polarity"
     if src and _has_unanchored_negation_addition(src, old, new):
         return False, "source_negation_addition"
@@ -13408,7 +13520,7 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
         # Active idioms: only inject idioms whose source phrase appears in this chunk
         if isinstance(idiom_map, dict) and idiom_map:
             active_idioms = {k: v for k, v in idiom_map.items()
-                             if term_in_text(k, chunk_text_lower)}
+                             if idiom_source_present(k, chunk_text_lower)}
             if active_idioms:
                 payload["idioms"] = active_idioms
 
