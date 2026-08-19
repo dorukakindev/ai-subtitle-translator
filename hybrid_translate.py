@@ -3213,6 +3213,8 @@ def _analyze_context_openai_compatible(
         for source, target in recurring_terms.items()
         if _locked_source_term_present(source, source_blob)
     }
+    recurring_terms = drop_quoted_work_title_terms(
+        recurring_terms, source_blob, log_fn=log_fn)
     scene_notes = data.get("scene_notes", [])
     if not isinstance(scene_notes, list):
         scene_notes = []
@@ -7089,6 +7091,53 @@ _ANALYSIS_POSSESSIVE_KINSHIP_RE = re.compile(
     r")(?!\w)",
     re.IGNORECASE,
 )
+
+
+# Eser adları (kitap/film/marka/proje) SÖZLÜKTE ÇEVRİLMEZ. Gerçek olay
+# (Ancient Egyptian Acoustics, 2026-08-19): konuşmacının kitabının adı olan
+# 'Egyptian Sonics' sözlükte 'Mısır Sonikleri'ne çevrildi. Kişi ve yer adları
+# zaten korunuyordu; eser adları korunmuyordu.
+_QUOTED_TITLE_QUOTES = "\"'\u201c\u201d\u00ab\u00bb\u2018\u2019"
+_QUOTED_TITLE_RE = re.compile(
+    "[" + _QUOTED_TITLE_QUOTES + "]"
+    "([^" + _QUOTED_TITLE_QUOTES + "\n]{2,60})"
+    "[" + _QUOTED_TITLE_QUOTES + "]"
+)
+
+
+def quoted_work_titles(source_text: str) -> set:
+    """Kaynak metinde TIRNAK İÇİNDE geçen (eser adı olma ihtimali yüksek) ifadeler."""
+    titles = set()
+    for match in _QUOTED_TITLE_RE.finditer(str(source_text or "")):
+        value = " ".join(match.group(1).split())
+        if value and any(char.isalpha() for char in value):
+            titles.add(value.casefold())
+    return titles
+
+
+def drop_quoted_work_title_terms(glossary: dict | None, source_text: str,
+                                 log_fn=None) -> dict:
+    """Kaynakta tırnak içinde geçen terimleri sözlükten çıkarır (çevrilmesinler)."""
+    entries = dict(glossary or {})
+    if not entries:
+        return entries
+    titles = quoted_work_titles(source_text)
+    if not titles:
+        return entries
+    kept, dropped = {}, []
+    for source, target in entries.items():
+        key = " ".join(str(source or "").split()).casefold()
+        if key and key in titles and key != str(target or "").strip().casefold():
+            dropped.append(f"{source}->{target}")
+            continue
+        kept[source] = target
+    if dropped and log_fn:
+        log_fn(
+            "Sözlük guard: kaynakta tırnak içinde geçen eser adları çevrilmeyecek: "
+            + ", ".join(dropped[:6]),
+            "warn",
+        )
+    return kept
 
 
 def _sanitize_analysis_recurring_terms(glossary: dict | None,

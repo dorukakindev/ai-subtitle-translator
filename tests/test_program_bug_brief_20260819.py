@@ -269,5 +269,25 @@ class DeliveryScanCountsTest(unittest.TestCase):
             gui._scan_delivery_blocks(blocks, None)["cue_id_leak"], 1)
 
 
+class QuotedWorkTitleGlossaryTest(unittest.TestCase):
+    """P1-11: sözlük konuşmacının KİTAP adını çeviriyordu."""
+
+    def test_quoted_title_is_dropped_from_glossary(self):
+        import hybrid_translate as ht
+        source = ('His book "Egyptian Sonics" explains the resonance. '
+                  'Egyptian Sonics costs twenty pounds.')
+        cleaned = ht.drop_quoted_work_title_terms(
+            {"Egyptian Sonics": "Mısır Sonikleri", "resonance": "rezonans"},
+            source)
+        self.assertNotIn("Egyptian Sonics", cleaned)
+        self.assertEqual(cleaned.get("resonance"), "rezonans")
+
+    def test_unquoted_terms_are_kept(self):
+        import hybrid_translate as ht
+        cleaned = ht.drop_quoted_work_title_terms(
+            {"resonance": "rezonans"}, "The resonance was measured here.")
+        self.assertEqual(cleaned, {"resonance": "rezonans"})
+
+
 if __name__ == "__main__":
     unittest.main()
