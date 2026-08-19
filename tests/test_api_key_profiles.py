@@ -88,7 +88,9 @@ class ApiKeyProfileTest(unittest.TestCase):
         self.assertEqual(app.main_custom_url_var.get(), "https://reseller.test/v1")
         self.assertEqual(app.main_custom_key_entry.get(), "sk-profile")
         self.assertEqual(app._api_key_assignments["main"], pid)
-        app._save_settings.assert_called_once_with(save_credentials=False)
+        # Anahtar da güvenli depoya yazılmalı; aksi hâlde uygulama yeniden
+        # açıldığında özel model seçili gelip anahtar boş kalıyor ve 401 alınıyordu.
+        app._save_settings.assert_called_once_with(save_credentials=True)
 
     def test_assign_claude_to_critic_populates_custom_helper(self):
         app = app_stub()

@@ -640,7 +640,13 @@ def _make_smart_chunks(cues: list, chunk_size: int, frag_tags: dict = None,
                         end = n
                         break
                     text = _clean_source_text(cues[check_idx].text)
-                    if _ends_sentence(text):
+                    # 'I saw Dr.' cümle sonu DEĞİLDİR: unvan ile isim arasından
+                    # bölünce ('Dr.' | 'Watson') model unvanı bağlamsız görüyordu.
+                    next_text = (_clean_source_text(cues[check_idx + 1].text)
+                                 if check_idx + 1 < n else "")
+                    if (_ends_sentence(text)
+                            and not _ellipsis_continues(text, next_text)
+                            and not _abbreviation_continues(text, next_text)):
                         end = min(check_idx + 1, n)
                         break
             # Never cut inside a fragment group: if the last cue in this
@@ -2687,6 +2693,9 @@ def _is_openai_compatible_endpoint(api_url: str, model: str) -> bool:
 
 
 API_REQUEST_TIMEOUT_SECONDS = 300
+# o1/o3/o4 ve gpt-5 ailesinde `max_completion_tokens` düşünme jetonlarını da sayar;
+# küçük bütçeler görünür çıktıyı tamamen yok eder (content="").
+REASONING_MIN_COMPLETION_TOKENS = 1500
 
 
 def _safe_chat_create(client, cancel_context=None, **kwargs):
@@ -2824,6 +2833,16 @@ def _normalize_chat_create_kwargs(model: str, kwargs: dict) -> dict:
             kwargs["messages"] = new_msgs
         if "max_tokens" in kwargs:
             kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+        # Reasoning/gpt-5 modellerinde bu bütçe DÜŞÜNME jetonlarını da kapsar:
+        # max_tokens=40/80 ile gönderilen kısa görevler (otomatik tür ve kaynak dil
+        # tespiti) bütçeyi düşünmede tüketip 0 karakter üretiyordu. Taban uygula.
+        budget = kwargs.get("max_completion_tokens")
+        if budget is not None:
+            try:
+                kwargs["max_completion_tokens"] = max(
+                    int(budget), REASONING_MIN_COMPLETION_TOKENS)
+            except (TypeError, ValueError):
+                pass
     return kwargs
 
 

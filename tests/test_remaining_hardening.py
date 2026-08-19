@@ -412,10 +412,21 @@ class CredentialAndAccountingTest(unittest.TestCase):
     def test_batch_token_callback_accepts_cached(self):
         stub = SimpleNamespace(
             _main_model_name=lambda: "gpt-5.4",
+            _main_api_base_url=lambda: "https://api.openai.com/v1",
             _update_tokens=mock.Mock(),
         )
         gui.App._update_batch_tokens(stub, 100, cached=40)
         self.assertEqual(stub._update_tokens.call_args.kwargs["cached"], 40)
+
+    def test_batch_token_cost_hidden_for_third_party_route(self):
+        """Kullanıcının kendi proxy'sinde sahte OpenAI USD tutarı gösterilmemeli."""
+        stub = SimpleNamespace(
+            _main_model_name=lambda: "gpt-5.4",
+            _main_api_base_url=lambda: "https://api.shuaiapi.com/v1",
+            _update_tokens=mock.Mock(),
+        )
+        gui.App._update_batch_tokens(stub, 100)
+        self.assertIsNone(stub._update_tokens.call_args.kwargs["price"])
 
 
 if __name__ == "__main__":

@@ -119,11 +119,23 @@ class SafeChatCreateModelCompatTest(unittest.TestCase):
         client = self._make_client()
         create = self._call(
             ht._safe_chat_create, client, model="o3-mini",
-            messages=[], max_tokens=500,
+            messages=[], max_tokens=4000,
         )
         _called_kwargs = create.call_args[1]
         self.assertNotIn("max_tokens", _called_kwargs)
-        self.assertEqual(_called_kwargs.get("max_completion_tokens"), 500)
+        self.assertEqual(_called_kwargs.get("max_completion_tokens"), 4000)
+
+    def test_reasoning_model_raises_tiny_budget_to_floor(self):
+        """Düşünme jetonları da bu bütçeden düşer; 40-80 jetonluk kısa görevler
+        (tür/kaynak dil tespiti) hiç görünür çıktı üretemiyordu."""
+        client = self._make_client()
+        create = self._call(
+            ht._safe_chat_create, client, model="o3-mini",
+            messages=[], max_tokens=80,
+        )
+        self.assertEqual(
+            create.call_args[1]["max_completion_tokens"],
+            ht.REASONING_MIN_COMPLETION_TOKENS)
 
     def test_bedrock_provider_routes_away(self):
         client = mock.MagicMock()
@@ -179,7 +191,9 @@ class SafeChatCreateModelCompatTest(unittest.TestCase):
         self.assertNotIn("response_format", _called_kwargs)
         self.assertEqual(_called_kwargs["messages"][0]["role"], "developer")
         self.assertNotIn("max_tokens", _called_kwargs)
-        self.assertEqual(_called_kwargs["max_completion_tokens"], 123)
+        self.assertEqual(
+            _called_kwargs["max_completion_tokens"],
+            ht.REASONING_MIN_COMPLETION_TOKENS)
 
     def test_gui_o4_matches_hybrid_behavior(self):
         client = self._make_client()
@@ -194,4 +208,6 @@ class SafeChatCreateModelCompatTest(unittest.TestCase):
         _called_kwargs = create.call_args[1]
         self.assertNotIn("response_format", _called_kwargs)
         self.assertEqual(_called_kwargs["messages"][0]["role"], "developer")
-        self.assertEqual(_called_kwargs["max_completion_tokens"], 77)
+        self.assertEqual(
+            _called_kwargs["max_completion_tokens"],
+            ht.REASONING_MIN_COMPLETION_TOKENS)

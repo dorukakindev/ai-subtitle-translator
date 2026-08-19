@@ -1,4 +1,5 @@
 import json
+import contextlib
 import copy
 import difflib
 import math
@@ -25,7 +26,8 @@ from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model, normalize_
 from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               restore_format_tags, read_subtitle_text,
                               clean_translation_source_text,
-                              normalize_subtitle_control_artifacts)
+                              normalize_subtitle_control_artifacts,
+                              _match_full_wrap)
 import credential_store
 import series_memory
 import sdh_cleaner
@@ -2738,6 +2740,13 @@ def _enforce_segment_groups(window_blocks: list, groups: list,
         lead = re.match(r'^\s*(?:\{[^}]*\})+', members[0][2] or '')
         if lead and not text.lstrip().startswith('{'):
             text = lead.group(0).strip() + text
+        # HTML biçim etiketleri de korunmalı: yalnız ASS bakılınca AI segmentasyonu
+        # uygulanan dosyalarda italik iç ses/vurgu düz yazıya dönüşüyordu.
+        html_wrap = _match_full_wrap(str(members[-1][2] or ""))
+        html_lead = _match_full_wrap(str(members[0][2] or ""))
+        if (html_lead and html_wrap and html_lead[0] == html_wrap[0]
+                and not re.match(r'^\s*(?:\{[^}]*\})*\s*<[a-zA-Z]', text)):
+            text = f"{html_lead[0]}{text}{html_wrap[2]}"
         # Zamanlama: ilk üyenin başı → son üyenin sonu (deterministik, senkron korunur)
         start = str(members[0][1]).split('-->')[0].strip()
         end_parts = str(members[-1][1]).split('-->')
@@ -4932,7 +4941,13 @@ def _make_smart_chunks_gui(blocks: list, chunk_size: int, frag_tags=None,
                         end = n
                         break
                     text = _clean_src(blocks[check_idx][2])
-                    if _ends_sentence_gui(text):
+                    # 'I saw Dr.' cümle sonu DEĞİLDİR: unvan ile isim arasından
+                    # bölünce ('Dr.' | 'Watson') model unvanı bağlamsız görüyordu.
+                    next_text = (_clean_src(blocks[check_idx + 1][2])
+                                 if check_idx + 1 < n else "")
+                    if (_ends_sentence_gui(text)
+                            and not _ellipsis_continues_gui(text, next_text)
+                            and not _abbreviation_continues_gui(text, next_text)):
                         end = min(check_idx + 1, n)
                         break
             # Never cut inside a fragment group — ama chunk'ı şişirme: sert tavan koy
@@ -7486,7 +7501,15 @@ def parse_source_languages_response(content: str) -> tuple[dict, set]:
 
     detected_map = data.get("languages")
     if not isinstance(detected_map, dict):
-        detected_map = {}
+        # Bazı modeller sarmalayıcıyı atlayıp düz {"0":"Spanish","1":"Italian"}
+        # döndürüyor; katı 'languages' beklentisi bu yanıtlarda TÜM dosyaların
+        # dil tespitini boşa düşürüp dosya adı tahminine indiriyordu.
+        if data and all(
+                str(key).strip().isdigit() and isinstance(value, str)
+                for key, value in data.items()):
+            detected_map = dict(data)
+        else:
+            detected_map = {}
 
     return detected_map, duplicate_keys
 
@@ -12841,9 +12864,13 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     ]
     hata_files = [r.get("name", "?") for r in rows if r.get("hata_indices")]
     if hata_files:
-        lines.insert(0, "")
-        lines.insert(0, "!!! UYARI: [ÇEVİRİ EKSİK] kalan satırlar var - aşağıdaki dosyalarda indeks listesini kontrol edin!")
-        lines.insert(0, "=" * 72)
+        # Uyarı ANA BAŞLIKTAN SONRA gelir; 0. indekse eklemek 'ÇEVİRİ KALİTE RAPORU'
+        # başlığını uyarı kutusunun altına düşürüp rapor biçimini bozuyordu.
+        lines.extend([
+            "!!! UYARI: [ÇEVİRİ EKSİK] kalan satırlar var - aşağıdaki dosyalarda "
+            "indeks listesini kontrol edin!",
+            "=" * 72,
+        ])
     width = max(len(lbl) for _, lbl in fields)
     for r in rows:
         lines.append(f"\n• {r['name']}  ({r.get('total', 0)} satır)")
@@ -12999,7 +13026,11 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             actual_cost = 0.0
             unknown_cost_tokens = max(int(unknown_cost_tokens or 0), int(total_tokens or 0))
         else:
-            actual_cost = total_tokens / 1e6 * price
+            # Batch API %50 ucuzdur; mod denetlenmeyince kullanıcıya gerçek harcamanın
+            # tam 2 KATI tahmini maliyet gösteriliyordu.
+            effective_price = (price * 0.5 if "batch" in str(mode or "").lower()
+                               else price)
+            actual_cost = total_tokens / 1e6 * effective_price
     unknown_note = (f" + {unknown_cost_tokens:,} token maliyeti sağlayıcı panelinden doğrulanmalı"
                     if unknown_cost_tokens else "")
     lines.append(
@@ -13091,6 +13122,74 @@ def _batch_id_path() -> Path:
     return state_path(__file__, "batch_id.txt")
 
 
+def _split_dropped_paths(data) -> list[str]:
+    """Sürükle-bırak verisini dosya yollarına ayırır (Tcl splitlist başarısızsa).
+
+    Eski yedek yol `\\{([^}]+)\\}|(\\S+)` regex'iydi: süslü parantez içeren dosya
+    adlarında ('Show {CRC32}.srt') yolu parçalayıp boşluklu yolları da bölüyordu.
+    Burada iç içe süslü parantez sayılır; ayrılan parçalar diskte bulunamazsa
+    boşlukla yeniden birleştirilerek gerçek yol geri kazanılır."""
+    text = str(data or "")
+    # (çıkarılmış değer, kaynaktaki ham hâli) — birleştirme ham hâli kullanır ki
+    # süslü parantez dosya adının parçasıysa kaybolmasın.
+    tokens: list[tuple[str, str]] = []
+    position = 0
+    length = len(text)
+    while position < length:
+        if text[position].isspace():
+            position += 1
+            continue
+        if text[position] == "{":
+            depth = 0
+            start = position
+            while position < length:
+                if text[position] == "{":
+                    depth += 1
+                elif text[position] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                position += 1
+            if position < length:
+                raw = text[start:position + 1]
+                tokens.append((raw[1:-1], raw))
+                position += 1
+                continue
+            raw = text[start:]
+            tokens.append((raw[1:], raw))
+            break
+        start = position
+        while position < length and not text[position].isspace():
+            position += 1
+        raw = text[start:position]
+        tokens.append((raw, raw))
+
+    # Boşluk içeren yollar bölünmüş olabilir: var olan bir yola birleşiyorlarsa birleştir.
+    merged: list[str] = []
+    index = 0
+    while index < len(tokens):
+        candidate, raw = tokens[index]
+        if Path(candidate).exists():
+            merged.append(candidate)
+            index += 1
+            continue
+        joined = raw
+        step = index + 1
+        matched = False
+        while step < len(tokens) and step - index <= 8:
+            joined = f"{joined} {tokens[step][1]}"
+            if Path(joined).exists():
+                merged.append(joined)
+                index = step + 1
+                matched = True
+                break
+            step += 1
+        if not matched:
+            merged.append(candidate)
+            index += 1
+    return merged
+
+
 def _pid_alive(pid: int) -> bool:
     """PID canlı mı?
 
@@ -13113,15 +13212,31 @@ def _pid_alive(pid: int) -> bool:
         try:
             import ctypes
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x00100000
             STILL_ACTIVE = 259
+            WAIT_TIMEOUT = 0x00000102
+            WAIT_OBJECT_0 = 0x00000000
             k32 = ctypes.windll.kernel32
-            h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            h = k32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+            if not h:
+                h = k32.OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
             if not h:
                 err = k32.GetLastError()
                 if err == 87:  # ERROR_INVALID_PARAMETER: PID yok
                     return False
                 return True    # ACCESS_DENIED/belirsiz: güvenli yönde canlı say
             try:
+                # GetExitCodeProcess'in 259'u BELİRSİZDİR: hem "çalışıyor" hem de
+                # "259 çıkış koduyla kapandı" demektir. 259 ile kapanmış ölü bir süreç
+                # sonsuza dek canlı sayılıp süreç kilidini temizlenemez yapıyordu.
+                # Süreç nesnesi sinyallenmişse (WAIT_OBJECT_0) süreç KESİN ölmüştür.
+                wait = k32.WaitForSingleObject(h, 0)
+                if wait == WAIT_OBJECT_0:
+                    return False
+                if wait == WAIT_TIMEOUT:
+                    return True
                 code = ctypes.c_ulong()
                 if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
                     return True   # sorgulanamadı → canlı say (güvenli yön)
@@ -14557,9 +14672,7 @@ class App(ctk.CTk):
         try:
             files = list(self.tk.splitlist(event.data))
         except Exception:
-            import re as _re
-            paths = _re.findall(r'\{([^}]+)\}|(\S+)', event.data)
-            files = [p[0] or p[1] for p in paths]
+            files = _split_dropped_paths(event.data)
         subtitle_exts = {'.srt', '.vtt', '.ass', '.ssa'}
         valid = []
         videos = []
@@ -20234,8 +20347,13 @@ class App(ctk.CTk):
                               prompt_tokens: int = 0,
                               completion_tokens: int = 0,
                               file_path: str = ""):
-        """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle)."""
-        price = _model_token_price(self._main_model_name())
+        """Batch API token/maliyeti — Batch API %50 daha ucuz (gösterilen maliyet de öyle).
+
+        Fiyat YALNIZCA resmi OpenAI rotasında gösterilir: kullanıcı kendi proxy'sini
+        veya indirimli bir sağlayıcıyı kullanırken ekrana sahte OpenAI USD tutarları
+        basılıyordu (bkz. _verified_token_price)."""
+        price = _verified_token_price(
+            self._main_model_name(), self._main_api_base_url())
         self._update_tokens(
             added, price=None if price is None else price * 0.5, cached=cached,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
@@ -21196,9 +21314,8 @@ class App(ctk.CTk):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken klasör değiştirilemez.", "warn")
             return
-        self.attributes("-topmost", True)
-        path = filedialog.askdirectory(parent=self, title="Klasör Seç")
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            path = filedialog.askdirectory(parent=self, title="Klasör Seç")
         if not path:
             return
         var.set(path)
@@ -21359,17 +21476,16 @@ class App(ctk.CTk):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken dosya seçilemez.", "warn")
             return
-        self.attributes("-topmost", True)
-        paths = filedialog.askopenfilenames(
-            parent=self, title="Altyazı Dosyaları Seç",
-            filetypes=[
-                ("Altyazı dosyaları", "*.srt *.vtt *.ass *.ssa"),
-                ("SubRip (.srt)", "*.srt"),
-                ("WebVTT (.vtt)", "*.vtt"),
-                ("ASS/SSA (.ass *.ssa)", "*.ass *.ssa"),
-                ("Tümü", "*.*"),
-            ])
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            paths = filedialog.askopenfilenames(
+                parent=self, title="Altyazı Dosyaları Seç",
+                filetypes=[
+                    ("Altyazı dosyaları", "*.srt *.vtt *.ass *.ssa"),
+                    ("SubRip (.srt)", "*.srt"),
+                    ("WebVTT (.vtt)", "*.vtt"),
+                    ("ASS/SSA (.ass *.ssa)", "*.ass *.ssa"),
+                    ("Tümü", "*.*"),
+                ])
         if not paths:
             return
         self._content_type_preflight_done = False
@@ -21387,18 +21503,17 @@ class App(ctk.CTk):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken video eklenemez.", "warn")
             return
-        self.attributes("-topmost", True)
-        paths = filedialog.askopenfilenames(
-            parent=self,
-            title="İçinden Altyazı Alınacak Videoları Seç",
-            filetypes=[
-                ("Video dosyaları", "*.mkv *.mp4 *.m4v *.mov *.avi *.webm *.m2ts"),
-                ("Matroska (.mkv)", "*.mkv"),
-                ("MP4 (.mp4 *.m4v)", "*.mp4 *.m4v"),
-                ("Tümü", "*.*"),
-            ],
-        )
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            paths = filedialog.askopenfilenames(
+                parent=self,
+                title="İçinden Altyazı Alınacak Videoları Seç",
+                filetypes=[
+                    ("Video dosyaları", "*.mkv *.mp4 *.m4v *.mov *.avi *.webm *.m2ts"),
+                    ("Matroska (.mkv)", "*.mkv"),
+                    ("MP4 (.mp4 *.m4v)", "*.mp4 *.m4v"),
+                    ("Tümü", "*.*"),
+                ],
+            )
         if paths:
             self._queue_video_probe(list(paths))
 
@@ -21645,9 +21760,9 @@ class App(ctk.CTk):
             self._log("Native çoklu klasör seçici kullanılamadı, alternatif klasör seçimi açılıyor.", "warn")
             collected = []
             while True:
-                self.attributes("-topmost", True)
-                path = filedialog.askdirectory(parent=self, title="Altyazı Klasörü Ekle")
-                self.attributes("-topmost", False)
+                with App._dialog_topmost(self):
+                    path = filedialog.askdirectory(
+                        parent=self, title="Altyazı Klasörü Ekle")
                 if not path:
                     break
                 collected.append(path)
@@ -22476,20 +22591,38 @@ class App(ctk.CTk):
         App._update_readiness_card(self)
         self._log("Dosya seçimi temizlendi — klasör modu aktif", "info")
 
+    @contextlib.contextmanager
+    def _dialog_topmost(self):
+        """Dosya/klasör seçicisi boyunca pencereyi öne alır ve HER durumda bırakır.
+
+        `-topmost` bayrağı try/finally olmadan değiştirilince, seçim sırasında bir
+        hata oluştuğunda uygulama penceresi işletim sistemindeki tüm pencerelerin
+        üzerinde kalıcı olarak kilitleniyordu."""
+        try:
+            self.attributes("-topmost", True)
+        except Exception:
+            pass
+        try:
+            yield
+        finally:
+            try:
+                self.attributes("-topmost", False)
+            except Exception:
+                pass
+
     def _pick_glossary(self):
-        self.attributes("-topmost", True)
-        path = filedialog.askopenfilename(
-            parent=self, title="Glossary Seç",
-            filetypes=[("Glossary", "*.json *.txt *.tsv *.csv"), ("Tümü", "*.*")])
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            path = filedialog.askopenfilename(
+                parent=self, title="Glossary Seç",
+                filetypes=[("Glossary", "*.json *.txt *.tsv *.csv"), ("Tümü", "*.*")])
         if path:
             self.glossary_var.set(path)
             self._log(f"Glossary: {path}", "info")
 
     def _pick_project_path(self):
-        self.attributes("-topmost", True)
-        path = filedialog.askdirectory(parent=self, title="External Project Path Seç (subtitle_localizer)")
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            path = filedialog.askdirectory(
+                parent=self, title="External Project Path Seç (subtitle_localizer)")
         if path:
             self.ext_project_path_var.set(path)
             self._log(f"External project: {path}", "info")
@@ -22880,7 +23013,10 @@ class App(ctk.CTk):
             self.helper_role_key_vars[role].set("")
             self._on_helper_model_change_role(role)
         self._api_key_assignments[role] = profile_id
-        self._save_settings(save_credentials=False)
+        # Anahtar da kaydedilmeli: save_credentials=False ile yalnız .gui_settings.json
+        # güncelleniyordu; uygulama yeniden açıldığında özel model seçili gelip anahtar
+        # boş kalıyor ve çeviri anında 401 alıyordu.
+        self._save_settings(save_credentials=True)
         if notify:
             self._log(
                 f"API profili atandı: {profile['name']} → {API_PROFILE_ROLE_LABELS[role]}",
@@ -23987,29 +24123,26 @@ class App(ctk.CTk):
 
     def _import_jsonl(self):
         """Manuel indirilen batch JSONL → SRT dönüştürücü."""
-        self.attributes("-topmost", True)
-        jsonl_path = filedialog.askopenfilename(
-            parent=self, title="Batch Output JSONL seç",
-            filetypes=[("JSONL", "*.jsonl"), ("Tümü", "*.*")])
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            jsonl_path = filedialog.askopenfilename(
+                parent=self, title="Batch Output JSONL seç",
+                filetypes=[("JSONL", "*.jsonl"), ("Tümü", "*.*")])
         if not jsonl_path:
             return
 
-        self.attributes("-topmost", True)
-        orig_path = filedialog.askopenfilename(
-            parent=self, title="Orijinal SRT dosyasını seç (timestamps için)",
-            filetypes=[("SRT", "*.srt"), ("Tümü", "*.*")])
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            orig_path = filedialog.askopenfilename(
+                parent=self, title="Orijinal SRT dosyasını seç (timestamps için)",
+                filetypes=[("SRT", "*.srt"), ("Tümü", "*.*")])
         if not orig_path:
             return
 
-        self.attributes("-topmost", True)
-        out_path = filedialog.asksaveasfilename(
-            parent=self, title="Çevrilmiş SRT olarak kaydet",
-            defaultextension=".srt",
-            filetypes=[("SRT", "*.srt")],
-            initialfile=Path(orig_path).stem + "_tr.srt")
-        self.attributes("-topmost", False)
+        with App._dialog_topmost(self):
+            out_path = filedialog.asksaveasfilename(
+                parent=self, title="Çevrilmiş SRT olarak kaydet",
+                defaultextension=".srt",
+                filetypes=[("SRT", "*.srt")],
+                initialfile=Path(orig_path).stem + "_tr.srt")
         if not out_path:
             return
 
@@ -30994,7 +31127,10 @@ class App(ctk.CTk):
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_merge_cues(sorted_blocks, file_path=filepath), tgt, self._log,
                 source_cues=cues)
-            _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
+            # İstatistikler DİSKE YAZILAN bloklardan sayılır: ara listeden sayınca
+            # birleştirme/AI segmentasyonun ürettiği CPS ve cue değişimleri rapora
+            # hiç yansımıyordu (rapor çıktıyla uyuşmuyordu).
+            _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
             _has_missing = _hata_n > 0
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
             self._record_file_status(filepath, "Dosya Yazımı", "running")
@@ -33568,14 +33704,15 @@ class App(ctk.CTk):
                 self._record_file_status(fp, f"{label.title()} değişti", "error")
                 _failed_files.append(fp)
                 continue
-            _hata_n, _cps_n = _count_hata_cps(sorted_blocks)
+            _delivery_blocks = _prepare_upload_ready_blocks(
+                self._maybe_merge_cues(sorted_blocks, file_path=fp), _tgt_lang, self._log,
+                source_cues=_src_cues)
+            # İstatistikler teslim bloklarından sayılır (bkz. _run_sync).
+            _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
             _has_missing = _hata_n > 0
             _write_path = out_path
             if _has_missing:
                 _write_path = _partial_output_path(out_path)
-            _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks, file_path=fp), _tgt_lang, self._log,
-                source_cues=_src_cues)
             self._record_file_status(fp, "Dosya Yazımı", "running")
             write_srt(_write_path, _delivery_blocks, _tgt_lang)
             _quarantined = (
@@ -33887,7 +34024,12 @@ class App(ctk.CTk):
 
         wave_a, wave_b = _split_waves(requests)
 
-        def _submit_wait(reqs, this_fmap, this_out):
+        def _submit_wait(reqs, this_fmap, this_out, defer_unregister=False):
+            """defer_unregister=True: batch tamamlansa bile CANLI SAHİPLİK işaretini
+            (batch_owner_<pid>.json) bırakma. A dalgası biter bitmez bırakılınca, B
+            sürerken açılan ikinci bir uygulama örneği A'yı 'sahipsiz' görüp kurtarmaya
+            kalkıyor ve .wave1of2.srt'yi bu koşuyla yarışarak yazabiliyordu.
+            (Kurtarma verisi batch_id.txt + batch_fmap_<id>.json'dadır; burada silinmez.)"""
             bid = ht.submit_batch(openai_key, reqs, self._log, this_fmap, this_out,
                                   source_path=source_path, output_dir=output_dir,
                                   base_url=b_url, source_language=source_language,
@@ -33904,7 +34046,7 @@ class App(ctk.CTk):
             oid = ht.wait_for_batch(openai_key, bid, self._log,
                                     stop_flag_fn=lambda: self._stop_flag,
                                     progress_fn=progress_fn, base_url=b_url)
-            if not self._stop_flag:
+            if not self._stop_flag and not defer_unregister:
                 self._unregister_batch(bid)
             return bid, oid
 
@@ -33928,7 +34070,8 @@ class App(ctk.CTk):
 
         # ── A dalgası ─────────────────────────────────────────────────────────
         self._log(f"{fname}: iki-dalgalı — A dalgası ({len(wave_a)} chunk) gönderiliyor", "info")
-        bid_a, oid_a = _submit_wait(wave_a, fmap_a, out_a)
+        # A'nın canlı sahiplik işareti B bitene kadar bırakılmaz (bkz. _submit_wait).
+        bid_a, oid_a = _submit_wait(wave_a, fmap_a, out_a, defer_unregister=True)
         if not bid_a or oid_a is None or self._stop_flag:
             return None
 
@@ -33957,6 +34100,9 @@ class App(ctk.CTk):
                         self._log, token_callback=self._update_batch_tokens, src_cues=None,
                         base_url=b_url, target_language=target_language,
                         cancel_check=lambda: self._stop_flag)
+        # Her iki dalga da yazıldı; A'nın ertelenen sahiplik işareti artık bırakılabilir.
+        if not self._stop_flag:
+            self._unregister_batch(bid_a)
         return combined_stage, [bid_a, bid_b]
 
     # ── Hybrid mod (Batch + yardımcı model analizi) ───────────────────────────
@@ -34581,7 +34727,10 @@ class App(ctk.CTk):
                         str(filepath), output_dir, fname, progress_fn=_pfn,
                         source_language=file_src, target_language=tgt,
                         stage_path=_tw_stage,
-                        expected_source_hash=_expected_source_hash)
+                        # BU dosyanın hash'i (döngü değişkeni). Faz 1'den artakalan
+                        # `_expected_source_hash` başka bir dosyaya aitti ve çoklu
+                        # çeviride 'kaynak dosya değişti' diye durduruyordu.
+                        expected_source_hash=expected_source_hash)
                     if not _tw_result or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")
@@ -35131,8 +35280,9 @@ class App(ctk.CTk):
                             f"{Path(_quarantined).name}",
                             "warn",
                         )
-                    _hata_n, _cps_n = _count_hata_cps(_final_blocks)
-                    _cps_avg, _cps_max = _cps_stats(_final_blocks)
+                    # İstatistikler diske yazılan teslim bloklarından (bkz. _run_sync)
+                    _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
+                    _cps_avg, _cps_max = _cps_stats(_delivery_blocks)
                     _pass_fix = sum(
                         1 for block in _final_blocks
                         if _pre_pass.get(str(block[0])) not in (None, block[2]))
@@ -35277,12 +35427,13 @@ class App(ctk.CTk):
                     _pass_status["Auto-Glossary"] = dict(
                         _auto_glossary_status)
 
-                # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu)
-                _hata_n, _cps_n = _count_hata_cps(_final_blocks)
+                # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu).
+                # Sayım diske yazılan teslim bloklarından yapılır (bkz. _run_sync).
+                _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
                 _pass_fix = sum(
                     1 for block in _final_blocks
                     if _pre_pass.get(str(block[0])) not in (None, block[2]))
-                _cps_avg, _cps_max = _cps_stats(_final_blocks)
+                _cps_avg, _cps_max = _cps_stats(_delivery_blocks)
                 _analysis_context = analysis_tuple[0]
                 _analysis_examples = analysis_tuple[1]
                 _analysis_idioms = analysis_tuple[5]
