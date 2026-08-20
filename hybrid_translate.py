@@ -317,9 +317,13 @@ def _ts_to_sec(ts: str) -> float:
 
 
 def cps(text: str, duration_sec: float) -> float:
-    """Characters per second (display speed) for a subtitle block."""
-    chars = len(text.replace('\n', ' ').strip())
-    return chars / duration_sec if duration_sec > 0 else 0.0
+    """Characters per second (display speed) for a subtitle block.
+
+    Biçimlendirme etiketleri ekranda GÖRÜNMEZ; ham sayımda '<font ...>'
+    taşıyan normal hızlı bir cue 26 CPS gibi görünüp gereksiz yere kısaltma
+    modeline gidiyordu (denetim Part 2, madde 47)."""
+    visible = _POLISH_FORMAT_RE.sub('', str(text or '')).replace('\n', ' ')
+    return len(visible.strip()) / duration_sec if duration_sec > 0 else 0.0
 
 
 def _clean_source_text(text: str) -> str:
@@ -2820,6 +2824,13 @@ def _normalize_chat_create_kwargs(model: str, kwargs: dict) -> dict:
         or model_lower.startswith("o4")
     )
     is_gpt5 = model_lower.startswith("gpt-5") or model_lower.startswith("codex-")
+    if not (is_reasoning or is_gpt5) and "max_completion_tokens" in kwargs:
+        # Ters yönlü eşleme: 'max_completion_tokens' yalnız yeni OpenAI
+        # modellerinde geçerlidir; gpt-4o ve OpenAI uyumlu üçüncü parti
+        # sunucular (vLLM, Ollama, DeepSeek) bunu HTTP 400 ile reddeder
+        # (denetim Part 2, madde 31).
+        kwargs.setdefault("max_tokens", kwargs.pop("max_completion_tokens"))
+        kwargs.pop("max_completion_tokens", None)
     if is_reasoning or is_gpt5:
         kwargs.pop("temperature", None)
         kwargs.pop("response_format", None)
@@ -4220,6 +4231,10 @@ def native_reader_pass(
     cancelled = False
 
     for chunk_num, chunk in enumerate(native_chunks, 1):
+        remaining_budget = max(0, max_total_fixes - total_fixed)
+        remaining_chunks = max(1, total_chunks - chunk_num + 1)
+        chunk_fix_budget = max(
+            1, min(remaining_budget, math.ceil(remaining_budget / remaining_chunks)))
         if cancel_context is not None and cancel_context.is_cancelled():
             cancelled = True
             break
@@ -4308,7 +4323,7 @@ def native_reader_pass(
             f"- Bir 'frag' grubundaki tek satırı değiştiriyorsan grubun TÜM satırlarını "
             f"(değişmeyenler dahil) JSON'da döndür; kısmi frag düzeltmesi yapma\n"
             f"{frag_instruction}\n"
-            f"En fazla {max_total_fixes} satır düzelt (yaklaşık %20 sınırı). "
+            f"En fazla {chunk_fix_budget} satır düzelt (yaklaşık %20 sınırı). "
             f"Sadece en emin olduğun satırları seç.\n\n"
             f"Altyazılar:\n{payload_json}\n\n"
             f'JSON array döndür: [{{"id":"N","fixed":"..."}}] — sadece düzeltilenleri.\n'
@@ -4835,13 +4850,13 @@ def back_translation_check(
     cancel_context=None,
     status_out: dict | None = None,
 ) -> list:
-    """Geri Ã§eviri anlam kontrolÃ¼ (RAPOR-ONLY â€” Ã§eviriyi DEÄÄ°ÅTÄ°RMEZ).
+    """Geri çeviri anlam kontrolü (RAPOR-ONLY — çeviriyi DEĞİŞTİRMEZ).
 
     İki aşamalı: aynı yönde LLM-yargısının kaçırdığı gerçek yanlış çevirileri yakalar.
       Stage 1 (kör): {tgt_lang} çevirileri, kaynağı GÖRMEDEN {src_lang}'a geri çevrilir.
       Stage 2: geri çeviri orijinal kaynakla karşılaştırılır; YALNIZCA sert anlam
       sapmaları (negasyon ters dönmesi, yanlış özne/nesne/kişi, yanlış sayı/miktar,
-      deÄŸiÅŸen olgu, atlanan/eklenen anlam) iÅŸaretlenir â€” Ã¼slup/eÅŸanlam/sÃ¶zdizimi DEÄÄ°L.
+      değişen olgu, atlanan/eklenen anlam) işaretlenir — üslup/eşanlam/sözdizimi DEĞİL.
 
     Dönüş: [{"idx","src","tr","back","reason"}] (yalnız işaretlenenler)."""
     if status_out is not None:
@@ -6506,7 +6521,10 @@ _TR_FINITE_VERB_TAIL_RE = re.compile(
     r"(?:acak|ecek)(?:ım|im|sın|sin|ız|iz|sınız|siniz|lar|ler)?|"
     r"(?:malı|meli)(?:yım|yim|sın|sin|yız|yiz|sınız|siniz)?|"
     r"(?:[aeıiuü]r)(?:ım|im|sın|sin|ız|iz|sınız|siniz|lar|ler)?|"
-    r"(?:dır|dir|dur|dür|tır|tir|tur|tür)"
+    r"(?:dır|dir|dur|dür|tır|tir|tur|tür)|"
+    r"(?:m[ae]z)(?:sın|sin|siniz|sınız|lar|ler)?|"
+    r"(?:m[ae]m)|"
+    r"(?:m[ıiuü]ş)(?:ım|im|um|üm|sın|sin|sun|sün|ız|iz|uz|üz|sınız|siniz|sunuz|sünüz|lar|ler)?"
     r")$",
     re.IGNORECASE,
 )
@@ -7196,6 +7214,7 @@ _ANALYSIS_POSSESSIVE_KINSHIP_RE = re.compile(
 # 'Egyptian Sonics' sözlükte 'Mısır Sonikleri'ne çevrildi. Kişi ve yer adları
 # zaten korunuyordu; eser adları korunmuyordu.
 _QUOTED_TITLE_QUOTES = "\"'\u201c\u201d\u00ab\u00bb\u2018\u2019"
+_APOSTROPHE_IN_WORD_RE = re.compile(r"(?<=[^\W\d_])['\u2018\u2019](?=[^\W\d_])")
 _QUOTED_TITLE_RE = re.compile(
     "[" + _QUOTED_TITLE_QUOTES + "]"
     "([^" + _QUOTED_TITLE_QUOTES + "\n]{2,60})"
@@ -7204,10 +7223,16 @@ _QUOTED_TITLE_RE = re.compile(
 
 
 def quoted_work_titles(source_text: str) -> set:
-    """Kaynak metinde TIRNAK İÇİNDE geçen (eser adı olma ihtimali yüksek) ifadeler."""
+    """Kaynak metinde TIRNAK İÇİNDE geçen (eser adı olma ihtimali yüksek) ifadeler.
+
+    İngilizce kısaltmalardaki kesme işareti (don't, it's, we'll) tırnak açma/
+    kapama sanılıp aradaki cümleyi 'eser adı' yapıyor ve sözlüğü kirletiyordu
+    (denetim Part 2, madde 9): "I don't know what it's about" → "t know what it".
+    Bu yüzden kesme işaretleri önce maskelenir."""
+    masked = _APOSTROPHE_IN_WORD_RE.sub("\u0001", str(source_text or ""))
     titles = set()
-    for match in _QUOTED_TITLE_RE.finditer(str(source_text or "")):
-        value = " ".join(match.group(1).split())
+    for match in _QUOTED_TITLE_RE.finditer(masked):
+        value = " ".join(match.group(1).replace("\u0001", "'").split())
         if value and any(char.isalpha() for char in value):
             titles.add(value.casefold())
     return titles
@@ -10877,7 +10902,7 @@ def _locked_target_has_derivational_suffix(target: str, candidate_text: str) -> 
     if not target or not target[:1].isupper() or " " in target:
         return False
     return bool(re.search(
-        re.escape(target) + r"(?:['’]?(?:lı|li|lu|lü))",
+        re.escape(target) + r"(?:['’]?(?:lı|li|lu|lü)(?![kğ]))",
         str(candidate_text or ""), re.IGNORECASE,
     ))
 
@@ -12126,7 +12151,7 @@ _CONTEXT_SENSITIVE_LOCAL_FIX_PATTERNS = frozenset({
 # is allowed to touch a real subtitle line.
 _LOCAL_FIX_SAFE_WITHOUT_SOURCE_PATTERNS = frozenset({
     r'\bevett\b', r'\bttek\b', r'\bmikrofom\b',
-    r'\byasadÄ±klarÄ±\b', r'\byasadÄ±ÄŸÄ±\b', r'\bmetafoor\b',
+    r'\byaşadıkları\b', r'\byaşadığı\b', r'\bmetafoor\b',
 })
 
 

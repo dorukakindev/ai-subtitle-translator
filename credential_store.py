@@ -228,7 +228,7 @@ def _write_fallback_store(data: dict) -> None:
         return
     principal = _windows_acl_principal()
     if not principal:
-        raise OSError("fallback anahtar deposu iÃ§in Windows kullanÄ±cÄ±sÄ± bulunamadÄ±")
+        raise OSError("fallback anahtar deposu için Windows kullanıcısı bulunamadı")
     tmp = p.with_name(f".{p.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -246,7 +246,7 @@ def _write_fallback_store(data: dict) -> None:
             check=False, capture_output=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if result.returncode:
-            raise OSError("fallback anahtar deposu ACL'i gÃ¼venli ayarlanamadÄ±")
+            raise OSError("fallback anahtar deposu ACL'i güvenli ayarlanamadı")
         os.replace(tmp, p)
     finally:
         tmp.unlink(missing_ok=True)

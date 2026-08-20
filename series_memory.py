@@ -80,6 +80,14 @@ def _term_identity(value) -> str:
     return f"folded:{text.casefold()}"
 
 
+def _episode_order(tag):
+    """'s01e002' / 's1e10' etiketini karşılaştırılabilir sayıya çevirir."""
+    match = re.fullmatch(r"s(\d+)e(\d+)", str(tag or "").strip(), re.IGNORECASE)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)))
+
+
 def _term_origin_key(value) -> str:
     text = str(value or "").strip()
     if text.isupper() and any(ch.isalpha() for ch in text):
@@ -466,11 +474,20 @@ class SeriesMemory:
                         legacy_blocked = True
                         break
 
+        cutoff_order = _episode_order(cutoff)
+
         def allowed(origin):
             if not cutoff:
                 return True
             if not origin:
                 return not legacy_blocked
+            # Dize karşılaştırması dolgusuz eski etiketlerde ('s1e10' < 's1e2')
+            # yanlış sonuç verip kanon ipuçlarını gereksiz eliyordu
+            # (denetim Part 2, madde 19). Sayısal karşılaştır, çözülemezse
+            # eski davranışa düş.
+            origin_order = _episode_order(origin)
+            if origin_order is not None and cutoff_order is not None:
+                return origin_order < cutoff_order
             return str(origin) < cutoff
 
         term_origins = self._data.get("term_origins") or {}

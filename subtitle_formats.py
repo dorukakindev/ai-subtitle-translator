@@ -290,6 +290,38 @@ def _decode_embedded_controls(text: str, encoding: str) -> str | None:
     return "".join(out)
 
 
+# cp1252'de tipografik kesme/tirnak olan C1 baytlari; MacRoman'da ayni
+# baytlar aksanli harftir ('\x92' -> 'i').
+_CP1252_APOSTROPHE_CONTROLS = frozenset("\x91\x92")
+# Kesmeden sonra gelebilecek Ingilizce kisaltma ekleri.
+_ENGLISH_CONTRACTION_TAILS = frozenset(
+    ("s", "t", "d", "m", "ll", "re", "ve"))
+
+
+def _cp1252_punctuation_in_context(text: str, pos: int) -> bool:
+    """Bu C1 bayti cp1252 noktalamasi mi, MacRoman aksanli harfi mi?
+
+    Iki sinyal ayirt eder: (1) bayt iki harfin ARASINDA degilse noktalamadir
+    (MacRoman aksani kelime icinde durur), (2) kesme bayti ise ardindan gelen
+    kelime sonu Ingilizce kisaltma ekiyse ('It\u2019s', 'Don\u2019t') yine
+    noktalamadir. 'Rodr\\x92guez' ikisini de gecemez ve MacRoman'a birakilir."""
+    char = text[pos]
+    before = text[pos - 1] if pos > 0 else ""
+    after = text[pos + 1] if pos + 1 < len(text) else ""
+    if not (before.isalpha() and after.isalpha()):
+        return True
+    if char not in _CP1252_APOSTROPHE_CONTROLS:
+        return False
+    tail = ""
+    for ch in text[pos + 1:]:
+        if not ch.isalpha():
+            break
+        tail += ch
+        if len(tail) > 2:
+            return False
+    return tail.casefold() in _ENGLISH_CONTRACTION_TAILS
+
+
 def _repair_embedded_mac_roman_controls(text: str) -> str:
     """Latin-1 fallback'inde kontrol karakterine dönüşmüş baytları geri kazanır.
 
@@ -298,12 +330,19 @@ def _repair_embedded_mac_roman_controls(text: str) -> str:
     anlamsız 'ì', 'î', 'Ö' harflerine çeviriyordu. Ayırt edici sinyal konumdur:
     MacRoman'da bu baytlar kelime İÇİNDEKİ aksanlı harflerdir (Rodr•guez), cp1252
     noktalamasıysa ağırlıklı olarak kelime sınırlarında durur."""
-    if sum("\x80" <= ch <= "\x9f" for ch in text) < 2:
+    # Eskiden esik 2'ydi: tek bir \x92 tasiyan "It\x92s here." hic onarilmadan
+    # ham C1 kontrol karakteriyle altyaziya yaziliyordu (Part 2, madde 24).
+    controls = [pos for pos, ch in enumerate(text) if "\x80" <= ch <= "\x9f"]
+    if not controls:
         return text
+    # Yalniz cp1252 NOKTALAMA baytlari varsa karar nettir; konum sezgisine
+    # basvurma. MacRoman'da ayni baytlar aksanli HARFtir ve "It's" -> "Itis"
+    # gibi bozulma uretir.
+    if all(_cp1252_punctuation_in_context(text, pos) for pos in controls):
+        cp1252_only = _decode_embedded_controls(text, "cp1252")
+        if cp1252_only is not None:
+            return cp1252_only
     base_penalty = _legacy_decode_penalty(text)
-    controls = [
-        pos for pos, ch in enumerate(text) if "\x80" <= ch <= "\x9f"
-    ]
     inside_word = sum(
         1 for pos in controls
         if pos > 0 and pos + 1 < len(text)
@@ -463,10 +502,17 @@ def _ass_ts_to_srt(ts: str) -> str:
     o dosyalarda eskiden ham '1:23:45.678' değeri SRT'ye olduğu gibi geçiyordu."""
     ts = ts.strip()
     # H:MM:SS.cc → HH:MM:SS,mmm (centi-secs → milisecs)
-    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.(\d{1,3})$', ts)
+    # 4+ haneli mikro-saniye taşıyan araçlar da var; eskiden regex hiç
+    # eşleşmeyip HAM geçersiz metin SRT'ye yazılıyordu (Part 2, madde 46).
+    m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.(\d+)$', ts)
     if m:
         h, mm, s, frac = m.groups()
-        ms = int(frac.ljust(3, '0')) if len(frac) == 3 else int(frac.ljust(2, '0')) * 10
+        if len(frac) == 2:
+            ms = int(frac) * 10          # santisaniye (standart ASS)
+        elif len(frac) == 1:
+            ms = int(frac) * 100
+        else:
+            ms = int(frac[:3])           # 3+ hane: ilk üçü milisaniyedir
         return f'{int(h):02d}:{mm}:{s},{ms:03d}'
     return ts
 
@@ -588,7 +634,17 @@ _ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _ASS_SOFTLINE = re.compile(r'\\N', re.IGNORECASE)
 _ASS_HARDLINE = re.compile(r'\\n', re.IGNORECASE)
 _ASS_HSPACE   = re.compile(r'\\h', re.IGNORECASE)
-_ASS_COMMENT  = re.compile(r'\{=[^}]*\}')
+# Aegisub içi yorum / çevirmen notu blokları. '{=13}' eski biçimdi; '{TL Note:
+# ...}', '{SFX}', '{Scene 2}' gibi notlar da diyalog metni sanılıp çeviri
+# modeline gidiyordu (denetim Part 2, madde 48).
+# DAR tutulur: ASS override komutları ('{\an8}') ve şablon yer tutucuları
+# ('{username}') bu desene GİRMEZ — ikisi de korunmalı.
+_ASS_COMMENT  = re.compile(
+    r'\{=[^}]*\}'
+    r'|\{(?![^}]*\\)\s*(?:tl\s*note|t/n|çn|ç/n|note|not|sfx|scene|sahne|'
+    r'music|müzik|song|şarkı|translator|çevirmen|comment|yorum)\b[^}]*\}',
+    re.IGNORECASE,
+)
 _ASS_DRAWING_MODE = re.compile(r'\{[^}]*\\p([1-9]\d*)\b[^}]*\}', re.IGNORECASE)
 _ASS_DRAWING_DATA = re.compile(
     r'^[\s,.-]*(?:[mnlbspc]\s+)?[-\d.,\s mnlbspc]+$', re.IGNORECASE)
@@ -689,9 +745,22 @@ def _adjacent_vtt_cue_id(value: str, expected_index: int,
     value = value.strip()
     if value.isdigit():
         return value == str(expected_index) or str(previous_id).strip().isdigit()
-    if re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value):
-        return bool(re.match(r"(?i)(?:cue|note)[-_.:]?\d", value))
     previous = str(previous_id or "").strip()
+    if re.fullmatch(r'[A-Za-z]{2,}[A-Za-z_-]*\d+[A-Za-z0-9_.:-]*', value):
+        if re.match(r"(?i)(?:cue|note)[-_.:]?\d", value):
+            return True
+        # 'cue'/'note' dışındaki üretici önekleri ('sub-2', 'item-2', 'seq-2')
+        # ancak ÖNCEKİ KİMLİKLE aynı deseni paylaşıyorsa kimliktir. Ad tek
+        # başına yeterli değil: 'Caption1' ve 'line-0-797' gerçek repliktir
+        # (denetim Part 2, madde 45 — düzeltme dar tutuldu).
+        return _shares_vtt_id_pattern(value, previous)
+    if not previous:
+        return False
+    return _shares_vtt_id_pattern(value, previous)
+
+
+def _shares_vtt_id_pattern(value: str, previous: str) -> bool:
+    """İki satır aynı kimlik desenini mi paylaşıyor ('sub-1' ↔ 'sub-2')?"""
     if not previous:
         return False
     value_tokens = {token.casefold() for token in re.findall(r"[A-Za-z]{2,}", value)}
@@ -893,7 +962,14 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
         if name and not re.match(rf'^\s*{re.escape(name)}\s*:', text, re.IGNORECASE):
             # Name sütunu konuşmacı bağlamıdır. Analize/çeviriye ulaşır; kaynak
             # güdümlü son temizlik yüklemeye hazır SRT'deki eş ön eki kaldırır.
-            text = f"{name}: {text}"
+            # Ön ek BAŞTAKİ konum/override etiketlerinin ARKASINA yazılır:
+            # '{\\an8}' bloğun ilk karakteri olmazsa oynatıcı hizalamayı
+            # uygulamaz (denetim Part 2, madde 13).
+            lead = re.match(r'^(?:\{[^}]*\}|</?[a-zA-Z][^>]*>)+', text)
+            if lead:
+                text = f"{lead.group(0)}{name}: {text[lead.end():]}"
+            else:
+                text = f"{name}: {text}"
 
         entries.append((timestamp, text, style))
 

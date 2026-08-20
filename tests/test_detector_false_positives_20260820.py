@@ -295,8 +295,14 @@ class AutoLockGuardTest(unittest.TestCase):
         source = ("Jesus spoke to the crowd. The French king listened. "
                   "Later Jesus left, and the French court followed the king. "
                   "Everyone praised Jesus, the French and the king alike.")
-        locked = g.auto_locked_proper_nouns(source)
-        self.assertEqual(locked.get("Jesus"), "İsa")
+        # NOT: "Jesus" bir dönem CANONICAL_TURKISH_NAMES ile "İsa"ya
+        # kilitleniyordu; modern bir karakterin adı da Jesus olabildiği için
+        # (Jesús) o eşleme kaldırıldı — artık hiç kilitlenmiyor, model
+        # bağlama göre çeviriyor (denetim Part 2, madde 5).
+        rejected = {}
+        locked = g.auto_locked_proper_nouns(source, rejected_out=rejected)
+        self.assertNotIn("Jesus", locked)
+        self.assertIn("Jesus", rejected)
         for word in ("French", "King", "king"):
             with self.subTest(word=word):
                 self.assertNotIn(word, locked)

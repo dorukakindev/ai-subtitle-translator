@@ -65,11 +65,11 @@ def parse_chunk(raw: str, info: list, cid: str) -> dict:
             # satırı birden [HATA] yapıyordu.
             if not (isinstance(item, dict) and "i" in item
                     and isinstance(item.get("t"), str)):
-                print(f"  [UYARI] {cid}: geÃ§ersiz cue yanÄ±tÄ± reddedildi")
+                print(f"  [UYARI] {cid}: geçersiz cue yanıtı reddedildi")
                 return {}
             item_id = str(item["i"])
             if item_id not in expected_ids or item_id in trans_map:
-                print(f"  [UYARI] {cid}: geÃ§ersiz/yinelenen cue kimliÄŸi ({item_id}) reddedildi")
+                print(f"  [UYARI] {cid}: geçersiz/yinelenen cue kimliği ({item_id}) reddedildi")
                 return {}
             trans_map[item_id] = item["t"]
         if trans_map and set(trans_map) == expected_ids:
@@ -101,7 +101,7 @@ def _repair_map_has_unique_cue_ids(raw_fmap: dict) -> bool:
 
 
 def _backup_before_repair(output_path: Path) -> Path | None:
-    """Eski teslimi, tamir yazÄ±mÄ± baÅŸarÄ±sÄ±z olursa geri dÃ¶nÃ¼lebilir tutar."""
+    """Eski teslimi, tamir yazımı başarısız olursa geri dönülebilir tutar."""
     if not output_path.exists():
         return None
     backup = output_path.with_name(output_path.name + ".repair.bak")
@@ -130,7 +130,7 @@ def main(fmap_files=None):
             with open(fmap_path, encoding="utf-8") as f:
                 fmap_data = json.load(f)
         except Exception as exc:
-            print(f"  [HATA] {fname}: fmap okunamadÄ±; dokunulmadÄ±: {exc}")
+            print(f"  [HATA] {fname}: fmap okunamadı; dokunulmadı: {exc}")
             continue
 
         output_path = fmap_data.get("output_path") or ""
@@ -154,7 +154,7 @@ def main(fmap_files=None):
             continue
 
         if not _repair_map_has_unique_cue_ids(raw_fmap):
-            print(f"  [HATA] {fname}: fmap cue kimlikleri yineleniyor; dosyaya dokunulmadÄ±")
+            print(f"  [HATA] {fname}: fmap cue kimlikleri yineleniyor; dosyaya dokunulmadı")
             continue
 
         output = Path(output_path)
@@ -188,7 +188,7 @@ def main(fmap_files=None):
         try:
             content = client.files.content(output_file_id).text
         except Exception as exc:
-            print(f"  [HATA] Batch Ã§Ä±ktÄ±sÄ± indirilemedi; dokunulmadÄ±: {exc}")
+            print(f"  [HATA] Batch çıktısı indirilemedi; dokunulmadı: {exc}")
             continue
 
         srt_blocks = {}
@@ -300,7 +300,7 @@ def main(fmap_files=None):
             backup = _backup_before_repair(output)
             atomic_write_text(output, "".join(lines), encoding="utf-8")
         except Exception as exc:
-            print(f"  [HATA] Ã‡Ä±ktÄ± yazÄ±lamadÄ±; eski teslim korunuyor: {exc}")
+            print(f"  [HATA] Çıktı yazılamadı; eski teslim korunuyor: {exc}")
             continue
         if backup:
             print(f"  Yedek : {backup}")

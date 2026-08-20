@@ -59,15 +59,24 @@ def _fuzzy_semantic_anchors(text: str) -> tuple:
     )
 
 
+def _normalized_semantic_tokens(text: str) -> tuple:
+    """Kesme işaretini (düz, eğik ve mojibake) tek biçime indirger."""
+    return tuple(
+        token.replace("â€™", "'").replace("’", "'").casefold()
+        for token in _SEMANTIC_TOKEN_RE.findall(str(text or ""))
+    )
+
+
 def _fuzzy_semantically_compatible(source: str, candidate: str) -> bool:
-    source_tokens = tuple(
-        token.replace("â€™", "'").casefold()
-        for token in _SEMANTIC_TOKEN_RE.findall(str(source or ""))
-    )
-    candidate_tokens = tuple(
-        token.replace("â€™", "'").casefold()
-        for token in _SEMANTIC_TOKEN_RE.findall(str(candidate or ""))
-    )
+    """Bulanık TM adayı kaynakla aynı şeyi mi söylüyor?
+
+    Jeton dizisinin BİREBİR aynı olması KASITLIDIR: tek bir içerik kelimesi
+    farklıysa ('gear' → 'bear') benzerlik oranı %95'i geçse bile çeviri yanlış
+    olur ve çapa karşılaştırması bunu yakalayamaz. Gevşetme denemesi
+    `test_fuzzy_rejects_content_tense_and_person_drift` ile geri döner.
+    Yalnız kesme işareti biçimi (düz/eğik/mojibake) normalize edilir."""
+    source_tokens = _normalized_semantic_tokens(source)
+    candidate_tokens = _normalized_semantic_tokens(candidate)
     return bool(source_tokens) and source_tokens == candidate_tokens
 
 

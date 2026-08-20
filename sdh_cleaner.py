@@ -264,6 +264,13 @@ _SCREEN_CARD_PHRASES = frozenset({
     "earlier", "the next day", "that night", "based on a true story",
     "based on true events", "inspired by true events", "to be continued",
     "in memory of", "dedicated to",
+    # Ekran tabelaları ve uyarı levhaları: bunlar SES etiketi değil, ekranda
+    # görünen ve ÇEVRİLMESİ gereken yazılardır (denetim Part 2, madde 27).
+    "emergency exit", "exit", "entrance", "no entry", "danger", "warning",
+    "caution", "police", "police department", "hospital", "fire department",
+    "for sale", "sold out", "closed", "open", "vacancy", "no vacancy",
+    "keep out", "private", "restricted area", "wanted", "missing",
+    "welcome", "help", "stop", "quiet please", "do not disturb",
 })
 _SCREEN_CARD_PREFIX_RE = re.compile(
     r"^(?:act|part|chapter|episode|volume|book|scene|day|year|week|month)\b"
@@ -1029,6 +1036,12 @@ _HEADING_LABEL_PATTERNS = (
     re.compile(r"^\s*(?:breaking news|news flash|special report|live report|son dakika|son dakika haberi)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:location|date|time|konum|tarih|saat|note|warning|caution|notice|disclaimer)\s*$", re.IGNORECASE),
     re.compile(r"^\s*(?:solution|destination|çözüm|varış\s+noktası)\s*$", re.IGNORECASE),
+    re.compile(
+        r"^\s*(?:problem|result|outcome|step|rule|question|answer|example"
+        r"|summary|tip|goal|method|status|objective|purpose|conclusion"
+        r"|sonuç|adım|kural|soru|cevap|yanıt|örnek|özet|ipucu|amaç|hedef"
+        r"|yöntem|durum|çıkarım)\s*(?:\d+|[ivxlcdm]+)?\s*$",
+        re.IGNORECASE),
     re.compile(r"^\s*(?:esteemed\s+sir|dear\s+sir|your\s+honou?r|superior\s+court)\s*$", re.IGNORECASE),
 )
 

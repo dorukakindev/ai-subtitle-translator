@@ -263,7 +263,7 @@ class SeasonCanonRunRoutingTest(unittest.TestCase):
                 encoding="utf-8")
             semantic_calls = []
             memory = SimpleNamespace(
-                build_hint=lambda: "SERIES CANON",
+                build_hint=lambda **_kwargs: "SERIES CANON",
                 get_address_map=lambda: [],
             )
             app = SimpleNamespace(

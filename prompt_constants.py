@@ -185,7 +185,7 @@ TRANSLATABLE_CAPITALISED_STOPS = frozenset({
     "man", "woman", "boy", "girl", "people",
     # gün / ay
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-    "sunday", "january", "february", "march", "april", "june", "july",
+    "sunday", "january", "february", "march", "april", "may", "june", "july",
     "august", "september", "october", "november", "december",
 })
 
@@ -201,21 +201,23 @@ FOREIGN_EXONYM_MAP = {
 }
 
 
-# Türkçede YERLEŞİK yazımı olan mitolojik/dinî/tarihî adlar. Bunları serbest
-# bırakmak (stop listesi) modelin dosya içinde tutarsız yazmasına açık kapıdır;
-# doğru hedefle kilitlemek hem çeviriyi hem tutarlılığı garantiler.
-# Gerçek olay 2026-08-20: 'Sisyphus' kimlikle kilitlenip İngilizce kalıyordu.
+# Türkçede YERLEŞİK yazımı olan adlar. Bunları serbest bırakmak modelin dosya
+# içinde tutarsız yazmasına açık kapıdır; doğru hedefle kilitlemek hem çeviriyi
+# hem tutarlılığı garantiler. Gerçek olay 2026-08-20: 'Sisyphus' kimlikle
+# kilitlenip İngilizce kalıyordu.
+#
+# BURAYA MODERN KİŞİ ADI EKLEME. 'david', 'mary', 'adam', 'jacob', 'joseph',
+# 'isaac', 'alexander' bir gün buradaydı ve çağdaş bir dizide "David, don't do
+# that!" repliğini "Davut, bunu yapma!" yapıyordu (denetim Part 2, madde 5).
+# Bu adlar YALNIZ dinî/tarihî bağlamda Türkçeleşir; altyazıda bağlamı ayırt
+# edemiyoruz, dolayısıyla model kendi kararını versin.
 CANONICAL_TURKISH_NAMES = {
+    # Mitoloji ve antik dünya — çağdaş kişi adı olarak kullanılmazlar.
     "sisyphus": "Sisifos", "icarus": "İkarus", "daedalus": "Daidalos",
-    "odysseus": "Odysseus", "achilles": "Akhilleus", "hercules": "Herakles",
-    "heracles": "Herakles", "aesop": "Ezop", "homer": "Homeros",
-    "plato": "Platon", "aristotle": "Aristoteles", "socrates": "Sokrates",
+    "achilles": "Akhilleus", "hercules": "Herakles", "heracles": "Herakles",
+    "aesop": "Ezop", "homer": "Homeros", "plato": "Platon",
+    "aristotle": "Aristoteles", "socrates": "Sokrates",
     "pythagoras": "Pisagor", "archimedes": "Arşimet", "euclid": "Öklid",
-    "zeus": "Zeus", "prometheus": "Prometheus", "oedipus": "Oidipus",
-    "jesus": "İsa", "christ": "Mesih", "moses": "Musa", "abraham": "İbrahim",
-    "noah": "Nuh", "adam": "Âdem", "solomon": "Süleyman", "david": "Davut",
-    "joseph": "Yusuf", "jacob": "Yakup", "isaac": "İshak", "mary": "Meryem",
-    "gabriel": "Cebrail", "michael": "Mikail", "lucifer": "Lucifer",
-    "alexander": "İskender", "caesar": "Sezar", "constantine": "Konstantin",
-    "confucius": "Konfüçyüs", "genghis": "Cengiz", "columbus": "Kolomb",
+    "prometheus": "Prometheus", "oedipus": "Oidipus",
+    "confucius": "Konfüçyüs", "columbus": "Kolomb",
 }

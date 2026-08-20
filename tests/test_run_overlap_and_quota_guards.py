@@ -126,8 +126,9 @@ class PermanentQuotaFailureTest(unittest.TestCase):
         messages = create.call_args.kwargs["messages"]
         payload = __import__("json").loads(messages[1]["content"])
         self.assertEqual(messages[0]["content"], "RICH FILE CONTEXT")
-        self.assertEqual(payload["ctx"], ["Before."])
-        self.assertEqual(payload["next_ctx"], ["After."])
+        # ctx/next_ctx sistem istemindeki {"i","t"} şemasını taşır
+        self.assertEqual(payload["ctx"], [{"i": "1", "t": "Before."}])
+        self.assertEqual(payload["next_ctx"], [{"i": "3", "t": "After."}])
         self.assertEqual(repaired, 1)
         self.assertEqual(result[0][2], "Eksik satır.")
 

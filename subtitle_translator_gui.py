@@ -2527,16 +2527,35 @@ _CONJ_RE = re.compile(
     re.IGNORECASE
 )
 
+def _tag_spans(text: str) -> list:
+    """Metindeki HTML/ASS etiket aralıkları [(başlangıç, bitiş), ...].
+
+    Satır kırma bu aralıkların İÇİNDEN bölmemeli: `<font color="#FFF" size="20">`
+    içindeki boşluktan bölünce etiket ikiye ayrılıp bozuk biçimlendirme
+    üretiliyordu (denetim Part 2, madde 40)."""
+    spans = []
+    for match in re.finditer(r"</?[a-zA-Z][^>]*>|\{[^{}]*\}", str(text or "")):
+        spans.append((match.start(), match.end()))
+    return spans
+
+
+def _position_is_inside_tag(position: int, spans: list) -> bool:
+    return any(start < position < end for start, end in spans)
+
+
 def _find_best_split(text: str) -> int | None:
     """text içinde en iyi boşluk pozisyonunu döndürür (merkeze yakın, virgül/bağlaç bonusu).
-    Bulunamazsa None."""
-    if len(text) <= _LINE_THRESHOLD:
+    Bulunamazsa None. Etiket İÇİNDEKİ boşluklar aday değildir."""
+    if _visible_len(text) <= _LINE_THRESHOLD:
         return None
+    spans = _tag_spans(text)
     mid        = len(text) // 2
     best_pos   = None
     best_score = float('inf')
     for i, ch in enumerate(text):
         if ch != ' ':
+            continue
+        if _position_is_inside_tag(i, spans):
             continue
         # Çok kısa/uzun fragman oluşturma — ilk %15 ve son %15'i atla
         if i < len(text) * 0.15 or i > len(text) * 0.85:
@@ -2565,11 +2584,11 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
         return text
     lines = text.split('\n')
     while len(lines) < max_lines:
-        en_i = max(range(len(lines)), key=lambda i: len(lines[i]))
+        en_i = max(range(len(lines)), key=lambda i: _visible_len(lines[i]))
         # Bir cue'yu daha fazla satıra bölmek OKUMA HIZINI (CPS) DEĞİŞTİRMEZ: aynı
         # karakterler aynı süre boyunca ekranda kalır. Eski CPS zorlaması bu yüzden
         # yalnızca gereksiz satır üretiyordu; kırma ölçütü satır genişliğidir.
-        if len(lines[en_i]) <= _LINE_THRESHOLD:
+        if _visible_len(lines[en_i]) <= _LINE_THRESHOLD:
             break
         pos = _find_best_split(lines[en_i])
         if pos is None:
@@ -2598,6 +2617,19 @@ _LINE_PUSH_DOWN_WORDS = frozenset({
 _LINE_BALANCE_MAX = 58
 
 
+_LINE_END_PUNCT_RE = re.compile(r"[.!?…:;,][\"'”’»)\]\}]*$")
+
+
+def _boundary_word_key(word: str) -> str:
+    """Satır sınırındaki kelimenin karşılaştırma anahtarı.
+
+    Biçim etiketleri ve çevresindeki noktalama soyulur: '<i>ve' ya da 've</i>'
+    eskiden _LINE_PUSH_DOWN_WORDS ile eşleşmiyordu, bu yüzden italik satırlarda
+    dengeleme hiç çalışmıyordu (denetim Part 2, madde 12)."""
+    cleaned = re.sub(r"</?[a-zA-Z][^>]*>|\{[^{}]*\}", "", str(word or ""))
+    return cleaned.strip("\"'“”«»([{)]}").casefold()
+
+
 def _rebalance_line_break(text: str) -> str:
     """İki satırlı bir cue'da sarkan edat/bağlacı doğru satıra taşır.
 
@@ -2613,19 +2645,22 @@ def _rebalance_line_break(text: str) -> str:
     # Diyalog tiresi olan bloklarda satırlar ayrı konuşmacılardır.
     if second.startswith(("-", "–", "—")):
         return value
-    if re.search(r"[.!?…:;,]$", first):
+    # Kapanış tırnağı/parantezi olan bitmiş cümleler de bitmiştir: '."', '!"',
+    # '.]' eskiden bitiş sayılmıyor ve 2. satırın ilk kelimesi yukarı
+    # çekiliyordu (denetim Part 2, madde 42).
+    if _LINE_END_PUNCT_RE.search(first):
         return value
 
     second_words = second.split()
     first_words = first.split()
     if second_words:
-        head = second_words[0].strip("\"'([{").casefold()
+        head = _boundary_word_key(second_words[0])
         if (head in _LINE_PULL_UP_WORDS and len(second_words) > 1
                 and _visible_len(f"{first} {second_words[0]}") <= _LINE_BALANCE_MAX):
             return f"{first} {second_words[0]}\n{' '.join(second_words[1:])}"
     if first_words:
-        tail = first_words[-1].strip("\"')]}").casefold()
-        tail_is_number = bool(re.fullmatch(r"[\d.,]+", first_words[-1]))
+        tail = _boundary_word_key(first_words[-1])
+        tail_is_number = bool(re.fullmatch(r"[\d.,]+", tail))
         if ((tail in _LINE_PUSH_DOWN_WORDS or tail_is_number)
                 and len(first_words) > 1
                 and _visible_len(f"{first_words[-1]} {second}") <= _LINE_BALANCE_MAX):
@@ -3987,32 +4022,56 @@ def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
     return leaked
 
 
+# Türkçede DOĞRU yazımı ayrı olan, bitişik biçimi de sözlükte bulunan
+# ikililer — dosya içi kanıt kuralı bunları asla işaretlememeli.
+_MIDWORD_LEGITIMATE_PAIRS = frozenset({
+    ("her", "sey"), ("bir", "sey"), ("hic", "kimse"), ("her", "biri"),
+    ("her", "gun"), ("bir", "cok"), ("bir", "az"), ("her", "hangi"),
+    ("bir", "kac"), ("hic", "bir'"), ("o", "kadar"), ("su", "an"),
+})
+_MIDWORD_MIN_FILE_HITS = 2
+
+
 def _midword_space_ids(blocks, src_map=None) -> list:
     """'Piram itler' gibi kelime ortasında boşluk olan cue'ları döner.
 
-    Yalnız KAYNAKTA bitişik yazılan bir kelimenin çeviride ikiye bölündüğü
-    durumda işaretler; kaynak yoksa hiç işaretlemez, böylece 'her şey' gibi
-    meşru ayrı yazımlar etkilenmez."""
-    if not src_map:
-        return []
+    İki bağımsız kanıt kabul edilir:
+    1) KAYNAKTA bitişik yazılan bir kelime çeviride ikiye bölünmüş
+       ('Schu mann' ↔ 'Schumann').
+    2) Birleşik biçim AYNI DOSYADA en az iki kez tek kelime olarak geçiyor
+       ('Piram itler' ↔ başka cue'lardaki 'Piramitler'). Türkçeleşmiş
+       kelimeler İngilizce kaynakla eşleşemediği için 1. kural onları hiç
+       yakalayamıyordu (denetim Part 2, madde 17).
+
+    'her şey' gibi meşru ayrı yazımlar açık listeyle korunur."""
+    file_word_counts = {}
+    for _idx, _ts, text in blocks or []:
+        for word in re.findall(r"[^\W\d_]{5,}", _align_visible(str(text or ""))):
+            key = _shift_token_key(word)
+            file_word_counts[key] = file_word_counts.get(key, 0) + 1
     flagged = []
     for idx, _ts, text in blocks or []:
         value = _align_visible(str(text or ""))
-        source = _align_visible(str(src_map.get(str(idx), "")))
-        if not value or not source:
+        source = _align_visible(str((src_map or {}).get(str(idx), "")))
+        if not value:
             continue
         source_keys = {
             _shift_token_key(word)
             for word in re.findall(r"[^\W\d_]{5,}", source)
         }
-        if not source_keys:
-            continue
         words = re.findall(r"[^\W\d_]+", value)
         for left, right in zip(words, words[1:]):
             joined = f"{left}{right}"
             if len(joined) < 6:
                 continue
-            if _shift_token_key(joined) in source_keys:
+            pair = (_shift_token_key(left), _shift_token_key(right))
+            if pair in _MIDWORD_LEGITIMATE_PAIRS:
+                continue
+            joined_key = _shift_token_key(joined)
+            if joined_key in source_keys:
+                flagged.append(str(idx))
+                break
+            if file_word_counts.get(joined_key, 0) >= _MIDWORD_MIN_FILE_HITS:
                 flagged.append(str(idx))
                 break
     return flagged
@@ -4242,6 +4301,13 @@ _ADDRESS_FORMAL_RE = re.compile(
     re.IGNORECASE,
 )
 # 'sin/sın' ile biten ama hitap olmayan sık kelimeler.
+_ADDRESS_PLURAL_CONTEXT_RE = re.compile(
+    r"(?<!\w)(?:hepiniz|hepinize|hepinizi|hepinizin|ikiniz|üçünüz|dördünüz"
+    r"|sizler|sizlere|sizleri|sizlerin|herkes|herkese|herkesi|millet"
+    r"|beyler|hanımlar|baylar|çocuklar|arkadaşlar|dostlar|gençler"
+    r"|beyefendiler|hanımefendiler|değerli\s+\w+ler)(?!\w)",
+    re.IGNORECASE,
+)
 _ADDRESS_FALSE_STEMS = frozenset({
     "resin", "esin", "kesin", "basın", "yasin", "hüsün", "üstün", "bütün",
     "düşün", "görüşün", "yazın", "kışın", "yarısın",
@@ -4261,6 +4327,8 @@ def detect_address_register_mix(blocks, minority_ratio: float = 0.10,
         value = str(text or "")
         if not value.strip() or value.startswith("[HATA"):
             continue
+        if _ADDRESS_PLURAL_CONTEXT_RE.search(value):
+            continue  # gerçek çoğul muhatap — resmî/samimi ayrımı geçersiz
         # Yalnız token bazlı sayım: 'resin', 'kesin', 'bütün' gibi hitap olmayan
         # kelimeler _ADDRESS_FALSE_STEMS ile elenir. Ham regex sonucunu yedek
         # olarak kullanmak bu elemeyi geçersiz kılar — kullanma.
@@ -4314,11 +4382,35 @@ def _tr_suffix_forms(vowel: str, hard: bool) -> dict:
         "ins_y": f"yl{low}",
         "ins": f"l{low}",
         "plu": f"l{low}r",
+        # 3. tekil iyelik ve iyelik+hâl. Bunlar tabloda yoktu, dolayısıyla
+        # "Yunanistan'sında" gibi ekler HİÇ yeniden kurulmuyor, olduğu gibi
+        # geri dönüyordu (denetim Part 2, madde 7).
+        "poss": f"{high}",
+        "poss_s": f"s{high}",
+        "poss_loc": f"{high}nd{low}",
+        "poss_s_loc": f"s{high}nd{low}",
+        "poss_abl": f"{high}nd{low}n",
+        "poss_s_abl": f"s{high}nd{low}n",
+        "poss_dat": f"{high}n{low}",
+        "poss_s_dat": f"s{high}n{low}",
+        "poss_acc": f"{high}n{high}",
+        "poss_s_acc": f"s{high}n{high}",
     }
 
 
 _TR_SUFFIX_KEYS = (
     ({"daki", "deki", "taki", "teki"}, "loc_ki"),
+    # İyelik + hâl birleşimleri DÜZ hâl eklerinden ÖNCE denenmeli: 'sında'
+    # önce 'da' diye eşleşirse iyelik kaybolur.
+    ({"sından", "sinden", "sundan", "sünden"}, "poss_s_abl"),
+    ({"ından", "inden", "undan", "ünden"}, "poss_abl"),
+    ({"sında", "sinde", "sunda", "sünde"}, "poss_s_loc"),
+    ({"ında", "inde", "unda", "ünde"}, "poss_loc"),
+    ({"sına", "sine", "suna", "süne"}, "poss_s_dat"),
+    ({"ına", "ine", "una", "üne"}, "poss_dat"),
+    ({"sını", "sini", "sunu", "sünü"}, "poss_s_acc"),
+    ({"ını", "ini", "unu", "ünü"}, "poss_acc"),
+    ({"sı", "si", "su", "sü"}, "poss_s"),
     ({"dan", "den", "tan", "ten"}, "abl"),
     ({"da", "de", "ta", "te"}, "loc"),
     ({"nin", "nın", "nun", "nün"}, "gen_n"),
@@ -4331,6 +4423,13 @@ _TR_SUFFIX_KEYS = (
     ({"le", "la"}, "ins"),
     ({"ler", "lar"}, "plu"),
 )
+
+# İyelik eklerinde kaynaştırma 's' YENİ gövdeye göre seçilir: ünlüyle biten
+# gövde 's' alır ('Amerika'sı'), ünsüzle biten almaz ('Yunanistan'ı').
+_TR_POSS_BUFFERED = {
+    "poss": "poss_s", "poss_loc": "poss_s_loc", "poss_abl": "poss_s_abl",
+    "poss_dat": "poss_s_dat", "poss_acc": "poss_s_acc",
+}
 
 
 def turkish_suffix_for_stem(stem: str, suffix: str) -> str:
@@ -4350,7 +4449,8 @@ def turkish_suffix_for_stem(stem: str, suffix: str) -> str:
     # → 'Hindistan'ya' oluyordu. Kaynaştırma harfi YENİ gövdeye göre seçilir.
     ends_vowel = bool(stripped) and stripped[-1].casefold() in (
         _TR_BACK_VOWELS + _TR_FRONT_VOWELS)
-    buffered = {"dat": "dat_y", "acc": "acc_y", "ins": "ins_y", "gen": "gen_n"}
+    buffered = {"dat": "dat_y", "acc": "acc_y", "ins": "ins_y",
+                "gen": "gen_n", **_TR_POSS_BUFFERED}
     plain = {value: key for key, value in buffered.items()}
     for keys, name in _TR_SUFFIX_KEYS:
         if key in keys:
@@ -4371,6 +4471,10 @@ def turkish_suffix_for_stem(stem: str, suffix: str) -> str:
 # gelmesi de şart — 'miss you' gibi diziler unvan değildir.
 # 'Dr.' ve 'Prof.' Türkçede zaten geçerli kısaltmalar; onlara dokunulmaz
 # ('Prof. Dr. Ayşe' → 'Prof. Doktor Ayşe' bozuk olurdu).
+# Bağırılan satırda unvanı izleyen ad: hiç küçük harf içermeyen, en az iki
+# harflik bir kelime.
+_SHOUTED_NAME = r"[A-ZCGIOSU\u00c7\u011e\u0130\u00d6\u015e\u00dc]{2,}(?![\w'\u2019])"
+
 _FOREIGN_TITLE_MAP = (
     (re.compile(r"(?<!\w)Mr\.?(?=\s+[^\W\d_])"), "Bay"),
     (re.compile(r"(?<!\w)Mrs\.?(?=\s+[^\W\d_])"), "Bayan"),
@@ -4383,7 +4487,19 @@ _FOREIGN_TITLE_MAP = (
     (re.compile(r"(?<!\w)Se[ñn]ora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
     (re.compile(r"(?<!\w)Senhor(?=\s+[^\W\d_])", re.IGNORECASE), "Bay"),
     (re.compile(r"(?<!\w)Senhora(?=\s+[^\W\d_])", re.IGNORECASE), "Bayan"),
-)# Türkçe karşılığı yerleşik olan yabancı yer/yön adları (çekim ekiyle bırakılırsa
+    # BAĞIRILAN satırlarda unvan da büyük harflidir ("MR. YI!"). Kalıp DAR
+    # tutulur, yoksa Türkçe kısaltmalar kurban gider: nokta zorunludur ("MS"
+    # = multipl skleroz, "MR" = manyetik rezonans hâlâ dokunulmaz) ve ardından
+    # gelen kelimenin de tamamen büyük harfli olması gerekir, yani gerçekten
+    # bağırılan bir satır olmalı (denetim Part 2, madde 8).
+    (re.compile(r"(?<!\w)MR\.(?=\s+" + _SHOUTED_NAME + r")"), "BAY"),
+    (re.compile(r"(?<!\w)MRS\.(?=\s+" + _SHOUTED_NAME + r")"), "BAYAN"),
+    (re.compile(r"(?<!\w)MS\.(?=\s+" + _SHOUTED_NAME + r")"), "BAYAN"),
+    (re.compile(r"(?<!\w)MISS(?=\s+" + _SHOUTED_NAME + r")"), "BAYAN"),
+)
+
+
+# Türkçe karşılığı yerleşik olan yabancı yer/yön adları (çekim ekiyle bırakılırsa
 # 'China'daki' gibi kalıntı oluşuyor).
 _FOREIGN_EXONYM_MAP = FOREIGN_EXONYM_MAP
 _TURKISH_SUFFIX_AFTER_APOSTROPHE = re.compile(
@@ -4452,7 +4568,10 @@ def fix_source_lowercase_apostrophes(text: str, source_text: str) -> tuple[str, 
         changed += 1
         # Satır başındaki büyük harf meşrudur, korunur; kesme her hâlde düşer.
         line_start = value.rfind("\n", 0, match.start()) + 1
-        at_line_start = not value[line_start:match.start()].strip()
+        # Diyalog çizgisi ve açılış tırnağı da satır başıdır: '- Pain'i' →
+        # '- paini' oluyordu, cümlenin ilk harfi küçülüyordu (Part 2, madde 6).
+        prefix = value[line_start:match.start()].strip(" -–—\"'“”«»…")
+        at_line_start = not prefix
         return f"{stem if at_line_start else stem.lower()}{suffix}"
 
     return _CAPITAL_APOSTROPHE_RE.sub(_replace, value), changed
@@ -4704,7 +4823,10 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             counts[key] = counts.get(key, 0) + 1
             if position > 0:
                 midsentence[key] = midsentence.get(key, 0) + 1
-            before_caps = position > 1 and forms[position - 1][:1].isupper()
+            # position > 1 idi: cümle başındaki 'John Smith'te Smith'in position'ı 1
+            # olduğu için önceki kelime HİÇ bakılmıyor ve soyad 'tek başına geçen
+            # özel ad' sanılıyordu (denetim Part 2, madde 1).
+            before_caps = position > 0 and forms[position - 1][:1].isupper()
             after_caps = (position + 1 < len(forms)
                           and forms[position + 1][:1].isupper())
             if not before_caps and not after_caps:
@@ -5091,6 +5213,8 @@ def _delivery_middle_signature_slot(blocks: list):
 
 
 def _normalize_delivery_ids(blocks: list) -> list:
+    # previous = -1 KASITLIDIR: baş imza cue'su 0 numarasını alır ve teslim
+    # bütünlük işareti buna dayanır (bkz. test_upload_ready_finalization).
     normalized = []
     previous = -1
     for idx, ts, text in blocks:
@@ -6331,18 +6455,29 @@ MAX_UNPUNCTUATED_FRAG_GROUP = 10
 MAX_FRAG_GROUP_CHARS = 2400
 CPS_WARN_LIMIT   = 24    # chars/sec; Turkish naturally longer than English (21→24)
 
+def _ts_field_seconds(value: str) -> float:
+    """'HH:MM:SS,mmm' alanını saniyeye çevirir; ARDINDAKİ fazlalığı yok sayar.
+
+    SRT zaman satırında zaman damgasından sonra koordinat/stil bilgisi
+    bulunabiliyor ('00:01:20,000 --> 00:01:23,500 X1:100 Y1:200'). Eskiden
+    `ts.split(':')` beş parça döndürüp `ValueError: too many values to unpack`
+    ile çöküyordu (denetim Part 2, madde 23)."""
+    text = str(value or "").strip().replace(",", ".")
+    if not text:
+        raise ValueError("boş zaman alanı")
+    text = text.split()[0]
+    hour, minute, second = text.split(":")[:3]
+    return int(hour) * 3600 + int(minute) * 60 + float(second)
+
+
 def _ts_to_sec_gui(ts_str: str) -> float:
     """Parse 'HH:MM:SS,mmm' or 'HH:MM:SS,mmm --> HH:MM:SS,mmm' → start seconds."""
-    ts = ts_str.split('-->')[0].strip().replace(',', '.')
-    h, m, s = ts.split(':')
-    return int(h) * 3600 + int(m) * 60 + float(s)
+    return _ts_field_seconds(str(ts_str or "").split("-->")[0])
 
 def _ts_end_sec_gui(ts_str: str) -> float:
     """Parse end time from 'HH:MM:SS,mmm --> HH:MM:SS,mmm' → seconds."""
-    parts = ts_str.split('-->')
-    ts = (parts[1] if len(parts) > 1 else parts[0]).strip().replace(',', '.')
-    h, m, s = ts.split(':')
-    return int(h) * 3600 + int(m) * 60 + float(s)
+    parts = str(ts_str or "").split("-->")
+    return _ts_field_seconds(parts[1] if len(parts) > 1 else parts[0])
 
 def _log_cps_warning(blocks: list, log_fn) -> int:
     """CPS_WARN_LIMIT'i aşan (çok hızlı okunması gereken) satırları sayıp tek bir
@@ -6370,12 +6505,21 @@ def _clean_src(text: str) -> str:
     return clean_translation_source_text(text)
 
 
+# Cümle sonunu kapatan tırnak/parantez karakterleri. Eskiden önce yalnız
+# parantez, sonra yalnız tırnak soyuluyordu; 'The end.]"' gibi İÇ İÇE
+# kapanışlarda cümle bitmemiş sayılıyor ve chunk sınırları bozuluyordu
+# (denetim Part 2, madde 41).
+_SENTENCE_CLOSERS = ")]}\"'»”’›"
+
+
 def _ends_sentence_gui(text: str) -> bool:
     """True if text ends with sentence-closing punctuation."""
-    bracket_trimmed = str(text or "").rstrip().rstrip(")]}")
-    if bracket_trimmed != str(text or "").rstrip():
-        return _ends_sentence_gui(bracket_trimmed)
-    t = text.strip().rstrip('"\'»"\u201d')
+    t = str(text or "").strip()
+    while True:
+        trimmed = t.rstrip(_SENTENCE_CLOSERS).rstrip()
+        if trimmed == t:
+            break
+        t = trimmed
     return bool(t) and t[-1] in '.!?…'
 
 
@@ -6942,7 +7086,9 @@ def _chain_waves(wave_a: list, wave_b: list, wave_a_raw_map: dict,
             continue
         tmap = parse_response(raw, fmap.get(cid, []))
         pairs = _chain_pairs_from_result(req["body"]["messages"][1]["content"], tmap)
-        prev_pairs = pairs or []
+        # Doğrudan atama, A dalgasının SON parçası kısa olduğunda B'ye tek
+        # tük çift bırakıyordu; sync akışındaki gibi biriktir (Part 2, m. 32).
+        prev_pairs = _extend_chain_pairs(prev_pairs, pairs or [], max_pairs)
     if not prev_pairs:
         return wave_b
     first = wave_b[0]
@@ -8191,11 +8337,11 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                 if positions:
                     first_pos, last_pos = min(positions), max(positions)
                     ctx = [
-                        text for _idx, text in
+                        {"i": _idx, "t": text} for _idx, text in
                         source_order[max(0, first_pos - 8):first_pos]
                     ]
                     next_ctx = [
-                        text for _idx, text in
+                        {"i": _idx, "t": text} for _idx, text in
                         source_order[last_pos + 1:last_pos + 9]
                     ]
                     if ctx:
@@ -8563,7 +8709,7 @@ def _reinsert_missing_dialogue_markers(blocks, source_cues, log_fn=None):
 
 
 def _finalize_translation_blocks(blocks, raw_src_map, source_cues=None,
-                                 log_fn=None):
+                                 log_fn=None, line_breaks: bool = False):
     finalized = list(blocks or [])
     if source_cues is not None:
         finalized, _ = _reinsert_missing_dialogue_markers(
@@ -8571,6 +8717,13 @@ def _finalize_translation_blocks(blocks, raw_src_map, source_cues=None,
     finalized, marked = _fill_hata_with_source(
         finalized, raw_src_map, log_fn=log_fn)
     finalized = _restore_tags_blocks(finalized, raw_src_map)
+    if line_breaks and finalized:
+        # Satır kırma geçişi QC'den ÖNCE çalışıyor; QC'nin uzattığı satırlar
+        # kırılmadan teslim ediliyordu (denetim Part 2, madde 43). Burada
+        # yeniden uygulanır — etiketler geri konduktan SONRA, çünkü
+        # _break_to_line_budget görünür uzunluğa bakar ve deterministiktir,
+        # değişmeyen satırlarda aynı sonucu üretir.
+        finalized = apply_line_breaks(finalized)
     return finalized, marked
 
 
@@ -8849,6 +9002,37 @@ def _schema_name_key(value) -> str:
     return unicodedata.normalize("NFKC", str(value or "").strip()).casefold().replace("\u0307", "")
 
 
+# Modelin serbest metin cevabı çoğu zaman ya şema ANAHTARI ('history_documentary')
+# ya da İngilizce tür adıdır ('Documentary'); ikisi de Türkçe şema adlarıyla
+# eşleşmeyip otomatik tespiti iptal ediyordu (denetim Part 2, madde 14 ve 38).
+# Yalnız TEK karşılığı olan türler eşlenir; 'Animation' ve 'Drama' gibi
+# birden çok şemaya oturan cevaplar kasıtlı olarak dışarıda bırakıldı.
+_ENGLISH_GENRE_ALIASES = {
+    "comedy": "comedy", "sitcom": "comedy", "stand up": "standup",
+    "stand-up": "standup", "standup": "standup",
+    "documentary": "documentary", "docuseries": "documentary",
+    "history": "history_documentary", "historical": "historical",
+    "period drama": "historical",
+    "action": "action_crime", "crime": "action_crime",
+    "thriller": "horror_thriller", "horror": "horror_thriller",
+    "sci-fi": "cyberpunk_sci_fi", "sci fi": "cyberpunk_sci_fi",
+    "science fiction": "cyberpunk_sci_fi", "cyberpunk": "cyberpunk_sci_fi",
+    "dystopia": "cyberpunk_sci_fi",
+    "romance": "romance_drama", "romantic": "romance_drama",
+    "musical": "musical", "anime": "anime",
+    "reality": "reality", "reality show": "reality",
+    "reality tv": "reality", "archaeology": "archaeology_ancient_history",
+    "ancient history": "archaeology_ancient_history",
+    "politics": "society_politics_documentary",
+    "political": "society_politics_documentary",
+}
+
+
+def _schema_name_for_key(key: str) -> str:
+    schema = CONTENT_SCHEMAS.get(str(key or "").strip().casefold())
+    return str(schema.get("name") or "") if schema else ""
+
+
 def _match_category(detected: str, categories: list):
     """Modelin döndürdüğü tür adını kategori listesine eşler.
     Sıra: tam eşleşme → kategori adı cevabın içinde geçiyor (en uzun/spesifik
@@ -8878,6 +9062,17 @@ def _match_category(detected: str, categories: list):
     ]
     if contained:
         return min(contained, key=len)
+    # Şema anahtarı ve İngilizce tür adı yedekleri
+    raw = str(detected or "").strip().casefold()
+    for key in (raw, raw.replace(" ", "_"), raw.replace("-", "_")):
+        name = _schema_name_for_key(key)
+        if name and name in categories:
+            return name
+    alias = _ENGLISH_GENRE_ALIASES.get(raw)
+    if alias:
+        name = _schema_name_for_key(alias)
+        if name and name in categories:
+            return name
     return None
 
 
@@ -9998,6 +10193,15 @@ _SHIFT_TOKEN_STOPS = frozenset({
     "this", "that", "there", "these", "those", "then", "they", "them",
     "when", "where", "what", "with", "your", "yours", "here", "have",
     "onlar", "bizim", "sizin", "benim", "bunun", "sunun",
+    # Cümle başında sık geçen belirteç, zaman zarfı ve zamirler de özel ad
+    # değildir; listede olmadıkları için yanlış kayma alarmı üretiyorlardı
+    # (denetim Part 2, madde 18).
+    "every", "everyone", "everybody", "everything", "everywhere",
+    "today", "tonight", "tomorrow", "yesterday", "someone",
+    "somebody", "something", "anyone", "anybody", "anything",
+    "nobody", "nothing", "because", "before", "after", "about",
+    "butun", "herkes", "herkesin", "hersey", "bugun", "yarin",
+    "birisi", "hicbiri", "kimse", "once", "hakkinda", "bunlari",
 })
 
 
@@ -10861,7 +11065,7 @@ def _season_canon_suspect_ids(blocks: list, src_map: dict,
 
 
 _SEASON_ADDRESS_RE = re.compile(
-    r"(?<!\w)(?:sen|sana|seni|sende|senden|senin|siz|size|sizi|sizden|sizin)(?!\w)",
+    r"(?<!\w)(?:sen|sana|seni|sende|senden|senin|siz|size|sizi|sizde|sizden|sizin)(?!\w)",
     re.IGNORECASE,
 )
 
@@ -15596,7 +15800,7 @@ def _translation_run_owned_by_other_process() -> bool:
 
 
 def _process_start_marker(pid: int) -> str:
-    """PID yeniden kullanÄ±mÄ±nÄ± ayÄ±rt etmek iÃ§in sÃ¼reÃ§ baÅŸlangÄ±Ã§ imzasÄ±."""
+    """PID yeniden kullanımını ayırt etmek için süreç başlangıç imzası."""
     try:
         pid = int(pid)
     except Exception:
@@ -21898,7 +22102,9 @@ class App(ctk.CTk):
                     suspects = _season_canon_suspect_ids(
                         output_blocks, src_map, locked_terms)
                     sm_obj, _season, _episode = self._series_mem_for(source_path)
-                    canon_hint = sm_obj.build_hint() if sm_obj else ""
+                    canon_hint = (
+                        sm_obj.build_hint(before_episode=(season, episode))
+                        if sm_obj else "")
                     if sm_obj and sm_obj.get_address_map():
                         suspects.update(_season_address_suspect_ids(output_blocks))
                     total_suspects += len(suspects)
@@ -22730,6 +22936,11 @@ class App(ctk.CTk):
     def _token_callback_for_model(self, model: str, discount: float = 1.0,
                                    pass_name: str = "", base_url: str | None = None,
                                    file_path: str = ""):
+        # Rota anlık görüntüden ÇÖZÜLDÜYSE boş base_url 'resmî OpenAI varsayılanı'
+        # demektir; bunu bilinmeyen rota sayıp fiyatı None döndürmek resmî API
+        # kullanan yardımcı modellerin maliyetini tamamen gizliyordu
+        # (denetim Part 2, madde 26).
+        route_resolved = base_url is not None
         if base_url is None:
             snapshot = self.__dict__.get("_active_snapshot", {}) or {}
             helper_models = snapshot.get("helper_models") or {}
@@ -22740,13 +22951,23 @@ class App(ctk.CTk):
                 if str(configured or "").strip() == str(model or "").strip()
             }
             candidates.discard("")
+            configured_models = {
+                str(configured or "").strip()
+                for configured in helper_models.values()
+            }
             if len(candidates) == 1:
                 base_url = next(iter(candidates))
+                route_resolved = True
             elif not candidates:
                 main_model = str(snapshot.get("main_model_name") or "").strip()
                 if main_model and main_model == str(model or "").strip():
                     base_url = snapshot.get("main_api_base_url")
-        price = _verified_token_price(model, base_url)
+                    route_resolved = True
+                elif str(model or "").strip() in configured_models:
+                    # Yardımcı rol yapılandırılmış ama URL'si boş = resmî OpenAI
+                    route_resolved = True
+        price = _verified_token_price(
+            model, base_url, default_is_official=route_resolved)
         if price is not None:
             price *= discount
 
@@ -26788,7 +27009,7 @@ class App(ctk.CTk):
 
                 blocks, _n_filled_save = _finalize_translation_blocks(
                     blocks, _raw_map_pre, source_cues=cues,
-                    log_fn=self._log)
+                    log_fn=self._log, line_breaks=bool(do_linebrk))
                 remaining_missing_ids = _partial_missing_translation_ids(
                     blocks, _raw_map_pre, cues,
                     locked_terms=_repair_locked_terms,
@@ -28693,14 +28914,32 @@ class App(ctk.CTk):
             else "failed"
         )
         if ratio > 0.25:
+            # Tekil satır bazlı geri alma, çok cue'ya yayılan cümlelerin
+            # (frag_group) yarısını eski yarısını yeni bırakıp cümleyi
+            # bozuyordu: bir üyesi geri alınan grubun TAMAMI geri alınır
+            # (denetim Part 2, madde 29).
+            unsafe_ids = {
+                str(idx) for idx, _ts, text in sorted_blocks
+                if result_map.get(str(idx), text) != text
+                and not ht.is_safe_polish_edit(
+                    text, result_map.get(str(idx), text))
+            }
+            group_members = {}
+            for _group in (fragment_groups or []):
+                _members = [str(item) for item in (_group.get("items") or [])]
+                for _member in _members:
+                    group_members[_member] = _members
+            for sid in list(unsafe_ids):
+                unsafe_ids.update(group_members.get(sid, ()))
             revert_count = 0
             safe_final = []
             for idx, ts, text in sorted_blocks:
                 sid = str(idx)
                 new_text = result_map.get(sid, text)
-                if new_text != text and not ht.is_safe_polish_edit(text, new_text):
+                if sid in unsafe_ids:
                     safe_final.append((idx, ts, text))
-                    revert_count += 1
+                    if new_text != text:
+                        revert_count += 1
                 else:
                     safe_final.append((idx, ts, new_text))
             final = safe_final
@@ -33688,7 +33927,8 @@ class App(ctk.CTk):
             try:
                 sorted_blocks, _n_filled = _finalize_translation_blocks(
                     sorted_blocks, _raw_map, source_cues=cues,
-                    log_fn=self._log)
+                    log_fn=self._log,
+                    line_breaks=bool(self.linebreak_var.get()))
             except Exception as finalize_error:
                 self._log_exc(
                     f"[{fname}] nihai yapı/etiket koruması başarısız",
@@ -35443,7 +35683,8 @@ class App(ctk.CTk):
                             _raw_map = _raw_src_map_from_cues(_orig_cues)
                             pp, _ = _finalize_translation_blocks(
                                 pp, _raw_map, source_cues=_orig_cues,
-                                log_fn=self._log)
+                                log_fn=self._log,
+                                line_breaks=bool(self.linebreak_var.get()))
                             _deep_status = {}
                             self._maybe_deep_delivery_semantic_audit(
                                 output_path, _src_map, pp,
@@ -36296,7 +36537,8 @@ class App(ctk.CTk):
             try:
                 sorted_blocks, _n_filled = _finalize_translation_blocks(
                     sorted_blocks, _raw_map, source_cues=_src_cues,
-                    log_fn=self._log)
+                    log_fn=self._log,
+                    line_breaks=bool(self.linebreak_var.get()))
             except Exception as finalize_error:
                 self._log_exc(
                     f"[{Path(fp).name}] nihai yapı/etiket koruması başarısız",
@@ -37863,7 +38105,8 @@ class App(ctk.CTk):
                 try:
                     _final_blocks, _n_filled = _finalize_translation_blocks(
                         _final_blocks, _raw_map, source_cues=cues,
-                        log_fn=self._log)
+                        log_fn=self._log,
+                        line_breaks=bool(self.linebreak_var.get()))
                 except Exception as finalize_error:
                     self._log_exc(
                         f"[{fname}] nihai yapı/etiket koruması başarısız",
