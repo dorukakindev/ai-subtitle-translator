@@ -4115,6 +4115,22 @@ def _cue_fill_move_plan(blocks: list, src_map: dict) -> list:
         # Önceki cue kendi cümlesini bitirmişse bu bir devam değildir.
         if _SENTENCE_END_PUNCT_RE.search(prev_value):
             continue
+        # KAYNAK da aynı cümlenin devamı olmalı. Yalnız hedef metne bakmak
+        # yetmiyor: kaynak "I left." / "Fire!" gibi İKİ AYRI cümleyse, çeviri
+        # noktalamasız bittiği için taşıma bağımsız bir cümleyi daha erken
+        # zaman damgasına kaydırıyordu (denetim 2026-08-20, madde 1).
+        prev_source = _align_visible(
+            str((src_map or {}).get(str(prev_idx), "") or "")).strip()
+        source = _align_visible(
+            str((src_map or {}).get(str(idx), "") or "")).strip()
+        if not prev_source or not source:
+            continue  # kaynak eşleşmesi yoksa devam olduğunu kanıtlayamayız
+        if _SENTENCE_END_PUNCT_RE.search(prev_source):
+            continue
+        # Devam cue'su büyük harfle yeni cümle açıyorsa da devam değildir.
+        first_letter = next((char for char in source if char.isalpha()), "")
+        if first_letter and first_letter.isupper():
+            continue
         words = value.split(" ")
         if len(words) < 3:
             continue
@@ -4922,7 +4938,14 @@ def _delivery_removable_source_ids(source_cues) -> set:
 
 
 def _delivery_removable_source_timestamps(source_cues, removable_ids: set) -> set:
-    timestamps = set()
+    """Tamamı silinebilir olan kaynak zaman aralıkları.
+
+    Zaman tabanlı eşleme birleştirme sonrası yeniden numaralanan çıktıda ŞART
+    (id eşlemesi bozuluyor). Ama aynı aralıkta hem kredi hem gerçek diyalog
+    varsa, tek bir silinebilir cue yüzünden diyalog da düşüyordu (denetim
+    2026-08-20, madde 5). Aralık ancak O ARALIKTAKİ TÜM kaynak cue'ları
+    silinebilirse silinebilir sayılır."""
+    by_timestamp = {}
     for cue in source_cues or []:
         try:
             if hasattr(cue, "text"):
@@ -4933,9 +4956,11 @@ def _delivery_removable_source_timestamps(source_cues, removable_ids: set) -> se
                 timestamp = str(cue[1])
         except Exception:
             continue
-        if cue_id in removable_ids:
-            timestamps.add(timestamp)
-    return timestamps
+        by_timestamp.setdefault(timestamp, []).append(cue_id)
+    return {
+        timestamp for timestamp, ids in by_timestamp.items()
+        if ids and all(cue_id in removable_ids for cue_id in ids)
+    }
 
 
 def _restore_source_linebreaks(text: str, source_text: str) -> str:
@@ -5379,6 +5404,14 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 work.append((idx, ts, "[ÇEVİRİ EKSİK]"))
             continue
         if _is_delivery_sdh_only(value):
+            # Kaynak GERÇEK diyalogsa hedefin SDH'ye benzemesi bir ÇEVİRİ
+            # hatasıdır, silinecek bir etiket değil ('Hello.' → '[MÜZİK]').
+            # Sessizce silmek hatanın kanıtını da yok ediyordu (denetim
+            # 2026-08-20, madde 14); görünür işaretle bırakılır.
+            if source_text.strip() and not _source_cue_is_delivery_removable(
+                    source_text):
+                work.append((idx, ts, "[ÇEVİRİ EKSİK]"))
+                continue
             sdh_removed += 1
             continue
         work.append((idx, ts, value))
@@ -5406,10 +5439,20 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 (str(int(str(idx)) + 1) if str(idx).isdigit() else idx, ts, text)
                 for idx, ts, text in cleaned
             ]
-        first_start, _ = _srt_timestamp_bounds(cleaned[0][1])
-        _, last_end = _srt_timestamp_bounds(cleaned[-1][1])
+        # Baş/son imza sınırı KRONOLOJİK uçlardan alınır. Liste sırası kronolojik
+        # olmayabiliyor (kaynak dosyada cue'lar karışık sırada olabilir); fiziksel
+        # ilk/son cue'yu kullanmak üç imzanın aynı boşluğa düşmesine yol açıyordu
+        # (denetim 2026-08-20, madde 45).
+        _bounds = []
+        for _idx, _ts, _text in cleaned:
+            try:
+                _bounds.append(_srt_timestamp_bounds(_ts))
+            except ValueError:
+                continue
+        first_start = min((start for start, _end in _bounds), default=0)
+        last_end = max((end for _start, end in _bounds), default=0)
         head_block = None
-        if first_start > 0:
+        if first_start > 1:
             head_end = first_start - 1
             head_start = max(0, head_end - 2000)
             head_block = (
@@ -5422,6 +5465,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             # baş imzaya yer yok sayılıp imza TAMAMEN atlanıyordu (Insomniac 8
             # bölümün 3'ü 2 imzayla teslim edildi). 1 ms'lik imza yazılır; bu
             # bilinçli örtüşme teslim denetiminde beyaz listededir.
+            # 1 ms başlangıcı da buraya girer: aksi hâlde head_end == head_start
+            # olup sıfır süreli, ters aralıklı imza üretiliyordu (madde 44).
             head_block = (
                 "",
                 f"{_srt_ms_timestamp(0)} --> {_srt_ms_timestamp(1)}",
@@ -14387,6 +14432,10 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("missing_dialogue_ids"),
         audit.get("extra_dialogue_ids"),
         audit.get("timestamp_mismatch_ids"),
+        # Cue sahiplik kayması = içerik yanlış cue'ya yazılmış (sync kırılması).
+        # Denetim bunu buluyordu ama sert hata saymadığı için dosya "hazır"
+        # işaretlenebiliyordu (denetim 2026-08-20, madde 8).
+        audit.get("delivery_owner_mismatch_ids"),
         audit.get("untranslated_fragment_ids"),
         audit.get("unresolved_markers"),
         audit.get("residual_credit_cues"),

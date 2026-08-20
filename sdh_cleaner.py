@@ -251,6 +251,43 @@ def _ascii_fold(value: str) -> str:
 _SENTENCE_END_RE = re.compile(r"[.!?…]['\"”’»]?\s*$")
 
 
+# Anlatısal EKRAN KARTLARI: tamamı büyük harf oldukları için yapısal SDH
+# testine takılıyorlardı ama bunlar ses/konuşmacı etiketi değil, çevrilmesi
+# gereken ekran yazılarıdır (denetim 2026-08-20, madde 6).
+# Ölçüt iki somut sinyal: yıl içeren yer/tarih kartı ve yerleşik film kartı
+# kalıpları. Çıplak yer adı ('LONDON') bu testle ayırt EDİLEMEZ — sözcük
+# dağarcığı gerektirir; bilinçli olarak kapsam dışıdır.
+_SCREEN_CARD_YEAR_RE = re.compile(r"(?<!\d)(1[0-9]{3}|2[0-9]{3})(?!\d)")
+_SCREEN_CARD_PHRASES = frozenset({
+    "the end", "fin", "ende", "son", "the beginning", "intermission",
+    "epilogue", "prologue", "epilog", "prolog", "meanwhile", "later",
+    "earlier", "the next day", "that night", "based on a true story",
+    "based on true events", "inspired by true events", "to be continued",
+    "in memory of", "dedicated to",
+})
+_SCREEN_CARD_PREFIX_RE = re.compile(
+    r"^(?:act|part|chapter|episode|volume|book|scene|day|year|week|month)\b"
+    r"[\s.:-]*"
+    r"(?:[ivxlcdm]+|\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|first|second|third|fourth|fifth|final|last)?$",
+    re.IGNORECASE,
+)
+
+
+def is_narrative_screen_card(text: str) -> bool:
+    """Tamamı büyük harfli metin bir ekran kartı mı (SDH etiketi DEĞİL)?"""
+    value = FORMAT_TAG_RE.sub("", str(text or ""))
+    value = re.sub(r"^\s*[-–—]\s*", "", value).strip()
+    if not value or "\n" in value:
+        return False
+    if _SCREEN_CARD_YEAR_RE.search(value):
+        return True
+    folded = _ascii_fold(value.rstrip(".!?").strip()).lower()
+    if folded in _SCREEN_CARD_PHRASES:
+        return True
+    return bool(_SCREEN_CARD_PREFIX_RE.match(folded))
+
+
 def is_structural_sdh_label(text: str) -> bool:
     """Beyaz listeye BAKMADAN, yapısal olarak SDH etiketi mi?
 
@@ -277,8 +314,11 @@ def is_structural_sdh_label(text: str) -> bool:
         return False
     if not all(char.isupper() for char in letters):
         return False
-    # Sayı/zaman kartları ('1975', 'BERLIN 1961') etiket değil, ekran yazısıdır;
-    # bunlar çevrilmeli. Harf oranı çok düşükse dokunma.
+    # Sayı/zaman kartları ('1975', 'BERLIN 1961') ve film kartları
+    # ('THE END', 'ACT I') etiket değil, ekran yazısıdır; bunlar çevrilmeli.
+    if is_narrative_screen_card(value):
+        return False
+    # Harf oranı çok düşükse dokunma.
     return len(letters) >= max(2, len(re.sub(r"\s", "", value)) // 2)
 
 

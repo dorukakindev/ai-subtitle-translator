@@ -11976,6 +11976,52 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
     return result_map, rejected, rejected_reasons
 
 
+_CONDENSE_MIN_KEEP_RATIO = 0.45
+
+
+def _condense_merges_speakers(old: str, new: str, src: str = "") -> bool:
+    """İki konuşmacılı cue tek satıra indirilmiş mi?
+
+    Kısaltma satır SAYISINI değiştirmemeli: '- Merhaba\\n- Nasılsın?' tek satıra
+    inince iki konuşmacı tek kişiye dönüşüyor ve sonraki hiçbir katman bunu
+    kaynaktan güvenle geri kuramıyor (denetim 2026-08-20, madde 2)."""
+    def _dash_lines(value):
+        lines = [line.strip() for line in str(value or "").split("\n")
+                 if line.strip()]
+        return lines, sum(
+            1 for line in lines if line.lstrip().startswith(("-", "–", "—")))
+
+    old_lines, old_dashes = _dash_lines(old)
+    new_lines, new_dashes = _dash_lines(new)
+    source_lines, source_dashes = _dash_lines(src)
+    two_speakers = old_dashes >= 2 or source_dashes >= 2
+    if not two_speakers:
+        return False
+    return len(new_lines) < max(2, min(len(old_lines), len(source_lines) or 2)) \
+        or new_dashes < 2
+
+
+def _condense_drops_source_content(old: str, new: str, src: str = "") -> bool:
+    """Aday, ESKİ çevirinin içerik gövdesinin büyük bölümünü atmış mı?
+
+    Kısaltma dolgu sözcüğü atar; özne/nesne atmaz. 'Maria kırmızı tren biletini
+    kaçırdı.' → 'Maria kaçırdı.' kabul ediliyordu (denetim 2026-08-20, madde 30).
+
+    Kontrol yalnız KAYNAK varken çalışır: kaynaksız çağrıda dolgu ile içeriği
+    ayırmak mümkün değildir ve condense'in kasıtlı kelime atma hakkı korunur
+    (bkz. tests/test_condense_validation.py LegitimateShorteningAccepted)."""
+    if not str(src or "").strip():
+        return False
+
+    def _body(value):
+        return re.sub(r"[^\w]+", "", str(value or ""), flags=re.UNICODE)
+
+    old_body, new_body = _body(old), _body(new)
+    if len(old_body) < 24:
+
+        return False  # kısa satırda oran ölçmek anlamsız
+    return len(new_body) < len(old_body) * _CONDENSE_MIN_KEEP_RATIO
+
 def validate_condense_candidate(original_text: str, candidate_text: str,
                                 source_text: str = "",
                                 locked_terms: dict | None = None,
@@ -12022,6 +12068,10 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
         return False, "source_negation_addition"
     if _has_content_word_drift(old, new, source_text=src):
         return False, "content_word_drift"
+    if _condense_merges_speakers(old, new, src):
+        return False, "speaker_merge"
+    if _condense_drops_source_content(old, new, src):
+        return False, "content_loss"
     return True, ""
 
 

@@ -629,7 +629,11 @@ class BuildQualityReportTextTest(unittest.TestCase):
 
         self.assertEqual(audit["delivery_owner_mismatch_ids"], ["1", "3"])
         self.assertEqual(audit["status"], "review")
-        self.assertFalse(gui._delivery_audit_has_hard_error(audit))
+        # İçeriğin cue'lar arasında yer değiştirmesi senkron kırılmasıdır:
+        # "John arrived."/"Mary waited." çifti ters çevrilmiş. Eskiden yalnız
+        # rapor ediliyordu ve dosya "hazır" işaretlenebiliyordu (denetim
+        # 2026-08-20, madde 8); artık sert hata sayılıp incelemeye düşer.
+        self.assertTrue(gui._delivery_audit_has_hard_error(audit))
 
     def test_delivery_owner_map_allows_natural_fragment_information_shift(self):
         source_rows = [
