@@ -597,5 +597,59 @@ class AutoShutdownGenerationTest(unittest.TestCase):
         self.assertFalse(g.App._export_log_and_shutdown(
             stub, {"run_id": "RUN-A"}, scheduled_run_id="RUN-A"))
 
+class HelperRoleMatrixTest(unittest.TestCase):
+    """Madde 18, 20: özellik → rol eşlemesi tek kaynaktan gelmeli."""
+
+    def test_condense_is_declared_on_the_role_it_actually_uses(self):
+        self.assertEqual(g.FEATURE_HELPER_ROLES["condense"], "analysis")
+
+    def test_default_on_term_normalize_is_covered(self):
+        self.assertEqual(g.FEATURE_HELPER_ROLES["term_normalize"], "polish")
+
+    def test_preflight_checks_condense_and_term_normalize(self):
+        snapshot = {
+            "main_api_key": "k", "main_api_base_url": "https://api.x/v1",
+            "main_model_name": "m", "condense": True, "term_normalize": True,
+            "helper_keys": {"analysis": "a", "polish": "p"},
+            "helper_urls": {"analysis": "https://a/v1", "polish": "https://p/v1"},
+            "helper_models": {"analysis": "am", "polish": "pm"},
+        }
+        models = {row[3] for row in g._provider_preflight_targets(snapshot)}
+        self.assertIn("am", models)
+        self.assertIn("pm", models)
+
+    def test_every_role_in_the_matrix_has_a_label(self):
+        for role in set(g.FEATURE_HELPER_ROLES.values()):
+            with self.subTest(role=role):
+                self.assertIn(role, g.API_PROFILE_ROLE_LABELS)
+
+
+class MovedDeliveryFolderTest(unittest.TestCase):
+    """Madde 40: tamamlanmış klasör taşınınca provenance kaybolmamalı."""
+
+    def test_fingerprint_survives_a_folder_move(self):
+        import shutil
+        base = Path(tempfile.mkdtemp())
+        old = base / "OLD" / "Movie"
+        old.mkdir(parents=True)
+        reports = old / "Raporlar"
+        reports.mkdir()
+        source = old / "s.srt"
+        output = old / "Movie.srt"
+        source.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello.\n",
+                          encoding="utf-8")
+        output.write_text("1\n00:00:01,000 --> 00:00:02,000\nMerhaba.\n",
+                          encoding="utf-8")
+        g._write_output_source_fingerprint(
+            reports, output, g._file_content_sha256(source),
+            source_path=source)
+        self.assertTrue(g._output_matches_source_fingerprint(
+            reports, output, source))
+        new = base / "YUKLENECEK" / "Movie"
+        new.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old), str(new))
+        self.assertTrue(g._output_matches_source_fingerprint(
+            new / "Raporlar", new / "Movie.srt", new / "s.srt"))
+
 if __name__ == "__main__":
     unittest.main()

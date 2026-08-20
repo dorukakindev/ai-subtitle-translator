@@ -81,10 +81,30 @@ API_PROFILE_PROVIDERS = {
 }
 API_PROFILE_ROLE_LABELS = {
     "main": "Ana ceviri",
-    "analysis": "Yardimci analiz",
-    "critic": "Critic + Derin Teslim + Nihai Anlam",
-    "polish": "Polish + Kisaltma",
-    "qc": "QC + son duzeltmeler",
+    "analysis": "Yardimci analiz + Kisaltma + Auto-Glossary",
+    "critic": "Critic + Derin Teslim + Nihai Anlam + Baglam Incelemesi",
+    "polish": "Polish + Terim Normalizasyonu + Sezon Kanonu",
+    "qc": "QC + Geri Ceviri",
+}
+
+# ozellik -> GERCEKTE kullanilan yardimci rol. Tek kaynak: preflight ve rol
+# etiketleri buradan turer. Onceden Kisaltma UI'da 'polish' diye dogrulanip
+# calisma aninda 'analysis' anahtariyla gidiyordu ve Terim Normalizasyonu
+# (varsayilan ACIK) hic dogrulanmiyordu (denetim 2026-08-20, madde 18 ve 20).
+FEATURE_HELPER_ROLES = {
+    "hybrid_mode": "analysis",
+    "condense": "analysis",
+    "auto_glossary": "analysis",
+    "critic": "critic",
+    "native": "critic",
+    "semantic_reconcile": "critic",
+    "deep_delivery_semantic": "critic",
+    "review": "critic",
+    "polish": "polish",
+    "term_normalize": "polish",
+    "season_canon": "polish",
+    "qc": "qc",
+    "backtrans": "qc",
 }
 
 
@@ -100,17 +120,10 @@ def _provider_preflight_targets(snapshot: dict) -> list:
         str(snapshot.get("main_model_name") or ""),
     )]
     if not snapshot.get("auto_retry_repair_only"):
-        enabled_roles = set()
-        if snapshot.get("hybrid_mode"):
-            enabled_roles.add("analysis")
-        if any(snapshot.get(key) for key in (
-                "critic", "native", "semantic_reconcile",
-                "deep_delivery_semantic", "review")):
-            enabled_roles.add("critic")
-        if snapshot.get("polish") or snapshot.get("condense"):
-            enabled_roles.add("polish")
-        if snapshot.get("qc") or snapshot.get("backtrans"):
-            enabled_roles.add("qc")
+        enabled_roles = {
+            role for feature, role in FEATURE_HELPER_ROLES.items()
+            if snapshot.get(feature)
+        }
         helper_keys = snapshot.get("helper_keys") or {}
         helper_urls = snapshot.get("helper_urls") or {}
         helper_models = snapshot.get("helper_models") or {}
@@ -13136,27 +13149,50 @@ def _archive_delivery_source(source_path, output_path, source_hash="") -> Path:
     return candidate
 
 
+def _output_source_fingerprint_candidates(report_dir, output_path) -> list:
+    """Sidecar adayları: tam ad, sonra konumdan BAĞIMSIZ aynı-stem eşleşmesi.
+
+    Sidecar adı çıktının MUTLAK yolundan türüyor; tamamlanmış klasör
+    'YÜKLENECEK' altına taşınınca eşleşme kayboluyordu (denetim 2026-08-20,
+    madde 40). Aynı stem için tek bir sidecar varsa o kullanılır; birden çok
+    aday varsa belirsizlik nedeniyle hiçbiri kabul edilmez.
+    """
+    directory = Path(report_dir)
+    exact = _output_source_fingerprint_path(report_dir, output_path)
+    if exact.is_file():
+        return [exact]
+    try:
+        matches = sorted(
+            path for path in directory.glob(
+                f"{Path(output_path).stem}.*.source.sha256")
+            if path.is_file())
+    except OSError:
+        return []
+    return matches if len(matches) == 1 else []
+
+
 def _read_output_source_fingerprint(report_dir, output_path) -> dict:
     """Sidecar'ı oku. Eski biçim (düz kaynak SHA metni) da desteklenir."""
-    sidecar = _output_source_fingerprint_path(report_dir, output_path)
-    try:
-        raw = sidecar.read_text(encoding="utf-8").strip()
-    except Exception:
-        return {}
-    if not raw:
-        return {}
-    if raw.startswith("{"):
+    for sidecar in _output_source_fingerprint_candidates(report_dir, output_path):
         try:
-            payload = json.loads(raw)
-        except ValueError:
-            return {}
-        if not isinstance(payload, dict):
-            return {}
-        return {
-            "source": str(payload.get("source") or "").strip(),
-            "output": str(payload.get("output") or "").strip(),
-        }
-    return {"source": raw, "output": ""}
+            raw = sidecar.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if not raw:
+            continue
+        if raw.startswith("{"):
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            return {
+                "source": str(payload.get("source") or "").strip(),
+                "output": str(payload.get("output") or "").strip(),
+            }
+        return {"source": raw, "output": ""}
+    return {}
 
 
 def _write_output_source_fingerprint(report_dir, output_path, source_hash,
@@ -27455,6 +27491,11 @@ class App(ctk.CTk):
                 for sid in finding.get("ids") or [finding.get("idx")]:
                     if sid is not None:
                         extra_reasons.setdefault(str(sid), set()).add(reason)
+            # Deterministik teslim taraması bulguları burada da şüpheli listesine
+            # girer: default-AÇIK derin tarama %35 bütçesini yalnız hizalama ve
+            # post-pass adaylarına harcıyordu (denetim 2026-08-20, madde 12).
+            for sid, reason in _delivery_scan_suspect_ids(blocks, cues):
+                extra_reasons.setdefault(str(sid), set()).add(reason)
             cancel_context = self.__dict__.get("_helper_request_canceller")
             target_coverage = self._deep_delivery_target_coverage()
             progress_path = str(source_path or out_path)
@@ -29962,7 +30003,36 @@ class App(ctk.CTk):
                     self._log("Auto-Glossary: geçerli onaylı terim yok", "warn")
                     return
                 if gp.suffix.casefold() == ".json":
+                    # API çağrısı ve onay penceresi sırasında başka bir çeviri
+                    # veya editör aynı JSON'a terim eklemiş olabilir; eski
+                    # snapshot'ı yazmak o terimleri sessizce siliyordu (denetim
+                    # 2026-08-20, madde 38). Yazmadan HEMEN ÖNCE yeniden oku.
+                    current = ht.load_glossary(gp, strict=True) if gp.exists() else {}
                     merged = dict(existing)
+                    concurrent = {
+                        key: value for key, value in dict(current or {}).items()
+                        if key not in merged
+                    }
+                    if concurrent:
+                        merged.update(concurrent)
+                        self._log(
+                            f"Auto-Glossary: sözlük bu sırada değişmiş; "
+                            f"{len(concurrent)} yeni terim korundu "
+                            f"({', '.join(list(concurrent)[:5])})", "warn")
+                    conflicts = {
+                        key for key, value in dict(current or {}).items()
+                        if key in approved and value != approved[key]
+                    }
+                    if conflicts:
+                        # Aynı anahtarda çelişki: kullanıcı onayı olmadan
+                        # diskteki değeri EZME.
+                        for key in conflicts:
+                            approved.pop(key, None)
+                        written = len(approved)
+                        self._log(
+                            f"Auto-Glossary: {len(conflicts)} terim bu sırada "
+                            "elle değiştirilmiş; üzerine yazılmadı "
+                            f"({', '.join(sorted(conflicts)[:5])})", "warn")
                     merged.update(approved)
                     atomic_write_json(gp, merged)
                 else:
