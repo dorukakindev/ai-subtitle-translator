@@ -3458,7 +3458,9 @@ _DELIVERY_SOURCE_SUBTITLE_CREDIT_RE = re.compile(
     r"(?:\r?\n\s*subs?-team)?\s*|"
     r"\s*subs?-team\s+p\s*r\s*e\s*s\s*e\s*n\s*t\s*[oó]\s*:\s*|"
     r"\s*NTP\s*:\s*traducci[oó]n\s*:\s*[^\r\n]{2,100}"
-    r"(?:\r?\n\s*\*?\s*[^\r\n]*\.(?:net|com|org)\s*\*?)?\s*)$",
+    r"(?:\r?\n\s*\*?\s*[^\r\n]*\.(?:net|com|org)\s*\*?)?\s*|"
+    r"\s*Απόδοση\s*:\s*[^\r\n]{2,100}\r?\n\s*"
+    r"Συγχρονισμός\s*,\s*διορθώσεις\s*:\s*[^\r\n]{2,100}\s*)$",
     re.IGNORECASE | re.DOTALL,
 )
 _NON_TURKISH_SCRIPT_RE = re.compile(
@@ -3508,6 +3510,7 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
 )
 _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"^(?:U+H+|APPLAUSE|CHEERING|SINGING(?:\s+(?:CONTINUES|ENDS))?|"
+    r"PEOPLE\s+PRAYING|SAYING\s+MANTRAS?|SINGING\s+MANTRAS?|"
     r"(?:MONASTIC\s+)?CHANTING|SHOUTING|HAMMERING|BABY\s+CRIES|"
     r"WATER\s+SPLASHES|EXPLOSIONS?|CALL\s+TO\s+PRAYER|"
     r"(?:ALL\s+)?EXCHANGING\s+GREETINGS|PLUCKS?\s+STRINGS?|"
