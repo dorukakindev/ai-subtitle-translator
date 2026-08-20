@@ -4613,6 +4613,16 @@ _AUTOLOCK_MIN_LENGTH = 4
 _AUTOLOCK_WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
 
 
+_LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ſƀ-ɏ]")
+
+
+def _is_latin_script_word(word: str) -> bool:
+    """Sözcük Latin alfabesinde mi (Türkçe hedefe olduğu gibi girebilir mi)?"""
+    letters = [char for char in str(word or "") if char.isalpha()]
+    if not letters:
+        return False
+    return all(_LATIN_LETTER_RE.match(char) for char in letters)
+
 def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
                              min_count: int = _AUTOLOCK_MIN_OCCURRENCES,
                              rejected_out: dict | None = None) -> dict:
@@ -4680,6 +4690,13 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             continue
         form = counts[f"__form__{key}"]
         if key in known:
+            continue
+        if not _is_latin_script_word(form):
+            # Latin dışı yazı (Yunan/Kiril/CJK/Arap) kimlikle kilitlenirse ana
+            # modele 'bu sözcüğü Türkçe çıktıda AYNEN bırak' denmiş olur; oysa
+            # prompt yabancı yazı bırakmayı yasaklıyor — kendi içinde çelişkili
+            # talimat (denetim 2026-08-20, madde 4). Kilit yerine model çevirir.
+            rejected[form] = "hedef yazı sisteminde değil"
             continue
         canonical = CANONICAL_TURKISH_NAMES.get(key)
         if canonical:
@@ -5572,6 +5589,14 @@ def _postprocess_source_drifted(filepath, source_path) -> bool:
 
 
 def _resolve_postprocess_source(filepath) -> Path | None:
+    """Manuel post-işlem için ORİJİNAL kaynak altyazıyı bulur.
+
+    Rapor şeması fail-soft doğrulanır: bozuk/beklenmedik biçimdeki EN YENİ rapor
+    eski sağlam raporların taranmasını engellememeli (denetim 2026-08-20, madde
+    42). Ayrıca `delivery_source_path` varsa ona öncelik verilir ve kaynak ile
+    çıktı aynı dosyaya çözülüyorsa aday reddedilir (madde 39): manuel post-işlem
+    raporu Türkçe finali `source_path` alanına yazıyor.
+    """
     output = Path(filepath).resolve()
     output_key = os.path.normcase(str(output))
     report_files = []
@@ -5585,9 +5610,19 @@ def _resolve_postprocess_source(filepath) -> Path | None:
             payload = json.loads(report_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        for row in payload.get("files") or []:
+        if not isinstance(payload, dict):
+            continue
+        rows = payload.get("files")
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
             candidate_output = row.get("output_path")
-            candidate_source = row.get("source_path")
+            # Manuel post-işlem raporunda `source_path` hedefin KENDİSİdir;
+            # gerçek kaynak `delivery_source_path` alanındadır.
+            candidate_source = (row.get("delivery_source_path")
+                                or row.get("source_path"))
             if not candidate_output or not candidate_source:
                 continue
             try:
@@ -5595,9 +5630,42 @@ def _resolve_postprocess_source(filepath) -> Path | None:
                     str(Path(candidate_output).resolve()))
             except OSError:
                 continue
+            if candidate_key != output_key:
+                continue
             source_path = Path(candidate_source)
-            if candidate_key == output_key and source_path.is_file():
+            try:
+                source_key = os.path.normcase(str(source_path.resolve()))
+            except OSError:
+                continue
+            if source_key == output_key:
+                continue  # kaynak = çıktı → provenance yok, kabul edilemez
+            if source_path.is_file():
                 return source_path
+            archived = _archived_source_candidate(report_path, source_path)
+            if archived is not None:
+                return archived
+    return None
+
+
+def _archived_source_candidate(report_path: Path, source_path: Path):
+    """Orijinal kaynak silinmişse `Raporlar/Kaynak` arşiv kopyasını kullan.
+
+    Çeviri bitince orijinal girdiyi silmek normal iş akışıdır; program kaynağı
+    zaten arşivliyor ama resolver arşive hiç bakmıyordu (madde 41).
+    """
+    try:
+        archive_dir = report_path.parent / "Kaynak"
+        if not archive_dir.is_dir():
+            return None
+        exact = archive_dir / source_path.name
+        if exact.is_file():
+            return exact
+        stem, suffix = source_path.stem, source_path.suffix
+        for candidate in sorted(archive_dir.glob(f"{stem}*{suffix}")):
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        return None
     return None
 
 
@@ -19089,6 +19157,10 @@ class App(ctk.CTk):
             "input_dir", "output_dir", "src_lang", "tgt_lang", "mode",
             "hybrid_mode", "analysis_depth", "style", "content_type",
             "profanity", "same_folder", "auto_glossary", "term_normalize",
+            # Yazma politikası alanları: bunlar snapshot'ta vardı ama run record ve
+            # resume geri yüklemesinde YOKTU; çökme sonrası "yalnız rapor" güvenlik
+            # politikası kaybolabiliyordu (denetim 2026-08-20, madde 11).
+            "term_normalize_apply", "cue_fill_move", "quality_report_only",
             "repair_missing",
             "critic", "polish", "native", "qc", "condense", "backtrans",
             "semantic_reconcile", "deep_delivery_semantic",
@@ -21887,6 +21959,10 @@ class App(ctk.CTk):
                     "input_dir", "output_dir", "src_lang", "tgt_lang", "mode",
                     "hybrid_mode", "analysis_depth", "style", "content_type",
                     "profanity", "same_folder", "auto_glossary", "term_normalize",
+                    # Yazma politikası alanları: bunlar snapshot'ta vardı ama run record ve
+                    # resume geri yüklemesinde YOKTU; çökme sonrası "yalnız rapor" güvenlik
+                    # politikası kaybolabiliyordu (denetim 2026-08-20, madde 11).
+                    "term_normalize_apply", "cue_fill_move", "quality_report_only",
                     "repair_missing",
                     "critic", "polish", "native", "qc", "condense", "backtrans",
                     "semantic_reconcile", "deep_delivery_semantic",

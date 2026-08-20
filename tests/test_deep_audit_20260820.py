@@ -4,14 +4,20 @@
 Her sınıf denetim maddesinin KARŞI ÖRNEĞİNİ kilitler; madde numarası
 docstring'de verilir.
 """
+import io
+import json
 import os
 import sys
+import tempfile
+import time
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hybrid_translate as ht
 import sdh_cleaner
+import subtitle_formats
 import subtitle_translator_gui as g
 
 
@@ -189,6 +195,150 @@ class DeliverySignatureBoundsTest(unittest.TestCase):
                     self.assertFalse(
                         spans[i][1] > spans[j][0] and spans[j][1] > spans[i][0])
 
+
+class NonLatinIdentityLockTest(unittest.TestCase):
+    """Madde 4: Latin dışı sözcük kimlikle kilitlenmemeli."""
+
+    GREEK = ("Η Ελλάδα είναι όμορφη. Οι Έλληνες ζουν στην Ελλάδα. "
+             "Η Γερμανία και η Ελλάδα. Ο Πλάτωνα έγραψε. "
+             "Ο Πλάτωνα ήταν σοφός. Διαβάσαμε τον Πλάτωνα ξανά.")
+
+    def test_greek_words_are_not_locked(self):
+        rejected = {}
+        locked = g.auto_locked_proper_nouns(self.GREEK, rejected_out=rejected)
+        self.assertEqual(locked, {})
+        self.assertIn("Ελλάδα", rejected)
+
+    def test_latin_names_still_lock(self):
+        source = ("Louis Barthou arrived in Marseille. The king met Barthou "
+                  "there. Later Barthou was shot. Everyone mourned Barthou.")
+        self.assertEqual(
+            g.auto_locked_proper_nouns(source).get("Barthou"), "Barthou")
+
+
+class ResumeKeepsWritePolicyTest(unittest.TestCase):
+    """Madde 11: yazma politikası alanları run record/resume kapsamında."""
+
+    def test_all_three_keys_are_in_every_scalar_key_list(self):
+        import re
+        source = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "subtitle_translator_gui.py"),
+            encoding="utf-8").read()
+        lists = re.findall(r"scalar_keys\s*=\s*\((.*?)\n\s*\)", source, re.S)
+        self.assertGreaterEqual(len(lists), 2)
+        for index, body in enumerate(lists):
+            for key in ("term_normalize_apply", "cue_fill_move",
+                        "quality_report_only"):
+                with self.subTest(list_index=index, key=key):
+                    self.assertIn(key, body)
+
+
+class ShortCjkEncodingTest(unittest.TestCase):
+    """Madde 22: 80 bayttan kısa CJK dosyalar kayıpsız okunmalı."""
+
+    def _roundtrip(self, encoding, body):
+        directory = tempfile.mkdtemp()
+        path = os.path.join(directory, "short.srt")
+        payload = "1\n00:00:01,000 --> 00:00:03,000\n" + body + "\n"
+        with io.open(path, "wb") as handle:
+            handle.write(payload.encode(encoding))
+        return subtitle_formats.read_subtitle_text(path)
+
+    def test_japanese_and_chinese_short_files(self):
+        for encoding, body in (("cp932", "はい"), ("cp932", "こんにちは世界"),
+                               ("gbk", "是"), ("gbk", "你好世界")):
+            with self.subTest(encoding=encoding, body=body):
+                self.assertIn(body, self._roundtrip(encoding, body))
+
+    def test_single_byte_encodings_are_not_stolen_by_cjk(self):
+        for encoding, body in (("cp1254", "Merhaba dünya"),
+                               ("cp1251", "Привет мир"),
+                               ("cp1253", "Γεια σου"),
+                               ("cp1256", "مرحبا")):
+            with self.subTest(encoding=encoding):
+                self.assertIn(body, self._roundtrip(encoding, body))
+
+
+class AssStyleSkipTest(unittest.TestCase):
+    """Madde 23: 'Note'/'Credit' stili tek başına silme gerekçesi değil."""
+
+    ASS = ("[Events]\n"
+           "Format: Layer, Start, End, Style, Name, MarginL, MarginR, "
+           "MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:01.00,0:00:03.00,Note,,0,0,0,,"
+           "This sentence is spoken aloud.\n"
+           "Dialogue: 0,0:00:04.00,0:00:06.00,Credit,,0,0,0,,"
+           "Translated by Fansub Group\n"
+           "Dialogue: 0,0:00:07.00,0:00:09.00,Default,,0,0,0,,Normal line.\n"
+           "Dialogue: 0,0:00:10.00,0:00:12.00,Note,,0,0,0,,TL note\n")
+
+    def test_spoken_line_in_a_note_style_is_kept(self):
+        path = os.path.join(tempfile.mkdtemp(), "t.ass")
+        with io.open(path, "w", encoding="utf-8") as handle:
+            handle.write(self.ASS)
+        texts = [text for _idx, _ts, text in subtitle_formats.parse_ass(path)]
+        self.assertIn("This sentence is spoken aloud.", texts)
+        self.assertIn("Normal line.", texts)
+        self.assertNotIn("Translated by Fansub Group", texts)
+        self.assertNotIn("TL note", texts)
+
+
+class PostprocessSourceResolverTest(unittest.TestCase):
+    """Madde 39, 41, 42: kaynak çözümleyicisi."""
+
+    def _fixture(self):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "Raporlar").mkdir()
+        source = directory / "Source.srt"
+        output = directory / "Movie.srt"
+        source.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello.\n",
+                          encoding="utf-8")
+        output.write_text("1\n00:00:01,000 --> 00:00:02,000\nMerhaba.\n",
+                          encoding="utf-8")
+        return directory, source, output
+
+    def test_malformed_newer_report_does_not_hide_the_older_one(self):
+        directory, source, output = self._fixture()
+        (directory / "Raporlar" / "ceviri_raporu_older.json").write_text(
+            json.dumps({"files": [{"output_path": str(output),
+                                   "source_path": str(source)}]}),
+            encoding="utf-8")
+        time.sleep(0.02)
+        (directory / "Raporlar" / "ceviri_raporu_newer.json").write_text(
+            "[]", encoding="utf-8")
+        self.assertEqual(g._resolve_postprocess_source(output), source)
+
+    def test_manual_report_uses_delivery_source_path(self):
+        directory, source, output = self._fixture()
+        (directory / "Raporlar" / "ceviri_raporu.json").write_text(
+            json.dumps({"files": [{"output_path": str(output),
+                                   "source_path": str(output),
+                                   "delivery_source_path": str(source)}]}),
+            encoding="utf-8")
+        self.assertEqual(g._resolve_postprocess_source(output), source)
+
+    def test_source_equal_to_output_is_rejected(self):
+        directory, _source, output = self._fixture()
+        (directory / "Raporlar" / "ceviri_raporu.json").write_text(
+            json.dumps({"files": [{"output_path": str(output),
+                                   "source_path": str(output)}]}),
+            encoding="utf-8")
+        self.assertIsNone(g._resolve_postprocess_source(output))
+
+    def test_archived_source_is_used_when_the_original_is_gone(self):
+        directory, source, output = self._fixture()
+        (directory / "Raporlar" / "ceviri_raporu.json").write_text(
+            json.dumps({"files": [{"output_path": str(output),
+                                   "source_path": str(source)}]}),
+            encoding="utf-8")
+        archive = directory / "Raporlar" / "Kaynak"
+        archive.mkdir()
+        (archive / "Source.srt").write_text(
+            source.read_text(encoding="utf-8"), encoding="utf-8")
+        source.unlink()
+        self.assertEqual(g._resolve_postprocess_source(output),
+                         archive / "Source.srt")
 
 if __name__ == "__main__":
     unittest.main()

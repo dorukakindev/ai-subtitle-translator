@@ -149,6 +149,46 @@ def _legacy_script_ratio(text: str, encoding: str) -> float:
     return matched / len(letters)
 
 
+_SHORT_CJK_ENCODINGS = ("cp932", "gb18030", "gbk", "big5", "cp949", "euc_jp",
+                        "euc_kr")
+_SHORT_CJK_MIN_SCRIPT_RATIO = 0.9
+
+
+def _decode_short_cjk(raw: bytes) -> str | None:
+    """80 bayttan kısa CJK altyazıyı tek-baytlı Batı kodlamalarından önce dener.
+
+    Kısa dosya kısayolu yalnız cp125x ailesini deniyordu; geçerli 35-37 baytlık
+    CP932/GBK dosyaları CP1254 mojibake'i olarak okunuyordu (denetim 2026-08-20,
+    madde 22). Ölçüt çok dar: çözülen metnin harflerinin en az %90'ı o kodlamanın
+    kendi yazı sisteminde olmalı — Latin/Türkçe metin bu eşiğe hiç yaklaşmaz."""
+    if not raw or not any(byte > 0x7F for byte in raw):
+        return None
+    best = None
+    for encoding in _SHORT_CJK_ENCODINGS:
+        try:
+            text = raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        letters = [char for char in text if char.isalpha()]
+        if not letters:
+            continue
+        ratio = _legacy_script_ratio(text, encoding)
+        if ratio < _SHORT_CJK_MIN_SCRIPT_RATIO:
+            continue
+        cjk = sum(
+            "぀" <= char <= "ヿ" or "㐀" <= char <= "鿿"
+            or "가" <= char <= "힯" for char in letters)
+        if not cjk:
+            continue
+        # Kana üreten çözüm Japonca kanıtıdır; Korece/Çince baytları kana
+        # üretmez. Aksi hâlde tek karakterlik CJK dosyalarında sıra rastgele.
+        kana = sum("぀" <= char <= "ヿ" for char in letters)
+        score = (1 if kana else 0, ratio, cjk)
+        if best is None or score > best[0]:
+            best = (score, text)
+    return best[1] if best else None
+
+
 def _decode_short_legacy(raw: bytes) -> str | None:
     """Kısa eski kodlu metni Yunanca/Arapçayı Kiril saymadan seçer."""
     candidates = []
@@ -182,7 +222,11 @@ def _decode_short_legacy(raw: bytes) -> str | None:
     if not candidates:
         return None
     score, text = max(candidates, key=lambda item: item[0])
-    return text if score >= 0.45 else None
+    if score >= 0.45:
+        return text
+    # Batı adayları eşiği tutmuyorsa CJK dene: gerçek cp125x metinleri 0.59+
+    # alırken CJK dosyalarının batı skoru 0.21-0.35'te kalıyor (ölçüldü).
+    return _decode_short_cjk(raw)
 
 
 def _decode_detected_legacy(raw: bytes) -> str | None:
@@ -757,6 +801,25 @@ def _ass_lyric_track(style: str):
     return None
 
 
+_ASS_SPOKEN_HINT_RE = re.compile(r"[.!?…»”\"']\s*$|[,;:]\s")
+
+
+def _ass_style_skip_is_safe(raw_text: str) -> bool:
+    """'Note'/'Credit' stilindeki satır gerçekten atılabilir mi?
+
+    Stil adı tek başına kanıt değil: keyfi adlandırılmış bir stille yazılmış
+    GERÇEK replik de 'Note' olabiliyor ve içerik incelenmeden siliniyordu
+    (denetim 2026-08-20, madde 23). Cümle noktalaması taşıyan çok kelimeli
+    metin replik sayılır ve korunur."""
+    text = _clean_ass_text(_format_ass_text(str(raw_text or ""))).strip()
+    if not text:
+        return True
+    words = [word for word in re.split(r"\s+", text) if any(
+        char.isalpha() for char in word)]
+    if len(words) < 4:
+        return True  # kısa künye/etiket
+    return not bool(_ASS_SPOKEN_HINT_RE.search(text))
+
 def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
     """ASS/SSA dosyasını parse eder. Anlam taşıyan diyalog/ekran metnini alır,
     yalnız salt efekt, karaoke, kredi ve çevirmen notu stillerini atlar.
@@ -805,8 +868,8 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
             continue
 
         style = parts[style_i].strip()
-        if _SKIP_STYLES.search(style):
-            continue  # efekt/sign satırları çevirmeye gerek yok
+        if _SKIP_STYLES.search(style) and _ass_style_skip_is_safe(parts[text_i]):
+            continue  # gerçekten kredi/not satırı
 
         start_ts = _ass_ts_to_srt(parts[start_i])
         end_ts   = _ass_ts_to_srt(parts[end_i])
