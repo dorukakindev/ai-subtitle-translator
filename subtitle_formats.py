@@ -952,6 +952,21 @@ def parse_any(filepath: str, lyric_language: str | None = None) -> list:
     return []
 
 
+def is_generated_subtitle_name(name: str) -> bool:
+    """Ad, programın ÜRETTİĞİ bir altyazı artifact'ına mı ait?
+
+    '.tr.srt', '.ham.srt', '.partial.srt', gizli '.stage.srt' vb. asla kaynak
+    olamaz; aksi hâlde sonraki koşu kendi çıktısını yeniden çevirir. GUI taraması
+    bunu zaten uyguluyordu, standalone batch yolunda parite yoktu (denetim
+    2026-08-20, madde 16)."""
+    low = str(name or "").lower()
+    if _GENERATED_SUBTITLE_NAME_RE.search(low):
+        return True
+    if low.endswith(".ham.srt"):
+        return True
+    return low.startswith(".") and low.endswith(".stage.srt")
+
+
 def get_subtitle_files(directory: str, recursive: bool = True,
                         exclude_dir_names=("ÇIKTI", "Raporlar"),
                         exclude_suffixes=(".ham.srt",),
@@ -997,10 +1012,7 @@ def get_subtitle_files(directory: str, recursive: bool = True,
             return True
 
     def _is_generated_subtitle_name(name: str) -> bool:
-        low = str(name or "").lower()
-        if _GENERATED_SUBTITLE_NAME_RE.search(low):
-            return True
-        return low.startswith(".") and low.endswith(".stage.srt")
+        return is_generated_subtitle_name(name)
 
     if recursive:
         for root, dirnames, filenames in os.walk(base):

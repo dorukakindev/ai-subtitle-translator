@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from openai import OpenAI
 from prompt_constants import meaning_readability_rule
+from subtitle_formats import is_generated_subtitle_name
 
 # === AYARLAR ===
 SOURCE_LANG = "English"     # Kaynak dil
@@ -293,6 +294,14 @@ def discover_source_srt_files(input_folder: str = INPUT_FOLDER,
                 continue
             except ValueError:
                 pass
+        # GUI taramasıyla parite: programın ürettiği artifact'lar kaynak değildir
+        # ('.tr.srt', '.ham.srt', '.partial.srt', gizli '.stage.srt') — aksi hâlde
+        # sonraki koşu kendi çıktısını çevirir (denetim 2026-08-20, madde 16).
+        if is_generated_subtitle_name(path.name):
+            continue
+        if any(part.casefold() in {"raporlar", "çıktı"}
+               for part in resolved.parts[:-1]):
+            continue
         files.append(str(path))
     return sorted(files)
 
@@ -304,9 +313,18 @@ def create_batch_requests(srt_files):
 
     for filepath in srt_files:
         blocks = parse_srt(filepath)
-        _phash = hashlib.md5(filepath.encode("utf-8", errors="replace")).hexdigest()[:6]
+        # 24 bitlik önek binlerce aynı adlı yolda çakışıyordu; çakışan iki
+        # istekte file_map yalnız ikinci sahibi tutup çeviriyi YANLIŞ
+        # dosyaya yazabiliyordu (denetim 2026-08-20, madde 24).
+        _phash = hashlib.sha256(
+            str(Path(filepath).resolve()).encode("utf-8", errors="replace")
+        ).hexdigest()[:16]
         for i, (idx, timestamp, text) in enumerate(blocks):
             custom_id = f"{Path(filepath).stem}_{_phash}__block{i}"
+            if custom_id in file_map:
+                raise ValueError(
+                    f"custom_id çakışması: {custom_id} "
+                    f"({file_map[custom_id][0]} ↔ {filepath})")
             file_map[custom_id] = (filepath, i, idx, timestamp)
 
             requests.append({
@@ -421,7 +439,12 @@ def process_results(output_file_id, file_map, srt_files, *,
                     translations[cid] = None
                     continue
                 response_text = choice["message"]["content"]
-                translations[cid] = response_text.strip() if isinstance(response_text, str) else None
+                cleaned = (response_text.strip()
+                           if isinstance(response_text, str) else None)
+                # Boş ama HTTP-başarılı cevap ÇEVİRİ DEĞİLDİR: eskiden kaynak metin
+                # finale yazılıp failed_ids boş kaldığı için recovery de siliniyordu
+                # (denetim 2026-08-20, madde 25).
+                translations[cid] = cleaned or None
             except (KeyError, TypeError, IndexError):
                 translations[cid] = None
 
@@ -450,12 +473,10 @@ def process_results(output_file_id, file_map, srt_files, *,
         source_blocks = source_cache[filepath]
         source_text = source_blocks[block_i][2] if block_i < len(source_blocks) else ""
         if cid not in translations or translations[cid] is None or cid in duplicate_ids:
-            # Batch'in eksik/tekrarlı yanıtı finalde hata etiketi olarak kalmasın.
-            # Recovery kaydı korunur; kullanıcı da cue'yu kaynak metinden görebilir.
-            translated_text = source_text or "[ÇEVIRI HATASI]"
-        elif translations[cid]:
-            translated_text = translations[cid]
-        else:
+            # Eksik/boş/tekrarlı yanıt. Kaynağı SAF SDH ise cue zaten düşer;
+            # gerçek diyalogsa kaynak metin YER TUTUCU olarak konur ama dosya
+            # `file_failed` sayıldığı için final değil `.partial` olarak yazılır
+            # ve recovery kaydı korunur (denetim 2026-08-20, madde 9 ve 25).
             try:
                 import sdh_cleaner
                 if source_text and sdh_cleaner.is_sdh_only(source_text):
@@ -463,6 +484,8 @@ def process_results(output_file_id, file_map, srt_files, *,
             except Exception:
                 pass
             translated_text = source_text or "[ÇEVIRI HATASI]"
+        else:
+            translated_text = translations[cid]
         file_blocks.setdefault(filepath, {})[block_i] = (idx, timestamp, translated_text)
 
     # Dosyaları sıralı blok indeksine göre yaz
@@ -488,10 +511,18 @@ def process_results(output_file_id, file_map, srt_files, *,
             cid in duplicate_ids or cid not in translations or translations.get(cid) is None
             for cid, entry in file_map.items() if entry[0] == filepath
         )
-        if file_failed and out_path.exists():
-            skipped_files += 1
-            print(f"[!] Kısmi batch sonucu mevcut finali ezmedi: {out_path}")
-            continue
+        if file_failed:
+            # Eksik cue'lar kaynak metniyle dolduruluyor; bu ÇEVİRİ DEĞİLDİR.
+            # Böyle bir dosya final `.srt` olarak yazılırsa hem çevrilmemiş
+            # satır teslim edilmiş olur hem de resume "final var" diye dosyayı
+            # atlar ve kurtarma döngüsü hiç bitmez (denetim 2026-08-20, madde 9).
+            if out_path.exists():
+                skipped_files += 1
+                print(f"[!] Kısmi batch sonucu mevcut finali ezmedi: {out_path}")
+                continue
+            out_path = out_path.with_name(
+                f"{out_path.stem}.partial{out_path.suffix}")
+            print(f"[!] Eksik cue var; kısmi sonuç ayrıldı: {out_path}")
         ordered = [blocks_dict[k] for k in sorted(blocks_dict)]
         write_srt(out_path, ordered, TARGET_LANG)
         print(f"[+] Kaydedildi: {out_path}")

@@ -435,5 +435,58 @@ class PartialPromotionProvenanceTest(unittest.TestCase):
         self.assertEqual(len(promoted), 1)
         self.assertTrue(output.exists())
 
+class StandaloneBatchSafetyTest(unittest.TestCase):
+    """Madde 9, 16, 24, 25: standalone batch yolu."""
+
+    def test_generated_artifacts_are_not_rediscovered_as_sources(self):
+        import subtitle_batch_translate as sb
+        directory = Path(tempfile.mkdtemp())
+        for name in ("source.srt", "source.tr.srt", "source.ham.srt",
+                     "source.partial.srt", ".source.stage.srt", "Movie.srt"):
+            (directory / name).write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nx\n", encoding="utf-8")
+        (directory / "Raporlar").mkdir()
+        (directory / "Raporlar" / "arsiv.srt").write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nx\n", encoding="utf-8")
+        found = sorted(Path(path).name for path in sb.discover_source_srt_files(
+            str(directory), str(directory / "ÇIKTI")))
+        self.assertEqual(found, ["Movie.srt", "source.srt"])
+
+    def test_custom_id_hash_is_wide_enough_to_avoid_collisions(self):
+        import hashlib
+        seen = {}
+        collisions = 0
+        for number in range(50000):
+            path = f"C:/x/{'a' * (number % 40)}/dir{number}/Episode.srt"
+            key = hashlib.sha256(path.encode()).hexdigest()[:16]
+            if key in seen:
+                collisions += 1
+            seen[key] = path
+        self.assertEqual(collisions, 0)
+
+    def test_empty_response_becomes_a_failure_and_a_partial_file(self):
+        import subtitle_batch_translate as sb
+        from unittest.mock import MagicMock, patch
+        directory = Path(tempfile.mkdtemp())
+        source = directory / "source.srt"
+        source.write_text("1\n00:00:01,000 --> 00:00:03,000\nHello there.\n",
+                          encoding="utf-8")
+        output = directory / "out"
+        output.mkdir()
+        file_map = {"a": (str(source), 0, "1",
+                          "00:00:01,000 --> 00:00:03,000")}
+        client = MagicMock()
+        client.files.content.return_value.text = (
+            '{"custom_id":"a","response":{"body":{"choices":'
+            '[{"message":{"content":""}}]}}}')
+        with patch.object(sb, "_get_client", return_value=client), \
+                patch.object(sb, "INPUT_FOLDER", str(directory)):
+            result = sb.process_results(
+                "f", file_map, [str(source)],
+                input_folder=str(directory), output_folder=str(output))
+        self.assertEqual(result["failed_ids"], {"a"})
+        written = sorted(path.name for path in output.rglob("*.srt"))
+        self.assertEqual(written, ["source.partial.srt"])
+
 if __name__ == "__main__":
     unittest.main()

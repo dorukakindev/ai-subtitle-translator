@@ -1383,7 +1383,7 @@ _BOUNDARY_QUALITY_VARS = {
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
     "term_normalize_apply": ("term_normalize_apply_var", "Terim Norm. Uygula"),
     "cue_fill_move": ("cue_fill_move_var", "Cue-fill Taşıma"),
-    "quality_report_only": ("quality_report_only_var", "Kalite/Teslim Yalnız Rapor"),
+    "quality_report_only": ("quality_report_only_var", "Teslim/Oto-Düzeltme Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
     "linebreak": ("linebreak_var", "Satır Bölme"),
@@ -17410,15 +17410,18 @@ class App(ctk.CTk):
         ctk.CTkSwitch(qro_fr, text="", variable=self.quality_report_only_var,
                       width=44, height=22,
                       fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
-        ctk.CTkLabel(qro_fr, text="Kalite + Teslim: Yalnız Raporla",
+        ctk.CTkLabel(qro_fr, text="Teslim + Otomatik Düzeltme: Yalnız Raporla",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(
             sb,
-            text="Varsayılan güvenli mod. Kalite ve teslim sorunlarını\n"
-                 "cue numarasıyla log ve rapora yazar; çıktıyı taşımaz\n"
-                 "ve otomatik yeniden çevirmez. Sorunlu dosya yine de\n"
-                 "yüklemeye hazır veya tamamlanmış sayılmaz.",
+            text="Varsayılan güvenli mod. Şunları YALNIZ raporlar:\n"
+                 "teslim karantinası/taşıma, otomatik yeniden çeviri,\n"
+                 "tutarlılık süpürmesi. Sorunlu dosya yüklemeye hazır\n"
+                 "veya tamamlanmış sayılmaz.\n"
+                 "AÇIKÇA seçtiğin geçişleri (Polish, Native, QC, Kısaltma,\n"
+                 "Terim Normalizasyonu, Cue-fill) DURDURMAZ — onların\n"
+                 "kendi anahtarları vardır.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260).grid(
                 row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
