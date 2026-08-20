@@ -8214,7 +8214,7 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 reasons.append("NUMBER_MISMATCH")
             if turkish_target and _spelled_number_mismatch(orig_clean, text):
                 reasons.append("SPELLED_NUMBER_MISMATCH")
-            if _has_speaker_label(orig_clean) != _has_speaker_label(text):
+            if not _has_speaker_label(orig_clean) and _has_speaker_label(text):
                 reasons.append("SPEAKER_LABEL_MISMATCH")
             if _speaker_label_absorbed_text(orig_clean, text):
                 reasons.append("SPEAKER_LABEL_ABSORBED_TEXT")
@@ -9968,8 +9968,8 @@ def _has_consecutive_echo(tr_blocks: list, pos: int,
     _idx2, _ts2, text2 = tr_blocks[pos + 1]
     if not text1 or not text2 or text1 == "[HATA]" or text2 == "[HATA]":
         return False
-    t1 = text1.strip().strip(".,;:!?").lower()
-    t2 = text2.strip().strip(".,;:!?").lower()
+    t1 = _semantic_text_for_validator(text1).strip().strip(".,;:!?").lower()
+    t2 = _semantic_text_for_validator(text2).strip().strip(".,;:!?").lower()
     if t1 != t2 or len(t1) < 3:
         return False
     if source_by_id:
@@ -9993,8 +9993,8 @@ def _has_neighbor_prefix_echo(tr_blocks: list, pos: int) -> bool:
     _idx2, _ts2, text2 = tr_blocks[pos + 1]
     if not text1 or not text2 or text1 == "[HATA]" or text2 == "[HATA]":
         return False
-    t1 = text1.strip().strip(".,;:!?").lower()
-    t2 = text2.strip().strip(".,;:!?").lower()
+    t1 = _semantic_text_for_validator(text1).strip().strip(".,;:!?").lower()
+    t2 = _semantic_text_for_validator(text2).strip().strip(".,;:!?").lower()
     t1_tokens = [w for w in re.findall(r"[a-zçğıöşü]+", t1) if len(w) >= 3]
     t2_tokens = [w for w in re.findall(r"[a-zçğıöşü]+", t2) if len(w) >= 3]
     if len(t1_tokens) < 1 or len(t2_tokens) < 1:
@@ -10022,12 +10022,14 @@ def _has_neighbor_prefix_echo_text(original_text: str, candidate_text: str, neig
     """Check if candidate repeats the tail of any neighbor at its start."""
     if not original_text or not candidate_text or not neighbor_texts:
         return False
+    candidate_text = _semantic_text_for_validator(candidate_text)
     c_tokens = [w for w in re.findall(r"[a-zçğıöşü]+", candidate_text.lower()) if len(w) >= 3]
     if len(c_tokens) < 2:
         return False
     for nt in neighbor_texts:
         if not nt or nt == "[HATA]":
             continue
+        nt = _semantic_text_for_validator(nt)
         n_tokens = [w for w in re.findall(r"[a-zçğıöşü]+", nt.lower()) if len(w) >= 3]
         if len(n_tokens) < 2:
             continue

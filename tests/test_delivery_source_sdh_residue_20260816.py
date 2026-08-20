@@ -153,7 +153,9 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 "Music: Aulis Sallinen",
                 "Production Designer: Ensio Suominen",
                 "Director: Kalle Holmberg",
-                "Subtitles: Arto Vartiainen\nBroadcast Text"):
+                "Subtitles: Arto Vartiainen\nBroadcast Text",
+                "Απόδοση: Γεωργία Γραμματικού\n"
+                "Συγχρονισμός, διορθώσεις: Γεράσιμος Μ."):
             with self.subTest(source_text=source_text):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))
@@ -166,7 +168,8 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 "HE PLAYS THE NOTE ON THE MOUTH ORGAN",
                 "VOICES GRADUALLY RISE\nIN A LOUD CRESCENDO",
                 "[NON-ENGLISH SPEECH]", "NGAKPA: [NON-ENGLISH SPEECH]",
-                "STANDCHEN: [NON-ENGLISH SPEECH]"):
+                "STANDCHEN: [NON-ENGLISH SPEECH]",
+                "[People Praying]", "[Saying Mantras]", "[Singing Mantra]"):
             with self.subTest(source_text=source_text):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))

@@ -383,7 +383,7 @@ _SDH_ACTION_VERBS = {
     "yelps", "yelping", "orgasms", "orgasming", "bursts", "dialling",
     "dialing", "kissing", "chokes", "choking", "sniffs", "sniffing",
     "wails", "wailing", "yawns", "yawning", "whirrs", "bleeping",
-    "play", "tolling", "beating", "jingle", "blasts",
+    "play", "tolling", "beating", "jingle", "blasts", "neigh",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -447,7 +447,7 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
             "banging hammer", "rubbing stone",
             "yabanci dilde", "savas komutlari", "komutlar",
             "dini torenler", "gaydacilar", "davul rulosu", "senlik",
-            "cekic darbesi", "tas ovalama"}:
+            "cekic darbesi", "tas ovalama", "black speech"}:
         return True
 
     words = key.split()
@@ -1039,6 +1039,7 @@ def _is_heading_label(label_text: str) -> bool:
 
 
 def _src_has_plain_speaker_label(src_line: str) -> bool:
+    src_line = FORMAT_TAG_RE.sub("", str(src_line or ""))
     m = _SRC_PLAIN_SPEAKER_LABEL_RE.search(src_line)
     if not m:
         return False
@@ -1092,13 +1093,15 @@ _SRC_QUOTED_SPEAKER_PREFIX_RE = re.compile(
 
 
 def _target_is_source_speaker_label_only(tr_line: str, src_line: str) -> bool:
-    if not _TR_LABEL_ONLY_RE.fullmatch(str(tr_line or "")):
+    tr_plain = FORMAT_TAG_RE.sub("", str(tr_line or ""))
+    src_plain = FORMAT_TAG_RE.sub("", str(src_line or ""))
+    if not _TR_LABEL_ONLY_RE.fullmatch(tr_plain):
         return False
-    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(str(src_line or ""))
+    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(src_plain)
     if not source_match:
         return False
     source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
-    target_label = str(tr_line or "").strip().lstrip("-").rstrip(":").strip()
+    target_label = tr_plain.strip().lstrip("-").rstrip(":").strip()
     source_key = _plain_speaker_label_key(source_label)
     target_key = _plain_speaker_label_key(target_label)
     mapped = _SPEAKER_LABEL_TRANSLATIONS.get(source_key, source_label)
@@ -1114,8 +1117,10 @@ def _plain_speaker_label_key(value: str) -> str:
 
 
 def _target_has_source_plain_speaker_label(tr_line: str, src_line: str) -> bool:
-    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(str(src_line or ""))
-    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(str(tr_line or ""))
+    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(
+        FORMAT_TAG_RE.sub("", str(src_line or "")))
+    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(
+        FORMAT_TAG_RE.sub("", str(tr_line or "")))
     if not source_match or not target_match:
         return False
     source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
@@ -1130,6 +1135,21 @@ def _target_has_source_plain_speaker_label(tr_line: str, src_line: str) -> bool:
         "recording": {"kayit"},
     }
     return target_key in {source_key, mapped_key, *aliases.get(source_key, set())}
+
+
+def _strip_target_source_plain_speaker_label(tr_line: str, src_line: str) -> str:
+    if not _target_has_source_plain_speaker_label(tr_line, src_line):
+        return tr_line
+    target_plain = FORMAT_TAG_RE.sub("", str(tr_line or ""))
+    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(target_plain)
+    if not target_match:
+        return tr_line
+    label = re.escape(target_match.group("label").strip())
+    tag = r"</?(?:i|b|u|font)\b[^>]*>"
+    pattern = re.compile(
+        rf"(?m)(^|(?<=[.!?…]))(?P<prefix>\s*(?:{tag}\s*)*(?:-\s*)?)"
+        rf"{label}:\s*(?=\S)")
+    return pattern.sub(r"\1\g<prefix>", tr_line, count=1)
 
 
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
@@ -1163,7 +1183,9 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
             return ""
         if (bracket_or_quoted_source
                 or _target_has_source_plain_speaker_label(tr_line, src_line)):
-            tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
+            stripped = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
+            tr_line = _strip_target_source_plain_speaker_label(
+                stripped, src_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""
     source_spans = _bracket_group_spans(src_line)

@@ -826,6 +826,54 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_bracketed_fantasy_speech_and_horse_neigh_are_sdh(self):
+        for text in ("[black speech]", "[Horse neigh]"):
+            with self.subTest(text=text):
+                self.assertTrue(gui._source_cue_is_delivery_removable(text))
+
+    def test_font_wrapped_music_card_is_delivery_sdh(self):
+        text = '<font color="#ffffff">MÜZİK: The Fall\'dan "Kicker Conspiracy"</font>'
+        self.assertTrue(gui._is_delivery_sdh_only(text))
+        self.assertTrue(gui._source_cue_is_delivery_removable(text))
+
+    def test_font_wrapped_source_speaker_label_is_reported(self):
+        with TemporaryDirectory() as td:
+            source_path = Path(td) / "source.srt"
+            output_path = Path(td) / "output.srt"
+            source_path.write_text(
+                '1\n00:00:01,000 --> 00:00:02,000\n'
+                '<font color="#ffffff">MARY-ANN: Look here.</font>\n',
+                encoding="utf-8",
+            )
+            output_path.write_text(
+                '1\n00:00:01,000 --> 00:00:02,000\n'
+                '<font color="#ffffff">MARY-ANN: Buraya bak.</font>\n',
+                encoding="utf-8",
+            )
+
+            audit = gui._subtitle_delivery_audit(str(source_path), str(output_path))
+
+        self.assertEqual(audit["residual_speaker_label_ids"], ["1"])
+
+    def test_font_wrapped_source_speaker_label_is_removed(self):
+        source = [(
+            "1", "00:00:01,000 --> 00:00:02,000",
+            '<font color="#ffffff">MARY-ANN: Look here.</font>',
+        )]
+        blocks = [(
+            "1", source[0][1],
+            '<font color="#ffffff">MARY-ANN: Buraya bak.</font>',
+        )]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = "\n".join(
+            text for _idx, _ts, text in result
+            if text != "discord: ceviri2")
+
+        self.assertNotIn("MARY-ANN", dialogue)
+        self.assertIn("Buraya bak.", dialogue)
+
     def test_delivery_audit_rejects_source_derived_voice_over_label(self):
         with TemporaryDirectory() as td:
             source_path = Path(td) / "source.srt"
