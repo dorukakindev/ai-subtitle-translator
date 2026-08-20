@@ -22,6 +22,18 @@ import subtitle_formats
 import subtitle_translator_gui as g
 
 
+class _Var:
+    """Basit tk değişkeni taklidi (Tk gerektirmez)."""
+
+    def __init__(self, value=""):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
 class _Cue:
     def __init__(self, index, timestamp, text):
         self.index, self.timestamp, self.text = index, timestamp, text
@@ -746,6 +758,71 @@ class PostPassTargetLanguageTest(unittest.TestCase):
             window = "\n".join(lines[index:index + 8])
             with self.subTest(line=index + 1):
                 self.assertIn("tgt_lang=", window)
+
+class PreflightStopIsTerminalTest(unittest.TestCase):
+    """Madde 21: DUR ön kontrolden sonra çeviriyi başlatmamalı."""
+
+    def _stub(self, stopped):
+        stub = types.SimpleNamespace()
+        stub._stop_flag = stopped
+        stub._is_shutting_down = False
+        stub._active_snapshot = None
+        stub._resume_snapshot_override = None
+        stub.logs = []
+        stub.started = []
+        stub.idle = []
+        stub._log = lambda message, tag="": stub.logs.append(message)
+        stub._log_exc = lambda message, exc: stub.logs.append(message)
+        stub._set_running = lambda value: None
+        stub._set_status = lambda value: None
+        stub._start = lambda: stub.started.append(True)
+        stub.after_idle = lambda fn: stub.idle.append(fn)
+        stub.after = lambda _ms, fn: stub.idle.append(fn)
+        return stub
+
+    def test_stop_prevents_the_resume_entirely(self):
+        stub = self._stub(stopped=True)
+        g.App._resume_after_preflight(stub, "_flag", "Kaynak Dil")
+        self.assertFalse(getattr(stub, "_flag"))
+        self.assertEqual(stub.idle, [])
+        self.assertEqual(stub.started, [])
+
+    def test_stop_during_the_idle_gap_still_blocks_the_start(self):
+        stub = self._stub(stopped=False)
+        g.App._resume_after_preflight(stub, "_flag", "Kaynak Dil")
+        self.assertEqual(len(stub.idle), 1)
+        stub._stop_flag = True
+        stub.idle[0]()
+        self.assertEqual(stub.started, [])
+
+    def test_normal_flow_still_starts(self):
+        stub = self._stub(stopped=False)
+        g.App._resume_after_preflight(stub, "_flag", "Kaynak Dil")
+        stub.idle[0]()
+        self.assertEqual(stub.started, [True])
+
+
+class DeletedProfileLeavesNothingBehindTest(unittest.TestCase):
+    """Madde 10: silinen profilin kopyalanmış alanları temizlenmeli."""
+
+    def test_helper_role_fields_are_cleared(self):
+        stub = types.SimpleNamespace()
+        stub.helper_custom_key_vars = {"analysis": _Var("SECRET")}
+        stub.helper_custom_url_vars = {"analysis": _Var("https://x/v1")}
+        stub.helper_custom_model_vars = {"analysis": _Var("m")}
+        stub.helper_model_vars = {"analysis": _Var("Özel (Custom)")}
+        stub.helper_role_key_vars = {"analysis": _Var("SECRET")}
+        g.App._clear_role_custom_fields(stub, "analysis")
+        self.assertEqual(stub.helper_custom_key_vars["analysis"].get(), "")
+        self.assertEqual(stub.helper_custom_url_vars["analysis"].get(), "")
+        self.assertEqual(stub.helper_custom_model_vars["analysis"].get(), "")
+        self.assertEqual(stub.helper_role_key_vars["analysis"].get(), "")
+        self.assertNotEqual(
+            stub.helper_model_vars["analysis"].get(), "Özel (Custom)")
+
+    def test_unknown_role_is_tolerated(self):
+        stub = types.SimpleNamespace()
+        g.App._clear_role_custom_fields(stub, "critic")
 
 if __name__ == "__main__":
     unittest.main()

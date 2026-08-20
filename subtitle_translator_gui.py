@@ -25473,6 +25473,46 @@ class App(ctk.CTk):
                 + ", ".join(API_PROFILE_ROLE_LABELS[r] for r in applied), "ok")
             self._refresh_api_keys_panel()
 
+    def _clear_role_custom_fields(self, role: str):
+        """Bir role kopyalanmış özel sağlayıcı alanlarını temizler.
+
+        Profil bir role atanırken key/url/model widget'lara KOPYALANIYOR. Profil
+        silinince yalnız profil ve atama kaydı siliniyordu; resolver profil
+        bulunamayınca bu eski kopyaya düşüyor ve kaydetme onu yeniden
+        kalıcılaştırıyordu — silinen profilin anahtarı yaşamaya devam ediyordu
+        (denetim 2026-08-20, madde 10)."""
+        if role == "main":
+            entry = getattr(self, "main_custom_key_entry", None)
+            if entry is not None:
+                try:
+                    App._replace_entry_value(self, entry, "")
+                except Exception:
+                    pass
+            for attr in ("main_custom_url_var", "main_custom_model_var"):
+                var = getattr(self, attr, None)
+                if var is not None:
+                    var.set("")
+            toggle = getattr(self, "main_custom_var", None)
+            if toggle is not None:
+                toggle.set(False)
+            try:
+                App._sync_main_custom_visibility(self)
+            except Exception:
+                pass
+            return
+        for mapping in ("helper_custom_key_vars", "helper_custom_url_vars",
+                        "helper_custom_model_vars"):
+            table = getattr(self, mapping, None) or {}
+            var = table.get(role)
+            if var is not None:
+                var.set("")
+        model_var = (getattr(self, "helper_model_vars", None) or {}).get(role)
+        if model_var is not None:
+            model_var.set("GPT-5.4 (Reseller)")
+        key_var = (getattr(self, "helper_role_key_vars", None) or {}).get(role)
+        if key_var is not None:
+            key_var.set("")
+
     def _delete_api_profile(self, profile_id: str):
         profile = self._api_key_profiles.get(profile_id)
         if not profile:
@@ -25493,7 +25533,14 @@ class App(ctk.CTk):
             role: pid for role, pid in self._api_key_assignments.items()
             if pid != profile_id
         }
-        self._save_settings(save_credentials=False)
+        for role in assigned_roles:
+            App._clear_role_custom_fields(self, role)
+        if assigned_roles:
+            self._log(
+                "Silinen profilin kopyalandığı alanlar temizlendi: "
+                + ", ".join(API_PROFILE_ROLE_LABELS.get(role, role)
+                            for role in assigned_roles), "warn")
+        self._save_settings(save_credentials=True)
         self._refresh_api_keys_panel()
 
     def _show_api_profile_menu(self, profile_id: str, event):
@@ -30844,7 +30891,19 @@ class App(ctk.CTk):
         dlg.grab_set()
 
     def _resume_after_preflight(self, flag_name: str, label: str):
-        """Onaydan sonra yeni bir UI turunda ana başlatma akışına güvenle döner."""
+        """Onaydan sonra yeni bir UI turunda ana başlatma akışına güvenle döner.
+
+        DUR terminaldir: kullanıcı ön kontrol sürerken Durdur'a bastıysa
+        worker döndüğünde ne onay diyaloğu ne de yeni bir _start() olmalı
+        (denetim 2026-08-20, madde 21). Eskiden stop bayrağı sıfırlanıp
+        çeviri yine başlayabiliyordu."""
+        if getattr(self, "_stop_flag", False):
+            setattr(self, flag_name, False)
+            self._set_running(False)
+            self._log(
+                f"{label} iptal edildi: kullanıcı durdurdu; çeviri başlatılmadı.",
+                "warn")
+            return
         setattr(self, flag_name, True)
         active_snapshot = getattr(self, "_active_snapshot", None)
         resume_snapshot = None
@@ -30858,6 +30917,10 @@ class App(ctk.CTk):
         self._log(f"{label} onaylandı; çeviri başlatılıyor.", "ok")
 
         def _resume():
+            if getattr(self, "_stop_flag", False):
+                self._log(
+                    f"{label} sonrası çeviri başlatılmadı: durduruldu.", "warn")
+                return
             if getattr(self, "_is_shutting_down", False):
                 return
             try:
