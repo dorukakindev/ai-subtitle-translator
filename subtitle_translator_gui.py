@@ -868,6 +868,154 @@ def _log_view_at_bottom(yview, tolerance: float = 0.002) -> bool:
         return False
 
 
+# Genel klavye kısayolları. Hem yardım penceresi hem de bağlama bu tek
+# listeden okur; yeni bir kısayol eklenince ikisi de kendiliğinden güncellenir.
+KEYBOARD_SHORTCUTS = (
+    ("F1", "Bu kısayol listesini aç"),
+    ("Ctrl+Shift+L", "Tüm oturum logunu panoya kopyala"),
+    ("Ctrl+Shift+D", "Tanı paketini panoya kopyala"),
+    ("Ctrl+Shift+S", "Son çalışma özetini aç"),
+    ("Alt+End", "Logu en alta sabitle"),
+    ("Sağ tık (log)", "Kopyala / temizle / tanı menüsü"),
+    ("Sürükle-bırak", "Altyazı dosyası veya klasörü pencereye bırak"),
+)
+
+
+WINDOW_MIN_WIDTH = 900
+WINDOW_MIN_HEIGHT = 620
+# Tk iki ayrı konum biçimi üretir: '+-1500' MUTLAK negatif x'tir (soldaki
+# ikinci monitör), '-100' ise SAĞ kenardan uzaklıktır. İkisini karıştırmak
+# ikinci ekrandaki pencereyi ana ekrana geri çeker.
+_GEOMETRY_RE = re.compile(r"(\d+)x(\d+)([+-])(-?\d+)([+-])(-?\d+)")
+
+
+def _center_dialog_on_parent(dialog, parent) -> None:
+    """Diyalogu ana pencerenin ortasina yerlestirir."""
+    try:
+        dialog.update_idletasks()
+        width = dialog.winfo_width() or dialog.winfo_reqwidth()
+        height = dialog.winfo_height() or dialog.winfo_reqheight()
+        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - height) // 3
+        dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+    except Exception:
+        pass
+
+
+def _default_window_geometry(screen_width: int, screen_height: int) -> str:
+    """İlk açılışta pencereyi ekrana göre boyutlar ve ortalar.
+
+    Kayıtlı konum yokken hiç `geometry()` verilmiyordu; pencere `minsize`
+    olan 900x620'de açılıyor, gösterge kartları iki satıra sarıyor ve log
+    kutusu avuç içi kadar kalıyordu."""
+    try:
+        screen_width = int(screen_width)
+        screen_height = int(screen_height)
+    except (TypeError, ValueError):
+        return f"{WINDOW_MIN_WIDTH}x{WINDOW_MIN_HEIGHT}"
+    width = max(WINDOW_MIN_WIDTH, min(1560, int(screen_width * 0.86)))
+    height = max(WINDOW_MIN_HEIGHT, min(980, int(screen_height * 0.86)))
+    x = max(0, (screen_width - width) // 2)
+    y = max(0, (screen_height - height) // 3)
+    return f"{width}x{height}+{x}+{y}"
+
+
+def _clamp_geometry_to_screen(geometry: str, screen_width: int,
+                             screen_height: int,
+                             virtual_width: int = 0,
+                             virtual_height: int = 0,
+                             virtual_x: int = 0,
+                             virtual_y: int = 0) -> str:
+    """Kayıtlı pencere konumunu bu makinede kullanılabilir hâle getirir.
+
+    Ayar dosyası başka bir makinede/monitör düzeninde yazılmış olabilir
+    (proje 2026-07'de yeni PC'ye taşındı): kayıtlı boyut sanal masaüstünden
+    büyükse kırpılır, pencere masaüstünün TAMAMEN dışında kalıyorsa
+    varsayılan konuma dönülür.
+
+    Sağ kenara göre yazılmış konumlar ('-100+40') Tk tarafından zaten ekrana
+    göre çözülür; onlarda yalnız BOYUT kırpılır, konuma dokunulmaz."""
+    match = _GEOMETRY_RE.fullmatch(str(geometry or "").strip())
+    if not match:
+        return ""
+    width, height = int(match.group(1)), int(match.group(2))
+    x_sign, x_value = match.group(3), int(match.group(4))
+    y_sign, y_value = match.group(5), int(match.group(6))
+    try:
+        screen_width = int(screen_width)
+        screen_height = int(screen_height)
+    except (TypeError, ValueError):
+        return ""
+    if screen_width <= 0 or screen_height <= 0:
+        return ""
+    virtual_width = max(int(virtual_width or 0), screen_width)
+    virtual_height = max(int(virtual_height or 0), screen_height)
+    virtual_x = int(virtual_x or 0)
+    virtual_y = int(virtual_y or 0)
+    width = max(WINDOW_MIN_WIDTH, min(width, virtual_width))
+    height = max(WINDOW_MIN_HEIGHT, min(height, virtual_height))
+    position = f"{x_sign}{x_value}{y_sign}{y_value}"
+    if x_sign == "-" or y_sign == "-":
+        return f"{width}x{height}{position}"
+    # Başlık çubuğundan en az bu kadarı yakalanabilir kalmalı.
+    visible_margin = 120
+    left, right = virtual_x, virtual_x + virtual_width
+    top, bottom = virtual_y, virtual_y + virtual_height
+    off_screen = (
+        x_value + width < left + visible_margin
+        or x_value > right - visible_margin
+        or y_value + height < top + 1
+        or y_value > bottom - 40
+    )
+    if off_screen:
+        return _default_window_geometry(screen_width, screen_height)
+    if y_value < top:
+        y_value = top  # başlık çubuğu üstte kalırsa pencere taşınamaz
+    return f"{width}x{height}+{x_value}+{y_value}"
+
+
+def _stretch_scrollable_to_canvas(frame) -> None:
+    """CTkScrollableFrame içeriğini tuval yüksekliğine kadar uzatır.
+
+    CustomTkinter dikey kaydırmada yalnız GENİŞLİĞİ tuvale oturtur
+    (`_fit_frame_dimensions_to_canvas`); yükseklik içeriğin doğal boyutunda
+    kalır. Bu yüzden iç çerçevedeki `grid_rowconfigure(..., weight=1)` hiç
+    çalışmıyor, pencere büyütülünce log kutusu sabit yükseklikte donup
+    altında geniş bir boşluk bırakıyordu.
+
+    İçerik tuvalden KISAysa tuval boyuna uzatılır (ağırlıklı satır büyür);
+    uzunsa doğal boyunda bırakılır, böylece kaydırma bozulmaz."""
+    canvas = getattr(frame, "_parent_canvas", None)
+    window_id = getattr(frame, "_create_window_id", None)
+    if canvas is None or window_id is None:
+        return
+
+    def _apply(_event=None):
+        try:
+            target = max(frame.winfo_reqheight(), canvas.winfo_height())
+        except Exception:
+            return
+        # Aynı değeri yeniden yazmak <Configure> döngüsü kurardı.
+        if getattr(frame, "_stretched_canvas_height", None) == target:
+            return
+        frame._stretched_canvas_height = target
+        try:
+            canvas.itemconfigure(window_id, height=target)
+        except Exception:
+            pass
+
+    # CustomTkinter iç alanlarına (_parent_canvas, _create_window_id)
+    # dayanıyoruz; sürüm değişiminde veya test stub'ında bunlar beklenen
+    # tipte olmayabilir. Kurulum başarısız olursa pencere yine açılsın.
+    try:
+        canvas.bind("<Configure>", _apply, add="+")
+        frame.bind("<Configure>", _apply, add="+")
+        frame._restretch_to_canvas = _apply
+        frame.after_idle(_apply)
+    except Exception:
+        pass
+
+
 def _dashboard_stat_columns(content_width: int) -> int:
     """Dar ana panelde istatistik kartlarını iki satıra böler."""
     try:
@@ -16248,7 +16396,7 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_WINDOW_TITLE)
-        self.minsize(900, 620)
+        self.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.configure(fg_color=BG)
         self._restored_geometry = None  # kayıtlı pencere pozisyonu
 
@@ -16384,13 +16532,10 @@ class App(ctk.CTk):
             "<Control-Shift-D>", self._shortcut_copy_diagnostic, add="+")
         self.bind_all(
             "<Control-Shift-S>", self._shortcut_show_last_summary, add="+")
+        self.bind_all("<F1>", self._shortcut_show_shortcuts, add="+")
         self._apply_media_mode("Dizi", notify=False)
         self._load_settings()
-        if self._restored_geometry:
-            try:
-                self.geometry(self._restored_geometry)
-            except Exception:
-                pass
+        self._apply_startup_geometry()
         self._setup_drag_drop()
         self.bind("<Configure>", self._on_window_motion, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -17190,6 +17335,95 @@ class App(ctk.CTk):
             self._queue_video_probe(videos)
 
     # ── UI ────────────────────────────────────────────────────────────────────
+    def _shortcut_show_shortcuts(self, _event=None):
+        self._show_shortcuts_dialog()
+        return "break"
+
+    def _show_shortcuts_dialog(self):
+        """Klavye kısayollarını listeler.
+
+        Kısayollar bağlıydı ama hiçbir yerde yazmıyordu; kullanıcının
+        varlıklarından haberi olmuyordu."""
+        existing = getattr(self, "_shortcuts_dialog", None)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+        dlg = ctk.CTkToplevel(self)
+        self._shortcuts_dialog = dlg
+        dlg.title("Klavye Kısayolları")
+        dlg.configure(fg_color=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        ctk.CTkLabel(
+            dlg, text="Klavye Kısayolları",
+            font=ctk.CTkFont("Segoe UI", 15, "bold"), text_color=FG,
+        ).pack(fill="x", padx=24, pady=(20, 12))
+        rows = ctk.CTkFrame(
+            dlg, fg_color=PANEL, corner_radius=10,
+            border_width=1, border_color=BORDER_SOFT)
+        rows.pack(fill="both", expand=True, padx=24, pady=(0, 14))
+        rows.grid_columnconfigure(1, weight=1)
+        for index, (keys, description) in enumerate(KEYBOARD_SHORTCUTS):
+            ctk.CTkLabel(
+                rows, text=keys, width=118, anchor="w", corner_radius=6,
+                fg_color=CARD, text_color=FG,
+                font=ctk.CTkFont("Consolas", 10, "bold"),
+            ).grid(row=index, column=0, sticky="w", padx=(12, 10),
+                   pady=(10 if index == 0 else 3,
+                         12 if index == len(KEYBOARD_SHORTCUTS) - 1 else 3),
+                   ipadx=6, ipady=4)
+            ctk.CTkLabel(
+                rows, text=description, anchor="w", text_color=FG2,
+                font=ctk.CTkFont("Segoe UI", 11),
+            ).grid(row=index, column=1, sticky="ew", padx=(0, 14))
+        ctk.CTkButton(
+            dlg, text="Kapat", height=32, fg_color=CARD,
+            hover_color=BORDER, command=dlg.destroy,
+        ).pack(fill="x", padx=24, pady=(0, 20))
+        dlg.bind("<Escape>", lambda _event: dlg.destroy())
+        try:
+            _center_dialog_on_parent(dlg, self)
+        except Exception:
+            pass
+
+    def _show_log_grip(self, visible: bool):
+        """Log/dosya listesi ayırıcısını yalnız işlevliyken göster."""
+        row = getattr(self, "_log_grip_row", None)
+        if row is None:
+            return
+        try:
+            if visible:
+                row.grid()
+            else:
+                _grid_hide(row)
+        except Exception:
+            pass
+
+    def _apply_startup_geometry(self):
+        """Kayıtlı konumu bu ekrana sığdırır; kayıt yoksa makul bir boy verir."""
+        try:
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+            virtual_width = self.winfo_vrootwidth()
+            virtual_height = self.winfo_vrootheight()
+            virtual_x = self.winfo_vrootx()
+            virtual_y = self.winfo_vrooty()
+        except Exception:
+            return
+        geometry = ""
+        if self._restored_geometry:
+            geometry = _clamp_geometry_to_screen(
+                self._restored_geometry, screen_width, screen_height,
+                virtual_width, virtual_height, virtual_x, virtual_y)
+        if not geometry:
+            geometry = _default_window_geometry(screen_width, screen_height)
+        try:
+            self.geometry(geometry)
+        except Exception:
+            pass
+
     def _build_ui(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -18496,6 +18730,7 @@ class App(ctk.CTk):
         main.grid(row=0, column=1, sticky="nsew", padx=(6,12), pady=12)
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(4, weight=1)
+        _stretch_scrollable_to_canvas(main)
 
         # ── Stats kartları ────────────────────────────────────────────────────
         sf = ctk.CTkFrame(
@@ -18521,13 +18756,13 @@ class App(ctk.CTk):
             c.grid(
                 row=0, column=i,
                 padx=(8 if i == 0 else 4, 8 if i == 5 else 4),
-                pady=12, sticky="nsew")
+                pady=9, sticky="nsew")
             c.grid_columnconfigure(0, weight=1)
             self._stat_cards.append(c)
 
             ctk.CTkFrame(
                 c, height=3, corner_radius=2, fg_color=color,
-            ).pack(fill="x", padx=10, pady=(8, 0))
+            ).pack(fill="x", padx=10, pady=(7, 0))
 
             # Store reference for hover effects
             setattr(self, f"{attr}_frame", c)
@@ -18545,9 +18780,9 @@ class App(ctk.CTk):
             setattr(self, attr+"_var", var)
 
             lbl = ctk.CTkLabel(c, textvariable=var,
-                             font=ctk.CTkFont("Segoe UI", 24, "bold"),
+                             font=ctk.CTkFont("Segoe UI", 22, "bold"),
                              text_color=color)
-            lbl.pack(pady=(8,2))
+            lbl.pack(pady=(5,0))
 
             # Store label ref for animation
             setattr(self, f"{attr}_lbl", lbl)
@@ -18556,18 +18791,18 @@ class App(ctk.CTk):
                 self.stat_tokens_sub_var = ctk.StringVar(value=name)
                 ctk.CTkLabel(c, textvariable=self.stat_tokens_sub_var,
                              font=ctk.CTkFont("Consolas", 9),
-                             text_color=FG2).pack(pady=(0,4))
+                             text_color=FG2).pack(pady=(1,2))
                 # Canvas for sparkline under token card
                 import tkinter as tk
-                self.stat_tokens_canvas = tk.Canvas(c, width=200, height=30,
+                self.stat_tokens_canvas = tk.Canvas(c, width=200, height=14,
                                                    bg=CARD, highlightthickness=0,
                                                    relief="flat", bd=0)
-                self.stat_tokens_canvas.pack(padx=8, pady=(0,8), fill="x")
+                self.stat_tokens_canvas.pack(padx=8, pady=(0,7), fill="x")
                 self._token_sparkline_points = []
             else:
                 ctk.CTkLabel(c, text=name,
                              font=ctk.CTkFont("Consolas", 9, "bold"),
-                             text_color=FG2).pack(pady=(0,12))
+                             text_color=FG2).pack(pady=(1,10))
 
         try:
             self.after_idle(self._refresh_dashboard_layout)
@@ -18763,10 +18998,16 @@ class App(ctk.CTk):
         # ELLE, pencereyi büyütmeden de ayarlayabilmesini sağlar).
         self._FILE_LIST_MIN_H = 40
         self._FILE_LIST_MAX_H = 500
-        grip = ctk.CTkFrame(main, height=8, fg_color=BORDER, corner_radius=4,
-                            cursor="sb_v_double_arrow")
-        grip.grid(row=3, column=0, sticky="ew", pady=(0,6))
+        grip_row = ctk.CTkFrame(main, fg_color="transparent", height=14)
+        grip_row.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        grip_row.grid_columnconfigure(0, weight=1)
+        grip_row.grid_propagate(False)
+        self._log_grip_row = grip_row
+        grip = ctk.CTkFrame(grip_row, height=5, width=104, fg_color=BORDER,
+                            corner_radius=3, cursor="sb_v_double_arrow")
+        grip.grid(row=0, column=0, pady=4)
         grip.grid_propagate(False)
+        _grid_hide(grip_row)  # dosya listesi görünene kadar işlevsiz
 
         def _grip_enter(_e):
             grip.configure(fg_color=ACCENT)
@@ -18800,6 +19041,11 @@ class App(ctk.CTk):
         grip.bind("<B1-Motion>", _grip_drag)
         grip.bind("<ButtonRelease-1>", _grip_release)
         self._log_grip = grip
+        # Tutamak sürüklenirken imleç birkaç piksel kayıp satırdan çıkabiliyor;
+        # olayları çevresindeki şeritten de yakala.
+        grip_row.bind("<ButtonPress-1>", _grip_press)
+        grip_row.bind("<B1-Motion>", _grip_drag)
+        grip_row.bind("<ButtonRelease-1>", _grip_release)
 
         # ── Log ───────────────────────────────────────────────────────────────
         log_fr = ctk.CTkFrame(
@@ -18843,7 +19089,12 @@ class App(ctk.CTk):
         ctk.CTkButton(log_hdr, text="Temizle", width=70, height=26,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
-                      command=self._clear_log).grid(row=0, column=5)
+                      command=self._clear_log).grid(row=0, column=5, padx=(0,4))
+        ctk.CTkButton(
+            log_hdr, text="⌨ F1", width=52, height=26,
+            font=ctk.CTkFont("Segoe UI", 10),
+            fg_color=CARD, hover_color=BORDER,
+            command=self._show_shortcuts_dialog).grid(row=0, column=6)
 
         self.log_box = ctk.CTkTextbox(log_fr, font=ctk.CTkFont("Consolas", 11),
                                       fg_color=CARD, corner_radius=8,
@@ -18872,6 +19123,9 @@ class App(ctk.CTk):
         self._log_context_menu.add_command(
             label="Son çalışma özetini aç", accelerator="Ctrl+Shift+S",
             command=self._show_last_run_summary)
+        self._log_context_menu.add_command(
+            label="Klavye kısayolları", accelerator="F1",
+            command=self._show_shortcuts_dialog)
         self.log_box.bind(
             "<Button-3>", self._show_log_context_menu, add="+")
 
@@ -18959,6 +19213,10 @@ class App(ctk.CTk):
             try:
                 main.grid_rowconfigure(4, weight=1)
                 main.grid_columnconfigure(0, weight=1)
+                main._stretched_canvas_height = None
+                restretch = getattr(main, "_restretch_to_canvas", None)
+                if callable(restretch):
+                    restretch()
             except Exception:
                 pass
         self._refresh_dashboard_layout()
@@ -19075,6 +19333,7 @@ class App(ctk.CTk):
             _grid_hide(self._file_next_btn)
         _grid_hide(self._job_board)   # iş panosu varsa gizle
         self._file_list_outer.grid()
+        self._show_log_grip(True)
 
     def _change_file_list_page(self, delta: int):
         files = list(getattr(self, "_file_list_files", ()) or ())
@@ -22570,6 +22829,7 @@ class App(ctk.CTk):
             self._jb_title.configure(text=f"DOSYALAR — 0 / {n}")
             self._jb_summary.configure(text=_job_board_summary_text(self._job_rows))
             _grid_hide(self._file_list_outer)
+            self._show_log_grip(False)
             self._job_board.grid()
 
         if threading.current_thread() is threading.main_thread():
@@ -26395,11 +26655,15 @@ class App(ctk.CTk):
         max_val = max(points)
         val_range = max_val - min_val if max_val > min_val else 1
 
-        # Scale points to canvas
+        # Scale points to canvas. Kenar boslugu tuval boyuna GORE hesaplanir:
+        # sabit 8 piksel, kart sikilastirildiktan sonra (h=14) tasip cizimi
+        # ters cevirir.
+        margin = max(2, min(8, h // 4))
+        usable = max(1, h - 2 * margin)
         scaled = []
         for i, val in enumerate(points):
             x = (i / (len(points) - 1)) * (w - 20) + 10 if len(points) > 1 else w / 2
-            y = h - 8 - ((val - min_val) / val_range) * (h - 16)
+            y = h - margin - ((val - min_val) / val_range) * usable
             scaled.append((x, y))
 
         # Draw line
@@ -26410,8 +26674,10 @@ class App(ctk.CTk):
                 canvas.create_line(x1, y1, x2, y2, fill=YELLOW, width=2)
 
         # Draw points
+        radius = 2 if h >= 20 else 1
         for x, y in scaled:
-            canvas.create_oval(x-2, y-2, x+2, y+2, fill=YELLOW, outline=YELLOW)
+            canvas.create_oval(x - radius, y - radius, x + radius, y + radius,
+                               fill=YELLOW, outline=YELLOW)
 
     # ── Kontrol ───────────────────────────────────────────────────────────────
     def _validate(self):
@@ -30987,6 +31253,7 @@ class App(ctk.CTk):
         self._file_list_files = []
         self._populate_file_list([])
         _grid_hide(self._file_list_outer)
+        self._show_log_grip(False)
         _grid_hide(self.clear_files_btn)
         _grid_hide(self.clear_info_btn)
         self.file_info_var.set("")
