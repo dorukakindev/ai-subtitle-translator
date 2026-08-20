@@ -45,6 +45,39 @@ class NeighborPrefixEchoTest(unittest.TestCase):
         blocks = [("1", "00:00:01 --> 00:00:04", "test")]
         self.assertFalse(ht._has_neighbor_prefix_echo(blocks, 0))
 
+    def test_font_attributes_do_not_create_prefix_echo(self):
+        blocks = [
+            ("1", "00:00:01 --> 00:00:04", '<font color="#fff">İlk cümle.</font>'),
+            ("2", "00:00:05 --> 00:00:08", '<font color="#fff">Başka bir cümle.</font>'),
+        ]
+        self.assertFalse(ht._has_neighbor_prefix_echo(blocks, 0))
+
+    def test_source_speaker_label_removal_is_not_a_mismatch(self):
+        class FakeCue:
+            index = 1
+            text = "NTP: This is the real dialogue."
+
+        suspicious = ht.run_validators(
+            [("1", "00:00:01 --> 00:00:04", "Bu gerçek diyalogdur.")],
+            cues=[FakeCue()],
+            tgt_lang="Türkçe",
+        )
+        reasons = "|".join(reason for *_rest, reason in suspicious)
+        self.assertNotIn("SPEAKER_LABEL_MISMATCH", reasons)
+
+    def test_target_only_speaker_label_is_still_a_mismatch(self):
+        class FakeCue:
+            index = 1
+            text = "This is the real dialogue."
+
+        suspicious = ht.run_validators(
+            [("1", "00:00:01 --> 00:00:04", "ANLATICI: Bu gerçek diyalogdur.")],
+            cues=[FakeCue()],
+            tgt_lang="Türkçe",
+        )
+        reasons = "|".join(reason for *_rest, reason in suspicious)
+        self.assertIn("SPEAKER_LABEL_MISMATCH", reasons)
+
     def test_prefix_echo_in_run_validators(self):
         class FakeCue:
             index = 1
