@@ -651,5 +651,59 @@ class MovedDeliveryFolderTest(unittest.TestCase):
         self.assertTrue(g._output_matches_source_fingerprint(
             new / "Raporlar", new / "Movie.srt", new / "s.srt"))
 
+class AutoRetryTokenTest(unittest.TestCase):
+    """Madde 32: eski retry override'ı yeni koşuyu ezmemeli."""
+
+    def _stub(self):
+        stub = types.SimpleNamespace()
+        stub._auto_retry_token = "TOK-A"
+        stub._resume_snapshot_override = {"model": "A"}
+        stub._auto_retry_continuation = True
+        stub.logs = []
+        stub.started = []
+        stub._log = lambda message, tag="": stub.logs.append(message)
+        stub._start = lambda: stub.started.append(True)
+        stub.after_cancel = lambda _id: None
+        return stub
+
+    def test_manual_start_cancels_the_pending_override(self):
+        stub = self._stub()
+        g.App._cancel_pending_auto_retry(stub)
+        self.assertIsNone(stub._resume_snapshot_override)
+        self.assertFalse(stub._auto_retry_continuation)
+
+    def test_stale_callback_does_not_start_a_run(self):
+        stub = self._stub()
+        g.App._cancel_pending_auto_retry(stub)
+        g.App._start_auto_retry(stub, "TOK-A")
+        self.assertEqual(stub.started, [])
+
+    def test_valid_callback_starts_and_keeps_the_override(self):
+        stub = self._stub()
+        g.App._start_auto_retry(stub, "TOK-A")
+        self.assertEqual(stub.started, [True])
+        self.assertEqual(stub._resume_snapshot_override, {"model": "A"})
+
+
+class BatchMissingCountOrderTest(unittest.TestCase):
+    """Madde 13: eksik sayımı teslim hazırlığından SONRA yapılmalı."""
+
+    def test_both_batch_paths_count_after_delivery_preparation(self):
+        source = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "subtitle_translator_gui.py"),
+            encoding="utf-8").read()
+        lines = source.split("\n")
+        for index, line in enumerate(lines):
+            # Yalnız YAZIM YOLU kararini veren sayim denetlenir; rapor
+            # istatistikleri zaten teslim bloklarindan hesaplaniyor.
+            if "_hata_n_pre, _ = _count_hata_cps(_delivery_blocks)" not in line:
+                continue
+            window = "\n".join(lines[max(0, index - 12):index])
+            with self.subTest(line=index + 1):
+                self.assertIn("_prepare_upload_ready_blocks", window)
+        self.assertNotIn("_hata_n_pre, _ = _count_hata_cps(_final_blocks)", source)
+        self.assertNotIn("_hata_n_pre, _ = _count_hata_cps(pp)", source)
+
 if __name__ == "__main__":
     unittest.main()

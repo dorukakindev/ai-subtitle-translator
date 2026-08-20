@@ -19200,6 +19200,7 @@ class App(ctk.CTk):
             "workflow_profile": (
                 self.workflow_profile_var.get()
                 if getattr(self, "workflow_profile_var", None) else "Özel"),
+            "main_shuai_route": App._main_shuai_route_url(self),
             "helper_shuai_route": App._helper_shuai_route_url(self),
             "helper_shuai_failover": bool(
                 getattr(self, "helper_shuai_failover_var", None) is None
@@ -19301,6 +19302,12 @@ class App(ctk.CTk):
             "season_canon_var": "season_canon", "media_mode_var": "media_mode",
             "content_type_var": "content_type", "backup_raw_var": "backup_raw",
             "glossary_var": "global_glossary_path",
+            # Sağlayıcı rotası koşu boyunca DEĞİŞMEZ olmalı: uzun çok-chunk
+            # koşuda kullanıcı combobox'ı değiştirirse sonraki istekler başlangıç
+            # raporundan farklı rotaya gidiyordu (denetim 2026-08-20, madde 19).
+            "main_shuai_route_var": "main_shuai_route",
+            "helper_shuai_route_var": "helper_shuai_route",
+            "helper_shuai_failover_var": "helper_shuai_failover",
         }
         snapshot = getattr(self, "_active_snapshot", {}) or {}
         for attr, key in mapping.items():
@@ -21270,11 +21277,48 @@ class App(ctk.CTk):
             "warn",
         )
         try:
-            self.after(1500, self._start)
+            # Yeniden deneme bir JETONLA koşuya bağlanır: kullanıcı bu 1,5 sn
+            # içinde kendi dosyalarını seçip Başlat'a basarsa, B koşusu A'nın
+            # model/pass/terim ayarlarıyla ezilmemeli (denetim 2026-08-20,
+            # madde 32). Jeton _start içinde tüketilir ve iptal edilebilir.
+            token = uuid.uuid4().hex
+            self._auto_retry_token = token
+            self._auto_retry_after_id = self.after(
+                1500, lambda _token=token: App._start_auto_retry(self, _token))
             return True
         except Exception as exc:
             self._log(f"Otomatik dosya yeniden denemesi başlatılamadı: {exc}", "err")
             return False
+
+    def _start_auto_retry(self, token: str):
+        """Zamanlanmış otomatik yeniden denemeyi yalnız jeton hâlâ geçerliyse başlatır."""
+        self.__dict__.pop("_auto_retry_after_id", None)
+        if token != getattr(self, "_auto_retry_token", None):
+            self._log(
+                "Otomatik yeniden deneme iptal edildi: kullanıcı yeni bir "
+                "çalışma başlattı.", "warn")
+            return
+        self._auto_retry_token = None
+        self._start()
+
+    def _cancel_pending_auto_retry(self) -> bool:
+        """Bekleyen otomatik yeniden denemeyi ve ayar override'ını iptal eder."""
+        after_id = self.__dict__.pop("_auto_retry_after_id", None)
+        had_token = bool(getattr(self, "_auto_retry_token", None))
+        self._auto_retry_token = None
+        if after_id is None and not had_token:
+            return False
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._resume_snapshot_override = None
+        self._auto_retry_continuation = False
+        self._log(
+            "Bekleyen otomatik yeniden deneme iptal edildi; yeni çalışma kendi "
+            "ayarlarıyla başlıyor.", "warn")
+        return True
 
     def _current_run_record_snapshot(self):
         with self._run_record_lock:
@@ -26290,6 +26334,7 @@ class App(ctk.CTk):
         # Yeni çalışma, önceki koşudan kalan otomatik kapanışı iptal eder
         # (denetim 2026-08-20, madde 27).
         App._cancel_pending_auto_shutdown(self)
+        App._cancel_pending_auto_retry(self)
 
         if getattr(self, "_api_translation_test_busy", False):
             messagebox.showwarning(
@@ -35305,8 +35350,6 @@ class App(ctk.CTk):
                             _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
                             if self._stop_flag:
                                 break
-                            _hata_n_pre, _ = _count_hata_cps(pp)
-                            _has_missing = _hata_n_pre > 0
                             _guard_reason = _batch_write_guard_reason(
                                 source_path, output_path,
                                 expected_source_hash, output_baseline)
@@ -35319,6 +35362,9 @@ class App(ctk.CTk):
                             _delivery_blocks = _prepare_upload_ready_blocks(
                                 self._maybe_rebalance_cue_fill(self._maybe_merge_cues(pp, file_path=str(_src_path)), _orig_cues), tgt, self._log,
                                 source_cues=_orig_cues)
+                            # Eksik sayımı teslim hazırlığından SONRA (bkz. _run_batch, madde 13).
+                            _hata_n_pre, _ = _count_hata_cps(_delivery_blocks)
+                            _has_missing = _hata_n_pre > 0
                             _write_path = (
                                 _partial_output_path(output_path)
                                 if _has_missing else Path(output_path))
@@ -37721,8 +37767,6 @@ class App(ctk.CTk):
                     _pass_trace.setdefault("Deep-Delivery-Semantic", 0)
                 if self._stop_flag:
                     break
-                _hata_n_pre, _ = _count_hata_cps(_final_blocks)
-                _has_missing = _hata_n_pre > 0
                 _guard_reason = _batch_write_guard_reason(
                     filepath, out_path, expected_source_hash, output_baseline)
                 if _guard_reason:
@@ -37734,12 +37778,19 @@ class App(ctk.CTk):
                     self._record_file_status(
                         filepath, "Kaynak/hedef değişti", "error")
                     continue
-                _write_path = _partial_output_path(out_path) if _has_missing else out_path
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     self._maybe_rebalance_cue_fill(
                         self._maybe_merge_cues(_final_blocks, file_path=filepath),
                         cues), tgt, self._log,
                     source_cues=cues)
+                # Eksik sayımı TESLİM HAZIRLIĞINDAN SONRA yapılır: sync/hybrid
+                # akışlarındaki kural budur. Önce sayınca, kaynağı gerçek
+                # diyalog olan ama hedefi yalnız '{\an8}' gibi bir cue teslim
+                # temizliğinde düşüyor ve dosya yanlışlıkla final yoluna
+                # gidiyordu (denetim 2026-08-20, madde 13).
+                _hata_n_pre, _ = _count_hata_cps(_delivery_blocks)
+                _has_missing = _hata_n_pre > 0
+                _write_path = _partial_output_path(out_path) if _has_missing else out_path
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)
                 if _has_missing:
