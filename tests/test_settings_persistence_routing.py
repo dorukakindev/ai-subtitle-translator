@@ -59,7 +59,7 @@ def _settings_app(path):
         "auto_glossary_var": True, "linebreak_var": True,
         "condense_var": True, "chain_ctx_var": True, "precontext_var": False,
         "series_memory_var": False, "review_pass_var": False,
-        "term_normalize_var": False, "term_normalize_apply_var": False,
+        "term_normalize_var": False, "term_normalize_apply_var": False, "cue_fill_move_var": False,
         "twowave_var": False,
         "same_folder_var": False, "merge_cues_var": True,
         "ai_segment_var": True, "notify_var": True, "api_url_var": "",

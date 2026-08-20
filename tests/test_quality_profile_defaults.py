@@ -126,6 +126,7 @@ class QualityProfileDefaultsTest(unittest.TestCase):
                 "backup_raw": True,
                 "term_normalize": True,
                 "term_normalize_apply": True,
+                "cue_fill_move": True,
                 "quality_report_only": True,
                 "repair_missing": False,
                 "media_mode": "Dizi",

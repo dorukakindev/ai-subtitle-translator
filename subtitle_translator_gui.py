@@ -1249,6 +1249,7 @@ QUALITY_PROFILE_DEFAULTS = {
     "backup_raw": True,
     "term_normalize": True,
     "term_normalize_apply": True,
+    "cue_fill_move": True,
     "quality_report_only": True,
     "repair_missing": False,
     "media_mode": "Dizi",
@@ -1281,6 +1282,7 @@ WORKFLOW_PROFILES = {
         "review_pass_var": False,
         "term_normalize_var": True,
         "term_normalize_apply_var": True,
+        "cue_fill_move_var": True,
         "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
@@ -1304,6 +1306,7 @@ WORKFLOW_PROFILES = {
         "review_pass_var": False,
         "term_normalize_var": True,
         "term_normalize_apply_var": True,
+        "cue_fill_move_var": True,
         "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
@@ -1327,6 +1330,7 @@ WORKFLOW_PROFILES = {
         "review_pass_var": False,
         "term_normalize_var": True,
         "term_normalize_apply_var": True,
+        "cue_fill_move_var": True,
         "quality_report_only_var": True,
         "repair_missing_var": False,
         "chain_ctx_var": True,
@@ -1352,6 +1356,7 @@ _BOUNDARY_QUALITY_VARS = {
     "review": ("review_pass_var", "Bağlam İncelemesi"),
     "term_normalize": ("term_normalize_var", "Terim Normalizasyonu"),
     "term_normalize_apply": ("term_normalize_apply_var", "Terim Norm. Uygula"),
+    "cue_fill_move": ("cue_fill_move_var", "Cue-fill Taşıma"),
     "quality_report_only": ("quality_report_only_var", "Kalite/Teslim Yalnız Rapor"),
     "repair_missing": ("repair_missing_var", "Eksik Cue API Onarımı"),
     "clean_sdh": ("clean_sdh_var", "SDH Temizleme"),
@@ -1418,6 +1423,7 @@ def _apply_quality_profile_defaults(settings: dict) -> bool:
         if int(settings.get("max_retry", 1) or 1) <= 1:
             settings["max_retry"] = 2
         settings.setdefault("term_normalize_apply", True)
+        settings.setdefault("cue_fill_move", True)
         settings["quality_profile_version"] = QUALITY_PROFILE_VERSION
         return True
     if previous_version == 9:
@@ -4045,6 +4051,110 @@ def _cue_fill_report_lines(findings: list, limit: int = 8) -> list:
         lines.append(f"  … +{len(findings) - limit} cue daha")
     return lines
 
+
+# ── Cue-fill onarımı: metni komşu cue'ya geri taşıma ────────────────────────
+# Kullanıcı Death Scenes'te 23 çifti ELLE böyle düzeltti: zaman damgasına
+# dokunmadan, aşırı dolu cue'nun baş kısmını bir önceki (boş duran) cue'ya
+# kaydırarak. İş mekanik olduğu için otomatikleştirilebilir.
+#
+# DEĞİŞMEZ (invariant): iki cue'nun metni birleştirildiğinde sonuç AYNI kalır —
+# kelime eklenmez, çıkarılmaz, sırası değişmez; yalnız BÖLME NOKTASI kayar.
+# Bu yüzden anlam kaybı yapısal olarak imkânsızdır; risk yalnız bölmenin
+# yerindeliğidir, o da CPS/genişlik ölçütleriyle sınırlanır.
+_CUE_MOVE_GAIN_RATIO = 0.6
+
+
+def _cue_fill_move_plan(blocks: list, src_map: dict) -> list:
+    """Taşınabilir cue-fill çiftleri için (prev_id, id, yeni_prev, yeni_metin)."""
+    rows = list(blocks or [])
+    by_id = {str(idx): pos for pos, (idx, _ts, _text) in enumerate(rows)}
+    plan = []
+    for finding in _cue_fill_imbalances(rows, src_map or {}):
+        pos = by_id.get(str(finding.get("id")))
+        prev_pos = by_id.get(str(finding.get("prev_id")))
+        if pos is None or prev_pos is None or prev_pos != pos - 1:
+            continue
+        prev_idx, prev_ts, prev_text = rows[prev_pos]
+        idx, ts, text = rows[pos]
+        prev_value = str(prev_text or "").strip()
+        value = str(text or "").strip()
+        if not prev_value or not value:
+            continue
+        # Etiketli / diyaloglu / çok satırlı cue'lara dokunulmaz: kelime taşımak
+        # italik sınırını veya konuşmacı ayrımını bozar.
+        if any(mark in prev_value + value for mark in ("<", "{", "\n")):
+            continue
+        if _is_dialogue_cue(prev_value) or _is_dialogue_cue(value):
+            continue
+        # Önceki cue kendi cümlesini bitirmişse bu bir devam değildir.
+        if _SENTENCE_END_PUNCT_RE.search(prev_value):
+            continue
+        words = value.split(" ")
+        if len(words) < 3:
+            continue
+        best = None
+        current = _cue_reading_speed(value, ts) or 0.0
+        for cut in range(1, len(words)):
+            moved = " ".join(words[:cut])
+            kept = " ".join(words[cut:])
+            candidate_prev = f"{prev_value} {moved}"
+            prev_cps = _cue_reading_speed(candidate_prev, prev_ts)
+            kept_cps = _cue_reading_speed(kept, ts)
+            if prev_cps is None or kept_cps is None:
+                continue
+            # ALICI cue sınırlar içinde kalmalı; kaynak cue'nun sınırın ALTINA
+            # inmesi şart değildir: 0.4 sn'lik bir cue'ya sığmayan metin zaten
+            # condense işidir. Kısmi rahatlama da gerçek bir kazanç.
+            if prev_cps > CPS_WARN_LIMIT:
+                continue
+            if _visible_len(candidate_prev) > _LINE_THRESHOLD * _MAX_LINES:
+                continue
+            score = kept_cps
+            if best is None or score < best[0]:
+                best = (score, candidate_prev, kept)
+        # Kazanç ANLAMLI olmalı: ya cue sınırın altına iner ya da hızı en az
+        # %40 düşer. Yoksa teslim metnini kozmetik bir kazanç için yeniden
+        # bölmeye değmez.
+        if best is None:
+            continue
+        if not (best[0] <= CPS_WARN_LIMIT
+                or best[0] <= current * _CUE_MOVE_GAIN_RATIO):
+            continue
+        plan.append((str(prev_idx), str(idx), best[1], best[2]))
+    return plan
+
+
+def rebalance_cue_fill_pairs(blocks: list, src_map: dict, log_fn=None) -> tuple:
+    """Aşırı dolu cue'nun baş kısmını önceki boş cue'ya taşır. (bloklar, sayı)."""
+    rows = list(blocks or [])
+    plan = _cue_fill_move_plan(rows, src_map)
+    if not plan:
+        return rows, 0
+    moves = {}
+    for prev_id, idx, new_prev, new_text in plan:
+        moves[prev_id] = new_prev
+        moves[idx] = new_text
+    out = []
+    for idx, ts, text in rows:
+        replacement = moves.get(str(idx))
+        out.append((idx, ts, replacement if replacement is not None else text))
+    # Değişmez denetimi: birleşik metin AYNI kalmalı. Bozulursa hiçbir şey
+    # uygulanmaz — kısmi/bozuk bir teslim, düzeltilmemiş teslimden kötüdür.
+    def _joined(items):
+        return " ".join(
+            " ".join(str(text or "").split()) for _idx, _ts, text in items).strip()
+
+    if _joined(out) != _joined(rows):
+        if log_fn:
+            log_fn("Cue-fill taşıma: birleşik metin denetimi başarısız; "
+                   "hiçbir cue değiştirilmedi.", "warn")
+        return rows, 0
+    out = apply_line_breaks(out)
+    if log_fn:
+        sample = ", ".join(f"#{idx}→#{prev}" for prev, idx, _p, _t in plan[:6])
+        log_fn(f"Cue-fill taşıma: {len(plan)} cue metni komşusuna kaydırıldı "
+               f"({sample}); zaman damgaları değişmedi.", "ok")
+    return out, len(plan)
 
 # ── Dosya içi sen/siz tutarlılığı ────────────────────────────────────────────
 # Gerçek olay (BBC Connections S01E10): dosyanın ilk yarısı 'siz', ortasından
@@ -15845,6 +15955,7 @@ class App(ctk.CTk):
             "global_glossary_path": "glossary_var",
             "term_normalize": "term_normalize_var",
             "term_normalize_apply": "term_normalize_apply_var",
+            "cue_fill_move": "cue_fill_move_var",
             "quality_report_only": "quality_report_only_var",
             "repair_missing": "repair_missing_var",
             "critic": "critic_var",
@@ -17049,6 +17160,24 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(sb, text="Kapalıyken yalnızca rapor edilir. Uygulanan\ndüzeltmeler zaten iki katmanlı denetimden\ngeçer: plan sadece 'çevrilmeden kalmış' sınıfını\nseçer, aday da satır bazında doğrulanır.",
+                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+                     justify="left", wraplength=260).grid(
+                     row=r, column=0, sticky="w", padx=4, pady=(0, 8)); r += 1
+
+        # Cue-fill taşıma: aşırı dolu cue'nun metnini önceki BOŞ komşusuna kaydırır.
+        # Zaman damgası değişmez, birleşik metin değişmez — yalnız bölme noktası
+        # kayar. Kullanıcının Death Scenes'te elle yaptığı işin otomatiği.
+        self.cue_fill_move_var = ctk.BooleanVar(value=True)
+        cfm_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        cfm_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
+        cfm_fr.grid_columnconfigure(1, weight=1)
+        ctk.CTkSwitch(cfm_fr, text="", variable=self.cue_fill_move_var,
+                      width=44, height=22,
+                      fg_color=BORDER, progress_color=ACCENT).grid(row=0, column=0)
+        ctk.CTkLabel(cfm_fr, text="Cue-fill taşıma",
+                     font=ctk.CTkFont("Segoe UI", 12),
+                     text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
+        ctk.CTkLabel(sb, text="Türkçe söz dizimi yüzünden 0,4 saniyelik bir\ncue'ya yığılan metni, önünde boş duran cue'ya\ngeri kaydırır. Zaman damgasına ve metnin\nkendisine dokunmaz. Sığmayan metin için\ndeğil (o condense işi) — yalnız yer varken.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0, 8)); r += 1
@@ -18764,6 +18893,9 @@ class App(ctk.CTk):
             "term_normalize_apply": bool(
                 getattr(self, "term_normalize_apply_var", None) is None
                 or self.term_normalize_apply_var.get()),
+            "cue_fill_move": bool(
+                getattr(self, "cue_fill_move_var", None) is None
+                or self.cue_fill_move_var.get()),
             "quality_report_only": bool(
                 getattr(self, "quality_report_only_var", None) is None
                 or self.quality_report_only_var.get()),
@@ -18834,6 +18966,7 @@ class App(ctk.CTk):
             "ext_project_path_var": "ext_project_path",
             "notify_var": "notify_desktop", "term_normalize_var": "term_normalize",
             "term_normalize_apply_var": "term_normalize_apply",
+            "cue_fill_move_var": "cue_fill_move",
             "quality_report_only_var": "quality_report_only",
             "repair_missing_var": "repair_missing",
             "prevent_sleep_var": "prevent_sleep",
@@ -22018,6 +22151,25 @@ class App(ctk.CTk):
             self._log_exc("Kısaltma pass hatası", e)
             return blocks
 
+    def _maybe_rebalance_cue_fill(self, blocks, source_cues=None):
+        """Aşırı dolu cue'nun metnini önceki BOŞ komşusuna kaydırır (açıksa).
+
+        Zaman damgalarına dokunmaz ve birleşik metni değiştirmez; yalnız iki cue
+        arasındaki bölme noktası kayar. Ölçüt dardır: alıcı cue kendi CPS ve
+        genişlik sınırları içinde kalmalı, kaynak cue'nun hızı ya sınırın altına
+        inmeli ya da en az %40 düşmeli. Sığmayan metin condense işidir."""
+        if not App._run_setting(self, "cue_fill_move", "cue_fill_move_var", True):
+            return blocks
+        if not source_cues:
+            return blocks
+        try:
+            src_map = _delivery_source_map(list(blocks or []), source_cues)
+            moved, count = rebalance_cue_fill_pairs(
+                list(blocks or []), src_map, log_fn=self._log)
+        except Exception as move_error:
+            self._log(f"Cue-fill taşıma çalışmadı: {move_error}", "warn")
+            return blocks
+        return moved if count else blocks
     def _maybe_merge_cues(self, blocks, file_path: str = ""):
         """ai_segment_var açıksa AI destekli akıllı segmentasyon, değilse merge_cues_var
         açıksa hızlı parçalı birleştirme uygular. ÇIKTI biçimlendirmesidir — TM/scan
@@ -24276,6 +24428,7 @@ class App(ctk.CTk):
             "review_pass": self.review_pass_var.get(),
             "term_normalize": self.term_normalize_var.get(),
             "term_normalize_apply": self.term_normalize_apply_var.get(),
+            "cue_fill_move": self.cue_fill_move_var.get(),
             "quality_report_only": bool(
                 getattr(self, "quality_report_only_var", None) is None
                 or self.quality_report_only_var.get()),
@@ -24741,6 +24894,8 @@ class App(ctk.CTk):
                 self.term_normalize_var.set(bool(d["term_normalize"]))
             if "term_normalize_apply" in d:
                 self.term_normalize_apply_var.set(bool(d["term_normalize_apply"]))
+            if "cue_fill_move" in d:
+                self.cue_fill_move_var.set(bool(d["cue_fill_move"]))
             if "quality_report_only" in d:
                 self.quality_report_only_var.set(bool(d["quality_report_only"]))
             if "repair_missing" in d:
@@ -26177,7 +26332,7 @@ class App(ctk.CTk):
                     source_language=src)
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    self._maybe_merge_cues(blocks, file_path=orig_path), tgt, self._log,
+                    self._maybe_rebalance_cue_fill(self._maybe_merge_cues(blocks, file_path=orig_path), cues), tgt, self._log,
                     source_cues=cues)
                 missing = len(remaining_missing_ids)
                 _write_path = _partial_output_path(out_path) if missing else Path(out_path)
@@ -33023,7 +33178,7 @@ class App(ctk.CTk):
                     filepath, f"{label.title()} değişti", 100, "error")
                 continue
             _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks, file_path=filepath), tgt, self._log,
+                self._maybe_rebalance_cue_fill(self._maybe_merge_cues(sorted_blocks, file_path=filepath), cues), tgt, self._log,
                 source_cues=cues)
             # İstatistikler DİSKE YAZILAN bloklardan sayılır: ara listeden sayınca
             # birleştirme/AI segmentasyonun ürettiği CPS ve cue değişimleri rapora
@@ -34765,7 +34920,7 @@ class App(ctk.CTk):
                                     "err")
                                 break
                             _delivery_blocks = _prepare_upload_ready_blocks(
-                                self._maybe_merge_cues(pp, file_path=str(_src_path)), tgt, self._log,
+                                self._maybe_rebalance_cue_fill(self._maybe_merge_cues(pp, file_path=str(_src_path)), _orig_cues), tgt, self._log,
                                 source_cues=_orig_cues)
                             _write_path = (
                                 _partial_output_path(output_path)
@@ -35617,7 +35772,7 @@ class App(ctk.CTk):
                 _failed_files.append(fp)
                 continue
             _delivery_blocks = _prepare_upload_ready_blocks(
-                self._maybe_merge_cues(sorted_blocks, file_path=fp), _tgt_lang, self._log,
+                self._maybe_rebalance_cue_fill(self._maybe_merge_cues(sorted_blocks, file_path=fp), _src_cues), _tgt_lang, self._log,
                 source_cues=_src_cues)
             # İstatistikler teslim bloklarından sayılır (bkz. _run_sync).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
@@ -37184,8 +37339,9 @@ class App(ctk.CTk):
                     continue
                 _write_path = _partial_output_path(out_path) if _has_missing else out_path
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    self._maybe_merge_cues(
-                        _final_blocks, file_path=filepath), tgt, self._log,
+                    self._maybe_rebalance_cue_fill(
+                        self._maybe_merge_cues(_final_blocks, file_path=filepath),
+                        cues), tgt, self._log,
                     source_cues=cues)
                 self._record_file_status(filepath, "Dosya Yazımı", "running")
                 write_srt(_write_path, _delivery_blocks, tgt)

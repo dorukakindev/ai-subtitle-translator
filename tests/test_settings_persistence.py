@@ -98,6 +98,7 @@ class _SettingsOnlyApp:
             "review_pass_var": True,
             "term_normalize_var": False,
             "term_normalize_apply_var": False,
+            "cue_fill_move_var": False,
             "twowave_var": False,
             "main_custom_var": False,
             "main_custom_model_var": "",
