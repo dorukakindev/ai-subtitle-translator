@@ -27902,6 +27902,10 @@ class App(ctk.CTk):
                 fixes = json.loads(raw)
                 if not isinstance(fixes, list):
                     raise ValueError("review response is not a JSON array")
+                # `[null]` de geçerli listedir ama incelenmiş cue kanıtı değildir
+                # (denetim 2026-08-20, madde 46).
+                if not ht._quality_rows_schema_valid(fixes):
+                    raise ValueError("review response row schema")
                 fix_by_id = {}
                 conflicting_ids = set()
                 for it in fixes:

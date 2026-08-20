@@ -340,5 +340,31 @@ class PostprocessSourceResolverTest(unittest.TestCase):
         self.assertEqual(g._resolve_postprocess_source(output),
                          archive / "Source.srt")
 
+class QualityRowSchemaTest(unittest.TestCase):
+    """Madde 33, 34, 46: `[null]` cevabı incelenmiş sayılmamalı."""
+
+    def test_null_row_is_rejected(self):
+        self.assertFalse(ht._quality_rows_schema_valid([None]))
+        self.assertFalse(ht._quality_rows_schema_valid([{"id": "1"}, None]))
+
+    def test_empty_list_is_a_legitimate_no_change_answer(self):
+        self.assertTrue(ht._quality_rows_schema_valid([]))
+
+    def test_object_rows_are_accepted(self):
+        self.assertTrue(ht._quality_rows_schema_valid([{"id": "1"}]))
+
+    def test_non_list_payloads_are_rejected(self):
+        for payload in (None, "metin", {"issues": []}, 3):
+            with self.subTest(payload=payload):
+                self.assertFalse(ht._quality_rows_schema_valid(payload))
+
+    def test_every_list_pass_consults_the_guard(self):
+        source = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "hybrid_translate.py"),
+            encoding="utf-8").read()
+        # Native, Condense, Critic, QC, Nihai Anlam
+        self.assertGreaterEqual(source.count("_quality_rows_schema_valid("), 5)
+
 if __name__ == "__main__":
     unittest.main()

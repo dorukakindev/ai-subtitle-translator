@@ -4350,6 +4350,14 @@ def native_reader_pass(
                 content, items, _retry_partial)
             if fixes is None:
                 continue
+            if not _quality_rows_schema_valid(fixes):
+                # `[null]` geçerli JSON listesidir ama hiçbir cue'nun
+                # incelendiğini kanıtlamaz; chunk başarılı sayılmamalı.
+                partial_chunks += 1
+                if log_fn:
+                    log_fn("Kalite geçişi: şema dışı satır (ör. null) döndü; "
+                           "chunk başarılı sayılmadı", "warn")
+                continue
             if response_complete:
                 successful_chunks += 1
             else:
@@ -4718,6 +4726,14 @@ def condense_fast_lines(
                 content, items, _retry_partial)
             if fixes is None:
                 raise ValueError("response_not_array")
+            if not _quality_rows_schema_valid(fixes):
+                # `[null]` geçerli JSON listesidir ama hiçbir cue'nun
+                # incelendiğini kanıtlamaz; chunk başarılı sayılmamalı.
+                partial_chunks += 1
+                if log_fn:
+                    log_fn("Kalite geçişi: şema dışı satır (ör. null) döndü; "
+                           "chunk başarılı sayılmadı", "warn")
+                continue
             if response_complete:
                 successful_chunks += 1
             else:
@@ -5274,6 +5290,10 @@ def quality_check_with_helper(
                 data = _extract_json_object(content)   # prose önsöz/kod-çiti toleransı
                 if not isinstance(data, dict) or "issues" not in data:
                     raise ValueError("geçerli issues JSON nesnesi bulunamadı")
+                # `{"issues": null}` / dict / string şema ihlalidir: denetim yapılmadığı
+                # hâlde chunk başarılı sayılıyordu (denetim 2026-08-20, madde 33).
+                if not _quality_rows_schema_valid(data.get("issues")):
+                    raise ValueError("issues alanı liste değil veya şema dışı satır var")
                 successful_chunks += 1
                 raw_issues = data.get("issues", []) if isinstance(data, dict) else []
                 chunk_issues = []
@@ -8318,6 +8338,19 @@ def _extract_json_array(raw: str, *, salvage_truncated: bool = False) -> str:
     return ""  # Return empty string instead of raw, so caller knows parse failed
 
 
+def _quality_rows_schema_valid(rows) -> bool:
+    """Kalite geçişi cevabındaki liste satırlarının tamamı nesne mi?
+
+    `[null]` geçerli bir JSON listesidir ama şema ihlalidir: hiçbir cue'nun
+    gerçekten incelendiğini kanıtlamaz. Geçişler üst seviyenin liste olmasını
+    yeterli sayıp chunk'ı BAŞARILI işaretliyor, sonra null satırı sessizce
+    atlıyordu — kapsam sahte biçimde %100 görünüyordu (denetim 2026-08-20,
+    maddeler 33, 34, 46). Gerçek boş liste `[]` meşrudur ve True döner.
+    """
+    if not isinstance(rows, list):
+        return False
+    return all(isinstance(row, dict) for row in rows)
+
 def _recover_truncated_quality_array(raw: str, requested_items: list,
                                      retry_call, max_retries: int = 2) -> tuple:
     """Keep complete objects from a cut-off quality response and retry only its tail."""
@@ -9028,6 +9061,11 @@ def semantic_reconciliation_pass(
                         f"{len(parsed)} tamamlanmış küme doğrulanacak.", "warn")
             if not isinstance(parsed, list):
                 raise ValueError("response_not_array")
+            # `[null]` de geçerli bir listedir ama incelenmiş küme kanıtı
+            # değildir: reviewed_cluster_ids baştan TÜM kümeleri içerdiği için
+            # kapsam sahte %100 görünüyordu (denetim 2026-08-20, madde 34).
+            if not _quality_rows_schema_valid(parsed):
+                raise ValueError("response_row_schema")
 
             # A cut-off array has no way to represent the clusters after its
             # last complete object.  Do not count those as reviewed: ask only
@@ -13204,6 +13242,14 @@ def critic_pass_with_helper(
             if fixes is None:
                 if log_fn:
                     log_fn(f"Critic Helper chunk JSON çıkarılamadı — {len(chunk)} satır bu turda atlandı", "warn")
+                continue
+            if not _quality_rows_schema_valid(fixes):
+                # `[null]` geçerli JSON listesidir ama hiçbir cue'nun
+                # incelendiğini kanıtlamaz; chunk başarılı sayılmamalı.
+                partial_chunks += 1
+                if log_fn:
+                    log_fn("Kalite geçişi: şema dışı satır (ör. null) döndü; "
+                           "chunk başarılı sayılmadı", "warn")
                 continue
             if response_complete:
                 successful_chunks += 1
