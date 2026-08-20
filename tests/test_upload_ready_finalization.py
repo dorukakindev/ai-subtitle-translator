@@ -850,6 +850,25 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
 
         self.assertEqual(audit["residual_speaker_label_ids"], ["1"])
 
+    def test_font_wrapped_source_speaker_label_is_removed(self):
+        source = [(
+            "1", "00:00:01,000 --> 00:00:02,000",
+            '<font color="#ffffff">MARY-ANN: Look here.</font>',
+        )]
+        blocks = [(
+            "1", source[0][1],
+            '<font color="#ffffff">MARY-ANN: Buraya bak.</font>',
+        )]
+
+        result = gui._prepare_upload_ready_blocks(
+            blocks, "Turkish", source_cues=source)
+        dialogue = "\n".join(
+            text for _idx, _ts, text in result
+            if text != "discord: ceviri2")
+
+        self.assertNotIn("MARY-ANN", dialogue)
+        self.assertIn("Buraya bak.", dialogue)
+
     def test_delivery_audit_rejects_source_derived_voice_over_label(self):
         with TemporaryDirectory() as td:
             source_path = Path(td) / "source.srt"

@@ -1097,6 +1097,21 @@ def _target_has_source_plain_speaker_label(tr_line: str, src_line: str) -> bool:
     return target_key in {source_key, mapped_key, *aliases.get(source_key, set())}
 
 
+def _strip_target_source_plain_speaker_label(tr_line: str, src_line: str) -> str:
+    if not _target_has_source_plain_speaker_label(tr_line, src_line):
+        return tr_line
+    target_plain = FORMAT_TAG_RE.sub("", str(tr_line or ""))
+    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(target_plain)
+    if not target_match:
+        return tr_line
+    label = re.escape(target_match.group("label").strip())
+    tag = r"</?(?:i|b|u|font)\b[^>]*>"
+    pattern = re.compile(
+        rf"(?m)(^|(?<=[.!?…]))(?P<prefix>\s*(?:{tag}\s*)*(?:-\s*)?)"
+        rf"{label}:\s*(?=\S)")
+    return pattern.sub(r"\1\g<prefix>", tr_line, count=1)
+
+
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     """Kaynak satırında (cue'nun kaynak metninde) parantez/köşeli grup VARSA,
     çeviri satırındaki tüm parantez/köşeli gruplarını sök (kalan repliği bırak).
@@ -1128,7 +1143,9 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
             return ""
         if (bracket_or_quoted_source
                 or _target_has_source_plain_speaker_label(tr_line, src_line)):
-            tr_line = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
+            stripped = _TR_PLAIN_SPEAKER_LABEL_RE.sub(r"\1\2", tr_line)
+            tr_line = _strip_target_source_plain_speaker_label(
+                stripped, src_line)
         if _DASH_ONLY_LINE_RE.match(tr_line.strip()):
             return ""
     source_spans = _bracket_group_spans(src_line)
