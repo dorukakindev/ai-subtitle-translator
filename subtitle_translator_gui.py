@@ -26460,6 +26460,7 @@ class App(ctk.CTk):
         self._tm.reset_session_hits()
         for attr in ("stat_tokens_var", "stat_done_var", "stat_fail_var", "stat_tm_var"):
             getattr(self, attr).set("0")
+        App._restore_preflight_usage(self)
         self._set_eta("")
         self._set_running(True)
 
@@ -26584,6 +26585,7 @@ class App(ctk.CTk):
         self._tm.reset_session_hits()
         for attr in ("stat_tokens_var", "stat_done_var", "stat_fail_var", "stat_tm_var"):
             getattr(self, attr).set("0")
+        App._restore_preflight_usage(self)
         self._set_eta("")
         if not _claim_translation_run_owner():
             messagebox.showwarning(
@@ -30900,6 +30902,40 @@ class App(ctk.CTk):
         dlg.focus_force()
         dlg.grab_set()
 
+    def _capture_preflight_usage(self):
+        """Ön kontrolde harcanan API kullanımını koşuya devretmek üzere saklar.
+
+        Kaynak/içerik ön analizi gerçek API çağrısı yapıyor ve para harcıyor;
+        ama onaydan sonra _start() sayaçları sıfırlıyordu, dolayısıyla bu
+        harcama ne oturum defterine ne ceviri_raporu'na giriyordu (denetim
+        2026-08-20, madde 17)."""
+        carry = getattr(self, "_preflight_usage_carry", None) or (0, 0, 0.0, 0)
+        self._preflight_usage_carry = (
+            int(carry[0]) + int(getattr(self, "_token_total", 0) or 0),
+            int(carry[1]) + int(getattr(self, "_token_cached", 0) or 0),
+            float(carry[2]) + float(getattr(self, "_cost_total", 0.0) or 0.0),
+            int(carry[3]) + int(getattr(self, "_unknown_cost_tokens", 0) or 0),
+        )
+
+    def _restore_preflight_usage(self):
+        """Sayaç sıfırlandıktan sonra ön kontrol harcamasını geri ekler."""
+        carry = self.__dict__.pop("_preflight_usage_carry", None)
+        if not carry or not any(carry):
+            return
+        tokens, cached, cost, unknown = carry
+        self._token_total = int(getattr(self, "_token_total", 0) or 0) + int(tokens)
+        self._token_cached = int(getattr(self, "_token_cached", 0) or 0) + int(cached)
+        self._cost_total = float(getattr(self, "_cost_total", 0.0) or 0.0) + float(cost)
+        self._unknown_cost_tokens = (
+            int(getattr(self, "_unknown_cost_tokens", 0) or 0) + int(unknown))
+        try:
+            self.stat_tokens_var.set(f"{self._token_total:,}")
+        except Exception:
+            pass
+        self._log(
+            f"Ön analiz kullanımı koşuya devredildi: {int(tokens):,} token.",
+            "info")
+
     def _resume_after_preflight(self, flag_name: str, label: str):
         """Onaydan sonra yeni bir UI turunda ana başlatma akışına güvenle döner.
 
@@ -30914,6 +30950,7 @@ class App(ctk.CTk):
                 f"{label} iptal edildi: kullanıcı durdurdu; çeviri başlatılmadı.",
                 "warn")
             return
+        App._capture_preflight_usage(self)
         setattr(self, flag_name, True)
         active_snapshot = getattr(self, "_active_snapshot", None)
         resume_snapshot = None

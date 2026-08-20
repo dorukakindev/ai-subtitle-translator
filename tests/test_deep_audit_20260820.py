@@ -877,5 +877,52 @@ class TurkishCanonsAreTargetGatedTest(unittest.TestCase):
         self.assertIn("target_language=target_language",
                       source[index:index + 200])
 
+class PreflightUsageCarryTest(unittest.TestCase):
+    """Madde 17: ön analiz harcaması koşu defterine girmeli."""
+
+    def _stub(self):
+        stub = types.SimpleNamespace()
+        stub._token_total, stub._token_cached = 12345, 200
+        stub._cost_total, stub._unknown_cost_tokens = 0.5, 40
+        stub.logs = []
+        stub._log = lambda message, tag="": stub.logs.append(message)
+        stub.stat_tokens_var = _Var("")
+        return stub
+
+    def test_usage_survives_the_counter_reset(self):
+        stub = self._stub()
+        g.App._capture_preflight_usage(stub)
+        stub._token_total = stub._token_cached = stub._unknown_cost_tokens = 0
+        stub._cost_total = 0.0
+        g.App._restore_preflight_usage(stub)
+        self.assertEqual(stub._token_total, 12345)
+        self.assertEqual(stub._token_cached, 200)
+        self.assertEqual(stub._cost_total, 0.5)
+        self.assertEqual(stub._unknown_cost_tokens, 40)
+
+    def test_restore_is_idempotent(self):
+        stub = self._stub()
+        g.App._capture_preflight_usage(stub)
+        stub._token_total = 0
+        g.App._restore_preflight_usage(stub)
+        g.App._restore_preflight_usage(stub)
+        self.assertEqual(stub._token_total, 12345)
+
+    def test_two_preflights_accumulate(self):
+        stub = self._stub()
+        g.App._capture_preflight_usage(stub)
+        stub._token_total = 1000
+        g.App._capture_preflight_usage(stub)
+        stub._token_total = 0
+        g.App._restore_preflight_usage(stub)
+        self.assertEqual(stub._token_total, 13345)
+
+    def test_nothing_to_restore_is_silent(self):
+        stub = self._stub()
+        stub._token_total = 0
+        g.App._restore_preflight_usage(stub)
+        self.assertEqual(stub._token_total, 0)
+        self.assertEqual(stub.logs, [])
+
 if __name__ == "__main__":
     unittest.main()
