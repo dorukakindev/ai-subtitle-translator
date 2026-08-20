@@ -851,5 +851,31 @@ class PollLayerDoesNotFinalizeTest(unittest.TestCase):
                 body = "\n".join(self._body(name))
                 self.assertIn("_set_running(False)", body)
 
+class TurkishCanonsAreTargetGatedTest(unittest.TestCase):
+    """Madde 3 (kısmi): Türkçe kanonlar yalnız Türkçe hedefte kullanılmalı."""
+
+    SOURCE = ("Sisyphus rolled the rock uphill. Each dawn Sisyphus began "
+              "again, and Sisyphus never finished the task.")
+
+    def test_turkish_target_gets_the_turkish_form(self):
+        self.assertEqual(
+            g.auto_locked_proper_nouns(self.SOURCE).get("Sisyphus"), "Sisifos")
+
+    def test_other_targets_do_not(self):
+        for language in ("German", "Russian", "Spanish"):
+            with self.subTest(language=language):
+                locked = g.auto_locked_proper_nouns(
+                    self.SOURCE, target_language=language)
+                self.assertNotEqual(locked.get("Sisyphus"), "Sisifos")
+
+    def test_analysis_passes_the_target_language_through(self):
+        source = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "hybrid_translate.py"),
+            encoding="utf-8").read()
+        index = source.index("auto_locked_proper_nouns(")
+        self.assertIn("target_language=target_language",
+                      source[index:index + 200])
+
 if __name__ == "__main__":
     unittest.main()

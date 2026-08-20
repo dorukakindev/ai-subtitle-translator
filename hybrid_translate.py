@@ -3222,7 +3222,8 @@ def _analyze_context_openai_compatible(
     try:
         from subtitle_translator_gui import auto_locked_proper_nouns
         auto_locked = auto_locked_proper_nouns(
-            source_blob, recurring_terms, rejected_out=auto_rejected)
+            source_blob, recurring_terms, rejected_out=auto_rejected,
+            target_language=target_language)
     except Exception:
         auto_locked = {}
     if auto_locked:

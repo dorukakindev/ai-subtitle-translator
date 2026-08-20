@@ -4643,9 +4643,16 @@ def _is_latin_script_word(word: str) -> bool:
         return False
     return all(_LATIN_LETTER_RE.match(char) for char in letters)
 
+def _turkish_target(target_language: str) -> bool:
+    """Hedef dil Türkçe mi? (Türkçeye özgü katmanların kapısı)."""
+    return normalize_language_name(
+        target_language or "Turkish", allow_auto=False) == "Turkish"
+
+
 def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
                              min_count: int = _AUTOLOCK_MIN_OCCURRENCES,
-                             rejected_out: dict | None = None) -> dict:
+                             rejected_out: dict | None = None,
+                             target_language: str = "Turkish") -> dict:
     """Kaynakta 3+ kez geçen özel ad adaylarını kimlik eşlemesiyle döner.
 
     Kimlik eşlemesi ('Barthou' -> 'Barthou') sözlüğe girince karışık-terim
@@ -4718,7 +4725,10 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             # talimat (denetim 2026-08-20, madde 4). Kilit yerine model çevirir.
             rejected[form] = "hedef yazı sisteminde değil"
             continue
-        canonical = CANONICAL_TURKISH_NAMES.get(key)
+        # Türkçe kanonlar YALNIZ Türkçe hedefte geçerlidir; Almanca/Rusça
+        # hedefe 'Sisyphus → Sisifos' taşımak yanlış olur (madde 3).
+        canonical = (CANONICAL_TURKISH_NAMES.get(key)
+                     if _turkish_target(target_language) else None)
         if canonical:
             locked[form] = canonical
             continue
