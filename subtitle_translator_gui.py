@@ -805,6 +805,32 @@ def _install_customtkinter_dpi_guard(root_cls=None, toplevel_cls=None):
     return True
 
 
+# CustomTkinter, ÖLÇEKLEME değişiminde her widget için son geometri çağrısını
+# aynen tekrar uygular (CTkBaseClass._set_scaling → _last_geometry_manager_call).
+# `grid_forget` bu kaydı temizler ama `grid_remove` CTk'de override EDİLMEMİŞ:
+# gizlenmiş widget'ın kaydı duruyor ve bir sonraki ölçekleme olayında .grid(...)
+# yeniden çalışıp widget'ı GERİ GETİRİYOR.
+#
+# Gerçek olay (2026-08-20): uygulama küçültülüp yeniden açılınca Windows DPI
+# bildirimi geliyor, gizlenen dosya-ayarları paneli iş panosunun üstüne geri
+# geliyor ve çalışan işin ilerlemesi yerine "English / Belgesel / Varsayılan"
+# satırları görünüyordu.
+def _grid_hide(widget) -> None:
+    """grid_remove + CTk'nin yeniden-uygulama kaydını temizle."""
+    if widget is None:
+        return
+    try:
+        widget.grid_remove()
+    except Exception:
+        return
+    # Kayıt yalnız GİZLİYKEN silinir; widget tekrar .grid() ile gösterildiğinde
+    # CTk kaydı yeniden kurar, yani ölçekleme davranışı bozulmaz.
+    if hasattr(widget, "_last_geometry_manager_call"):
+        try:
+            widget._last_geometry_manager_call = None
+        except Exception:
+            pass
+
 def _refresh_scrollable_frame_after_dpi(frame):
     canvas = getattr(frame, "_parent_canvas", None)
     if canvas is None:
@@ -16804,7 +16830,7 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Consolas", 11),
                      fg_color=CARD, border_color=BORDER, text_color=FG)
         self.main_custom_key_entry.pack(fill="x", padx=4, pady=(0,4))
-        self.main_custom_frame.grid_remove()   # başlangıçta kapalı (default OFF)
+        _grid_hide(self.main_custom_frame)   # başlangıçta kapalı (default OFF)
 
         # Bu 3 alan yalnızca _start()/_resume()/kapanışta değil, ALANDAN ÇIKINCA da
         # kaydedilir — kullanıcı doldurup çeviri başlatmadan/uygulamayı düzgün
@@ -18143,7 +18169,7 @@ class App(ctk.CTk):
                                                 fg_color=BORDER)
         self.progress_file.grid(row=4, column=0, sticky="ew", padx=16, pady=(0,14))
         self.progress_file.set(0)
-        self.progress_file.grid_remove()  # Hidden until processing starts
+        _grid_hide(self.progress_file)  # Hidden until processing starts
 
         self._update_pipeline_rail("Hazır", FG2)
 
@@ -18153,7 +18179,7 @@ class App(ctk.CTk):
             border_width=1, border_color=BORDER_SOFT)
         self._job_board.grid(row=2, column=0, sticky="ew", pady=(0,10))
         self._job_board.grid_columnconfigure(0, weight=1)
-        self._job_board.grid_remove()
+        _grid_hide(self._job_board)
 
         jb_hdr = ctk.CTkFrame(self._job_board, fg_color="transparent", height=36)
         jb_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(10,4))
@@ -18183,7 +18209,7 @@ class App(ctk.CTk):
             border_width=1, border_color=BORDER_SOFT)
         self._file_list_outer.grid(row=2, column=0, sticky="ew", pady=(0,10))
         self._file_list_outer.grid_columnconfigure(0, weight=1)
-        self._file_list_outer.grid_remove()  # hidden until files loaded
+        _grid_hide(self._file_list_outer)  # hidden until files loaded
 
         fl_hdr = ctk.CTkFrame(self._file_list_outer, fg_color="transparent", height=36)
         fl_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(10,4))
@@ -18213,9 +18239,9 @@ class App(ctk.CTk):
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
                       command=self._apply_schema_to_all).grid(row=0, column=4)
-        self._file_prev_btn.grid_remove()
-        self._file_page_lbl.grid_remove()
-        self._file_next_btn.grid_remove()
+        _grid_hide(self._file_prev_btn)
+        _grid_hide(self._file_page_lbl)
+        _grid_hide(self._file_next_btn)
 
         self._file_rows_frame = ctk.CTkScrollableFrame(
             self._file_list_outer, fg_color="transparent", height=148,
@@ -18541,10 +18567,10 @@ class App(ctk.CTk):
             self._file_page_lbl.grid()
             self._file_next_btn.grid()
         else:
-            self._file_prev_btn.grid_remove()
-            self._file_page_lbl.grid_remove()
-            self._file_next_btn.grid_remove()
-        self._job_board.grid_remove()   # iş panosu varsa gizle
+            _grid_hide(self._file_prev_btn)
+            _grid_hide(self._file_page_lbl)
+            _grid_hide(self._file_next_btn)
+        _grid_hide(self._job_board)   # iş panosu varsa gizle
         self._file_list_outer.grid()
 
     def _change_file_list_page(self, delta: int):
@@ -21953,7 +21979,7 @@ class App(ctk.CTk):
             n = len(files)
             self._jb_title.configure(text=f"DOSYALAR — 0 / {n}")
             self._jb_summary.configure(text=_job_board_summary_text(self._job_rows))
-            self._file_list_outer.grid_remove()
+            _grid_hide(self._file_list_outer)
             self._job_board.grid()
 
         if threading.current_thread() is threading.main_thread():
@@ -23242,7 +23268,7 @@ class App(ctk.CTk):
             if hasattr(self, "precontext_switch") and self.precontext_switch:
                 self.precontext_switch.configure(state="disabled")
         else:
-            self.hybrid_frame.grid_remove()
+            _grid_hide(self.hybrid_frame)
             # Yardımcı Analiz kapandığında Ön-Bağlam switch'ini tekrar etkinleştir
             if hasattr(self, "precontext_switch") and self.precontext_switch:
                 self.precontext_switch.configure(state="normal")
@@ -23354,8 +23380,8 @@ class App(ctk.CTk):
             self._input_folder_explicitly_selected = True
             self._content_type_preflight_done = False
             self._language_preflight_done = False
-            self.clear_files_btn.grid_remove()
-            self.clear_info_btn.grid_remove()
+            _grid_hide(self.clear_files_btn)
+            _grid_hide(self.clear_info_btn)
             self._pm = None
             self._project_memories = {}
             self._queue_input_folder_scan(path)
@@ -24325,7 +24351,7 @@ class App(ctk.CTk):
         if custom_active:
             self.main_custom_frame.grid()
         else:
-            self.main_custom_frame.grid_remove()
+            _grid_hide(self.main_custom_frame)
         batch_radio = getattr(self, "_mode_batch_radio", None)
         if batch_radio:
             if custom_active:
@@ -24607,16 +24633,16 @@ class App(ctk.CTk):
         for name in ("_file_prev_btn", "_file_page_lbl", "_file_next_btn"):
             widget = getattr(self, name, None)
             if widget is not None:
-                widget.grid_remove()
+                _grid_hide(widget)
         outer = getattr(self, "_file_list_outer", None)
         if outer is not None:
-            outer.grid_remove()
+            _grid_hide(outer)
         self._input_folder_explicitly_selected = True
         self._content_type_preflight_done = False
         self._language_preflight_done = False
         self.file_info_var.set("")
-        self.clear_files_btn.grid_remove()
-        self.clear_info_btn.grid_remove()
+        _grid_hide(self.clear_files_btn)
+        _grid_hide(self.clear_info_btn)
         App._update_readiness_card(self)
         self._log("Dosya seçimi temizlendi — klasör modu aktif", "info")
 
@@ -30246,9 +30272,9 @@ class App(ctk.CTk):
         self._selected_folder_roots = []
         self._file_list_files = []
         self._populate_file_list([])
-        self._file_list_outer.grid_remove()
-        self.clear_files_btn.grid_remove()
-        self.clear_info_btn.grid_remove()
+        _grid_hide(self._file_list_outer)
+        _grid_hide(self.clear_files_btn)
+        _grid_hide(self.clear_info_btn)
         self.file_info_var.set("")
         self._log(
             "Seçilen dosyaların tamamı daha önce çevrildiği için kuyruktan çıkarıldı.",
