@@ -13166,15 +13166,22 @@ def _recoverable_partial_output_path(report_dir, out_path, source_path,
 
 def promote_complete_partial_outputs(source_files, output_paths, target_language,
                                      source_languages=None, log_fn=None,
-                                     apply_changes: bool = True) -> list:
+                                     apply_changes: bool = True,
+                                     report_dir=None) -> list:
     """Aslında TAMAMLANMIŞ olan .partial.srt dosyalarını nihai konuma terfi ettirir.
 
     Gerçek olay (2026-08-19): 4 bölüm aylarca "çevrilmemiş" görünüyordu; dördü de
     %100 tam, temiz ve teslime hazırdı — sadece Raporlar/Kurtarma altında kalmış ve
     imzaları eklenmemişti. Tamamlanmış iş sessizce kayboluyordu.
 
-    Terfi YALNIZCA şu koşullarda yapılır: nihai çıktı yok, kısmi dosya kaynağın
-    tüm cue'larını kapsıyor, hiçbir eksik-çeviri işareti/boş cue yok.
+    Terfi koşulları: nihai çıktı yok, kısmi dosya KAYNAK PARMAK İZİYLE eşleşiyor,
+    kaynağın tüm cue'larını kapsıyor, eksik-çeviri işareti/boş cue yok, teslim
+    denetimi temiz. Denetim 2026-08-20:
+      - madde 43: parmak izi doğrulaması yoktu; eski kaynağa ait çeviri yeni
+        kaynağın nihai yoluna yazılabiliyordu,
+      - madde 48: yalnız İLK aday deneniyordu; bozuk öncelikli aday sağlam
+        legacy adayı gölgeliyordu,
+      - madde 15: terfi sonrası kaynak parmak izi/arşivi yazılmıyordu.
     Döner: [{"source", "partial", "output", "cues"}] (terfi edilenler).
     """
     promoted = []
@@ -13184,50 +13191,90 @@ def promote_complete_partial_outputs(source_files, output_paths, target_language
             out_file = Path(out_path)
             if out_file.exists():
                 continue
-            partial = next(
-                (candidate for candidate in _partial_output_candidates(out_path)
-                 if Path(candidate).is_file()), None)
-            if partial is None:
-                continue
-            partial_blocks = list(parse_subtitle(str(partial)))
-            if not partial_blocks:
-                continue
             cues = list(parse_subtitle(
                 str(source_path), languages.get(str(source_path))))
-            if not cues or not _existing_output_is_complete(partial_blocks, cues):
+            if not cues:
                 continue
-            if not apply_changes:
+            source_hash = _file_content_sha256(source_path)
+            target_report_dir = (
+                Path(report_dir) if report_dir
+                else _resolve_report_dir("", str(out_file.parent)))
+            for candidate in _partial_output_candidates(out_path):
+                if not Path(candidate).is_file():
+                    continue
+                sidecar = _output_source_fingerprint_path(
+                    target_report_dir, candidate)
+                has_sidecar = sidecar.is_file()
+                provenance_ok = _output_matches_source_fingerprint(
+                    target_report_dir, candidate, source_path)
+                if has_sidecar and not provenance_ok:
+                    # KESİN kanıt: bu kısmi dosya BAŞKA bir kaynağa ait.
+                    # Terfi ettirmek eski çeviriyi yeni kaynağın finali yapardı
+                    # (denetim 2026-08-20, madde 43).
+                    if log_fn:
+                        log_fn(
+                            f"{Path(candidate).name}: kaynak parmak izi "
+                            "eşleşmiyor (kaynak değişmiş); terfi ettirilmedi.",
+                            "warn")
+                    continue
+                partial_blocks = list(parse_subtitle(str(candidate)))
+                if not partial_blocks:
+                    continue
+                if not _existing_output_is_complete(partial_blocks, cues):
+                    continue
+                if not apply_changes:
+                    promoted.append({
+                        "source": str(source_path), "partial": str(candidate),
+                        "output": str(out_file), "cues": len(partial_blocks)})
+                    break
+                delivery = _prepare_upload_ready_blocks(
+                    partial_blocks, target_language=target_language,
+                    log_fn=None, source_cues=cues)
+                write_srt(str(out_file), delivery, target_language)
+                audit = _subtitle_delivery_audit(
+                    str(source_path), str(out_file), target_language,
+                    languages.get(str(source_path)))
+                if _delivery_audit_has_hard_error(audit):
+                    # Terfi güvenli değil: nihai dosyayı geri al, kısmi kalsın.
+                    try:
+                        out_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    if log_fn:
+                        log_fn(
+                            f"{out_file.name}: kısmi dosya tam görünüyordu ama "
+                            "teslim denetiminden geçmedi; terfi ettirilmedi.",
+                            "warn")
+                    continue
+                if provenance_ok and not _write_output_source_fingerprint(
+                        target_report_dir, out_file, source_hash,
+                        source_path=source_path):
+                    # Provenance yazılamadıysa terfi TAMAMLANMAMIŞ sayılır.
+                    try:
+                        out_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    if log_fn:
+                        log_fn(
+                            f"{out_file.name}: kaynak parmak izi yazılamadı; "
+                            "terfi geri alındı, kısmi dosya korundu.", "err")
+                    continue
+                if not provenance_ok and log_fn:
+                    # Parmak izi yoksa iş KURTARILIR ama 'doğrulanmış' damgası
+                    # ALMAZ: sonraki koşu dosyayı yeniden denetler.
+                    log_fn(
+                        f"{out_file.name}: kısmi dosyanın kaynak parmak izi yoktu; "
+                        "terfi edildi ama doğrulanmış işareti yazılmadı.", "warn")
+                _clear_unfinished_run_marker(out_file)
                 promoted.append({
-                    "source": str(source_path), "partial": str(partial),
+                    "source": str(source_path), "partial": str(candidate),
                     "output": str(out_file), "cues": len(partial_blocks)})
-                continue
-            delivery = _prepare_upload_ready_blocks(
-                partial_blocks, target_language=target_language,
-                log_fn=None, source_cues=cues)
-            write_srt(str(out_file), delivery, target_language)
-            audit = _subtitle_delivery_audit(
-                str(source_path), str(out_file), target_language,
-                languages.get(str(source_path)))
-            if _delivery_audit_has_hard_error(audit):
-                # Terfi güvenli değil: nihai dosyayı geri al, kısmi dosya kalsın.
-                try:
-                    out_file.unlink(missing_ok=True)
-                except Exception:
-                    pass
                 if log_fn:
                     log_fn(
-                        f"{out_file.name}: kısmi dosya tam görünüyordu ama teslim "
-                        "denetiminden geçmedi; terfi ettirilmedi.", "warn")
-                continue
-            _clear_unfinished_run_marker(out_file)
-            promoted.append({
-                "source": str(source_path), "partial": str(partial),
-                "output": str(out_file), "cues": len(partial_blocks)})
-            if log_fn:
-                log_fn(
-                    f"Tamamlanmış kısmi çıktı terfi ettirildi: {out_file.name} "
-                    f"({len(partial_blocks)} cue, kaynak: {Path(partial).name})",
-                    "ok")
+                        f"Tamamlanmış kısmi çıktı terfi ettirildi: "
+                        f"{out_file.name} ({len(partial_blocks)} cue, kaynak: "
+                        f"{Path(candidate).name})", "ok")
+                break
         except Exception as exc:
             if log_fn:
                 log_fn(f"Kısmi çıktı terfi denemesi başarısız ({out_path}): {exc}",
@@ -32304,7 +32351,7 @@ class App(ctk.CTk):
                     promote_complete_partial_outputs(
                         [filepath], [out_path], tgt,
                         source_languages={str(filepath): file_src},
-                        log_fn=self._log)
+                        log_fn=self._log, report_dir=report_dir)
                 if out_path.exists():
                     try:
                         out_blocks = list(parse_subtitle(str(out_path)))
@@ -36525,7 +36572,7 @@ class App(ctk.CTk):
                     promote_complete_partial_outputs(
                         [filepath], [existing_output], tgt,
                         source_languages={str(filepath): file_src},
-                        log_fn=self._log)
+                        log_fn=self._log, report_dir=report_dir)
                 if existing_output.exists():
                     try:
                         existing_blocks = list(parse_subtitle(str(existing_output)))

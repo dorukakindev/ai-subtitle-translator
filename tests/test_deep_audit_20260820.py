@@ -366,5 +366,74 @@ class QualityRowSchemaTest(unittest.TestCase):
         # Native, Condense, Critic, QC, Nihai Anlam
         self.assertGreaterEqual(source.count("_quality_rows_schema_valid("), 5)
 
+class PartialPromotionProvenanceTest(unittest.TestCase):
+    """Madde 15, 43, 48: kısmi terfi kaynak kanıtına bağlı olmalı."""
+
+    def _fixture(self, partial_text, source_text, legacy_broken=False):
+        directory = Path(tempfile.mkdtemp())
+        reports = directory / "Raporlar"
+        reports.mkdir()
+        source = directory / "s.srt"
+        output = directory / "out.srt"
+        source.write_text(
+            "1\n00:00:01,000 --> 00:00:03,000\n%s\n" % source_text,
+            encoding="utf-8")
+        if legacy_broken:
+            (reports / "Kurtarma").mkdir()
+            broken = reports / "Kurtarma" / "out.partial.srt"
+            broken.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\n[HATA]\n", encoding="utf-8")
+            g._write_output_source_fingerprint(
+                reports, broken, g._file_content_sha256(source),
+                source_path=source)
+        partial = directory / "out.partial.srt"
+        partial.write_text(
+            "1\n00:00:01,000 --> 00:00:03,000\n%s\n" % partial_text,
+            encoding="utf-8")
+        return directory, source, output, reports, partial
+
+    def test_partial_of_a_different_source_is_never_promoted(self):
+        directory, source, output, reports, partial = self._fixture(
+            "Kahveyi severim.", "I like tea.")
+        other = directory / "other.srt"
+        other.write_text("1\n00:00:01,000 --> 00:00:03,000\nI like coffee.\n",
+                         encoding="utf-8")
+        g._write_output_source_fingerprint(
+            reports, partial, g._file_content_sha256(other), source_path=other)
+        promoted = g.promote_complete_partial_outputs(
+            [source], [output], "Turkish", report_dir=reports)
+        self.assertEqual(promoted, [])
+        self.assertFalse(output.exists())
+
+    def test_matching_fingerprint_promotes_and_signs(self):
+        _directory, source, output, reports, partial = self._fixture(
+            "Çayı severim.", "I like tea.")
+        g._write_output_source_fingerprint(
+            reports, partial, g._file_content_sha256(source),
+            source_path=source)
+        promoted = g.promote_complete_partial_outputs(
+            [source], [output], "Turkish", report_dir=reports)
+        self.assertEqual(len(promoted), 1)
+        self.assertTrue(g._output_matches_source_fingerprint(
+            reports, output, source))
+
+    def test_legacy_partial_is_recovered_but_not_stamped(self):
+        _directory, source, output, reports, _partial = self._fixture(
+            "Çayı severim.", "I like tea.")
+        promoted = g.promote_complete_partial_outputs(
+            [source], [output], "Turkish", report_dir=reports)
+        self.assertEqual(len(promoted), 1)
+        self.assertTrue(output.exists())
+        self.assertFalse(g._output_matches_source_fingerprint(
+            reports, output, source))
+
+    def test_broken_first_candidate_does_not_hide_a_healthy_one(self):
+        _directory, source, output, reports, _partial = self._fixture(
+            "Çayı severim.", "I like tea.", legacy_broken=True)
+        promoted = g.promote_complete_partial_outputs(
+            [source], [output], "Turkish", report_dir=reports)
+        self.assertEqual(len(promoted), 1)
+        self.assertTrue(output.exists())
+
 if __name__ == "__main__":
     unittest.main()
