@@ -826,6 +826,11 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
 
 class DeliveryCreditRegressionTest(unittest.TestCase):
+    def test_bracketed_fantasy_speech_and_horse_neigh_are_sdh(self):
+        for text in ("[black speech]", "[Horse neigh]"):
+            with self.subTest(text=text):
+                self.assertTrue(gui._source_cue_is_delivery_removable(text))
+
     def test_font_wrapped_music_card_is_delivery_sdh(self):
         text = '<font color="#ffffff">MÜZİK: The Fall\'dan "Kicker Conspiracy"</font>'
         self.assertTrue(gui._is_delivery_sdh_only(text))

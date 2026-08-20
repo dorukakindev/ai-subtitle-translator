@@ -343,7 +343,7 @@ _SDH_ACTION_VERBS = {
     "yelps", "yelping", "orgasms", "orgasming", "bursts", "dialling",
     "dialing", "kissing", "chokes", "choking", "sniffs", "sniffing",
     "wails", "wailing", "yawns", "yawning", "whirrs", "bleeping",
-    "play", "tolling", "beating", "jingle", "blasts",
+    "play", "tolling", "beating", "jingle", "blasts", "neigh",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -407,7 +407,7 @@ def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
             "banging hammer", "rubbing stone",
             "yabanci dilde", "savas komutlari", "komutlar",
             "dini torenler", "gaydacilar", "davul rulosu", "senlik",
-            "cekic darbesi", "tas ovalama"}:
+            "cekic darbesi", "tas ovalama", "black speech"}:
         return True
 
     words = key.split()
