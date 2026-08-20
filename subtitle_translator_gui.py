@@ -14094,9 +14094,33 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                     "crying", "shouting", "whispering", "chanting", "music",
                 }
             )
+            domain_or_url = (
+                source_is_english and reason == "identical_source"
+                and bool(re.fullmatch(
+                    r"(?:https?://)?(?:www\.)?[A-Za-z0-9-]+"
+                    r"(?:\.[A-Za-z0-9-]+)+(?:/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)?"
+                    r"[.!?…]?",
+                    visible,
+                ))
+            )
+            repeated_foreign_refrain = False
+            if source_is_english and reason == "identical_source":
+                refrain_words = [
+                    word.casefold() for word in re.findall(
+                        r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+", visible)
+                ]
+                repeated_foreign_refrain = (
+                    len(refrain_words) >= 2
+                    and len(set(refrain_words)) == 1
+                    and refrain_words[0] not in {
+                        "go", "no", "yes", "stop", "wait", "help", "please",
+                        "come", "look", "run", "hello", "goodbye", "sorry",
+                    }
+                )
             if (reason and not foreign_name_line and not list_tail_proper_name
                     and not quoted_foreign_reference and not foreign_term_context
-                    and not standalone_proper_name and not repeated_inline_term):
+                    and not standalone_proper_name and not repeated_inline_term
+                    and not domain_or_url and not repeated_foreign_refrain):
                 flagged.append(str(idx))
                 break
     return flagged

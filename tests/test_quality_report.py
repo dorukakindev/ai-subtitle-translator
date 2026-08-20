@@ -954,6 +954,18 @@ class BuildQualityReportTextTest(unittest.TestCase):
         )
         self.assertEqual(flagged, [])
 
+    def test_delivery_fragment_guard_preserves_domain_and_foreign_refrain(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Gamefly.com."),
+            ("2", "00:00:02,000 --> 00:00:03,000", "Toro, toro, toro."),
+        ]
+        flagged = gui._delivery_untranslated_fragment_ids(
+            blocks,
+            {"1": "Gamefly.com.", "2": "Toro, toro, toro."},
+            "Turkish", "English",
+        )
+        self.assertEqual(flagged, [])
+
     def test_delivery_audit_ignores_prose_colons_as_speaker_labels(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "source.srt"
