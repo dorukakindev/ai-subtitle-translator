@@ -5378,7 +5378,7 @@ def _normalize_qc_match_text(value) -> str:
     return re.sub(r"\s+", " ", _clean_source_text(str(value))).strip().casefold()
 
 
-def split_qc_issues_for_review(issues: list) -> tuple[list, list]:
+def split_qc_issues_for_review(issues: list, tgt_lang: str = "") -> tuple[list, list]:
     """Split QC issues into safe auto-fix candidates and manual-review issues."""
     auto_issues = []
     review_issues = []
@@ -5391,7 +5391,7 @@ def split_qc_issues_for_review(issues: list) -> tuple[list, list]:
         if severity in {"med", "low"}:
             ok, _reason = validate_polish_candidate(
                 issue.get("current", ""), issue.get("suggestion", ""),
-                source_text=issue.get("original", ""))
+                source_text=issue.get("original", ""), tgt_lang=tgt_lang)
             if ok:
                 auto_issues.append(issue)
                 continue
@@ -9367,8 +9367,7 @@ def semantic_reconciliation_pass(
                     old_text, new_text,
                     source_text=str(src_map.get(sid, "")),
                     neighbor_texts=neighbors,
-                    locked_terms=locked_terms,
-                )
+                    locked_terms=locked_terms, tgt_lang=tgt_lang)
                 if not ok and reason == "linebreak_count":
                     reflowed = _reflow_to_line_count(
                         new_text, old_text.count("\n") + 1
@@ -9384,8 +9383,7 @@ def semantic_reconciliation_pass(
                         old_text, reflowed,
                         source_text=str(src_map.get(sid, "")),
                         neighbor_texts=retry_neighbors,
-                        locked_terms=locked_terms,
-                    )
+                        locked_terms=locked_terms, tgt_lang=tgt_lang)
                     if ok:
                         proposals[sid] = reflowed
                         candidate_text[sid] = reflowed
@@ -11866,8 +11864,7 @@ def validate_semantic_reconciliation_candidate(
     candidate_text: str,
     source_text: str = "",
     neighbor_texts: list[str] | None = None,
-    locked_terms: dict | None = None,
-) -> tuple[bool, str]:
+    locked_terms: dict | None = None, tgt_lang: str = "") -> tuple[bool, str]:
     """Allow a source-driven retranslation while retaining structural and source guards."""
     old = str(original_text or "")
     new = str(candidate_text or "")
@@ -11898,8 +11895,7 @@ def validate_semantic_reconciliation_candidate(
     ok, reason = validate_polish_candidate(
         original_text, candidate_text,
         source_text=source_text, neighbor_texts=neighbor_texts,
-        locked_terms=locked_terms,
-    )
+        locked_terms=locked_terms, tgt_lang=tgt_lang)
     if ok or reason not in _SEMANTIC_REWRITE_REJECTIONS:
         return ok, reason
     # A candidate that failed only because it rewrites content cannot safely be
@@ -11913,7 +11909,7 @@ def validate_semantic_reconciliation_candidate(
 def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
                               group_expected: dict | None = None,
                               src_map: dict | None = None,
-                              locked_terms: dict | None = None) -> tuple[dict, int, dict]:
+                              locked_terms: dict | None = None, tgt_lang: str = "") -> tuple[dict, int, dict]:
     """Grup-atomik Polish kabul mantığı (bkz. plans/polish-group-atomicity-brief.md,
     plans/quality-round2-fixes-brief.md Görev B).
 
@@ -12003,7 +11999,7 @@ def apply_polish_group_atomic(proposals: dict, original_by_id: dict,
                 ) if s2)
             joined_ok, joined_reason = validate_polish_candidate(
                 old_joined, new_joined, source_text=src_joined,
-                locked_terms=locked_terms)
+                locked_terms=locked_terms, tgt_lang=tgt_lang)
             if not joined_ok:
                 key = "group_atomic_joined:" + str(joined_reason)
                 rejected += len(changed)
@@ -12285,8 +12281,7 @@ def consistency_sweep(
                         tr,
                         best_tr,
                         source_text=orig_text_dict.get(str(old_idx), ""),
-                        locked_terms=locked_terms,
-                    )
+                        locked_terms=locked_terms, tgt_lang=tgt_lang)
                     if not ok:
                         continue
                     result[pos] = (old_idx, old_ts, best_tr)
@@ -12321,8 +12316,7 @@ def final_consistency_sweep(
     log_fn=None,
     min_words: int = 3,
     locked_terms: dict | None = None,
-    apply_changes: bool = True,
-) -> tuple:
+    apply_changes: bool = True, tgt_lang: str = "") -> tuple:
     """Run a second, safety-checked consistency sweep after critic/polish edits."""
     swept, fixes = consistency_sweep(
         cues, tr_blocks, log_fn=None, min_words=min_words,
@@ -12351,8 +12345,7 @@ def final_consistency_sweep(
             old_text,
             new_text,
             source_text=orig_dict.get(str(old_idx), ""),
-            locked_terms=locked_terms,
-        )
+            locked_terms=locked_terms, tgt_lang=tgt_lang)
         if ok:
             result[pos] = (old_idx, old_ts, new_text)
             accepted += 1
@@ -13340,8 +13333,7 @@ def critic_pass_with_helper(
                                 final_text,
                                 source_text=orig_dict.get(fid, ""),
                                 neighbor_texts=neighbor_texts,
-                                locked_terms=glossary,
-                            )
+                                locked_terms=glossary, tgt_lang=tgt_lang)
                         )
                         if semantic_ok:
                             ok, reason = True, semantic_reason

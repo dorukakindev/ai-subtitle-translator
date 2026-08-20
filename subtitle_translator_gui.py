@@ -26688,7 +26688,7 @@ class App(ctk.CTk):
                         cues, blocks, log_fn=self._log,
                         locked_terms=self._get_locked_terms_dict(orig_path, tgt),
                         apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)))
+                            "quality_report_only", True)), tgt_lang=tgt)
 
                 # Çevrilemeyen satırları sync ile onarma denemesi
                 if missing_ids:
@@ -33358,7 +33358,7 @@ class App(ctk.CTk):
                     cues, sorted_blocks, log_fn=self._log,
                     locked_terms=_locked_terms,
                     apply_changes=not bool(self._snap_get(
-                        "quality_report_only", True)))
+                        "quality_report_only", True)), tgt_lang=tgt)
                 if _final_cons_fixes:
                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
 
@@ -35157,7 +35157,7 @@ class App(ctk.CTk):
                                     _orig_cues, pp, log_fn=self._log,
                                     locked_terms=_locked_terms,
                                     apply_changes=not bool(self._snap_get(
-                                        "quality_report_only", True)))
+                                        "quality_report_only", True)), tgt_lang=tgt)
                                 if _final_cons_fixes:
                                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp, _pass_history)
                             _before_pass = list(pp)
@@ -36036,7 +36036,7 @@ class App(ctk.CTk):
                         _src_cues, sorted_blocks, log_fn=self._log,
                         locked_terms=_locked_terms_for(fp),
                         apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)))
+                            "quality_report_only", True)), tgt_lang=_tgt_lang)
                     if _final_cons_fixes:
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
@@ -37545,7 +37545,7 @@ class App(ctk.CTk):
                                 cues, pp_blocks, log_fn=self._log,
                                 locked_terms=_file_locked_terms,
                                 apply_changes=not bool(self._snap_get(
-                                    "quality_report_only", True)))
+                                    "quality_report_only", True)), tgt_lang=tgt)
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)

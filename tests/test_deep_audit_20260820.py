@@ -705,5 +705,47 @@ class BatchMissingCountOrderTest(unittest.TestCase):
         self.assertNotIn("_hata_n_pre, _ = _count_hata_cps(_final_blocks)", source)
         self.assertNotIn("_hata_n_pre, _ = _count_hata_cps(pp)", source)
 
+class PostPassTargetLanguageTest(unittest.TestCase):
+    """Madde 29: kabul zinciri hedef dili taşımalı."""
+
+    CHAIN = ("split_qc_issues_for_review",
+             "validate_semantic_reconciliation_candidate",
+             "apply_polish_group_atomic",
+             "final_consistency_sweep",
+             "consistency_sweep")
+
+    def test_every_acceptance_function_accepts_a_target_language(self):
+        import inspect
+        for name in self.CHAIN:
+            with self.subTest(name=name):
+                signature = inspect.signature(getattr(ht, name))
+                self.assertIn("tgt_lang", signature.parameters)
+
+    def test_german_candidate_is_not_judged_by_turkish_rules(self):
+        ok, _reason = ht.validate_polish_candidate(
+            "Ich weiß nicht.", "Ich weiß es nicht.", "I do not know.",
+            tgt_lang="German")
+        self.assertTrue(ok)
+
+    def test_turkish_rules_still_apply_for_turkish(self):
+        ok, reason = ht.validate_polish_candidate(
+            "Bilmiyorum.", "Biliyorum.", "I do not know.", tgt_lang="Turkish")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "source_negation")
+
+    def test_gui_passes_the_target_language_to_the_sweep(self):
+        source = io.open(
+            os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "subtitle_translator_gui.py"),
+            encoding="utf-8").read()
+        lines = source.split("\n")
+        calls = [index for index, line in enumerate(lines)
+                 if "ht.final_consistency_sweep(" in line]
+        self.assertTrue(calls)
+        for index in calls:
+            window = "\n".join(lines[index:index + 8])
+            with self.subTest(line=index + 1):
+                self.assertIn("tgt_lang=", window)
+
 if __name__ == "__main__":
     unittest.main()
