@@ -3683,6 +3683,10 @@ def _is_delivery_sdh_only(text: str) -> bool:
     if not value:
         return False
     if re.fullmatch(
+            r"(?:music|müzik|musique|musik)\s*:\s*[^\r\n]{1,160}",
+            value, re.IGNORECASE):
+        return True
+    if re.fullmatch(
             r"[\[(]\s*(?:(?:louder|faint|distant)\s+)?sounds?\s+of\b"
             r"[^\])\r\n]{1,100}[\])]",
             value, re.IGNORECASE):

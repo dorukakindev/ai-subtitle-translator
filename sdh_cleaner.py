@@ -999,6 +999,7 @@ def _is_heading_label(label_text: str) -> bool:
 
 
 def _src_has_plain_speaker_label(src_line: str) -> bool:
+    src_line = FORMAT_TAG_RE.sub("", str(src_line or ""))
     m = _SRC_PLAIN_SPEAKER_LABEL_RE.search(src_line)
     if not m:
         return False
@@ -1052,13 +1053,15 @@ _SRC_QUOTED_SPEAKER_PREFIX_RE = re.compile(
 
 
 def _target_is_source_speaker_label_only(tr_line: str, src_line: str) -> bool:
-    if not _TR_LABEL_ONLY_RE.fullmatch(str(tr_line or "")):
+    tr_plain = FORMAT_TAG_RE.sub("", str(tr_line or ""))
+    src_plain = FORMAT_TAG_RE.sub("", str(src_line or ""))
+    if not _TR_LABEL_ONLY_RE.fullmatch(tr_plain):
         return False
-    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(str(src_line or ""))
+    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(src_plain)
     if not source_match:
         return False
     source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
-    target_label = str(tr_line or "").strip().lstrip("-").rstrip(":").strip()
+    target_label = tr_plain.strip().lstrip("-").rstrip(":").strip()
     source_key = _plain_speaker_label_key(source_label)
     target_key = _plain_speaker_label_key(target_label)
     mapped = _SPEAKER_LABEL_TRANSLATIONS.get(source_key, source_label)
@@ -1074,8 +1077,10 @@ def _plain_speaker_label_key(value: str) -> str:
 
 
 def _target_has_source_plain_speaker_label(tr_line: str, src_line: str) -> bool:
-    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(str(src_line or ""))
-    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(str(tr_line or ""))
+    source_match = _SRC_PLAIN_SPEAKER_LABEL_RE.search(
+        FORMAT_TAG_RE.sub("", str(src_line or "")))
+    target_match = _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE.search(
+        FORMAT_TAG_RE.sub("", str(tr_line or "")))
     if not source_match or not target_match:
         return False
     source_label = source_match.group(0).strip().lstrip("-").rstrip(":").strip()
