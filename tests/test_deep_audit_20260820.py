@@ -824,5 +824,32 @@ class DeletedProfileLeavesNothingBehindTest(unittest.TestCase):
         stub = types.SimpleNamespace()
         g.App._clear_role_custom_fields(stub, "critic")
 
+class PollLayerDoesNotFinalizeTest(unittest.TestCase):
+    """Madde 28: son batch terminal olunca run hemen finalize edilmemeli."""
+
+    def _body(self, name):
+        import ast
+        path = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "subtitle_translator_gui.py")
+        source = io.open(path, encoding="utf-8").read()
+        lines = source.split("\n")
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return [line for line in lines[node.lineno - 1:node.end_lineno]
+                        if not line.strip().startswith("#")]
+        self.fail(f"{name} bulunamadı")
+
+    def test_poll_helpers_never_release_the_run(self):
+        for name in ("_wait_batch", "_wait_batch_hybrid"):
+            with self.subTest(name=name):
+                body = "\n".join(self._body(name))
+                self.assertNotIn("_set_running(False)", body)
+
+    def test_callers_still_finalize(self):
+        for name in ("_run_batch", "_resume_batches", "_run_hybrid"):
+            with self.subTest(name=name):
+                body = "\n".join(self._body(name))
+                self.assertIn("_set_running(False)", body)
+
 if __name__ == "__main__":
     unittest.main()

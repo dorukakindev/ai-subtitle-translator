@@ -35616,8 +35616,13 @@ class App(ctk.CTk):
                 time.sleep(1)
 
         if is_last:
-            self._set_running(False)
-            self._set_status("Tamamlandı." if not self._stop_flag else "Durduruldu.")
+            # Poll katmanı run'ı FİNALİZE ETMEZ: aynı worker bu çağrıdan
+            # sonra _retry_hata, _write_results ve kalite geçişlerini
+            # sürdürüyor. Erken _set_running(False) UI'yi serbest bırakıp
+            # kullanıcının aynı çıktı üzerinde yeni koşu başlatmasına izin
+            # veriyordu (denetim 2026-08-20, madde 28). Durumu yalnız
+            # göster; finalize çağıranın sonundadır.
+            self._set_status("Batch sonuçları işleniyor...")
         return terminal
 
     def _wait_batch(self, client, batch_id, file_map, output_dir, requests_list=None, is_last=True):
@@ -35690,8 +35695,13 @@ class App(ctk.CTk):
                 time.sleep(1)
 
         if is_last:
-            self._set_running(False)
-            self._set_status("Tamamlandı." if not self._stop_flag else "Durduruldu.")
+            # Poll katmanı run'ı FİNALİZE ETMEZ: aynı worker bu çağrıdan
+            # sonra _retry_hata, _write_results ve kalite geçişlerini
+            # sürdürüyor. Erken _set_running(False) UI'yi serbest bırakıp
+            # kullanıcının aynı çıktı üzerinde yeni koşu başlatmasına izin
+            # veriyordu (denetim 2026-08-20, madde 28). Durumu yalnız
+            # göster; finalize çağıranın sonundadır.
+            self._set_status("Batch sonuçları işleniyor...")
 
         return batch_raw_map, terminal
 
