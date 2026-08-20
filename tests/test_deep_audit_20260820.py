@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import time
 import unittest
 from pathlib import Path
@@ -487,6 +488,114 @@ class StandaloneBatchSafetyTest(unittest.TestCase):
         self.assertEqual(result["failed_ids"], {"a"})
         written = sorted(path.name for path in output.rglob("*.srt"))
         self.assertEqual(written, ["source.partial.srt"])
+
+class VideoCacheIntegrityTest(unittest.TestCase):
+    """Madde 26, 31: video cache kimliği ve payload bütünlüğü."""
+
+    def test_middle_of_file_change_invalidates_the_fingerprint(self):
+        import os
+        import video_subtitles as vs
+        directory = Path(tempfile.mkdtemp())
+        video = directory / "v.mkv"
+        payload = bytearray(b"A" * 262144)
+        video.write_bytes(bytes(payload))
+        stat = video.stat()
+        before = vs._source_fingerprint(video)
+        payload[131072:131136] = b"B" * 64
+        video.write_bytes(bytes(payload))
+        os.utime(video, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        self.assertEqual(video.stat().st_size, stat.st_size)
+        self.assertEqual(video.stat().st_mtime_ns, stat.st_mtime_ns)
+        self.assertNotEqual(before, vs._source_fingerprint(video))
+
+    def test_broken_payload_is_not_a_valid_cache(self):
+        import video_subtitles as vs
+        directory = Path(tempfile.mkdtemp())
+        subtitle = directory / "c.srt"
+        subtitle.write_text("1\n00:00:01,000 --> 00:00:02,000\nMerhaba.\n",
+                            encoding="utf-8")
+        self.assertTrue(vs._payload_has_timestamp(subtitle))
+        subtitle.write_text("broken-but-nonempty", encoding="utf-8")
+        self.assertFalse(vs._payload_has_timestamp(subtitle))
+
+    def test_ass_payload_is_accepted(self):
+        import video_subtitles as vs
+        directory = Path(tempfile.mkdtemp())
+        subtitle = directory / "c.ass"
+        subtitle.write_text(
+            "[Events]\nDialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Hi\n",
+            encoding="utf-8")
+        self.assertTrue(vs._payload_has_timestamp(subtitle))
+
+
+class OutputBoundFingerprintTest(unittest.TestCase):
+    """Madde 35, 36: parmak izi onaylanan ÇIKTIYA da bağlı olmalı."""
+
+    def _fixture(self):
+        directory = Path(tempfile.mkdtemp())
+        reports = directory / "Raporlar"
+        reports.mkdir()
+        source = directory / "s.srt"
+        output = directory / "o.srt"
+        source.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nI see the red door.\n",
+            encoding="utf-8")
+        output.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nKırmızı kapıyı görüyorum.\n",
+            encoding="utf-8")
+        g._write_output_source_fingerprint(
+            reports, output, g._file_content_sha256(source), source_path=source)
+        return reports, source, output
+
+    def test_untouched_output_matches(self):
+        reports, source, output = self._fixture()
+        self.assertTrue(g._output_matches_source_fingerprint(
+            reports, output, source))
+
+    def test_externally_edited_output_no_longer_matches(self):
+        reports, source, output = self._fixture()
+        output.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nMavi kapıyı görüyorum.\n",
+            encoding="utf-8")
+        self.assertFalse(g._output_matches_source_fingerprint(
+            reports, output, source))
+
+    def test_source_only_check_can_be_requested(self):
+        reports, source, output = self._fixture()
+        output.write_text("değişti", encoding="utf-8")
+        self.assertTrue(g._output_matches_source_fingerprint(
+            reports, output, source, verify_output=False))
+
+    def test_legacy_plain_hash_sidecar_still_works(self):
+        reports, source, output = self._fixture()
+        sidecar = g._output_source_fingerprint_path(reports, output)
+        sidecar.write_text(g._file_content_sha256(source), encoding="utf-8")
+        self.assertTrue(g._output_matches_source_fingerprint(
+            reports, output, source))
+
+
+class AutoShutdownGenerationTest(unittest.TestCase):
+    """Madde 27: eski kapanış callback'i yeni koşuyu kapatmamalı."""
+
+    def _stub(self):
+        stub = types.SimpleNamespace()
+        stub._log = lambda *args, **kwargs: None
+        stub._complete_session_log_text = lambda: "log"
+        stub._auto_shutdown_scheduled_run_id = "RUN-B"
+        stub._is_running = False
+        return stub
+
+    def test_callback_from_a_previous_run_is_ignored(self):
+        stub = self._stub()
+        self.assertFalse(g.App._export_log_and_shutdown(
+            stub, {"run_id": "RUN-A"}, scheduled_run_id="RUN-A"))
+
+    def test_callback_is_ignored_while_a_run_is_active(self):
+        stub = self._stub()
+        stub._auto_shutdown_scheduled_run_id = "RUN-A"
+        stub._is_running = True
+        self.assertFalse(g.App._export_log_and_shutdown(
+            stub, {"run_id": "RUN-A"}, scheduled_run_id="RUN-A"))
 
 if __name__ == "__main__":
     unittest.main()

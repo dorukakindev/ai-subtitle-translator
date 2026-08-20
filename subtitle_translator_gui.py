@@ -12610,6 +12610,18 @@ def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
                 and Path(str(state.get("output_path"))).is_file()
                 for _path, state in members):
             continue
+        # İşaret yazılmadan ÖNCE her çıktının kaynak+çıktı parmak izi yeniden
+        # doğrulanır: eskiden yalnız 'done' ve 'dosya var' yeterliydi, uzun
+        # koşuda dışarıdan değiştirilen bir çıktı yine ÇEVRİLDİ alıyordu
+        # (denetim 2026-08-20, madde 35).
+        marker_report_dir = _resolve_report_dir(
+            str(settings.get("input_dir") or ""),
+            str(settings.get("output_dir") or ""))
+        if not all(
+                _output_matches_source_fingerprint(
+                    marker_report_dir, str(state.get("output_path")), path)
+                for path, state in members):
+            continue
         tracked = {
             os.path.normcase(os.path.abspath(path))
             for path, _state in members
@@ -13094,14 +13106,6 @@ def _output_source_fingerprint_path(report_dir, output_path) -> Path:
     return Path(report_dir) / f"{Path(output_path).stem}.{token}.source.sha256"
 
 
-def _output_matches_source_fingerprint(report_dir, output_path, source_path) -> bool:
-    sidecar = _output_source_fingerprint_path(report_dir, output_path)
-    try:
-        expected = sidecar.read_text(encoding="utf-8").strip()
-    except Exception:
-        return False
-    return bool(expected) and expected == _file_content_sha256(source_path)
-
 
 def _archive_delivery_source(source_path, output_path, source_hash="") -> Path:
     source = Path(source_path)
@@ -13132,8 +13136,37 @@ def _archive_delivery_source(source_path, output_path, source_hash="") -> Path:
     return candidate
 
 
+def _read_output_source_fingerprint(report_dir, output_path) -> dict:
+    """Sidecar'ı oku. Eski biçim (düz kaynak SHA metni) da desteklenir."""
+    sidecar = _output_source_fingerprint_path(report_dir, output_path)
+    try:
+        raw = sidecar.read_text(encoding="utf-8").strip()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "source": str(payload.get("source") or "").strip(),
+            "output": str(payload.get("output") or "").strip(),
+        }
+    return {"source": raw, "output": ""}
+
+
 def _write_output_source_fingerprint(report_dir, output_path, source_hash,
                                      source_path=None) -> bool:
+    """Kaynak VE onaylanmış çıktı parmak izini yan dosyaya yazar.
+
+    Eskiden yalnız kaynak SHA'sı tutuluyordu; kaynak değişmediği sürece final
+    dışarıdan anlamı değiştirilecek biçimde düzenlense bile eşleşme sürüyordu
+    (denetim 2026-08-20, madde 36). Artık onaylanan çıktının hash'i de yazılır.
+    """
     if not source_hash:
         return False
     try:
@@ -13141,10 +13174,32 @@ def _write_output_source_fingerprint(report_dir, output_path, source_hash,
             _archive_delivery_source(source_path, output_path, source_hash)
         path = _output_source_fingerprint_path(report_dir, output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, str(source_hash).strip(), encoding="utf-8")
+        payload = {
+            "source": str(source_hash).strip(),
+            "output": _file_content_sha256(output_path),
+        }
+        atomic_write_text(
+            path, json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return True
     except Exception:
         return False
+
+
+def _output_matches_source_fingerprint(report_dir, output_path, source_path,
+                                       verify_output: bool = True) -> bool:
+    """Kayıtlı parmak izi hem kaynağı hem (varsa) çıktıyı doğruluyor mu?
+
+    verify_output=False yalnız kaynak eşleşmesini sorar (kısmi dosya adaylığı
+    gibi, çıktının değişmesi beklenen durumlar için).
+    """
+    payload = _read_output_source_fingerprint(report_dir, output_path)
+    expected_source = payload.get("source") or ""
+    if not expected_source or expected_source != _file_content_sha256(source_path):
+        return False
+    expected_output = payload.get("output") or ""
+    if verify_output and expected_output:
+        return expected_output == _file_content_sha256(output_path)
+    return True
 
 
 def _partial_output_recovery_allowed(report_dir, partial_path, source_path,
@@ -20860,7 +20915,20 @@ class App(ctk.CTk):
                 "Loglar panoya kopyalanamadı. Başka bir uygulama panoyu kilitlemiş olabilir.")
             return False
 
-    def _export_log_and_shutdown(self, record: dict):
+    def _export_log_and_shutdown(self, record: dict, scheduled_run_id: str = ""):
+        self.__dict__.pop("_auto_shutdown_after_id", None)
+        # Callback tetiklendiğinde koşu hâlâ güncel ve uygulama boşta olmalı.
+        if scheduled_run_id and scheduled_run_id != getattr(
+                self, "_auto_shutdown_scheduled_run_id", ""):
+            self._log(
+                "Otomatik kapanış iptal edildi: plan başka bir çalışmaya aitti.",
+                "warn")
+            return False
+        if getattr(self, "_is_running", False):
+            self._log(
+                "Otomatik kapanış iptal edildi: yeni bir çeviri çalışıyor.",
+                "warn")
+            return False
         run_id = re.sub(
             r"[^0-9A-Za-z_-]+", "_", str(record.get("run_id") or "son"))
         self._log(
@@ -21043,15 +21111,35 @@ class App(ctk.CTk):
             "info",
         )
         try:
-            self.after(
+            after_id = self.after(
                 2500,
-                lambda _record=copy.deepcopy(record):
-                    self._export_log_and_shutdown(_record),
+                lambda _record=copy.deepcopy(record), _run=run_id:
+                    self._export_log_and_shutdown(_record, scheduled_run_id=_run),
             )
+            # Callback kimliği saklanır: yeni bir koşu başlarsa bekleyen kapanış
+            # iptal edilmeli. Eskiden A koşusunun 2,5 sn'lik callback'i, o arada
+            # başlatılan B koşusunun ortasında bilgisayarı kapatabiliyordu
+            # (denetim 2026-08-20, madde 27).
+            self._auto_shutdown_after_id = after_id
             return True
         except Exception as exc:
             self._log(f"Otomatik kapanış zamanlanamadı: {exc}", "err")
             return False
+
+    def _cancel_pending_auto_shutdown(self) -> bool:
+        """Bekleyen otomatik kapanışı iptal eder (yeni koşu başlarken)."""
+        after_id = self.__dict__.pop("_auto_shutdown_after_id", None)
+        self._auto_shutdown_scheduled_run_id = ""
+        if after_id is None:
+            return False
+        try:
+            self.after_cancel(after_id)
+        except Exception:
+            pass
+        self._log(
+            "Yeni çalışma başladı; bekleyen otomatik kapanış iptal edildi.",
+            "warn")
+        return True
 
     def _on_shutdown_when_done_changed(self):
         enabled = bool(self.shutdown_when_done_var.get())
@@ -26163,6 +26251,9 @@ class App(ctk.CTk):
         messagebox.showinfo("Tahmini Maliyet Hesabı", "\n".join(details))
 
     def _start(self):
+        # Yeni çalışma, önceki koşudan kalan otomatik kapanışı iptal eder
+        # (denetim 2026-08-20, madde 27).
+        App._cancel_pending_auto_shutdown(self)
 
         if getattr(self, "_api_translation_test_busy", False):
             messagebox.showwarning(

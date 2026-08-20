@@ -135,18 +135,33 @@ def probe_subtitle_streams(video_path, runner=subprocess.run, which=shutil.which
 
 
 def _source_fingerprint(video: Path) -> str:
+    """Videonun kimliği. Örnekleme baş/son ile SINIRLI DEĞİL.
+
+    Eskiden yalnız boyut, mtime ve ilk/son 64 KiB kapsanıyordu; aynı boyut ve
+    mtime ile ortası değiştirilmiş bir video eski gömülü altyazı cache'ini geri
+    veriyordu (denetim 2026-08-20, madde 26). Artık dosya boyunca eşit aralıklı
+    parçalar da örneklenir: tam hash büyük videolarda pahalı, çoklu örnekleme
+    ise orta bölge değişimini yakalar.
+    """
     stat = video.stat()
     sample_size = 65536
+    digest = hashlib.sha256()
     with video.open("rb") as handle:
-        head = handle.read(sample_size)
+        handle.seek(0)
+        digest.update(handle.read(sample_size))
         if stat.st_size > sample_size:
+            # Dosya boyunca 8 ara nokta: ortadaki değişiklikler de imzaya girer.
+            for step in range(1, 9):
+                offset = (stat.st_size * step) // 9
+                handle.seek(max(0, min(offset, stat.st_size - 1)))
+                digest.update(b"\0")
+                digest.update(handle.read(sample_size))
             handle.seek(max(stat.st_size - sample_size, 0))
-            tail = handle.read(sample_size)
-        else:
-            tail = b""
-    sample_digest = hashlib.sha256(head + b"\0" + tail).hexdigest()
+            digest.update(b"\0")
+            digest.update(handle.read(sample_size))
     identity = (
-        f"{video.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}\0{sample_digest}"
+        f"{video.resolve()}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
+        f"{digest.hexdigest()}"
     ).encode("utf-8", errors="surrogatepass")
     return hashlib.sha256(identity).hexdigest()[:20]
 
@@ -217,6 +232,19 @@ def extracted_video_language(subtitle_path) -> str:
     return str(extracted_video_metadata(subtitle_path).get("language") or "").strip()
 
 
+_SUBTITLE_TIMESTAMP_RE = re.compile(
+    r"\d{1,2}:\d{2}:\d{2}[.,]\d{2,3}\s*(?:-->|,)")
+
+
+def _payload_has_timestamp(path: Path) -> bool:
+    """Dosyada en az bir altyazı zaman damgası var mı (SRT/VTT/ASS ortak)."""
+    try:
+        head = path.read_bytes()[:65536].decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(_SUBTITLE_TIMESTAMP_RE.search(head))
+
+
 def _cached_extraction_matches(output: Path, video: Path,
                                stream: SubtitleStream) -> bool:
     if not output.is_file() or output.stat().st_size <= 0:
@@ -226,6 +254,11 @@ def _cached_extraction_matches(output: Path, video: Path,
         cached_source = Path(str(payload.get("source_video") or "")).resolve()
         cached_index = int(payload.get("stream_index"))
     except (OSError, TypeError, ValueError):
+        return False
+    # Cache yalnız 'boş değil' diye geçerli sayılıyordu; bozuk ama dolu
+    # payload yeniden çıkarımı engelliyordu (denetim 2026-08-20, madde 31).
+    # Biçimden bağımsız asgari bütünlük: en az bir zaman damgası olmalı.
+    if not _payload_has_timestamp(output):
         return False
     return (
         cached_source == video.resolve()

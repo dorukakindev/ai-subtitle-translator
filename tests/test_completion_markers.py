@@ -16,6 +16,13 @@ class CompletionMarkerTest(unittest.TestCase):
             output_path = output_dir / f"{Path(source_path).stem}.tr.srt"
             output_path.write_text("translated", encoding="utf-8")
             state.setdefault("output_path", str(output_path))
+            # İşaret artık kaynak+çıktı parmak izini yeniden doğruluyor
+            # (denetim 2026-08-20, madde 35); fixture bunu da kurmalı.
+            report_dir = gui._resolve_report_dir("", str(output_dir))
+            report_dir.mkdir(parents=True, exist_ok=True)
+            gui._write_output_source_fingerprint(
+                report_dir, output_path,
+                gui._file_content_sha256(source_path))
         return {
             "run_id": "run-marker",
             "started_at": "2026-07-31T20:00:00",
@@ -151,6 +158,12 @@ class CompletionMarkerTest(unittest.TestCase):
                     patch.object(
                         gui, "state_path",
                         side_effect=lambda _file, *parts: temp.joinpath(*parts)):
+                # Rapor klasörü bu testte temp'e yamalandığı için parmak izi
+                # oraya da yazılmalı (madde 35 doğrulaması).
+                gui._write_output_source_fingerprint(
+                    temp,
+                    record["files"][str(source)]["output_path"],
+                    gui._file_content_sha256(source))
                 result = gui.App._finalize_run_record(stub)
             marker = root / "ÇEVRİLDİ.txt"
             self.assertTrue(marker.exists())
@@ -176,6 +189,12 @@ class CompletionMarkerTest(unittest.TestCase):
             first_output.parent.mkdir()
             first_output.write_text("translated", encoding="utf-8")
             second_output.write_text("translated", encoding="utf-8")
+            report_dir = gui._resolve_report_dir("", str(base / "out"))
+            report_dir.mkdir(parents=True, exist_ok=True)
+            for source, output in ((first_source, first_output),
+                                   (second_source, second_output)):
+                gui._write_output_source_fingerprint(
+                    report_dir, output, gui._file_content_sha256(source))
             record = {
                 "run_id": "run-marker", "ended_at": "now",
                 "settings": {

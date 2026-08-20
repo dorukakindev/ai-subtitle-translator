@@ -8,6 +8,13 @@ from unittest import mock
 import video_subtitles as vs
 
 
+_SAMPLE_SUBTITLE = (
+    "1\n"
+    "00:00:01,000 --> 00:00:02,000\n"
+    "Merhaba.\n"
+)
+
+
 class VideoSubtitleTests(unittest.TestCase):
     def test_probe_returns_text_and_bitmap_streams(self):
         with tempfile.TemporaryDirectory() as td:
@@ -110,7 +117,7 @@ class VideoSubtitleTests(unittest.TestCase):
 
             def runner(command, **_kwargs):
                 calls.append(command)
-                Path(command[-1]).write_text("subtitle", encoding="utf-8")
+                Path(command[-1]).write_text(_SAMPLE_SUBTITLE, encoding="utf-8")
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 
             with mock.patch.object(vs.tempfile, "gettempdir", return_value=td):
@@ -188,8 +195,8 @@ class VideoSubtitleTests(unittest.TestCase):
                 second = vs._cache_root(mp4) / "second.srt"
                 first.parent.mkdir(parents=True)
                 second.parent.mkdir(parents=True)
-                first.write_text("subtitle", encoding="utf-8")
-                second.write_text("subtitle", encoding="utf-8")
+                first.write_text(_SAMPLE_SUBTITLE, encoding="utf-8")
+                second.write_text(_SAMPLE_SUBTITLE, encoding="utf-8")
                 vs._write_json_atomic(vs._origin_sidecar(first), {
                     "source_video": str(mkv.resolve()), "language": "eng"})
                 vs._write_json_atomic(vs._origin_sidecar(second), {
@@ -208,7 +215,7 @@ class VideoSubtitleTests(unittest.TestCase):
             video = root / "Film.mkv"
             subtitle = root / "downloaded.srt"
             video.write_bytes(b"video")
-            subtitle.write_text("subtitle", encoding="utf-8")
+            subtitle.write_text(_SAMPLE_SUBTITLE, encoding="utf-8")
             vs._write_json_atomic(vs._origin_sidecar(subtitle), {
                 "source_video": str(video.resolve()),
                 "stream_index": 2,
