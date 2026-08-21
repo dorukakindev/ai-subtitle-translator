@@ -12,7 +12,16 @@ import unicodedata
 from pathlib import Path
 
 
-_SOURCE_HTML_TAG = re.compile(r'</?[a-zA-Z][^>]*>')
+# WebVTT/SRT'de GERÇEKTEN desteklenen biçim etiketleri. Eskiden desen
+# `</?[a-zA-Z][^>]*>` idi, yani harfle başlayan HER `<...>` parçası etiket
+# sayılıyordu: 'Press <Enter> now.', 'The variable <x>' ve
+# '<PRIVATE_PERSON>' gibi anlam taşıyan kaynak metin API'ye gitmeden
+# siliniyordu (denetim 2026-08-21, madde 2). Artık yalnız bu allowlist
+# temizlenir; bilinmeyen `<...>` parçaları veri olarak korunur.
+_SOURCE_HTML_TAG = re.compile(
+    r'</?\s*(?:i|b|u|s|em|strong|font|ruby|rt|rp|v|c|lang|br|span)(?:[.\s][^>]*)?\s*/?>',
+    re.IGNORECASE,
+)
 _SOURCE_MALFORMED_FORMAT_TAG = re.compile(
     r'<\s*/?\s*(?:i|b|u|font)\b[^>]*>',
     re.IGNORECASE,
@@ -393,15 +402,51 @@ _UNUSUAL_SPACE_CHARS = frozenset("       "
                                  "       　")
 
 
+# Bu üç karakter ARTEFAKT DEĞİL, anlam taşır:
+#   U+200D ZWJ   — emoji dizisini tek gliften yapar (👩‍👩‍👧‍👦),
+#   U+200C ZWNJ  — Farsça/Arapça/Hintçe yazımında harf birleşimini keser,
+#   U+2066-2069  — bidi isolate; RTL metindeki Latin ad/sayının görsel
+#                  sırasını korur.
+# Hepsi hedef dilden bağımsız siliniyordu: aile emojisi dört ayrı glife
+# düşüyor, Arapça altyazıda Latin isimlerin sırası bozulabiliyordu
+# (denetim 2026-08-21, madde 5). Artık BAĞLAMA bakılır.
+_JOINER_CHARS = frozenset("\u200c\u200d")
+_BIDI_ISOLATE_CHARS = frozenset("\u2066\u2067\u2068\u2069")
+_LATIN_LETTER_RE = re.compile(r"[A-Za-z\u00c0-\u024f]")
+
+
+def _joiner_is_meaningful(value: str, position: int) -> bool:
+    """ZWJ/ZWNJ burada gerçek bir birleştirici mi?
+
+    Latin harfleri ARASINDA duruyorsa kopyala-yapıştır artefaktıdır ve
+    silinir (eski davranış). Emoji/sembol ya da Latin dışı yazı arasında
+    duruyorsa anlam taşır ve korunur."""
+    before = value[position - 1] if position > 0 else ""
+    after = value[position + 1] if position + 1 < len(value) else ""
+    if not before or not after:
+        return False
+    if _LATIN_LETTER_RE.match(before) and _LATIN_LETTER_RE.match(after):
+        return False
+    return True
+
+
 def normalize_subtitle_control_artifacts(text: str) -> str:
     """Repair model-emitted NUL+hex escapes and remove other C0 controls.
 
     Ayrıca sıfır-genişlik/BOM/yön işareti gibi görünmez biçim karakterlerini SİLER
-    ve alışılmadık boşlukları normal boşluğa indirger."""
+    ve alışılmadık boşlukları normal boşluğa indirger. ZWJ/ZWNJ ve bidi
+    isolate işaretleri anlam taşıdıkları bağlamda KORUNUR."""
     value = _NUL_HEX_ARTIFACT_RE.sub(
         lambda match: chr(int(match.group(1), 16)), str(text or ""))
     out = []
-    for char in value:
+    for position, char in enumerate(value):
+        if char in _BIDI_ISOLATE_CHARS:
+            out.append(char)
+            continue
+        if char in _JOINER_CHARS:
+            if _joiner_is_meaningful(value, position):
+                out.append(char)
+            continue
         if char in _INVISIBLE_FORMAT_CHARS:
             continue
         if char in _UNUSUAL_SPACE_CHARS:
@@ -1026,6 +1071,55 @@ def parse_any(filepath: str, lyric_language: str | None = None) -> list:
     if ext in ('.ass', '.ssa'):
         return parse_ass(filepath, lyric_language=lyric_language)
     return []
+
+
+# ── Görünür anlam katmanı ────────────────────────────────────────────────
+# Eksik/hatalı çeviri denetimleri HAM dize üzerinde yapılıyordu: '[HATA]'
+# yalnız dizenin BAŞINDA aranıyor, biçim etiketleri hiç soyulmuyordu. Bu
+# yüzden '<i>[HATA]</i>', '<i></i>' ve '—' gibi teslim edilemez hedefler
+# tamamlanma, teslim denetimi ve TM kapılarının üçünden de geçiyordu
+# (denetim 2026-08-21, madde 1). Bu katman üç kapının ortak ölçütüdür.
+_VISIBLE_MARKUP_RE = re.compile(r"</?[a-zA-Z][^>]*>|\{[^{}]*\}")
+_VISIBLE_INVISIBLE_RE = re.compile(
+    "[\u00ad\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
+_TRANSLATION_FAILURE_MARKER_RE = re.compile(
+    r"\[\s*(?:HATA|ÇEVİRİ\s+EKSİK)", re.IGNORECASE)
+_WORDLIKE_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def visible_semantic_text(value) -> str:
+    """Biçim etiketleri ve görünmez kontroller çıkarılmış görünür metin."""
+    text = _VISIBLE_MARKUP_RE.sub("", str(value or ""))
+    text = _VISIBLE_INVISIBLE_RE.sub("", text)
+    return text.strip()
+
+
+def has_visible_wordlike_text(value) -> bool:
+    """Görünür metinde en az bir harf var mı?"""
+    return bool(_WORDLIKE_RE.search(visible_semantic_text(value)))
+
+
+def translation_failure_reason(target, source=None) -> str:
+    """Bu hedef teslim edilebilir mi? Edilemezse nedeni, edilebilirse ''.
+
+    `source` verilmezse yalnız hedefin kendisinden anlaşılan hatalar
+    (hata işareti, görünür içeriğin tamamen boş olması) bildirilir.
+    Kaynak verilirse sözcük taşıyan bir kaynağın karşısındaki sözcüksüz
+    hedef ('...', '—') de hata sayılır; kaynağın kendisi sözcüksüzse
+    aynı hedef meşrudur."""
+    raw = str(target or "")
+    if _TRANSLATION_FAILURE_MARKER_RE.search(raw):
+        return "hata_isareti"
+    visible = visible_semantic_text(raw)
+    if not visible:
+        return "bos_hedef"
+    if _WORDLIKE_RE.search(visible):
+        return ""
+    if source is None:
+        return ""
+    if has_visible_wordlike_text(source):
+        return "sozcuksuz_hedef"
+    return ""
 
 
 def is_generated_subtitle_name(name: str) -> bool:

@@ -26,6 +26,8 @@ from helper_models import HELPER_MODEL_OPTIONS, resolve_helper_model, normalize_
 from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               restore_format_tags, read_subtitle_text,
                               clean_translation_source_text,
+                              translation_failure_reason,
+                              visible_semantic_text,
                               normalize_subtitle_control_artifacts,
                               _match_full_wrap)
 import credential_store
@@ -3671,6 +3673,39 @@ _NON_TURKISH_SCRIPT_RE = re.compile(
     r"\u3040-\u30FF"
     r"\uAC00-\uD7AF]"
 )
+# Hedef dilin MEŞRU yazı sistemi. `_NON_TURKISH_SCRIPT_RE` hedef dili hiç
+# bilmiyordu: arayüzün sunduğu Arapça/Rusça/Japonca/Korece/Çince hedefler
+# kusursuz üretilse bile nihai teslim kapısında SERT hata sayılıyordu
+# (denetim 2026-08-21, madde 3). Burada listelenen aralıklar o hedefte
+# normaldir; kalan alfabeler sızıntı olarak işaretlenmeye devam eder.
+_TARGET_SCRIPT_RANGES = {
+    "arabic": "\u0600-\u06ff\ufb50-\ufdff\ufe70-\ufeff",
+    "russian": "\u0400-\u04ff\u0500-\u052f",
+    "japanese": "\u3040-\u30ff\u4e00-\u9fff\u31f0-\u31ff",
+    "korean": "\uac00-\ud7af\u1100-\u11ff\u3130-\u318f",
+    "chinese": "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff",
+}
+_FOREIGN_SCRIPT_RE_CACHE = {}
+
+
+def _foreign_script_re_for_target(target_language="Turkish"):
+    """Bu hedef için 'yabancı alfabe' sayılan karakterlerin deseni."""
+    key = normalize_language_name(
+        target_language, allow_auto=False).strip().casefold()
+    if key in _FOREIGN_SCRIPT_RE_CACHE:
+        return _FOREIGN_SCRIPT_RE_CACHE[key]
+    allowed = _TARGET_SCRIPT_RANGES.get(key, "")
+    if not allowed:
+        pattern = _NON_TURKISH_SCRIPT_RE
+    else:
+        pattern = re.compile(
+            "(?![" + allowed + "])"
+            "[\u0600-\u06ff\u0900-\u097f\u0b80-\u0bff\u0400-\u04ff"
+            "\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
+    _FOREIGN_SCRIPT_RE_CACHE[key] = pattern
+    return pattern
+
+
 _DELIVERY_SDH_TOKEN_RE = re.compile(
     r"\s*([\[(])([^\]\)\r\n]{1,120})[\]\)]\s*")
 _DELIVERY_TURKISH_SDH_RE = re.compile(
@@ -5527,10 +5562,93 @@ _DELIVERY_KEEP_UPPER = frozenset({
     "ABD", "AB", "BM", "NATO", "NASA", "FBI", "CIA", "KGB", "DNA", "RNA",
     "TV", "DVD", "CD", "PC", "GPS", "UFO", "IQ", "AIDS", "HIV", "SSCB",
     "TBMM", "TRT", "BBC", "CNN", "NBA", "NFL", "FIFA", "UEFA", "OK",
+    # Ünlü taşıdıkları ve 4 harften uzun oldukları için dinamik kuraldan
+    # geçemeyen yaygın kısaltmalar (denetim 2026-08-21, madde 6).
+    "UNESCO", "UNICEF", "INTERPOL", "OPEC", "WIFI", "LASER", "SWAT",
+    "NYPD", "LAPD", "PTSD", "MDMA", "LSD", "DMT", "THC", "CPR",
 })
 
 
-def _tr_sentence_case(text: str) -> str:
+# Yaygın Roma rakamları: bölüm/yüzyıl/kral adlarında geçer ve ASCII 'I'
+# Türkçe küçültmede 'ı'ya dönüşerek 'VIII' → 'vııı' oluyordu (madde 6).
+_COMMON_ROMAN_NUMERALS = frozenset({
+    "II", "III", "IV", "VI", "VII", "VIII", "IX", "XI", "XII",
+    "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX",
+    "XXI", "XXII", "XXIII", "XXIV", "XXV", "XXX", "XL", "LX",
+})
+_TR_UPPER_VOWELS = frozenset("AEIİOÖUÜ")
+_TR_UPPER_FRONT_VOWELS = frozenset("EİÖÜ")
+_TR_UPPER_BACK_VOWELS = frozenset("AIOU")
+# İlk hecedeki ASCII 'I' ünlü uyumuyla çözülemez (yabancı kökenli gövdeler
+# uyumu bozar: 'insan', 'hikaye'). Yüksek frekanslı sözcükler listelenir.
+_TR_FIRST_SYLLABLE_DOTTED_I = frozenset({
+    "BIR", "BIRI", "BIRAZ", "BIZ", "BIZE", "BIZIM", "IKI", "ILE",
+    "ICIN", "ILK", "IYI", "IYICE", "ISTE", "INSAN", "ISIM",
+    "IKINCI", "ICINDE", "IC", "ICERI", "ILGI", "IHTIYAC", "IMKAN",
+    "ISTIYORUM", "IS", "ISLER", "IYIYIM", "ITIRAF", "IFADE",
+    "IHTIMAL", "ILISKI", "INAN", "INANMIYORUM", "IZIN", "ISARET",
+    "HIKAYE", "HIC", "HICBIR", "BILIYORUM", "BILMIYORUM", "GIBI",
+    "SIMDI", "KIM", "KIMSE", "NICIN", "MI", "MIYIM", "MISIN",
+    "KI", "DIYE", "NIYE", "BIRLIKTE", "IKISI", "ILERI", "ILERIDE",
+    "IHTIYACIM", "ISTEDIGIN", "BIRAK", "BIRAKMA", "DINLE", "GIT",
+    "GITTI", "BILIR", "BILDIGIM", "SEVGILI", "DEGIL", "DEGILIM",
+})
+
+
+def _tr_resolve_ambiguous_i(token: str) -> str:
+    """All-caps Türkçe tokendeki ASCII 'I'ları noktalı/noktasız ayırır.
+
+    Türkçede 'I'→'ı', 'İ'→'i'. Model büyük harfi ASCII yazdığında ikisi
+    ayırt edilemiyor ve 'GELDI' → 'geldı', 'ETKISI' → 'etkısı' oluyordu.
+    Türkçede EK ünlüleri gövdeyle uyum kurmak ZORUNDA olduğu için ilk
+    heceden sonraki her 'I' önceki ünlüye göre seçilebilir; ilk hecedeki
+    'I' ise sözcük listesine bakılır, yoksa 'ı' kalır (mevcut davranış).
+    """
+    value = str(token or "")
+    if "I" not in value:
+        return value
+    core = value.strip("\"'“”‘’()[]{}.,!?;:…-–—")
+    first_is_dotted = core in _TR_FIRST_SYLLABLE_DOTTED_I
+    out = []
+    previous_vowel = ""
+    for char in value:
+        if char == "I":
+            if not previous_vowel:
+                resolved = "İ" if first_is_dotted else "I"
+            elif previous_vowel in _TR_UPPER_FRONT_VOWELS:
+                resolved = "İ"
+            else:
+                resolved = "I"
+            out.append(resolved)
+            previous_vowel = resolved
+            continue
+        out.append(char)
+        if char in _TR_UPPER_VOWELS:
+            previous_vowel = char
+    return "".join(out)
+
+
+
+def _delivery_token_keeps_upper(stem: str, source_tokens=()) -> bool:
+    """Bu all-caps token kısaltma/rakam mı, yoksa sıradan sözcük mü?
+
+    Sabit liste tek başına yetmiyordu (LSD, MDMA, DMT, NYPD…). Ek ölçüt
+    çeviriden SAĞ ÇIKMA: aynı token hem kaynakta hem hedefte birebir aynı
+    kaldıysa çevrilmemiş demektir, yani kısaltma ya da özel addır. Uzun
+    sözcükler ('BERLIN') bu yoldan geçmesin diye kısalık/ünsüzlük aranır.
+    """
+    if not stem or not stem.isalpha():
+        return False
+    if stem in _DELIVERY_KEEP_UPPER or stem in _COMMON_ROMAN_NUMERALS:
+        return True
+    if stem not in set(source_tokens or ()):
+        return False
+    if len(stem) <= 4:
+        return True
+    return not (set(stem) & _TR_UPPER_VOWELS)
+
+
+def _tr_sentence_case(text: str, source_text: str = "") -> str:
     """Tamamı büyük harfle yazılmış Türkçe metni normal cümle düzenine indirir.
 
     Türkçe'ye duyarlı: I→ı, İ→i. Kısaltmalar (_DELIVERY_KEEP_UPPER), rakam içeren
@@ -5538,6 +5656,10 @@ def _tr_sentence_case(text: str) -> str:
     value = str(text or "")
     if not value.strip():
         return value
+    source_tokens = {
+        part.strip("\"'“”‘’()[]{}.,!?;:…-–—")
+        for part in str(source_text or "").split()
+    }
 
     def _lower_token(token: str) -> str:
         core = token.strip("\"'“”‘’()[]{}.,!?;:…-–—")
@@ -5554,14 +5676,15 @@ def _tr_sentence_case(text: str) -> str:
             suffix = core[apostrophe.end():]
         else:
             stem, sep, suffix = core, "", ""
-        if stem in _DELIVERY_KEEP_UPPER:
+        if _delivery_token_keeps_upper(stem, source_tokens):
             if not sep:
                 return token
             lowered_suffix = suffix.translate(_TR_LOWER_MAP).lower()
             return token.replace(core, f"{stem}{sep}{lowered_suffix}")
         if len(core) == 1 and core.isalpha():
             return token
-        return token.translate(_TR_LOWER_MAP).lower()
+        return _tr_resolve_ambiguous_i(token).translate(
+            _TR_LOWER_MAP).lower()
 
     lowered = " ".join(_lower_token(token) for token in value.split(" "))
     # Satır yapısını koru (split(" ") newline'ları token içinde bıraktı)
@@ -5614,7 +5737,7 @@ def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int
         if (len(letters) >= 4 and all(char.isupper() for char in letters)
                 and len(source_letters) >= 4
                 and all(char.isupper() for char in source_letters)):
-            fixed = _tr_sentence_case(value)
+            fixed = _tr_sentence_case(value, source_text)
             if fixed != value:
                 changed += 1
                 value = fixed
@@ -11719,18 +11842,26 @@ def _source_map_for_quality_blocks(blocks: list, cues: list) -> dict:
     }
 
 
-def _foreign_script_ids(blocks: list) -> list[str]:
+def _foreign_script_ids(blocks: list,
+                        target_language: str = "Turkish") -> list[str]:
+    """Hedef dilin yazı sistemine AİT OLMAYAN alfabe taşıyan cue'lar."""
+    is_turkish = normalize_language_name(
+        target_language, allow_auto=False) == "Turkish"
+    pattern = _foreign_script_re_for_target(target_language)
     ids = []
     for idx, _ts, text in blocks:
         value = str(text or "")
         if not value or value == "[HATA]":
             continue
-        try:
-            import hybrid_translate as ht
-            value = ht.normalize_latin_homoglyphs(value)
-        except Exception:
-            pass
-        if _NON_TURKISH_SCRIPT_RE.search(value):
+        if is_turkish:
+            # Homoglif onarımı Latin hedefe özgüdür; Kiril hedefte aynı
+            # biçimli harfler MEŞRU olduğu için uygulanmaz.
+            try:
+                import hybrid_translate as ht
+                value = ht.normalize_latin_homoglyphs(value)
+            except Exception:
+                pass
+        if pattern.search(value):
             ids.append(str(idx))
     return ids
 
@@ -13149,8 +13280,7 @@ def _count_hata_cps(blocks) -> tuple:
     hata = cps_n = 0
     for _idx, _ts, _txt in blocks:
         _value = str(_txt or "")
-        if (not _value.strip() or _value.startswith("[HATA")
-                or _value.strip() == "[ÇEVİRİ EKSİK]"):
+        if translation_failure_reason(_value):
             hata += 1
             continue
         try:
@@ -13162,12 +13292,19 @@ def _count_hata_cps(blocks) -> tuple:
     return hata, cps_n
 
 
-def _blocks_have_translation_failures(blocks) -> bool:
-    return any(
-        str(text or "").startswith("[HATA")
-        or "[ÇEVİRİ EKSİK]" in str(text or "")
-        for _idx, _ts, text in (blocks or [])
-    )
+def _blocks_have_translation_failures(blocks, src_map=None) -> bool:
+    """Bloklarda teslim edilemez hedef var mı?
+
+    Ölçüt GÖRÜNÜR metindir: '<i>[HATA]</i>' ve '<i></i>' eskiden ham dize
+    denetiminden geçiyordu (denetim 2026-08-21, madde 1). `src_map`
+    verilirse sözcük taşıyan kaynağın karşısındaki sözcüksüz hedef de
+    hata sayılır."""
+    sources = src_map or {}
+    for idx, _ts, text in (blocks or []):
+        source = sources.get(str(idx)) if sources else None
+        if translation_failure_reason(text, source):
+            return True
+    return False
 
 
 def _partition_quality_blocks(blocks):
@@ -13471,6 +13608,7 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
         return False
     used = set()
     untranslated_echo = False
+    unusable_target = False
     for out_idx, ts, text in out_blocks:
         if (not str(text or "").strip()
                 or _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())):
@@ -13487,6 +13625,11 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
             if any(_looks_like_untranslated_output(
                     source_rows[pos][2], text) for pos in positions):
                 untranslated_echo = True
+            # Kaynak sozcuk tasiyorsa hedef de tasimali: '<i>[HATA]</i>',
+            # '<i></i>' ve '---' eskiden 'tamam' sayiliyordu (madde 1).
+            if any(translation_failure_reason(text, source_rows[pos][2])
+                   for pos in positions):
+                unusable_target = True
             continue
         id_pos = next((
             pos for pos, (source_idx, _source_ts, _source_text, source_bounds)
@@ -13498,7 +13641,10 @@ def _existing_output_is_complete(out_blocks, source_cues) -> bool:
             used.add(id_pos)
             if _looks_like_untranslated_output(source_rows[id_pos][2], text):
                 untranslated_echo = True
-    return required_positions <= used and not untranslated_echo
+            if translation_failure_reason(text, source_rows[id_pos][2]):
+                unusable_target = True
+    return (required_positions <= used and not untranslated_echo
+            and not unusable_target)
 
 
 def _should_skip_existing_output(filepath, out_blocks, source_cues,
@@ -14882,7 +15028,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             missing_dialogue.append(source_idx)
     extras.sort()
     output_texts = [text for _idx, _ts, text in output_dialogue]
-    foreign_script_ids = _foreign_script_ids(output_dialogue)
+    foreign_script_ids = _foreign_script_ids(
+        output_dialogue, target_language)
     output_source_map = _delivery_source_map(output_dialogue, source_rows)
     owner_source_map = _delivery_owner_source_map(
         source_rows, source_to_output_ids)
@@ -14895,9 +15042,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     )
     untranslated_fragment_ids = _delivery_untranslated_fragment_ids(
         output_dialogue, output_source_map, target_language, source_language)
+    # Biçim etiketine sarılmış hata işareti de sayılır (madde 1).
     unresolved_markers = sum(
-        text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text
-        for text in output_texts)
+        bool(translation_failure_reason(text)) for text in output_texts)
     residual_credit_ids = [
         str(idx) for idx, _ts, text in output_dialogue
         if _is_delivery_credit(text)
@@ -14935,8 +15082,14 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         str(idx) for idx, _ts, text in output_dialogue
         if re.search(r"\}\s*,\s*\{", str(text or ""))
     ]
-    hatted_letters = sum(
-        sum(text.count(char) for char in "âîûÂÎÛ") for text in output_texts)
+    # Şapkalı harf politikası TÜRKÇEYE ÖZGÜ bir teslim kuralıdır. Hedelden
+    # bağımsız sayılınca Fransızca 'grâce', 'âme', 'sûr' gibi TAMAMEN doğru
+    # kelimeler dosyayı sert hataya düşürüyordu (madde 4).
+    hatted_letters = (
+        sum(sum(text.count(char) for char in "âîûÂÎÛ")
+            for text in output_texts)
+        if normalize_language_name(
+            target_language, allow_auto=False) == "Turkish" else 0)
     delivery_signatures = sum(
         bool(_DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip()))
         for _idx, _ts, text in output)

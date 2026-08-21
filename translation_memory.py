@@ -88,8 +88,16 @@ def _context_key(context_fingerprint: str = "") -> str:
 
 
 def _is_missing_translation(target: str) -> bool:
-    text = str(target or "").strip()
-    return text.startswith("[HATA") or text == "[ÇEVİRİ EKSİK]"
+    """Biçim etiketine sarılmış hata/boş hedef de eksik sayılır.
+
+    Ham dize denetimi '<i>[HATA]</i>' ve '<i></i>' değerlerini sağlıklı
+    çeviri sanıp TM'ye kaydediyordu (denetim 2026-08-21, madde 1)."""
+    try:
+        from subtitle_formats import translation_failure_reason
+    except Exception:
+        text = str(target or "").strip()
+        return text.startswith("[HATA") or text == "[ÇEVİRİ EKSİK]"
+    return bool(translation_failure_reason(target))
 
 
 _TURKISH_TARGET_KEYS = frozenset({"tr", "tur", "turkish", "türkçe", "turkce"})
