@@ -371,6 +371,18 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertFalse(any(
             line.startswith("Native Okuyucu: çalıştı") for line in audit))
 
+    def test_disabled_deep_delivery_skipped_trace_is_reported_closed(self):
+        audit = gui._quality_feature_audit({
+            "run_status": "done",
+            "pass_trace": {"Deep-Delivery-Semantic": 0},
+            "pass_status": {"Deep-Delivery-Semantic": {"status": "skipped"}},
+        }, {"deep_delivery_semantic": False})
+
+        self.assertIn("Derin Teslim Anlam Taraması: kapalı", audit)
+        self.assertFalse(any(
+            line.startswith("Derin Teslim Anlam Taraması: çalıştı")
+            for line in audit))
+
     def test_user_skipped_critic_reports_coverage_without_hard_failure(self):
         status = {"Critic": {
             "status": "user_skipped", "successful_chunks": 4,

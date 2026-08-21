@@ -4988,7 +4988,7 @@ _DANGLING_VERBAL_NOUN_RE = re.compile(
 _SENTENCE_END_PUNCT_RE = re.compile(r"[.!?…][\"'”’»]?$")
 
 
-def _missing_predicate_ids(blocks) -> list:
+def _missing_predicate_ids(blocks, src_map=None) -> list:
     """Fiilimsiyle bitip sonraki cue'nun yeni cümle başlattığı cue'lar.
 
     Gerçek olay (Death Scenes 3 #80): '...hastaneye gitmesine.' — cümle yüklemsiz
@@ -5007,6 +5007,11 @@ def _missing_predicate_ids(blocks) -> list:
         if not words:
             continue
         if not _DANGLING_VERBAL_NOUN_RE.search(words[-1].casefold()):
+            continue
+        source_value = _align_visible(
+            str((src_map or {}).get(str(idx), "") or "")).strip()
+        if (source_value.endswith(("...", "…"))
+                and value.endswith(("...", "…"))):
             continue
         next_value = _align_visible(str(rows[pos + 1][2] or "")).strip()
         first = next((char for char in next_value if char.isalpha()), "")
@@ -5223,7 +5228,7 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     stats["cue_fill"] = len(cue_fill)
     stats["cue_fill_details"] = cue_fill
     stats["partial_echo"] = len(_partial_echo_ids(blocks, src_map))
-    stats["missing_predicate"] = len(_missing_predicate_ids(blocks))
+    stats["missing_predicate"] = len(_missing_predicate_ids(blocks, src_map))
     stats["source_residue"] = len(
         _source_residue_with_turkish_suffix(blocks, src_map, locked_terms))
     head_typos = _repeated_head_typo_ids(blocks)
@@ -5301,7 +5306,7 @@ def _delivery_scan_suspect_ids(blocks, source_cues) -> list:
         suspects.append((str(right), "SCAN_PARTIAL_ECHO"))
     for item in _source_residue_with_turkish_suffix(list(blocks or []), src_map):
         suspects.append((str(item.get("id")), "SCAN_SOURCE_RESIDUE"))
-    for cue_id in _missing_predicate_ids(list(blocks or [])):
+    for cue_id in _missing_predicate_ids(list(blocks or []), src_map):
         suspects.append((str(cue_id), "SCAN_MISSING_PREDICATE"))
     return suspects
 
@@ -7990,6 +7995,17 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
             not in _ENGLISH_LEAK_PHRASE_EXEMPT_TARGETS)
         if phrase_check_applies:
             for match in _PARTIAL_ENGLISH_LEAK_PHRASE_RE.finditer(src_text):
+                if match.group(0).casefold() == "british":
+                    tail_words = re.findall(
+                        r"[^\W\d_]+", src_text[match.end():], re.UNICODE)[:2]
+                    if len(tail_words) == 2:
+                        proper_phrase = " ".join([match.group(0), *tail_words])
+                        target_match = re.search(
+                            rf"\b{re.escape(proper_phrase)}\b", tr_text, re.I)
+                        if (target_match and all(
+                                word[:1].isupper()
+                                for word in target_match.group(0).split())):
+                            continue
                 if match.group(0).lower() in tr_text.lower():
                     return f"partial_english_phrase:{match.group(0)}"
     try:
@@ -15181,6 +15197,9 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
              if isinstance(pass_status.get(label), dict)), None)
         trace_changed = any(
             int(trace.get(label, 0) or 0) > 0 for label in labels)
+        if status_info and status_info.get("status") == "skipped":
+            lines.append(f"{title}: {'atlandı' if enabled else 'kapalı'}")
+            continue
         if not enabled and not status_info and not trace_changed:
             lines.append(f"{title}: kapalı")
             continue

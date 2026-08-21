@@ -54,6 +54,17 @@ class MissingPredicateTest(unittest.TestCase):
         ]
         self.assertEqual(g._missing_predicate_ids(blocks), [])
 
+    def test_source_ellipsis_continuation_is_not_missing_predicate(self):
+        blocks = [
+            ("367", "ts", "ölü hayvanların Mexico'ya gönderilmesine..."),
+            ("368", "ts", "Mexico'daki bir üniversite için..."),
+        ]
+        src_map = {
+            "367": "or exporting dead animals to Mexico...",
+            "368": "for some university in Mexico...",
+        }
+        self.assertEqual(g._missing_predicate_ids(blocks, src_map), [])
+
 
 class AddressRegisterMixTest(unittest.TestCase):
     def test_false_stems_do_not_count_as_informal(self):
