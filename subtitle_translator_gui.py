@@ -4763,13 +4763,68 @@ def fix_source_lowercase_apostrophes(text: str, source_text: str) -> tuple[str, 
     return _CAPITAL_APOSTROPHE_RE.sub(_replace, value), changed
 
 
-def normalize_foreign_titles(text: str) -> tuple[str, int]:
-    """'Mr. Yi' → 'Bay Yi', 'Professor Sun' → 'Profesör Sun'. (metin, sayı)."""
+# Unvanın ardından gelen sözcük SIRADAN bir İngilizce ad ise ortada hitap
+# değil bir ESER/KARAKTER kimliği vardır: 'Mr. Robot', 'Miss Fortune',
+# 'Mr. Bean'. Nihai normalizasyon bunları bağlamdan bağımsız 'Bay'/'Bayan'
+# yapıyordu (denetim 2026-08-21, madde 23).
+_TITLE_WORK_NAME_STOPS = frozenset({
+    "robot", "fortune", "bean", "big", "universe", "right", "wrong",
+    "nobody", "president", "mayor", "sandman", "freeze", "gold",
+    "incredible", "popper", "magoo", "deeds", "hyde", "brightside",
+    "congeniality", "world", "america", "daisy", "grey", "clean",
+    "happy", "lucky", "perfect", "pink", "white", "black", "blue",
+    "green", "orange", "brown", "gray", "smith" if False else "sunshine",
+})
+_TITLE_NAME_RE = re.compile(r"\s+([^\W\d_]+)")
+
+
+def _locked_term_surface_forms(locked_terms) -> set:
+    """Kilitli terimlerin iki yakasındaki yüzey biçimleri."""
+    forms = set()
+    for key, value in (locked_terms or {}).items():
+        for item in (key, value):
+            text = " ".join(str(item or "").split()).casefold()
+            if text:
+                forms.add(text)
+    return forms
+
+
+def normalize_foreign_titles(text: str, source_text: str = "",
+                             locked_terms=None) -> tuple[str, int]:
+    """'Mr. Yi' → 'Bay Yi', 'Professor Sun' → 'Profesör Sun'. (metin, sayı).
+
+    Unvan ancak KAYNAK da bir unvan gösteriyorsa çevrilir; kilitli terim,
+    tırnak içinde geçen eser adı ve bilinen eser/karakter kimlikleri
+    korunur (madde 23)."""
     value = str(text or "")
+    source = str(source_text or "")
+    locked_forms = _locked_term_surface_forms(locked_terms)
     changed = 0
+
+    def _make_replacer(replacement):
+        def _replace(match):
+            nonlocal changed
+            title = match.group(0)
+            tail = value[match.end():]
+            name_match = _TITLE_NAME_RE.match(tail)
+            name = name_match.group(1) if name_match else ""
+            pair = f"{title} {name}".strip().casefold()
+            if name.casefold() in _TITLE_WORK_NAME_STOPS:
+                return title
+            if pair in locked_forms or name.casefold() in locked_forms:
+                return title
+            if source and name and re.search(
+                    r"[\"'\u201c\u201d\u00ab\u00bb][^\"'\u201c\u201d\u00ab\u00bb\r\n]*"
+                    + re.escape(name),
+                    source, re.IGNORECASE):
+                return title  # kaynakta tırnak içinde — eser adı
+            changed += 1
+            return replacement
+
+        return _replace
+
     for pattern, replacement in _FOREIGN_TITLE_MAP:
-        value, count = pattern.subn(replacement, value)
-        changed += count
+        value = pattern.sub(_make_replacer(replacement), value)
     return value, changed
 
 
@@ -5843,7 +5898,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             # teslim denetiminin çevrilmemiş-parça guard'ını maskelerdi.
             if source_text.strip() and _align_visible(value).casefold() != (
                     _align_visible(source_text).casefold()):
-                value, _titles_fixed = normalize_foreign_titles(value)
+                value, _titles_fixed = normalize_foreign_titles(
+                    value, source_text)
                 value, _exonyms_fixed = normalize_foreign_exonyms(value)
                 value, _caps_fixed = fix_source_lowercase_apostrophes(
                     value, source_text)
@@ -6048,8 +6104,22 @@ def _resolve_postprocess_source(filepath) -> Path | None:
         for report_dir in (parent / "Raporlar", parent / "ÇIKTI" / "Raporlar"):
             if report_dir.is_dir():
                 report_files.extend(report_dir.glob("ceviri_raporu*.json"))
-    for report_path in sorted(
-            set(report_files), key=lambda path: path.stat().st_mtime, reverse=True):
+    # `glob` ile `stat` arasında bir rapor silinir/kilitlenirse istisna
+    # doğrudan post-işlem worker'ına çıkıyor ve SAĞLAM eski raporlar hiç
+    # denenmiyordu (denetim 2026-08-21, madde 17). Okunamayan aday atlanır.
+    def _report_mtime(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return None
+
+    ordered = []
+    for path in set(report_files):
+        mtime = _report_mtime(path)
+        if mtime is not None:
+            ordered.append((mtime, path))
+    ordered.sort(key=lambda item: item[0], reverse=True)
+    for _mtime, report_path in ordered:
         try:
             payload = json.loads(report_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -6085,32 +6155,60 @@ def _resolve_postprocess_source(filepath) -> Path | None:
                 continue  # kaynak = çıktı → provenance yok, kabul edilemez
             if source_path.is_file():
                 return source_path
-            archived = _archived_source_candidate(report_path, source_path)
+            archived = _archived_source_candidate(
+                report_path, source_path,
+                expected_hash=str(row.get("source_sha256") or ""))
             if archived is not None:
                 return archived
     return None
 
 
-def _archived_source_candidate(report_path: Path, source_path: Path):
+def _archived_source_candidate(report_path: Path, source_path: Path,
+                               expected_hash: str = ""):
     """Orijinal kaynak silinmişse `Raporlar/Kaynak` arşiv kopyasını kullan.
 
     Çeviri bitince orijinal girdiyi silmek normal iş akışıdır; program kaynağı
     zaten arşivliyor ama resolver arşive hiç bakmıyordu (madde 41).
-    """
+
+    Aynı adlı kaynak DEĞİŞTİĞİNDE arşivleyici yeni sürümü hash ekli adla
+    ('movie.en.<hash>.srt') saklıyor. Resolver ise içeriğe hiç bakmadan önce
+    düz adı, sonra alfabetik ilk adayı döndürüyordu — yani ESKİ sürümü
+    (denetim 2026-08-21, madde 18). Artık rapordaki `source_sha256` ile
+    seçilir; hash yoksa ve içerikleri farklı birden çok aday varsa
+    fail-closed davranılır."""
     try:
         archive_dir = report_path.parent / "Kaynak"
         if not archive_dir.is_dir():
             return None
-        exact = archive_dir / source_path.name
-        if exact.is_file():
-            return exact
         stem, suffix = source_path.stem, source_path.suffix
-        for candidate in sorted(archive_dir.glob(f"{stem}*{suffix}")):
-            if candidate.is_file():
-                return candidate
+        candidates = [
+            candidate for candidate
+            in sorted(archive_dir.glob(f"{stem}*{suffix}"))
+            if candidate.is_file()
+        ]
+        exact = archive_dir / source_path.name
+        if exact.is_file() and exact not in candidates:
+            candidates.insert(0, exact)
     except OSError:
         return None
-    return None
+    if not candidates:
+        return None
+    digests = {}
+    for candidate in candidates:
+        digest = _file_content_sha256(candidate)
+        if digest:
+            digests[candidate] = digest
+    wanted = str(expected_hash or "").strip().lower()
+    if wanted:
+        for candidate in candidates:
+            if digests.get(candidate, "").lower() == wanted:
+                return candidate
+        return None  # beklenen sürüm arşivde yok — yanlışını verme
+    if len(set(digests.values())) > 1:
+        return None  # birden çok farklı içerik, ayırt edecek kanıt yok
+    if exact.is_file():
+        return exact
+    return candidates[0]
 
 
 def _paths_equal(a, b) -> bool:

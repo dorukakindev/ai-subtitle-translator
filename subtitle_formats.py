@@ -614,6 +614,125 @@ def parse_vtt_timestamp_map(content: str) -> float:
     return (mpegts_ticks / _MPEGTS_HZ) - local_seconds
 
 
+# ASS/SSA `[Script Info] Timer` script saatinin YÜZDE hız çarpanıdır
+# (100.0000 = normal). Hiç okunmuyordu: Timer'ı 100 olmayan dosyalarda
+# bütün altyazı zamanları film boyunca sistematik kayıyordu (denetim
+# 2026-08-21, madde 19). Kaynak ve hedef aynı parser çıktısını kullandığı
+# için iç kayma denetimi bunu göremiyordu.
+_ASS_TIMER_RE = re.compile(
+    r'^\s*Timer\s*:\s*([0-9]+(?:[.,][0-9]+)?)\s*$',
+    re.IGNORECASE | re.MULTILINE)
+
+
+def parse_ass_timer_scale(content: str) -> float:
+    """`Timer` yüzdesinden medya zamanı katsayısı (100/Timer).
+
+    Eksik, sıfır, negatif veya çözülemez değer güvenle 1.0 kabul edilir.
+    Ondalık ayracı locale'e göre ',' olabilir."""
+    match = _ASS_TIMER_RE.search(str(content or ""))
+    if not match:
+        return 1.0
+    try:
+        timer = float(match.group(1).replace(",", "."))
+    except ValueError:
+        return 1.0
+    if timer <= 0:
+        return 1.0
+    return 100.0 / timer
+
+
+def _ass_ts_to_seconds(ts: str):
+    """ASS zaman damgasını saniyeye çevirir; çözülemezse None."""
+    match = re.fullmatch(r'\s*(\d+):(\d{1,2}):(\d{1,2})[.,](\d+)\s*',
+                         str(ts or ""))
+    if not match:
+        return None
+    hour, minute, second, fraction = match.groups()
+    if len(fraction) == 2:
+        millis = int(fraction) * 10
+    else:
+        millis = int((fraction + "000")[:3])
+    return (int(hour) * 3600 + int(minute) * 60 + int(second)
+            + millis / 1000.0)
+
+
+# ASS alpha kanalı: `&HFF` TAMAMEN saydamdır. Parser stil tablosunu hiç
+# okumuyor, inline `{\alpha&HFF&}` bloğunu da yalnız silip metni
+# bırakıyordu; kaynakta bilerek görünmeyen teknik/maskeleme metinleri
+# çeviriye ve teslim SRT'sine geçiyordu (madde 20).
+_ASS_ALPHA_OVERRIDE_RE = re.compile(
+    r'\\(?:1?a|alpha)\s*&H([0-9A-Fa-f]{1,2})&', re.IGNORECASE)
+# ADI ÇAKIŞMASIN: aşağıda aynı adla başka bir desen daha var (yalnız
+# ters-bölüyle başlayan override blokları) ve bu tanımı gölgeliyordu.
+_ASS_ALPHA_BLOCK_RE = re.compile(r'\{([^{}]*)\}')
+_ASS_STYLE_SECTION_RE = re.compile(
+    r'\[V4\+? Styles\](.*?)(?:\n\s*\[|\Z)', re.S | re.IGNORECASE)
+
+
+def parse_ass_invisible_styles(content: str) -> set:
+    """PrimaryColour alpha'sı tamamen saydam olan stil adları."""
+    section = _ASS_STYLE_SECTION_RE.search(str(content or ""))
+    if not section:
+        return set()
+    columns = None
+    invisible = set()
+    for line in section.group(1).splitlines():
+        stripped = line.strip()
+        low = stripped.lower()
+        if low.startswith("format:"):
+            columns = [part.strip().lower()
+                       for part in stripped[7:].split(",")]
+            continue
+        if not low.startswith("style:") or not columns:
+            continue
+        values = [part.strip() for part in stripped[6:].split(",")]
+        if len(values) < len(columns):
+            continue
+        row = dict(zip(columns, values))
+        colour = row.get("primarycolour") or ""
+        digits = re.fullmatch(r'&H([0-9A-Fa-f]{1,8})&?', colour.strip())
+        if not digits:
+            continue
+        value = digits.group(1)
+        # &HAABBGGRR — alpha en anlamlı iki hanedir; 8 haneden kısaysa
+        # alpha verilmemiş demektir (görünür).
+        if len(value) == 8 and value[:2].upper() == "FF":
+            invisible.add(row.get("name", "").strip())
+    invisible.discard("")
+    return invisible
+
+
+def ass_visible_text(raw_text: str) -> str:
+    """Inline alpha override'larına göre GÖRÜNÜR kalan metni döner.
+
+    `\\alpha&HFF&gizli\\alpha&H00&görünür` → `görünür`. Alpha animasyonu
+    (`\\t(...)`) çözülemez; o durumda metin olduğu gibi korunur.
+    """
+    value = str(raw_text or "")
+    if "\\t(" in value.replace(" ", ""):
+        return value
+    if not _ASS_ALPHA_OVERRIDE_RE.search(value):
+        return value
+    out = []
+    hidden = False
+    position = 0
+    for match in _ASS_ALPHA_BLOCK_RE.finditer(value):
+        segment = value[position:match.start()]
+        if not hidden:
+            out.append(segment)
+        alpha = None
+        for alpha_match in _ASS_ALPHA_OVERRIDE_RE.finditer(match.group(1)):
+            alpha = alpha_match.group(1)
+        if alpha is not None:
+            hidden = alpha.upper().zfill(2) == "FF"
+        if not hidden:
+            out.append(match.group(0))
+        position = match.end()
+    if not hidden:
+        out.append(value[position:])
+    return "".join(out)
+
+
 def _ass_ts_to_srt(ts: str) -> str:
     """ASS zaman damgasını (H:MM:SS.cc) SRT formatına çevirir.
 
@@ -809,8 +928,59 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
 # ── ASS stil/tag temizleme ────────────────────────────────────────────────────
 
 _ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
-_ASS_SOFTLINE = re.compile(r'\\N', re.IGNORECASE)
-_ASS_HARDLINE = re.compile(r'\\n', re.IGNORECASE)
+# ASS'te büyük `\N` HER wrap modunda zorunlu satır sonudur; küçük `\n`
+# YALNIZ `WrapStyle: 2` altında kırılır, diğer modlarda normal boşluktur.
+# İki desen de IGNORECASE derlenmişti, yani ikisi de her ikisiyle eşleşiyor
+# ve küçük `\n` koşulsuz satır sonuna dönüyordu (denetim 2026-08-21,
+# madde 21). Artık büyük/küçük harfe duyarlı.
+_ASS_SOFTLINE = re.compile(r'\\N')
+_ASS_HARDLINE = re.compile(r'\\n')
+_ASS_WRAPSTYLE_RE = re.compile(
+    r'^\s*WrapStyle\s*:\s*([0-9]+)\s*$',
+    re.IGNORECASE | re.MULTILINE)
+
+
+def parse_ass_wrap_style(content: str) -> int:
+    """`[Script Info] WrapStyle`; okunamazsa ASS varsayılanı olan 0."""
+    match = _ASS_WRAPSTYLE_RE.search(str(content or ""))
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return 0
+
+
+# ASS `\p1` ve üzeri VEKTÖR ÇİZİM modunu açar, `\p0` kapatır. Aradaki
+# 'm 0 0 l 100 0' koordinatları görünür dil metni değildir; override blokları
+# silinince gerçek kelimelerle karışıp modele gidiyordu (madde 22).
+_ASS_DRAWING_MODE_RE = re.compile(r'\\p\s*([0-9]+)', re.IGNORECASE)
+
+
+def strip_ass_drawing_segments(text: str) -> str:
+    """Çizim modu AÇIKKEN gelen içeriği atar, görünür metni korur.
+
+    Çizim modu kapanmadan event biterse kalan bölüm tamamen çizimdir.
+    """
+    value = str(text or "")
+    if not _ASS_DRAWING_MODE_RE.search(value):
+        return value
+    out = []
+    drawing = False
+    position = 0
+    for match in _ASS_ALPHA_BLOCK_RE.finditer(value):
+        if not drawing:
+            out.append(value[position:match.start()])
+        mode = None
+        for mode_match in _ASS_DRAWING_MODE_RE.finditer(match.group(1)):
+            mode = mode_match.group(1)
+        if mode is not None:
+            drawing = mode != "0"
+        out.append(match.group(0))
+        position = match.end()
+    if not drawing:
+        out.append(value[position:])
+    return "".join(out)
 _ASS_HSPACE   = re.compile(r'\\h', re.IGNORECASE)
 # Aegisub içi yorum / çevirmen notu blokları. '{=13}' eski biçimdi; '{TL Note:
 # ...}', '{SFX}', '{Scene 2}' gibi notlar da diyalog metni sanılıp çeviri
@@ -827,17 +997,20 @@ _ASS_DRAWING_MODE = re.compile(r'\{[^}]*\\p([1-9]\d*)\b[^}]*\}', re.IGNORECASE)
 _ASS_DRAWING_DATA = re.compile(
     r'^[\s,.-]*(?:[mnlbspc]\s+)?[-\d.,\s mnlbspc]+$', re.IGNORECASE)
 
-def _clean_ass_text(text: str) -> str:
-    """ASS override tag'lerini kaldır, satır kırma karakterlerini dönüştür."""
+def _clean_ass_text(text: str, wrap_style: int = 2) -> str:
+    """ASS override tag'lerini kaldır, satır kırma karakterlerini dönüştür.
+
+    `wrap_style` varsayılanı 2'dir: küçük `\n` de satır sonu sayılır. Bu,
+    wrap modunu bilmeyen eski çağrıların davranışını korur."""
     text = _ASS_COMMENT.sub('', text)
     text = _ASS_OVERRIDE.sub('', text)
     text = _ASS_SOFTLINE.sub('\n', text)
-    text = _ASS_HARDLINE.sub('\n', text)
+    text = _ASS_HARDLINE.sub('\n' if wrap_style == 2 else ' ', text)
     text = _ASS_HSPACE.sub(' ', text)
     return text.strip()
 
 
-def _format_ass_text(text: str) -> str:
+def _format_ass_text(text: str, wrap_style: int = 2) -> str:
     """ASS satır kırma karakterlerini dönüştür ve yorumları kaldır, ancak biçim/konum etiketlerini (\\an8 vb.) koru.
 
     Dönüşümler yalnızca `{...}` override blokları DIŞINDA uygulanır: blok içine
@@ -857,7 +1030,7 @@ def _format_ass_text(text: str) -> str:
 
     def _convert_breaks(value: str) -> str:
         value = _ASS_SOFTLINE.sub('\n', value)
-        value = _ASS_HARDLINE.sub('\n', value)
+        value = _ASS_HARDLINE.sub('\n' if wrap_style == 2 else ' ', value)
         return _ASS_HSPACE.sub(' ', value)
 
     return _convert_outside_blocks(text).strip()
@@ -1091,6 +1264,9 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
     Returns: [(index_str, 'HH:MM:SS,mmm --> HH:MM:SS,mmm', text), ...]
     """
     content = read_subtitle_text(filepath)
+    timer_scale = parse_ass_timer_scale(content)
+    wrap_style = parse_ass_wrap_style(content)
+    invisible_styles = parse_ass_invisible_styles(content)
 
     # [Events] bölümünü gerçek section sınırlarıyla ayır; içerikteki [ karakteri
     # (ör. Comment veya diyalog metni) Format satırı aramasını kesmemeli.
@@ -1136,16 +1312,32 @@ def parse_ass(filepath: str, lyric_language: str | None = None) -> list:
         if _SKIP_STYLES.search(style) and _ass_style_skip_is_safe(parts[text_i]):
             continue  # gerçekten kredi/not satırı
 
-        start_ts = _ass_ts_to_srt(parts[start_i])
-        end_ts   = _ass_ts_to_srt(parts[end_i])
+        if timer_scale != 1.0:
+            start_seconds = _ass_ts_to_seconds(parts[start_i])
+            end_seconds = _ass_ts_to_seconds(parts[end_i])
+        else:
+            start_seconds = end_seconds = None
+        if start_seconds is not None and end_seconds is not None:
+            start_ts = _seconds_to_srt_ts(start_seconds * timer_scale)
+            end_ts = _seconds_to_srt_ts(end_seconds * timer_scale)
+        else:
+            start_ts = _ass_ts_to_srt(parts[start_i])
+            end_ts   = _ass_ts_to_srt(parts[end_i])
         timestamp = f'{start_ts} --> {end_ts}'
-        raw_text = parts[text_i]
+        if style in invisible_styles:
+            continue  # stil tamamen saydam — ekranda hiç görünmez
+        raw_text = ass_visible_text(parts[text_i])
+        if not _clean_ass_text(raw_text, wrap_style).strip():
+            continue  # inline alpha ile baştan sona gizlenmiş event
+        # Aynı event hem çizim hem gerçek yazı taşıyabilir; koordinatlar
+        # override blokları silinince kelimelerle karışıyordu (madde 22).
+        raw_text = strip_ass_drawing_segments(raw_text)
         if _ass_is_drawing_only(raw_text):
             continue
         if _ass_is_pure_decorative_fx(style, raw_text):
             continue
-        text = _format_ass_text(raw_text)
-        if not _clean_ass_text(text).strip():
+        text = _format_ass_text(raw_text, wrap_style)
+        if not _clean_ass_text(text, wrap_style).strip():
             continue
         name = parts[name_i].strip() if name_i is not None else ""
         if not any(ch.isalpha() for ch in name):
