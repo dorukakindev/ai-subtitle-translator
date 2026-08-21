@@ -67,6 +67,51 @@ def _normalized_semantic_tokens(text: str) -> tuple:
     )
 
 
+# Anlam taşıyan noktalama: hitap virgülü, yan cümle sınırı, soru/ünlem,
+# diyalog tiresi. Fuzzy kapısı yalnız SÖZCÜK token'larına bakıyordu; virgül
+# tamamen kayboluyor ve 'Let's eat, Grandma!' ile 'Let's eat Grandma!'
+# %97 benzerlikle eşleşiyordu (denetim 2026-08-21, madde 32).
+_MEANINGFUL_PUNCTUATION = {
+    ",": ",", ";": ",", ":": ":",
+    "?": "?", "!": "!",
+    "(": "(", ")": ")", "[": "(", "]": ")",
+    "-": "-", "\u2013": "-", "\u2014": "-",
+    "\u2026": ".", ".": ".",
+}
+
+
+_TERMINAL_MARKS = ".!?\u2026"
+_TERMINAL_TRIM = _TERMINAL_MARKS + "\"'\u201c\u201d\u2018\u2019\u00ab\u00bb)]} "
+
+
+def _punctuation_shape(text: str) -> tuple:
+    """Metnin anlam taşıyan İÇ noktalama iskeleti.
+
+    Cümle SONUNDAKİ işaret kasıtlı olarak DIŞARIDA: '... great day' ile
+    '... great day!' aynı şeyi söyler ve mevcut fuzzy testleri bunu
+    kilitliyor. Anlamı değiştiren, cümlenin İÇİNDEKİ virgül/iki nokta/
+    parantez/tire yapısıdır. Tipografik varyantlar tek biçime indirgenir.
+    """
+    value = str(text or "").replace("\u2026", "...")
+    value = value.rstrip(_TERMINAL_TRIM)
+    shape = []
+    for char in value:
+        mapped = _MEANINGFUL_PUNCTUATION.get(char)
+        if mapped is None:
+            continue
+        if shape and shape[-1] == mapped:
+            continue
+        shape.append(mapped)
+    return tuple(shape)
+
+
+def _is_question(text: str) -> bool:
+    """Cümle soru kipinde mi bitiyor? (soru ≠ önerme)"""
+    value = str(text or "").rstrip(
+        "\"'\u201c\u201d\u2018\u2019\u00ab\u00bb)]} ")
+    return value.endswith("?")
+
+
 def _fuzzy_semantically_compatible(source: str, candidate: str) -> bool:
     """Bulanık TM adayı kaynakla aynı şeyi mi söylüyor?
 
@@ -77,7 +122,15 @@ def _fuzzy_semantically_compatible(source: str, candidate: str) -> bool:
     Yalnız kesme işareti biçimi (düz/eğik/mojibake) normalize edilir."""
     source_tokens = _normalized_semantic_tokens(source)
     candidate_tokens = _normalized_semantic_tokens(candidate)
-    return bool(source_tokens) and source_tokens == candidate_tokens
+    if not source_tokens or source_tokens != candidate_tokens:
+        return False
+    # Jetonlar aynı olsa bile İÇ noktalama özneyi/hitabı değiştirebilir
+    # ('Let's eat, Grandma!' ≠ 'Let's eat Grandma!'); madde 32.
+    if _punctuation_shape(source) != _punctuation_shape(candidate):
+        return False
+    # Soru ile önerme aynı şey değildir; ünlem/nokta farkı ise yalnız
+    # vurgudur ve mevcut fuzzy testleri onu eşdeğer sayıyor.
+    return _is_question(source) == _is_question(candidate)
 
 
 def _context_key(context_fingerprint: str = "") -> str:
@@ -515,11 +568,29 @@ class TranslationMemory:
             return True
         fingerprint = self._settings_fingerprint(
             model, profanity, schema_name, source_language, context_fingerprint)
+        # AYNI DOSYADA aynı kaynak iki FARKLI doğru çeviri almış olabilir:
+        # 'Right.' bir yerde 'Sağ.', başka yerde 'Doğru.'dur. Anahtar cue
+        # yerel bağlamını taşımadığı için ikisi aynı satıra düşüyor ve
+        # INSERT OR REPLACE sonuncuyu bütün örneklere uyguluyordu (denetim
+        # 2026-08-21, madde 34). Böyle bir kaynak için exact reuse KAPATILIR:
+        # kaydedilmez ve varsa eski kaydı silinir, model her seferinde
+        # kendi bağlamıyla çevirir.
+        targets_by_hash = {}
+        for source, target in pairs:
+            if not source or not target:
+                continue
+            key = self._hash(source, tgt_lang, fingerprint)
+            targets_by_hash.setdefault(key, set()).add(str(target).strip())
+        ambiguous = {
+            key for key, values in targets_by_hash.items() if len(values) > 1
+        }
         rows = []
         for source, target in pairs:
             if not source or not target or _is_missing_translation(target):
                 continue
             if source.strip().lower() == target.strip().lower():
+                continue
+            if self._hash(source, tgt_lang, fingerprint) in ambiguous:
                 continue
             if not _is_safe_target(target.strip(), source.strip(), tgt_lang):
                 continue
@@ -535,6 +606,18 @@ class TranslationMemory:
                 source_language.strip().lower() if source_language else "",
                 _context_key(context_fingerprint),
             ))
+        if ambiguous:
+            # Daha önce tek anlamla saklanmış olabilir; o kaydı da düşür.
+            try:
+                with self._lock:
+                    conn = self._get_conn()
+                    if conn is not None:
+                        conn.executemany(
+                            "DELETE FROM tm WHERE hash=?",
+                            [(key,) for key in ambiguous])
+                        conn.commit()
+            except Exception:
+                pass
         if not rows:
             return True
         try:

@@ -3301,16 +3301,29 @@ def parse_srt(filepath):
     parsed = []
     content = read_subtitle_text(filepath).strip()
     lines = content.splitlines()
+    # Dosya NUMARALI mı? Numaralıysa yeni cue'nun kanıtı 'sayı + zaman'
+    # çiftidir. Eskiden zaman damgasına benzeyen HER satır koşulsuz yeni
+    # cue sayılıyordu: ekranda görünen bir timecode metni cue'yu ikiye
+    # bölüyor, devam satırı on dakika ilerideki sahte bir zamana taşınıyor
+    # ve kaynak sırası bozuluyordu (denetim 2026-08-21, madde 37).
+    numbered_file = any(
+        re.fullmatch(r"\d+", lines[pos].strip())
+        and pos + 1 < len(lines)
+        and _TS_LINE_RE.match(lines[pos + 1].strip())
+        for pos in range(len(lines))
+    )
 
-    def _cue_start(pos):
+    def _cue_start(pos, require_id: bool = False):
         if pos >= len(lines):
             return None
         current = lines[pos].strip()
-        if _TS_LINE_RE.match(current):
-            return None, current, pos + 1
         if (re.fullmatch(r"\d+", current) and pos + 1 < len(lines)
                 and _TS_LINE_RE.match(lines[pos + 1].strip())):
             return current, lines[pos + 1].strip(), pos + 2
+        if require_id:
+            return None
+        if _TS_LINE_RE.match(current):
+            return None, current, pos + 1
         return None
 
     i = 0
@@ -3322,13 +3335,14 @@ def parse_srt(filepath):
         idx, ts, i = start
         text_lines = []
         while i < len(lines):
-            if _cue_start(i) is not None:
+            if _cue_start(i, require_id=numbered_file) is not None:
                 break
             if not lines[i].strip():
                 next_nonblank = i + 1
                 while next_nonblank < len(lines) and not lines[next_nonblank].strip():
                     next_nonblank += 1
-                if _cue_start(next_nonblank) is not None or next_nonblank >= len(lines):
+                if (_cue_start(next_nonblank, require_id=numbered_file) is not None
+                        or next_nonblank >= len(lines)):
                     i = next_nonblank
                     break
                 i = next_nonblank
@@ -6223,9 +6237,24 @@ def _paths_equal(a, b) -> bool:
         return a.rstrip("\\/").lower() == b.rstrip("\\/").lower()
 
 
+def _output_language_tag(target_language: str) -> str:
+    """Çıktı adına giren dil etiketi; Türkçede BOŞ döner.
+
+    Resolver hedef dili hiç bilmiyordu: aynı kaynağın Almanca ve Fransızca
+    çevirisi aynı `.tr.srt` yoluna çözülüyor, ikinci koşu birincinin üstüne
+    yazıyordu (denetim 2026-08-21, madde 31). Türkçe için etiket BOŞ
+    bırakılır: mevcut `.tr.srt` teslimlerinin yolu birebir korunmalı.
+    """
+    normalized = normalize_language_name(target_language, allow_auto=False)
+    if not normalized or normalized == "Turkish":
+        return ""
+    return _lang_iso639_1(normalized)
+
+
 def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
                           same_folder: bool = False,
-                          selected_roots=None) -> Path:
+                          selected_roots=None,
+                          target_language: str = "Turkish") -> Path:
     """Çıktı .srt yolunu çözer (bkz. plans/output-folder-rules-brief.md).
 
     same_folder=True — Giriş/Çıkış klasörü alanları YOK SAYILIR: çıktı, dosyanın
@@ -6244,10 +6273,14 @@ def _resolve_output_path(input_dir: str, output_dir: str, filepath: str,
     Yol her zaman .srt uzantılıdır (çıktı daima SRT)."""
     src = video_tracks.logical_subtitle_path(filepath)
     source_key = src.stem if src.suffix.lower() == ".srt" else src.name
-    output_name = f"{source_key}.srt"
+    language_tag = _output_language_tag(target_language)
+    suffix = f".{language_tag}.srt" if language_tag else ".srt"
+    output_name = f"{source_key}{suffix}"
     if same_folder:
         if src.suffix.lower() == ".srt":
-            return src.with_name(f"{src.stem}.tr.srt")
+            # Türkçede etiket boş; ad eskisi gibi '<stem>.tr.srt' kalır.
+            return src.with_name(
+                f"{src.stem}.{language_tag or 'tr'}.srt")
         return src.with_name(output_name)
     in_dir = (input_dir or "").strip()
     out_dir = (output_dir or "").strip()
@@ -27536,6 +27569,21 @@ class App(ctk.CTk):
         if not out_path:
             return
 
+        # Ücretli/çıktı-yazan her akış gibi bu da PROCESS GENELİ sahipliği
+        # almalı: manuel JSONL akışı Polish ve eksik-cue onarımı
+        # çalıştırabiliyor ve doğrudan write_srt ile yazıyordu, ama sahiplik
+        # kilidine hiç katılmıyordu (denetim 2026-08-21, madde 33).
+        if not _claim_translation_run_owner():
+            self._log(
+                "JSONL → SRT başlatılamadı: başka bir çeviri çalışması "
+                "sürüyor.", "err")
+            messagebox.showerror(
+                "Çalışma sürüyor",
+                "Başka bir çeviri çalışması sürerken JSONL dönüştürülemez.")
+            return
+        # Kaydetme hedefinin başlangıç durumu: nihai yazımdan hemen önce
+        # dışarıdan değiştiyse eski bloklarla üzerine yazma.
+        output_baseline = _file_state_signature(out_path)
         self._set_running(True)
         src = self.src_var.get()
         tgt = self.tgt_var.get()
@@ -27555,6 +27603,7 @@ class App(ctk.CTk):
                 self._set_status("JSONL kaynakla eşleşmiyor — dönüştürme yapılmadı")
                 _post_ui(self, messagebox.showerror,
                          "Kaynak eşleşmiyor", detail)
+                _release_translation_run_owner()
                 self._set_running(False)
                 return
             if verdict == "unknown":
@@ -27707,6 +27756,13 @@ class App(ctk.CTk):
                     source_cues=cues)
                 missing = len(remaining_missing_ids)
                 _write_path = _partial_output_path(out_path) if missing else Path(out_path)
+                current_baseline = _file_state_signature(_write_path)
+                if (str(_write_path) == str(out_path)
+                        and current_baseline != output_baseline):
+                    self._log(
+                        "JSONL → SRT: hedef dosya bu işlem sürerken "
+                        "değişti; eski bloklar YAZILMADI.", "err")
+                    return
                 write_srt(_write_path, _delivery_blocks, tgt)
                 _quarantined = (
                     self._maybe_quarantine_incomplete_final(out_path) if missing else None)
@@ -27760,6 +27816,7 @@ class App(ctk.CTk):
                 # mesajı default argümana bağla, yoksa lambda NameError verir
                 _post_ui(self, messagebox.showerror, "Hata", str(e))
             finally:
+                _release_translation_run_owner()
                 self._set_running(False)
                 self._set_status("Hazır.")
 
@@ -33046,7 +33103,8 @@ class App(ctk.CTk):
             fp: str(_resolve_output_path(
                 input_dir, output_dir, fp,
                 same_folder=self.same_folder_var.get(),
-                selected_roots=self._output_selection_roots()))
+                selected_roots=self._output_selection_roots(),
+                target_language=tgt))
             for fp in valid_files
         }
         output_baselines = {
@@ -33669,7 +33727,8 @@ class App(ctk.CTk):
                 # ── Çıktı dosyası zaten varsa ve tamamsa atla ───────────────
                 out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                                  same_folder=self.same_folder_var.get(),
-                                                 selected_roots=self._output_selection_roots())
+                                                 selected_roots=self._output_selection_roots(),
+                                                 target_language=tgt)
                 # Nihai çıktı yok ama Kurtarma'daki kısmi dosya ASLINDA tamsa
                 # (kaynağın tüm cue'ları çevrilmiş, yer tutucu yok) yeniden
                 # çevirmek yerine terfi ettir — tamamlanmış iş sessizce
@@ -34572,7 +34631,8 @@ class App(ctk.CTk):
                 break
             out_path = _resolve_output_path(input_dir, output_dir, filepath,
                                              same_folder=self.same_folder_var.get(),
-                                             selected_roots=self._output_selection_roots())
+                                             selected_roots=self._output_selection_roots(),
+                                             target_language=tgt)
             _guard_reason = _batch_write_guard_reason(
                 filepath, out_path, _expected_source_hash, _output_baseline)
             if _guard_reason:
@@ -35087,7 +35147,8 @@ class App(ctk.CTk):
         output_paths = {
             fp: str(_resolve_output_path(
                 input_dir, output_dir, fp, same_folder=self.same_folder_var.get(),
-                selected_roots=self._output_selection_roots()))
+                selected_roots=self._output_selection_roots(),
+                target_language=tgt))
             for fp in valid_files
         }
         output_baselines = {
@@ -36836,7 +36897,8 @@ class App(ctk.CTk):
             out_path = (Path(saved_out) if saved_out else
                         _resolve_output_path(input_dir, output_dir, fp,
                                              same_folder=self.same_folder_var.get(),
-                                             selected_roots=self._output_selection_roots()))
+                                             selected_roots=self._output_selection_roots(),
+                                             target_language=target_language))
             expected_source_hash = (source_hashes or {}).get(fp) or (
                 source_hashes or {}).get(str(fp))
             baseline = (output_baselines or {}).get(fp) or (
@@ -37827,7 +37889,8 @@ class App(ctk.CTk):
                 review_output = Path(stored_output) if stored_output else _resolve_output_path(
                     input_dir, output_dir, filepath,
                     same_folder=self.same_folder_var.get(),
-                    selected_roots=self._output_selection_roots())
+                    selected_roots=self._output_selection_roots(),
+                    target_language=tgt)
                 review_audit = _subtitle_delivery_audit(
                     filepath, str(review_output), tgt, file_src)
                 source_drift_rows.append(_delivery_review_report_row(
@@ -37848,7 +37911,8 @@ class App(ctk.CTk):
                     Path(stored_output) if stored_output else _resolve_output_path(
                         input_dir, output_dir, filepath,
                         same_folder=self.same_folder_var.get(),
-                        selected_roots=self._output_selection_roots()))
+                        selected_roots=self._output_selection_roots(),
+                        target_language=tgt))
                 existing_audit = _subtitle_delivery_audit(
                     filepath, str(existing_output), tgt, file_src)
                 if _delivery_audit_has_hard_error(existing_audit):
@@ -37909,7 +37973,8 @@ class App(ctk.CTk):
                 existing_output = _resolve_output_path(
                     input_dir, output_dir, filepath,
                     same_folder=self.same_folder_var.get(),
-                    selected_roots=self._output_selection_roots())
+                    selected_roots=self._output_selection_roots(),
+                    target_language=tgt)
                 # Kurtarma'daki kısmi dosya aslında tamsa terfi ettir (bkz. _run_sync).
                 if not existing_output.exists():
                     promote_complete_partial_outputs(
@@ -38208,7 +38273,8 @@ class App(ctk.CTk):
 
                 out_path = str(_resolve_output_path(input_dir, output_dir, filepath,
                                                      same_folder=self.same_folder_var.get(),
-                                                     selected_roots=self._output_selection_roots()))  # çıktı her zaman SRT
+                                                     selected_roots=self._output_selection_roots(),
+                                                     target_language=tgt))  # çıktı her zaman SRT
 
                 # ── B3: İki-dalgalı zincirli batch ────────────────────────────
                 # Doğası gereği "gönder-bekle-gönder-bekle" olduğundan Faz1'de GÖNDERİLMEZ;

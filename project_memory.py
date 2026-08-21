@@ -61,13 +61,38 @@ def is_generic_character_name(name) -> bool:
     return text.casefold().strip(".,:;!?'\"") in _COMMON_NOUN_FILTER
 
 
+def _translatable_stops() -> frozenset:
+    """Baş harfi büyük yazılsa da SIRADAN olan İngilizce sözcükler."""
+    try:
+        from prompt_constants import TRANSLATABLE_CAPITALISED_STOPS
+    except Exception:
+        return frozenset()
+    return frozenset(
+        str(word or "").strip().casefold()
+        for word in TRANSLATABLE_CAPITALISED_STOPS
+    )
+
+
 def is_self_translation(src, tgt) -> bool:
     """Kaynak==hedef mi (kelime kendine 'çevriliyor' → İngilizce sızıntısı)?
-    İstisna: özel ad / kısaltma / büyük harf içeren terimler (Ayn Rand, IQ, marka
-    adları) gerçekten korunmalı; SADECE tamamı küçük-harf sıradan kelimeleri reddet
-    (camera→camera, train→train, police→police gibi)."""
+
+    İstisna: özel ad / kısaltma (Ayn Rand, IQ, marka adları) gerçekten
+    korunmalı. Ancak ölçüt YALNIZ 'tamamı küçük harf' olamaz: analiz modeli
+    cümle başındaki ya da başlık biçimli sözcüğü 'Camera → Camera' diye
+    döndürdüğünde bu kimlik eşlemesi kalıcı hafızaya girip sonraki
+    bölümlerde de sözcüğü İngilizce bırakıyordu (denetim 2026-08-21,
+    madde 35). Bilinen sıradan sözcükler harf durumundan bağımsız reddedilir.
+    """
     s, t = str(src).strip(), str(tgt).strip()
-    return bool(s) and s.lower() == t.lower() and s.islower()
+    if not s or s.lower() != t.lower():
+        return False
+    if s.islower():
+        return True
+    stops = _translatable_stops()
+    if not stops:
+        return False
+    words = [word for word in re.findall(r"[^\W\d_]+", s, re.UNICODE)]
+    return bool(words) and all(word.casefold() in stops for word in words)
 
 
 class ProjectMemory:

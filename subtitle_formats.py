@@ -115,9 +115,20 @@ _LEGACY_IMPLAUSIBLE_CHARS = frozenset(
     "\u00af\u00b4\u2039\u203a\u00a4\u00a6\u00ac\u00b1")
 
 
+# WebVTT ruby: `<rt>` OKUNUŞ alt ağacıdır, ana metnin telaffuzunu gösterir.
+# Yalnız etiket kabuğu silindiği için okunuş ana sözcüğe yapışıyor ve
+# modele '漢kan' gibi tek bozuk kelime gidiyordu (denetim 2026-08-21,
+# madde 39). `<rp>` de yalnız parantez süsüdür.
+_VTT_RUBY_READING_RE = re.compile(
+    r'<\s*(rt|rp)\b[^>]*>.*?<\s*/\s*\1\s*>|<\s*(?:rt|rp)\b[^>]*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def clean_translation_source_text(text: str) -> str:
     """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
-    text = _SOURCE_MALFORMED_FORMAT_TAG.sub("", str(text or ""))
+    text = _VTT_RUBY_READING_RE.sub("", str(text or ""))
+    text = _SOURCE_MALFORMED_FORMAT_TAG.sub("", text)
     text = _SOURCE_HTML_TAG.sub(
         lambda match: match.group(0)
         if _VTT_VOICE_TAG.fullmatch(match.group(0)) else "",

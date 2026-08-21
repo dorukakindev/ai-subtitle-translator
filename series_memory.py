@@ -46,6 +46,12 @@ _ANIME_DASH = re.compile(
 
 
 def _slugify(show: str) -> str:
+    # NFC: Windows ve indirme araçları görsel olarak AYNI adı ayrışmış
+    # (NFD) ya da birleşik (NFC) yazabiliyor. Normalize edilmeyince
+    # 'Cafe' + combining accent 'cafe', birleşik 'Café' ise 'café' slug'ına
+    # düşüyor ve aynı dizi iki ayrı hafızaya bölünüyordu (denetim
+    # 2026-08-21, madde 36).
+    show = unicodedata.normalize('NFC', str(show or ''))
     s = re.sub(r'[._]+', ' ', show.strip().lower())
     s = re.sub(r'[^\w\s-]', '', s)        # \w Türkçe harfleri de kapsar (py3 unicode)
     s = re.sub(r'\s+', '-', s.strip())
@@ -74,7 +80,8 @@ def _source_key(value: str) -> str:
 
 
 def _term_identity(value) -> str:
-    text = str(value or "").strip()
+    # Terim kimliği de NFC'ye indirgenir (madde 36).
+    text = unicodedata.normalize("NFC", str(value or "")).strip()
     if text.isupper() and any(ch.isalpha() for ch in text):
         return f"exact:{text}"
     return f"folded:{text.casefold()}"

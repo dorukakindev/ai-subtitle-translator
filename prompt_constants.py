@@ -158,6 +158,28 @@ JSON_INSTRUCTION = (
 # King, Pyramid, Chamber Ingilizce kalmisti). Hem GUI auto-lock hem
 # hybrid_translate.sanitize_glossary_for_turkish TEK bu kaynaktan okur.
 TRANSLATABLE_CAPITALISED_STOPS = frozenset({
+    # Analiz modeli cümle başındaki ya da başlık biçimli sözcüğü sık sık
+    # 'Camera → Camera' diye döndürüyor; bu kimlik eşlemesi proje/dizi
+    # hafızasına girip sonraki bölümlerde sözcüğü İngilizce bırakıyordu
+    # (denetim 2026-08-21, madde 35). Sık geçen SIRADAN somut adlar:
+    "camera", "train", "car", "truck", "bus", "plane", "boat", "ship",
+    "phone", "radio", "television", "computer", "machine", "engine",
+    "door", "window", "house", "room", "building", "street", "road",
+    "bridge", "river", "mountain", "forest", "island", "beach",
+    "city", "town", "village", "hospital", "school", "office",
+    "station", "airport", "hotel", "restaurant", "bank", "prison",
+    "gun", "knife", "sword", "bomb", "money", "gold", "water",
+    "fire", "earth", "air", "blood", "heart", "head", "hand",
+    "eye", "face", "body", "dog", "cat", "horse", "bird", "fish",
+    "tree", "flower", "food", "bread", "wine", "coffee", "book",
+    "letter", "paper", "picture", "music", "song", "story", "film",
+    "movie", "game", "war", "peace", "love", "death", "life",
+    "time", "day", "night", "morning", "evening", "year", "week",
+    "month", "hour", "minute", "second", "world", "country", "home",
+    "family", "friend", "enemy", "people", "man", "woman", "child",
+    "baby", "body", "police", "army", "government", "company",
+    "problem", "question", "answer", "reason", "truth", "lie",
+
     # ulus / dil / bölge sıfatları
     "french", "english", "german", "spanish", "italian", "greek", "roman",
     "russian", "turkish", "chinese", "japanese", "arab", "arabic", "jewish",

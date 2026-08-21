@@ -416,14 +416,41 @@ _KNOWN_LANGUAGES = {
 }
 
 
+# Latin dışı alfabelerde SDH betimlemesi için POZİTİF kanıt. Yalnız bu
+# sözcükler görülürse cue SDH sayılır; gerçek ekran yazıları korunur.
+_NON_LATIN_SDH_WORDS = (
+    # Japonca
+    "音", "音楽", "効果音", "笑い", "拍手", "悲鳴", "足音", "鳴",
+    "開く", "閉まる", "ため息", "咳", "叫", "銃声", "爆発",
+    # Çince
+    "音乐", "掌声", "笑声", "脚步", "枪声", "爆炸",
+    # Korece
+    "음악", "박수", "웃음", "발소리", "총성",
+    # Kiril
+    "музык", "аплодисмент", "смех", "шаги", "выстрел", "звонок",
+    "крик", "вздох", "кашель", "взрыв", "звук",
+    # Yunan
+    "μουσικ", "χειροκρότ", "γέλι", "βήματα",
+    # Arapça
+    "موسيق", "تصفيق", "ضحك", "صوت", "خطوات", "صرخة",
+)
+
+
+def _non_latin_sdh_evidence(content: str) -> bool:
+    """Latin dışı metinde SDH betimlemesi olduğuna dair pozitif kanıt."""
+    value = str(content or "").casefold()
+    return any(word in value for word in _NON_LATIN_SDH_WORDS)
+
+
 def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
     key = _descriptor_key(content)
     if not key:
-        # ASCII'ye indirgenince boşalan içerik = Latin dışı alfabe (Kiril, Yunan,
-        # Arap...). Parantez İÇİNDEYSE parantezin kendisi zaten yeterli sinyaldir.
-        # ÇIPLAK metinde ise koşulsuz 'evet' demek gerçek diyaloğu siliyordu
-        # ('МУЗЫКА: Что-то происходит' tamamen uçuyordu) — yapısal teste bırak.
-        if not bare_text:
+        # ASCII'ye indirgenince boşalan içerik = Latin dışı alfabe (Kiril,
+        # Yunan, Arap, Japonca...). Parantez içinde olmak TEK BAŞINA kanıt
+        # DEĞİLDİR: köşeli parantez o dillerde gerçek ekran yazısı için de
+        # kullanılıyor ve '[東京都庁]' gibi anlamlı tabelalar tamamen
+        # siliniyordu (denetim 2026-08-21, madde 38). Pozitif kanıt aranır.
+        if _non_latin_sdh_evidence(content):
             return True
         return is_structural_sdh_label(content)
     if _is_heading_label(content):
