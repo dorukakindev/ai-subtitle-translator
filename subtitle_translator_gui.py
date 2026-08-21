@@ -4475,7 +4475,10 @@ def _is_delivery_sdh_only(text: str) -> bool:
             or "".join(match.group(0) for match in tokens).strip() != token_value):
         return False
     return all(
-        sdh_cleaner.is_sdh_descriptor(match.group(2), bare_text=False)
+        # Buraya gelen metin YALNIZ parantez gruplarından oluşuyor
+        # (yukarıdaki eşitlik kontrolü), yani her grup tek başına.
+        sdh_cleaner.is_sdh_descriptor(
+            match.group(2), bare_text=False, bracketed=True)
         or bool(_DELIVERY_TURKISH_SDH_RE.search(match.group(2)))
         or bool(_DELIVERY_LANGUAGE_LABEL_RE.fullmatch(
             sdh_cleaner._ascii_fold(match.group(2)).strip()))

@@ -57,6 +57,40 @@ def _replace_bracket_groups(text: str, replacer) -> str:
     return "".join(out)
 
 
+_LABEL_CONTEXT_NOISE_RE = re.compile(r"[\s\-–—>♪♫♬♩:;,.]+")
+
+
+def _replace_bracket_groups_ctx(text: str, replacer) -> str:
+    """_replace_bracket_groups gibi, ama replacer'a (raw, standalone) verir.
+
+    `standalone`: grup, bulunduğu SATIRIN tamamını kaplıyor mu? '[Soft Power]
+    A documentary.' gibi başlık ön ekleriyle '[uğultu]' gibi tek başına duran
+    ses etiketlerini ayırt etmenin tek güvenilir yolu bu — ikisi de kısa ve
+    Title Case olabiliyor."""
+    text = str(text or "")
+    spans = _bracket_group_spans(text)
+    if not spans:
+        return text
+    out = []
+    cursor = 0
+    for start, end in spans:
+        line_start = text.rfind("\n", 0, start) + 1
+        line_end = text.find("\n", end)
+        if line_end == -1:
+            line_end = len(text)
+        context = text[line_start:start] + " " + text[end:line_end]
+        context = _replace_bracket_groups(context, lambda raw: " ")
+        # <i>(etiket)</i>: biçim etiketleri bağlam sayılmaz, yoksa italikle
+        # sarılmış her etiket "tek başına değil" görünüyordu.
+        context = FORMAT_TAG_RE.sub("", context)
+        standalone = not _LABEL_CONTEXT_NOISE_RE.sub("", context).strip()
+        out.append(text[cursor:start])
+        out.append(replacer(text[start:end], standalone))
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
 def _has_bracket_group(text: str) -> bool:
     return bool(_bracket_group_spans(text))
 
@@ -442,7 +476,90 @@ def _non_latin_sdh_evidence(content: str) -> bool:
     return any(word in value for word in _NON_LATIN_SDH_WORDS)
 
 
-def is_sdh_descriptor(content: str, bare_text: bool = False) -> bool:
+# Parantez içi içerik için DİLDEN BAĞIMSIZ biçim kuralı.
+#
+# Beyaz liste (_SDH_KEYWORDS, _SDH_ACTION_VERBS...) İngilizce sözcüklere
+# dayanıyordu; Türkçeye çevrilmiş etiketler ('[uğultu]', '[KEDİ MİYAVLAR]',
+# '[Keçi melemesi]', '[Burnunu sümkürüyor]') hiçbir kurala uymadığı için
+# teslim dosyasında kalıyordu. GERÇEK teslimlerde ölçüldü: 274 dosyanın
+# 23'ünde artık etiket vardı. Proje kuralı ses/dil/konuşmacı etiketlerinin
+# TAMAMEN silinmesi olduğu için parantez içi kısa, cümle olmayan içerik
+# artık VARSAYILAN OLARAK etiket sayılır; korumalar aşağıda tek tek sayılı.
+_LABEL_QUOTE_CHARS = "\"“”«»„‟"
+# Programın kendi işaretleri: bunlar sonradan kaynakla doldurulur, silinmez.
+_SELF_MARKER_KEYS = {"ceviri eksik", "ceviri hatasi", "hata"}
+# Bağlaçla başlayan parantez içi metin replik/şarkı sözü parçasıdır,
+# etiket değil ('[çünkü sobama şeker döktüm]' gerçek bir teslimde vardı).
+_CLAUSE_STARTER_KEYS = {
+    "cunku", "ama", "fakat", "ancak", "yani", "veya", "oysa",
+    "eger", "ki", "ve", "ya", "hem", "ise", "belki", "sanki",
+    "keske", "madem", "ustelik", "halbuki", "cunki",
+    "because", "but", "and", "or", "if", "so", "then", "that",
+}
+
+
+def _bracket_shape_is_label(content: str, standalone: bool = True) -> bool:
+    """Parantez içi içerik, sözcük listesine BAKMADAN etiket mi?
+
+    Ayırt edici sinyal biçimdir: kısa, cümle noktalamasıyla bitmeyen,
+    tırnaksız bir parantez içi metin altyazı repliği değildir. Korumalar:
+    ekran kartları ('[I. KSENAKİS, 1978]', '[THE END]'), başlık etiketleri,
+    tırnaklı alıntılar, '#' ile başlayan şarkı künyeleri, formül/eşitlik
+    içerenler, bağlaçla başlayan replik parçaları ve programın kendi
+    '[ÇEVİRİ EKSİK]' işareti."""
+    raw = str(content or "").strip()
+    if not raw or "\n" in raw or len(raw) > 60:
+        return False
+    if raw[0] in "#♪♫":
+        return False
+    if any(char in raw for char in _LABEL_QUOTE_CHARS):
+        return False
+    if _is_protected_bracket_content("[" + raw + "]"):
+        return False
+    if _SENTENCE_END_RE.search(raw):
+        return False
+    if is_narrative_screen_card(raw) or _is_heading_label(raw):
+        return False
+    key = _descriptor_key(raw)
+    if not key or key.casefold() in _SELF_MARKER_KEYS:
+        return False
+    words = key.split()
+    if not words or words[0].casefold() in _CLAUSE_STARTER_KEYS:
+        return False
+    # Çıplak sayı taşıyan içerik ekran yazısıdır ('[404 ERROR]', '[SAAT 3]'),
+    # ses etiketi değil. Bilinen etiketleri ('[NARRATOR 2]') aşağıdaki
+    # sözcük kuralları yine yakalar.
+    if any(word.isdigit() for word in words):
+        return False
+    letters = [char for char in raw if char.isalpha()]
+    if len(letters) < 2:
+        return False
+    # Tamamı büyük harf = klasik SDH/konuşmacı etiketi; biraz daha uzun
+    # olanına da izin verilir. Karışık/küçük harfte replik riski yüksek
+    # olduğu için sınır dar tutulur.
+    if all(char.isupper() for char in letters):
+        return len(words) <= 6
+    # İki nokta ile biten içerik konuşmacı etiketidir: '[Bayan Milagros:]'.
+    if raw.rstrip().endswith(":"):
+        return len(words) <= 4
+    # Karışık/küçük harfte replik ve özel ad riski var. İki koşul birden:
+    #  • grup satırın TAMAMINI kaplamalı ('[Soft Power] A documentary.'
+    #    korunur, '[uğultu]' silinir);
+    #  • en az bir sözcük küçük harfle başlamalı — böylece '[Keçi
+    #    melemesi]' silinirken '[Sesame Street]' gibi saf Title Case
+    #    ekran yazıları/özel adlar korunur.
+    has_lower_initial = any(
+        word[:1].isalpha() and word[:1].islower() for word in raw.split())
+    return standalone and has_lower_initial and len(words) <= 4
+
+
+def is_sdh_descriptor(content: str, bare_text: bool = False,
+                      bracketed: bool = False,
+                      standalone: bool = True) -> bool:
+    # `bracketed`: içerik gerçekten [..]/(..) içinden geldiyse biçim kuralı
+    # uygulanır. Çıplak metinde (bare_text) parantez sinyali yoktur.
+    if bracketed and _bracket_shape_is_label(content, standalone):
+        return True
     key = _descriptor_key(content)
     if not key:
         # ASCII'ye indirgenince boşalan içerik = Latin dışı alfabe (Kiril,
@@ -627,7 +744,12 @@ def _strip_speaker_prefix(line: str) -> str:
         raw = match.group(1)
         inner = raw[1:-1].strip()
         colon_follows = line[match.start(1) + len(raw):match.end()].strip().startswith(":")
-        if colon_follows or is_sdh_descriptor(inner) or _is_speaker_name(inner, colon_follows):
+        # Ön ek konumunda grup satırın tamamını kaplamaz: '[Soft Power] A
+        # documentary.' gibi başlıklar korunsun diye standalone=False.
+        if (colon_follows
+                or is_sdh_descriptor(
+                    inner, bracketed=True, standalone=False)
+                or _is_speaker_name(inner, colon_follows)):
             line = line[match.end():]
             continue
         return line
@@ -642,11 +764,12 @@ def strip_sdh_line(line: str, strip_format_tags: bool = True) -> str:
 
     line = _strip_standalone_music_notes(line)
 
-    def replace_descriptor(raw):
+    def replace_descriptor(raw, standalone):
         inner = raw[1:-1]
-        return "" if is_sdh_descriptor(inner) else raw
+        return "" if is_sdh_descriptor(
+            inner, bracketed=True, standalone=standalone) else raw
 
-    line = _replace_bracket_groups(line, replace_descriptor)
+    line = _replace_bracket_groups_ctx(line, replace_descriptor)
     line = re.sub(r"\s+([,.;:!?])", r"\1", line)
     line = re.sub(r"(^|\s)[-–—]\s*$", "", line)
     line = re.sub(r"\s{2,}", " ", line).strip()
@@ -663,8 +786,10 @@ def is_sdh_only(text: str) -> bool:
         return True
 
     had_bracket_group = _has_bracket_group(text)
-    stripped = _replace_bracket_groups(
-        text, lambda raw: "" if is_sdh_descriptor(raw[1:-1]) else raw)
+    stripped = _replace_bracket_groups_ctx(
+        text,
+        lambda raw, standalone: "" if is_sdh_descriptor(
+            raw[1:-1], bracketed=True, standalone=standalone) else raw)
     stripped = re.sub(r"[\s,.;:!?_\-–—]+", "", stripped)
     if not stripped:
         return True
@@ -710,6 +835,10 @@ def normalize_sdh_descriptors(text: str) -> str:
     return _replace_bracket_groups(str(text or ""), replace_descriptor)
 
 
+_EMPTY_FORMAT_PAIR_RE = re.compile(
+    r"<\s*(i|b|u|font)[^>]*>\s*</\s*\1\s*>", re.IGNORECASE)
+
+
 def strip_sdh_descriptors(text: str) -> str:
     """SDH ses/efekt tanımlayıcılarını ÇEVİRMEK yerine tamamen kaldırır.
 
@@ -717,14 +846,18 @@ def strip_sdh_descriptors(text: str) -> str:
     ('[LAUGHS]' → '[GÜLER]' değil, hiç). Satırı tümüyle boşaltacaksa satır olduğu
     gibi bırakılır — bu aşamada cue düşürülemez, boş metin '[ÇEVİRİ EKSİK]' olarak
     ekrana basılırdı; salt-SDH cue'ları zaten clean_sdh aşaması düşürür."""
-    def replace_descriptor(raw):
-        return "" if is_sdh_descriptor(raw[1:-1]) else raw
+    def replace_descriptor(raw, standalone):
+        return "" if is_sdh_descriptor(
+            raw[1:-1], bracketed=True, standalone=standalone) else raw
 
     original = str(text or "")
     out_lines = []
     for line in original.split("\n"):
-        stripped = _replace_bracket_groups(line, replace_descriptor)
+        stripped = _replace_bracket_groups_ctx(line, replace_descriptor)
         stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
+        # '<i>[uğultu]</i>' → '<i></i>': boşalan biçim etiketi çifti ekranda
+        # görünmez ama satırı 'dolu' gösterip cue'nun düşmesini engelliyordu.
+        stripped = _EMPTY_FORMAT_PAIR_RE.sub("", stripped)
         # Etiket sökülünce yalnız diyalog tiresi kalan satır ekranda '-' olarak
         # görünürdü; tamamen boşalmış say.
         stripped = re.sub(r"^\s*[-–—]\s*$", "", stripped)

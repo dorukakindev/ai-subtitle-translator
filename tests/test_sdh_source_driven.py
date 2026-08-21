@@ -470,16 +470,17 @@ class SdhSourceDrivenTest(unittest.TestCase):
         self.assertEqual(dict((b[0], b[2]) for b in result)["1"], "'Havaalanı bomboş...'")
 
     def test_turkish_label_stripped_despite_whitelist(self):
-        """ASIL REGRESYON KİLİDİ: '[ÇAN SESLERİ]' _SDH_KEYWORDS beyaz listesinde
-        YOK — bu yüzden legacy (source_driven=False) yol onu tanıyamayıp sağ
-        bırakıyor (bugünkü hata). Kaynak-güdümlü yol beyaz listeyi hiç
-        sorgulamadan, yalnızca kaynağın yapısına bakarak doğru siliyor."""
+        """'[ÇAN SESLERİ]' _SDH_KEYWORDS beyaz listesinde YOK. Eskiden legacy
+        (source_driven=False) yol onu tanıyamayıp sağ bırakıyordu; artık
+        dilden bağımsız BİÇİM kuralı (tamamı büyük harf + cümle değil) her
+        iki yolda da siliyor."""
         blocks = [("1", "00:00:01,000 --> 00:00:02,000", "[ÇAN SESLERİ]")]
         src_map = _src(**{"1": "[BELLS RINGING]"})
 
         legacy = sdh.clean_sdh_blocks(blocks)  # source_driven=False (varsayılan), src_map yok
-        self.assertIn("1", [b[0] for b in legacy],
-                      "regresyon belgesi: beyaz liste 'çan sesleri'ni tanımıyor, satır hayatta kalıyor")
+        self.assertNotIn("1", [b[0] for b in legacy],
+                         "beyaz listeden bağımsız BİÇİM kuralı: tamamı büyük harfli, "
+                         "cümle olmayan parantez içeriği kaynak olmadan da silinmeli")
 
         fixed = sdh.clean_sdh_blocks(blocks, src_map=src_map, source_driven=True)
         self.assertNotIn("1", [b[0] for b in fixed],
