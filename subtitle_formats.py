@@ -125,9 +125,40 @@ _VTT_RUBY_READING_RE = re.compile(
 )
 
 
+# `<br>` ve inline VTT zaman etiketi GÖRSEL kabuk değil, iki metin parçası
+# arasındaki gerçek SINIRDIR. Boş dizeyle silinince komşu sözcükler
+# birleşiyor ve modele 'Waithere' gidiyordu (devam denetimi, madde 1).
+_SOURCE_LINE_BREAK_TAG = re.compile(r'<\s*br\s*/?\s*>', re.IGNORECASE)
+_SOURCE_INLINE_VTT_TS = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{1,3}>')
+_WORDLIKE_CHAR_RE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def _replace_word_separators(text: str) -> str:
+    """Ayırıcı etiketleri boşluğa çevirir; sahte boşluk üretmez.
+
+    `<br>` her wrap modunda gerçek satır sonudur, hep ayırır. Inline VTT
+    zaman etiketi ise karaoke zamanlamasıdır: yalnız İKİ SÖZCÜĞÜN arasında
+    duruyorsa ayırır, `<v Roger><00:00:01.500>Choose` gibi bir etiketin
+    hemen ardındaysa boşluk eklemez."""
+    value = _SOURCE_LINE_BREAK_TAG.sub(" ", str(text or ""))
+
+    def _timestamp(match):
+        before = value[match.start() - 1] if match.start() else ""
+        after = value[match.end()] if match.end() < len(value) else ""
+        if (before and after
+                and _WORDLIKE_CHAR_RE.match(before)
+                and _WORDLIKE_CHAR_RE.match(after)):
+            return " "
+        return ""
+
+    return _SOURCE_INLINE_VTT_TS.sub(_timestamp, value)
+
+
 def clean_translation_source_text(text: str) -> str:
     """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
     text = _VTT_RUBY_READING_RE.sub("", str(text or ""))
+    # Ayırıcılar ÖNCE boşluğa çevrilir; görsel kabuk temizliği sonra gelir.
+    text = _replace_word_separators(text)
     text = _SOURCE_MALFORMED_FORMAT_TAG.sub("", text)
     text = _SOURCE_HTML_TAG.sub(
         lambda match: match.group(0)
@@ -831,7 +862,31 @@ _VTT_ENTITIES = {
     "lsquo": "\u2018", "rsquo": "\u2019", "laquo": "\u00ab",
     "raquo": "\u00bb", "deg": "\u00b0", "eacute": "\u00e9",
 }
-_VTT_ENTITY_RE = re.compile(r"&(#x[0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]*);")
+_VTT_ENTITY_RE = re.compile(
+    r"&(#[xX][0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]*);")
+# Unicode surrogate aralığı ve noncharacter değerleri GEÇERLİ scalar değil:
+# `chr(0xD800)` bir Python str üretir ama UTF-8'e yazılamaz ve nihai SRT
+# yazımını, logu, JSONL'i kırar (devam denetimi, madde 3).
+_UNICODE_NONCHARACTERS = frozenset(
+    list(range(0xFDD0, 0xFDF0))
+    + [plane * 0x10000 + offset
+       for plane in range(17) for offset in (0xFFFE, 0xFFFF)]
+)
+
+
+def _valid_entity_codepoint(code: int) -> bool:
+    """WebVTT/HTML karakter referansı geçerli bir Unicode scalar mı?"""
+    if code <= 0 or code > 0x10FFFF:
+        return False
+    if 0xD800 <= code <= 0xDFFF:
+        return False  # surrogate
+    if code in _UNICODE_NONCHARACTERS:
+        return False
+    if code < 0x20 and chr(code) not in "\t\n\r":
+        return False  # C0 kontrol
+    if 0x7F <= code <= 0x9F:
+        return False  # DEL ve C1 kontrol
+    return True
 
 
 def decode_vtt_entities(text: str) -> str:
@@ -849,8 +904,9 @@ def decode_vtt_entities(text: str) -> str:
                         else int(body[1:]))
             except ValueError:
                 return match.group(0)
-            if 0 < code <= 0x10ffff:
+            if _valid_entity_codepoint(code):
                 return chr(code)
+            # Geçersiz scalar: kaynağı bozmadan olduğu gibi bırak.
             return match.group(0)
         return _VTT_ENTITIES.get(body.casefold(), match.group(0))
 
@@ -1464,7 +1520,12 @@ def parse_any(filepath: str, lyric_language: str | None = None) -> list:
 # yüzden '<i>[HATA]</i>', '<i></i>' ve '—' gibi teslim edilemez hedefler
 # tamamlanma, teslim denetimi ve TM kapılarının üçünden de geçiyordu
 # (denetim 2026-08-21, madde 1). Bu katman üç kapının ortak ölçütüdür.
-_VISIBLE_MARKUP_RE = re.compile(r"</?[a-zA-Z][^>]*>|\{[^{}]*\}")
+# Süslü parantez YALNIZ ters-bölüyle başlayan gerçek ASS override bloğuysa
+# görünmezdir. Her `{...}`'yi markup saymak `{username}`, `{red}` gibi
+# ekranda GÖRÜNEN literal metni boş hedefe çeviriyordu (devam denetimi,
+# madde 2) — parser katmanı bunları özellikle koruyor.
+_VISIBLE_MARKUP_RE = re.compile(
+    r"</?[a-zA-Z][^>]*>|\{\s*\\[^{}]*\}")
 _VISIBLE_INVISIBLE_RE = re.compile(
     "[\u00ad\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]")
 _TRANSLATION_FAILURE_MARKER_RE = re.compile(

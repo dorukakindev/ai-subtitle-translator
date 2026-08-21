@@ -1341,8 +1341,25 @@ def _recover_submitted_batch_links(session: dict, filepaths: list,
         except OSError:
             source_key = str(Path(source_path))
         filepath = wanted.get(source_key)
-        if filepath:
-            recovered[filepath] = (batch_id, data)
+        if not filepath:
+            continue
+        # Kaynak SAHİPLİĞİ: fmap'teki hash hem oturum kaydıyla hem DİSKTEKİ
+        # güncel dosyayla uyuşmalı. Eskiden yalnız yol ve fingerprint
+        # karşılaştırılıyordu; kaynak değişmiş olsa bile eski uzak iş yeni
+        # çalışmaya bağlanıyor, bekleme ve ücretli post-pass'ler boşa
+        # gidiyordu (devam denetimi, madde 4).
+        fmap_hash = str(data.get("source_hash") or "").strip()
+        current_hash = _cache_sig(filepath).removeprefix("sha256:")
+        entry_hash = str(
+            (session.get("files") or {}).get(filepath, {})
+            .get("source_hash") or "").strip()
+        # Hash HİÇ yoksa fmap eski biçimdedir: doğrulanamaz, ama ödenmiş
+        # uzak iş de atılamaz — eski davranışla (yol + fingerprint) bağlanır.
+        if fmap_hash and current_hash and fmap_hash != current_hash:
+            continue
+        if fmap_hash and entry_hash and entry_hash != fmap_hash:
+            continue
+        recovered[filepath] = (batch_id, data)
     for filepath, (batch_id, data) in recovered.items():
         entry = session["files"].setdefault(filepath, {})
         if entry.get("status") == "completed":
@@ -1409,6 +1426,16 @@ def _create_batch_session_unlocked(input_dir: str, output_dir: str,
                 continue
             entry = session["files"][key]
             status = entry.get("status")
+            if (status == "submitted"
+                    and entry.get("source_hash")
+                    and entry.get("source_hash") != source_hash):
+                # Kaynak dosya bu batch gönderildikten SONRA değişti: uzak
+                # iş artık bu dosyaya ait değil (devam denetimi, madde 4).
+                session["files"][key] = {
+                    "status": "pending", "source_hash": source_hash,
+                    "orphan_batch_id": entry.get("batch_id") or "",
+                }
+                continue
             is_forced = os.path.normcase(os.path.abspath(key)) in forced
             if is_forced and status != "submitted":
                 session["files"][key] = {
@@ -1448,8 +1475,20 @@ def _create_batch_session_unlocked(input_dir: str, output_dir: str,
             for fp in filepaths:
                 key = str(fp)
                 old_entry = (replaced.get("files") or {}).get(key, {})
-                if old_entry.get("status") == "submitted" and old_entry.get("batch_id"):
-                    session["files"][key] = dict(old_entry)
+                if not (old_entry.get("status") == "submitted"
+                        and old_entry.get("batch_id")):
+                    continue
+                # AYAR fingerprint'i değişti: hedef dil, model, şema veya
+                # pass ayarları artık başka. Batch ÖDENMİŞTİR, bağlantı
+                # atılmaz (bkz. test_settings_change_preserves_paid_submitted_batch);
+                # ama sonucun ESKİ ayarlarla üretildiği kaydedilir, yoksa
+                # yeni ayarların işi gibi raporlanıyordu (devam denetimi,
+                # madde 4).
+                carried = dict(old_entry)
+                carried["settings_fingerprint_changed"] = True
+                carried["origin_fingerprint"] = str(
+                    (replaced or {}).get("fingerprint") or "")
+                session["files"][key] = carried
         for fp in filepaths:
             key = str(fp)
             if (os.path.normcase(os.path.abspath(key)) in forced

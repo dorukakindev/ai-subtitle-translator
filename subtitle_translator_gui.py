@@ -8340,6 +8340,14 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
         "see", "saw", "hear", "heard", "leave", "left", "stay",
     }
     folded = [token.casefold() for token in tokens]
+    # POZİTİF KANIT: bütün sözcükler bilinen SIRADAN İngilizce sözcükse
+    # ortada özel ad yoktur. Yalnız 'baş harfi büyük' ölçütü 'Fire Exit',
+    # 'Emergency Exit', 'Danger Ahead' gibi gerçek tabelaları özel ad sayıp
+    # çevrilmemiş hâlde teslimden geçiriyordu (devam denetimi, madde 5).
+    if not any(
+            token.strip("'’-") not in TRANSLATABLE_CAPITALISED_STOPS
+            for token in folded):
+        return False
     if len(tokens) > 8:
         return len(re.findall(r"[,;\n]", text)) >= 3
     if " ".join(folded) in {
@@ -13962,12 +13970,35 @@ def _upload_ready_marker_text(record: dict, entries: list) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _intended_output_folder(source_path, settings: dict):
+    """Bu kaynak için çıktının GİDECEĞİ klasör (dosya hiç yazılmasa bile).
+
+    Başarısız üye `output_path` üretemediği için klasör toplulaştırmasından
+    tamamen düşüyor ve klasör yine hazır işareti alabiliyordu (devam
+    denetimi, madde 6). Aynı resolver ile hedef klasör yeniden hesaplanır.
+    """
+    try:
+        return _resolve_output_path(
+            str(settings.get("input_dir") or ""),
+            str(settings.get("output_dir") or ""),
+            str(source_path),
+            same_folder=bool(settings.get("same_folder")),
+            selected_roots=settings.get("selected_folder_roots") or (),
+            target_language=str(settings.get("tgt_lang") or "Turkish"),
+        ).parent
+    except Exception:
+        return None
+
+
 def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     """(yazılacak {klasör: [(ad, hash)]}, silinecek klasörler).
 
     Bir final YALNIZ şu üçü birden sağlanınca hazır sayılır: durum 'done',
     dosya diskte var ve kaynak+çıktı parmak izi doğrulanıyor. Aksi hâlde o
     klasördeki eski işaret KALDIRILIR.
+
+    Çıktı yolu HİÇ oluşmamış başarısız üye de kendi hedef klasörünü bloklar;
+    ayrıca çalışmanın kendisi 'done' değilse hiçbir işaret yazılmaz.
     """
     files = dict(record.get("files") or {})
     settings = dict(record.get("settings") or {})
@@ -13979,6 +14010,10 @@ def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     for source_path, state in files.items():
         output_value = str((state or {}).get("output_path") or "").strip()
         if not output_value:
+            # Yol yok: gitmesi GEREKEN klasörü hesapla ve orayı blokla.
+            intended = _intended_output_folder(source_path, settings)
+            if intended is not None:
+                stale.add(intended)
             continue
         output = Path(output_value)
         folder = output.parent
@@ -13998,6 +14033,12 @@ def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     # Aynı klasörde bir dosya bile hazır değilse işaret yazılmaz.
     for folder in stale:
         ready.pop(folder, None)
+    # Çalışma terminal durumda 'done' değilse hiçbir klasör hazır sayılmaz;
+    # eski işaretler yine de temizlenir.
+    run_status = str(record.get("status") or "").strip().casefold()
+    if run_status and run_status not in {"done", "completed", ""}:
+        stale.update(ready)
+        ready = {}
     return ready, stale
 
 
@@ -15726,6 +15767,25 @@ def _delivery_visible_line(text: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _has_non_ordinary_english_token(text: str) -> bool:
+    """Metinde SIRADAN İngilizce olmayan en az bir sözcük var mı?
+
+    'Yabancı nakarat', 'tırnaklı eser adı' ve 'özel ad' muafiyetleri
+    yalnız BİÇİME bakıyordu: tekrar, tırnak ya da iki Title Case sözcük.
+    Böylece 'Danger danger', '\"Fire!\"' ve 'Fire Exit' gibi GERÇEK
+    İngilizce replik ve tabelalar çevrilmemiş hâlde teslimden geçiyordu
+    (devam denetimi, madde 5). Muafiyet artık pozitif kanıt ister: en az
+    bir sözcük bilinen sıradan İngilizce sözcüklerden OLMAMALI.
+    """
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+", str(text or ""))
+    if not words:
+        return False
+    return any(
+        word.casefold().strip("'’-") not in TRANSLATABLE_CAPITALISED_STOPS
+        for word in words
+    )
+
+
 def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                                         target_language="Turkish",
                                         source_language=None) -> list[str]:
@@ -15804,6 +15864,7 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                     "stop", "wait", "go", "come", "get", "make", "know", "want",
                     "need", "look", "see", "say", "tell", "let", "good", "bad",
                 })
+                and _has_non_ordinary_english_token(quote_body)
             )
             foreign_term_context = (
                 source_is_english and reason == "identical_source"
@@ -15827,6 +15888,7 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                         "good", "morning", "thank", "thanks", "hello", "please",
                         "come", "look", "wait", "stop", "help", "yes", "no",
                     })
+                and _has_non_ordinary_english_token(visible)
             )
             repeated_inline_term = (
                 source_is_english and reason == "identical_source"
@@ -15851,6 +15913,7 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
             repeated_foreign_refrain = (
                 source_is_english and reason == "identical_source"
                 and bool(_repeated_foreign_refrain_word(visible))
+                and _has_non_ordinary_english_token(visible)
             )
             if (reason and not foreign_name_line and not list_tail_proper_name
                     and not quoted_foreign_reference and not foreign_term_context
@@ -38617,6 +38680,31 @@ class App(ctk.CTk):
             input_dir, output_dir, srt_files, fingerprint=session_fp,
             force_retranslate_paths=getattr(
                 self, "_force_retranslate_paths", set()))
+        _carried = [
+            Path(k).name for k, v in (session.get("files") or {}).items()
+            if isinstance(v, dict) and v.get("settings_fingerprint_changed")
+        ]
+        if _carried:
+            # Ödenmiş batch korunuyor ama ESKİ ayarlarla üretildi; sessizce
+            # yeni ayarların işiymiş gibi raporlanmasın (devam denetimi, m.4).
+            self._log(
+                "⚠ Ayarlar değişti; şu dosyaların gönderilmiş batch'i ESKİ "
+                "ayarlarla üretildi (ücret kaybolmasın diye bağlantı korundu): "
+                + ", ".join(_carried[:8])
+                + (" …" if len(_carried) > 8 else "")
+                + " — yeni ayarlarla istiyorsanız 'Yeniden Çevir' ile işaretleyin.",
+                "warn")
+        _orphans = [
+            Path(k).name for k, v in (session.get("files") or {}).items()
+            if isinstance(v, dict) and v.get("orphan_batch_id")
+        ]
+        if _orphans:
+            self._log(
+                "⚠ Kaynak dosya gönderimden sonra değiştiği için eski batch "
+                "bağlantısı bırakıldı: " + ", ".join(_orphans[:8])
+                + (" …" if len(_orphans) > 8 else "")
+                + " — bu dosyalar yeniden gönderilecek.",
+                "warn")
         _summary = ht.batch_session_summary(session, srt_files)
         if _summary["completed"] > 0 or _summary["submitted"] > 0:
             self._log(

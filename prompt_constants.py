@@ -179,6 +179,17 @@ TRANSLATABLE_CAPITALISED_STOPS = frozenset({
     "family", "friend", "enemy", "people", "man", "woman", "child",
     "baby", "body", "police", "army", "government", "company",
     "problem", "question", "answer", "reason", "truth", "lie",
+    # Tabela ve uyarı sözcükleri: 'Fire Exit', 'Danger Ahead' gerçek
+    # İngilizce içeriktir, özel ad değil (devam denetimi, madde 5).
+    "danger", "warning", "caution", "exit", "entrance", "emergency",
+    "ahead", "stop", "help", "open", "closed", "push", "pull",
+    "freedom", "justice", "victory", "silence", "welcome",
+    "private", "public", "restricted", "forbidden", "keep",
+    "property", "area", "zone", "entry", "access", "authorized",
+    "out", "in", "up", "down", "left", "right", "north", "south",
+    "east", "west", "first", "last", "next", "final", "start",
+    "end", "begin", "finish", "yes", "no", "maybe", "now",
+    "later", "never", "always", "here", "there", "everywhere",
 
     # ulus / dil / bölge sıfatları
     "french", "english", "german", "spanish", "italian", "greek", "roman",
