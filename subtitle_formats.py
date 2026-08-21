@@ -100,7 +100,19 @@ _SHORT_LEGACY_COMMON_BIGRAMS = {
 }
 _SHORT_LEGACY_DISTINCTIVE_CHARS = {
     "cp1250": set("\u0105\u0107\u0119\u0142\u0144\u00f3\u015b\u017a\u017c"),
+    # CP1254'ün CP1252'den TEK farkı bu altı yuvadır (ğĞıİşŞ). Türkçe bir
+    # kaynakta bunlar varken rakip kodlamalar aynı baytları tipografik
+    # işaretlere çeviriyor ve skorda öne geçebiliyordu: kısa dosyada
+    # 'İyi günler' → '›yi g¸nler' (denetim 2026-08-21, madde 24).
+    # 'ç/ö/ü' KASITLI olarak listede yok: onlar CP1252 ile ortak, yani
+    # Almanca/Fransızca metinde ayırt edici değil.
+    "cp1254": set("\u011f\u011e\u0131\u0130\u015f\u015e"),
 }
+# Aralık işareti/aksan taşıyıcısı gibi karakterler gerçek altyazı metninde
+# bulunmaz; yanlış kodlama seçildiğinin güçlü işaretidir.
+_LEGACY_IMPLAUSIBLE_CHARS = frozenset(
+    "\u02c6\u02dc\u02d8\u02d9\u02da\u02db\u02dd\u00b8\u00a8"
+    "\u00af\u00b4\u2039\u203a\u00a4\u00a6\u00ac\u00b1")
 
 
 def clean_translation_source_text(text: str) -> str:
@@ -120,11 +132,28 @@ def clean_translation_source_text(text: str) -> str:
 
 # ── Toleranslı encoding çözümleme ─────────────────────────────────────────────
 
+def _srt_fraction_to_millis(fraction: str) -> str:
+    """Kesir alanını üç haneli milisaniyeye indirger.
+
+    Kural DETERMİNİSTİK: eksikse '000', kısaysa sağdan sıfırla tamamlanır,
+    4+ haneyse İLK ÜÇ hane alınır (mikro saniyeli araç çıktıları).
+    """
+    digits = str(fraction or "")
+    if not digits:
+        return "000"
+    return (digits + "000")[:3]
+
+
 def normalize_srt_timestamp_separators(text: str) -> str:
-    """SRT zaman satırlarındaki hatalı ayraçları ve kısa milisaniyeleri düzeltir."""
+    """SRT zaman satırlarındaki hatalı ayraçları ve milisaniyeleri düzeltir.
+
+    Kesir alanı OPSİYONELDİR: '00:00:01 --> 00:00:03' ve mikro saniyeli
+    '00:00:01,123456' biçimleri eskiden hiç cue üretmiyor, dosya boş
+    sanılıyordu (denetim 2026-08-21, madde 25). Tolerans yalnız İKİ UCU da
+    tam 'HH:MM:SS' olan satırlara uygulanır."""
     pattern = re.compile(
-        r'(?m)^([ \t]*)(\d+)[;:](\d{2})[;:](\d{2})[,.](\d{1,3})([ \t]*'
-        r'-->[ \t]*)(\d+)[;:](\d{2})[;:](\d{2})[,.](\d{1,3})([^\n]*)$'
+        r'(?m)^([ \t]*)(\d+)[;:](\d{2})[;:](\d{2})(?:[,.](\d+))?([ \t]*'
+        r'-->[ \t]*)(\d+)[;:](\d{2})[;:](\d{2})(?:[,.](\d+))?([^\n]*)$'
     )
 
     def replace(match):
@@ -132,8 +161,9 @@ def normalize_srt_timestamp_separators(text: str) -> str:
         # Saat 2 haneye tamamlanmalı: '0:01:23,456' biçimini donanımsal oynatıcılar
         # ve bazı yazılımlar yüklemiyor.
         return (
-            f"{lead}{int(sh):02d}:{sm}:{ss},{(sms + '000')[:3]}{arrow}"
-            f"{int(eh):02d}:{em}:{es},{(ems + '000')[:3]}{tail}"
+            f"{lead}{int(sh):02d}:{sm}:{ss},{_srt_fraction_to_millis(sms)}"
+            f"{arrow}{int(eh):02d}:{em}:{es},"
+            f"{_srt_fraction_to_millis(ems)}{tail}"
         )
 
     return pattern.sub(replace, str(text or ""))
@@ -239,6 +269,7 @@ def _decode_short_legacy(raw: bytes) -> str | None:
         suspicious = len(re.findall(
             r"(?<=[^\W\d_])(?:[\u2010-\u2017\u2020-\u2027]|[‡–—])"
             r"(?=[^\W\d_])", text))
+        suspicious += sum(ch in _LEGACY_IMPLAUSIBLE_CHARS for ch in text)
         candidates.append(((common_ratio * 0.2) + (bigram_ratio * 1.2)
                             + (script_ratio * 0.15) + distinctive_bonus
                             - (suspicious * 0.75), text))

@@ -136,10 +136,45 @@ def _tv_root_info(filename: str):
     return None
 
 
+# Dizi adı TAŞIMAYAN, yalnız bölümü numaralayan klasör adları. Bunlar bir
+# dizi kökü değildir; ayrı 'Episode 1' / 'Episode 2' klasörlerindeki iki
+# bölüm ayrı bellek köküne düşüyor, dizi hafızası ve sezon kanonu hiç
+# çalışmıyordu (denetim 2026-08-21, madde 29).
+_EPISODE_CONTAINER_DIR = re.compile(
+    r'^\s*(?:'
+    r'(?:episode|ep|bölüm|bolum|part|kısım|kisim|chapter|disc|disk|cd)'
+    r'[ ._\-]*\d{1,3}'
+    r'|e\d{1,3}'
+    r'|\d{1,3}'
+    r')\s*$',
+    re.IGNORECASE,
+)
+
+
 def series_memory_root(filename: str) -> Path:
-    """Seçilmiş bölüm alt klasörlerini ortak dizi köküne bağlar."""
+    """Seçilmiş bölüm alt klasörlerini ortak dizi köküne bağlar.
+
+    Tanınan TV/sezon kalıbı yoksa dosyanın hemen üst klasörü kullanılırdı.
+    Dosya adı bir dizi kimliği taşıyorsa ve üst klasör yalnız bölümü
+    numaralıyorsa ('Episode 1') bir üst ataya çıkılır; böylece kardeş bölüm
+    klasörleri aynı belleği paylaşır. Farklı diziler birleşmez: bellek
+    kimliği kökün YANINDA slug+sezon da taşır."""
     info = _tv_root_info(filename)
-    return info[0] if info else Path(filename).parent
+    if info:
+        return info[0]
+    path = Path(filename)
+    root = path.parent
+    if not parse_series_key(filename):
+        return root
+    # En çok iki kat yukarı: 'Show/Season 1/Episode 3' düzeni de kapsansın.
+    for _step in range(2):
+        if not _EPISODE_CONTAINER_DIR.match(root.name):
+            break
+        parent = root.parent
+        if parent == root:
+            break
+        root = parent
+    return root
 
 
 def parse_series_key(filename: str):

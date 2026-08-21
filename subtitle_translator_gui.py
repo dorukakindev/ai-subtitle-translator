@@ -9931,6 +9931,67 @@ def parse_response(raw, chunk_info):
     return trans_map
 
 
+def _jsonl_provenance_hashes(jsonl_path) -> set:
+    """JSONL'nin yanındaki fmap/manifest dosyalarındaki kaynak SHA'ları.
+
+    Manuel dönüştürücü, JSONL'nin seçilen kaynağa ait olduğunu hiç
+    doğrulamıyordu: cue kimlikleri çoğu filmde 1..N olduğu için BAŞKA bir
+    filmin JSONL'si yapısal olarak kusursuz görünüyor ve nihai denetimden
+    geçiyordu (denetim 2026-08-21, madde 28)."""
+    hashes = set()
+    source = Path(jsonl_path)
+    candidates = []
+    try:
+        folder = source.parent
+        candidates.extend(sorted(folder.glob("batch_fmap_*.json")))
+        candidates.extend(sorted(folder.glob("*.manifest.json")))
+        sidecar = source.with_suffix(".fmap.json")
+        if sidecar.is_file():
+            candidates.append(sidecar)
+    except OSError:
+        return hashes
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("source_hash", "expected_source_hash"):
+            value = str(payload.get(key) or "").strip().lower()
+            if value:
+                hashes.add(value)
+        mapping = payload.get("source_hashes")
+        if isinstance(mapping, dict):
+            for value in mapping.values():
+                text = str(value or "").strip().lower()
+                if text:
+                    hashes.add(text)
+    return hashes
+
+
+def manual_jsonl_source_verdict(jsonl_path, source_path) -> tuple[str, str]:
+    """('verified'|'mismatch'|'unknown', açıklama).
+
+    Ortak 1..N cue kimlikleri provenance KANITI DEĞİLDİR; ölçüt kaynak
+    SHA-256'sıdır. Kanıt yoksa dönüşüm sürer ama 'doğrulanmamış kaynak'
+    sayılır ve tamamlanma/parmak izi işaretleri yazılmaz."""
+    known = _jsonl_provenance_hashes(jsonl_path)
+    if not known:
+        return ("unknown",
+                "JSONL'nin yanında fmap/manifest bulunamadı; kaynak "
+                "sahipliği doğrulanamıyor.")
+    actual = str(_file_content_sha256(source_path) or "").strip().lower()
+    if not actual:
+        return ("unknown", "Kaynak dosyanın SHA-256 değeri okunamadı.")
+    if actual in known:
+        return ("verified", "")
+    return ("mismatch",
+            "Seçilen JSONL BAŞKA bir kaynağa ait: fmap kaydındaki kaynak "
+            f"SHA-256 ({sorted(known)[0][:12]}…) seçilen dosyanınkiyle "
+            f"({actual[:12]}…) uyuşmuyor.")
+
+
 def _merge_jsonl_translation_payload(translations: dict, rejected_ids: set,
                                      raw: str, expected_ids: set):
     from response_integrity import parse_translation_payload
@@ -12520,7 +12581,19 @@ def _file_content_sha256(path) -> str:
     return ""
 
 
-def _tm_context_fingerprint(source_hash: str, locked_terms=None) -> str:
+def _tm_context_fingerprint(source_hash: str, locked_terms=None,
+                            canonical_context=None) -> str:
+    """Exact-TM kaydının hangi bağlama ait olduğunu özetler.
+
+    Eskiden yalnız kaynak SHA'sı ve kilitli terimler vardı. Aynı kaynak için
+    promptu DEĞİŞTİREN dizi hitap haritası, karakter üslubu ve analiz
+    derinliği özete girmiyordu: kullanıcı sen/siz kararını düzeltse ya da
+    Gelişmiş'ten Maksimum'a geçse bile exact hit eski çeviriyi döndürüp ana
+    modeli tamamen atlıyordu (denetim 2026-08-21, madde 26).
+
+    `canonical_context` YALNIZ dolu anahtarlarla gelmelidir: boş sözlük eski
+    parmak izini birebir korur, böylece mevcut TM kayıtları geçersizleşmez.
+    """
     source_hash = str(source_hash or "").strip()
     if not source_hash:
         return ""
@@ -12529,9 +12602,22 @@ def _tm_context_fingerprint(source_hash: str, locked_terms=None) -> str:
         for source, target in (locked_terms or {}).items()
         if str(source).strip() and str(target).strip()
     )
+    body = {"source_sha256": source_hash, "locked_terms": normalized_terms}
+    context = {
+        str(key): str(value)
+        for key, value in (canonical_context or {}).items()
+        if str(value or "").strip()
+    }
+    if context:
+        # sort_keys: yalnız anahtar SIRASI değişimi parmak izini bozmasın.
+        body["canonical_context"] = json.dumps(
+            context, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"))
+    # DIŞ dump'ta sort_keys YOK: anahtar sırası 'source_sha256' →
+    # 'locked_terms' şeklinde KALMALI, yoksa mevcut bütün TM kayıtlarının
+    # parmak izi değişir ve 130 binden fazla satır bir anda isabetsiz olur.
     payload = json.dumps(
-        {"source_sha256": source_hash, "locked_terms": normalized_terms},
-        ensure_ascii=False, separators=(",", ":"),
+        body, ensure_ascii=False, separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -24845,11 +24931,19 @@ class App(ctk.CTk):
                 anchor="w",
             ).pack(fill="x", padx=10, pady=(12, 4))
             supported = [stream for stream in streams if stream.supported]
-            preferred = next(
-                (stream for stream in supported
-                 if stream.language.lower() in {"eng", "en", "english"}),
-                supported[0] if supported else None,
-            )
+            # Dil tercihi tek başına yetmiyordu: forced/SDH/yorum akışları da
+            # İngilizce olduğu için ilk sıradaki forced track varsayılan
+            # seçiliyordu (madde 27). Önce tam+default, sonra tam, en son
+            # kısıtlı akışlar.
+            english = [stream for stream in supported
+                       if stream.language.lower() in {"eng", "en", "english"}]
+            ranked = sorted(english or supported,
+                            key=lambda stream: stream.selection_rank)
+            preferred = ranked[0] if ranked else None
+            if preferred is not None and preferred.restricted:
+                self._log(
+                    f"Gömülü altyazı uyarısı: {preferred.label} tam diyalog "
+                    "taşımayabilir (forced/SDH/yorum).", "warn")
             if not streams:
                 ctk.CTkLabel(
                     scroll, text="Altyazı akışı yok",
@@ -27454,6 +27548,20 @@ class App(ctk.CTk):
             api_key = self._main_api_key()
             b_url = self._main_api_base_url()
             self._set_status("JSONL → SRT dönüştürülüyor...")
+            verdict, detail = manual_jsonl_source_verdict(
+                jsonl_path, orig_path)
+            if verdict == "mismatch":
+                self._log(f"JSONL → SRT iptal edildi: {detail}", "err")
+                self._set_status("JSONL kaynakla eşleşmiyor — dönüştürme yapılmadı")
+                _post_ui(self, messagebox.showerror,
+                         "Kaynak eşleşmiyor", detail)
+                self._set_running(False)
+                return
+            if verdict == "unknown":
+                self._log(
+                    f"JSONL → SRT: {detail} Sonuç DOĞRULANMAMIŞ kaynak "
+                    "olarak üretiliyor; teslim işaretleri yazılmayacak.",
+                    "warn")
             try:
                 # Timestamps from original SRT
                 ts_map = {}
@@ -28102,6 +28210,31 @@ class App(ctk.CTk):
                 source_language=source_key), season, ep
         except Exception:
             return None, None, None
+
+    def _tm_canonical_context(self, filepath: str, tgt_lang: str = "") -> dict:
+        """Modele gerçekten enjekte edilen kanonik bağlamın kararlı özeti.
+
+        Yalnız VARSA/varsayılandan farklıysa anahtar üretir; boş sözlük
+        eski parmak izini korur (bkz. `_tm_context_fingerprint`).
+        """
+        context = {}
+        try:
+            hint = App._series_hint_for(self, str(filepath))
+        except Exception:
+            hint = ""
+        if str(hint or "").strip():
+            normalized = " ".join(str(hint).split())
+            context["series_canon"] = hashlib.sha256(
+                normalized.encode("utf-8")).hexdigest()[:24]
+        try:
+            depth = _resolve_analysis_depth_choice(
+                self._snap_get("analysis_depth", "Standart"))
+        except Exception:
+            depth = ""
+        # 'Standart' varsayılan: anahtarı hiç yazma ki eski kayıtlar tutsun.
+        if depth and depth != "Standart":
+            context["analysis_depth"] = depth
+        return context
 
     def _series_hint_for(self, fp: str) -> str:
         sm_obj, season, ep = self._series_mem_for(fp)
@@ -32998,6 +33131,7 @@ class App(ctk.CTk):
                 req_hash = _tm_context_fingerprint(
                     source_hashes.get(req_path) or _file_content_sha256(req_path),
                     self._get_locked_terms_dict(req_path, tgt),
+                    self._tm_canonical_context(req_path, tgt),
                 )
                 payload = json.loads(req["body"]["messages"][1]["content"])
                 _tm_groups[(req.get("schema_name", ""),
@@ -33029,6 +33163,7 @@ class App(ctk.CTk):
                 context_fingerprint = _tm_context_fingerprint(
                     source_hashes.get(req_path) or _file_content_sha256(req_path),
                     self._get_locked_terms_dict(req_path, tgt),
+                    self._tm_canonical_context(req_path, tgt),
                 )
                 results = []
                 for item in items:
@@ -33826,6 +33961,7 @@ class App(ctk.CTk):
             _tm_fingerprint = _tm_context_fingerprint(
                 _expected_source_hash,
                 _locked_terms,
+                self._tm_canonical_context(filepath, tgt),
             )
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                         chunk_size=self._chunk_size, glossary=_locked_terms,
@@ -37324,7 +37460,8 @@ class App(ctk.CTk):
                 source_language=_file_src_lang,
                 context_fingerprint=_tm_context_fingerprint(
                     _expected_source_hash,
-                    self._get_locked_terms_dict(fp, _tgt_lang)))
+                    self._get_locked_terms_dict(fp, _tgt_lang),
+                    self._tm_canonical_context(fp, _tgt_lang)))
             if _hata_n == 0 and _n_filled == 0:
                 _series_memory_status = {}
                 self._commit_precontext_series_memory(
@@ -38047,6 +38184,7 @@ class App(ctk.CTk):
                 _tm_fingerprint = _tm_context_fingerprint(
                     _expected_source_hash,
                     _file_locked_terms,
+                    self._tm_canonical_context(filepath, tgt),
                 )
                 self._record_file_status(
                     filepath, "İstek Hazırlığı", "running")

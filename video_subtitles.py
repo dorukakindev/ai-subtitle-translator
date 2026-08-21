@@ -32,16 +32,44 @@ class VideoSubtitleError(RuntimeError):
     pass
 
 
+# ffprobe disposition bayrakları modele hiç taşınmıyordu: seçim penceresi
+# İngilizce olan İLK akışı varsayılan yapıyordu, yani yaygın
+# '#2 forced / #3 SDH / #4 full [default]' sırasında forced track
+# seçiliyordu (denetim 2026-08-21, madde 27).
 @dataclass(frozen=True)
 class SubtitleStream:
     index: int
     codec: str
     language: str = ""
     title: str = ""
+    default: bool = False
+    forced: bool = False
+    hearing_impaired: bool = False
+    commentary: bool = False
 
     @property
     def supported(self) -> bool:
         return self.codec.lower() in TEXT_SUBTITLE_CODECS
+
+    @property
+    def restricted(self) -> bool:
+        """Tam diyalog taşımayan akış (forced / SDH / yorum)."""
+        if self.forced or self.hearing_impaired or self.commentary:
+            return True
+        # Disposition eksikse başlık İKİNCİL kanıttır.
+        title = self.title.casefold()
+        return any(token in title for token in (
+            "forced", "sdh", "commentary", "comment", "hearing",
+            "descriptive", "description", "narration"))
+
+    @property
+    def selection_rank(self) -> tuple:
+        """Küçük olan önce seçilir: tam+default → tam → kısıtlı."""
+        return (
+            1 if self.restricted else 0,
+            0 if self.default else 1,
+            self.index,
+        )
 
     @property
     def label(self) -> str:
@@ -98,7 +126,8 @@ def probe_subtitle_streams(video_path, runner=subprocess.run, which=shutil.which
     ffprobe = _tool_path("ffprobe", which=which)
     command = [
         ffprobe, "-v", "error", "-select_streams", "s",
-        "-show_entries", "stream=index,codec_name:stream_tags=language,title",
+        "-show_entries",
+        "stream=index,codec_name,disposition:stream_tags=language,title",
         "-of", "json", str(video),
     ]
     result = _run(command, runner=runner, timeout=30)
@@ -125,11 +154,19 @@ def probe_subtitle_streams(video_path, runner=subprocess.run, which=shutil.which
         tags = item.get("tags") or {}
         if not isinstance(tags, dict):
             tags = {}
+        disposition = item.get("disposition") or {}
+        if not isinstance(disposition, dict):
+            disposition = {}
         streams.append(SubtitleStream(
             index=index,
             codec=str(item.get("codec_name") or "unknown").strip().lower(),
             language=str(tags.get("language") or "").strip(),
             title=str(tags.get("title") or "").strip(),
+            default=bool(disposition.get("default")),
+            forced=bool(disposition.get("forced")),
+            hearing_impaired=bool(disposition.get("hearing_impaired")),
+            commentary=bool(disposition.get("comment")
+                            or disposition.get("descriptions")),
         ))
     return streams
 
