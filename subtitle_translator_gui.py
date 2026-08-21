@@ -4702,6 +4702,8 @@ def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
     sayılar işaretlenir; '1969' gibi gerçek sayılar etkilenmez."""
     leaked = []
     for idx, _ts, text in blocks or []:
+        if _DELIVERY_SIGNATURE_RE.search(str(text or "")):
+            continue
         try:
             own = int(str(idx).strip())
         except (TypeError, ValueError):
@@ -4763,8 +4765,13 @@ def _midword_space_ids(blocks, src_map=None) -> list:
             _shift_token_key(word)
             for word in re.findall(r"[^\W\d_]{5,}", source)
         }
-        words = re.findall(r"[^\W\d_]+", value)
-        for left, right in zip(words, words[1:]):
+        words = list(re.finditer(r"[^\W\d_]+", value))
+        for left_match, right_match in zip(words, words[1:]):
+            left, right = left_match.group(), right_match.group()
+            if len(left) < 3 or len(right) < 3:
+                continue
+            if re.search(r"['’]", value[left_match.end():right_match.start()]):
+                continue
             joined = f"{left}{right}"
             if len(joined) < 6:
                 continue
@@ -8602,7 +8609,7 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         "not", "now", "oh", "or", "please", "she", "that", "the",
         "their", "then", "there", "they", "this", "to", "was", "we", "were",
         "ugh", "what", "when", "where", "who", "why", "will", "would", "yes",
-        "you",
+        "you", "kan",
     }
     def _token_key(token):
         value = sdh_cleaner._ascii_fold(str(token or "")).casefold()
@@ -8646,13 +8653,24 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         idx = str(item["i"])
         target = str(item.get("t") or "")
         target_tokens = _text_tokens(target)
+        own = unique_tokens.get(idx, set())
+
+        def _related_to_own(token):
+            return any(
+                len(token) >= 6
+                and len(own_token) - len(token) >= 4
+                and own_token.startswith(token)
+                for own_token in own
+            )
+
         foreign = {
             token for owner, tokens in unique_tokens.items()
             if owner != idx for token in tokens
-            if token in target_tokens
+            if token in target_tokens and not _related_to_own(token)
         }
-        own = unique_tokens.get(idx, set())
-        if foreign and own and not (own & target_tokens):
+        own_present = bool(own & target_tokens) or any(
+            _related_to_own(token) for token in target_tokens)
+        if foreign and own and not own_present:
             mismatched.add(idx)
     return mismatched
 
@@ -12602,6 +12620,20 @@ def _foreign_script_ids(blocks: list,
     return ids
 
 
+def _repeated_foreign_refrain_word(text: str) -> str:
+    words = [
+        word.casefold() for word in re.findall(
+            r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+", str(text or ""))
+    ]
+    if (len(words) >= 2 and len(set(words)) == 1
+            and words[0] not in {
+                "go", "no", "yes", "stop", "wait", "help", "please",
+                "come", "look", "run", "hello", "goodbye", "sorry",
+            }):
+        return words[0]
+    return ""
+
+
 def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                              src_clean_map: dict = None,
                              issue_fn=None, *, locked_terms=None,
@@ -12747,6 +12779,10 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
         _is_untranslated_cue = _is_untranslated(
             src_text, tr_text, locked_terms=locked_terms,
             source_language=source_language)
+        refrain_word = _repeated_foreign_refrain_word(src_text)
+        if (_is_untranslated_cue and refrain_word
+                and refrain_word == _repeated_foreign_refrain_word(tr_text)):
+            _is_untranslated_cue = False
         if _is_untranslated_cue:
             untranslated.append(str(idx))
             warnings += 1
@@ -12831,14 +12867,27 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 word.casefold() for word in re.findall(
                     r"[^\W\d_]+", source_text, re.UNICODE)
             }
+            source_quotes = {
+                re.sub(r"\s+", " ", quote).strip().casefold()
+                for quote in re.findall(r'["“]([^"”]{2,})["”]', source_text)
+            }
+            target_quotes = {
+                re.sub(r"\s+", " ", quote).strip().casefold()
+                for quote in re.findall(r'["“]([^"”]{2,})["”]', str(tr_text))
+            }
+            preserved_quote_words = {
+                word.casefold()
+                for quote in source_quotes & target_quotes
+                for word in re.findall(r"[^\W\d_]+", quote, re.UNICODE)
+            }
             hits = [
                 hit for hit in hits
-                if (str(hit[1]) == "R1_stray_letter"
-                    or (
-                        str(hit[0]).casefold().strip("'’") not in source_words
+                if ((str(hit[1]) == "R1_stray_letter"
+                     and str(hit[0]).casefold() not in preserved_quote_words)
+                    or (str(hit[1]) != "R1_stray_letter"
+                        and str(hit[0]).casefold().strip("'’") not in source_words
                         and str(hit[0]).split("'", 1)[0].split("’", 1)[0].casefold()
-                        not in source_words
-                    ))
+                        not in source_words))
             ]
             if hits:
                 garble_lines.append((str(idx), hits[0][0]))
@@ -15735,12 +15784,13 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                 )
             )
             quote_probe = visible.strip().lstrip("-–— ").strip()
-            quote_body = quote_probe.rstrip(".!?…").strip().strip('"“”\'‘’').strip()
+            quote_trimmed = quote_probe.rstrip(".,;:!?…").strip()
+            quote_body = quote_trimmed.strip('"“”\'‘’').strip()
             quote_words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", quote_body)
             quoted_foreign_reference = (
                 source_is_english and reason == "identical_source"
                 and quote_probe[:1] in {'"', '“', "'", '‘'}
-                and quote_probe.rstrip(".!?…").strip()[-1:] in {'"', '”', "'", '’'}
+                and quote_trimmed[-1:] in {'"', '”', "'", '’'}
                 and len(quote_words) >= 1
                 and not {
                     word.casefold() for word in quote_words
@@ -15769,7 +15819,7 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                 source_is_english and reason == "identical_source"
                 and any(bool(re.fullmatch(
                     r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*"
-                    r"(?:\s+(?:(?:of|the|and|de|del|van|von|da|di)\s+)?"
+                    r"(?:\s+(?:(?:of|the|and|de|del|du|des|et|la|le|van|von|da|di)\s+)?"
                     r"[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’.-]*){1,4}[.!?…]*",
                     candidate)) for candidate in matching_targets)
                 and not {word.casefold() for word in re.findall(
@@ -15798,20 +15848,10 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
                     visible,
                 ))
             )
-            repeated_foreign_refrain = False
-            if source_is_english and reason == "identical_source":
-                refrain_words = [
-                    word.casefold() for word in re.findall(
-                        r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+", visible)
-                ]
-                repeated_foreign_refrain = (
-                    len(refrain_words) >= 2
-                    and len(set(refrain_words)) == 1
-                    and refrain_words[0] not in {
-                        "go", "no", "yes", "stop", "wait", "help", "please",
-                        "come", "look", "run", "hello", "goodbye", "sorry",
-                    }
-                )
+            repeated_foreign_refrain = (
+                source_is_english and reason == "identical_source"
+                and bool(_repeated_foreign_refrain_word(visible))
+            )
             if (reason and not foreign_name_line and not list_tail_proper_name
                     and not quoted_foreign_reference and not foreign_term_context
                     and not standalone_proper_name and not repeated_inline_term
