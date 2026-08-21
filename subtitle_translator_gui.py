@@ -1287,6 +1287,11 @@ def infer_source_language_from_filename(filename: str) -> str:
     tokens = re.findall(r"[a-z]+|\d+", stem)
     if not tokens:
         return AUTO_LANGUAGE
+    if len(tokens) == 1:
+        # Tek jetonlu ad ("Ara.srt", "Dan.srt", "Fin.srt") bir release
+        # etiketi değil, filmin/kişinin KENDİ adıdır; dil kodu sayma
+        # (denetim 2026-08-21, madde 12).
+        return AUTO_LANGUAGE
     has_prior_release_number = False
     candidates = set()
     for pos, token in enumerate(tokens):
@@ -13363,6 +13368,99 @@ def _completion_marker_root(source: Path, roots: list[Path]) -> Path | None:
     return None
 
 
+# `ÇEVRİLDİ.txt` KAYNAK kuyruğunun durumudur: 'bu klasördeki dosyalar
+# çevrildi'. Kullanıcının beklediği sözleşme ise ayrıdır: teslim edilecek
+# FİNAL klasöründe, o finalin sert denetimden ve provenance'tan geçtiğini
+# söyleyen bir işaret. Üretim kodunda böyle bir işaret hiç yoktu (denetim
+# 2026-08-21, madde 8).
+_UPLOAD_READY_MARKER_NAME = "YÜKLEMEYE HAZIR.txt"
+
+
+def _upload_ready_marker_text(record: dict, entries: list) -> str:
+    lines = [
+        "YÜKLEMEYE HAZIR",
+        f"Çalıştırma kimliği: {record.get('run_id') or '-'}",
+        f"Denetim zamanı: {record.get('ended_at') or '-'}",
+        f"Teslim dosyası sayısı: {len(entries)}",
+        "",
+        "Teslim dosyaları:",
+    ]
+    for name, digest in entries:
+        lines.append(f"- {name}  SHA-256: {digest or '-'}")
+    return "\n".join(lines) + "\n"
+
+
+def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
+    """(yazılacak {klasör: [(ad, hash)]}, silinecek klasörler).
+
+    Bir final YALNIZ şu üçü birden sağlanınca hazır sayılır: durum 'done',
+    dosya diskte var ve kaynak+çıktı parmak izi doğrulanıyor. Aksi hâlde o
+    klasördeki eski işaret KALDIRILIR.
+    """
+    files = dict(record.get("files") or {})
+    settings = dict(record.get("settings") or {})
+    report_dir = _resolve_report_dir(
+        str(settings.get("input_dir") or ""),
+        str(settings.get("output_dir") or ""))
+    ready = {}
+    stale = set()
+    for source_path, state in files.items():
+        output_value = str((state or {}).get("output_path") or "").strip()
+        if not output_value:
+            continue
+        output = Path(output_value)
+        folder = output.parent
+        done = str((state or {}).get("status")) == "done"
+        verified = False
+        if done and output.is_file():
+            try:
+                verified = _output_matches_source_fingerprint(
+                    report_dir, str(output), source_path)
+            except Exception:
+                verified = False
+        if verified:
+            ready.setdefault(folder, []).append(
+                (output.name, _file_content_sha256(output)))
+        else:
+            stale.add(folder)
+    # Aynı klasörde bir dosya bile hazır değilse işaret yazılmaz.
+    for folder in stale:
+        ready.pop(folder, None)
+    return ready, stale
+
+
+def _write_upload_ready_markers(record: dict,
+                                errors: list | None = None) -> list:
+    """Hazır teslim klasörlerine işaret yaz, hazır olmayanlardan kaldır."""
+    local_errors = errors if errors is not None else []
+    written = []
+    try:
+        ready, stale = upload_ready_marker_plan(record)
+    except Exception as exc:
+        local_errors.append(f"yükleme işareti planlanamadı ({exc})")
+        return written
+    for folder in stale:
+        try:
+            (Path(folder) / _UPLOAD_READY_MARKER_NAME).unlink(missing_ok=True)
+        except Exception as exc:
+            local_errors.append(f"{folder}: eski yükleme işareti kaldırılamadı ({exc})")
+    for folder, entries in ready.items():
+        target = Path(folder)
+        if not target.is_dir():
+            continue
+        marker = target / _UPLOAD_READY_MARKER_NAME
+        try:
+            atomic_write_text(
+                marker, _upload_ready_marker_text(record, sorted(entries)),
+                encoding="utf-8")
+            written.append(str(marker))
+        except Exception as exc:
+            local_errors.append(f"{marker}: yükleme işareti yazılamadı ({exc})")
+    if errors is None and local_errors:
+        raise OSError("; ".join(local_errors))
+    return written
+
+
 def _completion_marker_groups(record: dict) -> list[tuple[Path, list[str]]]:
     files = dict(record.get("files") or {})
     settings = dict(record.get("settings") or {})
@@ -13464,6 +13562,9 @@ def _write_completion_markers(record: dict, errors: list[str] | None = None) -> 
             written.append(str(marker))
         except Exception as exc:
             local_errors.append(f"{marker}: işaret yazılamadı ({exc})")
+    # Yükleme işareti AYRI bir sözleşmedir; bu fonksiyonun dönüş listesi
+    # kaynak-kuyruğu işaretlerini bildirir ve çağıranlar onu öyle okuyor.
+    _write_upload_ready_markers(record, local_errors)
     if errors is None and local_errors:
         raise OSError("; ".join(local_errors))
     return written
@@ -13928,12 +14029,18 @@ def _archive_delivery_source(source_path, output_path, source_hash="") -> Path:
 
 
 def _output_source_fingerprint_candidates(report_dir, output_path) -> list:
-    """Sidecar adayları: tam ad, sonra konumdan BAĞIMSIZ aynı-stem eşleşmesi.
+    """Sidecar adayları: tam ad → aynı stem → ÇIKTI İÇERİK HASH'i.
 
     Sidecar adı çıktının MUTLAK yolundan türüyor; tamamlanmış klasör
     'YÜKLENECEK' altına taşınınca eşleşme kayboluyordu (denetim 2026-08-20,
     madde 40). Aynı stem için tek bir sidecar varsa o kullanılır; birden çok
     aday varsa belirsizlik nedeniyle hiçbiri kabul edilmez.
+
+    Kullanıcı finali 'Film (1986).srt' gibi YENİDEN ADLANDIRINCA hem yol
+    tokenı hem stem değişiyor ve provenance tamamen kopuyordu (denetim
+    2026-08-21, madde 7). Son çare olarak sidecar'ların içindeki `output`
+    hash'i dosyanın gerçek içeriğiyle karşılaştırılır: ad değişse de içerik
+    aynıysa kayıt bulunur, içerik değiştiyse yine reddedilir.
     """
     directory = Path(report_dir)
     exact = _output_source_fingerprint_path(report_dir, output_path)
@@ -13946,7 +14053,40 @@ def _output_source_fingerprint_candidates(report_dir, output_path) -> list:
             if path.is_file())
     except OSError:
         return []
-    return matches if len(matches) == 1 else []
+    if len(matches) == 1:
+        return matches
+    if matches:
+        return []  # aynı stem için birden çok aday — belirsiz
+    return _fingerprints_matching_output_hash(directory, output_path)
+
+
+def _fingerprints_matching_output_hash(directory, output_path) -> list:
+    """Çıktının İÇERİK hash'ini taşıyan sidecar(lar)."""
+    actual = str(_file_content_sha256(output_path) or "").strip().lower()
+    if not actual:
+        return []
+    found = []
+    try:
+        candidates = sorted(Path(directory).glob("*.source.sha256"))
+    except OSError:
+        return []
+    for candidate in candidates:
+        try:
+            raw = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not raw.startswith("{"):
+            continue
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("output") or "").strip().lower() == actual:
+            found.append(candidate)
+    # Birden çok eşleşme belirsizdir; fail-closed.
+    return found if len(found) == 1 else []
 
 
 def _read_output_source_fingerprint(report_dir, output_path) -> dict:
@@ -31578,14 +31718,19 @@ class App(ctk.CTk):
         base_url = base_url_fn() if callable(base_url_fn) else None
 
         def _one(fp):
+            # Dosya adı yalnız İPUCUDUR, otorite değil. Eskiden addan tek bir
+            # aday çıkınca cue'lar hiç okunmuyor ve içerik analizi hiç
+            # çağrılmıyordu: 'Actually.French.eng.srt' içi Fransızca olsa
+            # bile İngilizce sayılıyordu (denetim 2026-08-21, madde 12).
             filename_language = infer_source_language_from_filename(fp)
-            if filename_language != AUTO_LANGUAGE:
-                return fp, filename_language
             try:
                 cues = self._cached_blocks_for(fp) or list(parse_subtitle(fp))
             except Exception as e:
                 self._log(f"[{Path(fp).name}] Kaynak dil örneği okunamadı: {e}", "warn")
                 cues = []
+            if not cues:
+                # Okunacak diyalog yok: elde yalnız ad ipucu var.
+                return fp, filename_language
             language = detect_source_language_with_ai(
                 client, cues, model, self._log,
                 token_callback=App._token_callback_for_pass(
@@ -31593,6 +31738,17 @@ class App(ctk.CTk):
                     base_url=base_url, file_path=fp), filename=fp,
                 cancel_context=self.__dict__.get(
                     "_helper_request_canceller"))
+            if language == AUTO_LANGUAGE or not str(language or "").strip():
+                return fp, filename_language
+            if (filename_language != AUTO_LANGUAGE
+                    and normalize_language_name(filename_language)
+                    != normalize_language_name(language)):
+                # Çatışma SESSİZ geçilmez: içerik kazanır, kullanıcı görür.
+                self._log(
+                    f"[{Path(fp).name}] Kaynak dil çatışması: dosya adı "
+                    f"'{filename_language}' diyor, içerik analizi "
+                    f"'{language}' buldu. İçerik analizi kullanılıyor — "
+                    "onay ekranından değiştirebilirsiniz.", "warn")
             return fp, language
 
         with ThreadPoolExecutor(max_workers=min(4, len(files))) as ex:

@@ -662,7 +662,8 @@ class SourceLanguageDetectionTest(unittest.TestCase):
         self.assertEqual(detected_corrupt["file0.srt"], gui.AUTO_LANGUAGE)
         self.assertNotEqual(detected_corrupt["file0.srt"], "English")
 
-    def test_parallel_detection_skips_api_for_explicit_filename_labels(self):
+    def test_content_detection_overrides_the_filename_label(self):
+        """Dosya adı yalnız ipucudur; içerik analizi otoritedir (madde 12)."""
         files = ["movie.eng.srt", "unknown.srt", "other.1977.ITALIAN.WEBRip.srt"]
         stub = SimpleNamespace(
             _cached_blocks_for=lambda fp: [("1", "", "Bonjour")],
@@ -681,10 +682,11 @@ class SourceLanguageDetectionTest(unittest.TestCase):
             results = gui.App._detect_source_languages_parallel(
                 stub, object(), files, "gpt-5.4")
 
-        self.assertEqual(results["movie.eng.srt"], "English")
-        self.assertEqual(results["other.1977.ITALIAN.WEBRip.srt"], "Italian")
+        # Icerik hepsinde Fransizca; ad etiketi sessizce kazanmamali.
+        self.assertEqual(results["movie.eng.srt"], "French")
+        self.assertEqual(results["other.1977.ITALIAN.WEBRip.srt"], "French")
         self.assertEqual(results["unknown.srt"], "French")
-        self.assertEqual(calls, ["unknown.srt"])
+        self.assertEqual(sorted(calls), sorted(files))
 
     def test_single_file_detector_samples_thirty_distributed_lines(self):
         captured = {}
