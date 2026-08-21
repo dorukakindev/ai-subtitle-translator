@@ -817,6 +817,21 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertEqual(
             gui._chunk_content_owner_mismatch_ids(items, sources), set())
 
+    def test_delivery_owner_audit_normalizes_czech_name_inflection(self):
+        items = [
+            {"i": "371", "t": "Modüler formları ve Galois temsillerini saymanın yolunu buldum."},
+            {"i": "648", "t": "Mazur'un, Galois gösterimlerinin deformasyon teorisini kullanma fikri..."},
+        ]
+        sources = {
+            "370": "Andrew Wiles se vrátil k dřívější myšlence.",
+            "371": "Našel jsem způsob, jak počítat modulární formy a Galoisovy reprezentace.",
+            "647": "Freyova křivka změnila celý důkaz.",
+            "648": "Mazurův nápad použít teorii deformace Galoisových zobrazení.",
+        }
+
+        self.assertEqual(
+            gui._chunk_content_owner_mismatch_ids(items, sources), set())
+
     def test_delivery_owner_audit_ignores_quote_and_stopword_punctuation(self):
         items = [
             {"i": "1", "t": "Yunancada petaxa, atmak demek."},
