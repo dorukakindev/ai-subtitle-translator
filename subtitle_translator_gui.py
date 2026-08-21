@@ -1201,10 +1201,23 @@ MODELS_2_5M = [
     "claude-haiku-4-5-20251001",
 ]
 MODELS = MODELS_250K + MODELS_2_5M
+# Kaynak dil tespiti YALNIZ bu listeden seçebiliyor: liste dar kaldığında
+# model doğru dili bulsa bile eşleşme olmuyor ve dosya 'Otomatik' kalıyordu.
+# Altyazı dünyasında gerçekten karşılaşılan diller eklendi (2026-08-21).
+# Sıra kasıtlı: en sık kullanılanlar başta, gerisi alfabetik.
 LANGUAGES = [
-    "Turkish","English","German","French","Spanish","Italian",
-    "Portuguese","Russian","Japanese","Korean","Chinese","Arabic",
-    "Dutch","Polish","Swedish","Norwegian","Danish","Finnish",
+    "Turkish", "English", "German", "French", "Spanish", "Italian",
+    "Portuguese", "Russian", "Japanese", "Korean", "Chinese", "Arabic",
+    "Dutch", "Polish", "Swedish", "Norwegian", "Danish", "Finnish",
+    # — genişletme —
+    "Albanian", "Armenian", "Azerbaijani", "Belarusian", "Bengali",
+    "Bosnian", "Bulgarian", "Catalan", "Croatian", "Czech",
+    "Estonian", "Filipino", "Georgian", "Greek", "Hebrew", "Hindi",
+    "Hungarian", "Icelandic", "Indonesian", "Kazakh", "Kurdish",
+    "Latin", "Latvian", "Lithuanian", "Macedonian", "Malay",
+    "Malayalam", "Mongolian", "Persian", "Punjabi", "Romanian",
+    "Serbian", "Slovak", "Slovenian", "Swahili", "Tamil", "Telugu",
+    "Thai", "Ukrainian", "Urdu", "Uzbek", "Vietnamese",
 ]
 AUTO_LANGUAGE = "Otomatik"
 UNRESOLVED_LANGUAGE = "Dil seçin"
@@ -1226,6 +1239,20 @@ _LANGUAGE_ISO639_1 = {
     "japanese": "ja", "korean": "ko", "chinese": "zh", "arabic": "ar",
     "dutch": "nl", "polish": "pl", "swedish": "sv", "norwegian": "no",
     "danish": "da", "finnish": "fi",
+    "albanian": "sq", "armenian": "hy", "azerbaijani": "az",
+    "belarusian": "be", "bengali": "bn", "bosnian": "bs",
+    "bulgarian": "bg", "catalan": "ca", "croatian": "hr",
+    "czech": "cs", "estonian": "et", "filipino": "tl",
+    "georgian": "ka", "greek": "el", "hebrew": "he", "hindi": "hi",
+    "hungarian": "hu", "icelandic": "is", "indonesian": "id",
+    "kazakh": "kk", "kurdish": "ku", "latin": "la",
+    "latvian": "lv", "lithuanian": "lt", "macedonian": "mk",
+    "malay": "ms", "malayalam": "ml", "mongolian": "mn",
+    "persian": "fa", "punjabi": "pa", "romanian": "ro",
+    "serbian": "sr", "slovak": "sk", "slovenian": "sl",
+    "swahili": "sw", "tamil": "ta", "telugu": "te", "thai": "th",
+    "ukrainian": "uk", "urdu": "ur", "uzbek": "uz",
+    "vietnamese": "vi",
 }
 
 
@@ -1236,17 +1263,133 @@ def _lang_iso639_1(name: str) -> str:
     return _LANGUAGE_ISO639_1.get(key) or key[:2]
 
 
+# Model ve dosya adları dili SIK SIK başka bir adla söylüyor: 'Farsi',
+# 'Mandarin', 'Brazilian Portuguese', 'Castilian', 'Flemish'... Eşleşme
+# yalnız tam ad ve ISO-639-1 koduyla yapıldığı için bunlar 'Otomatik'e
+# düşüyor ve kullanıcı 'dili bulamıyor' diyordu (2026-08-21).
+_LANGUAGE_ALIASES = {
+    # aynı dilin başka adları
+    "farsi": "Persian", "parsi": "Persian", "dari": "Persian",
+    "mandarin": "Chinese", "cantonese": "Chinese",
+    "simplified chinese": "Chinese", "traditional chinese": "Chinese",
+    "chinese (simplified)": "Chinese", "chinese (traditional)": "Chinese",
+    "brazilian portuguese": "Portuguese",
+    "portuguese (brazil)": "Portuguese", "brazilian": "Portuguese",
+    "castilian": "Spanish", "latin american spanish": "Spanish",
+    "spanish (latin america)": "Spanish",
+    "flemish": "Dutch", "vlaams": "Dutch",
+    "tagalog": "Filipino", "pilipino": "Filipino",
+    "bahasa indonesia": "Indonesian", "bahasa": "Indonesian",
+    "bahasa melayu": "Malay",
+    "serbo-croatian": "Serbian", "serbocroatian": "Serbian",
+    "montenegrin": "Serbian",
+    "moldovan": "Romanian", "moldavian": "Romanian",
+    "bokmal": "Norwegian", "bokmål": "Norwegian",
+    "nynorsk": "Norwegian",
+    "kurmanji": "Kurdish", "sorani": "Kurdish", "kurmanci": "Kurdish",
+    "azeri": "Azerbaijani",
+    "kirghiz": "Kazakh", "kyrgyz": "Kazakh",
+    "modern greek": "Greek", "ellinika": "Greek",
+    "ivrit": "Hebrew", "modern hebrew": "Hebrew",
+    "hindustani": "Hindi",
+    # Türkçe yazılmış dil adları
+    "türkçe": "Turkish", "turkce": "Turkish",
+    "ingilizce": "English", "almanca": "German",
+    "fransızca": "French", "fransizca": "French",
+    "ispanyolca": "Spanish", "italyanca": "Italian",
+    "portekizce": "Portuguese", "rusça": "Russian", "rusca": "Russian",
+    "japonca": "Japanese", "korece": "Korean", "çince": "Chinese",
+    "cince": "Chinese", "arapça": "Arabic", "arapca": "Arabic",
+    "felemenkçe": "Dutch", "hollandaca": "Dutch",
+    "lehçe": "Polish", "lehce": "Polish", "isveççe": "Swedish",
+    "norveççe": "Norwegian", "danca": "Danish", "fince": "Finnish",
+    "yunanca": "Greek", "ibranice": "Hebrew", "farsça": "Persian",
+    "farsca": "Persian", "hintçe": "Hindi", "hintce": "Hindi",
+    "urduca": "Urdu", "tayca": "Thai", "vietnamca": "Vietnamese",
+    "endonezce": "Indonesian", "malayca": "Malay",
+    "ukraynaca": "Ukrainian", "çekçe": "Czech", "cekce": "Czech",
+    "slovakça": "Slovak", "macarca": "Hungarian",
+    "romence": "Romanian", "bulgarca": "Bulgarian",
+    "sırpça": "Serbian", "sirpca": "Serbian", "hırvatça": "Croatian",
+    "boşnakça": "Bosnian", "bosnakca": "Bosnian",
+    "slovence": "Slovenian", "makedonca": "Macedonian",
+    "arnavutça": "Albanian", "estonca": "Estonian",
+    "letonca": "Latvian", "litvanca": "Lithuanian",
+    "izlandaca": "Icelandic", "katalanca": "Catalan",
+    "gürcüce": "Georgian", "gurcuce": "Georgian",
+    "ermenice": "Armenian", "azerice": "Azerbaijani",
+    "kazakça": "Kazakh", "özbekçe": "Uzbek", "kürtçe": "Kurdish",
+    "kurtce": "Kurdish", "svahili": "Swahili", "latince": "Latin",
+    "tamilce": "Tamil", "telugu dili": "Telugu",
+    "bengalce": "Bengali", "moğolca": "Mongolian",
+    "belarusça": "Belarusian", "filipince": "Filipino",
+}
+
+
+def _language_lookup_key(value) -> str:
+    """Dil adı arama anahtarı: aksan ve Türkçe büyük harf farkını siler.
+
+    'İbranice'.lower() Python'da 'i' + birleştirici nokta üretir ve düz
+    'ibranice' ile eşleşmez; 'Rusça' ile 'rusca' da ayrı düşer.
+    """
+    text = unicodedata.normalize("NFKD", str(value or "").strip())
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return text.replace("ı", "i").replace("İ", "i").casefold()
+
+
+_LANGUAGE_ALIAS_KEYS = {
+    _language_lookup_key(key): value
+    for key, value in _LANGUAGE_ALIASES.items()
+}
+_LANGUAGE_NAME_KEYS = {
+    _language_lookup_key(language): language for language in LANGUAGES
+}
+
+
+def combobox_typeahead_match(values, prefix: str, current: str = "") -> str:
+    """Yazılan ön eke uyan sonraki değer.
+
+    Dil listesi 18'den 60'a, içerik türü 53'ten 73'e çıktı; okunacak menü
+    ekrandan taşıyor. Aynı harfe tekrar basmak eşleşenler arasında DÖNER
+    (Georgian → German → Greek → Georgian), böylece uzun liste klavyeyle
+    taranabilir (2026-08-21).
+    """
+    key = _language_lookup_key(prefix)
+    if not key:
+        return ""
+    matches = [
+        value for value in (values or [])
+        if _language_lookup_key(value).startswith(key)
+    ]
+    if not matches:
+        return ""
+    if len(key) == 1 and current in matches:
+        # Tek harfte döngü: aynı harfe basmak sıradakine geçsin.
+        return matches[(matches.index(current) + 1) % len(matches)]
+    return matches[0]
+
+
 def normalize_language_name(name: str, allow_auto: bool = True) -> str:
     raw = str(name or "").strip()
     if allow_auto and raw.lower() in {"auto", "automatic", "otomatik", "dil seçin", "dil secin"}:
         return AUTO_LANGUAGE
-    for language in LANGUAGES:
-        if language.lower() == raw.lower():
-            return language
+    key = _language_lookup_key(raw)
+    if key in _LANGUAGE_NAME_KEYS:
+        return _LANGUAGE_NAME_KEYS[key]
+    if key in _LANGUAGE_ALIAS_KEYS:
+        return _LANGUAGE_ALIAS_KEYS[key]
     code = raw.lower()
     for language in LANGUAGES:
         if _lang_iso639_1(language) == code:
             return language
+    # 'English (US)', 'Portuguese - Brazil' gibi ekli biçimler.
+    trimmed = _language_lookup_key(
+        re.split(r"[(\[,;/|]|\s-\s", raw, maxsplit=1)[0])
+    if trimmed and trimmed != key:
+        if trimmed in _LANGUAGE_NAME_KEYS:
+            return _LANGUAGE_NAME_KEYS[trimmed]
+        if trimmed in _LANGUAGE_ALIAS_KEYS:
+            return _LANGUAGE_ALIAS_KEYS[trimmed]
     return AUTO_LANGUAGE if allow_auto else ""
 
 
@@ -1278,6 +1421,54 @@ _FILENAME_LANGUAGE_TOKENS = {
     "nor": "Norwegian", "norwegian": "Norwegian",
     "dan": "Danish", "danish": "Danish",
     "fin": "Finnish", "finnish": "Finnish",
+    # — genişletme (2026-08-21): release adlarında gerçekten görülen
+    # ISO-639-2/B, -2/T ve yaygın kısaltmalar.
+    "gre": "Greek", "ell": "Greek", "greek": "Greek",
+    "heb": "Hebrew", "hebrew": "Hebrew",
+    "per": "Persian", "fas": "Persian", "persian": "Persian",
+    "farsi": "Persian",
+    "hin": "Hindi", "hindi": "Hindi",
+    "urd": "Urdu", "urdu": "Urdu",
+    "ben": "Bengali", "bengali": "Bengali",
+    "tam": "Tamil", "tamil": "Tamil",
+    "tel": "Telugu", "telugu": "Telugu",
+    "mal": "Malayalam", "malayalam": "Malayalam",
+    "pan": "Punjabi", "punjabi": "Punjabi",
+    "tha": "Thai", "thai": "Thai",
+    "vie": "Vietnamese", "vietnamese": "Vietnamese",
+    "ind": "Indonesian", "indonesian": "Indonesian",
+    "msa": "Malay", "may": "Malay", "malay": "Malay",
+    "tgl": "Filipino", "fil": "Filipino", "filipino": "Filipino",
+    "tagalog": "Filipino",
+    "ukr": "Ukrainian", "ukrainian": "Ukrainian",
+    "ces": "Czech", "cze": "Czech", "czech": "Czech",
+    "slk": "Slovak", "slo": "Slovak", "slovak": "Slovak",
+    "hun": "Hungarian", "hungarian": "Hungarian",
+    "ron": "Romanian", "rum": "Romanian", "romanian": "Romanian",
+    "bul": "Bulgarian", "bulgarian": "Bulgarian",
+    "srp": "Serbian", "serbian": "Serbian",
+    "hrv": "Croatian", "croatian": "Croatian",
+    "bos": "Bosnian", "bosnian": "Bosnian",
+    "slv": "Slovenian", "slovenian": "Slovenian",
+    "mkd": "Macedonian", "mac": "Macedonian",
+    "macedonian": "Macedonian",
+    "sqi": "Albanian", "alb": "Albanian", "albanian": "Albanian",
+    "est": "Estonian", "estonian": "Estonian",
+    "lav": "Latvian", "latvian": "Latvian",
+    "lit": "Lithuanian", "lithuanian": "Lithuanian",
+    "isl": "Icelandic", "ice": "Icelandic",
+    "icelandic": "Icelandic",
+    "cat": "Catalan", "catalan": "Catalan",
+    "kat": "Georgian", "geo": "Georgian", "georgian": "Georgian",
+    "hye": "Armenian", "arm": "Armenian", "armenian": "Armenian",
+    "aze": "Azerbaijani", "azerbaijani": "Azerbaijani",
+    "kaz": "Kazakh", "kazakh": "Kazakh",
+    "uzb": "Uzbek", "uzbek": "Uzbek",
+    "kur": "Kurdish", "kurdish": "Kurdish",
+    "bel": "Belarusian", "belarusian": "Belarusian",
+    "mon": "Mongolian", "mongolian": "Mongolian",
+    "swa": "Swahili", "swahili": "Swahili",
+    "lat": "Latin", "latin": "Latin",
 }
 
 
@@ -2631,6 +2822,267 @@ CONTENT_SCHEMAS = {
             "- [TR_ERROR] A common TR error here is translating scripture and sermon in flat conversational Turkish, stripping the liturgical weight and rhetorical cadence that define the genre.",
         ],
     },
+    "kdrama": {
+        "name": "Kore Dizisi (K-Drama)",
+        "detect": "Korean-language scripted series where social hierarchy, age-based address and honorific speech levels drive how characters talk to each other.",
+        "rules": [
+            "- [PRONOUNS] Korean speech LEVELS are the spine of this genre: 반말 (banmal) is 'sen', 존댓말 (jondaetmal) is 'siz'. The moment a character switches level it is a PLOT EVENT — the Turkish must switch with it, never smooth it out.",
+            "- [TERMINOLOGY] Address terms carry the relationship and are NOT decoration: oppa, hyung, noona, unnie, sunbae, hoobae, ajusshi, ajumma. Keep them or map them consistently (sunbae→kıdemli/abi kalıbı), and use the SAME choice for the whole file.",
+            "- [TERMINOLOGY] Titles are job+rank in Korean workplaces: 사장님/부장님/과장님 → patron/müdür bey/şef; '-nim' is deference, render it with Turkish deference (Bey/Hanım/hocam), not by dropping it.",
+            "- [DIALECT & CHARACTER] Satoori (Busan/Jeolla dialect) marks a character; give it a plain, warm Turkish regional colour without turning it into a specific Turkish city accent.",
+            "- [TONE & REGISTER] Chaebol / office / school registers are three distinct worlds; formality and vocabulary must not blur between them.",
+            "- [FLOW & TIMING] Confession, apology and 'I like you' scenes are built on hesitation and unfinished sentences — leave them unfinished.",
+            "- [TERMINOLOGY] Food, holiday and ritual names stay Korean with their accepted Turkish spelling (kimchi, soju, tteokbokki, Chuseok); do not substitute Turkish dishes.",
+            "- [TR_ERROR] A common TR error here is using 'sen' throughout because English subtitles have no 'you' distinction — the honorific level must be read from the Korean cues, not from the English relay.",
+        ],
+    },
+    "legal_courtroom": {
+        "name": "Hukuk / Mahkeme Dramı",
+        "detect": "Courtroom or legal-practice drama built on hearings, objections, cross-examination, plea bargaining and legal procedure.",
+        "rules": [
+            "- [TERMINOLOGY] Use real Turkish courtroom vocabulary: iddianame, savunma, tanık, çapraz sorgu, itiraz, celse, tutanak, beraat, mahkûmiyet, temyiz, teminat/kefalet, uzlaşma.",
+            "- [TERMINOLOGY] Roles map to the Turkish system: prosecutor→savcı, defense attorney→avukat/müdafi, judge→hâkim, jury→jüri (keep jury as jüri; do NOT convert to a Turkish court structure that has none).",
+            "- [TONE & REGISTER] In-court speech is formal and ritualised ('Sayın Hâkim', 'İtiraz ediyorum', 'İtiraz kabul edildi'); out-of-court lawyer talk is blunt and colloquial. Never mix the two registers.",
+            "- [FLOW & TIMING] Objections cut the other speaker off mid-sentence; keep the interruption broken, do not complete the sentence.",
+            "- [TERMINOLOGY] Latin legal phrases (habeas corpus, pro bono, voir dire) stay Latin; only translate them if the source itself explains them.",
+            "- [CONTEXT & TONE] A closing argument is rhetoric, not information: keep its rhythm, repetition and build.",
+            "- [TR_ERROR] A common TR error here is dictionary-translating procedure words ('motion'→'hareket' instead of 'talep/dilekçe', 'sustained'→'sürdürüldü' instead of 'kabul edildi').",
+        ],
+    },
+    "science_space": {
+        "name": "Bilim / Uzay Belgeseli",
+        "detect": "Straight scientific documentary on physics, astronomy, cosmology, biology or engineering, narrated with explanatory authority rather than gonzo participation.",
+        "rules": [
+            "- [TERMINOLOGY] Use the established Turkish scientific term, not a literal one: spacetime→uzay-zaman, redshift→kırmızıya kayma, event horizon→olay ufku, natural selection→doğal seçilim, half-life→yarılanma ömrü.",
+            "- [TERMINOLOGY] Units and quantities are exact and stay metric-correct: light-year→ışık yılı, AU→astronomi birimi, keep every figure, exponent and margin of error unchanged.",
+            "- [TONE & REGISTER] The narrator explains with calm authority; analogies for lay viewers stay analogies and must not become technical claims.",
+            "- [TERMINOLOGY] Mission, instrument, spacecraft and telescope names stay as-is (Voyager, JWST, LIGO); only their common-noun parts translate.",
+            "- [CONTEXT & TONE] Hedges are data: 'we think', 'the evidence suggests', 'may be' must keep their exact certainty level — Turkish must not upgrade a hypothesis into a fact.",
+            "- [DIALECT & CHARACTER] Interviewed scientists speak more loosely than the narration; keep that difference.",
+            "- [TR_ERROR] A common TR error here is turning a careful hedge into a flat assertion, or translating an established term literally so the sentence stops being findable science.",
+        ],
+    },
+    "spy_political_thriller": {
+        "name": "Casusluk / Politik Gerilim",
+        "detect": "Espionage or political thriller driven by intelligence tradecraft, agencies, operations and institutional secrecy.",
+        "rules": [
+            "- [TERMINOLOGY] Tradecraft has fixed Turkish forms: handler→irtibat subayı, asset→kaynak/varlık, safe house→güvenli ev, dead drop→ölü nokta, exfiltration→tahliye, cover→kimlik/örtü, burned→deşifre.",
+            "- [TERMINOLOGY] Agency and rank names stay as-is (CIA, MI6, KGB, SVR, NSA); only descriptive roles translate.",
+            "- [TONE & REGISTER] Operational dialogue is clipped and unemotional; keep it short, do not add connective politeness that the source does not have.",
+            "- [CONTEXT & TONE] What is deliberately left unsaid IS the content: never resolve a vague reference into an explicit one.",
+            "- [DIALECT & CHARACTER] Bureaucrat, field officer and politician are three registers; the politician's public speech is polished, the field officer's is not.",
+            "- [TERMINOLOGY] Codenames and operation names stay untranslated and identical everywhere in the file.",
+            "- [TR_ERROR] A common TR error here is over-explaining jargon so a deliberately opaque line becomes a briefing.",
+        ],
+    },
+    "western": {
+        "name": "Western",
+        "detect": "Western set in the American frontier, with period speech, frontier professions and a distinct rural register.",
+        "rules": [
+            "- [TONE & REGISTER] Period frontier speech is plain, slow and concrete; avoid modern Turkish slang and avoid Ottoman-heavy archaism — aim for timeless plain Turkish.",
+            "- [TERMINOLOGY] Frontier vocabulary keeps its accepted Turkish forms: sheriff→şerif, marshal→marşal, saloon→salon/meyhane, outlaw→kanun kaçağı, posse→takip müfrezesi, homestead→çiftlik.",
+            "- [DIALECT & CHARACTER] Drawl and dropped consonants ('ain't', 'reckon', 'y'all') become relaxed rural Turkish word choice, NOT a phonetic Turkish accent spelling.",
+            "- [TONE & REGISTER] Threats and standoffs are understated; the menace is in the plainness. Do not amplify.",
+            "- [TERMINOLOGY] Weapons, coin and measures stay period-correct (Winchester, Colt, dolar, mil); never modernise them.",
+            "- [TR_ERROR] A common TR error here is dubbing-style theatrical Turkish ('Vay canına, kovboy!') that no Western character would say.",
+            "- [FLOW & TIMING] Long silences between lines are part of the staging; do not fill them by splitting one line into two cues.",
+        ],
+    },
+    "noir": {
+        "name": "Kara Film / Neo-Noir",
+        "detect": "Noir or neo-noir built on first-person voice-over, fatalism, stylised wisecracks and moral ambiguity.",
+        "rules": [
+            "- [TONE & REGISTER] The voice-over is LITERARY and rhythmic — it is written prose spoken aloud. Keep the metaphors and the cadence; never reduce it to plain reporting.",
+            "- [TONE & REGISTER] Dialogue is fast, sardonic and elliptical; the wisecrack must land as a wisecrack in Turkish, not as a translated sentence with a joke inside it.",
+            "- [DIALECT & CHARACTER] The detective, the femme fatale and the heavies each have a distinct verbal style; keep them apart.",
+            "- [FLOW & TIMING] Voice-over lines are paced against images — keep them short enough to read at the source's rhythm; do not lengthen for clarity.",
+            "- [CONTEXT & TONE] Period slang (gumshoe, dame, heater, grifter) needs Turkish equivalents with the same era-flavour, not neutral modern words.",
+            "- [TR_ERROR] A common TR error here is flattening a stylised metaphor into its literal meaning, which kills the genre's only real voice.",
+            "- [PRONOUNS] The detective addresses clients with 'siz' and the underworld with 'sen'; that split is characterisation and must stay stable.",
+        ],
+    },
+    "superhero_comic": {
+        "name": "Süper Kahraman / Çizgi Roman",
+        "detect": "Superhero or comic-book adaptation with codenames, powers, teams and an established universe vocabulary.",
+        "rules": [
+            "- [TERMINOLOGY] Codenames, team names and universe terms follow the ESTABLISHED Turkish comics/dubbing convention and stay identical file-wide (Örümcek Adam, Yarasa Adam or Batman — pick the one the source universe uses in Turkish and never mix).",
+            "- [TERMINOLOGY] Powers, devices and in-universe science stay in their own vocabulary; do not translate a made-up universe word into a real Turkish scientific one.",
+            "- [TONE & REGISTER] Banter during action is the genre's signature: keep the quips quick and let them stay slightly juvenile if they are.",
+            "- [DIALECT & CHARACTER] The hero's public speech, the villain's monologue and the civilian voice are separate registers; a villain monologue is theatrical on purpose.",
+            "- [CONTEXT & TONE] Catchphrases are fixed strings — once rendered, they must never vary across the file.",
+            "- [TR_ERROR] A common TR error here is translating an established codename differently in each scene, which breaks the universe for a viewer who knows it.",
+            "- [FLOW & TIMING] Action-scene lines are shouted over noise: keep them short enough to read in the cue they belong to.",
+        ],
+    },
+    "martial_arts_wuxia": {
+        "name": "Dövüş Sanatları / Wuxia",
+        "detect": "Martial-arts, wuxia or xianxia work built on sects, masters, internal energy systems and formal martial address.",
+        "rules": [
+            "- [TERMINOLOGY] Martial and cultivation terms keep their own vocabulary: qi/chi→çi, dantian, kung fu, wushu, sect→tarikat/ekol, master→üstat/şifu, disciple→mürit/öğrenci — one choice, file-wide.",
+            "- [PRONOUNS] Master-disciple and elder-junior relations are formal: the disciple uses 'siz' and 'üstat', the master uses 'sen'. This never flips except as a plot event.",
+            "- [TERMINOLOGY] Technique and stance names are proper nouns of the universe — keep them consistent and do not paraphrase them into descriptions.",
+            "- [TONE & REGISTER] Formal wuxia speech is elevated and slightly archaic; keep that elevation without going full Ottoman.",
+            "- [CONTEXT & TONE] Honour, debt and face are literal plot mechanics; translate them as such, never as vague politeness.",
+            "- [TR_ERROR] A common TR error here is rendering the master's elevated speech as everyday Turkish, which erases the hierarchy the plot runs on.",
+            "- [FLOW & TIMING] Fight-scene calls and technique names land on the strike; keep them short and do not merge them into the next cue.",
+        ],
+    },
+    "bollywood_indian": {
+        "name": "Bollywood / Hint Sineması",
+        "detect": "Indian cinema with family hierarchy, mixed Hindi-English dialogue, song sequences and heightened emotional register.",
+        "rules": [
+            "- [TERMINOLOGY] Kinship and respect terms carry the relationship: beta, bhai, didi, ji, sahib, memsahib, bhabhi — keep them or map them consistently, never drop them.",
+            "- [PRONOUNS] Hindi has tu / tum / aap; map them to Turkish sen/siz by relationship and keep the mapping stable per character pair.",
+            "- [TONE & REGISTER] Hinglish code-switching is characterisation: when a character switches to English mid-sentence, that switch means something — do not flatten everything into Turkish.",
+            "- [CONTEXT & TONE] Song lyrics are heightened poetic register; translate them as lyrics, not as dialogue, and keep line breaks.",
+            "- [TERMINOLOGY] Festival, food and ritual names stay Indian with accepted Turkish spelling (Diwali, Holi, roti, sari); never substitute Turkish equivalents.",
+            "- [TONE & REGISTER] Melodramatic declarations are genre-correct; keep their intensity instead of toning them down to sound natural.",
+            "- [TR_ERROR] A common TR error here is deleting the honorific '-ji' or 'sahib', which quietly removes the social layer the scene depends on.",
+        ],
+    },
+    "telenovela": {
+        "name": "Telenovela / Latin Melodram",
+        "detect": "Latin American or Spanish-language melodrama serial with heightened emotion, family betrayal and confrontation scenes.",
+        "rules": [
+            "- [TONE & REGISTER] The emotional register is HIGH by design: declarations, accusations and betrayals must keep their intensity; do not calm them into neutral Turkish.",
+            "- [PRONOUNS] tú / usted / vos map to sen/siz and the shift is dramatic: a character switching to 'usted' is putting up a wall — mirror it in Turkish.",
+            "- [TERMINOLOGY] Kinship and endearment terms (mi amor, mija, comadre, padrino) need Turkish equivalents with the same warmth, not literal ones.",
+            "- [FLOW & TIMING] Confrontation scenes overlap and interrupt; keep the broken lines broken.",
+            "- [DIALECT & CHARACTER] The wealthy family, the household staff and the villain speak in clearly different registers; keep the class distance audible.",
+            "- [TR_ERROR] A common TR error here is 'correcting' melodrama into restrained Turkish, which makes the scene read as badly acted rather than genre-correct.",
+            "- [TERMINOLOGY] Place, saint and holiday names stay Spanish/Portuguese with their accepted Turkish spelling; do not localise them.",
+        ],
+    },
+    "nordic_noir": {
+        "name": "İskandinav Polisiyesi",
+        "detect": "Nordic crime drama with terse dialogue, procedural detail, bleak landscape and understated emotion.",
+        "rules": [
+            "- [TONE & REGISTER] Dialogue is SHORT and unemotional; silence carries the scene. Never add connective words or politeness the source does not have.",
+            "- [TERMINOLOGY] Police procedure uses real Turkish equivalents: forensic→adli tıp, autopsy→otopsi, warrant→arama izni, suspect→şüpheli, custody→gözaltı, prosecutor→savcı.",
+            "- [PRONOUNS] Scandinavian languages are broadly informal; default to 'sen' between colleagues and reserve 'siz' for genuine institutional distance.",
+            "- [CONTEXT & TONE] Trauma and grief are underplayed; a flat line is the point — do not make it expressive.",
+            "- [TERMINOLOGY] Place, agency and rank names stay local (Rigspolitiet, kommissarie); add no explanatory apposition the source does not have.",
+            "- [TR_ERROR] A common TR error here is padding terse lines into fluent Turkish sentences, which destroys the genre's defining coldness.",
+            "- [FLOW & TIMING] Scenes carry long wordless stretches; never invent a line or extend one to cover the gap.",
+        ],
+    },
+    "police_procedural": {
+        "name": "Prosedürel Polisiye / Adli Dizi",
+        "detect": "Case-of-the-week police, forensic or investigative procedural centered on evidence, interrogation and chain of procedure.",
+        "rules": [
+            "- [TERMINOLOGY] Use the vocabulary Turkish police procedurals actually use: olay yeri, delil, parmak izi, balistik, otopsi, ifade, sorgu, arama emri, tutuklama, gözaltı, zanlı/şüpheli.",
+            "- [TONE & REGISTER] Interrogation is a tactical register: pressure, silence and sudden softening. Keep each shift; do not level it out.",
+            "- [TERMINOLOGY] Radio and dispatch codes keep their function, not their letters: render them as real Turkish dispatch phrasing rather than transliterating '10-4'.",
+            "- [FLOW & TIMING] Briefing scenes are dense and fast; keep them dense — do not expand for clarity or the cue will overrun.",
+            "- [PRONOUNS] Rank hierarchy shows in address: junior officers use 'komiserim/amirim' and siz; peers use sen.",
+            "- [CONTEXT & TONE] Legal warnings (rights on arrest) are formulaic — use the fixed Turkish formulation consistently.",
+            "- [TR_ERROR] A common TR error here is translating forensic terms literally so the dialogue stops sounding like professionals talking to professionals.",
+        ],
+    },
+    "biopic": {
+        "name": "Biyografi Filmi (Biopic)",
+        "detect": "Dramatised biography of a real person, mixing period speech, real names and documented events.",
+        "rules": [
+            "- [TERMINOLOGY] Real names, institutions, places and works keep their established Turkish forms where one exists and stay identical throughout the file.",
+            "- [TONE & REGISTER] Period speech follows the era; a 1920s scene must not use current Turkish slang.",
+            "- [CONTEXT & TONE] Quoted real speeches, letters and writings use the accepted Turkish rendering when one exists; do not re-translate a famous line freshly.",
+            "- [DIALECT & CHARACTER] The public persona and the private voice of the subject are different registers; keep them apart.",
+            "- [TERMINOLOGY] Dates, ages, titles and honours are factual — never round or drop them.",
+            "- [TR_ERROR] A common TR error here is modernising period dialogue for readability, which quietly moves the film out of its own decade.",
+            "- [PRONOUNS] Period address forms follow the era and the class relation; a servant and an employer never share the same pronoun.",
+        ],
+    },
+    "music_documentary": {
+        "name": "Müzik Belgeseli / Konser",
+        "detect": "Music documentary, concert film or band history built on musician interviews, performance and industry vocabulary.",
+        "rules": [
+            "- [TERMINOLOGY] Music vocabulary uses what Turkish musicians say: riff, akort, prova, stüdyo kaydı, mix, mastering, turne, sahne alma, seans müzisyeni — do not dictionary-translate them.",
+            "- [CONTEXT & TONE] Song titles and album names stay as-is; NEVER translate them. Lyrics quoted on screen are translated as lyrics, with line breaks kept.",
+            "- [DIALECT & CHARACTER] Musicians speak loosely and profanely; the narrator does not. Keep the two apart.",
+            "- [TERMINOLOGY] Genre names keep their known Turkish usage (punk, caz, blues, hip-hop) and stay consistent.",
+            "- [TONE & REGISTER] Anecdotes are told, not reported — keep the storytelling rhythm and the asides.",
+            "- [TR_ERROR] A common TR error here is translating a song or album title, which makes the sentence unsearchable and wrong.",
+            "- [FLOW & TIMING] Interview cuts are fast and overlap the music; keep each answer inside its own cue instead of merging it with the next.",
+        ],
+    },
+    "tech_review": {
+        "name": "Teknoloji / Ürün İncelemesi",
+        "detect": "Consumer technology review or product walkthrough with specifications, benchmarks and buying advice.",
+        "rules": [
+            "- [TERMINOLOGY] Product, brand and model names stay EXACTLY as written, including capitalisation and numbers.",
+            "- [TERMINOLOGY] Spec vocabulary uses Turkish tech usage: ekran yenileme hızı, işlemci, pil ömrü, şarj hızı, çözünürlük, depolama; units and figures never change.",
+            "- [TONE & REGISTER] The reviewer voice is conversational and opinionated; keep the verdict language direct ('almayın', 'değer', 'fiyatına göre iyi').",
+            "- [CONTEXT & TONE] Comparative claims are precise: 'roughly twice as fast' must not become 'çok daha hızlı'.",
+            "- [FLOW & TIMING] Spec read-outs are fast; keep them compact so the cue stays readable.",
+            "- [TR_ERROR] A common TR error here is translating a feature's marketing name (ProMotion, Dynamic Island) instead of leaving it as the product name it is.",
+            "- [TERMINOLOGY] Price, model year and storage figures are exact; never convert a currency the source did not convert.",
+        ],
+    },
+    "auto_motorsport": {
+        "name": "Otomotiv / Motor Sporları",
+        "detect": "Car culture, restoration, or motorsport coverage with mechanical vocabulary and race-day commentary.",
+        "rules": [
+            "- [TERMINOLOGY] Mechanical vocabulary uses what Turkish mechanics say: şanzıman, süspansiyon, turbo, egzoz, debriyaj, rölanti, tork, beygir — never dictionary forms.",
+            "- [TERMINOLOGY] Race terms keep their Turkish motorsport usage: pit stop, tur, pole pozisyonu, sıralama turları, güvenlik aracı, lastik stratejisi.",
+            "- [TONE & REGISTER] Live commentary is fast, excited and elliptical; keep it short and let sentences break.",
+            "- [TERMINOLOGY] Car makes, models and team names stay exactly as written; only descriptive words translate.",
+            "- [CONTEXT & TONE] Figures — times, gaps, speeds, gear counts — are exact and must survive unchanged.",
+            "- [TR_ERROR] A common TR error here is translating a part name literally so a mechanic's instruction stops being executable.",
+            "- [DIALECT & CHARACTER] The garage voice and the broadcast commentary voice are different registers; the garage is rough and informal.",
+        ],
+    },
+    "howto_craft": {
+        "name": "Zanaat / Yapım / Nasıl Yapılır",
+        "detect": "Process, manufacturing, restoration or craft programming that walks through how something is made or repaired.",
+        "rules": [
+            "- [TONE & REGISTER] Instructions are imperative and sequential; keep each step a step. Never merge two steps into one sentence.",
+            "- [TERMINOLOGY] Tool, material and process names use real Turkish workshop vocabulary (zımpara, torna, kaynak, freze, mengene, tutkal, vernik).",
+            "- [CONTEXT & TONE] Measurements, temperatures, times and ratios are exact; never round them and never change the unit system the source uses.",
+            "- [TONE & REGISTER] Safety warnings keep their urgency and their imperative form.",
+            "- [FLOW & TIMING] Narration is timed to the visible action; keep cue length close to the source so the words still match what is on screen.",
+            "- [TR_ERROR] A common TR error here is turning an instruction into a description ('sand the edge' → 'kenar zımparalanır' instead of 'kenarı zımparala').",
+            "- [TERMINOLOGY] Brand names of tools and materials stay as written; only the generic noun beside them translates.",
+        ],
+    },
+    "business_economy": {
+        "name": "Ekonomi / İş Dünyası",
+        "detect": "Business, finance or economics programming with market vocabulary, corporate strategy and financial figures.",
+        "rules": [
+            "- [TERMINOLOGY] Finance vocabulary uses established Turkish forms: hisse, tahvil, faiz, enflasyon, arz-talep, halka arz, kâr marjı, nakit akışı, iflas, birleşme ve satın alma.",
+            "- [CONTEXT & TONE] Every figure, currency, percentage and period is exact; never round and never convert currencies the source did not convert.",
+            "- [TONE & REGISTER] Analyst commentary is hedged and conditional; keep the hedges — an analyst's 'could' is not a forecast.",
+            "- [TERMINOLOGY] Company, index and institution names stay as-is (Nasdaq, S&P 500, Fed, IMF); only descriptive parts translate.",
+            "- [DIALECT & CHARACTER] Boardroom, trading floor and street-level interview registers are distinct; the trading floor is loud and clipped.",
+            "- [TR_ERROR] A common TR error here is translating an instrument name literally so the sentence describes a product that does not exist.",
+            "- [FLOW & TIMING] On-screen ticker and chart figures are read out fast; keep the cue compact so the numbers stay legible.",
+        ],
+    },
+    "psychology_selfhelp": {
+        "name": "Psikoloji / Kişisel Gelişim",
+        "detect": "Psychology, therapy or self-improvement content explaining behaviour, mental health and personal practice.",
+        "rules": [
+            "- [TERMINOLOGY] Clinical terms use accepted Turkish psychology vocabulary: bilişsel çarpıtma, kaygı bozukluğu, travma, bağlanma stili, sınır koyma, öz-şefkat, tetikleyici.",
+            "- [CONTEXT & TONE] A clinical claim and a personal opinion are different weights; keep hedges ('research suggests' vs 'I believe') exactly as they are.",
+            "- [TONE & REGISTER] The therapeutic voice is warm and non-judgemental; do not harden it into lecture Turkish.",
+            "- [PRONOUNS] Direct address to the viewer is consistent — pick 'sen' or 'siz' for the whole file and never drift.",
+            "- [CONTEXT & TONE] Sensitive content (self-harm, abuse, loss) keeps the source's careful phrasing; do not sharpen or soften it.",
+            "- [TR_ERROR] A common TR error here is translating a clinical term with its everyday Turkish sense ('depression'→'üzüntü'), which changes a diagnosis into a mood.",
+            "- [FLOW & TIMING] Guided-exercise and breathing sections are paced with the viewer; keep the cue rhythm close to the source.",
+        ],
+    },
+    "drama_general": {
+        "name": "Dram (Genel)",
+        "detect": "Character-driven contemporary drama with no stronger genre marker: relationships, work and everyday conflict carry the story.",
+        "rules": [
+            "- [TONE & REGISTER] Everyday speech must sound like Turkish people actually talk — contracted, unfinished, sometimes ungrammatical. Avoid written-Turkish tidiness.",
+            "- [PRONOUNS] sen/siz follows the relationship and stays stable per character pair; a change is a plot event.",
+            "- [FLOW & TIMING] Overlaps, trailing sentences and interruptions are characterisation; keep them broken.",
+            "- [DIALECT & CHARACTER] Age, class and education show in word choice; a teenager and their grandparent must not share a vocabulary.",
+            "- [CONTEXT & TONE] Subtext carries these scenes: what is implied stays implied — never make an unspoken accusation explicit.",
+            "- [TR_ERROR] A common TR error here is 'improving' natural fragmentary speech into complete literary sentences, which makes every character sound the same.",
+            "- [TERMINOLOGY] Workplace, school and family terms use everyday Turkish equivalents, not institutional ones ('principal'→'müdür', not 'okul yöneticisi').",
+        ],
+    },
 }
 
 _BRACKET_TAG  = re.compile(r'\[.*?\]')
@@ -3685,26 +4137,62 @@ _DELIVERY_SOURCE_SUBTITLE_CREDIT_RE = re.compile(
     r"Συγχρονισμός\s*,\s*διορθώσεις\s*:\s*[^\r\n]{2,100}\s*)$",
     re.IGNORECASE | re.DOTALL,
 )
+# Türkçe hedefte SIZINTI sayılan alfabeler. Yeni diller eklendikçe burası da
+# genişler: Yunan, İbrani, Tay, Gürcü, Ermeni, Bengal, Telugu, Malayalam,
+# Gurmukhi harfleri de Türkçe bir teslimde kalıntıdır (2026-08-21).
 _NON_TURKISH_SCRIPT_RE = re.compile(
-    r"[\u0600-\u06FF"
-    r"\u0900-\u097F"
-    r"\u0B80-\u0BFF"
-    r"\u0400-\u04FF"
-    r"\u4E00-\u9FFF"
-    r"\u3040-\u30FF"
-    r"\uAC00-\uD7AF]"
+    r"[\u0370-\u03FF"   # Yunan
+    r"\u0400-\u04FF"    # Kiril
+    r"\u0530-\u058F"    # Ermeni
+    r"\u0590-\u05FF"    # İbrani
+    r"\u0600-\u06FF"    # Arap
+    r"\u0900-\u097F"    # Devanagari
+    r"\u0980-\u09FF"    # Bengal
+    r"\u0A00-\u0A7F"    # Gurmukhi
+    r"\u0B80-\u0BFF"    # Tamil
+    r"\u0C00-\u0C7F"    # Telugu
+    r"\u0D00-\u0D7F"    # Malayalam
+    r"\u0E00-\u0E7F"    # Tay
+    r"\u10A0-\u10FF"    # Gürcü
+    r"\u3040-\u30FF"    # Kana
+    r"\u4E00-\u9FFF"    # Han
+    r"\uAC00-\uD7AF]"   # Hangul
 )
 # Hedef dilin MEŞRU yazı sistemi. `_NON_TURKISH_SCRIPT_RE` hedef dili hiç
 # bilmiyordu: arayüzün sunduğu Arapça/Rusça/Japonca/Korece/Çince hedefler
 # kusursuz üretilse bile nihai teslim kapısında SERT hata sayılıyordu
 # (denetim 2026-08-21, madde 3). Burada listelenen aralıklar o hedefte
 # normaldir; kalan alfabeler sızıntı olarak işaretlenmeye devam eder.
+_CYRILLIC_RANGE = "\u0400-\u04ff\u0500-\u052f"
+_ARABIC_RANGE = "\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-\ufeff"
+_DEVANAGARI_RANGE = "\u0900-\u097f"
 _TARGET_SCRIPT_RANGES = {
-    "arabic": "\u0600-\u06ff\ufb50-\ufdff\ufe70-\ufeff",
-    "russian": "\u0400-\u04ff\u0500-\u052f",
+    "arabic": _ARABIC_RANGE,
+    "persian": _ARABIC_RANGE,
+    "urdu": _ARABIC_RANGE,
+    "kurdish": _ARABIC_RANGE,
+    "russian": _CYRILLIC_RANGE,
+    "ukrainian": _CYRILLIC_RANGE,
+    "belarusian": _CYRILLIC_RANGE,
+    "bulgarian": _CYRILLIC_RANGE,
+    "serbian": _CYRILLIC_RANGE,
+    "macedonian": _CYRILLIC_RANGE,
+    "kazakh": _CYRILLIC_RANGE,
+    "mongolian": _CYRILLIC_RANGE,
     "japanese": "\u3040-\u30ff\u4e00-\u9fff\u31f0-\u31ff",
     "korean": "\uac00-\ud7af\u1100-\u11ff\u3130-\u318f",
     "chinese": "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff",
+    "greek": "\u0370-\u03ff\u1f00-\u1fff",
+    "hebrew": "\u0590-\u05ff\ufb1d-\ufb4f",
+    "hindi": _DEVANAGARI_RANGE,
+    "bengali": "\u0980-\u09ff",
+    "punjabi": "\u0a00-\u0a7f",
+    "tamil": "\u0b80-\u0bff",
+    "telugu": "\u0c00-\u0c7f",
+    "malayalam": "\u0d00-\u0d7f",
+    "thai": "\u0e00-\u0e7f",
+    "georgian": "\u10a0-\u10ff\u1c90-\u1cbf",
+    "armenian": "\u0530-\u058f",
 }
 _FOREIGN_SCRIPT_RE_CACHE = {}
 
@@ -17999,6 +18487,46 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    _TYPEAHEAD_RESET_MS = 900
+
+    def _bind_combobox_typeahead(self, widget, var, values):
+        """Uzun listelerde harfe basınca o harfle başlayan değere atla."""
+        state = {"prefix": "", "at": 0.0}
+
+        def _on_key(event):
+            char = getattr(event, "char", "") or ""
+            if not char or not char.isprintable() or char.isspace():
+                return None
+            now = time.monotonic()
+            if now - state["at"] > App._TYPEAHEAD_RESET_MS / 1000.0:
+                state["prefix"] = ""
+            state["at"] = now
+            state["prefix"] += char
+            match = combobox_typeahead_match(
+                values, state["prefix"], var.get())
+            if not match and len(state["prefix"]) > 1:
+                # Yeni bir arama başlat: son harf tek başına denensin.
+                state["prefix"] = char
+                match = combobox_typeahead_match(values, char, var.get())
+            if match:
+                var.set(match)
+                command = getattr(widget, "_command", None)
+                if callable(command):
+                    try:
+                        command(match)
+                    except Exception:
+                        pass
+            return "break"
+
+        for target in (widget, getattr(widget, "_entry", None),
+                       getattr(widget, "_canvas", None)):
+            if target is None:
+                continue
+            try:
+                target.bind("<KeyPress>", _on_key, add="+")
+            except Exception:
+                continue
+
     def _show_log_grip(self, visible: bool):
         """Log/dosya listesi ayırıcısını yalnız işlevliyken göster."""
         row = getattr(self, "_log_grip_row", None)
@@ -18100,6 +18628,7 @@ class App(ctk.CTk):
                                 dropdown_fg_color=CARD, text_color=FG,
                                 state="readonly")
             c.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,2)); r += 1
+            App._bind_combobox_typeahead(self, c, var, values)
             return c
 
         def sep():
