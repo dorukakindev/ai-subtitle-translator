@@ -155,6 +155,8 @@ class DeliveryHardeningTest(unittest.TestCase):
             Path("Show/Season 1/Show S01E03 English.srt")), "")
         self.assertIn("S01E01", gui._upload_filename_issue(
             Path("Show/Season 1/Show.1of4.Title.srt")))
+        self.assertIn("S01E03", gui._upload_filename_issue(
+            Path("Show/Season 1/The Last Machine - 3 - The Body Electric.srt")))
 
     def test_postprocess_source_is_resolved_from_delivery_report(self):
         with tempfile.TemporaryDirectory() as td:
