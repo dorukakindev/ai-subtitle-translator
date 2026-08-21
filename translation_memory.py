@@ -87,6 +87,19 @@ def _context_key(context_fingerprint: str = "") -> str:
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
 
 
+def _entry_shape(text: str) -> tuple:
+    """Anlam taşıyan yüzey biçimi: SATIR YAPISI.
+
+    Büyük/küçük harf KASITLI olarak dışarıda: kaynağın harf durumu
+    `_normalize_all_caps_delivery` tarafından teslimde kaynaktan yeniden
+    türetiliyor ve büyük/küçük duyarsız arama testle kilitli bir tasarım
+    (`test_case_insensitive_lookup`). Satır yapısı ise anlamlıdır:
+    "One\nTwo" ile "One Two" aynı hash'e düşüyor ve çok satırlı cue'nun
+    çevirisi tek satırlık bir kayıtla eziliyordu (denetim 2026-08-21,
+    madde 10)."""
+    return (str(text or "").count(chr(10)),)
+
+
 def _is_missing_translation(target: str) -> bool:
     """Biçim etiketine sarılmış hata/boş hedef de eksik sayılır.
 
@@ -282,10 +295,14 @@ class TranslationMemory:
                 if conn is None:
                     return None
                 row = conn.execute(
-                    "SELECT target FROM tm WHERE hash=?", (h,)
+                    "SELECT source, target FROM tm WHERE hash=?", (h,)
                 ).fetchone()
         except Exception:
             return None
+        if row is not None and _entry_shape(row[0]) != _entry_shape(source):
+            # Aynı hash, farklı yüzey biçimi: 'RUN.' ile 'Run.' ya da
+            # 'One\nTwo' ile 'One Two'. Yeniden kullanma (madde 10).
+            row = None
         # Fallback: settings-aware olmayan eski girişleri dene (yalnızca schema_name BOŞ ise)
         if (row is None and fingerprint and not schema_name and not source_language
                 and not context_fingerprint):
@@ -296,12 +313,15 @@ class TranslationMemory:
                     if conn is None:
                         return None
                     row = conn.execute(
-                        "SELECT target FROM tm WHERE hash=?", (old_h,)
+                        "SELECT source, target FROM tm WHERE hash=?", (old_h,)
                     ).fetchone()
             except Exception:
                 return None
+            if (row is not None
+                    and _entry_shape(row[0]) != _entry_shape(source)):
+                row = None
         try:
-            return row[0] if row else None
+            return row[1] if row else None
         except Exception:
             return None
 
@@ -340,10 +360,15 @@ class TranslationMemory:
                 for i in range(0, len(hashes), 900):
                     batch = hashes[i:i + 900]
                     ph = ",".join("?" * len(batch))
-                    for h, target in conn.execute(
-                            f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
+                    for h, db_source, target in conn.execute(
+                            "SELECT hash, source, target FROM tm "
+                            f"WHERE hash IN ({ph})", batch):
+                        shape = _entry_shape(db_source)
                         for src in uniq.get(h, ()):
-                            result[src] = target
+                            # Aynı hash farklı yüzey biçimi ('RUN.' ↔ 'Run.')
+                            # taşıyorsa isabet sayma (madde 10).
+                            if _entry_shape(src) == shape:
+                                result[src] = target
         except Exception:
             return {}
         # Fallback: YALNIZCA schema_name BOŞ ise ve henüz bulunamamış kaynaklar varsa eski şemasız girişleri dene
@@ -362,10 +387,13 @@ class TranslationMemory:
                     for i in range(0, len(hashes2), 900):
                         batch = hashes2[i:i + 900]
                         ph = ",".join("?" * len(batch))
-                        for h, target in conn.execute(
-                                f"SELECT hash, target FROM tm WHERE hash IN ({ph})", batch):
+                        for h, db_source, target in conn.execute(
+                                "SELECT hash, source, target FROM tm "
+                                f"WHERE hash IN ({ph})", batch):
+                            shape = _entry_shape(db_source)
                             for src in uniq2.get(h, ()):
-                                result[src] = target
+                                if _entry_shape(src) == shape:
+                                    result[src] = target
             except Exception:
                 return result
         return result

@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from openai import OpenAI
 from prompt_constants import meaning_readability_rule
-from subtitle_formats import is_generated_subtitle_name
+from subtitle_formats import is_generated_subtitle_file
 
 # === AYARLAR ===
 SOURCE_LANG = "English"     # Kaynak dil
@@ -297,7 +297,7 @@ def discover_source_srt_files(input_folder: str = INPUT_FOLDER,
         # GUI taramasıyla parite: programın ürettiği artifact'lar kaynak değildir
         # ('.tr.srt', '.ham.srt', '.partial.srt', gizli '.stage.srt') — aksi hâlde
         # sonraki koşu kendi çıktısını çevirir (denetim 2026-08-20, madde 16).
-        if is_generated_subtitle_name(path.name):
+        if is_generated_subtitle_file(path):
             continue
         if any(part.casefold() in {"raporlar", "çıktı"}
                for part in resolved.parts[:-1]):

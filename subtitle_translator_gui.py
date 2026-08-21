@@ -5436,11 +5436,20 @@ def _delivery_source_map(blocks: list, source_cues) -> dict:
             continue
         timed_source.append((start, end, str(text or "")))
     result = {}
-    for idx, timestamp, _text in blocks or []:
+    # Aynı zaman damgasını paylaşan AYRI cue'lar (iki konuşmacı, üst/alt
+    # yerleşim) eskiden hepsi birleşik kaynağı alıyordu; kalite haritası ve
+    # satır-satır rapor birbirini eziyordu (denetim 2026-08-21, madde 14).
+    # Aynı aralığı paylaşan çıktı cue'ları önce SAYILIR, kaynaklar sayı
+    # tutuyorsa sırayla dağıtılır; tutmuyorsa eski birleşik davranış sürer.
+    span_positions = {}
+    for position, (idx, timestamp, _text) in enumerate(blocks or []):
         try:
-            start, end = _srt_timestamp_bounds(timestamp)
+            bounds = _srt_timestamp_bounds(timestamp)
         except ValueError:
             continue
+        span_positions.setdefault(bounds, []).append((position, str(idx)))
+    for bounds, members in span_positions.items():
+        start, end = bounds
         matched = [
             text for src_start, src_end, text in timed_source
             if src_start >= start and src_end <= end
@@ -5450,8 +5459,15 @@ def _delivery_source_map(blocks: list, source_cues) -> dict:
                 text for src_start, src_end, text in timed_source
                 if src_start == start or src_end == end
             ]
-        if matched:
-            result[str(idx)] = "\n".join(matched)
+        if not matched:
+            continue
+        if len(members) > 1 and len(matched) == len(members):
+            for (_position, idx), text in zip(members, matched):
+                result[idx] = text
+            continue
+        joined = "\n".join(matched)
+        for _position, idx in members:
+            result[idx] = joined
     return result
 
 
@@ -15898,7 +15914,16 @@ def rotate_logs(log_dir: Path, keep: int = 100) -> int:
         else:
             candidates.append(p)
 
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    # `glob` ile `stat` arasında bir log dosyası silinirse (paralel oturum,
+    # temizlik aracı) `stat()` yükseliyor ve UYGULAMA AÇILIŞI düşüyordu
+    # (denetim 2026-08-21, madde 16). Okunamayan dosya sıranın sonuna gider.
+    def _mtime(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return float("-inf")
+
+    candidates.sort(key=_mtime, reverse=True)
     removed = 0
     for p in candidates[keep:]:
         try:

@@ -36,6 +36,20 @@ _VTT_SRT_UNSAFE_TAG = re.compile(
 _SOURCE_VTT_TIMESTAMP = re.compile(r'<\d{1,2}:\d{2}(?::\d{2})?[.,]\d{3}>')
 _SOURCE_ASS_OVERRIDE = re.compile(r'\{\\[^}]*\}')
 _SOURCE_EMPTY_OVERRIDE = re.compile(r'\{\}')
+# Programın kendi ara/yedek dosyaları: adı tek başına KESİN kanıttır.
+_INTERNAL_ARTIFACT_NAME_RE = re.compile(
+    r'(?:\.partial|\.wave[12]of2)\.srt$|\.bak\.srt$|\.ham\.srt$',
+    re.IGNORECASE,
+)
+# Belirsiz adlar: '.tr.srt' aynı zamanda internetten indirilmiş meşru bir
+# Türkçe altyazının en yaygın dil etiketidir; '.vtt.srt'/'.ass.srt' ise
+# aynı-klasör modunda programın VTT/ASS çıktısının adıdır. İkisi de ancak
+# KOMŞU KAYNAK kanıtıyla program çıktısı sayılır (denetim 2026-08-21,
+# madde 13 ve 30): kanıt yoksa dosya normal bir kaynaktır.
+_AMBIGUOUS_TR_NAME_RE = re.compile(r'^(?P<stem>.+)\.tr\.srt$', re.IGNORECASE)
+_AMBIGUOUS_FORMAT_NAME_RE = re.compile(
+    r'^(?P<stem>.+)\.(?P<ext>vtt|ass|ssa)\.srt$', re.IGNORECASE)
+_SOURCE_EXTENSIONS = (".srt", ".vtt", ".ass", ".ssa")
 _GENERATED_SUBTITLE_NAME_RE = re.compile(
     r'(?:\.tr|\.partial|\.wave[12]of2)\.srt$|\.bak\.srt$',
     re.IGNORECASE,
@@ -540,6 +554,66 @@ def _vtt_ts_to_srt(ts: str) -> str:
     hour, minute, second, ms = match.groups()
     return f"{int(hour or 0):02d}:{int(minute):02d}:{int(second):02d},{(ms + '000')[:3]}"
 
+# HLS/WebVTT'de cue zamanları YEREL, video zamanı MPEG-TS tabanlıdır.
+# `X-TIMESTAMP-MAP=LOCAL:...,MPEGTS:...` bu ikisini bağlar ve hiç
+# okunmuyordu: HLS segmentinden gelen altyazı videonun gerçek timeline'ına
+# oturmuyordu (denetim 2026-08-21, madde 15). MPEGTS saati 90 kHz'dir.
+_MPEGTS_HZ = 90000.0
+_MPEGTS_WRAP = 1 << 33  # 33-bit sayaç
+_VTT_TIMESTAMP_MAP_RE = re.compile(
+    r'X-TIMESTAMP-MAP\s*=\s*(?P<body>[^\r\n]+)', re.IGNORECASE)
+
+
+def _vtt_ts_to_seconds(ts: str):
+    """WebVTT zaman damgasını saniyeye çevirir; çözülemezse None."""
+    match = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d*)',
+                         str(ts or "").strip())
+    if not match:
+        return None
+    hour, minute, second, ms = match.groups()
+    return (int(hour or 0) * 3600 + int(minute) * 60 + int(second)
+            + int((ms + '000')[:3]) / 1000.0)
+
+
+def _seconds_to_srt_ts(seconds: float) -> str:
+    total_ms = max(0, int(round(float(seconds) * 1000)))
+    hours, remainder = divmod(total_ms, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def parse_vtt_timestamp_map(content: str) -> float:
+    """`X-TIMESTAMP-MAP` başlığından saniye cinsinden medya ofseti.
+
+    Ofset = MPEGTS/90000 - LOCAL. Başlık yoksa ya da çözülemezse 0.0."""
+    match = _VTT_TIMESTAMP_MAP_RE.search(str(content or ""))
+    if not match:
+        return 0.0
+    local_seconds = 0.0
+    mpegts_ticks = None
+    for part in match.group("body").split(","):
+        key, sep, value = part.partition(":")
+        if not sep:
+            continue
+        key = key.strip().upper()
+        value = value.strip()
+        if key == "LOCAL":
+            parsed = _vtt_ts_to_seconds(value)
+            if parsed is not None:
+                local_seconds = parsed
+        elif key == "MPEGTS":
+            try:
+                mpegts_ticks = int(value)
+            except ValueError:
+                mpegts_ticks = None
+    if mpegts_ticks is None:
+        return 0.0
+    # Sayaç 33 bitte sarar; negatif/aşırı değerleri aralığa indir.
+    mpegts_ticks %= _MPEGTS_WRAP
+    return (mpegts_ticks / _MPEGTS_HZ) - local_seconds
+
+
 def _ass_ts_to_srt(ts: str) -> str:
     """ASS zaman damgasını (H:MM:SS.cc) SRT formatına çevirir.
 
@@ -584,11 +658,70 @@ def _strip_srt_unsafe_ass_overrides(text: str) -> str:
     return _ASS_OVERRIDE_BLOCK_RE.sub(_safe_part, text)
 
 
+# WebVTT'nin izin verdiği adlandırılmış karakter referansları. Parser bunları
+# hiç çözmüyordu: model gerçek '&' yerine '&amp;' görüyor, teslim SRT'sinde
+# de literal kalabiliyordu (denetim 2026-08-21, madde 9). Bilinmeyen
+# varlıklar ('&filmname;') olduğu gibi KORUNUR.
+_VTT_ENTITIES = {
+    "amp": "&", "lt": "<", "gt": ">", "quot": '"',
+    "apos": "'", "nbsp": "\u00a0", "lrm": "\u200e",
+    "rlm": "\u200f", "hellip": "\u2026", "mdash": "\u2014",
+    "ndash": "\u2013", "ldquo": "\u201c", "rdquo": "\u201d",
+    "lsquo": "\u2018", "rsquo": "\u2019", "laquo": "\u00ab",
+    "raquo": "\u00bb", "deg": "\u00b0", "eacute": "\u00e9",
+}
+_VTT_ENTITY_RE = re.compile(r"&(#x[0-9a-fA-F]+|#\d+|[A-Za-z][A-Za-z0-9]*);")
+
+
+def decode_vtt_entities(text: str) -> str:
+    """WebVTT karakter referanslarını çözer; bilinmeyenleri korur.
+
+    `&lt;`/`&gt;` çözülünce ETİKET GİBİ duran bir yapı oluşuyorsa
+    (`&lt;i&gt;` → `<i>`) o iki referans kodlu bırakılır: sonraki temizlik
+    katmanı onu gerçek biçim etiketi sanıp yazarın ekranda göstermek
+    istediği metni silerdi."""
+    def _replace(match):
+        body = match.group(1)
+        if body.startswith("#"):
+            try:
+                code = (int(body[2:], 16) if body[1:2].lower() == "x"
+                        else int(body[1:]))
+            except ValueError:
+                return match.group(0)
+            if 0 < code <= 0x10ffff:
+                return chr(code)
+            return match.group(0)
+        return _VTT_ENTITIES.get(body.casefold(), match.group(0))
+
+    decoded = _VTT_ENTITY_RE.sub(_replace, str(text or ""))
+    if _SOURCE_HTML_TAG.search(decoded) and not _SOURCE_HTML_TAG.search(
+            str(text or "")):
+        # Etiket YALNIZ çözümden doğduysa açı parantezlerini geri kodla.
+        decoded = _VTT_ENTITY_RE.sub(
+            lambda match: (match.group(0)
+                           if match.group(1).casefold() in ("lt", "gt")
+                           else _replace(match)),
+            str(text or ""))
+    return decoded
+
+
+# SRT teslimlerinde GERÇEKTEN desteklenen sarmalama etiketleri. Eskiden desen
+# `<[a-zA-Z][^>]*>` idi, yani kaynaktaki HERHANGİ bir etiket ('<blink>',
+# '<script>') çeviriye geri sarılıp teslim dosyasına yazılabiliyordu ve nihai
+# denetim yalnız ASS komutlarına baktığı için görmüyordu (madde 11).
+_SUPPORTED_WRAP_TAG = r'(?:i|b|u|s|em|strong|font)'
+_FULL_WRAP_RE = re.compile(
+    r'^\s*((?:<' + _SUPPORTED_WRAP_TAG + r'(?:\s[^>]*)?>)+)'
+    r'(.*?)((?:</' + _SUPPORTED_WRAP_TAG + r'\s*>)+)\s*$',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def _match_full_wrap(src_body: str):
-    """Metin tam bir açılış/kapanış etiket çiftiyle sarmalanmış mı?
+    """Metin tam bir DESTEKLENEN açılış/kapanış etiket çiftiyle sarılı mı?
     İçeride matematiksel '<' veya '>' karakterleri bulunabilir, ancak ek kapanış
     etiketleri (</...) olmamalıdır."""
-    m = re.match(r'^\s*((?:<[a-zA-Z][^>]*>)+)(.*?)((?:</[a-zA-Z][^>]*>)+)\s*$', src_body, re.DOTALL)
+    m = _FULL_WRAP_RE.match(src_body)
     if not m:
         return None
     open_run, inner, close_run = m.groups()
@@ -832,6 +965,7 @@ def parse_vtt(filepath: str) -> list:
     Returns: [(index_str, 'HH:MM:SS,mmm --> HH:MM:SS,mmm', text), ...]
     """
     content = read_subtitle_text(filepath)
+    timestamp_offset = parse_vtt_timestamp_map(content)
 
     blocks = []
     idx = 1
@@ -874,7 +1008,20 @@ def parse_vtt(filepath: str) -> list:
         if not end_parts:
             i = ts_idx + 1
             continue
-        timestamp = f'{_vtt_ts_to_srt(start_raw)} --> {_vtt_ts_to_srt(end_parts[0])}'
+        if timestamp_offset:
+            start_seconds = _vtt_ts_to_seconds(start_raw)
+            end_seconds = _vtt_ts_to_seconds(end_parts[0])
+            if start_seconds is not None and end_seconds is not None:
+                timestamp = (
+                    f'{_seconds_to_srt_ts(start_seconds + timestamp_offset)}'
+                    ' --> '
+                    f'{_seconds_to_srt_ts(end_seconds + timestamp_offset)}')
+            else:
+                timestamp = (f'{_vtt_ts_to_srt(start_raw)} --> '
+                             f'{_vtt_ts_to_srt(end_parts[0])}')
+        else:
+            timestamp = (f'{_vtt_ts_to_srt(start_raw)} --> '
+                         f'{_vtt_ts_to_srt(end_parts[0])}')
 
         text_lines = []
         i = ts_idx + 1
@@ -894,6 +1041,10 @@ def parse_vtt(filepath: str) -> list:
             text_lines.append(current)
             i += 1
         text = '\n'.join(text_lines)
+        # Karakter referansları BURADA, etiket ayrımından SONRA çözülür:
+        # önce çözülseydi '&lt;i&gt;' gerçek bir etiket sanılıp silinirdi
+        # (denetim 2026-08-21, madde 9).
+        text = decode_vtt_entities(text)
         if not _clean_vtt_text(text).strip():
             continue
         blocks.append((str(idx), timestamp, text))
@@ -1137,6 +1288,39 @@ def is_generated_subtitle_name(name: str) -> bool:
     return low.startswith(".") and low.endswith(".stage.srt")
 
 
+def _sibling_exists(folder, stem: str, extensions) -> bool:
+    try:
+        names = {entry.name.casefold() for entry in Path(folder).iterdir()}
+    except OSError:
+        return False
+    return any(f"{stem}{ext}".casefold() in names for ext in extensions)
+
+
+def is_generated_subtitle_file(path) -> bool:
+    """Bu DOSYA programın ürettiği bir artifact mı?
+
+    `is_generated_subtitle_name` yalnız ada bakıyordu; bu yüzden meşru
+    `movie.tr.srt` kaynakları hiç keşfedilmiyor (madde 30), programın
+    `movie.vtt.srt` çıktısı ise kaynak sanılıyordu (madde 13). Burada
+    belirsiz adlar için KOMŞU KAYNAK kanıtı aranır."""
+    target = Path(path)
+    name = target.name
+    low = name.casefold()
+    if _INTERNAL_ARTIFACT_NAME_RE.search(low):
+        return True
+    if low.startswith(".") and low.endswith(".stage.srt"):
+        return True
+    folder = target.parent
+    match = _AMBIGUOUS_FORMAT_NAME_RE.match(name)
+    if match:
+        return _sibling_exists(
+            folder, match.group("stem"), ("." + match.group("ext"),))
+    match = _AMBIGUOUS_TR_NAME_RE.match(name)
+    if match:
+        return _sibling_exists(folder, match.group("stem"), _SOURCE_EXTENSIONS)
+    return False
+
+
 def get_subtitle_files(directory: str, recursive: bool = True,
                         exclude_dir_names=("ÇIKTI", "Raporlar"),
                         exclude_suffixes=(".ham.srt",),
@@ -1181,9 +1365,6 @@ def get_subtitle_files(directory: str, recursive: bool = True,
         except Exception:
             return True
 
-    def _is_generated_subtitle_name(name: str) -> bool:
-        return is_generated_subtitle_name(name)
-
     if recursive:
         for root, dirnames, filenames in os.walk(base):
             if _cancelled():
@@ -1203,7 +1384,7 @@ def get_subtitle_files(directory: str, recursive: bool = True,
                     continue
                 if excl_sfx and low.endswith(excl_sfx):
                     continue
-                if _is_generated_subtitle_name(name):
+                if is_generated_subtitle_file(Path(root) / name):
                     continue
                 result.append(str(Path(root) / name))
     else:
@@ -1218,7 +1399,7 @@ def get_subtitle_files(directory: str, recursive: bool = True,
                 continue
             if excl_sfx and fp.name.lower().endswith(excl_sfx):
                 continue
-            if _is_generated_subtitle_name(fp.name):
+            if is_generated_subtitle_file(fp):
                 continue
             result.append(str(fp))
     return sorted(result)  # alfabetik sıra — tekrarlanabilir
