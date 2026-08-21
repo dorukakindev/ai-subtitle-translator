@@ -19,6 +19,18 @@ import sdh_cleaner as sdh
 
 
 class IsUntranslatedEmptyTest(unittest.TestCase):
+    def test_british_institution_name_is_not_untranslated(self):
+        self.assertEqual(gui._untranslated_reason(
+            "We wrote a paper for the British interplanetary society.",
+            "British Interplanetary Society dergisi için bir makale yazdık.",
+        ), "")
+
+    def test_british_common_phrase_is_still_flagged(self):
+        self.assertEqual(gui._untranslated_reason(
+            "British people discussed the proposal.",
+            "British people öneriyi tartıştı.",
+        ), "partial_english_phrase:British")
+
     def test_short_identical_dialogue_is_untranslated(self):
         self.assertTrue(gui._is_untranslated("Let's go.", "Let's go."))
 
