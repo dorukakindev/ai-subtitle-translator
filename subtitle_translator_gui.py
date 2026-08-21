@@ -43,6 +43,9 @@ from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
 from provider_retry import (ProviderWaitCancelled, SHUAI_API_ROUTE_OPTIONS,
+                            _openai_client_for_route,
+                            _shuai_failover_error,
+                            _shuai_route_candidates,
                             _provider_error_text,
                             configure_shuai_route_failover,
                             format_shuai_route_metrics,
@@ -9832,6 +9835,40 @@ def _is_provider_unavailable_error(exc) -> bool:
             "auto groups is not enabled",
         ))
     )
+
+
+def provider_probe_routes(client, scope: str = "main") -> tuple:
+    """Sağlık testinin sırayla deneyeceği rotalar.
+
+    Çeviri isteği `chat_create_with_shuai_failover` üzerinden gidiyor ve
+    shuaiapi rotalarının HEPSİNİ deniyor; sağlık testi ise yalnız ayarlardaki
+    tek rotayı yokluyordu. İkisi ayrı şeyi ölçtüğü için test 'model yanıt
+    vermiyor' derken çeviri ikinci rotadan pekâlâ devam edebiliyordu
+    (2026-08-21). Artık ikisi aynı listeyi kullanır.
+
+    Rota shuaiapi değilse (resmî OpenAI ya da başka bir sağlayıcı) tek
+    elemanlı liste döner — BAŞKA bir sağlayıcıya asla istek gitmez."""
+    base_url = getattr(client, "base_url", "")
+    if not normalize_shuai_api_route(base_url):
+        return (("", client),)
+    original = normalize_shuai_api_route(base_url)
+    try:
+        routes = _shuai_route_candidates(base_url, scope=scope)
+    except Exception:
+        routes = ()
+    if not routes:
+        # Hepsi cooldown'daysa yine de asıl rotayı bir kez yokla.
+        routes = (original,)
+    probes = []
+    for route in routes:
+        if route == original:
+            probes.append((route, client))
+            continue
+        try:
+            probes.append((route, _openai_client_for_route(client, route)))
+        except Exception:
+            continue
+    return tuple(probes) or ((original, client),)
 
 
 def _should_offer_provider_recovery(exc) -> bool:
@@ -30157,37 +30194,60 @@ class App(ctk.CTk):
             body = ht._normalize_chat_create_kwargs(model, body)
         except Exception:
             pass
-        request_client = client
-        try:
-            request_client = client.with_options(max_retries=0)
-        except (AttributeError, TypeError):
-            pass
         cancel_context = self.__dict__.get("_helper_request_canceller")
-        if cancel_context is not None:
-            cancel_context.raise_if_cancelled()
-            cancel_context.register(request_client)
-        try:
-            from provider_retry import provider_call_with_retry
-            response = provider_call_with_retry(
-                lambda: request_client.chat.completions.create(**body),
-                request_client,
-                model,
-                {"operation": "provider_health_probe"},
-                cancel_check=(cancel_context.is_cancelled
-                              if cancel_context is not None else None),
-                retry_delays=(),
-            )
-            _validated_chat_content(response)
-            _report_response_usage(
-                _app_token_callback(
-                    self, model, "Sağlayıcı Sağlık Testi",
-                    base_url=self._main_api_base_url(), file_path=file_path),
-                response, log_fn=self._log,
-                pass_name="Sağlayıcı Sağlık Testi", filepath=file_path)
-            return response
-        finally:
+        from provider_retry import provider_call_with_retry
+        probes = provider_probe_routes(client, scope="main")
+        last_error = None
+        for index, (route, route_client) in enumerate(probes):
+            request_client = route_client
+            try:
+                request_client = route_client.with_options(max_retries=0)
+            except (AttributeError, TypeError):
+                pass
             if cancel_context is not None:
-                cancel_context.unregister(request_client)
+                cancel_context.raise_if_cancelled()
+                cancel_context.register(request_client)
+            try:
+                response = provider_call_with_retry(
+                    lambda _c=request_client: _c.chat.completions.create(**body),
+                    request_client,
+                    model,
+                    {"operation": "provider_health_probe"},
+                    cancel_check=(cancel_context.is_cancelled
+                                  if cancel_context is not None else None),
+                    retry_delays=(),
+                )
+                _validated_chat_content(response)
+            except RequestCancelled:
+                raise
+            except Exception as exc:
+                last_error = exc
+                # Kimlik/kota gibi rotadan BAĞIMSIZ hatalarda başka rotayı
+                # denemek anlamsız; hatayı olduğu gibi yükselt.
+                if len(probes) == 1 or not _shuai_failover_error(exc):
+                    raise
+                if route:
+                    self._log(
+                        f"Sağlık testi rotası yanıt vermedi ({route}); "
+                        "sıradaki rota deneniyor.", "warn")
+                continue
+            else:
+                if route and index:
+                    self._log(
+                        f"Sağlık testi yedek rotadan geçti: {route}", "ok")
+                _report_response_usage(
+                    _app_token_callback(
+                        self, model, "Sağlayıcı Sağlık Testi",
+                        base_url=route or self._main_api_base_url(),
+                        file_path=file_path),
+                    response, log_fn=self._log,
+                    pass_name="Sağlayıcı Sağlık Testi", filepath=file_path)
+                return response
+            finally:
+                if cancel_context is not None:
+                    cancel_context.unregister(request_client)
+        raise last_error if last_error is not None else RuntimeError(
+            "sağlık testi için deneyecek rota bulunamadı")
 
     def _show_provider_recovery_dialog(self, client, model: str, error_text: str,
                                        file_path: str, result: dict,
