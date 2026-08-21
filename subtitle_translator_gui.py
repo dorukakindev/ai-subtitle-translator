@@ -3658,6 +3658,8 @@ _DELIVERY_SOURCE_SUBTITLE_CREDIT_RE = re.compile(
     r"\s*subs?-team\s+p\s*r\s*e\s*s\s*e\s*n\s*t\s*[oó]\s*:\s*|"
     r"\s*NTP\s*:\s*traducci[oó]n\s*:\s*[^\r\n]{2,100}"
     r"(?:\r?\n\s*\*?\s*[^\r\n]*\.(?:net|com|org)\s*\*?)?\s*|"
+    r"\s*preveo\s+i\s+prilagodio\s*:\s*[^\r\n]{2,100}\s*|"
+    r"\s*preuzeto\s+sa\s+(?:https?://|www\.)?\S+\s*|"
     r"\s*Απόδοση\s*:\s*[^\r\n]{2,100}\r?\n\s*"
     r"Συγχρονισμός\s*,\s*διορθώσεις\s*:\s*[^\r\n]{2,100}\s*)$",
     re.IGNORECASE | re.DOTALL,
@@ -3895,15 +3897,23 @@ def _is_delivery_sdh_only(text: str) -> bool:
         return True
     # Bare English sound descriptions are still non-dialogue, even when they
     # arrive without brackets and bypass the bracket-token parser below.
-    bare_english_sdh = value.strip().strip("[](){} ")
+    bare_english_sdh = re.sub(
+        r"\s+", " ", value.strip().strip("[](){} ")).strip()
     if re.fullmatch(
             r"(?:muffled\s+(?:speaking|voice)|(?:speaking|speaks)\s+(?:in\s+)?"
             r"(?:native|foreign)\s+language|conversing\s+in\s+(?:a\s+)?"
             r"(?:native|foreign)\s+language|mouthing\s+words|clamou?r|"
             r"(?:he|she|they|all)\s+(?:laughs?|exhales?)|"
-            r"(?:gentle\s+)?laughter|theme\s+music(?:\s+and\s+applause)?|"
-            r"pulsing|"
-            r"(?:[\w'-]+\s+)?(?:eats?|chews?)\s+(?:noisily|loudly)|"
+             r"(?:gentle\s+)?laughter|theme\s+music(?:\s+and\s+applause)?|"
+             r"pulsing|"
+             r"(?:gramophone|phonograph|record(?:\s+player)?)\s+plays?\s+[\s\S]{1,160}|"
+             r"shortwave\s+radio\s+transmissions?\s*:?|radio\s+fades?\s+in\s+and\s+out|"
+             r"various\s+languages,?\s+as\s+radio\s+station\s+is\s+changed|"
+             r"part\s+in\s+[a-z -]+language|drums?|"
+             r"(?:[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,3}\s+)?"
+             r"(?:speaking|talking|chatting|bargaining)(?:\s+(?:at\s+once|quietly|"
+             r"unintelligibly|in(?:\s+the)?\s+background|in\s+[a-z -]+))?|"
+             r"(?:[\w'-]+\s+)?(?:eats?|chews?)\s+(?:noisily|loudly)|"
             r"frog\s+croaks?|rooster\s+crows?)\s*[.!]*",
             bare_english_sdh, re.IGNORECASE):
         return True
@@ -4016,13 +4026,14 @@ def _source_cue_is_delivery_removable(text: str, *,
         )
     if arabic_parenthesized_dialogue:
         return False
+    if _is_delivery_sdh_only(value):
+        return True
     if _looks_like_work_attribution(value):
         # 'Başlık, tâlif/by Yazar' ekran yazısı SDH değil İÇERİKtir (Myths E01/E06'da
         # 4 kitap künyesi silinmiş, E01'de sonraki cue öznesiz kalmıştı). Uzman
         # ad-künyesi (kişi + üniversite) bu kalıba girmez, silinmeye devam eder.
         return False
-    if (_is_delivery_sdh_only(value)
-            or _src_is_sdh_only(value)
+    if (_src_is_sdh_only(value)
             or _delivery_source_is_all_credit(value)
             or arabic_academic_card
             or _DELIVERY_RELEASE_AD_RE.fullmatch(value)
@@ -5255,6 +5266,17 @@ def _delivery_removable_source_ids(source_cues) -> set:
                 removable.update(ids)
             break
     return removable
+
+
+def _source_cue_matches_delivery_filename_title(text: str, source_path: str) -> bool:
+    def _key(value):
+        return re.sub(
+            r"[^a-z0-9]+", " ",
+            sdh_cleaner._ascii_fold(str(value or "")).casefold()).strip()
+
+    cue_key = _key(text)
+    stem_key = _key(Path(str(source_path or "")).stem)
+    return len(cue_key.split()) >= 2 and cue_key == stem_key
 
 
 def _delivery_removable_source_timestamps(source_cues, removable_ids: set) -> set:
@@ -7815,28 +7837,39 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         "ugh", "what", "when", "where", "who", "why", "will", "would", "yes",
         "you",
     }
-    owner_tokens = {}
-    token_owners = defaultdict(set)
-    for idx, source_text in (owner_src_map or {}).items():
-        tokens = set(re.findall(
+    def _token_key(token):
+        value = sdh_cleaner._ascii_fold(str(token or "")).casefold()
+        value = value.rstrip(".'’-")
+        value = re.sub(r"['’].*$", "", value)
+        for suffix in ("ovych", "ovymi", "oveho", "ovemu", "ovem", "ovy", "ova", "ovo", "uv"):
+            if value.endswith(suffix) and len(value) - len(suffix) >= 4:
+                value = value[:-len(suffix)]
+                break
+        return value
+
+    def _text_tokens(text):
+        raw = set(re.findall(
             r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
-            str(source_text or "")))
-        tokens = {token.rstrip(".'’-") for token in tokens}
-        tokens = {re.sub(r"['’]s$", "", token, flags=re.IGNORECASE)
-                  for token in tokens}
-        tokens = {
+            str(text or "")))
+        tokens = {_token_key(token) for token in raw}
+        return {
             token for token in tokens
             if token and (token[0].isdigit()
                           or (len(re.sub(r"[^\w]+", "", token,
                                          flags=re.UNICODE)) >= 3
-                              and token.casefold() not in owner_stopwords))
+                              and token not in owner_stopwords))
         }
+
+    owner_tokens = {}
+    token_owners = defaultdict(set)
+    for idx, source_text in (owner_src_map or {}).items():
+        tokens = _text_tokens(source_text)
         owner_tokens[str(idx)] = tokens
         for token in tokens:
-            token_owners[token.casefold()].add(str(idx))
+            token_owners[token].add(str(idx))
     unique_tokens = {
         idx: {token for token in tokens
-              if len(token_owners.get(token.casefold(), ())) == 1}
+              if len(token_owners.get(token, ())) == 1}
         for idx, tokens in owner_tokens.items()
     }
     mismatched = set()
@@ -7845,16 +7878,14 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
             continue
         idx = str(item["i"])
         target = str(item.get("t") or "")
+        target_tokens = _text_tokens(target)
         foreign = {
             token for owner, tokens in unique_tokens.items()
             if owner != idx for token in tokens
-            if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
-                         re.IGNORECASE)
+            if token in target_tokens
         }
         own = unique_tokens.get(idx, set())
-        if foreign and own and not any(
-                re.search(rf"(?<!\w){re.escape(token)}(?!\w)", target,
-                          re.IGNORECASE) for token in own):
+        if foreign and own and not (own & target_tokens):
             mismatched.add(idx)
     return mismatched
 
@@ -14800,6 +14831,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     source_rows = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in source]
     removable_source_ids = _delivery_removable_source_ids(source_rows)
+    removable_source_ids -= {
+        source_idx for source_idx, _ts, source_text in source_rows
+        if _source_cue_matches_delivery_filename_title(source_text, source_path)
+    }
     output_dialogue = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in output
         if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())

@@ -147,6 +147,50 @@ class DeliverySourceSdhResidueTest(unittest.TestCase):
                 self.assertTrue(
                     gui._source_cue_is_delivery_removable(source_text))
 
+    def test_bare_radio_crowd_and_gramophone_descriptors_are_removable(self):
+        for source_text in (
+                'GRAMOPHONE PLAYS "Symphony No. 7"\nby Beethoven',
+                "( shortwave radio\ntransmissions: )",
+                "( various languages, as\nradio station is changed )",
+                "( men speaking in\nGerman and pidgin )",
+                "( radio fades in and out )",
+                "( women speaking in\nforeign language )",
+                "( people talking at once )",
+                "( people chatting quietly )",
+                "( children talking\nin native language )",
+                "( part in native language )",
+                "( tourists bargaining\nin background )",
+                "( couple chatting\nunintelligibly )",
+                "( drums )",
+                "( people chatting\nin background )"):
+            with self.subTest(source_text=source_text):
+                self.assertTrue(
+                    gui._source_cue_is_delivery_removable(source_text))
+
+    def test_croatian_subtitle_credits_are_removable(self):
+        for source_text in (
+                "Preveo i prilagodio:\nMrDaky78",
+                "Preuzeto sa www.titlovi.com"):
+            with self.subTest(source_text=source_text):
+                self.assertTrue(
+                    gui._source_cue_is_delivery_removable(source_text))
+
+    def test_all_caps_source_title_matching_filename_is_not_residual_sdh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "Aristotelova laguna.srt"
+            output = root / "output.srt"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nARISTOTELOVA LAGUNA\n",
+                encoding="utf-8")
+            output.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nARİSTOTELES'İN LAGÜNÜ\n",
+                encoding="utf-8")
+            audit = gui._subtitle_delivery_audit(
+                str(source), str(output), source_language="Croatian")
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["residual_sdh_ids"], [])
+
     def test_production_and_multiline_subtitle_credits_are_removable(self):
         for source_text in (
                 "Screenplay: Paavo Haavikko",
