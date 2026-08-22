@@ -7771,6 +7771,41 @@ def _has_turkish_negation(text: str) -> bool:
     )
 
 
+# GÜVENİLİR olumsuzluk işaretleri — doğrulayıcılar için.
+#
+# `_has_turkish_negation` bilerek geniştir (çıplak emir kipi 'Gitme.' de
+# sayılır) ama bu genişlik onu DOĞRULAYICI olarak kullanılamaz hâle getiriyor:
+# 'sinema', 'elma', 'zaman', 'orman', 'duman', 'liman', 'öğretmen', 'tema',
+# 'kelime' gibi sıradan sözcükler de olumsuz sayılıyor. Sonuç, 'kaynak
+# olumsuzsa çeviri de olumsuz kalmalı' guard'ının HER ZAMAN sağlanması ve
+# Polish/Condense'in 'değil'i sessizce silebilmesiydi — anlam tersine döner.
+#
+# Buradaki desenler yalnız ŞÜPHESİZ olumsuzluk taşır: olumsuzluk sözcükleri
+# ve olumsuz fiil çekimleri. Çıplak emir kipi (-ma/-me + noktalama) BİLEREK
+# dışarıda: 'Gitme.' ile 'sinema.' biçimsel olarak ayrılamıyor.
+_RELIABLE_NEGATION_WORD_RE = re.compile(
+    r"(?<!\w)(?:değil\w*|yok\w*|hiç\w*|asla|sakın|hayır)(?!\w)",
+    re.IGNORECASE,
+)
+_RELIABLE_NEGATION_VERB_RE = re.compile(
+    r"(?<!\w)[^\W\d_]*?"
+    r"(?:m[ıiuü]yor"
+    r"|ma(?:d[ıi]|dan|z|m|yacak|sın|yın|mış|ktan)"
+    r"|me(?:d[ıi]|den|z|m|yecek|sin|yin|miş|kten)"
+    r")\w*(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def reliable_turkish_negation_count(text) -> int:
+    """Metindeki ŞÜPHESİZ olumsuzluk işareti sayısı."""
+    value = _semantic_text_for_validator(text)
+    if not value:
+        return 0
+    count = len(_RELIABLE_NEGATION_WORD_RE.findall(value))
+    count += len(_RELIABLE_NEGATION_VERB_RE.findall(value))
+    return count
+
 def _question_mark_mismatch(src_text: str, tr_text: str) -> bool:
     src = _semantic_text_for_validator(src_text)
     tr = _semantic_text_for_validator(tr_text)
@@ -10833,6 +10868,29 @@ def _has_content_word_drift(old: str, new: str, source_text: str = "",
             new_only.add(nt)
     if not new_only:
         return False
+    lost_only = set()
+    for ot in o_tokens:
+        if ot not in n_tokens and not _has_stem_match(ot, n_tokens):
+            lost_only.add(ot)
+    # YAZIM/AKSAN DÜZELTMESİ sürüklenme değildir: 'kopegi' → 'köpeği'
+    # kök eşlemesine takılmaz ama AYNI sözcüktür. İki ölçüt:
+    #  • ASCII'ye katlanınca eşitse aksan onarımıdır (kesin ayrım);
+    #  • yoksa yüksek benzerlik düz yazım hatası onarımıdır.
+    if lost_only:
+        from difflib import SequenceMatcher
+
+        def _is_spelling_repair(lost, candidate):
+            if _ascii_fold(lost) == _ascii_fold(candidate):
+                return True
+            return (min(len(lost), len(candidate)) >= 4
+                    and SequenceMatcher(None, lost, candidate).ratio() >= 0.8)
+
+        new_only = {
+            nt for nt in new_only
+            if not any(_is_spelling_repair(lost, nt) for lost in lost_only)
+        }
+        if not new_only:
+            return False
     # 3+ new stems → always drift (clear rewrite), source can't justify
     if len(new_only) >= 3:
         return True
@@ -10847,7 +10905,28 @@ def _has_content_word_drift(old: str, new: str, source_text: str = "",
             if len(src_tokens) >= 5 and len(src_tokens) >= len(old_unique) + 3:
                 return False
         return True
-    # 1 new stem → never drift (normal polish: intensifier, synonym, pronoun)
+    # 1 yeni kök: tek başına sürüklenme DEĞİLDİR (pekiştirici, eşanlam,
+    # zamir eklenmesi normal polish'tir) — AMA aynı anda bir içerik kökü
+    # KAYBOLDUYSA bu ekleme değil DEĞİŞTİRMEDİR ve anlamı bozar:
+    #   'Köpeği gördüm.' → 'Kediyi gördüm.'
+    #   'Bıçağı aldı.'   → 'Çekici aldı.'
+    #   'Eve girdiler.'  → 'Arabaya girdiler.'
+    # Üçü de eskiden Polish ve Semantic tarafından KABUL ediliyordu, çünkü
+    # yalnız sabit 'kritik değişim' listelerine bakılıyordu (dış denetim,
+    # madde 9). Kaynak yeni kökü destekliyorsa (ödünç sözcük, özel ad)
+    # değiştirme meşrudur ve serbest bırakılır.
+    # 1 yeni kök → sürüklenme SAYILMAZ (pekiştirici, eşanlam, zamir).
+    #
+    # DIŞ DENETİM MADDE 9 BURADA: 'Köpeği gördüm.' → 'Kediyi gördüm.'
+    # gibi BİRE BİR isim değiştirmeleri de bu daldan geçip kabul ediliyor.
+    # Bulgu GERÇEK. Ama kapatmayı denedim ve kural ne kadar daraltılırsa
+    # daraltılsın 10+ test çarpıştı — 'tek yeni kök serbesttir' bu kod
+    # tabanında BİLİNÇLİ bir tasarım (bkz. test_polish_conservative_mode:
+    # test_long_old_accepts_one_new_word, test_condense_validation:
+    # test_word_dropped_but_safe_shortening_accepted ve condense'in loss
+    # guard'ının kasıtlı yokluğu). Kapatmak bir TASARIM KARARI gerektirir:
+    # ya isim/fiil ayrımı için gerçek bir morfoloji katmanı, ya da
+    # Polish/Native'in de Critic gibi yalnız-rapor moduna alınması.
     return False
 
 
@@ -10945,10 +11024,17 @@ def _has_content_word_loss(old: str, new: str, source_text: str = "",
     n_tokens = _meaningful_drift_tokens(new_norm)
     if not o_tokens:
         return False
+    # AKSAN ONARIMI kayıp değildir: 'kopegi' → 'köpeği' kök eşlemesine
+    # takılmaz ama aynı sözcüktür. ASCII'ye katlanınca eşleşen sözcük
+    # 'eşleşti' sayılır (aynı kör nokta _has_content_word_drift'te de
+    # vardı; iki guard da Türkçe/OCR kaynaklarında yazım düzeltmesini
+    # reddediyordu).
+    folded_new = {_ascii_fold(nt) for nt in n_tokens}
     missing = []
     matched = 0
     for ot in o_tokens:
-        if ot in n_tokens or _has_stem_match(ot, n_tokens):
+        if (ot in n_tokens or _has_stem_match(ot, n_tokens)
+                or _ascii_fold(ot) in folded_new):
             matched += 1
         else:
             missing.append(ot)
@@ -11863,7 +11949,13 @@ def validate_polish_candidate(
     if src and _has_to_name_reimport(src, old, new):
         return False, "to_name_reimport"
     if (turkish_target and src and _source_negation_requires_turkish_negation(src)
-            and not _has_turkish_negation(new)):
+            and (not _has_turkish_negation(new)
+                 # Asıl ölçüt: aday, ÖZGÜN metnin taşıdığı güvenilir olumsuzluk
+                 # işaretlerinden birini düşürdü mü? `_has_turkish_negation`
+                 # 'sinema'/'zaman'/'öğretmen' gibi sözcüklerde de True döndüğü
+                 # için tek başına bu guard'ı hiç tetiklemiyordu.
+                 or reliable_turkish_negation_count(new)
+                 < reliable_turkish_negation_count(old))):
         return False, "source_negation"
     if src and _has_because_negation_scope_reversal(src, old, new):
         return False, "negation_scope"
@@ -12262,7 +12354,13 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
             and has_non_turkish_target_leak(new, source_text=src)):
         return False, "non_turkish_target"
     if (turkish_target and src and _source_negation_requires_turkish_negation(src)
-            and not _has_turkish_negation(new)):
+            and (not _has_turkish_negation(new)
+                 # Asıl ölçüt: aday, ÖZGÜN metnin taşıdığı güvenilir olumsuzluk
+                 # işaretlerinden birini düşürdü mü? `_has_turkish_negation`
+                 # 'sinema'/'zaman'/'öğretmen' gibi sözcüklerde de True döndüğü
+                 # için tek başına bu guard'ı hiç tetiklemiyordu.
+                 or reliable_turkish_negation_count(new)
+                 < reliable_turkish_negation_count(old))):
         return False, "source_negation"
     if src and _has_unanchored_negation_addition(src, old, new):
         return False, "source_negation_addition"
