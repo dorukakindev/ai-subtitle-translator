@@ -363,6 +363,70 @@ def is_structural_sdh_label(text: str) -> bool:
     return len(letters) >= max(2, len(re.sub(r"\s", "", value)) // 2)
 
 
+# Title Case eser adlarında küçük yazılan bağlaç/edatlar.
+_TITLE_CASE_PARTICLES = frozenset({
+    "of", "the", "a", "an", "and", "or", "for", "in", "on",
+    "at", "to", "from", "with", "by", "de", "la", "le", "du",
+    "des", "von", "van", "der", "die", "das", "und", "el", "y",
+    "ve", "ile", "da", "e", "di", "il", "no", "na",
+})
+_TITLED_LABEL_RE = re.compile(
+    r"^\s*(?:[-–—]\s*)?([^\W\d_][^:\n]{0,29}):\s*(\S.*)$")
+
+
+def is_titled_sdh_label(text: str) -> bool:
+    """TAMAMI BÜYÜK etiket + iki nokta + ESER ADI biçimi mi?
+
+    'МУЗЫКА: "Theme 21"' / 'MUSIC: "Rite of Spring"' gibi künyeler
+    is_structural_sdh_label'ın 'satırın TAMAMI büyük harf' testine takılmıyordu:
+    şarkı adı Latin ve karışık harfli. Sonuç, SDH temizliğinin doğru şekilde
+    düşürdüğü cue'nun teslim denetiminde 'kayıp diyalog' (SERT HATA) sayılması
+    ve iyi bir teslimin karantinaya alınmasıydı — gerçek dosyalarda ölçüldü:
+    tek bölümde 12 cue.
+
+    Ayırt edici ölçüt, kalan kısmın CÜMLE OLMAMASI: tırnaklı ya da Title Case
+    bir ad. Böylece 'JOHN: Get out' gibi gerçek replikler korunur — orada
+    küçük harfle başlayan bir sözcük var.
+    """
+    value = FORMAT_TAG_RE.sub("", str(text or ""))
+    value = MUSIC_NOTE_RE.sub(" ", value)
+    value = CHEVRON_SPEAKER_RE.sub("", value).strip()
+    if not value or len(value) > 120:
+        return False
+    lines = [line.strip() for line in value.split("\n") if line.strip()]
+    if not lines:
+        return False
+    match = _TITLED_LABEL_RE.match(lines[0])
+    if not match:
+        return False
+    label, first_rest = match.group(1).strip(), match.group(2).strip()
+    label_letters = [char for char in label if char.isalpha()]
+    if len(label_letters) < 2 or not all(
+            char.isupper() for char in label_letters):
+        return False
+    rest = " ".join([first_rest, *lines[1:]]).strip()
+    if not rest:
+        # Yalnız etiket: bu zaten is_structural_sdh_label'ın işi.
+        return False
+    if _SENTENCE_END_RE.search(rest):
+        return False
+    # Parantezli niteleyici künyede olağandır ve küçük harfle
+    # başlayabilir: '(часть 1)', '(Side 2 Part 4)'.
+    rest = re.sub(r"\([^()]*\)", " ", rest).strip()
+    if not rest:
+        return True
+    # Kalan kısımda küçük harfle BAŞLAYAN sözcük varsa bu bir replik olabilir.
+    # İstisna: Title Case eser adlarındaki bağlaç/edatlar küçük yazılır
+    # ('Rite of Spring', 'The Threshold of Liberty').
+    for word in re.findall(r"[^\W\d_][^\s]*", rest):
+        first = word[0]
+        if not (first.isalpha() and first.islower()):
+            continue
+        if word.strip("'\"()[].,;:-").casefold() in _TITLE_CASE_PARTICLES:
+            continue
+        return False
+    return True
+
 def strip_structural_sdh_label_prefix(text: str) -> str:
     """'МУЗЫКА: gerçek replik' → 'gerçek replik' (etiket kısmı atılır).
 

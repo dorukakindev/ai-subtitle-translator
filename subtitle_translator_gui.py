@@ -4523,6 +4523,13 @@ def _looks_like_work_attribution(text: str) -> bool:
 def _source_cue_is_delivery_removable(text: str, *,
                                       allow_caps_heuristic: bool = False) -> bool:
     value = str(text or "")
+    # 'МУЗЫКА: "Theme 21"' biçimi: TAMAMI BÜYÜK etiket + eser adı. Etiket
+    # yapısal sinyali taşıyor ama şarkı adı karışık harfli olduğu için
+    # 'satırın tamamı büyük harf' testine takılmıyordu; SDH temizliğinin
+    # doğru şekilde düşürdüğü cue teslim denetiminde 'kayıp diyalog'
+    # (SERT HATA) sayılıp iyi teslimi karantinaya alıyordu.
+    if sdh_cleaner.is_titled_sdh_label(value):
+        return True
     if allow_caps_heuristic and sdh_cleaner.is_structural_sdh_label(value):
         # Parantezsiz, tamamı büyük harfli ve cümle noktalamasıyla bitmeyen etiket
         # ('ВОЙ СИРЕНЫ', 'АПЛОДИСМЕНТЫ', 'APPLAUSE'). Alfabeden bağımsız yapısal
@@ -16074,6 +16081,46 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             reversed_timestamp_ids.append(str(output_idx))
             continue
         timed_output.append((str(output_idx), start, end, str(output_text or "")))
+    # CUE SIRASI: bir cue kendinden öncekinden ERKEN başlıyorsa dosya sıralı
+    # değildir; oynatıcılar ve zaman damgasına dayanan bütün eşlemelerimiz
+    # (kaynak haritası, satır-satır rapor) artan sıra varsayar.
+    #
+    # AYRIM ŞART: zaman damgaları kaynaktan BİREBİR kopyalanıyor, yani eski/
+    # OCR'lı ripler bu kusuru bize miras bırakıyor. 255 gerçek teslim dosyası
+    # ölçüldü: 34'ünde geri giden cue vardı ve HEPSİ kaynaktan geliyordu.
+    # Bu yüzden miras olan yalnız RAPORLANIR; kaynakta olmayıp teslimde
+    # ortaya çıkan sıra bozukluğu ise sync kırılmasıdır ve SERT HATADIR.
+    def _first_start_out_of_order(rows):
+        bad, previous = [], None
+        for row_id, row_start in rows:
+            if previous is not None and row_start < previous:
+                bad.append((str(row_id), row_start))
+            previous = row_start
+        return bad
+
+    source_starts = []
+    for source_idx, source_ts, _source_text in source_rows:
+        try:
+            source_start, _source_end = _srt_timestamp_bounds(source_ts)
+        except (ValueError, TypeError):
+            continue
+        source_starts.append((source_idx, source_start))
+    # Birleştirme/imza yüzünden id'ler kaymış olabilir; BAŞLANGIÇ ZAMANI
+    # güvenilir birleştirme anahtarıdır (damgalar kopyalanıyor).
+    inherited_starts = {
+        start for _row_id, start in _first_start_out_of_order(source_starts)
+    }
+    output_disorder = _first_start_out_of_order([
+        (row_id, start) for row_id, start, _end, text in timed_output
+        if not _DELIVERY_SIGNATURE_RE.fullmatch(text.strip())
+    ])
+    inherited_out_of_order_ids = [
+        row_id for row_id, start in output_disorder if start in inherited_starts
+    ]
+    introduced_out_of_order_ids = [
+        row_id for row_id, start in output_disorder
+        if start not in inherited_starts
+    ]
     for output_idx, start, end, output_text in timed_output:
         if not _DELIVERY_SIGNATURE_RE.fullmatch(output_text.strip()):
             continue
@@ -16272,6 +16319,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         foreign_script_ids,
         serialized_json_residue_ids,
         signature_mismatch, duplicate_cue_ids, unnumbered_cue_lines,
+        introduced_out_of_order_ids, inherited_out_of_order_ids,
         invalid_timestamp_ids,
         reversed_timestamp_ids, signature_overlap_ids,
     ))
@@ -16305,6 +16353,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "signature_mismatch": signature_mismatch,
         "invalid_timestamp_ids": invalid_timestamp_ids,
         "reversed_timestamp_ids": reversed_timestamp_ids,
+        # Sıra bozukluğu: kaynaktan MİRAS olan yalnız bilgi, teslimde
+        # ORTAYA ÇIKAN sert hata (bkz. _delivery_audit_has_hard_error).
+        "introduced_out_of_order_ids": introduced_out_of_order_ids,
+        "inherited_out_of_order_ids": inherited_out_of_order_ids,
         "signature_overlap_ids": signature_overlap_ids,
         "duplicate_cue_ids": duplicate_cue_ids,
         "unnumbered_cue_lines": unnumbered_cue_lines,
@@ -16352,6 +16404,8 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("signature_overlap_ids"),
         audit.get("duplicate_cue_ids"),
         audit.get("unnumbered_cue_lines"),
+        # Kaynakta OLMAYAN sıra bozukluğu = biz kırdık.
+        audit.get("introduced_out_of_order_ids"),
     ))
 
 
@@ -16378,6 +16432,17 @@ def _delivery_audit_log_details(audit: dict, limit: int = 12) -> list[str]:
     if remaining:
         lines.append(
             f"Teslim denetimi ayrıntısı: {remaining} ek bulgu kalite raporunda.")
+    inherited = [str(v) for v in (audit.get("inherited_out_of_order_ids") or [])]
+    if inherited:
+        # Kaynaktan MİRAS sıra bozukluğu: teslimi bloklamaz ama
+        # oynatıcıda ve zaman damgasına dayanan eşlemelerde sorun
+        # çıkarabilir, kullanıcı bilmeli.
+        shown = ", ".join(inherited[:12])
+        suffix = f" (+{len(inherited) - 12})" if len(inherited) > 12 else ""
+        lines.append(
+            f"Teslim denetimi bilgisi [cue_sirasi_kaynaktan]: {shown}{suffix}"
+            " — bu cue'lar kendinden öncekinden erken başlıyor;"
+            " aynı bozukluk KAYNAK dosyada da var.")
     if not lines:
         fields = (
             ("extra_dialogue_ids", "extra_dialogue"),
@@ -16385,6 +16450,7 @@ def _delivery_audit_log_details(audit: dict, limit: int = 12) -> list[str]:
             ("untranslated_fragment_ids", "untranslated_fragment"),
             ("invalid_timestamp_ids", "invalid_timestamp"),
             ("duplicate_cue_ids", "duplicate_cue_id"),
+            ("introduced_out_of_order_ids", "cue_sirasi_bozuldu"),
         )
         for key, label in fields:
             ids = [str(value) for value in (audit.get(key) or [])]
