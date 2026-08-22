@@ -10005,6 +10005,89 @@ def _precontext_analysis_fingerprint(model: str, base_url: str = "") -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# ── Kaynak dil / içerik türü tespitinin kalıcı önbelleği ─────────────────────
+# Tespitler yalnız koşu anlık görüntüsünde ve yarım-koşu kaydında yaşıyordu;
+# program kapanınca kayboluyor, aynı dosya yeniden seçildiğinde yardımcı model
+# baştan çalışıyordu. Bu önbellek dosyanın yanına yazılır ve içerik hash'i
+# değişirse kendiliğinden geçersizleşir.
+
+def _detection_cache_path(filepath: str) -> Path:
+    p = Path(filepath)
+    return p.parent / ".context_cache" / (p.name + ".detect.json")
+
+
+def load_detection_cache(filepath: str) -> dict:
+    """Daha önce tespit edilmiş kaynak dil / içerik türünü döndürür.
+
+    Dosya içeriği değiştiyse (SHA-256 uyuşmazlığı) boş sözlük döner ki
+    bayat tespit sessizce taşınmasın.
+    """
+    try:
+        path = _detection_cache_path(filepath)
+        if not path.exists():
+            return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        current = _precontext_cache_sig(filepath)
+        if not current or data.get("_sig") != current:
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def save_detection_cache(filepath: str, source_language=None,
+                         content_type=None) -> bool:
+    """Tespit sonucunu diske yazar.
+
+    None verilen alan DEĞİŞMEZ. 'Otomatik' (ya da boş) verilen alan SİLİNİR:
+    kullanıcı seçimi otomatiğe geri aldıysa bayat tespit yapışıp kalmasın.
+    """
+    sig = _precontext_cache_sig(filepath)
+    if not sig:
+        return False
+    try:
+        path = _detection_cache_path(filepath)
+        data = {}
+        if path.exists():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    old = json.load(f)
+                if isinstance(old, dict) and old.get("_sig") == sig:
+                    data = {k: v for k, v in old.items() if k != "_sig"}
+            except Exception:
+                data = {}
+        if source_language is not None:
+            language = normalize_language_name(source_language)
+            if language and language != AUTO_LANGUAGE:
+                data["source_language"] = language
+            else:
+                data.pop("source_language", None)
+        if content_type is not None:
+            name = normalize_schema_name(content_type)
+            if name and name != "Otomatik":
+                data["content_type"] = name
+            else:
+                data.pop("content_type", None)
+        if not data:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+        data["_sig"] = sig
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 def build_precontext_hint(data: dict, target_language: str = "tr",
                           source_text: str | None = None) -> str:
     """Ön-analiz JSON'ını system prompt'a eklenecek metin bloğuna çevirir.
@@ -20980,6 +21063,54 @@ class App(ctk.CTk):
             pass
 
     # ── Per-file şema ─────────────────────────────────────────────────────────
+    def _remembered_source_language(self, filepath: str, fallback: str) -> str:
+        """Global seçim 'Otomatik' ise diskteki eski tespiti geri getirir.
+
+        Kullanıcı global dili açıkça seçmişse ona dokunulmaz; önbellek
+        yalnızca yardımcı modeli yeniden çalıştıracak boşluğu doldurur.
+        """
+        if normalize_language_name(fallback) != AUTO_LANGUAGE:
+            return fallback
+        cached = normalize_language_name(
+            load_detection_cache(filepath).get("source_language") or "")
+        if not cached or cached == AUTO_LANGUAGE:
+            return fallback
+        self._log(
+            f"[{Path(filepath).name}] Kaynak dil önceki tespitten geri "
+            f"yüklendi: {cached}", "info")
+        return cached
+
+    def _remembered_content_type(self, filepath: str, fallback: str) -> str:
+        """Global tür 'Otomatik' ise diskteki eski tür tespitini geri getirir."""
+        if normalize_schema_name(fallback) != "Otomatik":
+            return fallback
+        cached = normalize_schema_name(
+            load_detection_cache(filepath).get("content_type") or "")
+        if cached == "Otomatik" or cached not in {
+                v["name"] for v in CONTENT_SCHEMAS.values()}:
+            return fallback
+        self._log(
+            f"[{Path(filepath).name}] İçerik türü önceki tespitten geri "
+            f"yüklendi: {cached}", "info")
+        return cached
+
+    def _remember_file_detections(self, files=None):
+        """Onaylanmış kaynak dil / içerik türü tespitlerini diske yazar."""
+        paths = list(files) if files is not None else list(
+            set(getattr(self, "_file_language_vars", {}))
+            | set(getattr(self, "_file_schema_vars", {})))
+        for fp in paths:
+            lang_var = getattr(self, "_file_language_vars", {}).get(fp)
+            schema_var = getattr(self, "_file_schema_vars", {}).get(fp)
+            try:
+                save_detection_cache(
+                    fp,
+                    source_language=lang_var.get() if lang_var is not None else None,
+                    content_type=schema_var.get() if schema_var is not None else None,
+                )
+            except Exception:
+                continue
+
     def _populate_file_list(self, files: list, reset_page: bool = True):
         """Dosya ayarlarını korur; yalnızca görünür sayfanın widget'larını oluşturur."""
         files = sorted(self._dedupe_paths(files), key=lambda p: Path(p).name.lower())
@@ -21022,10 +21153,13 @@ class App(ctk.CTk):
                          row=0, column=0, sticky="ew", padx=(10,4), pady=5)
             lang_var = self._file_language_vars.get(fp)
             if lang_var is None:
-                lang_var = ctk.StringVar(value=default_language)
+                lang_var = ctk.StringVar(
+                    value=self._remembered_source_language(fp, default_language))
                 self._file_language_vars[fp] = lang_var
             ctk.CTkOptionMenu(row_fr, variable=lang_var, values=SOURCE_LANGUAGES,
                               width=105, height=26,
+                              command=lambda _v, _fp=fp: (
+                                  self._remember_file_detections([_fp])),
                               font=ctk.CTkFont("Segoe UI", 10),
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
@@ -21033,10 +21167,13 @@ class App(ctk.CTk):
                               ).grid(row=0, column=1, padx=(4, 2), pady=4)
             var = self._file_schema_vars.get(fp)
             if var is None:
-                var = ctk.StringVar(value=default)
+                var = ctk.StringVar(
+                    value=self._remembered_content_type(fp, default))
                 self._file_schema_vars[fp] = var
             ctk.CTkOptionMenu(row_fr, variable=var, values=schema_names,
                               width=155, height=26,
+                              command=lambda _v, _fp=fp: (
+                                  self._remember_file_detections([_fp])),
                               font=ctk.CTkFont("Segoe UI", 10),
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
@@ -33081,6 +33218,10 @@ class App(ctk.CTk):
             self.src_var.set(next(iter(all_languages)))
         elif len(all_languages) > 1:
             self.src_var.set(AUTO_LANGUAGE)
+        # Program kapansa bile tespit korunur (bkz. save_detection_cache).
+        remember = getattr(self, "_remember_file_detections", None)
+        if callable(remember):
+            remember(detected.keys())
 
     def _file_preflight_signature(self, files: list):
         items = []
@@ -33802,6 +33943,10 @@ class App(ctk.CTk):
             only = next(iter(resolved))
             if only != "Otomatik":
                 self.content_type_var.set(only)
+        # Program kapansa bile tespit korunur (bkz. save_detection_cache).
+        remember = getattr(self, "_remember_file_detections", None)
+        if callable(remember):
+            remember(detected.keys())
 
     def _show_content_type_confirm_dialog(self, detected: dict) -> bool:
         """Show detected content types before translation. Returns True to continue."""
