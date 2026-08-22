@@ -7972,10 +7972,7 @@ def _tr_number_values_unfiltered(text: str) -> list:
     "3 years" -> "Üç yıl" doğruluğunu ölçerken tam da o küçük değerler
     gerekiyor; burada fazladan değer görmek yalnız guard'ı hoşgörülü yapar.
     """
-    # "İki".lower() birleşik nokta bırakır ve "iki" ile eşleşmez; Türkçe
-    # metinde cümle başındaki her sayı sözcüğü bu yüzden görülmüyordu.
-    raw = [word.replace("İ", "i").replace("I", "ı").lower()
-           for word, _gap in
+    raw = [_tr_lower(word) for word, _gap in
            _number_word_gaps(text, _TR_NUMBER_WORD_TOKEN_RE)]
     # Ek almış sayı sözcüğü de sayılır: "Beşte", "ikide", "beşle", "üçü".
     # Ek listesi KAPALI tutuluyor: serbest kısaltma "Biró"yu "bir" sanıp
@@ -8373,6 +8370,21 @@ def _tr_number_group_values(group: list) -> list:
     return values
 
 
+def _tr_lower(word: str) -> str:
+    """Türkçe güvenli küçültme: İ -> i, I -> ı.
+
+    str.lower() Türkçe İ'yi i + U+0307 (birleşik nokta) yapar ve sözlükteki
+    "iki" ile ARTIK EŞLEŞMEZ. Sonuç sessiz ve yanlış: "İki bin" 2000 değil
+    1000, "İki yüz elli" 250 değil 150 okunuyordu — cümle başındaki sayı
+    sözcüğü kaybolup komşusu tek başına değerleniyordu.
+
+    Sayı okuyan HER yer bu tek dönüşümü kullanır; ayrı ayrı yazıldığında
+    biri düzeltilip diğeri unutuluyor (2026-08-22: _tr_number_values_unfiltered
+    düzeltilmiş, _tr_spelled_numbers atlanmıştı).
+    """
+    return str(word or "").replace("İ", "i").replace("I", "ı").lower()
+
+
 def _tr_spelled_numbers(text: str) -> list:
     """Ardışık Türkçe sayı sözcüklerini gruplayıp değere çevirir.
     'bin dört yüz' -> [1400]. Ekli 'yüz'/'bir'/'bin' (yüzünü, birini, yüzden, ...)
@@ -8383,7 +8395,7 @@ def _tr_spelled_numbers(text: str) -> list:
     "Two... one..." iki belirteç verirken çeviri "İki... bir..." tek değer
     verip yapay uyuşmazlık üretiyordu."""
     pairs = _number_word_gaps(text, _TR_NUMBER_WORD_TOKEN_RE)
-    tokens = [word.lower() for word, _gap in pairs]
+    tokens = [_tr_lower(word) for word, _gap in pairs]
     gaps = [gap for _word, gap in pairs]
     n = len(tokens)
     results = []
@@ -11595,11 +11607,19 @@ def _numeric_noun_stem(word: str) -> str:
 def _has_numeric_plural_regression(old: str, new: str) -> bool:
     old_tokens = _NUMERIC_WORD_TOKEN_RE.findall(str(old or "").casefold())
     new_tokens = _NUMERIC_WORD_TOKEN_RE.findall(str(new or "").casefold())
+    # Anahtar token YAZIMI değil DEĞERİ olmalı: Polish ondalık ayracını da
+    # değiştirdiyse ("1,5 yıl" -> "1.5 yıllar") eski ve yeni token birebir
+    # eşleşmiyor ve çoğul regresyonu guard'dan kaçıyordu. Ayraç normalizasyonu
+    # _has_unanchored_numeric_change tarafından bilerek hoş görüldüğü için o
+    # da yakalamıyor; ikisinin arasından geçen bir boşluktu.
     old_number_positions = {}
     for pos, token in enumerate(old_tokens):
         if token[:1].isdigit():
-            old_number_positions.setdefault(token, []).append(pos)
+            old_number_positions.setdefault(
+                _normalize_numeric_token(token), []).append(pos)
     for pos, token in enumerate(new_tokens):
+        token = (_normalize_numeric_token(token)
+                 if token[:1].isdigit() else token)
         if token not in old_number_positions:
             continue
         for new_word in new_tokens[pos + 1:pos + 4]:
