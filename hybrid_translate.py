@@ -9035,6 +9035,33 @@ def _source_wordplay_risk_ids(src_map: dict, tr_blocks: list) -> set:
     return risk_ids
 
 
+def _scene_layout(validator_cues: list, gap_limit: float) -> tuple[list, dict]:
+    """(pozisyon -> sahne no, sahne no -> [ilk, son]) düzeni.
+
+    Küme aralığı sahne sınırında KIRPILIYOR ama kapsam sayacı kırpmayı
+    görmüyordu; ikisi tek kaynaktan hesaplansın diye ayrıldı.
+    """
+    scene_by_pos = []
+    scene_no = 0
+    for pos, cue in enumerate(validator_cues or []):
+        if pos and gap_limit > 0:
+            try:
+                gap = _ts_to_sec(cue.start) - _ts_to_sec(
+                    validator_cues[pos - 1].end)
+                if gap >= gap_limit:
+                    scene_no += 1
+            except Exception:
+                pass
+        scene_by_pos.append(scene_no)
+    scene_bounds = {}
+    for pos, number in enumerate(scene_by_pos):
+        if number not in scene_bounds:
+            scene_bounds[number] = [pos, pos]
+        else:
+            scene_bounds[number][1] = pos
+    return scene_by_pos, scene_bounds
+
+
 def _adaptive_semantic_suspects(
     src_map: dict,
     tr_blocks: list,
@@ -9053,11 +9080,20 @@ def _adaptive_semantic_suspects(
     gap_limit = float(
         SCENE_GAP_SEC if scene_gap_sec is None else scene_gap_sec)
     covered = set()
+    # Kapsam sayacı pencereyi sahne sınırını GÖRMEDEN sayıyordu; küme
+    # kurucusu ise aralığı sahnede kırpıyor. Fark, hedefe ulaşıldı sanılıp
+    # yeni merkez seçilmemesi demekti: 60 gerçek dosyada "Tam (%100)" ayarı
+    # %80-96 arasında kalıyordu (dış denetim madde 4).
+    scene_by_pos, scene_bounds = _scene_layout(cues, gap_limit)
 
     def cover(pos):
+        if pos < len(scene_by_pos):
+            scene_start, scene_end = scene_bounds[scene_by_pos[pos]]
+        else:
+            scene_start, scene_end = 0, len(tr_blocks) - 1
         covered.update(range(
-            max(0, pos - radius),
-            min(len(tr_blocks), pos + radius + 1),
+            max(scene_start, pos - radius),
+            min(scene_end, pos + radius) + 1,
         ))
 
     for sid in existing_ids:
@@ -9172,24 +9208,7 @@ def build_semantic_reconciliation_clusters(
     if not suspect_positions:
         return []
 
-    scene_by_pos = []
-    scene_no = 0
-    for pos, cue in enumerate(validator_cues):
-        if pos and gap_limit > 0:
-            try:
-                gap = _ts_to_sec(cue.start) - _ts_to_sec(
-                    validator_cues[pos - 1].end)
-                if gap >= gap_limit:
-                    scene_no += 1
-            except Exception:
-                pass
-        scene_by_pos.append(scene_no)
-    scene_bounds = {}
-    for pos, number in enumerate(scene_by_pos):
-        if number not in scene_bounds:
-            scene_bounds[number] = [pos, pos]
-        else:
-            scene_bounds[number][1] = pos
+    scene_by_pos, scene_bounds = _scene_layout(validator_cues, gap_limit)
 
     window = max(0, int(window))
     max_cluster_items = max(window * 2 + 1, int(max_cluster_items))

@@ -2074,11 +2074,50 @@ def provider_call_with_retry(call, client, model: str, request_context=None,
         retry_delays=retry_delays)
 
 
+def _rotated_route_client(request_client, request_context=None):
+    """Yeniden-deneme merdiveninin HER denemesinde rotayı yeniden seçer.
+
+    Rota yarışı yalnız ilk saniyede bir kez yapılıyordu: dördü de düşünce
+    hepsi soğumaya giriyor, `_shuai_route_candidates` boş dönüyor ve kalan
+    ~10 dakikalık merdiven TEK adrese harcanıyordu. Gerçek koşuda
+    (2026-08-22 22:36-22:46) 11 denemenin hepsi `api.shuaiapi.com`'a gitti;
+    bağlantı hatasının soğuması 30 sn olduğu için diğer üç rota çoktan
+    uygunken bir daha hiç sorulmadılar.
+
+    Yalnız MEVCUT rota soğumadayken devreye girer; sağlıklı rotada çağrı
+    olduğu gibi geçer ve Shuai dışı istemcilere hiç dokunmaz.
+    """
+    current = normalize_shuai_api_route(
+        getattr(request_client, "base_url", ""))
+    if not current:
+        return request_client
+    now = time.monotonic()
+    with _SHUAI_FAILOVER_LOCK:
+        if not _SHUAI_FAILOVER_ENABLED:
+            return request_client
+        cooling = float(
+            _SHUAI_ROUTE_STATES[current].get("cooldown_until", 0.0) or 0.0)
+    if cooling <= now:
+        return request_client
+    scope = _shuai_route_scope(
+        (request_context or {}).get("checkpoint_label", ""))
+    replacement = next(
+        (route for route in _shuai_route_candidates(current, scope=scope)
+         if route != current), "")
+    if not replacement:
+        return request_client
+    _shuai_log(
+        "Shuai rotası soğumada; yeniden deneme "
+        f"{urlparse(replacement).hostname} üzerinden gönderiliyor.", "info")
+    return _openai_client_for_route(request_client, replacement)
+
+
 def _chat_create_once(client, kwargs: dict, request_context=None,
                       cancel_check=None, retry_delays=None):
     request_client = _without_sdk_retries(client)
     return _provider_call_once(
-        lambda: request_client.chat.completions.create(**kwargs),
+        lambda: _rotated_route_client(
+            request_client, request_context).chat.completions.create(**kwargs),
         client,
         kwargs.get("model", ""),
         request_context,

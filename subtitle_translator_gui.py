@@ -32447,6 +32447,13 @@ class App(ctk.CTk):
                         delivery_source_path=str(source_path)))
                     failed_files.append(fp)
                     continue
+                # Kilitli terimler dört normal akışta pass'lere veriliyor,
+                # manuel post-işlemde ise HİÇBİRİNE verilmiyordu: Critic
+                # `glossary=None` alıyor, Polish/Native ve teslim hazırlığı
+                # sözlüğü hiç görmüyordu; QC kendi çözdüğü için tutuyordu
+                # (dış denetim madde 3). Kaynak bulunur bulunmaz bir kez
+                # çözülüp hepsine AYNI sözlük verilir.
+                _pp_locked_terms = self._get_locked_terms_dict(fp, tgt)
                 if do_critic or do_polish or do_native or do_qc:
                     if orig_cues:
                         self._log(
@@ -32476,7 +32483,7 @@ class App(ctk.CTk):
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
                             src_lang=source_language,
                             log_fn=self._log,
-                            glossary=None,
+                            glossary=_pp_locked_terms,
                             analysis_result=analysis_result,
                             change_log=_critic_change_log,
                             scene_gap_sec=float(self._snap_get(
@@ -32532,6 +32539,7 @@ class App(ctk.CTk):
                             helper_models.get("polish", "gpt-5.4-mini"),
                             src_map=_src_map_from_cues(orig_cues) if orig_cues else None,
                             analysis_result=analysis_result,
+                            locked_terms=_pp_locked_terms,
                             status_out=_polish_status)
                         if self._stop_flag:
                             break
@@ -32566,6 +32574,7 @@ class App(ctk.CTk):
                             progress_callback=App._pass_progress_callback(
                             self, fp, "Native Okuyucu", 65.0, 82.0),
                             cancel_context=self.__dict__.get("_helper_request_canceller"),
+                            locked_terms=_pp_locked_terms,
                             status_out=_native_status)
                         if self._stop_flag:
                             break
@@ -32692,7 +32701,8 @@ class App(ctk.CTk):
                     blocks = _restore_tags_blocks(blocks, _raw_map)
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
-                    blocks, tgt, self._log, source_cues=orig_cues)
+                    blocks, tgt, self._log, source_cues=orig_cues,
+                    locked_terms=_pp_locked_terms)
                 if self._stop_flag:
                     self._log(
                         f"{fname}: durdurma istendi; post-işlem sonucu yazılmadı.",
