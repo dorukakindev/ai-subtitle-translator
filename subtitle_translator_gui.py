@@ -24806,11 +24806,31 @@ class App(ctk.CTk):
                         backup_key=backup_key, log_fn=log_fn)
                     for scope in ("main", "helper")
                 ]
-                if any(registered) and log_fn is not None:
+                if log_fn is not None:
+                    # "Doğru API'yi mi deniyor?" — koşu HANGİ profille
+                    # gidiyor, log'dan görülebilsin. Anahtarın kendisi asla
+                    # yazılmaz; kullanıcının pencerede gördüğü ad yazılır.
+                    assignments = getattr(self, "_api_key_assignments", {}) or {}
+                    main_name = self._api_profile_name(assignments.get("main", ""))
+                    host = urlparse(
+                        str(snap.get("main_api_base_url") or "")).hostname or "?"
+                    model = str(snap.get("main_model_name") or "?")
                     log_fn(
-                        "2. gruba ait yedek API anahtarı hazır; ana anahtar "
-                        "kota/grup hatası verirse ana çeviri ve onu devralan "
-                        "yardımcı görevler yedeğe geçecek.", "info")
+                        f"Ana çeviri hattı: profil '{main_name}' · {model} @ "
+                        f"{host}", "info")
+                    if any(registered):
+                        backup_name = self._api_profile_name(
+                            assignments.get("main_backup", ""))
+                        log_fn(
+                            f"Yedek anahtar hazır: profil '{backup_name}' "
+                            "(2. grup). Ana anahtar kota/grup hatası verirse "
+                            "ana çeviri ve onu devralan yardımcı görevler "
+                            "buna geçecek.", "info")
+                    else:
+                        log_fn(
+                            "Yedek anahtar YOK: ana anahtar grup hatası "
+                            "verirse geçilecek ikinci bir profil atanmamış.",
+                            "warn")
             except Exception as exc:
                 log_fn = getattr(self, "_log", None)
                 if callable(log_fn):
@@ -28609,18 +28629,24 @@ class App(ctk.CTk):
         """
         main_url = self._main_api_base_url() or ""
         main_model = self._main_model_name() or ""
+        assignments = getattr(self, "_api_key_assignments", {}) or {}
         targets = [{
             "label": "Ana anahtar",
+            # Profil adı, "doğru API'yi mi deniyor?" sorusunun tek cevabı:
+            # anahtarın kendisi loglanamaz, ama kullanıcının pencerede
+            # gördüğü ad loglanabilir.
+            "profile": self._api_profile_name(assignments.get("main", "")),
             "key": self._main_api_key() or "",
             "base_url": main_url,
             "model": main_model,
         }]
         backup_key = self._main_api_key_backup() or ""
         if backup_key:
-            assigned = getattr(self, "_api_key_assignments", {}).get("main_backup")
+            assigned = assignments.get("main_backup")
             url, model = self._api_profile_endpoint(assigned)
             targets.append({
                 "label": "Yedek anahtar (2. grup)",
+                "profile": self._api_profile_name(assigned or ""),
                 "key": backup_key,
                 "base_url": url or main_url,
                 "model": model or main_model,
@@ -28666,8 +28692,12 @@ class App(ctk.CTk):
                 frame, text=dot, text_color=color, width=18,
                 font=ctk.CTkFont("Consolas", 12, "bold")).grid(
                     row=index * 2, column=0, sticky="w")
+            profile = str(row.get("profile", "") or "")
+            title = row.get("label", "")
+            if profile:
+                title = f"{title}  ·  {profile}"
             ctk.CTkLabel(
-                frame, text=f"{row.get('label', '')}  ·  {row.get('model', '')}",
+                frame, text=f"{title}  ·  {row.get('model', '')}",
                 text_color=FG, anchor="w",
                 font=ctk.CTkFont("Segoe UI", 10)).grid(
                     row=index * 2, column=1, sticky="ew", pady=1)
@@ -28705,7 +28735,8 @@ class App(ctk.CTk):
             return
         self._api_key_check_busy = True
         self._api_key_check_results = [
-            {"label": t["label"], "model": t["model"], "state": "pending"}
+            {"label": t["label"], "profile": t.get("profile", ""),
+             "model": t["model"], "state": "pending"}
             for t in usable]
         self._refresh_api_key_check_panel()
         button = getattr(self, "_api_key_check_btn", None)
@@ -28733,6 +28764,7 @@ class App(ctk.CTk):
                         note = ""
                     row = {
                         "label": target["label"],
+                        "profile": target.get("profile", ""),
                         "model": target["model"],
                         # Kararsız sağlayıcı yeşil DEĞİL: anahtar doğru ama
                         # koşunun ilk isteği pekâlâ hataya denk gelebilir.
@@ -28749,9 +28781,13 @@ class App(ctk.CTk):
                     note = row["detail"]
                     if row["hint"]:
                         note = f"{note} ({row['hint']})"
+                    where = urlparse(
+                        str(outcome.get("route") or target["base_url"] or "")
+                    ).hostname or "?"
                     self._log(
-                        f"Anahtar testi — {target['label']} / "
-                        f"{target['model']}: {note}", level)
+                        f"Anahtar testi — {target['label']} "
+                        f"(profil '{target.get('profile', '?')}') / "
+                        f"{target['model']} @ {where}: {note}", level)
                     _post_ui(self, self._refresh_api_key_check_panel)
             finally:
                 def _finish():

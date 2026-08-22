@@ -320,12 +320,17 @@ import subtitle_translator_gui as gui
 
 def _app(*, main_key="ana", backup_key="", backup_profile=None):
     app = types.SimpleNamespace()
+    app._api_profile_name = lambda pid: (
+        (app._api_key_profiles.get(pid) or {}).get("name") or "Atanmadı")
     app._main_api_key = lambda: main_key
     app._main_api_key_backup = lambda: backup_key
     app._main_api_base_url = lambda: "https://api.shuaiapi.com/v1"
     app._main_model_name = lambda: "gpt-5.4"
-    app._api_key_assignments = {"main_backup": "p2"} if backup_key else {}
-    app._api_key_profiles = {"p2": backup_profile} if backup_profile else {}
+    app._api_key_assignments = (
+        {"main": "p1", "main_backup": "p2"} if backup_key else {"main": "p1"})
+    app._api_key_profiles = {"p1": {"name": "ana api"}}
+    if backup_profile:
+        app._api_key_profiles["p2"] = backup_profile
     app._api_profile_endpoint = lambda pid: gui.App._api_profile_endpoint(app, pid)
     return app
 
@@ -364,6 +369,27 @@ class TargetsTest(unittest.TestCase):
         targets = gui.App._api_key_check_targets(app)
         self.assertEqual(targets[0]["key"], "ana")
         self.assertEqual(targets[1]["key"], "yedek")
+
+
+class ProfileVisibilityTest(unittest.TestCase):
+    """'Doğru API'yi mi deniyor?' — hedefler profil adını taşımalı."""
+
+    def test_main_target_carries_its_profile_name(self):
+        targets = gui.App._api_key_check_targets(_app())
+        self.assertEqual(targets[0]["profile"], "ana api")
+
+    def test_backup_target_carries_its_own_profile_name(self):
+        app = _app(backup_key="yedek", backup_profile={
+            "name": "alternatif api", "provider": "openai_compatible",
+            "base_url": "https://oai.sb/v1", "model": "gpt-5.4"})
+        targets = gui.App._api_key_check_targets(app)
+        self.assertEqual(targets[1]["profile"], "alternatif api")
+
+    def test_an_unassigned_slot_reads_as_unassigned(self):
+        app = _app()
+        app._api_key_assignments = {}
+        targets = gui.App._api_key_check_targets(app)
+        self.assertEqual(targets[0]["profile"], "Atanmadı")
 
 
 if __name__ == "__main__":
