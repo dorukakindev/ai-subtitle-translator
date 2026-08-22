@@ -1545,7 +1545,17 @@ def chat_create_with_shuai_failover(
         route_client = client if route == original else _openai_client_for_route(
             client, route)
         if cancel_context is not None:
-            cancel_context.raise_if_cancelled()
+            try:
+                cancel_context.raise_if_cancelled()
+            except BaseException:
+                # İPTAL claim ile çağrı ARASINA düşerse `probing` bayrağı
+                # süreç ömrü boyunca True kalıyordu; rota daha önce hiç
+                # healthy olmadıysa bir daha claim edilemiyor ve
+                # cancel_check'siz bir çağrı süresiz bekleyebiliyordu
+                # (bug taraması madde 5). Diğer tüm raise yolları
+                # bayrağı bırakıyor; bu yol da bıraksın.
+                _shuai_release_route_probe(route)
+                raise
             cancel_context.register(route_client)
         started = time.monotonic()
         try:

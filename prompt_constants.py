@@ -108,6 +108,8 @@ JSON_INSTRUCTION = (
     '  "scene"    \u2014 (optional) list of scene-plan objects covering the lines in this chunk (a chunk '
     "rarely spans more than one scene, but can \u2014 if so, more than one object is present). Each object "
     "may include: \"summary\" (what is happening), \"speakers\" (character names present in the scene), "
+    "\"cues\" (ONLY present when the chunk spans more than one scene: the tr item id range this "
+    "scene object applies to, e.g. \"12-18\" — use it to attach each line to its own scene), "
     "\"speaker_goals\" (what each speaker wants/is trying to do \u2014 use it to judge each line's underlying "
     "intent and subtext), \"referents\" (explicit pronoun/deictic word \u2192 what it refers to \u2014 PREFER "
     "this over guessing from ctx/next_ctx when both are present), \"tone\" (overall mood/emotional "
@@ -119,6 +121,11 @@ JSON_INSTRUCTION = (
     "prioritize scene intent and translate the correct meaning naturally.\n"
     "Each 'tr' item has a 'd' key = display duration in seconds. "
     "Keep translation concise enough to read: use each 'd' value as the display duration.\n"
+    'Some "tr" items have "is_ost": true = ON-SCREEN TEXT (a sign, '
+    'caption, title card, chyron or document shown in the picture), not spoken '
+    'dialogue. Translate it as written display text: keep it short and label-like, '
+    'do not add conversational particles or address forms, and preserve numbers, '
+    'dates and proper names exactly.\n'
     "Some 'tr' items have a 'frag' key indicating their role in a multi-line sentence:\n"
     "  frag='start' \u2014 this subtitle begins a sentence that continues in the next line(s)\n"
     "  frag='mid'   \u2014 this subtitle is the middle of a multi-line sentence\n"

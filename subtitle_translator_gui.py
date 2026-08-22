@@ -12139,10 +12139,19 @@ def _locked_term_residue_plan(blocks: list, src_map: dict,
         for source, target in entries:
             source_re = re.compile(
                 r"(?<!\w)" + re.escape(source) + r"(?!\w)", re.IGNORECASE)
+            # HEDEFTE terim Türkçe ekini KESME İŞARETSİZ almış olabilir
+            # ('Memoriesleri'): sağ sınır sağlanmadığı için kalıntı hiçbir
+            # dedektöre takılmıyordu — `_source_residue_with_turkish_suffix`
+            # kilitli terimleri zaten muaf tutuyor, yani tek savunma hattı
+            # burasıydı (dış denetim H5).
+            target_side_re = re.compile(
+                r"(?<!\w)" + re.escape(source)
+                + r"(?:['’][^\W\d_]{1,6}|[^\W\d_]{1,6})?(?!\w)",
+                re.IGNORECASE)
             source_matches = list(source_re.finditer(str(source_text)))
             if not source_matches:
                 continue
-            if not source_re.search(translated):
+            if not target_side_re.search(translated):
                 continue
             independent_matches = [
                 match for match in source_matches

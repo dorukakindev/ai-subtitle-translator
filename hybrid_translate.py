@@ -858,7 +858,13 @@ def _file_state_signature(filepath: str) -> dict:
         return {"exists": path.exists()}
 
 
-CONTEXT_ANALYSIS_CACHE_VER = 4
+# Bu sürüm YALNIZ kullanıcı ayarlarını değil, ANALİZ KODUNUN DAVRANIŞINI
+# de temsil eder: prompt metni, parser, sanitizer veya yardımcı alt-şema
+# değiştiğinde ELLE artırılmalı. 2026-08-01'den 2026-08-22'ye kadar 4'te
+# kaldı; bu sürede sahne planı tamamlama, zamir/deyim kurtarma, analiz
+# terim kimliği ve üslup çatışması davranışları değişti ama eski
+# önbellekler geçerli kalmaya devam etti (dış denetim H7).
+CONTEXT_ANALYSIS_CACHE_VER = 5
 
 
 def analysis_fingerprint(source_language: str = "", target_language: str = "",
@@ -1123,7 +1129,12 @@ def load_context_cache(filepath: str, expected_target: str = "", expected_analys
         )
         _scene_emotions = d.get("scene_emotions", [])
         if _scene_plan_cache_is_stale(_scene_emotions):
-            _scene_emotions = []
+            # CACHE-MISS: docstring'in söylediği bu. Eskiden yalnız
+            # boşaltılıyordu; önbellek geçerli sayıldığı için dosya
+            # 'Analiz (önbellek)' ile geçiyor, payload['scene'] hiç
+            # üretilmiyor ve durum KALICI oluyordu — Sahne Analizi
+            # sessizce hiç çalışmıyordu (bug taraması madde 6).
+            return None
         elif not isinstance(_scene_emotions, list):
             return None
         else:
@@ -1795,8 +1806,13 @@ def _generate_character_examples(
             for name, info in styles.items()
             if _analysis_name_identity(name) in known_names
         }
+        # Şema geçerli ama içerik BOŞ olabilir (known_names süzgeci her
+        # şeyi elemişse). Koşulsuz True dönünce hedefli retry hiç
+        # çalışmıyor, _analysis_degraded işaretlenmiyor ve boş sonuç
+        # önbelleğe yazılıp sonraki koşularda geri geliyordu (H6).
         return _analysis_aux_result(
-            (examples, styles), status, "character_examples", True)
+            (examples, styles), status, "character_examples",
+            bool(examples or styles))
     except RequestCancelled:
         raise
     except Exception as _e:
@@ -3008,8 +3024,50 @@ def _scene_context_for_chunk(scene_emotions: list | None, start_idx: int, end_id
         if s_start <= end_idx and s_end >= start_idx:
             entry = _scene_plan_payload_entry(scene)
             if entry:
-                matches.append(entry)
-    return matches
+                matches.append((entry, max(s_start, start_idx),
+                                min(s_end, end_idx)))
+    if len(matches) <= 1:
+        # Tek sahne: payload eskisiyle BİREBİR aynı kalır.
+        return [entry for entry, _s, _e in matches]
+    # Chunk birden çok sahneye yayılıyor: hangi cue'nun hangi sahneye ait
+    # olduğu payload'dan silindiği için model bunu göremiyordu (dış
+    # denetim H1). Cue-index defter tutmayı geri getirmeden, yalnız bu
+    # durumda sahiplik aralığı eklenir.
+    out = []
+    for entry, span_start, span_end in matches:
+        owned = dict(entry)
+        owned["cues"] = (str(span_start) if span_start == span_end
+                          else f"{span_start}-{span_end}")
+        out.append(owned)
+    return out
+
+
+def _scene_span_ids(scene_emotions: list | None, idx) -> tuple:
+    """Bu cue'yu kapsayan sahne aralıklarının kimliği (payload'dan bağımsız).
+
+    Critic çifti yalnız payload METNİ değişince 'scene' alanı yayıyordu;
+    anlamsal alanı olmayan bir sahne kaydı payload üretmediği için 'plan
+    sahne değiştirdi ama içerik boş' durumu modele hiç bildirilmiyor ve
+    prompt sözleşmesi gereği ÖNCEKİ sahne taşınıyordu (dış denetim H4)."""
+    if not scene_emotions:
+        return ()
+
+    def _as_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    cue = _as_int(idx)
+    spans = []
+    for scene in scene_emotions:
+        if not isinstance(scene, dict):
+            continue
+        s_start = _as_int(scene.get("start"))
+        s_end = _as_int(scene.get("end"))
+        if s_start <= cue <= s_end:
+            spans.append((s_start, s_end))
+    return tuple(spans)
 
 
 def _helper_model_log_name(api_url: str, model: str) -> str:
@@ -3725,11 +3783,22 @@ def _merge_memories(memories: list, target_language: str = "tr", log_fn=None):
     summaries = [m.summary for m in memories if m.summary]
     base = memories[0]
 
+    def _first_meaningful(attr):
+        """İlk DOLU ve anlamlı değer. 'fallback' bir ton değil, analizin
+        çözümlenemediğini bildiren bir yer tutucudur; boş sayılmadığı
+        için kirlenmiş ilk chunk dosyanın gerçek tonunu eziyordu
+        (dış denetim H2 — hata sıraya bağlıydı)."""
+        for memory in memories:
+            value = str(getattr(memory, attr, "") or "").strip()
+            if value and value.casefold() != "fallback":
+                return value
+        return ""
+
     merged = ContextMemory(
         source_language=base.source_language,
         summary=" | ".join(summaries),
-        setting=next((m.setting for m in memories if m.setting), ""),
-        tone=next((m.tone for m in memories if m.tone), ""),
+        setting=_first_meaningful("setting"),
+        tone=_first_meaningful("tone"),
         characters=merged_chars,
         recurring_terms=_sanitize_analysis_recurring_terms(
             merged_terms, target_language=target_language, log_fn=log_fn
@@ -13159,13 +13228,23 @@ def critic_pass_with_helper(
         chunk_ids = {str(idx) for idx, _ts, _text in chunk}
         pairs = []
         last_scene_context = None
+        last_scene_span = None
         for idx, ts, text in chunk:
             sid = str(idx)
             pair = {"id": sid, "orig": orig_dict.get(sid, ""), "tr": text}
             local_scene = _scene_context_for_chunk(scene_plan, idx, idx)
+            local_span = _scene_span_ids(scene_plan, idx)
             if local_scene and local_scene != last_scene_context:
                 pair["scene"] = local_scene
+            elif (last_scene_span is not None
+                  and local_span != last_scene_span
+                  and not local_scene):
+                # Sahne DEĞİŞTİ ama planda anlamsal alan yok: önceki
+                # sahnenin taşınmaması için açık bir sıfırlama gönder
+                # (dış denetim H4).
+                pair["scene"] = ["new scene — no details available"]
             last_scene_context = local_scene or None
+            last_scene_span = local_span
             duration = _block_duration(str(ts))
             if duration > 0:
                 pair["d"] = round(duration, 2)
