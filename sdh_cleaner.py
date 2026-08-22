@@ -410,6 +410,14 @@ def is_titled_sdh_label(text: str) -> bool:
         return False
     if _SENTENCE_END_RE.search(rest):
         return False
+    # POZİTİF KANIT ŞART: künyenin ayırt edici yanı ETİKETİN büyük,
+    # ESER ADININ olmamasıdır. Bu kontrol olmayınca TAMAMI BÜYÜK yazılmış
+    # kaynaklarda (ABD closed-caption geleneği) 'JOHN: GET OUT OF HERE'
+    # gibi GERÇEK replikler künye sayılıyor ve teslimden düşürülüyordu.
+    if not (any(char.islower() for char in rest)
+            or any(char in rest for char in "\"“”«»")
+            or "(" in rest):
+        return False
     # Parantezli niteleyici künyede olağandır ve küçük harfle
     # başlayabilir: '(часть 1)', '(Side 2 Part 4)'.
     rest = re.sub(r"\([^()]*\)", " ", rest).strip()

@@ -62,8 +62,18 @@ class TitledSdhLabelTest(unittest.TestCase):
 
     def test_the_audit_treats_them_as_expected_removals(self):
         self.assertTrue(g._source_cue_is_delivery_removable(
-            'МУЗЫКА: "Theme 21"' + NL + 'Tangerine Dream'))
-        self.assertFalse(g._source_cue_is_delivery_removable("JOHN: Get out"))
+            'МУЗЫКА: "Theme 21"' + NL + 'Tangerine Dream',
+            allow_caps_heuristic=True))
+        self.assertFalse(g._source_cue_is_delivery_removable(
+            "JOHN: Get out", allow_caps_heuristic=True))
+
+    def test_an_all_caps_source_file_disables_the_rule(self):
+        # ABD closed-caption geleneği: dosyanın TAMAMI büyük harf.
+        # Orada 'JOHN: GET OUT OF HERE' künye değil repliktir ve
+        # teslimden DÜŞÜRÜLMEMELİ.
+        self.assertFalse(g._source_cue_is_delivery_removable(
+            "JOHN: GET OUT OF HERE", allow_caps_heuristic=False))
+        self.assertFalse(sc.is_titled_sdh_label("JOHN: GET OUT OF HERE"))
 
 
 class DeliveryCueOrderTest(unittest.TestCase):
@@ -185,6 +195,53 @@ class OwnerMismatchFalseAlarmTest(unittest.TestCase):
         flagged = self._mismatch(owner, [
             {"i": "2", "t": "Marcus dün Berlin'e gitti."}])
         self.assertIn("2", flagged)
+
+class SdhResidueNeedsAnExplicitMarkerTest(unittest.TestCase):
+    """Kaynağın "kaldırılabilir" olması tek başına kalıntı kanıtı değil.
+
+    `is_structural_sdh_label` tamamı büyük harfli ve cümle olmayan her satırı
+    — alfabeden bağımsız — etiket sayıyor; AÇILIŞ JENERİĞİ de buna giriyor.
+    Gerçek dosyada ölçüldü: 'Η ΚΛΗΡΟΝΟΜΙΑ ΤΗΣ ΓΛΑΥΚΗΣ' doğru şekilde
+    'BAYKUŞUN MİRASI' diye çevrildiği hâlde SDH kalıntısı sayılıyor, dosya
+    KALICI sert hataya düşüyordu — temizleyici o metni zaten silmediği için
+    yeniden koşmak da kurtarmıyordu.
+    """
+
+    def _audit(self, source_text, output_text):
+        folder = Path(tempfile.mkdtemp())
+        source = folder / "src.srt"
+        output = folder / "out.srt"
+        source.write_text(
+            "1" + NL + "00:00:01,000 --> 00:00:02,000" + NL + source_text + NL,
+            encoding="utf-8")
+        output.write_text(
+            "1" + NL + "00:00:01,000 --> 00:00:02,000" + NL + output_text + NL,
+            encoding="utf-8")
+        return g._subtitle_delivery_audit(
+            str(source), str(output), "Turkish", "Greek")
+
+    def test_a_translated_title_card_is_not_sdh_residue(self):
+        audit = self._audit(
+            "Η ΚΛΗΡΟΝΟΜΙΑ ΤΗΣ ΓΛΑΥΚΗΣ", "BAYKUŞUN MİRASI")
+        self.assertEqual(audit["residual_sdh_cues"], 0)
+        self.assertEqual(audit["residual_sdh_ids"], [])
+
+    def test_a_translated_bracketed_label_is_still_residue(self):
+        # Parantez AÇIK SDH işaretidir: çevrilmiş olması sızıntıdır.
+        audit = self._audit(
+            "(MEN SPEAKING SPANISH QUIETLY)",
+            "Adamlar İspanyolca alçak sesle sohbet ediyor")
+        self.assertEqual(audit["residual_sdh_cues"], 1)
+        self.assertTrue(g._delivery_audit_has_hard_error(audit))
+
+    def test_the_marker_helper_separates_the_two(self):
+        self.assertTrue(g._source_cue_has_explicit_sdh_marker(
+            "(MEN SPEAKING SPANISH QUIETLY)"))
+        self.assertTrue(g._source_cue_has_explicit_sdh_marker(
+            "♪ La la la ♪"))
+        self.assertFalse(g._source_cue_has_explicit_sdh_marker(
+            "Η ΚΛΗΡΟΝΟΜΙΑ ΤΗΣ ΓΛΑΥΚΗΣ"))
+
 
 if __name__ == "__main__":
     unittest.main()

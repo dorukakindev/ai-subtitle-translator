@@ -4528,7 +4528,7 @@ def _source_cue_is_delivery_removable(text: str, *,
     # 'satırın tamamı büyük harf' testine takılmıyordu; SDH temizliğinin
     # doğru şekilde düşürdüğü cue teslim denetiminde 'kayıp diyalog'
     # (SERT HATA) sayılıp iyi teslimi karantinaya alıyordu.
-    if sdh_cleaner.is_titled_sdh_label(value):
+    if allow_caps_heuristic and sdh_cleaner.is_titled_sdh_label(value):
         return True
     if allow_caps_heuristic and sdh_cleaner.is_structural_sdh_label(value):
         # Parantezsiz, tamamı büyük harfli ve cümle noktalamasıyla bitmeyen etiket
@@ -6132,6 +6132,52 @@ def _delivery_source_map(blocks: list, source_cues) -> dict:
         for _position, idx in members:
             result[idx] = joined
     return result
+
+
+def _delivery_text_is_sdh_removable(text) -> bool:
+    """SDH temizleyicisi bu TESLİM metnini düşürür mü?
+
+    Denetim ile temizleyici aynı fikirde OLMAK ZORUNDA: denetim KAYNAĞA,
+    temizleyici HEDEFE bakıyordu. Anlaşamadıklarında dosya kalıcı olarak
+    sert hataya düşüyor ve yeniden koşmak da kurtarmıyordu — çünkü
+    temizleyici o cue'yu zaten silmiyor. Gerçek dosyalarda ölçüldü:
+    denetimin 'SDH kalıntısı' dediği 398 cue'nun 341'ini temizleyici
+    SİLMİYORDU ve içlerinde dizi jeneriği ('BAYKUŞUN MİRASI') ile düz
+    replikler vardı."""
+    value = str(text or "")
+    if not value.strip():
+        return True
+    try:
+        kept = sdh_cleaner.clean_sdh_blocks(
+            [("1", "00:00:01,000 --> 00:00:02,000", value)])
+    except Exception:
+        return False
+    if not kept:
+        return True
+    return str(kept[0][2]).strip() != value.strip()
+
+
+def _source_cue_has_explicit_sdh_marker(text) -> bool:
+    """Kaynak cue AÇIK bir SDH işareti taşıyor mu (parantez, nota, '>>')?
+
+    'Kaynak kaldırılabilirdi' sinyali tek başına yetmiyor: `is_structural_
+    sdh_label` tamamı büyük harfli ve cümle olmayan her satırı — alfabeden
+    bağımsız olarak — etiket sayıyor. Bu, AÇILIŞ JENERİĞİNİ de yakalıyor:
+    'Η ΚΛΗΡΟΝΟΜΙΑ ΤΗΣ ΓΛΑΥΚΗΣ' (The Owl's Legacy) doğru şekilde 'BAYKUŞUN
+    MİRASI' diye çevrildiği hâlde 'SDH kalıntısı' sayılıp dosyayı KALICI
+    sert hataya düşürüyordu — temizleyici o metni zaten silmediği için
+    yeniden koşmak da kurtarmıyordu.
+
+    Ayrım: parantezli/notalı kaynak GERÇEK SDH etiketidir, çevrilmiş olması
+    sızıntıdır ve bildirilmelidir (bkz. test_delivery_source_sdh_residue).
+    Çıplak büyük harfli metin ise ekran yazısı da olabilir; orada karar
+    TESLİM metnine bakılarak verilir."""
+    value = str(text or "")
+    if sdh_cleaner._has_bracket_group(value):
+        return True
+    if sdh_cleaner.MUSIC_NOTE_RE.search(value):
+        return True
+    return bool(sdh_cleaner.CHEVRON_SPEAKER_RE.match(value.strip()))
 
 
 def _delivery_owner_source_map(source_rows: list, source_to_output_ids: dict) -> dict:
@@ -16230,7 +16276,14 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     residual_sdh_ids = [
         str(idx) for idx, _ts, text in output_dialogue
         if _is_delivery_sdh_only(text)
-        or str(idx) in removable_output_ids
+        # Kaynağın kaldırılabilir olması TEK BAŞINA yetmez: açık SDH
+        # işareti (parantez/nota/'>>') yoksa çıplak büyük harfli metin
+        # ekran yazısı/jenerik olabilir ve doğru çevrilmiş olabilir.
+        # O durumda karar TESLİM metnine bakılarak verilir.
+        or (str(idx) in removable_output_ids
+            and (_source_cue_has_explicit_sdh_marker(
+                     output_source_map.get(str(idx), ""))
+                 or _delivery_text_is_sdh_removable(text)))
     ]
     residual_credit_cues = len(residual_credit_ids)
     residual_sdh_cues = len(residual_sdh_ids)
