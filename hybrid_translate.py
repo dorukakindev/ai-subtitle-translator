@@ -7896,6 +7896,35 @@ _EN_NUMBER_WORDS = {
 }
 _EN_NUMBER_MULTIPLIERS = frozenset({"hundred", "thousand", "million", "billion"})
 _EN_NUMBER_WORD_TOKEN_RE = re.compile(r"[A-Za-z]+")
+# Sayı sözcüklerini ayıran güçlü noktalama. Tokenizer bunları atınca
+# "Two... one... fire!" tek bir gruba dönüşüp 2+1=3 okunuyordu (denetim Tur 4,
+# madde 3): doğru "İki... bir... ateş!" çevirisi sayı uyuşmazlığı sayılıyordu.
+_NUMBER_GROUP_HARD_BREAK_RE = re.compile(r"[.!?;:…\n\r\"“”«»()\[\]{}/—–]")
+
+
+def _number_word_gaps(text: str, token_re) -> list:
+    """[(sözcük, önündeki ham boşluk/noktalama), ...] — sınır bilgisi korunur."""
+    value = str(text or "")
+    pairs = []
+    prev_end = 0
+    for match in token_re.finditer(value):
+        pairs.append((match.group(0), value[prev_end:match.start()]))
+        prev_end = match.end()
+    return pairs
+
+
+def _number_group_is_broken(gap: str, group_has_multiplier: bool) -> bool:
+    """İki sayı sözcüğü arasındaki boşluk grubu bölüyor mu?
+
+    Nokta/üç nokta/ünlem/soru/noktalı virgül ve satır sonu HER ZAMAN böler.
+    Virgül yalnız çarpan İÇERMEYEN gruplarda böler: "Üç, iki, bir" sayımdır
+    (=[3,2,1]) ama "four thousand, five hundred" tek sayıdır (=4500).
+    """
+    if _NUMBER_GROUP_HARD_BREAK_RE.search(gap):
+        return True
+    if "," in gap:
+        return not group_has_multiplier
+    return False
 
 
 def _en_number_group_value(group: list) -> int:
@@ -7924,6 +7953,9 @@ def _en_spelled_numbers(text: str) -> list:
     'fourteen hundred' -> [1400]; 'thirteen wounds' -> [13]; 'twenty-five' -> [25]
     (tire otomatik olarak ayrı kelime sayılır); sayı sözcüğü yoksa [].
 
+    Noktalama grubu böler (bkz. _number_group_is_broken): "Two... one..." iki
+    ayrı belirteçtir, 3 değil.
+
     Muhafazakar filtre: yalnızca çarpan (hundred/thousand/million/billion) içeren
     VEYA >=2 sözcüklü VEYA >12 değerli gruplar raporlanır — tek başına 'one'/'two'
     gibi belirteç kullanımları (ör. 'one of them') atlanır.
@@ -7936,7 +7968,9 @@ def _en_spelled_numbers(text: str) -> list:
     gibi tuhaf sıralamalar ayrıca bastırılmalı) o grubu SESSİZCE atlar — tahmin
     yürütmek yerine [] dönmek güvenlidir, çünkü _spelled_number_mismatch kaynak
     boşsa hiç çalışmaz (bkz. onun docstring'i)."""
-    tokens = [w.lower() for w in _EN_NUMBER_WORD_TOKEN_RE.findall(str(text or ""))]
+    pairs = _number_word_gaps(text, _EN_NUMBER_WORD_TOKEN_RE)
+    tokens = [word.lower() for word, _gap in pairs]
+    gaps = [gap for _word, gap in pairs]
     n = len(tokens)
     results = []
     i = 0
@@ -7949,11 +7983,16 @@ def _en_spelled_numbers(text: str) -> list:
         if not (is_num or is_article):
             i += 1
             continue
-        preceded_by_half = i > 0 and tokens[i - 1] == "half"
+        preceded_by_half = (
+            i > 0 and tokens[i - 1] == "half"
+            and not _number_group_is_broken(gaps[i], False))
         group = [word]
         j = i + 1
         while j < n:
             nxt = tokens[j]
+            has_multiplier = any(g in _EN_NUMBER_MULTIPLIERS for g in group)
+            if _number_group_is_broken(gaps[j], has_multiplier):
+                break
             if nxt in _EN_NUMBER_WORDS:
                 group.append(nxt)
                 j += 1
@@ -7977,9 +8016,8 @@ def _en_spelled_numbers(text: str) -> list:
         i = j
     return results
 
-
 _SOURCE_NUMBER_LEXICONS = (
-    ({"zero": 0, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4,
+    ("it", {"zero": 0, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4,
       "cinque": 5, "sei": 6, "sette": 7, "otto": 8, "nove": 9, "dieci": 10,
       "undici": 11, "dodici": 12, "tredici": 13, "quattordici": 14,
       "quindici": 15, "sedici": 16, "diciassette": 17, "diciotto": 18,
@@ -7990,13 +8028,13 @@ _SOURCE_NUMBER_LEXICONS = (
       "settecento": 700, "ottocento": 800, "novecento": 900,
       "mille": 1000, "mila": 1000,
       "milione": 10 ** 6, "milioni": 10 ** 6}, {"e"}),
-    ({"zéro": 0, "zero": 0, "un": 1, "une": 1, "deux": 2, "trois": 3,
+    ("fr", {"zéro": 0, "zero": 0, "un": 1, "une": 1, "deux": 2, "trois": 3,
       "quatre": 4, "cinq": 5, "six": 6, "sept": 7, "huit": 8, "neuf": 9,
       "dix": 10, "onze": 11, "douze": 12, "treize": 13, "quatorze": 14,
       "quinze": 15, "seize": 16, "vingt": 20, "trente": 30, "quarante": 40,
       "cinquante": 50, "soixante": 60, "cent": 100, "cents": 100,
       "mille": 1000, "million": 10 ** 6, "millions": 10 ** 6}, {"et"}),
-    ({"null": 0, "ein": 1, "eins": 1, "eine": 1, "zwei": 2, "drei": 3,
+    ("de", {"null": 0, "ein": 1, "eins": 1, "eine": 1, "zwei": 2, "drei": 3,
       "vier": 4, "fünf": 5, "funf": 5, "sechs": 6, "sieben": 7, "acht": 8,
       "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12, "zwolf": 12,
       "dreizehn": 13, "vierzehn": 14, "fünfzehn": 15, "funfzehn": 15,
@@ -8005,7 +8043,7 @@ _SOURCE_NUMBER_LEXICONS = (
       "fünfzig": 50, "funfzig": 50, "sechzig": 60, "siebzig": 70,
       "achtzig": 80, "neunzig": 90, "hundert": 100, "tausend": 1000,
       "million": 10 ** 6, "millionen": 10 ** 6}, {"und"}),
-    ({"cero": 0, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
+    ("es", {"cero": 0, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4,
       "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
       "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quince": 15,
       "dieciséis": 16, "dieciseis": 16, "veinte": 20, "treinta": 30,
@@ -8036,11 +8074,51 @@ def _source_number_group_value(group: list, lexicon: dict) -> int:
     return result + current
 
 
-def _source_spelled_numbers(text: str) -> list:
+_SOURCE_NUMBER_LANG_HINTS = {
+    "it": ("it", "ita", "italian", "italiano", "italyanca"),
+    "fr": ("fr", "fra", "fre", "french", "français", "francais", "fransızca",
+           "fransizca"),
+    "de": ("de", "ger", "deu", "german", "deutsch", "almanca"),
+    "es": ("es", "spa", "spanish", "español", "espanol", "ispanyolca"),
+    "en": ("en", "eng", "english", "ingilizce"),
+}
+
+
+def _source_number_lang_code(source_language) -> str:
+    """Serbest metin dil adını sayı sözlüğü koduna indirger; tanımazsa ''."""
+    # Türkçe İ/I tuzağı: "İngilizce".casefold() birleşik nokta bırakır ve
+    # "ingilizce" ile eşleşmez (bkz. dil eşleştirmesinin İ-duyarsız kuralı).
+    value = str(source_language or "").strip()
+    value = value.replace("İ", "i").replace("I", "ı").casefold()
+    if not value:
+        return ""
+    for code, hints in _SOURCE_NUMBER_LANG_HINTS.items():
+        if any(value == hint or value.startswith(hint + "-") for hint in hints):
+            return code
+    return ""
+
+
+def _source_spelled_numbers(text: str, source_language=None) -> list:
+    """Kaynak metindeki yazıyla sayılar.
+
+    Kaynak dili biliniyorsa YALNIZ o dilin sözlüğü çalışır. Bilinmiyorsa
+    yabancı sözlükler yine denenir ama tek sözcüklük eşleşme kabul edilmez:
+    "for 25 cents." içindeki 'cents' Fransızca cent=100 diye okunuyordu
+    (denetim Tur 4, madde 4). İngilizce her hâlükârda çalışır — arşivin
+    ezici çoğunluğu İngilizce kaynaklı.
+    """
     values = list(_en_spelled_numbers(text))
-    tokens = [word.casefold() for word in re.findall(
-        r"[^\W\d_]+", str(text or ""), re.UNICODE)]
-    for lexicon, connectors in _SOURCE_NUMBER_LEXICONS:
+    iso = _source_number_lang_code(source_language)
+    if iso == "en":
+        return values
+    pairs = _number_word_gaps(text, _TR_NUMBER_WORD_TOKEN_RE)
+    tokens = [word.casefold() for word, _gap in pairs]
+    gaps = [gap for _word, gap in pairs]
+    for lang, lexicon, connectors in _SOURCE_NUMBER_LEXICONS:
+        if iso and lang != iso:
+            continue
+        # Dil bilinmiyorsa tek sözcüklük yabancı eşleşme güvenilmez.
+        require_pair = not iso
         pos = 0
         while pos < len(tokens):
             if tokens[pos] not in lexicon:
@@ -8049,21 +8127,28 @@ def _source_spelled_numbers(text: str) -> list:
             group = [tokens[pos]]
             end = pos + 1
             while end < len(tokens):
+                has_multiplier = any(lexicon[w] >= 100 for w in group
+                                     if w in lexicon)
+                if _number_group_is_broken(gaps[end], has_multiplier):
+                    break
                 if tokens[end] in lexicon:
                     group.append(tokens[end])
                     end += 1
                 elif (tokens[end] in connectors and end + 1 < len(tokens)
-                      and tokens[end + 1] in lexicon):
+                      and tokens[end + 1] in lexicon
+                      and not _number_group_is_broken(gaps[end + 1], has_multiplier)):
                     end += 1
                 else:
                     break
             value = _source_number_group_value(group, lexicon)
+            if require_pair and len(group) < 2:
+                pos = end
+                continue
             if (any(lexicon[word] >= 100 for word in group)
                     or len(group) >= 2 or value > 12):
                 values.append(value)
             pos = end
     return values
-
 
 _TR_NUMBER_WORDS = {
     "sıfır": 0, "bir": 1, "iki": 2, "üç": 3, "dört": 4, "beş": 5,
@@ -8113,8 +8198,12 @@ def _tr_spelled_numbers(text: str) -> list:
     sayı DEĞİLDİR — tam kelime tokenizasyonu (regex kelime sınırları) bunu doğal
     olarak dışlar, çünkü 'yüzünü' tek bir token'dır ve 'yüz' sözlüğüyle birebir
     eşleşmez. Aynı muhafazakar filtre İngilizce tarafla (_en_spelled_numbers)
-    tutarlıdır."""
-    tokens = [w.lower() for w in _TR_NUMBER_WORD_TOKEN_RE.findall(str(text or ""))]
+    tutarlıdır; noktalama sınırı da aynı kuralla korunur, aksi hâlde kaynak
+    "Two... one..." iki belirteç verirken çeviri "İki... bir..." tek değer
+    verip yapay uyuşmazlık üretiyordu."""
+    pairs = _number_word_gaps(text, _TR_NUMBER_WORD_TOKEN_RE)
+    tokens = [word.lower() for word, _gap in pairs]
+    gaps = [gap for _word, gap in pairs]
     n = len(tokens)
     results = []
     i = 0
@@ -8125,6 +8214,10 @@ def _tr_spelled_numbers(text: str) -> list:
         j = i
         group = []
         while j < n and tokens[j] in _TR_NUMBER_WORDS:
+            if group:
+                has_multiplier = any(g in _TR_NUMBER_MULTIPLIERS for g in group)
+                if _number_group_is_broken(gaps[j], has_multiplier):
+                    break
             group.append(tokens[j])
             j += 1
         has_multiplier = any(g in _TR_NUMBER_MULTIPLIERS for g in group)
@@ -8136,28 +8229,46 @@ def _tr_spelled_numbers(text: str) -> list:
 
 
 def _digit_tokens_as_ints(text: str) -> list:
-    """Metindeki rakam token'larını (ör. '1400', '1,400') tamsayıya çevirir —
-    yazıyla sayının rakamla çevrilmiş halini (#384: '1400 yıl önce') kabul etmek
-    için, böylece rakamla doğru çeviri yanlış-pozitif almaz."""
+    """Metindeki rakam token'larını sayı DEĞERİNE çevirir — yazıyla sayının
+    rakamla çevrilmiş halini (#384: '1400 yıl önce') kabul etmek için.
+
+    Token TÜRÜ korunur (denetim Tur 4, madde 5): eskiden rakam dışındaki her
+    şey silindiği için '2,5' 25, '8-16' 816, '-25' de 25 okunuyordu; yani
+    25 -> 2,5 ve 816 -> 8-16 gibi biçim bozulmaları ile pozitif -> negatif
+    dönüşümü guard'dan geçiyordu. Artık ondalık gerçek ondalık, işaret
+    korunuyor, aralık/saat ise BİLEŞENLERİNE ayrılıyor ('8-16' -> 8 ve 16),
+    çünkü aralığın kendisi tek bir sayının karşılığı değildir."""
     values = []
     for tok in _normalized_numeric_tokens(text):
-        digits = re.sub(r"\D", "", tok)
-        if digits:
-            try:
-                values.append(int(digits))
-            except ValueError:
-                pass
+        sign = -1 if tok[:1] == "-" else 1
+        body = tok[1:] if tok[:1] in "+-" else tok
+        # Aralık ve saat: '8-16', '12:30', '3/4' -> parçaları ayrı değerlerdir.
+        parts = re.split(r"[-:/]", body)
+        if len(parts) > 1:
+            for part in parts:
+                if part.isdigit():
+                    values.append(int(part))
+            continue
+        try:
+            number = float(body)
+        except ValueError:
+            continue
+        if number.is_integer():
+            values.append(sign * int(number))
+        else:
+            values.append(sign * number)
     return values
 
 
-def _spelled_number_mismatch(src_text: str, tr_text: str) -> bool:
+def _spelled_number_mismatch(src_text: str, tr_text: str,
+                             source_language=None) -> bool:
     """Kaynakta yazıyla sayı varsa ('fourteen hundred'), çeviride aynı değer
     (yazıyla veya rakamla) yoksa True.
 
     KAYNAK-GÜTMELİ: kaynakta yazıyla sayı YOKSA hiç çalışmaz — Türkçede 'yüz'
     (100/face) ve 'bir' (1/a) tuzağını (bkz. _has_head_to_face_regression) bu
     şekilde susturur; çeviri tarafı asla taranmaz çünkü kaynakta zaten sayı yok."""
-    src_vals = _source_spelled_numbers(src_text)
+    src_vals = _source_spelled_numbers(src_text, source_language)
     if not src_vals:
         return False
     tr_vals = _tr_spelled_numbers(tr_text) + _digit_tokens_as_ints(tr_text)
@@ -8237,7 +8348,7 @@ def _has_identity_slur_loss(source_text: str, target_text: str) -> bool:
 def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                    series_terms: dict = None,
                    scene_gap_sec: float = SCENE_GAP_SEC,
-                   tgt_lang: str = "") -> list:
+                   tgt_lang: str = "", src_lang: str = "") -> list:
     """Deterministic pre-check before Helper Critic Pass.
     Returns list of (idx, ts, text, reason_str) for lines needing review.
 
@@ -8389,7 +8500,8 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 reasons.append("QUESTION_MARK_MISMATCH")
             if _numeric_token_mismatch(orig_clean, text):
                 reasons.append("NUMBER_MISMATCH")
-            if turkish_target and _spelled_number_mismatch(orig_clean, text):
+            if turkish_target and _spelled_number_mismatch(
+                    orig_clean, text, src_lang):
                 reasons.append("SPELLED_NUMBER_MISMATCH")
             if not _has_speaker_label(orig_clean) and _has_speaker_label(text):
                 reasons.append("SPEAKER_LABEL_MISMATCH")
@@ -13014,6 +13126,7 @@ def critic_pass_with_helper(
     helper_url: str = "https://api.openai.com/v1",
     helper_model: str = "gpt-5.4-mini",
     tgt_lang: str = "Turkish",
+    src_lang: str = "",
     log_fn=None,
     glossary: dict = None,
     analysis_result=None,  # Optional: (ContextMemory, char_examples, pronoun_map)
@@ -13150,7 +13263,8 @@ def critic_pass_with_helper(
     validator_hits: set = set()
     v_reasons: dict = {}
     for v_idx, _, _, reason in run_validators(
-            result, cues, glossary, scene_gap_sec=gap_limit, tgt_lang=tgt_lang):
+            result, cues, glossary, scene_gap_sec=gap_limit,
+            tgt_lang=tgt_lang, src_lang=src_lang):
         key = str(v_idx)
         validator_hits.add(key)
         v_reasons[key] = reason

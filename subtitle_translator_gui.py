@@ -32119,6 +32119,7 @@ class App(ctk.CTk):
                             helper_api_key=helper_keys.get("critic", ""),
                             helper_url=helper_urls.get("critic", ""),
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
+                            src_lang=source_language,
                             log_fn=self._log,
                             glossary=None,
                             analysis_result=analysis_result,
@@ -36563,7 +36564,7 @@ class App(ctk.CTk):
                         cues=cues,
                         tr_blocks=sorted_blocks,
                         helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
-                        tgt_lang=tgt,
+                        tgt_lang=tgt, src_lang=file_src,
                         log_fn=self._log,
                         glossary=_locked_terms,
                         analysis_result=(context, char_examples, pronoun_map,
@@ -38453,6 +38454,11 @@ class App(ctk.CTk):
                                     helper_url=self._helper_api_base_url("critic"),
                                     helper_model=self._helper_api_model("critic"),
                                     tgt_lang=tgt, log_fn=self._log,
+                                    src_lang=(
+                                        source_language
+                                        or self._effective_file_source_language(
+                                            str(_src_path),
+                                            self._snap_get("src_lang", "English"))),
                                     glossary=_locked_terms,
                                     analysis_result=_analysis_result,
                                     change_log=_critic_change_log,
@@ -39303,7 +39309,8 @@ class App(ctk.CTk):
                         helper_api_key=self._helper_api_key("critic"),
                         helper_url=self._helper_api_base_url("critic"),
                         helper_model=self._helper_api_model("critic"),
-                        tgt_lang=_tgt_lang, log_fn=self._log,
+                        tgt_lang=_tgt_lang, src_lang=_file_src_lang,
+                        log_fn=self._log,
                         glossary=_locked_terms_for(fp),
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log,
@@ -40911,6 +40918,7 @@ class App(ctk.CTk):
                             pp_blocks = ht.critic_pass_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
+                                src_lang=file_src,
                                 log_fn=self._log,
                                 glossary=_file_locked_terms,
                                 analysis_result=_full_analysis,
