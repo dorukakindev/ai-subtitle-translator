@@ -5926,8 +5926,10 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
             # BİLGİ amaçlı: sen/siz Türkçede dosya değil İLİŞKİ özelliğidir
             # (aynı karakter patronuna "siz", kardeşine "sen" der). Bu ölçüm
             # dosya genelinde yapıldığı için tek başına tutarsızlık kanıtı
-            # değildir; konuşmacı başına ölçen Critic REGISTER_FLIP kararı
-            # asıldır (bug taraması madde 34).
+            # değildir. Critic'in REGISTER_FLIP'i de ilişkiyi ölçmez: yalnız
+            # konuşmacının kendi satırları içindeki AZINLIK biçimi görür,
+            # muhatabı bilmez (denetim Tur 4, madde 7). İkisi de karar
+            # değil, insan gözüne işarettir (bug taraması madde 34).
             log_fn(
                 f"Teslim taraması: dosya genelinde hitap dağılımı — "
                 f"{register['informal']} cue 'sen', {register['formal']} cue 'siz'. "

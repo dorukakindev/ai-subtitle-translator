@@ -8561,6 +8561,14 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
             frag_tags = {}
             frag_group_ids = {}
 
+    # REGISTER_FLIP, konuşmacının KENDİ satırları içindeki AZINLIK hitap
+    # biçimini işaretler; MUHATABI bilmez. Cue verisi kimin kime konuştuğunu
+    # taşımadığı için ilişki sürekliliği buradan ölçülemez: aynı kişi patronuna
+    # "siz", arkadaşına "sen" diyorsa bu kayma değil, doğru kullanımdır
+    # (denetim Tur 4, madde 7). Sinyal Critic'e YALNIZ aday olarak gider ve
+    # prompt açıkça "muhatap aynıysa düzelt" der. Davranış testle kilitli
+    # (tests/test_source_language_leftover.py) — değiştirmeden önce oradaki
+    # beklenti okunmalı.
     register_flips: dict[str, str] = {}
     if speaker_by_id and turkish_target:
         speaker_markers: dict[str, dict[str, int]] = {}
@@ -11067,6 +11075,36 @@ def _turkish_stem(word: str) -> str:
     return word
 
 
+_TR_FINAL_HARDENING = {"g": "k", "ğ": "k", "b": "p", "d": "t", "c": "ç"}
+_TR_STEM_VOWELS = "aeıioöuü"
+
+
+def _turkish_hard_stem(word: str) -> str:
+    """Ünsüz yumuşamasını geri alan karşılaştırma anahtarı.
+
+    Türkçede ek alan sözcüğün son sert ünsüzü yumuşar: kitap -> kitabı,
+    renk -> rengi, Hristiyanlık -> Hristiyanlığa. Suffix listesi bu değişimi
+    görmediği için terim tutarlılığı raporu NORMAL çekimi "farklı çeviri"
+    diye gösteriyordu (denetim Tur 4, madde 10).
+
+    Sondaki ünlüler atılır, ardından son ünsüz sertleştirilir; ikisi de
+    yalnız aynı sözcüğün biçimlerini birleştirir, farklı terimleri değil
+    ('Henry'/'Henrique', 'Tulun'/'Tolun' ayrı kalır).
+    """
+    value = str(word or "").casefold()
+    if len(value) < 4:
+        return value
+    trimmed = value
+    for _ in range(2):
+        if len(trimmed) > 3 and trimmed[-1] in _TR_STEM_VOWELS:
+            trimmed = trimmed[:-1]
+        else:
+            break
+    if trimmed and trimmed[-1] in _TR_FINAL_HARDENING:
+        trimmed = trimmed[:-1] + _TR_FINAL_HARDENING[trimmed[-1]]
+    return trimmed
+
+
 def _share_stem(t1: str, t2: str) -> bool:
     """Check if two Turkish tokens share a stem via suffix stripping + prefix fallback."""
     if len(t1) < 3 or len(t2) < 3:
@@ -11074,6 +11112,9 @@ def _share_stem(t1: str, t2: str) -> bool:
     s1 = _turkish_stem(t1)
     s2 = _turkish_stem(t2)
     if s1 == s2:
+        return True
+    # Ünsüz yumuşaması: 'kitabı' ile 'kitap' aynı sözcüktür.
+    if _turkish_hard_stem(s1) == _turkish_hard_stem(s2):
         return True
     # Stem-level prefix: threshold 3 (stems already suffix-stripped, more reliable)
     shorter, longer = (s1, s2) if len(s1) <= len(s2) else (s2, s1)
@@ -13566,8 +13607,10 @@ def critic_pass_with_helper(
         "\n\nTurkish-Specific Issues to Fix:\n"
         "1. Leftover English: Transliterated words or English phrases in Turkish subtitle\n"
         "2. Sen/Siz Register: Verify formal/informal pronoun matches the relationship/tone\n"
-        "   If reason includes REGISTER_FLIP, compare the speaker's established address pattern and fix only the "
-        "minority line if it is an accidental sen/siz switch.\n"
+        "   REGISTER_FLIP only means this line uses the MINORITY address form among that "
+        "speaker's own lines; it does NOT know who is being addressed. A speaker may correctly "
+        "say 'siz' to a superior and 'sen' to a friend. Change the line ONLY if the surrounding "
+        "context shows the same addressee, otherwise leave it." + chr(10) +
         "3. Unnatural Phrasing: Word order or verb conjugation that violates Turkish conventions\n"
         "   If reason includes BAD_TURKISH_CASE_FLOW, fix the Turkish case/word-order break "
         "(e.g. genitive '-in/-ın' used where an object '-i/-ı' or reordered phrase is required).\n"
