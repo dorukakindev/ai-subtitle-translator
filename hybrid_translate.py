@@ -20,6 +20,7 @@ from app_state import (_interprocess_lock, atomic_write_json, atomic_write_text,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
 from subtitle_formats import (clean_translation_source_text,
                               ends_sentence as _sf_ends_sentence,
+                              is_turkish_second_person_token as _sf_is_tr_second_person,
                               normalize_subtitle_control_artifacts)
 from request_cancellation import RequestCancelled
 from provider_retry import ProviderWaitCancelled
@@ -12351,8 +12352,13 @@ def _turkish_second_person_register(text: str) -> str:
             r"bekleyin|gidin|durun|oturun|başlayın|bırakın|izleyin|düşünün)\b",
             value):
         return "formal"
-    if re.search(r"\bsen\b", value) or re.search(
-            r"\b[\wçğıöşü]+(?:sın|sin|sun|sün)\b", value):
+    # Ek kuralı GUI ikiziyle AYNI morfolojiyi kullanır: çıplak köke gelen
+    # -sIn 3. tekil istek kipidir ('olsun', 'gelsin') ve 'sen' sayılmaz.
+    # Sahte 'informal' damgası yüzünden consistency_sweep register karışımı
+    # görüp MEŞRU normalizasyonları sessizce atlıyordu (bug taraması m.30).
+    if re.search(r"\bsen\b", value) or any(
+            _sf_is_tr_second_person(token)
+            for token in re.findall(r"[^\W\d_]+", value)):
         return "informal"
     if re.search(
             r"\b(?:gel|bak|et|yap|ol|ver|al|söyle|dinle|bekle|git|dur|otur|"

@@ -175,6 +175,62 @@ def ends_sentence(text) -> bool:
     return bool(value) and value[-1] in SENTENCE_ENDERS
 
 
+# ── Türkçe 2. tekil hitap eki morfolojisi ────────────────────────────────────
+# Tek kaynak: GUI teslim taraması (detect_address_register_mix) ve hybrid
+# tutarlılık taraması (_turkish_second_person_register) aynı kuralı
+# kullanmalı. İkisi de ekleri gövdeden ayırmadığı için 3. tekil istek kipini
+# ('olsun', 'gelsin') ve tamlayan ekini ('herkesin', 'kentin') 'sen' sayıyordu
+# (bug taraması madde 29/30/33).
+TR_VOICELESS_STOPS = "pçtkfhsş"
+TR_TENSE_MARKERS = (
+    "yor", "acak", "ecek", "mış", "miş", "muş", "müş",
+    "ar", "er", "ır", "ir", "ur", "ür", "maz", "mez",
+    "malı", "meli", "abilir", "ebilir",
+)
+# Yapısal kuralların eleyemediği, gerçek teslim dosyalarında ölçülen kalıntı.
+TR_ADDRESS_FALSE_STEMS = frozenset({
+    "resin", "esin", "kesin", "basın", "yasin", "hüsün", "üstün", "bütün",
+    "düşün", "görüşün", "yazın", "kışın", "yarısın",
+    "kadın", "aydın", "günaydın", "vücudun", "gidin", "affedin", "edin",
+    "odun", "düğün", "üzüldün",
+})
+_TR_SIN_RE = re.compile(
+    r"(?<!\w)([^\W\d_]{2,}?)(sın|sin|sun|sün)(?!\w)", re.IGNORECASE)
+_TR_DIN_RE = re.compile(
+    r"(?<!\w)([^\W\d_]+?)([dt])(ın|in|un|ün)(?!\w)", re.IGNORECASE)
+
+
+def is_turkish_second_person_token(token) -> bool:
+    """Bu tek sözcük 2. TEKİL hitap eki mi taşıyor?
+
+    -sIn yalnız bir kip/zaman işaretinden sonra 2. tekildir (geliyorsun,
+    gelirsin); çıplak köke gelen -sIn istek kipidir (olsun, gelsin).
+    -DIn'de ünsüz uyumu aranır: -tIn yalnız sert ünsüzden sonra gelebilir,
+    böylece 'kent+in', 'hayat+ın', 'sa+tın' elenir, 'yap+tın' korunur.
+    """
+    word = str(token or "")
+    if not word or word.casefold() in TR_ADDRESS_FALSE_STEMS:
+        return False
+    match = _TR_SIN_RE.fullmatch(word)
+    if match:
+        stem = match.group(1).casefold()
+        # Kısa fiil kökleri kısa aorist işaretiyle çakışıyor ('dur+sun',
+        # 'ver+sin' istek kipidir): gövde işaretten belirgin ölçüde uzun olmalı.
+        return any(
+            stem.endswith(marker) and len(stem) >= len(marker) + 2
+            for marker in TR_TENSE_MARKERS)
+    match = _TR_DIN_RE.fullmatch(word)
+    if match:
+        stem = match.group(1).casefold()
+        consonant = match.group(2).casefold()
+        if not stem:
+            return False
+        previous = stem[-1]
+        if consonant == "t":
+            return previous in TR_VOICELESS_STOPS
+        return previous not in TR_VOICELESS_STOPS
+    return False
+
 def clean_translation_source_text(text: str) -> str:
     """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
     text = _VTT_RUBY_READING_RE.sub("", str(text or ""))

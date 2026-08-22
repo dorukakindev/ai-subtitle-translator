@@ -214,7 +214,7 @@ class DeliveryScanInReportTest(unittest.TestCase):
         for expected in ("Teslim taraması:", "Aşırı uzun satır",
                          "Komşu cue'da kısmi yankı", "Yüklemsiz biten cue",
                          "Türkçe ekli kaynak kalıntısı",
-                         "Dosya içinde sen/siz karışık",
+                         "Hitap dağılımı (bilgi)",
                          "#54 'neneredeyse' → 'neredeyse'"):
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)

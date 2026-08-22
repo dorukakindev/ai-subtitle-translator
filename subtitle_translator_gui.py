@@ -30,6 +30,8 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               visible_semantic_text,
                               normalize_subtitle_control_artifacts,
                               ends_sentence as _sf_ends_sentence,
+                              is_turkish_second_person_token as _sf_is_tr_second_person,
+                              TR_ADDRESS_FALSE_STEMS as _SF_TR_ADDRESS_FALSE_STEMS,
                               SENTENCE_CLOSERS as _SF_SENTENCE_CLOSERS,
                               _match_full_wrap)
 import credential_store
@@ -5020,12 +5022,27 @@ def rebalance_cue_fill_pairs(blocks: list, src_map: dict, log_fn=None,
 #
 # EMİR KİPLERİ BİLEREK DIŞARIDA: 'bakın/yapın' 2. çoğul emir de olabilir, kibar
 # hitap da; sayıma alınınca her belgesel 'karışık' görünürdü.
-_ADDRESS_INFORMAL_RE = re.compile(
-    r"(?<!\w)(?:sen|sana|seni|senin|seninle|sende|senden)(?!\w)"
-    r"|(?<!\w)[^\W\d_]{2,}(?:sın|sin|sun|sün)(?!\w)"
-    r"|(?<!\w)[^\W\d_]{2,}(?:dın|din|dun|dün|tın|tin|tun|tün)(?!\w)",
-    re.IGNORECASE,
-)
+# 2. TEKİL HİTAP EKLERİ — gövde/kip ayrımı yapan biçim.
+#
+# Eski desen ekleri gövdeden ayırmıyordu ve 248 gerçek teslim dosyasında
+# ölçüldüğünde işaretlemenin en az %43'ü dilbilgisel yanlış eşleşmeydi
+# (bug taraması madde 29/33). Üç sınıf karışıyordu:
+#   • tamlayan/iyelik eki: herkes+in, kent+in, hayat+ın, saat+in
+#   • 3. tekil istek kipi: ol+sun, gel+sin, kahret+sin, yaşa+sın
+#   • 2. ÇOĞUL emir (yani SİZ): gid+in, affed+in — ters yönde hata
+#
+# İki yapısal kural:
+#  1) -sIn yalnız bir KİP/ZAMAN işaretinden sonra 2. tekildir
+#     (geliyorsun, gelirsin, geleceksin, gelmişsin). Çıplak köke gelen
+#     -sIn istek kipidir ve sayılmaz.
+#  2) -DIn'de ÜNSÜZ UYUMU aranır: -tIn yalnız SERT ünsüzden (pçtkfhsş)
+#     sonra gelebilir. 'kent+in', 'hayat+ın', 'alt+ın', 'sa+tın' elenir;
+#     'yap+tın', 'git+tin' korunur.
+# Morfoloji TEK KAYNAKTA: subtitle_formats.is_turkish_second_person_token.
+# Hybrid ikizi (_turkish_second_person_register) de aynısını kullanır, yoksa
+# aynı cümle iki taramada farklı sınıflanıyordu (bug taraması madde 30).
+_address_informal_suffix_token = _sf_is_tr_second_person
+
 _ADDRESS_INFORMAL_PRONOUN_RE = re.compile(
     r"(?<!\w)(?:sen|sana|seni|senin|seninle|sende|senden)(?!\w)",
     re.IGNORECASE,
@@ -5044,10 +5061,10 @@ _ADDRESS_PLURAL_CONTEXT_RE = re.compile(
     r"|beyefendiler|hanımefendiler|değerli\s+\w+ler)(?!\w)",
     re.IGNORECASE,
 )
-_ADDRESS_FALSE_STEMS = frozenset({
-    "resin", "esin", "kesin", "basın", "yasin", "hüsün", "üstün", "bütün",
-    "düşün", "görüşün", "yazın", "kışın", "yarısın",
-})
+# Yapısal kuralların ELEYEMEDİĞİ, gerçek dosyalarda ölçülen kalıntı:
+# kökün kendisi 'd/t + ünlü + n' ile bittiği için ünsüz uyumu ayırt
+# edemiyor ('kadın', 'aydın'); 'gidin/affedin' ise 2. ÇOĞUL emirdir (SİZ).
+_ADDRESS_FALSE_STEMS = _SF_TR_ADDRESS_FALSE_STEMS
 
 
 def detect_address_register_mix(blocks, minority_ratio: float = 0.10,
@@ -5069,9 +5086,8 @@ def detect_address_register_mix(blocks, minority_ratio: float = 0.10,
         # kelimeler _ADDRESS_FALSE_STEMS ile elenir. Ham regex sonucunu yedek
         # olarak kullanmak bu elemeyi geçersiz kılar — kullanma.
         has_informal = bool(_ADDRESS_INFORMAL_PRONOUN_RE.search(value)) or any(
-            token.casefold() not in _ADDRESS_FALSE_STEMS
+            _address_informal_suffix_token(token)
             for token in re.findall(r"[^\W\d_]+", value)
-            if _ADDRESS_INFORMAL_RE.fullmatch(token)
         )
         has_formal = bool(_ADDRESS_FORMAL_RE.search(value))
         if has_formal:
@@ -5782,10 +5798,16 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
         for line in _cue_fill_report_lines(cue_fill):
             log_fn(line, "warn")
         if register["mixed"]:
+            # BİLGİ amaçlı: sen/siz Türkçede dosya değil İLİŞKİ özelliğidir
+            # (aynı karakter patronuna "siz", kardeşine "sen" der). Bu ölçüm
+            # dosya genelinde yapıldığı için tek başına tutarsızlık kanıtı
+            # değildir; konuşmacı başına ölçen Critic REGISTER_FLIP kararı
+            # asıldır (bug taraması madde 34).
             log_fn(
-                f"Teslim taraması: dosya içinde sen/siz karışık — "
-                f"{register['informal']} cue 'sen', {register['formal']} cue 'siz' "
-                "işaretçisi taşıyor; tek hitap seçilmeli.", "warn")
+                f"Teslim taraması: dosya genelinde hitap dağılımı — "
+                f"{register['informal']} cue 'sen', {register['formal']} cue 'siz'. "
+                "Farklı ilişkiler için normal olabilir; aynı ikili "
+                "arasında değişiyorsa gözden geçirin.", "info")
     return stats
 
 
@@ -16721,7 +16743,7 @@ def delivery_scan_report_lines(scan: dict) -> list:
     register = scan.get("register") or {}
     if scan.get("register_mixed"):
         lines.append(
-            f"   {'Dosya içinde sen/siz karışık'.ljust(width)} : "
+            f"   {'Hitap dağılımı (bilgi)'.ljust(width)} : "
             f"{register.get('informal', 0)} 'sen' / "
             f"{register.get('formal', 0)} 'siz' cue")
     for line in _cue_fill_report_lines(scan.get("cue_fill_details") or []):
