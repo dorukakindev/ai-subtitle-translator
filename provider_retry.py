@@ -588,18 +588,27 @@ def _model_missing_hint(api_key: str, base_url: str, model: str,
 
 
 def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
-                         timeout: float) -> dict:
-    """Rotalari sirayla dener; ilk KESIN cevap sonucu belirler."""
+                         timeout: float, tally: dict) -> dict:
+    """Rotalari sirayla dener; ilk KESIN cevap sonucu belirler.
+
+    tally: {"attempts": n, "failures": n} — kac denemede basarildigini
+    cagirana bildirir. Yesil isik tek basina yaniltici olabiliyor: bayi
+    dalgalanirken sekiz denemenin biri 200 donse de kosunun ILK istegi
+    502'ye denk gelebiliyor (2026-08-23 18:43 anahtar testi "calisiyor",
+    18:44 kosusu dort rotadan da 502).
+    """
     last = {"ok": False, "status": None, "latency_ms": None,
             "detail": "baglanti yok", "route": "", "hint": "", "flaky": True}
     for route in route_urls:
         if not route:
             continue
         started = time.monotonic()
+        tally["attempts"] = tally.get("attempts", 0) + 1
         status, body, transport = _api_key_check_request(
             f"{route}/chat/completions", api_key, timeout, payload)
         elapsed = int((time.monotonic() - started) * 1000)
         if transport or status is None:
+            tally["failures"] = tally.get("failures", 0) + 1
             last = {"ok": False, "status": None, "latency_ms": elapsed,
                     "detail": transport or "baglanti yok",
                     "route": route, "hint": "", "flaky": True}
@@ -608,6 +617,7 @@ def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
             return {"ok": True, "status": 200, "latency_ms": elapsed,
                     "detail": "calisiyor", "route": route, "hint": "",
                     "flaky": False}
+        tally["failures"] = tally.get("failures", 0) + 1
         flaky = _api_key_check_is_flaky(status, body)
         result = {"ok": False, "status": status, "latency_ms": elapsed,
                   "detail": _api_key_check_reason(status, body),
@@ -633,15 +643,21 @@ def probe_api_key(api_key: str, base_url: str, model: str,
     gorunen hatalar once siradaki rotaya, tur bitince de kisa bir bekleme
     sonrasi yeni bir tura devrolur; bayinin kanali dalgalanirken saglam bir
     anahtari kirmizi yakmamak icin.
+
+    Donen sozlukte 'attempts'/'failures' de bulunur: yesil isik "anahtar ve
+    grup dogru" demektir, "saglayici saglikli" DEMEZ. Kac denemede
+    basarildigini gormeden yesil isik yaniltici olur.
     """
     api_key = str(api_key or "").strip()
     model = str(model or "").strip()
     if not api_key:
         return {"ok": False, "status": None, "latency_ms": None,
-                "detail": "anahtar girilmemis", "route": "", "hint": ""}
+                "detail": "anahtar girilmemis", "route": "", "hint": "",
+                "attempts": 0, "failures": 0}
     if not model:
         return {"ok": False, "status": None, "latency_ms": None,
-                "detail": "model adi bos", "route": "", "hint": ""}
+                "detail": "model adi bos", "route": "", "hint": "",
+                "attempts": 0, "failures": 0}
     if route_urls is None:
         normalized = normalize_shuai_api_route(base_url)
         if normalized and urlparse(normalized).hostname in _SHUAI_ROUTE_HOSTS:
@@ -652,17 +668,31 @@ def probe_api_key(api_key: str, base_url: str, model: str,
         else:
             route_urls = [normalized or str(base_url or "").rstrip("/")]
     payload = _api_key_check_payload(model)
+    tally = {"attempts": 0, "failures": 0}
     result = {}
     for turn in range(max(1, int(attempts))):
         if turn:
             time.sleep(max(0.0, retry_delay))
         result = _api_key_check_sweep(
-            api_key, model, route_urls, payload, timeout)
+            api_key, model, route_urls, payload, timeout, tally)
         if result["ok"] or not result.get("flaky"):
             break
     result.pop("flaky", None)
+    result["attempts"] = tally["attempts"]
+    result["failures"] = tally["failures"]
     return result
 
+
+def api_key_check_stability_note(result: dict) -> str:
+    """Yesil isigin yaninda gosterilecek kararsizlik uyarisi ('' ise temiz)."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return ""
+    failures = int(result.get("failures", 0) or 0)
+    attempts = int(result.get("attempts", 0) or 0)
+    if failures <= 0:
+        return ""
+    return (f"anahtar ve grup dogru ama saglayici kararsiz: "
+            f"{attempts} denemenin {failures} tanesi basarisiz")
 
 
 def configure_shuai_route_failover(

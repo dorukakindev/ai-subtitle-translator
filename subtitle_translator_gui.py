@@ -28654,6 +28654,10 @@ class App(ctk.CTk):
             if state == "ok":
                 dot, color = "●", GREEN
                 value = f"{row.get('latency_ms') or 0} ms"
+            elif state == "warn":
+                # Sarı: anahtar/grup doğru ama sağlayıcı kararsız.
+                dot, color = "●", WARN
+                value = f"{row.get('latency_ms') or 0} ms · kararsız"
             elif state == "pending":
                 dot, color, value = "○", FG2, "deneniyor..."
             else:
@@ -28675,7 +28679,7 @@ class App(ctk.CTk):
             hint = str(row.get("hint", "") or "")
             if hint:
                 detail = f"{detail} · {hint}" if detail else hint
-            if detail and state != "ok":
+            if detail and state in ("warn", "fail"):
                 ctk.CTkLabel(
                     frame, text=detail, text_color=FG2, anchor="w",
                     justify="left", wraplength=520,
@@ -28722,18 +28726,26 @@ class App(ctk.CTk):
                         outcome = {"ok": False, "latency_ms": None,
                                    "detail": f"{type(exc).__name__}: {exc}"[:120],
                                    "hint": ""}
+                    try:
+                        from provider_retry import api_key_check_stability_note
+                        note = api_key_check_stability_note(outcome)
+                    except Exception:
+                        note = ""
                     row = {
                         "label": target["label"],
                         "model": target["model"],
-                        "state": "ok" if outcome.get("ok") else "fail",
+                        # Kararsız sağlayıcı yeşil DEĞİL: anahtar doğru ama
+                        # koşunun ilk isteği pekâlâ hataya denk gelebilir.
+                        "state": ("warn" if (outcome.get("ok") and note)
+                                  else "ok" if outcome.get("ok") else "fail"),
                         "latency_ms": outcome.get("latency_ms"),
-                        "detail": outcome.get("detail", ""),
+                        "detail": note or outcome.get("detail", ""),
                         "hint": outcome.get("hint", ""),
                     }
                     results = getattr(self, "_api_key_check_results", [])
                     if index < len(results):
                         results[index] = row
-                    level = "info" if outcome.get("ok") else "warn"
+                    level = "info" if row["state"] == "ok" else "warn"
                     note = row["detail"]
                     if row["hint"]:
                         note = f"{note} ({row['hint']})"

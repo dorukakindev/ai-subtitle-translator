@@ -269,6 +269,52 @@ class PostRoutePredicateTest(unittest.TestCase):
         self.assertFalse(pr._is_post_route_key_error(self._Err(502)))
 
 
+class StabilityReportingTest(unittest.TestCase):
+    """Yeşil ışık "anahtar doğru" demek, "sağlayıcı sağlıklı" DEMEK değil.
+
+    2026-08-23: anahtar testi 18:43'te "calisiyor" dedi, 18:44'teki koşu
+    dört rotadan da 502 aldı. Test yalan söylemiyordu — kaç denemede
+    başardığını söylemiyordu.
+    """
+
+    def test_a_clean_first_try_has_no_note(self):
+        url = "https://api.shuaiapi.com/v1/chat/completions"
+        with mock.patch.object(pr, "_api_key_check_request",
+                               lambda u, k, t, payload=None: (200, "{}", "")):
+            result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
+                                      "gpt-5.4")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(pr.api_key_check_stability_note(result), "")
+
+    def test_success_after_failures_is_reported_as_unstable(self):
+        seen = []
+
+        def _fake(url, api_key, timeout, payload=None):
+            seen.append(url)
+            return (200, "{}", "") if len(seen) > 3 else (502, "bad gateway", "")
+        with mock.patch.object(pr, "_api_key_check_request", _fake),                 mock.patch.object(pr.time, "sleep", lambda _s: None):
+            result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
+                                      "gpt-5.4")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["failures"], 3)
+        note = pr.api_key_check_stability_note(result)
+        self.assertIn("kararsiz", note)
+        self.assertIn("3", note)
+
+    def test_a_failed_check_has_no_stability_note(self):
+        result = {"ok": False, "attempts": 8, "failures": 8}
+        self.assertEqual(pr.api_key_check_stability_note(result), "")
+
+    def test_counters_survive_a_hard_failure(self):
+        with mock.patch.object(pr, "_api_key_check_request",
+                               lambda u, k, t, payload=None: (401, "", "")):
+            result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
+                                      "gpt-5.4")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(result["failures"], 1)
+
+
 import subtitle_translator_gui as gui
 
 
