@@ -125,7 +125,7 @@ class ProbeTest(unittest.TestCase):
                 pr, "list_models_for_key", return_value=["gpt-5.4"]):
             result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
                                       "gpt-5.4")
-        self.assertIn("listede", result["hint"])
+        self.assertIn("listesinde", result["hint"])
 
     def test_non_shuai_url_is_tried_once(self):
         url = "https://api.openai.com/v1/chat/completions"
@@ -136,11 +136,12 @@ class ProbeTest(unittest.TestCase):
 
     def test_every_route_dead_reports_the_last_failure(self):
         _calls, patch = self._patch({})
-        with patch:
+        with patch, mock.patch.object(pr.time, "sleep", lambda _s: None):
             result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
                                       "gpt-5.4")
         self.assertFalse(result["ok"])
         self.assertIsNone(result["status"])
+        self.assertNotIn("flaky", result)
 
     def test_missing_key_never_hits_the_network(self):
         calls, patch = self._patch({})
@@ -179,6 +180,93 @@ class ModelListTest(unittest.TestCase):
             self.assertEqual(
                 pr.list_models_for_key("anahtar", "https://api.shuaiapi.com/v1"),
                 [])
+
+
+_CHANNEL_DOWN = ('{"error": {"message": "The channel is temporarily '
+                 'unavailable. Please contact the administrator."}}')
+
+
+class FlakyChannelTest(unittest.TestCase):
+    """2026-08-23: aynı anahtar 16:49'da 404, 16:51'de çalışıyordu.
+
+    new-api üst kaynak kanalı düştüğünde de 404 döner. Bunu "model bu
+    grupta yok" diye okumak yanlış; sağlam bir anahtarı kırmızı yakar ve
+    tek atışlık yedek geçişini boşa harcar.
+    """
+
+    def test_channel_text_is_not_read_as_a_missing_model(self):
+        reason = pr._api_key_check_reason(404, _CHANNEL_DOWN)
+        self.assertIn("kanali gecici", reason)
+        self.assertNotIn("grupta yok", reason)
+
+    def test_real_404_still_says_the_model_is_missing(self):
+        reason = pr._api_key_check_reason(404, '{"error": "model not found"}')
+        self.assertIn("grupta yok", reason)
+
+    def test_flaky_classification(self):
+        self.assertTrue(pr._api_key_check_is_flaky(None, ""))
+        self.assertTrue(pr._api_key_check_is_flaky(502, ""))
+        self.assertTrue(pr._api_key_check_is_flaky(404, _CHANNEL_DOWN))
+        self.assertTrue(pr._api_key_check_is_flaky(429, "rate limit"))
+        self.assertFalse(pr._api_key_check_is_flaky(404, "model not found"))
+        self.assertFalse(pr._api_key_check_is_flaky(401, ""))
+        self.assertFalse(pr._api_key_check_is_flaky(429, "insufficient_quota"))
+
+    def test_a_recovering_channel_ends_up_green(self):
+        url = "https://api.shuaiapi.com/v1/chat/completions"
+        seen = []
+
+        def _fake(request_url, api_key, timeout, payload=None):
+            seen.append(request_url)
+            if request_url != url:
+                return (None, "", "ConnectionError")
+            return (200, "{}", "") if len(seen) > 4 else (404, _CHANNEL_DOWN, "")
+        with mock.patch.object(pr, "_api_key_check_request", _fake),                 mock.patch.object(pr.time, "sleep", lambda _s: None):
+            result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
+                                      "gpt-5.4")
+        self.assertTrue(result["ok"])
+
+    def test_a_dead_key_is_not_retried(self):
+        url = "https://api.shuaiapi.com/v1/chat/completions"
+        calls = []
+
+        def _fake(request_url, api_key, timeout, payload=None):
+            calls.append(request_url)
+            return (401, "", "")
+        with mock.patch.object(pr, "_api_key_check_request", _fake),                 mock.patch.object(pr.time, "sleep", lambda _s: None):
+            result = pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1",
+                                      "gpt-5.4")
+        self.assertEqual(calls, [url])
+        self.assertEqual(result["status"], 401)
+
+    def test_a_missing_model_is_not_retried(self):
+        calls = []
+
+        def _fake(request_url, api_key, timeout, payload=None):
+            calls.append(request_url)
+            return (404, '{"error": "model not found"}', "")
+        with mock.patch.object(pr, "_api_key_check_request", _fake),                 mock.patch.object(pr, "list_models_for_key", return_value=[]),                 mock.patch.object(pr.time, "sleep", lambda _s: None):
+            pr.probe_api_key("anahtar", "https://api.shuaiapi.com/v1", "gpt-5.4")
+        self.assertEqual(len(calls), 1)
+
+
+class PostRoutePredicateTest(unittest.TestCase):
+    class _Err(Exception):
+        def __init__(self, status, message=""):
+            super().__init__(message or f"HTTP {status}")
+            self.status_code = status
+
+    def test_transient_channel_404_keeps_the_backup_key_in_reserve(self):
+        exc = self._Err(404, "The channel is temporarily unavailable.")
+        self.assertFalse(pr._is_post_route_key_error(exc))
+
+    def test_a_genuinely_missing_model_still_switches(self):
+        self.assertTrue(pr._is_post_route_key_error(
+            self._Err(404, "model gpt-5.4 not found")))
+
+    def test_auth_errors_are_unaffected(self):
+        self.assertTrue(pr._is_post_route_key_error(self._Err(401)))
+        self.assertFalse(pr._is_post_route_key_error(self._Err(502)))
 
 
 import subtitle_translator_gui as gui

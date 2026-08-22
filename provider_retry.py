@@ -182,8 +182,15 @@ def _is_post_route_key_error(exc) -> bool:
     Dort rotanin dordu de 404 donduyse sorun rotada degil; new-api model
     grupta yoksa/kanal yoksa bu kodu doner (2026-08-23 kosu logu: gpt-5.4
     tum rotalarda 404, yedek anahtar hic denenmiyordu).
+
+    ISTISNA: "channel is temporarily unavailable" metnini tasiyan 404 gecici
+    bir bayi arizasidir; onu zaten 11 denemelik gecici-hata merdiveni
+    kurtariyor (ayni gun 16:51 logunda kanal iki dakika sonra geri geldi).
+    Tek atislik yedek gecisini boyle bir dalgalanmaya harcamayiz.
     """
-    return _is_api_key_or_group_error(exc) or _status_code(exc) == 404
+    if _is_api_key_or_group_error(exc):
+        return True
+    return _status_code(exc) == 404 and not _is_transient_provider_error(exc)
 
 
 def _client_api_key(client) -> str:
@@ -475,6 +482,38 @@ def _api_key_check_request(url: str, api_key: str, timeout: float,
         return None, "", f"{type(exc).__name__}: {exc}"[:120]
 
 
+_TEMPORARY_CHANNEL_MARKERS = (
+    "temporarily unavailable",
+    "channel is temporarily",
+    "渠道暂时不可用",
+    "暂时不可用",
+)
+
+
+def _is_temporary_channel_text(folded: str) -> bool:
+    """Bayinin ust kaynak kanali gecici kapali mi (model eksikligi DEGIL)?"""
+    return any(marker in folded for marker in _TEMPORARY_CHANNEL_MARKERS)
+
+
+def _api_key_check_is_flaky(status, body: str) -> bool:
+    """Bu basarisizlik anahtarin degil, o anki hattin sorunu mu?
+
+    Oyleyse hem siradaki rota denenir hem de tur bittiginde bir kez daha
+    supurulur: bayi dalgalanirken kirmizi yakmak kullaniciyi yaniltir
+    (2026-08-23 16:49'da kirmizi, 16:51'de ayni anahtar yesildi).
+    """
+    if status is None:
+        return True
+    if status >= 500:
+        return True
+    folded = (body or "").casefold()
+    if _is_temporary_channel_text(folded):
+        return True
+    if status == 429:
+        return not any(marker in folded for marker in _QUOTA_EXHAUSTED_MARKERS)
+    return False
+
+
 def _api_key_check_reason(status, body: str) -> str:
     """HTTP kodunu kullanicinin anlayacagi tek satira cevirir."""
     text = ""
@@ -490,6 +529,7 @@ def _api_key_check_reason(status, body: str) -> str:
     except Exception:
         text = (body or "")[:120]
     text = " ".join(text.split())[:160]
+    folded = (text or "").casefold()
     labels = {
         401: "anahtar gecersiz veya askida",
         403: "anahtarin bu modele/gruba izni yok",
@@ -497,10 +537,15 @@ def _api_key_check_reason(status, body: str) -> str:
         429: "kota bitti veya hiz siniri",
     }
     label = labels.get(status, f"HTTP {status}" if status else "baglanti yok")
-    if any(marker in (text or "").casefold()
-           for marker in _QUOTA_EXHAUSTED_MARKERS):
+    # new-api ayni 404'u iki bambaska durum icin doner: model gercekten
+    # grupta yoksa VE ust kaynak kanali gecici kapaliysa. Ikincisi bir kac
+    # dakikada kendi kendine duzelir; "model yok" demek yaniltici olur.
+    if _is_temporary_channel_text(folded):
+        label = "bayinin kanali gecici olarak kapali"
+    elif any(marker in folded for marker in _QUOTA_EXHAUSTED_MARKERS):
         label = "kota bitti"
     return f"{label} — {text}" if text else label
+
 
 
 def list_models_for_key(api_key: str, base_url: str,
@@ -533,7 +578,8 @@ def _model_missing_hint(api_key: str, base_url: str, model: str,
     if not names:
         return ""
     if model in names:
-        return "model listede gorunuyor ama istek reddedildi"
+        return ("model grubun listesinde var; sorun kanal atamasi "
+                "veya kota olabilir")
     near = [name for name in names
             if name.split(":")[0].startswith((model or "")[:5])]
     if near:
@@ -541,14 +587,52 @@ def _model_missing_hint(api_key: str, base_url: str, model: str,
     return f"grupta {len(names)} model var ama bu yok"
 
 
+def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
+                         timeout: float) -> dict:
+    """Rotalari sirayla dener; ilk KESIN cevap sonucu belirler."""
+    last = {"ok": False, "status": None, "latency_ms": None,
+            "detail": "baglanti yok", "route": "", "hint": "", "flaky": True}
+    for route in route_urls:
+        if not route:
+            continue
+        started = time.monotonic()
+        status, body, transport = _api_key_check_request(
+            f"{route}/chat/completions", api_key, timeout, payload)
+        elapsed = int((time.monotonic() - started) * 1000)
+        if transport or status is None:
+            last = {"ok": False, "status": None, "latency_ms": elapsed,
+                    "detail": transport or "baglanti yok",
+                    "route": route, "hint": "", "flaky": True}
+            continue
+        if status == 200:
+            return {"ok": True, "status": 200, "latency_ms": elapsed,
+                    "detail": "calisiyor", "route": route, "hint": "",
+                    "flaky": False}
+        flaky = _api_key_check_is_flaky(status, body)
+        result = {"ok": False, "status": status, "latency_ms": elapsed,
+                  "detail": _api_key_check_reason(status, body),
+                  "route": route, "hint": "", "flaky": flaky}
+        if flaky:
+            # Yol veya kanal dalgalaniyor: bu rotayi anahtara yazmayiz.
+            last = result
+            continue
+        if status == 404:
+            result["hint"] = _model_missing_hint(
+                api_key, route, model, min(timeout, 10.0))
+        return result
+    return last
+
+
 def probe_api_key(api_key: str, base_url: str, model: str,
                   timeout: float = API_KEY_CHECK_TIMEOUT,
-                  route_urls=None) -> dict:
+                  route_urls=None, attempts: int = 2,
+                  retry_delay: float = 3.0) -> dict:
     """Bir anahtari kucuk bir istekle sinar.
 
-    Shuai adresleri icin butun rotalar sirayla denenir: ilk KESIN cevap
-    (2xx veya 4xx) sonucu belirler; tasima hatasi ve 5xx bir sonraki rotaya
-    gecirtir, cunku bunlar anahtarin degil yolun sorunudur.
+    Kesin cevaplar (401/403/gercek 404) ilk rotada isi bitirir. Gecici
+    gorunen hatalar once siradaki rotaya, tur bitince de kisa bir bekleme
+    sonrasi yeni bir tura devrolur; bayinin kanali dalgalanirken saglam bir
+    anahtari kirmizi yakmamak icin.
     """
     api_key = str(api_key or "").strip()
     model = str(model or "").strip()
@@ -568,35 +652,17 @@ def probe_api_key(api_key: str, base_url: str, model: str,
         else:
             route_urls = [normalized or str(base_url or "").rstrip("/")]
     payload = _api_key_check_payload(model)
-    last = {"ok": False, "status": None, "latency_ms": None,
-            "detail": "baglanti yok", "route": "", "hint": ""}
-    for route in route_urls:
-        if not route:
-            continue
-        started = time.monotonic()
-        status, body, transport = _api_key_check_request(
-            f"{route}/chat/completions", api_key, timeout, payload)
-        elapsed = int((time.monotonic() - started) * 1000)
-        if transport or status is None:
-            last = {"ok": False, "status": None, "latency_ms": elapsed,
-                    "detail": transport or "baglanti yok",
-                    "route": route, "hint": ""}
-            continue
-        if status == 200:
-            return {"ok": True, "status": 200, "latency_ms": elapsed,
-                    "detail": "calisiyor", "route": route, "hint": ""}
-        result = {"ok": False, "status": status, "latency_ms": elapsed,
-                  "detail": _api_key_check_reason(status, body),
-                  "route": route, "hint": ""}
-        if status >= 500:
-            # Sunucu arizasi: yol sorunu olabilir, siradaki rotayi dene.
-            last = result
-            continue
-        if status == 404:
-            result["hint"] = _model_missing_hint(
-                api_key, route, model, min(timeout, 10.0))
-        return result
-    return last
+    result = {}
+    for turn in range(max(1, int(attempts))):
+        if turn:
+            time.sleep(max(0.0, retry_delay))
+        result = _api_key_check_sweep(
+            api_key, model, route_urls, payload, timeout)
+        if result["ok"] or not result.get("flaky"):
+            break
+    result.pop("flaky", None)
+    return result
+
 
 
 def configure_shuai_route_failover(
