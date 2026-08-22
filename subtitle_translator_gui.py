@@ -18927,7 +18927,9 @@ class App(ctk.CTk):
                      font=ctk.CTkFont("Consolas", 11),
                      fg_color=CARD, border_color=BORDER, text_color=FG)
         self.main_custom_key_entry.pack(fill="x", padx=4, pady=(0,4))
-        _grid_hide(self.main_custom_frame)   # başlangıçta kapalı (default OFF)
+        # Başlangıçta gizli; gerçek görünürlüğü _sync_main_custom_visibility
+        # belirler (varsayılan AÇIK — eski 'default OFF' yorumu yanlıştı).
+        _grid_hide(self.main_custom_frame)
 
         # Bu 3 alan yalnızca _start()/_resume()/kapanışta değil, ALANDAN ÇIKINCA da
         # kaydedilir — kullanıcı doldurup çeviri başlatmadan/uygulamayı düzgün
@@ -24038,6 +24040,9 @@ class App(ctk.CTk):
             self._current_skippable_pass = ""
             self._skip_current_pass_request = None
             self._run_series_memory = {}
+            # Koşuya özel checkpoint önbelleği/sayaçları (bkz. madde 7b).
+            self.__dict__.pop("_sync_ckpt_store_cache", None)
+            self.__dict__.pop("_sync_ckpt_resumed_total", None)
             self._run_precontext_data = {}
             self._active_snapshot = self._take_run_snapshot()
             resume_settings = getattr(self, "_resume_snapshot_override", None)
@@ -24120,6 +24125,9 @@ class App(ctk.CTk):
             self._current_skippable_pass = ""
             self._skip_current_pass_request = None
             self._run_series_memory = {}
+            # Koşuya özel checkpoint önbelleği/sayaçları (bkz. madde 7b).
+            self.__dict__.pop("_sync_ckpt_store_cache", None)
+            self.__dict__.pop("_sync_ckpt_resumed_total", None)
             self._run_precontext_data = {}
             self._stop_elapsed_timer()
             if self._job_rows:
@@ -27061,6 +27069,16 @@ class App(ctk.CTk):
         except Exception:
             pass
         if not p.exists():
+            # Temiz kurulum: main_custom varsayılanı AÇIK ama frame gizli
+            # açılıyor ve Batch kilidi yalnız bu çağrıda uygulanıyor.
+            # Eskiden burada erken dönülüyordu; kullanıcı Özel Sağlayıcı
+            # alanlarını GÖREMİYOR ama anahtar oradan okunduğu için
+            # "API anahtarını girin" hatası alıyor, üstelik pasif olması
+            # gereken Batch'i seçebiliyordu (bug taraması madde 2).
+            try:
+                self._sync_main_custom_visibility()
+            except Exception:
+                pass
             self._log_startup_settings("(ayar dosyası yok, varsayılanlar)")
             return
         try:
@@ -27215,7 +27233,12 @@ class App(ctk.CTk):
             App._configure_helper_shuai_route(self)
             if "main_custom" in d:
                 self.main_custom_var.set(bool(d["main_custom"]))
+            # Anahtar kayıtta OLMASA da senkronize et: varsayılan AÇIK.
+            # Görünürlük senkronu ayar YÜKLEMESİNİ düşürmemeli.
+            try:
                 self._sync_main_custom_visibility()
+            except Exception:
+                pass
             if "merge_cues" in d:
                 self.merge_cues_var.set(bool(d["merge_cues"]))
             if "ai_segment" in d:
@@ -34009,9 +34032,13 @@ class App(ctk.CTk):
                 self._ckpt_write_warned = True
             log_fn = _log_warn
         save_sync_ckpt_entry_to_store(self._sync_ckpt_path(), cid, text, src_hash, log_fn=log_fn)
+        # _prefill_sync_ckpt önbelleği bayatlamasın (bkz. madde 7b).
+        self.__dict__.pop("_sync_ckpt_store_cache", None)
 
     def _clear_sync_ckpt(self, keys_to_remove=None):
         clear_sync_ckpt_entries_from_store(self._sync_ckpt_path(), keys_to_remove, log_fn=self._log)
+        self.__dict__.pop("_sync_ckpt_store_cache", None)
+        self.__dict__.pop("_sync_ckpt_resumed_total", None)
 
     def _resume_from_sync_ckpt(self, api_requests, raw_map):
         """Checkpoint'teki (içerik imzası eşleşen) tamamlanmış chunk'ları raw_map'e koyar
@@ -34043,7 +34070,17 @@ class App(ctk.CTk):
     def _prefill_sync_ckpt(self, reqs, raw_map, scope: str = "") -> tuple[int, set]:
         """Checkpoint'teki (imzası eşleşen) tamamlanmış chunk'ları raw_map'e koyar; döngüler
         `cid in raw_map` ile atlar. (raw_map'i filtrelemez — chain prev_pairs için uygun.)"""
-        store = load_sync_ckpt_store(self._sync_ckpt_path())
+        # Zincirleme modda bu fonksiyon HER CHUNK için ayrı çağrılıyor;
+        # her çağrıda checkpoint deposunun tamamını diskten okumak
+        # N chunk × M dosya kadar tam JSON okuması demekti. Depo koşu
+        # boyunca bir kez okunup önbelleğe alınır; yazan taraf
+        # (_record_sync_ckpt) önbelleği geçersiz kılar.
+        # (bug taraması madde 7b)
+        cache = self.__dict__.get("_sync_ckpt_store_cache")
+        if cache is None:
+            cache = load_sync_ckpt_store(self._sync_ckpt_path())
+            self._sync_ckpt_store_cache = cache
+        store = cache
         entries = store.get("entries", {})
         if not entries:
             return 0, set()
@@ -34063,8 +34100,15 @@ class App(ctk.CTk):
                 if matched_key:
                     resumed_keys.add(matched_key)
         if n:
-            self._log(f"Çökme kurtarma: {n} tamamlanmış chunk önbellekten alındı "
-                      f"(yeniden çevrilmeyecek)", "ok")
+            # Zincirleme modda chunk başına çağrıldığı için bu satır
+            # kurtarma koşularında log'u dolduruyordu: toplamı say,
+            # 20'de bir bildir.
+            total = int(self.__dict__.get("_sync_ckpt_resumed_total", 0)) + n
+            self._sync_ckpt_resumed_total = total
+            if len(reqs) > 1 or total % 20 == 0 or total == n:
+                self._log(
+                    f"Çökme kurtarma: {total} tamamlanmış chunk önbellekten "
+                    f"alındı (yeniden çevrilmeyecek)", "ok")
         return n, resumed_keys
 
     def _run_sync(self, api_key):
@@ -34390,8 +34434,13 @@ class App(ctk.CTk):
                         continue
                     resumed_n, resumed_now = self._prefill_sync_ckpt([req], raw_map)
                     if resumed_n:
-                        used_ckpt_keys.update(resumed_now)
-                        completed[0] += 1
+                        # chain_file dosyalar arası PARALEL çalışıyor:
+                        # API dalı kilit kullanırken bu dal kullanmıyordu,
+                        # ilerleme sayacı ve ETA eksik sayabiliyordu
+                        # (bug taraması madde 7a).
+                        with lock:
+                            used_ckpt_keys.update(resumed_now)
+                            completed[0] += 1
                         raw = raw_map.get(cid, "")
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
