@@ -131,6 +131,10 @@ class BatchOwnerCancellationTest(unittest.TestCase):
         )
         client = MagicMock()
         client.batches.cancel.side_effect = lambda bid: events.append(("cancel", bid))
+        # İptal çağrısının KABUL edilmesi batch'in terminal olduğu anlamına
+        # gelmez; kurtarma verisi ancak uzak durum terminal DOĞRULANINCA
+        # silinir (OpenAI batch'i önce 'cancelling' durumuna alır).
+        client.batches.retrieve.return_value = SimpleNamespace(status="cancelled")
 
         with patch.object(gui, "OpenAI", return_value=client), \
                 patch("hybrid_translate.mark_cancelled_batch_sessions",
@@ -142,6 +146,33 @@ class BatchOwnerCancellationTest(unittest.TestCase):
         self.assertIn(("cancel", "batch_A"), events)
         self.assertIn(("session", ("batch_A",)), events)
         self.assertIn(("recovery", ("batch_A",)), events)
+
+    def test_recovery_survives_while_the_batch_is_still_cancelling(self):
+        """cancel kabul edildi ama durum hala 'cancelling': kismi ucretli
+        ciktiya ulasan tek yerel bag olan kurtarma verisi SILINMEZ."""
+        events = []
+        app = SimpleNamespace(
+            _batch_lock=threading.RLock(),
+            _active_batches={"batch_A": ("sk-test", "")},
+            _write_batch_owner=lambda: events.append("owner"),
+            _clear_batch_recovery=lambda ids: events.append(
+                ("recovery", tuple(ids))),
+            _log=MagicMock(),
+        )
+        client = MagicMock()
+        client.batches.retrieve.return_value = SimpleNamespace(
+            status="cancelling")
+
+        with patch.object(gui, "OpenAI", return_value=client), \
+                patch("hybrid_translate.mark_cancelled_batch_sessions",
+                      side_effect=lambda ids: events.append(
+                          ("session", tuple(ids)))):
+            gui.App._cancel_active_batches(app)
+
+        # Batch aktif listede KALIR ve kurtarma verisi silinmez.
+        self.assertEqual(app._active_batches, {"batch_A": ("sk-test", "")})
+        self.assertIn(("recovery", ()), events)
+        self.assertNotIn(("session", ("batch_A",)), events)
 
     def test_failed_cancel_remains_owned_and_recoverable(self):
         events = []

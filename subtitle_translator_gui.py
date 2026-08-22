@@ -18405,20 +18405,16 @@ class App(ctk.CTk):
 
         def _resume_selected():
             selected = [bid for bid, v in check_vars.items() if v.get()]
-            unselected = [bid for bid, v in check_vars.items() if not v.get()]
             dlg.destroy()
             if not selected:
                 return
-            # Seçilmeyenleri batch_id.txt'den çıkar ve fmap dosyalarını sil
-            if unselected:
-                self._clear_batch_recovery(unselected)
-            # batch_id.txt'yi sadece seçilenlerle güncelle
-            bid_path = _batch_id_path()
-            try:
-                mutate_batch_ids(bid_path, replace=selected)
-            except Exception:
-                pass
-            self._resume()
+            # SEÇMEMEK 'sil' DEĞİLDİR: silme için ayrı bir düğme var.
+            # Eskiden işaretlenmeyen ÜCRETLİ batch'lerin fmap dosyaları
+            # siliniyor ve kimlikleri batch_id.txt'den çıkarılıyordu;
+            # kullanıcı tek bir batch'i sürdürmek isterken diğerlerinin
+            # yerel kurtarma bağlantısı kalıcı olarak kayboluyordu.
+            # Kapsam artık dosyaya dokunmadan _resume'a geçiriliyor.
+            self._resume(only_batch_ids=selected)
 
         def _delete_selected():
             selected = [bid for bid, v in check_vars.items() if v.get()]
@@ -28592,7 +28588,15 @@ class App(ctk.CTk):
         else:
             App._start_worker(self, _guarded_worker, (self._run_batch, key))
 
-    def _resume(self):
+    def _resume(self, only_batch_ids=None):
+        """batch_id.txt'deki işleri sürdürür.
+
+        only_batch_ids verilirse YALNIZ o kimlikler işlenir; dosyaya
+        dokunulmaz. Eskiden bekleyen-batch penceresi kapsamı daraltmak
+        için batch_id.txt'yi seçilenlerle DEĞİŞTİRİYOR ve seçilmeyenlerin
+        fmap dosyalarını SİLİYORDU — seçmemek 'sil' demek değildir ve
+        ücretli batch'lerin yerel kurtarma bağlantısı kalıcı kayboluyordu.
+        """
         if getattr(self, "_is_running", False):
             return
         key = self._validate()
@@ -28621,6 +28625,14 @@ class App(ctk.CTk):
             batch_ids.extend(parts)
         batch_ids = list(dict.fromkeys(batch_ids))
         batch_ids = [bid for bid in batch_ids if is_safe_batch_id(bid)]
+        if only_batch_ids:
+            wanted = {str(bid).strip() for bid in only_batch_ids}
+            batch_ids = [bid for bid in batch_ids if bid in wanted]
+            if not batch_ids:
+                messagebox.showerror(
+                    "Hata",
+                    "Seçilen batch kimlikleri batch_id.txt içinde bulunamadı.")
+                return
         if not batch_ids:
             messagebox.showerror("Hata", "batch_id.txt boş veya bozuk.")
             return
@@ -29031,23 +29043,54 @@ class App(ctk.CTk):
             )
             return False
 
+    @staticmethod
+    def _remote_batch_terminal_status(self, client, batch_id):
+        """Uzak batch TERMİNAL durumdaysa durumu, değilse None döner.
+
+        Durum okunamazsa TEMKİNLİ davranır ve None döner: kurtarma verisi
+        korunur. Yanlışlıkla korunan bir kayıt zararsızdır; yanlışlıkla
+        silinen ücretli bir batch geri getirilemez."""
+        terminal = {"cancelled", "failed", "expired", "completed"}
+        try:
+            remote = client.batches.retrieve(batch_id)
+        except Exception:
+            return None
+        status = str(getattr(remote, "status", "") or "").strip().lower()
+        return status if status in terminal else None
+
     def _cancel_active_batches(self):
         """Açık OpenAI batch'lerini iptal eder + kurtarma dosyalarını temizler.
         UI'ı bloklamamak için arka plan thread'inde çağrılmalı."""
         with self._batch_lock:
             items = list(self._active_batches.items())
         cancelled = []
+        still_cancelling = []
         for bid, auth in items:
             if isinstance(auth, (tuple, list)):
                 key, base_url = auth[0], auth[1] if len(auth) > 1 else ""
             else:
                 key, base_url = auth, ""
             try:
-                OpenAI(api_key=key, base_url=base_url or None).batches.cancel(bid)
-                self._log(f"Batch iptal edildi: {bid}", "ok")
-                cancelled.append(bid)
+                client = OpenAI(api_key=key, base_url=base_url or None)
+                client.batches.cancel(bid)
             except Exception as e:
                 self._log(f"Batch iptal edilemedi ({bid}): {e}", "warn")
+                continue
+            # İPTAL ÇAĞRISININ KABUL EDİLMESİ, batch'in TERMİNAL olduğu
+            # anlamına GELMEZ: OpenAI batch'i önce 'cancelling' durumuna
+            # alır, 'cancelled' olması dakikalar sürebilir ve bu arada
+            # KISMİ (ücreti ödenmiş) çıktı üretmiş olabilir. Kurtarma
+            # dosyalarını hemen silmek, o çıktıya ulaşan tek yerel bağı
+            # yok ediyordu. Durum terminal olarak doğrulanana kadar
+            # kurtarma verisi KORUNUR; sonraki açılışta temizlenir.
+            status = App._remote_batch_terminal_status(self, client, bid)
+            if status is None:
+                still_cancelling.append(bid)
+                self._log(
+                    f"Batch iptal isteği gönderildi ama durumu henüz terminal değil ({bid}); kurtarma verisi korunuyor.", "warn")
+                continue
+            cancelled.append(bid)
+            self._log(f"Batch iptal edildi: {bid} ({status})", "ok")
         with self._batch_lock:
             for bid in cancelled:
                 self._active_batches.pop(bid, None)
@@ -29056,6 +29099,10 @@ class App(ctk.CTk):
             import hybrid_translate as ht
             ht.mark_cancelled_batch_sessions(cancelled)
         self._clear_batch_recovery(cancelled)
+        if still_cancelling:
+            self._log(
+                "İptal edilen batch'lerden bazıları hâlâ 'cancelling' durumunda; kurtarma kayıtları silinmedi: "
+                + ", ".join(still_cancelling[:6]), "info")
     def _toggle_pause_between_files(self):
         if self._pause_btw_files.is_set():
             self._pause_btw_files.clear()
@@ -38121,7 +38168,7 @@ class App(ctk.CTk):
                         _resolve_output_path(input_dir, output_dir, fp,
                                              same_folder=self.same_folder_var.get(),
                                              selected_roots=self._output_selection_roots(),
-                                             target_language=target_language))
+                                             target_language=_tgt_lang))
             expected_source_hash = (source_hashes or {}).get(fp) or (
                 source_hashes or {}).get(str(fp))
             baseline = (output_baselines or {}).get(fp) or (
@@ -38744,7 +38791,7 @@ class App(ctk.CTk):
                 schema_name=schema_dict.get("name", ""),
                 source_language=_file_src_lang,
                 context_fingerprint=_tm_context_fingerprint(
-                    _expected_source_hash,
+                    expected_source_hash,
                     self._get_locked_terms_dict(fp, _tgt_lang),
                     self._tm_canonical_context(fp, _tgt_lang)))
             if _hata_n == 0 and _n_filled == 0:
@@ -40462,7 +40509,15 @@ class App(ctk.CTk):
 
                 ht.update_batch_session(
                     session, filepath, "completed", out_path=out_path,
-                    source_hash=_expected_source_hash,
+                    # BU dosyanın hash'i (döngü değişkeni). Faz 1'den
+                    # artakalan `_expected_source_hash` SON işlenen
+                    # dosyaya aittir; buraya yazılınca son dosya dışındaki
+                    # bütün tamamlanmış dosyalar YANLIŞ hash ile
+                    # kaydediliyor, sonraki açılışta oturum onları
+                    # 'kaynak değişmiş' sanıp pending'e çekiyor ve
+                    # ÜCRETLİ işi yeniden gönderiyordu. Aynı tuzak
+                    # iki-dalgalı yolda zaten düzeltilmişti (bkz. yukarısı).
+                    source_hash=expected_source_hash,
                     output_state=ht._file_state_signature(out_path))
                 self._record_file_status(filepath, "Tamamlandı", "done")
                 if _tw_batch_ids:
