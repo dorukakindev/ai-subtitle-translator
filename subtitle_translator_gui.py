@@ -28150,6 +28150,88 @@ class App(ctk.CTk):
         ctk.CTkButton(buttons, text="Kaydet", width=110, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, command=save_profile).pack(side="left")
 
+    def _refresh_shuai_route_panel(self):
+        """Rota ölçüm tablosunu yeniden çizer (hızlıdan yavaşa)."""
+        frame = getattr(self, "_shuai_probe_frame", None)
+        if frame is None:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+        except Exception:
+            return
+        for widget in frame.winfo_children():
+            widget.destroy()
+        try:
+            from provider_retry import shuai_route_probe_report, shuai_probe_ran
+            rows = shuai_route_probe_report()
+            measured = shuai_probe_ran()
+        except Exception:
+            return
+        now = time.monotonic()
+        for index, row in enumerate(rows):
+            if not measured:
+                value, color = "—", FG2
+            elif row["probe_ok"]:
+                value, color = f"{row['median_ms']} ms", GREEN
+            else:
+                value, color = (row["detail"] or "yanıtsız"), WARN
+            ctk.CTkLabel(
+                frame, text=("▸ " if measured and index == 0 and row["probe_ok"]
+                             else "   "),
+                text_color=ACCENT, width=18,
+                font=ctk.CTkFont("Consolas", 10)).grid(
+                    row=index, column=0, sticky="w")
+            ctk.CTkLabel(
+                frame, text=f"{row['label']}  ({row['host']})",
+                text_color=FG, anchor="w",
+                font=ctk.CTkFont("Segoe UI", 10)).grid(
+                    row=index, column=1, sticky="ew", pady=1)
+            note = ""
+            if row["successes"] or row["failures"]:
+                note = f"  {row['successes']}✓/{row['failures']}✕"
+            if row["cooldown_until"] > now:
+                note += f"  ⏳{int(row['cooldown_until'] - now)}s"
+            ctk.CTkLabel(
+                frame, text=note, text_color=FG2, anchor="e",
+                font=ctk.CTkFont("Consolas", 9)).grid(
+                    row=index, column=2, sticky="e", padx=(6, 6))
+            ctk.CTkLabel(
+                frame, text=value, text_color=color, anchor="e", width=90,
+                font=ctk.CTkFont("Consolas", 10, "bold")).grid(
+                    row=index, column=3, sticky="e")
+
+    def _start_shuai_route_probe(self):
+        """'Rotaları Ölç' düğmesi: ölçümü arka planda çalıştırır."""
+        button = getattr(self, "_shuai_probe_btn", None)
+        if button is not None:
+            try:
+                button.configure(state="disabled", text="Ölçülüyor...")
+            except Exception:
+                pass
+
+        def _worker():
+            try:
+                from provider_retry import probe_shuai_routes
+                probe_shuai_routes(attempts=3, log_fn=self._log)
+            except Exception as exc:
+                self._log(f"Rota testi başarısız: {exc}", "warn")
+
+            def _finish():
+                self._refresh_shuai_route_panel()
+                btn = getattr(self, "_shuai_probe_btn", None)
+                if btn is None:
+                    return
+                try:
+                    if btn.winfo_exists():
+                        btn.configure(state="normal", text="⟳  Rotaları Ölç")
+                except Exception:
+                    pass
+
+            _post_ui(self, _finish)
+
+        App._start_worker(self, _worker)
+
     def _refresh_api_keys_panel(self):
         dlg = getattr(self, "_api_keys_dialog", None)
         if not dlg or not dlg.winfo_exists():
@@ -28246,6 +28328,30 @@ class App(ctk.CTk):
         self._api_routes_frame = ctk.CTkFrame(route_card, fg_color="transparent")
         self._api_routes_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
         self._api_routes_frame.grid_columnconfigure(0, weight=1)
+        probe_bar = ctk.CTkFrame(route_card, fg_color="transparent")
+        probe_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
+        probe_bar.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            probe_bar, text="SHUAI ROTA TESTİ", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=0, column=0, sticky="w")
+        self._shuai_probe_btn = ctk.CTkButton(
+            probe_bar, text="⟳  Rotaları Ölç", width=140, height=30,
+            fg_color=CARD, hover_color=BORDER,
+            command=self._start_shuai_route_probe)
+        self._shuai_probe_btn.grid(row=0, column=1)
+        ctk.CTkLabel(
+            probe_bar,
+            text="Anahtar göndermeden her rotanın /api/ping ucunu ölçer; "
+                 "sonuç failover sırasını belirler.",
+            text_color=FG2, anchor="w", justify="left", wraplength=560,
+            font=ctk.CTkFont("Segoe UI", 9)).grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self._shuai_probe_frame = ctk.CTkFrame(route_card, fg_color="transparent")
+        self._shuai_probe_frame.grid(row=3, column=0, sticky="ew",
+                                     padx=16, pady=(4, 12))
+        self._shuai_probe_frame.grid_columnconfigure(1, weight=1)
+        self._refresh_shuai_route_panel()
         self._api_profiles_frame = ctk.CTkScrollableFrame(
             dlg, fg_color=PANEL, corner_radius=12,
             scrollbar_button_color=BORDER, scrollbar_button_hover_color=ACCENT)
@@ -28662,12 +28768,60 @@ class App(ctk.CTk):
                     return None
         return key
 
+    def _shuai_route_preflight(self, attempts: int = 2) -> bool:
+        """Koşu öncesi rota ölçümü + 'hepsi ölü' durumunda hızlı vazgeçme.
+
+        Ölçüm iki iş yapar: (1) soğuk başlangıçta failover sırasını gerçek
+        gecikmeye göre tohumlar, (2) dört rota da yanıt vermiyorsa çeviriyi
+        hiç başlatmayıp istek başına 11x60 sn'lik yeniden deneme merdivenini
+        atlar (2026-08-23: 4/4 rota HTTP 502, ön analiz 10 dakika bekledi).
+        """
+        try:
+            from provider_retry import probe_shuai_routes, normalize_shuai_api_route
+        except Exception:
+            return True
+        self._set_phase("Rota Testi", "SHUAI rotaları ölçülüyor")
+        self._set_status("SHUAI rotaları ölçülüyor")
+        try:
+            probe = probe_shuai_routes(attempts=attempts, log_fn=self._log)
+        except Exception as exc:
+            self._log(f"Rota testi çalıştırılamadı, atlanıyor: {exc}", "warn")
+            return True
+        alive = {url: result for url, result in probe.items() if result.get("ok")}
+        if not alive:
+            self._log(
+                f"Rota testi: {len(probe)} rotanın hiçbiri yanıt vermedi. "
+                "Sağlayıcı ulaşılamıyor; ücretli çeviri başlatılmadı ve uzun "
+                "yeniden deneme merdiveni atlandı. Sağlayıcı toparlayınca "
+                "yeniden Başlat'a basın.", "err")
+            return False
+        fastest_url = min(
+            alive, key=lambda url: alive[url].get("median_ms") or 10 ** 9)
+        fastest_ms = alive[fastest_url].get("median_ms")
+        self._log(
+            f"Rota testi tamam: {len(alive)}/{len(probe)} rota canlı; en hızlı "
+            f"{urlparse(fastest_url).hostname} ({fastest_ms} ms). Failover "
+            "sırası ölçüme göre düzenlendi.", "ok")
+        try:
+            configured = normalize_shuai_api_route(self._main_api_base_url())
+        except Exception:
+            configured = ""
+        if configured and configured not in alive:
+            self._log(
+                f"Seçili ana rota ({urlparse(configured).hostname}) yanıt "
+                "vermiyor; istekler ölçümde canlı çıkan rotaya yönlendirilecek.",
+                "warn")
+        return True
+
     def _provider_model_preflight(self, targets: list) -> bool:
         shuai_targets = [
             target for target in targets if _is_shuai_api_route(target[2])
         ]
         if not shuai_targets:
             return True
+        route_probe = getattr(self, "_shuai_route_preflight", None)
+        if callable(route_probe) and not route_probe():
+            return False
         self._set_phase("API Ön Kontrolü", "model ve grup erişimi doğrulanıyor")
         self._set_status("SHUAI model/grup uygunluğu kontrol ediliyor")
         self._log(

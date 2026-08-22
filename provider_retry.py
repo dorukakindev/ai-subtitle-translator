@@ -5,6 +5,10 @@ import json
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,10 +71,17 @@ _SHUAI_ROUTE_STATES = {
         "attempts": 0, "successes": 0, "failures": 0, "rate_limits": 0,
         "failovers": 0, "total_tokens": 0, "duration_seconds": 0.0,
         "last_error": "",
+        # Koşu öncesi ölçüm (bkz. probe_shuai_routes): soğuk başlangıçta
+        # sıralama artık liste sırasına değil gerçek gecikmeye dayanır.
+        "probe_ok": False, "probe_latency_ms": None, "probe_detail": "",
+        "probe_at": 0.0,
     }
     for _label, url in SHUAI_API_ROUTE_OPTIONS
 }
 _SHUAI_ROUTE_CONDITION = threading.Condition(_SHUAI_FAILOVER_LOCK)
+_SHUAI_PROBE_DONE = False
+SHUAI_ROUTE_PROBE_PATH = "/api/ping"
+_SHUAI_PROBE_UNREACHABLE_RANK = 1_000_000.0
 
 
 def normalize_shuai_api_route(value) -> str:
@@ -88,6 +99,164 @@ def shuai_api_route_label(value) -> str:
         if url == normalized:
             return label
     return SHUAI_API_ROUTE_OPTIONS[0][0]
+
+
+def shuai_route_probe_url(route_url) -> str:
+    """Rota tabanindan (…/v1) saglik ucunu (…/api/ping) turetir."""
+    normalized = normalize_shuai_api_route(route_url)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    return f"{parsed.scheme}://{parsed.netloc}{SHUAI_ROUTE_PROBE_PATH}"
+
+
+def _probe_one_shuai_route(route_url: str, attempts: int, timeout: float) -> dict:
+    """Tek rotayi yoklar. API ANAHTARI GONDERMEZ, yalniz GET atar.
+
+    Her istege rastgele bir nonce konur ve cevapta ayni nonce aranir: ara
+    katman onbelleginden gelen bayat 200 'saglikli' sayilmaz.
+    """
+    probe_url = shuai_route_probe_url(route_url)
+    if not probe_url:
+        return {"ok": False, "successes": 0, "attempts": 0,
+                "median_ms": None, "detail": "invalid-url"}
+    latencies = []
+    detail = ""
+    for _ in range(max(1, int(attempts))):
+        nonce = uuid.uuid4().hex
+        request = urllib.request.Request(
+            f"{probe_url}?nonce={nonce}",
+            headers={
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+                "User-Agent": "SubtitleTranslator-RouteProbe/1.0",
+            },
+        )
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read(65536).decode("utf-8", "replace")
+            elapsed = int((time.perf_counter() - started) * 1000)
+            payload = json.loads(body)
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if (isinstance(payload, dict) and payload.get("success") is True
+                    and isinstance(data, dict)
+                    and data.get("service") == "new-api"
+                    and data.get("nonce") == nonce):
+                latencies.append(max(0, elapsed))
+            elif not detail:
+                detail = "gecersiz yanit"
+        except urllib.error.HTTPError as exc:
+            detail = f"HTTP {exc.code}"
+        except Exception as exc:  # ag/TLS/zaman asimi
+            if not detail:
+                detail = f"{type(exc).__name__}: {exc}"[:120]
+    median = None
+    if latencies:
+        ordered = sorted(latencies)
+        middle = len(ordered) // 2
+        median = (ordered[middle] if len(ordered) % 2
+                  else int(round((ordered[middle - 1] + ordered[middle]) / 2)))
+    return {
+        "ok": bool(latencies),
+        "successes": len(latencies),
+        "attempts": max(1, int(attempts)),
+        "median_ms": median,
+        "detail": "" if latencies else (detail or "yanit yok"),
+    }
+
+
+def probe_shuai_routes(attempts: int = 2, timeout: float = 6.0,
+                       log_fn=None) -> dict:
+    """Dort rotayi paralel yoklar, sonucu sıralamaya tohum olarak yazar.
+
+    Donen: {rota_url: {'ok', 'successes', 'attempts', 'median_ms', 'detail'}}
+    Olcum SADECE siralamayi etkiler; cooldown/health gibi gercek API
+    verisine dokunmaz — ping canli demek, model kanali saglikli demek degil.
+    """
+    global _SHUAI_PROBE_DONE
+    routes = [url for _label, url in SHUAI_API_ROUTE_OPTIONS]
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(routes)) as pool:
+        futures = {
+            pool.submit(_probe_one_shuai_route, url, attempts, timeout): url
+            for url in routes
+        }
+        for future, url in futures.items():
+            try:
+                results[url] = future.result()
+            except Exception as exc:
+                results[url] = {
+                    "ok": False, "successes": 0, "attempts": attempts,
+                    "median_ms": None,
+                    "detail": f"{type(exc).__name__}: {exc}"[:120],
+                }
+    now = time.monotonic()
+    with _SHUAI_ROUTE_CONDITION:
+        for url, result in results.items():
+            state = _SHUAI_ROUTE_STATES.get(url)
+            if state is None:
+                continue
+            state["probe_ok"] = bool(result.get("ok"))
+            state["probe_latency_ms"] = result.get("median_ms")
+            state["probe_detail"] = str(result.get("detail") or "")
+            state["probe_at"] = now
+        _SHUAI_PROBE_DONE = True
+    if log_fn is not None:
+        for label, url in SHUAI_API_ROUTE_OPTIONS:
+            result = results.get(url) or {}
+            host = urlparse(url).hostname or url
+            if result.get("ok"):
+                log_fn(
+                    f"Rota testi: {label} ({host}) "
+                    f"{result.get('successes')}/{result.get('attempts')} "
+                    f"· medyan {result.get('median_ms')} ms", "info")
+            else:
+                log_fn(
+                    f"Rota testi: {label} ({host}) yanit vermedi "
+                    f"({result.get('detail')})", "warn")
+    return results
+
+
+def shuai_route_probe_report() -> list:
+    """GUI tablosu icin satirlar; hizlidan yavasa siralidir."""
+    rows = []
+    with _SHUAI_ROUTE_CONDITION:
+        for label, url in SHUAI_API_ROUTE_OPTIONS:
+            state = dict(_SHUAI_ROUTE_STATES.get(url) or {})
+            rows.append({
+                "label": label,
+                "url": url,
+                "host": urlparse(url).hostname or url,
+                "probe_ok": bool(state.get("probe_ok")),
+                "median_ms": state.get("probe_latency_ms"),
+                "detail": str(state.get("probe_detail") or ""),
+                "health": str(state.get("health") or "unknown"),
+                "cooldown_until": float(state.get("cooldown_until", 0.0) or 0.0),
+                "successes": int(state.get("successes", 0) or 0),
+                "failures": int(state.get("failures", 0) or 0),
+            })
+    rows.sort(key=lambda row: (
+        0 if row["probe_ok"] else 1,
+        row["median_ms"] if row["median_ms"] is not None else 10 ** 9,
+    ))
+    return rows
+
+
+def shuai_probe_ran() -> bool:
+    return _SHUAI_PROBE_DONE
+
+
+def reset_shuai_route_probe() -> None:
+    """Olcum sonuclarini siler (testler ve ayar degisikligi icin)."""
+    global _SHUAI_PROBE_DONE
+    with _SHUAI_ROUTE_CONDITION:
+        for state in _SHUAI_ROUTE_STATES.values():
+            state["probe_ok"] = False
+            state["probe_latency_ms"] = None
+            state["probe_detail"] = ""
+            state["probe_at"] = 0.0
+        _SHUAI_PROBE_DONE = False
 
 
 def configure_shuai_route_failover(
@@ -129,6 +298,24 @@ def _shuai_route_scope(checkpoint_label: str = "") -> str:
     return "main" if label.startswith(main_prefixes) else "helper"
 
 
+def _shuai_probe_rank(state) -> float:
+    """Ölçüm sıralaması. Hiç ölçüm yapılmadıysa herkese 0 → nötr.
+
+    Ölçüm yapıldıysa cevap vermeyen rota en sona düşer; cevap veren rotalar
+    medyan gecikmeye göre sıralanır. Bu kriter BAŞARI ORANININ ALTINDA durur:
+    ping ölçümü hangi kenarın canlı olduğunu söyler, yukarı akış kanalının
+    sağlığını değil (2026-08-23 sağlayıcı kesintisi).
+    """
+    if not _SHUAI_PROBE_DONE:
+        return 0.0
+    if not state.get("probe_ok"):
+        return _SHUAI_PROBE_UNREACHABLE_RANK
+    latency = state.get("probe_latency_ms")
+    if latency is None:
+        return _SHUAI_PROBE_UNREACHABLE_RANK
+    return float(latency)
+
+
 def _shuai_route_score(route: str, preferred: str, last_working: str) -> tuple:
     state = _SHUAI_ROUTE_STATES.get(route) or {}
     attempts = int(state.get("attempts", 0) or 0)
@@ -139,10 +326,15 @@ def _shuai_route_score(route: str, preferred: str, last_working: str) -> tuple:
         if successes else 999999.0
     )
     success_rate = successes / max(1, successes + failures)
+    probe_rank = _shuai_probe_rank(state)
+    # Olcum yapildi ve bu rota cevap vermediyse 'tercih edilen'/'son calisan'
+    # ayricaligi da dusurulur: olu rotaya bos yere ilk istegi harcamayalim.
+    probe_dead = probe_rank >= _SHUAI_PROBE_UNREACHABLE_RANK
     return (
-        0 if route == last_working else 1,
-        0 if route == preferred else 1,
+        0 if (route == last_working and not probe_dead) else 1,
+        0 if (route == preferred and not probe_dead) else 1,
         -success_rate if attempts else 0.0,
+        probe_rank,
         int(state.get("rate_limits", 0) or 0),
         avg,
     )
