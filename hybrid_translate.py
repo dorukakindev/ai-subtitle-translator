@@ -6493,9 +6493,14 @@ def find_garble_tokens(text, source_text: str = "") -> list:
             continue
         if _garble_neighbor_is_capitalized(s, m.start(), m.end()):
             continue  # özel-isim dizisinin parçası olabilir (ör. "Monumento a la Humanidad")
-        if re.search(rf"(?<![A-Za-z]){re.escape(m.group(0))}(?![A-Za-z])",
-                     str(source_text or ""), re.IGNORECASE):
-            continue  # kaynakta da tek başına duruyor: madde işareti/şema etiketi
+        # Kaynakta aynı harfin tek başına geçmesi TEK BAŞINA muafiyet DEĞİLDİR:
+        # "to a toad-obsessed friend" içindeki 'a' İngilizce artikeldir ve
+        # Türkçe satırda kalması gerçek bir sızıntıdır (Hamilton #357, canlı
+        # log 2026-08-09, tests/test_live_log_regressions_20260809.py). Şema
+        # etiketi ("a) ...", "magnets a,") ile artikeli cue düzeyinde ayırmanın
+        # güvenilir yolu yok; dosya çapında eleme _delivery_garble_ids'te
+        # yapılıyor, orada aynı harfin kaynak sözcük dağarcığında bulunması
+        # meşru etiket sayılıyor.
         found.append((m.group(0), "R1_stray_letter"))
 
     for m in _GARBLE_LINEBREAK_DUP_INITIAL_RE.finditer(s):

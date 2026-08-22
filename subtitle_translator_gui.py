@@ -21779,7 +21779,12 @@ class App(ctk.CTk):
             "media_mode": (self.media_mode_var.get()
                            if getattr(self, "media_mode_var", None) else "Dizi"),
             "main_api_key": self._main_api_key(),
-            "main_api_key_backup": self._main_api_key_backup(),
+            # getattr: eski test taklitleri (SimpleNamespace) bu resolver'ı
+            # tanımıyor; yokluğunda yedek anahtar sadece boş kalır.
+            "main_api_key_backup": (
+                self._main_api_key_backup()
+                if callable(getattr(self, "_main_api_key_backup", None))
+                else ""),
             "main_api_base_url": self._main_api_base_url(),
             "main_model_name": self._main_model_name(),
             "schema": self._get_schema(),
@@ -24792,19 +24797,24 @@ class App(ctk.CTk):
                 # Ana VE yardimci kapsam: ana anahtari devralan roller de
                 # yedege gecer. Kendi anahtari olan rol etkilenmez — gecis
                 # yalniz BIRINCIL anahtari tasiyan isteklerde yapilir.
+                log_fn = getattr(self, "_log", None)
+                if not callable(log_fn):
+                    log_fn = None
                 registered = [
                     configure_api_key_fallback(
                         scope, primary_key=primary_key,
-                        backup_key=backup_key, log_fn=self._log)
+                        backup_key=backup_key, log_fn=log_fn)
                     for scope in ("main", "helper")
                 ]
-                if any(registered):
-                    self._log(
+                if any(registered) and log_fn is not None:
+                    log_fn(
                         "2. gruba ait yedek API anahtarı hazır; ana anahtar "
                         "kota/grup hatası verirse ana çeviri ve onu devralan "
                         "yardımcı görevler yedeğe geçecek.", "info")
             except Exception as exc:
-                self._log(f"Yedek API anahtarı ayarlanamadı: {exc}", "warn")
+                log_fn = getattr(self, "_log", None)
+                if callable(log_fn):
+                    log_fn(f"Yedek API anahtarı ayarlanamadı: {exc}", "warn")
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
             if (getattr(self, "_active_snapshot", {}) or {}).get("prevent_sleep"):

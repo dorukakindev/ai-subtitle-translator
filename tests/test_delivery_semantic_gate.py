@@ -174,10 +174,28 @@ class SourceBoundRulesTest(unittest.TestCase):
             ht._garble_stem_in_source("conquistadorları", "the conquistadors"))
         self.assertFalse(ht._garble_stem_in_source("simwolika", "symbolism"))
 
-    def test_a_list_marker_present_in_the_source_is_not_garble(self):
-        self.assertEqual(
-            ht.find_garble_tokens("a) ülkenin savunması", "a) for the defence"),
-            [])
+    def test_a_stray_article_is_still_reported_per_cue(self):
+        # Hamilton #357 (canlı log 2026-08-09): kaynaktaki 'a' İngilizce
+        # artikeldir ve Türkçe satırda kalması gerçek sızıntıdır. Şema
+        # etiketiyle ("a) ...") ayrımı cue düzeyinde yapılamıyor, bu yüzden
+        # eleme DOSYA düzeyinde (_delivery_garble_ids) yapılıyor.
+        hits = ht.find_garble_tokens(
+            "Ken adlı, kurbağa takıntılı" + chr(10) + "a arkadaşına.",
+            "to a toad-obsessed friend named Ken.")
+        self.assertIn("R1_stray_letter", {rule for _tok, rule in hits})
+
+    def test_a_list_marker_is_filtered_at_file_level(self):
+        blocks = [
+            (1, "00:00:01,000 --> 00:00:02,000", "a) ülkenin savunması için"),
+            (2, "00:00:03,000 --> 00:00:04,000", "b) donanmanın bakımı için"),
+        ]
+        sources = {
+            "1": ("a) for the defence of the realm and every county in it, "
+                  "so that people could live in peace and quiet at home"),
+            "2": ("b) for the upkeep of the navy which had to be paid for "
+                  "somehow by somebody in the end, as everyone understood"),
+        }
+        self.assertEqual(gui._delivery_garble_ids(blocks, sources), [])
 
 
 class AuditWiringTest(unittest.TestCase):
