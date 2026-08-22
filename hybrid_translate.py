@@ -7924,12 +7924,113 @@ def _normalized_polish_numeric_tokens(text: str) -> list[str]:
     return normalized
 
 
+_IMPERIAL_UNIT_RE = re.compile(
+    r"\b(?:pounds?|lbs?|feet|foot|ft|inch(?:es)?|miles?|yards?|acres?|"
+    r"gallons?|pints?|quarts?|ounces?|oz|fahrenheit|stones?|degrees?)\b",
+    re.IGNORECASE)
+_METRIC_UNIT_RE = re.compile(
+    r"\b(?:kilo|kg|gram|metre|santim|km|kilometre|litre|hektar|ton|"
+    r"santigrat|derece)\w*", re.IGNORECASE)
+
+
+def _numeric_digit_groups(text: str) -> list:
+    """Metindeki sayıların RAKAM GRUPLARI: '08.30' ve '8:30' aynı, '1,400' 1400."""
+    groups = []
+    for token in _normalized_numeric_tokens(text):
+        for part in re.findall(r"\d+", token):
+            try:
+                groups.append(int(part))
+            except ValueError:
+                pass
+    return groups
+
+
+_TR_NUMBER_CASE_SUFFIXES = frozenset({
+    "a", "e", "i", "ı", "u", "ü",
+    "da", "de", "ta", "te",
+    "dan", "den", "tan", "ten",
+    "ya", "ye", "yi", "yı", "yu", "yü",
+    "la", "le", "yla", "yle", "ile",
+    "in", "ın", "un", "ün", "nin", "nın", "nun", "nün",
+    "ler", "lar", "leri", "ları", "lerde", "larda",
+    "si", "sı", "su", "sü", "nci", "ncı", "ncu", "ncü",
+    "inci", "ıncı", "uncu", "üncü", "dir", "dır", "dur", "dür",
+    "de", "de ki", "deki", "daki",
+})
+
+
+def _tr_number_values_unfiltered(text: str) -> list:
+    """Çeviride geçen TÜM Türkçe sayı değerleri, muhafazakar filtre olmadan.
+
+    _tr_spelled_numbers tek başına 'bir'/'beş' gibi küçük sayıları BİLEREK
+    atlar (kaynak-güdümlü guard'da 'yüz'=face tuzağını susturmak için). Ama
+    "3 years" -> "Üç yıl" doğruluğunu ölçerken tam da o küçük değerler
+    gerekiyor; burada fazladan değer görmek yalnız guard'ı hoşgörülü yapar.
+    """
+    # "İki".lower() birleşik nokta bırakır ve "iki" ile eşleşmez; Türkçe
+    # metinde cümle başındaki her sayı sözcüğü bu yüzden görülmüyordu.
+    raw = [word.replace("İ", "i").replace("I", "ı").lower()
+           for word, _gap in
+           _number_word_gaps(text, _TR_NUMBER_WORD_TOKEN_RE)]
+    # Ek almış sayı sözcüğü de sayılır: "Beşte", "ikide", "beşle", "üçü".
+    # Ek listesi KAPALI tutuluyor: serbest kısaltma "Biró"yu "bir" sanıp
+    # havuza 1 ekliyor ve komşu sayılarla birleşip 38'i 39 yapıyordu.
+    tokens = []
+    for word in raw:
+        if word in _TR_NUMBER_WORDS:
+            tokens.append(word)
+            continue
+        stem = ""
+        for size in range(len(word) - 1, 1, -1):
+            candidate = word[:size]
+            if (candidate in _TR_NUMBER_WORDS
+                    and word[size:] in _TR_NUMBER_CASE_SUFFIXES):
+                stem = candidate
+                break
+        tokens.append(stem or word)
+    values = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index] not in _TR_NUMBER_WORDS:
+            index += 1
+            continue
+        group = []
+        while index < len(tokens) and tokens[index] in _TR_NUMBER_WORDS:
+            group.append(tokens[index])
+            index += 1
+        values.extend(_tr_number_group_values(group))
+        # Grup değerinin YANINDA tek tek değerler de havuza girer: "beşle yedi"
+        # bitişik olduğu için 12 diye okunuyor ama kaynakta 5 ve 7 ayrı ayrı
+        # geçiyor. Havuz genişlemesi guard'ı yalnız hoşgörülü yapar.
+        if len(group) > 1:
+            for word in group:
+                values.append(_TR_NUMBER_WORDS[word])
+    return values
+
+
 def _numeric_token_mismatch(src_text: str, tr_text: str) -> bool:
-    src_nums = _normalized_numeric_tokens(src_text)
-    if not src_nums:
+    """Kaynaktaki bir sayı çeviride hiç karşılık bulmuyorsa True.
+
+    Eskiden ham token dizileri birebir karşılaştırılıyordu ve bu üç meşru
+    sınıfı hata sayıyordu (denetim Tur 4, madde 6; gerçek arşivdeki 872
+    uyarının büyük çoğunluğu):
+      - rakamın DOĞRU yazıyla çevrilmesi: "3 years" -> "Üç yıl"
+      - saat biçimi farkı: "8:30 A.M." -> "08.30", "07:00 to 08:00" -> "07:00-08:00"
+      - birim dönüşümü: "150 pounds" -> "68 kilo", "102 degrees" -> "38,9 derece"
+    Artık karşılaştırma DEĞER üzerinden yapılıyor, çeviri tarafında yazıyla
+    sayılar da sayılıyor ve emperyal->metrik dönüşüm taşıyan cue atlanıyor.
+    """
+    src_groups = _numeric_digit_groups(src_text)
+    if not src_groups:
         return False
-    from collections import Counter
-    return Counter(src_nums) != Counter(_normalized_numeric_tokens(tr_text))
+    source_value = str(src_text or "")
+    target_value = str(tr_text or "")
+    if (_IMPERIAL_UNIT_RE.search(source_value)
+            and _METRIC_UNIT_RE.search(target_value)):
+        return False  # dönüşüm bekleniyor; token eşitliğiyle doğrulanamaz
+    target_pool = set(_numeric_digit_groups(target_value))
+    target_pool.update(_tr_number_values_unfiltered(target_value))
+    return any(value not in target_pool for value in src_groups)
 
 
 def _has_unanchored_numeric_change(old_text: str, candidate_text: str,
