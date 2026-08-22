@@ -3197,6 +3197,23 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
     if not text:
         return text
     lines = text.split('\n')
+    # ZATEN max_lines'ı AŞMIŞ cue: fonksiyon 'satır sayısı ASLA max_lines'ı
+    # aşmaz (EBU)' diyor ama girdi 3 satırla geldiğinde döngü hiç çalışmıyor
+    # ve 3 satır teslime gidiyordu. Gerçek dosyalarda ölçüldü: 127.423 teslim
+    # cue'sunun 2.562'si 3+ satır ve 2.515'i DÜZ METİN — kötü sarılmış tek
+    # cümle. Bunlar birleştirilip yeniden bölünür.
+    #
+    # DİYALOG DOKUNULMAZ: iki tireli cue'da satır yapısı konuşmacı ayrımıdır,
+    # birleştirmek anlamı bozar (ölçümde 37 cue).
+    if len(lines) > max_lines:
+        dash_lines = sum(
+            1 for line in lines
+            if line.lstrip().startswith(('-', '–', '—')))
+        if dash_lines < 2:
+            joined = ' '.join(
+                part.strip() for part in lines if part.strip())
+            if joined:
+                lines = [joined]
     while len(lines) < max_lines:
         en_i = max(range(len(lines)), key=lambda i: _visible_len(lines[i]))
         # Bir cue'yu daha fazla satıra bölmek OKUMA HIZINI (CPS) DEĞİŞTİRMEZ: aynı
@@ -3354,6 +3371,11 @@ def apply_line_breaks(blocks: list) -> list:
 MERGE_MAX_CHARS  = 84    # birleştirilmiş cue'da görünür karakter üst sınırı (~2 satır)
 MERGE_MAX_GAP_MS = 500   # iki cue arası boşluk <= bu(ms) ise birleştirilebilir
 
+# CPS = GÖRÜNÜR karakter / süre. '<i>', '{\an8}' gibi etiketler ekranda
+# görünmez; ham sayımda normal hızlı bir cue sınırı aşmış gibi görünüyordu.
+# hybrid_translate.cps bunu zaten yapıyordu (denetim Part 2, madde 47);
+# GUI'deki dört hesap yapmıyordu ve aynı metin iki ölçüte göre farklı
+# 'görünür karakter' tanımı kullanıyordu (dış denetim, madde 4).
 def _visible_len(text: str) -> int:
     """Etiket/parantez/newline hariç görünür karakter sayısı (okuma uzunluğu için)."""
     t = re.sub(r'</?[a-zA-Z][^>]*>', '', text)
@@ -5759,7 +5781,7 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
             stats["over_width"] += 1
         try:
             duration = max(_ts_end_sec_gui(ts) - _ts_to_sec_gui(ts), 0.1)
-            if len(value.replace("\n", "")) / duration > CPS_WARN_LIMIT:
+            if _visible_len(value) / duration > CPS_WARN_LIMIT:
                 stats["cps"] += 1
         except Exception:
             pass
@@ -6179,6 +6201,19 @@ def _source_cue_has_explicit_sdh_marker(text) -> bool:
         return True
     return bool(sdh_cleaner.CHEVRON_SPEAKER_RE.match(value.strip()))
 
+
+def delivery_line_count(blocks) -> int:
+    """Diske YAZILAN gerçek çeviri cue sayısı (teslim imzaları hariç).
+
+    Rapordaki 'N satır' payda olarak kullanılıyor ama teslim öncesi listeden
+    (`sorted_blocks`/`_final_blocks`) alınıyordu; oysa hata ve CPS sayıları
+    diske yazılan `_delivery_blocks`'tan geliyor. Cue birleştirmesi yapılan
+    dosyalarda oran yanlış paydayla yorumlanıyordu (dış denetim, madde 5).
+    """
+    return sum(
+        1 for _idx, _ts, text in (blocks or [])
+        if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
+    )
 
 def _delivery_owner_source_map(source_rows: list, source_to_output_ids: dict) -> dict:
     """Final outputta her cue'nun sahip olduğu kaynak metni döndür.
@@ -7559,7 +7594,7 @@ def _log_cps_warning(blocks: list, log_fn) -> int:
     for idx, ts, text in blocks:
         try:
             dur = max(_ts_end_sec_gui(ts) - _ts_to_sec_gui(ts), 0.1)
-            speed = len(str(text).replace('\n', '')) / dur
+            speed = _visible_len(str(text)) / dur
             if speed > CPS_WARN_LIMIT:
                 cps_issues.append((idx, round(speed, 1)))
         except Exception:
@@ -14405,7 +14440,7 @@ def _count_hata_cps(blocks) -> tuple:
             continue
         try:
             dur = max(_ts_end_sec_gui(_ts) - _ts_to_sec_gui(_ts), 0.1)
-            if len(str(_txt).replace("\n", "")) / dur > CPS_WARN_LIMIT:
+            if _visible_len(str(_txt)) / dur > CPS_WARN_LIMIT:
                 cps_n += 1
         except Exception:
             pass
@@ -15088,12 +15123,12 @@ def _cps_stats(blocks) -> tuple:
     """(cps_avg, cps_max) — CPS dağılım istatistiklerini döndürür."""
     values = []
     for _idx, _ts, _txt in blocks:
-        txt = str(_txt or "").replace("\n", "")
-        if not txt or txt.startswith("[HATA"):
+        raw = str(_txt or "")
+        if not raw.strip() or raw.startswith("[HATA"):
             continue
         try:
             dur = max(_ts_end_sec_gui(_ts) - _ts_to_sec_gui(_ts), 0.1)
-            values.append(len(txt) / dur)
+            values.append(_visible_len(raw) / dur)
         except Exception:
             pass
     if not values:
@@ -26191,8 +26226,13 @@ class App(ctk.CTk):
             # İngilizce olduğu için ilk sıradaki forced track varsayılan
             # seçiliyordu (madde 27). Önce tam+default, sonra tam, en son
             # kısıtlı akışlar.
+            # BCP-47 bölge etiketleri ('en-US', 'en-GB', 'en_US') de
+            # İngilizcedir. Ham eşleşme bunları eliyordu: İngilizce iz
+            # varken başka dildeki `default` iz önden seçili geliyordu.
+            # `_video_track_language` bu normalizasyonu zaten yapıyor,
+            # seçim aşaması kullanmıyordu (dış denetim, madde 6).
             english = [stream for stream in supported
-                       if stream.language.lower() in {"eng", "en", "english"}]
+                       if _video_track_language(stream.language) == "English"]
             ranked = sorted(english or supported,
                             key=lambda stream: stream.selection_rank)
             preferred = ranked[0] if ranked else None
@@ -36263,7 +36303,7 @@ class App(ctk.CTk):
             report_rows.append({
                 "name": fname, "source_path": filepath,
                 "output_path": str(_write_path),
-                "total": len(sorted_blocks),
+                "total": delivery_line_count(_delivery_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "dup": _dup_n,
                 "delivery_scan": _delivery_scan,
@@ -37470,6 +37510,18 @@ class App(ctk.CTk):
                                     "Resume: gerçek kaynak olmadan kalite ve teslim "
                                     f"doğrulanamaz; sonuç {_partial_path.name} olarak "
                                     "ayrıldı ve tamamlandı sayılmadı.", "err")
+                                # Normal sync/batch/hibrit akışları aynı
+                                # durumda TAMAMLANMADI işareti yazıyor;
+                                # resume yolu bu görünür güvenlik
+                                # sözleşmesini atlıyordu. Eski final
+                                # yerinde kalmışsa kullanıcı onu yeni
+                                # koşunun sonucu sanabilirdi
+                                # (dış denetim, madde 1).
+                                _write_unfinished_run_marker(
+                                    output_path, _partial_path,
+                                    reason="kaynak dosya bulunamadı; kalite ve "
+                                           "teslim doğrulanamadı",
+                                    log_fn=self._log)
                                 if result_out is not None:
                                     result_out["status"] = "failed"
                                 break
@@ -37929,6 +37981,11 @@ class App(ctk.CTk):
                                     self._log(
                                         f"Önceki eksik nihai çıktı karantinaya "
                                         f"alındı: {_quarantined.name}", "warn")
+                                # TAMAMLANMADI işareti: bkz. madde 1.
+                                _write_unfinished_run_marker(
+                                    output_path, _write_path,
+                                    reason="eksik çeviri satırı kaldı",
+                                    missing=_hata_n_pre, log_fn=self._log)
                                 terminal = True
                                 if result_out is not None:
                                     result_out["status"] = "failed"
@@ -38865,7 +38922,7 @@ class App(ctk.CTk):
             report_rows.append({
                 "name": Path(fp).name, "source_path": fp,
                 "output_path": str(_write_path),
-                "total": len(sorted_blocks),
+                "total": delivery_line_count(_delivery_blocks),
                 "hata": _hata_n, "cps": _cps_n,
                 "dup": _dup_n,
                 "delivery_scan": _delivery_scan,
@@ -39747,7 +39804,15 @@ class App(ctk.CTk):
                     run_context=_batch_run_context(
                         getattr(self, "_active_snapshot", None) or {},
                         api_key=openai_key),
-                    locked_terms=self._get_locked_terms_dict(filepath, tgt),
+                    # İSTEKLERİ kuran sözlükle AYNISI kaydedilmeli:
+                    # `_file_locked_terms` şema + yardımcı ANALİZ + dosya
+                    # terimlerinin birleşimidir, `_get_locked_terms_dict`
+                    # analiz katmanını taşımaz. fmap'e dar sözlük
+                    # yazılınca çökme sonrası resume, analizin bulduğu
+                    # karakter/kurum/kavram terimlerini kaybediyor ve aynı
+                    # batch farklı terim kurallarıyla tamamlanıyordu
+                    # (dış denetim, madde 2).
+                    locked_terms=_file_locked_terms,
                     cancel_check=lambda: self._stop_flag,
                     expected_source_hash=_expected_source_hash)
                 if batch_id:
@@ -40455,7 +40520,7 @@ class App(ctk.CTk):
                     report_rows.append({
                         "name": fname, "source_path": filepath,
                         "output_path": str(_write_path),
-                        "total": len(_final_blocks),
+                        "total": delivery_line_count(_delivery_blocks),
                         "hata": max(_hata_n, _hata_n_pre), "cps": _cps_n,
                         "cps_avg": _cps_avg, "cps_max": _cps_max,
                         "cons": _cons_fixes, "pass_fix": _pass_fix,
@@ -40610,7 +40675,7 @@ class App(ctk.CTk):
                 report_rows.append({
                     "name": fname, "source_path": filepath,
                     "output_path": str(out_path),
-                    "total": len(_final_blocks),
+                    "total": delivery_line_count(_delivery_blocks),
                     "hata": _hata_n, "cps": _cps_n,
                     "dup": _dup_n,
                     "delivery_scan": _delivery_scan,
