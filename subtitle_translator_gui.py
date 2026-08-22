@@ -28751,8 +28751,12 @@ class App(ctk.CTk):
                 from provider_retry import probe_api_key
                 for index, target in enumerate(usable):
                     try:
+                        # realistic=True: koşunun gönderdiğine benzer
+                        # boyutta gerçek bir çeviri isteği. Küçük "ping"
+                        # yeşil yakarken koşu 502 alıyordu.
                         outcome = probe_api_key(
-                            target["key"], target["base_url"], target["model"])
+                            target["key"], target["base_url"], target["model"],
+                            realistic=True)
                     except Exception as exc:
                         outcome = {"ok": False, "latency_ms": None,
                                    "detail": f"{type(exc).__name__}: {exc}"[:120],
@@ -28940,8 +28944,9 @@ class App(ctk.CTk):
         self._api_key_check_btn.grid(row=0, column=1)
         ctk.CTkLabel(
             key_bar,
-            text="Önce ana, sonra yedek anahtarla tek küçük istek gönderir; "
-                 "hangisinin o modele erişimi varsa yeşil yanar.",
+            text="Önce ana, sonra yedek anahtarla gerçek boyutta tek çeviri "
+                 "isteği gönderir; anahtar/grup doğruysa ve sağlayıcı iş "
+                 "yapabiliyorsa yeşil, kararsızsa sarı yanar.",
             text_color=FG2, anchor="w", justify="left", wraplength=560,
             font=ctk.CTkFont("Segoe UI", 9)).grid(
                 row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
@@ -29366,6 +29371,73 @@ class App(ctk.CTk):
                     return None
         return key
 
+    # Canlilik kapisi bir kez gecince kisa sure yeniden sorulmaz: ayni
+    # kosuda dil on analizi, tur on analizi ve ana preflight ard arda
+    # calisiyor ve her biri icin ucretli bir istek gondermek gereksiz.
+    _PROVIDER_LIVE_CHECK_TTL = 120.0
+
+    def _provider_live_check(self, label: str = "") -> bool:
+        """Sağlayıcı GERÇEKTEN iş yapabiliyor mu? (ön analizden önce)
+
+        Rota ölçümü (/api/ping) yalnız yolu görüyor: 2026-08-23 19:03'te üç
+        rota da 3/3 canlı ölçüldü, istekler yine 502 aldı. Küçük "ping"
+        isteği de yetmiyor — kısa istek anında dönüyor, uzun üretimde ağ
+        geçidi zaman aşımına düşüyor. Bu yüzden kapı, koşunun göndereceğine
+        BENZER boyutta gerçek bir çeviri isteği gönderir.
+
+        False dönerse çeviri hiç başlamaz; 11x60 saniyelik yeniden deneme
+        merdiveni boşuna işletilmez.
+        """
+        base_url = ""
+        try:
+            base_url = str(self._main_api_base_url() or "")
+        except Exception:
+            return True
+        if not _is_shuai_api_route(base_url):
+            # Resmî OpenAI ve bilinmeyen adreslerde bu arıza sınıfı
+            # görülmedi; her koşuda ücretli bir istek eklemenin anlamı yok.
+            return True
+        now = time.monotonic()
+        passed_at = getattr(self, "_provider_live_check_ok_at", 0.0) or 0.0
+        if now - passed_at < App._PROVIDER_LIVE_CHECK_TTL:
+            return True
+        try:
+            from provider_retry import probe_api_key
+            api_key = self._main_api_key() or ""
+            model = str(self._main_model_name() or "")
+        except Exception:
+            return True
+        if not api_key or not model:
+            return True
+        where = label or "Çeviri"
+        self._set_status("Sağlayıcı canlılık kontrolü")
+        try:
+            outcome = probe_api_key(api_key, base_url, model, realistic=True)
+        except Exception as exc:
+            self._log(f"Canlılık kontrolü çalıştırılamadı, atlanıyor: {exc}",
+                      "warn")
+            return True
+        if outcome.get("ok"):
+            self._provider_live_check_ok_at = time.monotonic()
+            failures = int(outcome.get("failures", 0) or 0)
+            if failures:
+                self._log(
+                    f"Canlılık kontrolü geçti ama sağlayıcı kararsız: "
+                    f"{outcome.get('attempts')} denemenin {failures} tanesi "
+                    "başarısız. Koşu sırasında kesinti olabilir.", "warn")
+            return True
+        detail = str(outcome.get("detail", "") or "")
+        hint = str(outcome.get("hint", "") or "")
+        if hint:
+            detail = f"{detail} ({hint})"
+        self._log(
+            f"{where} başlatılmadı — sağlayıcı gerçek bir isteği "
+            f"karşılayamıyor: {detail}. Rota ölçümü yolu canlı gösterse bile "
+            "model kanalı iş yapamıyor; toparlayınca yeniden Başlat'a basın.",
+            "err")
+        self._set_status("Sağlayıcı iş yapamıyor; çeviri başlatılmadı.")
+        return False
+
     def _shuai_route_preflight(self, attempts: int = 2) -> bool:
         """Koşu öncesi rota ölçümü + 'hepsi ölü' durumunda hızlı vazgeçme.
 
@@ -29419,6 +29491,11 @@ class App(ctk.CTk):
             return True
         route_probe = getattr(self, "_shuai_route_preflight", None)
         if callable(route_probe) and not route_probe():
+            return False
+        # Rota olcumu YOLU gorur; model kanalinin gercekten is yapip
+        # yapmadigini ancak gercek bir istek soyler.
+        live_check = getattr(self, "_provider_live_check", None)
+        if callable(live_check) and not live_check("Çeviri"):
             return False
         self._set_phase("API Ön Kontrolü", "model ve grup erişimi doğrulanıyor")
         self._set_status("SHUAI model/grup uygunluğu kontrol ediliyor")
@@ -34556,6 +34633,14 @@ class App(ctk.CTk):
             "info")
 
         def _worker():
+            # Kapi burada: on analiz de UCRETLI istekler gonderiyor ve
+            # saglayici coktugunde 11x60 sn merdivene giriyordu.
+            if not App._provider_live_check(self, "Kaynak dil ön analizi"):
+                def _stop():
+                    self._language_preflight_done = False
+                    self._set_running(False)
+                _post_ui(self, _stop)
+                return
             try:
                 client = OpenAI(api_key=api_key, base_url=base_url if base_url else None)
                 detected = self._detect_source_languages_parallel(
@@ -34864,6 +34949,12 @@ class App(ctk.CTk):
         )
 
         def _worker():
+            if not App._provider_live_check(self, "İçerik türü ön analizi"):
+                def _stop():
+                    self._content_type_preflight_done = False
+                    self._set_running(False)
+                _post_ui(self, _stop)
+                return
             try:
                 client = OpenAI(
                     api_key=api_key, base_url=base_url if base_url else None)

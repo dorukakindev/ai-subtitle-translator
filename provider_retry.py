@@ -439,19 +439,47 @@ _API_KEY_CHECK_PROMPT = "ping"
 # da kapsadigi icin bos metin donmesi NORMAL, basarisizlik degil.
 _API_KEY_CHECK_BUDGET = 16
 
+# GERCEKCI sinama: 16 jetonluk "ping" bayinin on kapisini olcuyor ama
+# gercek isi olcmuyor. 2026-08-23 19:03'te anahtar testi ust uste UC KEZ
+# ilk denemede yesil dedi, iki dakika sonra kosu dort rotadan da 502 aldi:
+# kisa istek aninda doner, uzun uretimde ag gecidi zaman asimina duser.
+# Bu yuzden kapi isteginin kosunun gonderdigine BENZEMESI gerekiyor.
+_API_KEY_CHECK_REALISTIC_BUDGET = 600
+_API_KEY_CHECK_REALISTIC_PROMPT = (
+    "Translate these subtitle lines into Turkish. Return one line per input "
+    "line and nothing else.\n"
+    "1. We had been walking for hours before the rain finally stopped.\n"
+    "2. Nobody told him the bridge had been closed since the spring floods.\n"
+    "3. She kept the letter in a drawer for almost thirty years.\n"
+    "4. The engine coughed twice, then settled into a steady rhythm.\n"
+    "5. If you leave now you will still reach the harbour before dark.\n"
+    "6. They argued about the price until the market began to empty.\n"
+    "7. It was the last winter anyone remembered the river freezing over.\n"
+    "8. He wrote the whole account down and then never spoke of it again."
+)
 
-def _api_key_check_payload(model: str) -> dict:
-    """Sinama istegi. Ucreti bir kac jeton; hicbir sey uretmesi gerekmiyor."""
+
+def _api_key_check_payload(model: str, realistic: bool = False) -> dict:
+    """Sinama istegi.
+
+    realistic=False: bir kac jeton, yalniz anahtar/grup dogrulamasi.
+    realistic=True : kosunun gonderdigine benzer boyutta gercek bir ceviri
+    istegi — bayinin uzun uretimde 502 verip vermedigini de gorur.
+    """
     model_lower = (model or "").lower()
     reasoning = (model_lower.startswith(("o1", "o3", "o4", "gpt-5", "codex-")))
+    budget = (_API_KEY_CHECK_REALISTIC_BUDGET if realistic
+              else _API_KEY_CHECK_BUDGET)
+    prompt = (_API_KEY_CHECK_REALISTIC_PROMPT if realistic
+              else _API_KEY_CHECK_PROMPT)
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": _API_KEY_CHECK_PROMPT}],
+        "messages": [{"role": "user", "content": prompt}],
     }
     if reasoning:
-        payload["max_completion_tokens"] = _API_KEY_CHECK_BUDGET
+        payload["max_completion_tokens"] = budget
     else:
-        payload["max_tokens"] = _API_KEY_CHECK_BUDGET
+        payload["max_tokens"] = budget
         payload["temperature"] = 0
     return payload
 
@@ -636,7 +664,7 @@ def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
 def probe_api_key(api_key: str, base_url: str, model: str,
                   timeout: float = API_KEY_CHECK_TIMEOUT,
                   route_urls=None, attempts: int = 2,
-                  retry_delay: float = 3.0) -> dict:
+                  retry_delay: float = 3.0, realistic: bool = False) -> dict:
     """Bir anahtari kucuk bir istekle sinar.
 
     Kesin cevaplar (401/403/gercek 404) ilk rotada isi bitirir. Gecici
@@ -667,7 +695,7 @@ def probe_api_key(api_key: str, base_url: str, model: str,
             route_urls.insert(0, normalized)
         else:
             route_urls = [normalized or str(base_url or "").rstrip("/")]
-    payload = _api_key_check_payload(model)
+    payload = _api_key_check_payload(model, realistic=realistic)
     tally = {"attempts": 0, "failures": 0}
     result = {}
     for turn in range(max(1, int(attempts))):
