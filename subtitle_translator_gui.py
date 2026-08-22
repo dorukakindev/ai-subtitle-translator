@@ -5878,7 +5878,10 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
                 stats["cps"] += 1
         except Exception:
             pass
-    stats["duplicates"] = _delivery_duplicate_count(blocks, source_cues)
+    duplicate_pairs = _delivery_duplicate_pairs(blocks, source_cues)
+    stats["duplicate_pairs"] = duplicate_pairs
+    stats["duplicates"] = len({cue_id for pair in duplicate_pairs
+                               for cue_id in pair})
     src_map = _delivery_source_map(blocks, source_cues) if source_cues else {}
     stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
@@ -5898,7 +5901,7 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     if log_fn:
         problems = [
             (stats["missing"], "eksik çeviri"),
-            (stats["duplicates"], "bitişik yineleme"),
+            (stats["duplicates"], "yakın cue'larda olası çeviri tekrarı"),
             (stats["cps"], f"CPS>{CPS_WARN_LIMIT}"),
             (stats["over_width"], f">{_LINE_THRESHOLD} karakter satır"),
             (stats["over_lines"], f">{_MAX_LINES} satır"),
@@ -5980,8 +5983,36 @@ def _delivery_scan_suspect_ids(blocks, source_cues,
         suspects.append((str(cue_id), "SCAN_MISSING_PREDICATE"))
     return suspects
 
+def _delivery_duplicate_pairs(blocks, source_cues) -> list:
+    """Yakın cue'larda tekrarlanan çeviri çiftleri: [(id_a, id_b), ...].
+
+    Rapor "bitişik yineleme" diyordu ama dedektör sekiz cue'luk bir pencerede
+    çalışıyor (bkz. _DUP_WIN): Gwen #236 ile #243 arasında yedi cue var. Kullanıcı yalnız
+    ardışık iki cue'ya bakıp bulguyu doğrulayamıyordu (denetim Tur 4, madde 11),
+    bu yüzden çiftler artık rapora yazılıyor.
+    """
+    try:
+        src_map = _delivery_source_map(list(blocks), source_cues)
+        seq = [
+            (str(idx), _align_visible(str(text or "")))
+            for idx, _ts, text in blocks
+        ]
+        seq = [(idx, text) for idx, text in seq if text]
+        pairs: list = []
+        _find_adjacent_duplicate_ids(seq, src_map, pairs_out=pairs)
+        seen = set()
+        unique = []
+        for pair in pairs:
+            if pair not in seen:
+                seen.add(pair)
+                unique.append(pair)
+        return unique
+    except Exception:
+        return []
+
+
 def _delivery_duplicate_count(blocks, source_cues) -> int:
-    """Teslim edilen dosyada BİTİŞİK yinelenen cue sayısı (deterministik).
+    """Teslim edilen dosyada YAKIN cue'larda yinelenen cue sayısı (deterministik).
 
     `detect_alignment_issues` bu sınıfı zaten görüyordu ama bulgular yalnız
     API tabanlı (isteğe bağlı) geçişlere besleniyordu; kapalıyken yinelemeler
@@ -11578,8 +11609,9 @@ _DUP_WIN, _DUP_TR, _DUP_SRC, _DUP_LCS = 8, 0.90, 0.60, 15
 
 def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                                   window: int = _DUP_WIN, tr_thresh: float = _DUP_TR,
-                                  src_thresh: float = _DUP_SRC, lcs_thresh: int = _DUP_LCS) -> list:
-    """seq: [(id_str, visible_tr_text), ...]. Komşu (±window) çeviri çiftlerinden
+                                  src_thresh: float = _DUP_SRC, lcs_thresh: int = _DUP_LCS,
+                                  pairs_out: list | None = None) -> list:
+    """seq: [(id_str, visible_tr_text), ...]. YAKIN (±window) çeviri çiftlerinden
     TR-benzerliği yüksek AMA kaynak-benzerliği düşük olanların id'lerini döner —
     içerik 'öne kaymış' ve yeniden hizalanırken tekrarlanmış izi (redistribution-
     desync). Guard: kaynak da benziyorsa (refrain) ya da uzun ortak ifade
@@ -11629,6 +11661,8 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                 continue  # kaynaklar uzun ortak ifade paylaşıyor → meşru
             dup_ids.append(seq[a][0])
             dup_ids.append(seq[b][0])
+            if pairs_out is not None:
+                pairs_out.append((seq[a][0], seq[b][0]))
     return dup_ids
 
 
@@ -12332,7 +12366,10 @@ def _acronym_mixed_renderings(blocks: list, src_map: dict) -> list:
         target = text_by_id.get(str(idx))
         if not target:
             continue
-        for term in set(_ACRONYM_TERM_RE.findall(str(source_text or ""))):
+        # sorted: set üzerinde dolaşmak bulgu sırasını PYTHONHASHSEED'e
+        # bağlıyordu; altyazı değişmiyor ama rapor ve anlık görüntü
+        # karşılaştırmaları kararsızlaşıyordu (denetim Tur 4, madde 12).
+        for term in sorted(set(_ACRONYM_TERM_RE.findall(str(source_text or "")))):
             if term in _MIXED_TERM_ACRONYM_STOPS:
                 continue
             bucket = kept if re.search(
@@ -17245,6 +17282,10 @@ def delivery_scan_report_lines(scan: dict) -> list:
     for cue_id, written, expected in (
             scan.get("syllable_typo_details") or [])[:8]:
         lines.append(f"      - #{cue_id} '{written}' → '{expected}'")
+    # Çiftler yazılmazsa kullanıcı ardışık iki cue'ya bakıp bulguyu bulamıyor;
+    # pencere sekiz cue geniş (denetim Tur 4, madde 11).
+    for left, right in (scan.get("duplicate_pairs") or [])[:8]:
+        lines.append(f"      - #{left} ↔ #{right} aynı çeviri")
     return lines
 
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
@@ -17256,7 +17297,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     import datetime as _dt
     fields = [
         ("hata",     "Eksik çeviri satırı"),
-        ("dup",      "Bitişik yinelenen cue"),
+        ("dup",      "Yakın cue'da yinelenen çeviri"),
         ("cps",      f"CPS aşımı (>{CPS_WARN_LIMIT} k/sn)"),
         ("cps_avg",  "Ortalama CPS"),
         ("cps_max",  "Maksimum CPS"),

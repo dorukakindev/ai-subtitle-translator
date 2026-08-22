@@ -620,6 +620,31 @@ def normalize_subtitle_control_artifacts(text: str) -> str:
     return "".join(out)
 
 
+_NUL_BYTE = bytes([0])
+
+
+def _looks_like_subtitle_text(value: str) -> bool:
+    """Çözülen metin gerçekten altyazı mı? (kodlama tahminini doğrulamak için)"""
+    head = str(value or "")[:8192]
+    return "-->" in head or "Dialogue:" in head or "[Script Info]" in head
+
+
+def _bom_less_utf16_lane_signature(sample: bytes) -> bool:
+    """Bir bayt şeridinde NUL yığılması, diğerinde neredeyse hiç yoksa True.
+
+    UTF-16'nın imzası budur ve metnin dilinden bağımsızdır; toplam NUL oranı
+    ise Latin dışı alfabelerde çöker (CJK örneğinde %11).
+    """
+    even = sample[0::2]
+    odd = sample[1::2]
+    if not even or not odd:
+        return False
+    even_ratio = even.count(0) / len(even)
+    odd_ratio = odd.count(0) / len(odd)
+    strong, weak = max(even_ratio, odd_ratio), min(even_ratio, odd_ratio)
+    return strong >= 0.08 and weak <= strong / 4
+
+
 def read_subtitle_text(filepath) -> str:
     """Altyazı dosyasını toleranslı çözümler: utf-8-sig → utf-16 (BOM) → cp1254 → latin-1(replace).
 
@@ -656,14 +681,29 @@ def read_subtitle_text(filepath) -> str:
             text = raw.decode("utf-16")
         except UnicodeDecodeError:
             text = None
-    if text is None and sample and sample.count(b"\x00") / len(sample) >= 0.15:
+    if text is None and sample:
         even_nuls = sample[0::2].count(0)
         odd_nuls = sample[1::2].count(0)
         enc = "utf-16-be" if even_nuls > odd_nuls else "utf-16-le"
-        try:
-            text = raw.decode(enc)
-        except UnicodeDecodeError:
-            text = None
+        if sample.count(_NUL_BYTE) / len(sample) >= 0.15:
+            try:
+                text = raw.decode(enc)
+            except UnicodeDecodeError:
+                text = None
+        elif _bom_less_utf16_lane_signature(sample):
+            # Toplam NUL oranı BOM'suz UTF-16 için güvenilir bir ölçü değil:
+            # Çince/Japonca/Korece/Arapça metnin KENDİSİ NUL üretmez, yalnız
+            # zaman damgaları üretir; oran %11'e düşüp eşiği geçemiyor ve
+            # dosya sessizce mojibake oluyordu (denetim Tur 4, madde 8).
+            # Şerit asimetrisi dilden bağımsızdır — ama tek başına da
+            # yanılabilir, bu yüzden çözülen metin altyazıya benzemiyorsa
+            # tahmin kabul edilmez ve eski zincir işlemeye devam eder.
+            try:
+                candidate = raw.decode(enc)
+            except UnicodeDecodeError:
+                candidate = None
+            if candidate and _looks_like_subtitle_text(candidate):
+                text = candidate
     for enc in ("utf-8-sig",):
         if text is not None:
             break
@@ -698,10 +738,11 @@ def _vtt_ts_to_srt(ts: str) -> str:
     """WebVTT zaman damgasını (HH:MM:SS.mmm veya MM:SS.mmm) SRT formatına çevirir.
     Milisaniye kısmı 3 haneye tamamlanır (SRT geçerliliği: ,5 → ,500; ,12 → ,120)."""
     ts = ts.strip()
-    match = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d*)', ts)
+    match = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,](\d*))?', ts)
     if not match:
         return ts
     hour, minute, second, ms = match.groups()
+    ms = ms or ''
     return f"{int(hour or 0):02d}:{int(minute):02d}:{int(second):02d},{(ms + '000')[:3]}"
 
 # HLS/WebVTT'de cue zamanları YEREL, video zamanı MPEG-TS tabanlıdır.
@@ -716,11 +757,12 @@ _VTT_TIMESTAMP_MAP_RE = re.compile(
 
 def _vtt_ts_to_seconds(ts: str):
     """WebVTT zaman damgasını saniyeye çevirir; çözülemezse None."""
-    match = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d*)',
+    match = re.fullmatch(r'(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,](\d*))?',
                          str(ts or "").strip())
     if not match:
         return None
     hour, minute, second, ms = match.groups()
+    ms = ms or ''
     return (int(hour or 0) * 3600 + int(minute) * 60 + int(second)
             + int((ms + '000')[:3]) / 1000.0)
 
@@ -1318,7 +1360,10 @@ def parse_vtt(filepath: str) -> list:
     blocks = []
     idx = 1
     lines = content.replace('\r\n', '\n').replace('\r', '\n').splitlines()
-    ts_re = re.compile(r'^\d+:\d{2}(?::\d{2})?[.,]\d+\s*-->')
+    # Kesir alani WebVTT'de de SRT normalizasyonunda da OPSIYONEL olmali:
+    # zorunlu tutulunca '00:00:01 --> 00:00:02' satiri hic taninmiyor ve
+    # cue SESSIZCE dusuyordu (denetim Tur 4, madde 9).
+    ts_re = re.compile(r'^\d+:\d{2}(?::\d{2})?(?:[.,]\d+)?\s*-->')
     i = 0
     while i < len(lines):
         line = lines[i].strip()
