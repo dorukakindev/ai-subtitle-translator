@@ -88,6 +88,35 @@ API_PROFILE_PROVIDERS = {
     "openai_compatible": "OpenAI Uyumlu / Reseller",
     "anthropic": "Anthropic / Claude",
 }
+def _api_profile_provider_url_mismatch(provider: str, base_url: str) -> str:
+    """Saglayici turu ile adres celisiyorsa aciklamayi dondurur, yoksa ''.
+
+    Yeni profil varsayilani 'OpenAI Uyumlu / Reseller' + api.openai.com idi;
+    kullanici reseller anahtarini bu adresle kaydedince her istek 401
+    aliyordu ve hata mesaji gercek OpenAI'ye isaret ettigi icin sebep
+    gorunmuyordu (2026-08-23 kosu logu).
+    """
+    host = (urlparse(str(base_url or "")).hostname or "").casefold()
+    if not host:
+        return ""
+    official_hosts = {"api.openai.com", "openai.com"}
+    if provider == "openai_compatible" and host in official_hosts:
+        return (
+            "Sağlayıcı türü 'OpenAI Uyumlu / Reseller' ama adres gerçek "
+            f"OpenAI'yi ({host}) gösteriyor.\n\n"
+            "Reseller anahtarı bu adrese gönderilirse her istek 401 döner.\n\n"
+            "Ya sağlayıcınızın adresini yazın (ör. https://api.shuaiapi.com/v1) "
+            "ya da sağlayıcı türünü 'OpenAI Resmi' yapın."
+        )
+    if provider == "anthropic" and host in official_hosts:
+        return (
+            "Sağlayıcı türü 'Anthropic / Claude' ama adres OpenAI'yi "
+            f"({host}) gösteriyor. Anthropic adresini yazın "
+            "(ör. https://api.anthropic.com/v1)."
+        )
+    return ""
+
+
 API_PROFILE_ROLE_LABELS = {
     "main": "Ana ceviri",
     # Ikinci bir new-api grubuna ait anahtar. Rota failover'i grup sorununu
@@ -28197,7 +28226,9 @@ class App(ctk.CTk):
         provider_var = ctk.StringVar(value=API_PROFILE_PROVIDERS.get(
             current.get("provider"), "OpenAI Uyumlu / Reseller"))
         model_var = ctk.StringVar(value=current.get("model", "gpt-5.4"))
-        url_var = ctk.StringVar(value=current.get("base_url", "https://api.openai.com/v1"))
+        # Yeni profilde adres BOS baslar: varsayilan saglayici 'Reseller' iken
+        # api.openai.com on-dolu geliyordu ve celiski fark edilmiyordu.
+        url_var = ctk.StringVar(value=current.get("base_url", ""))
 
         ctk.CTkLabel(
             dlg, text="API PROFİLİ", text_color=ACCENT,
@@ -28265,6 +28296,11 @@ class App(ctk.CTk):
                 messagebox.showwarning(
                     "Geçersiz adres", "API adresi http:// veya https:// ile başlamalıdır.",
                     parent=dlg)
+                return
+            mismatch = _api_profile_provider_url_mismatch(provider, base_url)
+            if mismatch:
+                messagebox.showwarning("Sağlayıcı ile adres uyuşmuyor",
+                                       mismatch, parent=dlg)
                 return
             if not profile_id and not key:
                 messagebox.showwarning(
