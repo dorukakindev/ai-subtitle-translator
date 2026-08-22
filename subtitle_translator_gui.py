@@ -29164,11 +29164,16 @@ class App(ctk.CTk):
         if key is None:
             return None, None, None
         slug, season, ep = key
-        selected = snapshot.get("selected_files") if snapshot else getattr(self, "_selected_files", ())
-        input_dir = (str(series_memory.series_memory_root(fp)) if selected
-                     else snapshot.get("input_dir") if snapshot
-                     else self.input_var.get())
-        input_dir = input_dir or str(Path(fp).parent)
+        # Kök SEÇİM BİÇİMİNE bağlı olmamalı: aynı dizi klasör seçilince
+        # <input_dir>, dosya tek tek seçilince <series_memory_root(fp)>
+        # altına yazılıyor, kanon iki dosyaya bölünüyordu (bug taraması
+        # madde 4). Artık yol her zaman dosyadan türetilir; yalnız ESKİ
+        # kayıt <input_dir> altındaysa ve yenisi henüz yoksa ona sadık
+        # kalınır, böylece mevcut kanonlar kaybolmaz.
+        derived_root = str(series_memory.series_memory_root(fp))
+        legacy_root = (snapshot.get("input_dir") if snapshot
+                       else self.input_var.get())
+        input_dir = derived_root or str(Path(fp).parent)
         tgt_var = getattr(self, "tgt_var", None)
         target_language = (
             snapshot.get("tgt_lang")
@@ -29184,6 +29189,18 @@ class App(ctk.CTk):
             if callable(effective_source) else source_fallback
         )
         source_key = _lang_iso639_1(source_language)
+        # Geriye dönük uyum: türetilen kökte kayıt yoksa ama eski
+        # <input_dir> kökünde varsa, mevcut kanonu bölmemek için orayı kullan.
+        if legacy_root and str(Path(legacy_root)) != str(Path(input_dir)):
+            try:
+                derived_file = series_memory.SeriesMemory.memory_path(
+                    input_dir, slug, target_key, source_key)
+                legacy_file = series_memory.SeriesMemory.memory_path(
+                    legacy_root, slug, target_key, source_key)
+                if not derived_file.exists() and legacy_file.exists():
+                    input_dir = legacy_root
+            except Exception:
+                pass
         try:
             if not persistent:
                 overlays = getattr(self, "_run_series_memory", None)
@@ -29905,7 +29922,12 @@ class App(ctk.CTk):
                             input_dir, slug,
                             target_language=_lang_iso639_1(tgt),
                             source_language=_lang_iso639_1(series_source))
-                        series_terms = sm_obj.get_terms()
+                        # Kesme ŞART: _series_hint_for modele yalnız
+                        # önceki bölümlerin kanonunu söylüyor; kilitli
+                        # küme daha geniş olursa doğrulayıcı söylenmemiş
+                        # terimi dayatıyor (bug taraması madde 26).
+                        series_terms = sm_obj.get_terms(
+                            before_episode=(_season, _episode))
                 except Exception:
                     pass
             # Şema genel varsayımdır; proje/dizi hafızası önceki kanondur; açıkça
@@ -33670,6 +33692,16 @@ class App(ctk.CTk):
             saved = sm_obj.save()
             if saved is False:
                 raise OSError("series memory could not be saved")
+            # Overlay tazeleme (bkz. madde 1): ön-bağlam yolu da aynı
+            # boşluğu taşıyordu.
+            try:
+                overlay_obj, o_season, o_ep = self._series_mem_for(fp)
+                if overlay_obj is not None and overlay_obj is not sm_obj:
+                    self._merge_precontext_into_series_memory(
+                        overlay_obj, o_season, o_ep, data,
+                        target_language=target_language)
+            except Exception:
+                pass
             if status_out is not None:
                 status_out.update({"status": "completed", "changed": 1})
         except Exception as exc:
@@ -33724,6 +33756,17 @@ class App(ctk.CTk):
                 raise OSError("series memory could not be saved")
             if status_out is not None:
                 status_out.update({"status": "completed", "changed": 1})
+            # Koşu OVERLAY'ini de tazele: overlay bir kez yükleniyor ve
+            # bir daha yenilenmiyordu, bu yüzden aynı koşuda S01E01'in
+            # kararları S01E02'nin prompt'una ULAŞMIYORDU — 'ilk karar
+            # kanon' ancak uygulama yeniden başlatılınca işliyordu
+            # (bug taraması madde 1). Kalıcı kayıt BAŞARILI sayılır;
+            # bu yalnız önbellek tazelemesidir, kendi try'ında durur.
+            try:
+                self._stage_series_memory_from_analysis(
+                    fp, context, pronoun_map, target_language)
+            except Exception:
+                pass
         except Exception as exc:
             if status_out is not None:
                 status_out.update({"status": "failed", "error": str(exc)})

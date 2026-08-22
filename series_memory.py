@@ -241,6 +241,22 @@ class SeriesMemory:
 
     # ── Yükleme / kaydetme ────────────────────────────────────────────────────
 
+    @staticmethod
+    def memory_path(input_dir: str, show_slug: str,
+                    target_language: str = "tr",
+                    source_language: str = "en"):
+        """Bu (kök, dizi, dil) dörtlüsünün diskteki dosya yolu."""
+        target_key = _target_key(target_language)
+        source_key = _source_key(source_language)
+        base = Path(input_dir) / ".series_memory"
+        if source_key == "en":
+            return (
+                base / f"{show_slug}.json"
+                if target_key == "tr"
+                else base / target_key / f"{show_slug}.json"
+            )
+        return base / f"src-{source_key}" / f"tgt-{target_key}" / f"{show_slug}.json"
+
     @classmethod
     def load(cls, input_dir: str, show_slug: str,
              target_language: str = "tr",
@@ -250,15 +266,8 @@ class SeriesMemory:
             raise ValueError("gecersiz dizi hafizasi anahtari")
         target_key = _target_key(target_language)
         source_key = _source_key(source_language)
-        base = Path(input_dir) / ".series_memory"
-        if source_key == "en":
-            path = (
-                base / f"{show_slug}.json"
-                if target_key == "tr"
-                else base / target_key / f"{show_slug}.json"
-            )
-        else:
-            path = base / f"src-{source_key}" / f"tgt-{target_key}" / f"{show_slug}.json"
+        path = cls.memory_path(
+            input_dir, show_slug, target_language, source_language)
         data = None
         if path.exists():
             try:
@@ -341,6 +350,21 @@ class SeriesMemory:
                 if identity not in known:
                     values[item] = value
                     known.add(identity)
+                elif key == "characters":
+                    # 'İlk karar kanon' terimler için doğru, KARAKTERLER
+                    # için değil: merge_characters diskteki üslup BOŞsa
+                    # bilerek zenginleştiriyor. Save sınırındaki 'kimlik
+                    # diskte varsa bellek değerini yok say' kuralı tam o
+                    # zenginleştirmeyi geri alıyordu — sonradan öğrenilen
+                    # üslup hiç diske yazılmıyordu (dış denetim H3).
+                    disk_entry = next(
+                        (values[name] for name in values
+                         if _character_identity(name) == identity), None)
+                    if (isinstance(disk_entry, dict)
+                            and isinstance(value, dict)
+                            and not str(disk_entry.get("style") or "").strip()
+                            and str(value.get("style") or "").strip()):
+                        disk_entry["style"] = str(value["style"]).strip()
             merged[key] = values
         addresses = list(disk.get("address_map") or [])
         seen = {
@@ -591,8 +615,32 @@ class SeriesMemory:
                     lines.append(f"- {aa} → {bb}: '{reg}'" if bb else f"- {aa}: '{reg}'")
         return "\n".join(lines) + "\n"
 
-    def get_terms(self) -> dict:
-        return dict(self._data.get("terms") or {})
+    def get_terms(self, before_episode=None) -> dict:
+        """Terim tablosu. before_episode verilirse 'ilk karar kanon'
+        kesmesi UYGULANIR — build_hint ile aynı küme döner.
+
+        Kesmesiz hâli, modele HİÇ söylenmemiş (hint'te olmayan) bir
+        terimi doğrulayıcıya dayatıyordu: yanlış locked_term_violation
+        redleri ve gereksiz terim-normalizasyonu adayları. Ayrıca bir
+        sezonu ikinci kez çevirince kilitli küme büyüdüğü için aynı
+        girdi farklı sonuç veriyordu (bug taraması madde 26)."""
+        terms = dict(self._data.get("terms") or {})
+        if not before_episode:
+            return terms
+        cutoff_order = _episode_order(self._episode_tag(*before_episode))
+        if cutoff_order is None:
+            return terms
+        origins = self._data.get("term_origins") or {}
+        allowed = {}
+        for source, target in terms.items():
+            origin = origins.get(_term_origin_key(source))
+            if not origin:
+                allowed[source] = target
+                continue
+            origin_order = _episode_order(origin)
+            if origin_order is None or origin_order < cutoff_order:
+                allowed[source] = target
+        return allowed
 
     def get_address_map(self) -> list:
         return [dict(item) for item in (self._data.get("address_map") or [])
