@@ -9397,6 +9397,49 @@ def _repair_validation_source_map(raw_src_map: dict, source_cues) -> dict:
     return result
 
 
+# Onarim TAVANI. Onarim cue basina BIR istek gonderir ve her istek tam
+# sistem promptunu tasir (~5.000 token); tekrar yoktur. Birkac eksik cue
+# icin bu ucuzdur (olculen: tipik dosyada ana cevirinin %2'si, bir chunk
+# coktugunde %18'i). Ama saglayici dosyanin ortasinda olurse BINLERCE cue
+# [HATA] kalir ve onarim bunlari tek tek cevirmeye kalkar: 2026-08-22
+# kosusunda Domestic Violence'ta 4.551 cue'nun 4.473'u eksikti; onarim acik
+# olsaydi ~22 milyon token, yani butun kosunun ana cevirisinin on kati
+# harcanacakti.
+#
+# ORAN esigi ekonomiden geliyor: onarim cue basina ~5.000 token, bastan
+# ceviri ise chunk basina (~25 cue) ~12.000 token, yani cue basina ~480.
+# Onarim ancak eksikler dosyanin ~%10'unun altindayken bastan ceviriden
+# ucuzdur; ustunde yamamak sacmadir.
+#
+# TABAN (50 cue) kucuk dosyalari korur: uc cue'luk bir dosyada bir eksik
+# %33'tur ama maliyeti bir istektir; 50 istegin altinda (~250 bin token)
+# oran tartismasi yapmaya degmez, orada onarim her zaman denenir.
+# MUTLAK TAVAN (150) ise oran dusuk kalsa bile kacak maliyeti keser.
+_REPAIR_MAX_MISSING_RATIO = 0.10
+_REPAIR_RATIO_MIN_MISSING = 50
+_REPAIR_MAX_MISSING_CUES = 150
+
+
+def _repair_budget_exceeded(missing: int, total: int) -> bool:
+    """Eksik cue sayisi onarilamayacak kadar buyuk mu?
+
+    True donerse cue'lar API'ye GONDERILMEZ; kaynak metinleriyle inceleme
+    raporuna birakilir, tipki onarim kapaliyken oldugu gibi.
+    """
+    try:
+        missing = int(missing)
+        total = int(total)
+    except (TypeError, ValueError):
+        return False
+    if missing <= 0:
+        return False
+    if missing >= _REPAIR_MAX_MISSING_CUES:
+        return True
+    if missing < _REPAIR_RATIO_MIN_MISSING:
+        return False
+    return total > 0 and missing > total * _REPAIR_MAX_MISSING_RATIO
+
+
 def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
                               model="gpt-5.4-mini", schema=None, profanity="Orta",
                               log_fn=None, token_cb=None, max_per_call=1,
@@ -9535,15 +9578,31 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
     advisory_reviews = []
     advisory_accepted_ids = set()
 
+    # Tavan: bu kadar cue eksikse onarim degil BASTAN CEVIRI gerekir.
+    over_budget = bool(
+        enabled and hata_indices
+        and _repair_budget_exceeded(len(hata_indices), len(out)))
+    if over_budget:
+        enabled = False
+        if log_fn:
+            share = 100.0 * len(hata_indices) / max(1, len(out))
+            log_fn(
+                f"Eksik Cue API Onarımı devre dışı bırakıldı: "
+                f"{len(hata_indices)}/{len(out)} cue eksik (%{share:.0f}). "
+                "Bu kadarı eksik satır değil başarısız çeviridir; cue başına "
+                "bir istekle yamamak koşunun kendisinden pahalıya gelir. "
+                "Dosya baştan çevrilmeli.", "err")
+
     if hata_indices and not enabled:
         advisory_reviews.extend({
             "id": str(idx),
-            "reason": "automatic_repair_disabled",
+            "reason": ("repair_budget_exceeded" if over_budget
+                       else "automatic_repair_disabled"),
             "source": src,
             "candidate": str(out[block_pos][2] or ""),
             "unresolved": True,
         } for block_pos, idx, _ts, src in hata_indices)
-        if log_fn:
+        if log_fn and not over_budget:
             ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in hata_indices)
             log_fn(
                 f"Eksik Cue API Onarımı kapalı: {len(hata_indices)} cue API'ye "
