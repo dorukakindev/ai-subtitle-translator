@@ -17671,6 +17671,12 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             idx_str = ", ".join(
                 str(i) for i in sorted(hata_idxs, key=_hata_sort_key))
             lines.append(f"   >>> [ÇEVİRİ EKSİK] kalan satır indeksleri: {idx_str}")
+        # Hangi tür şemasıyla çevrildiği hiçbir çıktıda yazmıyordu: kullanıcı
+        # kenar çubuğunda 'Otomatik' görüp tespitin çalıştığını varsayıyor,
+        # atlandığında ise bunu ancak çeviriyi okuyunca anlıyordu.
+        schema_used = str(r.get("schema_name") or "").strip()
+        if schema_used:
+            lines.append(f"   {'İçerik türü'.ljust(width)} : {schema_used}")
         passes = r.get("pass_coverage", "")
         if passes:
             lines.append(f"   {'Uygulanan geçişler'.ljust(width)} : {passes}")
@@ -30004,13 +30010,26 @@ class App(ctk.CTk):
         ):
             if self._start_source_language_preflight(key, srt_files):
                 return
-        if (
-            srt_files
-            and not self._content_type_preflight_done
-            and self._auto_content_type_files(srt_files)
-        ):
-            if self._start_content_type_preflight(key, srt_files):
-                return
+        # İçerik türü ön analizi atlandığında HİÇBİR iz kalmıyordu: kullanıcı
+        # kenar çubuğunda 'Otomatik' görüyor, log ise türden hiç söz etmiyor
+        # ve dosya jenerik şemayla çevriliyor — tür kurallarının hiç
+        # enjekte edilmediği ancak teslimden sonra fark ediliyordu.
+        # Atlama artık NEDENİYLE birlikte yazılır.
+        if srt_files and not self._content_type_preflight_done:
+            _auto_type_files = self._auto_content_type_files(srt_files)
+            if _auto_type_files:
+                if self._start_content_type_preflight(key, srt_files):
+                    return
+            else:
+                self._log(
+                    "İçerik türü ön analizi atlandı: seçili "
+                    f"{len(srt_files)} dosyanın hiçbirinde tür 'Otomatik' "
+                    "değil; tür kuralları elle seçilen şemadan gelecek.",
+                    "info")
+        elif srt_files:
+            self._log(
+                "İçerik türü ön analizi atlandı: bu başlatmada tür zaten "
+                "belirlendi (kurtarma/yeniden deneme akışı).", "info")
         self._language_preflight_done = False
         self._content_type_preflight_done = False
         self._file_integrity_preflight_done = False
@@ -36644,6 +36663,13 @@ class App(ctk.CTk):
                         self._log(f"Otomatik şema tespiti başarısız: {e}", "warn")
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
                 analysis_depth = self._get_file_analysis_depth(filepath)
+                # Hangi tür şemasıyla çevrildiği hiçbir yerde yazmıyordu:
+                # 'Otomatik' seçili olup tespit atlandığında dosya jenerik
+                # şemayla çevriliyor ve bu ancak teslimden sonra fark
+                # ediliyordu.
+                self._log(
+                    f"[{fname}] İçerik türü: "
+                    + (schema_dict.get("name") or "Otomatik"), "info")
                 self._log(
                     f"[{fname}] Analiz derinligi: {analysis_depth}", "info")
 
@@ -37672,6 +37698,7 @@ class App(ctk.CTk):
                 "pass_trace": _pass_trace,
                 "pass_status": _pass_status,
                 "pass_history": _pass_history,
+                "schema_name": (schema_dict or {}).get("name", ""),
                 "pass_coverage": _pc,
                 "helper_analysis": True,
                 "analysis_status": _analysis_status,
@@ -39464,6 +39491,7 @@ class App(ctk.CTk):
                                                         self.review_pass_var.get()
                                                         and pp and _orig_cues),
                                                      "pass_history": _pass_history,
+                                                     "schema_name": (_resume_schema or {}).get("name", ""),
                                                      "pass_coverage": _pc,
                                                      "helper_analysis": True,
                                                      "analysis_status": _resume_analysis_status,
@@ -40312,6 +40340,7 @@ class App(ctk.CTk):
                 "review_expected": bool(
                     self.review_pass_var.get() and _review_needed),
                 "pass_history": _pass_history,
+                "schema_name": (schema_dict or {}).get("name", ""),
                 "pass_coverage": _pc,
                 "helper_analysis": False,
                 "analysis_status": "kapalı (düz batch)",
@@ -40956,6 +40985,13 @@ class App(ctk.CTk):
                     self._get_file_glossary(filepath), strict=True)
                 glossary = self._merge_schema_glossary(glossary, schema_dict)
                 analysis_depth = self._get_file_analysis_depth(filepath)
+                # Hangi tür şemasıyla çevrildiği hiçbir yerde yazmıyordu:
+                # 'Otomatik' seçili olup tespit atlandığında dosya jenerik
+                # şemayla çevriliyor ve bu ancak teslimden sonra fark
+                # ediliyordu.
+                self._log(
+                    f"[{fname}] İçerik türü: "
+                    + (schema_dict.get("name") or "Otomatik"), "info")
                 self._log(
                     f"[{fname}] Analiz derinligi: {analysis_depth}", "info")
 
@@ -42078,6 +42114,7 @@ class App(ctk.CTk):
                     "pass_status": _pass_status,
                     "review_expected": bool(self.review_pass_var.get()),
                     "pass_history": _pass_history,
+                    "schema_name": (schema_dict or {}).get("name", ""),
                     "pass_coverage": _pc,
                     "helper_analysis": True,
                     "analysis_status": _analysis_status,
