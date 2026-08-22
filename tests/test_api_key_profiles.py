@@ -92,6 +92,39 @@ class ApiKeyProfileTest(unittest.TestCase):
         # açıldığında özel model seçili gelip anahtar boş kalıyor ve 401 alınıyordu.
         app._save_settings.assert_called_once_with(save_credentials=True)
 
+    def test_promoting_the_backup_profile_to_main_clears_the_backup(self):
+        # Aksi halde ana==yedek olur: kosuda yedek anahtar hic devreye
+        # girmez (ayni anahtar) ama kullanici yedegi var sanir.
+        app = app_stub()
+        app._save_settings = Mock()
+        app._log = Mock()
+        pid = "d" * 32
+        app._api_key_profiles[pid] = {
+            "name": "Reseller 2", "provider": "openai_compatible",
+            "model": "gpt-5.4", "base_url": "https://reseller.test/v1",
+        }
+        app._api_key_assignments["main_backup"] = pid
+        with patch.object(gui.credential_store, "load_key", return_value="sk-2"):
+            result = gui.App._apply_api_profile(app, pid, "main", notify=True)
+        self.assertTrue(result)
+        self.assertEqual(app._api_key_assignments["main"], pid)
+        self.assertNotIn("main_backup", app._api_key_assignments)
+        self.assertTrue(app._log.called)
+
+    def test_a_different_backup_profile_survives_a_main_assignment(self):
+        app = app_stub()
+        app._save_settings = Mock()
+        main_pid, backup_pid = "e" * 32, "f" * 32
+        for pid in (main_pid, backup_pid):
+            app._api_key_profiles[pid] = {
+                "name": pid[:3], "provider": "openai_compatible",
+                "model": "gpt-5.4", "base_url": "https://reseller.test/v1",
+            }
+        app._api_key_assignments["main_backup"] = backup_pid
+        with patch.object(gui.credential_store, "load_key", return_value="sk"):
+            gui.App._apply_api_profile(app, main_pid, "main", notify=False)
+        self.assertEqual(app._api_key_assignments["main_backup"], backup_pid)
+
     def test_assign_claude_to_critic_populates_custom_helper(self):
         app = app_stub()
         pid = "c" * 32

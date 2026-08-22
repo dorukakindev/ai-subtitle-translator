@@ -28040,6 +28040,17 @@ class App(ctk.CTk):
                         "Ana çeviri hattı OpenAI uyumlu API kullanıyor. Bu Claude profilini yardımcı görevlerden birine atayın.",
                         parent=getattr(self, "_api_keys_dialog", None) or self)
                 return False
+            # Ters yon: bu profil ZATEN yedek olarak duruyorsa atama sessizce
+            # ana=yedek durumunu yaratir; koşuda yedek anahtar hiç devreye
+            # girmez (aynı anahtar) ama kullanıcı yedeği var sanır.
+            if getattr(self, "_api_key_assignments", {}).get("main_backup") == profile_id:
+                self._api_key_assignments.pop("main_backup", None)
+                if notify:
+                    self._log(
+                        f"'{profile['name']}' ana çeviriye atandı; aynı profil "
+                        "yedek anahtar olarak duruyordu, yedek boşaltıldı. "
+                        "İkinci gruba ait ayrı bir profili yedek olarak atayın.",
+                        "warn")
             if provider == "openai_official":
                 self.main_custom_var.set(False)
                 self._replace_entry_value(self.api_key_entry, key)
