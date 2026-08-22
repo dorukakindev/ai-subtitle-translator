@@ -24613,15 +24613,22 @@ class App(ctk.CTk):
             try:
                 from provider_retry import configure_api_key_fallback
                 snap = getattr(self, "_active_snapshot", {}) or {}
-                if configure_api_key_fallback(
-                        "main",
-                        primary_key=str(snap.get("main_api_key") or ""),
-                        backup_key=str(snap.get("main_api_key_backup") or ""),
-                        log_fn=self._log):
+                primary_key = str(snap.get("main_api_key") or "")
+                backup_key = str(snap.get("main_api_key_backup") or "")
+                # Ana VE yardimci kapsam: ana anahtari devralan roller de
+                # yedege gecer. Kendi anahtari olan rol etkilenmez — gecis
+                # yalniz BIRINCIL anahtari tasiyan isteklerde yapilir.
+                registered = [
+                    configure_api_key_fallback(
+                        scope, primary_key=primary_key,
+                        backup_key=backup_key, log_fn=self._log)
+                    for scope in ("main", "helper")
+                ]
+                if any(registered):
                     self._log(
-                        "Ana çeviri için 2. gruba ait yedek API anahtarı hazır; "
-                        "birincil anahtar kota/grup hatası verirse devreye girecek.",
-                        "info")
+                        "2. gruba ait yedek API anahtarı hazır; ana anahtar "
+                        "kota/grup hatası verirse ana çeviri ve onu devralan "
+                        "yardımcı görevler yedeğe geçecek.", "info")
             except Exception as exc:
                 self._log(f"Yedek API anahtarı ayarlanamadı: {exc}", "warn")
             App._freeze_run_variable_reads(self)
@@ -27022,11 +27029,50 @@ class App(ctk.CTk):
             )
         return resolve_helper_model(lbl)
 
+    def _helper_falls_back_to_main(self, role: str) -> bool:
+        """Bu yardimci rol kendi ayarina sahip degil mi?
+
+        True ise rol, ana cevirinin anahtarini VE adresini devralir. Eskiden
+        bu durumda anahtar bos donuyordu (fail-closed) ve kullanici her rol
+        icin ayri profil girmek zorunda kaliyordu. Anahtarla adres birlikte
+        devralindigi icin guvenlik kurali korunuyor: bir anahtar yalnizca
+        kendi servisine gonderiliyor.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return False
+        assignments = getattr(self, "_api_key_assignments", {})
+        if assignments.get(role) in getattr(self, "_api_key_profiles", {}):
+            return False
+        model_vars = getattr(self, "helper_model_vars", {})
+        if role in model_vars and self._is_custom_helper_label(model_vars[role].get()):
+            return False
+        role_keys = getattr(self, "helper_role_key_vars", {})
+        if role in role_keys and role_keys[role].get().strip():
+            return False
+        try:
+            if self._get_current_helper_provider(role) not in {"openai", "openai_helper"}:
+                return False
+            helper_url = self._helper_model_config(role).base_url
+            main_url = self._main_api_base_url() or ""
+        except Exception:
+            return False
+        helper_host = (urlparse(str(helper_url or "")).hostname or "").casefold()
+        main_host = (urlparse(str(main_url or "")).hostname or "").casefold()
+        if not helper_host or helper_host in {"api.openai.com", "openai.com"}:
+            # Resmi OpenAI ucu: kendi anahtarini kullanmali.
+            return False
+        if helper_host == main_host or (
+                _is_shuai_api_route(helper_url) and _is_shuai_api_route(main_url)):
+            return False  # zaten ayni servis; mevcut devretme yolu calisiyor
+        return bool(str(self._main_api_key() or "").strip())
+
     def _helper_api_base_url(self, role: str):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             urls = self._active_snapshot.get("helper_urls") or {}
             if role in urls:
                 return urls[role]
+        if App._helper_falls_back_to_main(self, role):
+            return self._main_api_base_url()
         cfg = self._helper_model_config(role)
         url = cfg.base_url
         assigned = getattr(self, "_api_key_assignments", {}).get(role)
@@ -27139,6 +27185,12 @@ class App(ctk.CTk):
                     and _is_shuai_api_route(main_url))
                 if same_shuai_service or (
                         main_custom and main_host == helper_host):
+                    return self._main_api_key()
+                # Farkli servis: eskiden bos donup "API key girin" hatasi
+                # verirdi. Artik ana hattin anahtarini VE adresini birlikte
+                # devraliyoruz (bkz. _helper_falls_back_to_main), boylece
+                # anahtar yine yalniz kendi servisine gidiyor.
+                if App._helper_falls_back_to_main(self, role):
                     return self._main_api_key()
                 return ""
         if not k:

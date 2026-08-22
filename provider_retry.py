@@ -197,13 +197,17 @@ def _openai_client_for_key(client, api_key: str):
 
 
 def _apply_active_api_key(client, scope: str):
-    """Kosu icinde yedek anahtara gecildiyse yeni istekler de onu kullanir."""
+    """Kosu icinde yedek anahtara gecildiyse yeni istekler de onu kullanir.
+
+    Yalniz BIRINCIL anahtari tasiyan istemci degistirilir: bir yardimci role
+    kendi anahtarini verdiyse (baska hesap) ona dokunulmaz.
+    """
     with _API_KEY_FALLBACK_LOCK:
         entry = _API_KEY_FALLBACKS.get(scope)
         if not entry or entry["active"] != "backup":
             return client
-        backup = entry["backup"]
-    if _client_api_key(client) == backup:
+        primary, backup = entry["primary"], entry["backup"]
+    if _client_api_key(client) != primary:
         return client
     try:
         return _openai_client_for_key(client, backup)
@@ -219,14 +223,15 @@ def _switch_to_backup_api_key(client, scope: str, exc):
         entry = _API_KEY_FALLBACKS.get(scope)
         if not entry:
             return None
-        backup = entry["backup"]
+        primary, backup = entry["primary"], entry["backup"]
+        # Kendi anahtari olan bir rolu baska hesabin anahtarina cevirmeyiz.
+        if _client_api_key(client) != primary:
+            return None
         if entry["active"] == "backup":
             return None
         entry["active"] = "backup"
         entry["switched"] = True
         log_fn = entry.get("log")
-    if _client_api_key(client) == backup:
-        return None
     try:
         alternate = _openai_client_for_key(client, backup)
     except Exception:

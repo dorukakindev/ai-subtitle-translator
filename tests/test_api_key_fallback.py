@@ -157,6 +157,41 @@ class FailoverTest(unittest.TestCase):
             self._run(lambda key: _StatusError(403), label="critic_pass")
         self.assertEqual(self.calls, ["birincil"])
 
+    def test_helper_scope_switches_when_registered(self):
+        # Ana anahtari devralan yardimci roller de yedege gecer.
+        pr.configure_api_key_fallback("helper", "birincil", "yedek")
+
+        def behaviour(key):
+            if key == "birincil":
+                return _StatusError(403)
+            return "ok"
+        self.assertEqual(self._run(behaviour, label="critic_pass"), "ok")
+        self.assertEqual(self.calls, ["birincil", "yedek"])
+
+    def test_role_with_its_own_key_is_never_switched(self):
+        pr.configure_api_key_fallback("helper", "birincil", "yedek")
+        stub = self._route_stub(lambda key: _StatusError(403))
+        with mock.patch.object(pr, "_chat_create_with_route_failover", stub):
+            with self.assertRaises(_StatusError):
+                pr.chat_create_with_shuai_failover(
+                    _FakeClient("rolun-kendi-anahtari"), "gpt-5.4", {},
+                    checkpoint_label="critic_pass")
+        self.assertEqual(self.calls, ["rolun-kendi-anahtari"])
+        self.assertEqual(pr.api_key_fallback_state("helper")["active"], "primary")
+
+    def test_sticky_switch_leaves_foreign_keys_alone(self):
+        pr.configure_api_key_fallback("helper", "birincil", "yedek")
+        pr._API_KEY_FALLBACKS["helper"]["active"] = "backup"
+        stub = self._route_stub(lambda key: "ok")
+        with mock.patch.object(pr, "_chat_create_with_route_failover", stub):
+            pr.chat_create_with_shuai_failover(
+                _FakeClient("rolun-kendi-anahtari"), "gpt-5.4", {},
+                checkpoint_label="critic_pass")
+            pr.chat_create_with_shuai_failover(
+                _FakeClient("birincil"), "gpt-5.4", {},
+                checkpoint_label="critic_pass")
+        self.assertEqual(self.calls, ["rolun-kendi-anahtari", "yedek"])
+
     def test_switch_is_logged_once(self):
         logs = []
         pr.configure_api_key_fallback(
