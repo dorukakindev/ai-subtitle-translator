@@ -208,5 +208,51 @@ class FailoverTest(unittest.TestCase):
         self.assertEqual(logs[0][0], "warn")
 
 
+class PostRouteFailureTest(unittest.TestCase):
+    """Rotalar tukendikten sonra 404 rota sorunu degil, grup sorunudur."""
+
+    def setUp(self):
+        pr.reset_api_key_fallback()
+        self.calls = []
+
+    def tearDown(self):
+        pr.reset_api_key_fallback()
+
+    def _run(self, behaviour):
+        def _call(client, model, kwargs, requested_format=None,
+                  checkpoint_label="", cancel_context=None):
+            self.calls.append(client.api_key)
+            outcome = behaviour(client.api_key)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        with mock.patch.object(pr, "_chat_create_with_route_failover", _call):
+            return pr.chat_create_with_shuai_failover(
+                _FakeClient("birincil"), "gpt-5.4", {},
+                checkpoint_label="main_translation")
+
+    def test_404_after_every_route_switches_to_backup(self):
+        pr.configure_api_key_fallback("main", "birincil", "yedek")
+
+        def behaviour(key):
+            if key == "birincil":
+                return _StatusError(404, "model not found")
+            return "ok"
+        self.assertEqual(self._run(behaviour), "ok")
+        self.assertEqual(self.calls, ["birincil", "yedek"])
+
+    def test_single_route_404_still_belongs_to_route_failover(self):
+        # Rota dongusu icindeki siniflandirma degismedi.
+        self.assertFalse(pr._is_api_key_or_group_error(_StatusError(404)))
+        self.assertTrue(pr._is_post_route_key_error(_StatusError(404)))
+
+    def test_outage_codes_do_not_burn_the_backup_key(self):
+        pr.configure_api_key_fallback("main", "birincil", "yedek")
+        with self.assertRaises(_StatusError):
+            self._run(lambda key: _StatusError(502, "bad gateway"))
+        self.assertEqual(self.calls, ["birincil"])
+        self.assertEqual(pr.api_key_fallback_state("main")["active"], "primary")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -161,9 +161,9 @@ def api_key_fallback_state(scope: str = "main") -> dict:
 def _is_api_key_or_group_error(exc) -> bool:
     """Yedek anahtara gecmeyi hak eden hata mi?
 
-    404 BILEREK disarida: o rota bazinda yol/model bulunamadi demek olabilir
-    ve zaten rota failover'ini tetikliyor. Buraya yalniz anahtarin kendisine
-    ya da ait oldugu gruba bagli hatalar girer.
+    404 BURADA disarida: tek bir rotada yol/model bulunamadi olabilir ve
+    zaten rota failover'ini tetikler. Rotalar tukendikten SONRA anlami
+    degisir; bkz. _is_post_route_key_error.
     """
     status = _status_code(exc)
     if status in (401, 403):
@@ -174,6 +174,16 @@ def _is_api_key_or_group_error(exc) -> bool:
     if any(marker in text for marker in _API_KEY_GROUP_MARKERS):
         return True
     return bool(status == 429 and "insufficient" in text)
+
+
+def _is_post_route_key_error(exc) -> bool:
+    """Rota failover'i tukendikten sonra: 404 de grup sorunudur.
+
+    Dort rotanin dordu de 404 donduyse sorun rotada degil; new-api model
+    grupta yoksa/kanal yoksa bu kodu doner (2026-08-23 kosu logu: gpt-5.4
+    tum rotalarda 404, yedek anahtar hic denenmiyordu).
+    """
+    return _is_api_key_or_group_error(exc) or _status_code(exc) == 404
 
 
 def _client_api_key(client) -> str:
@@ -216,8 +226,12 @@ def _apply_active_api_key(client, scope: str):
 
 
 def _switch_to_backup_api_key(client, scope: str, exc):
-    """Hata anahtar/grup kaynakliysa yedek anahtarli istemciyi dondurur."""
-    if not _is_api_key_or_group_error(exc):
+    """Hata anahtar/grup kaynakliysa yedek anahtarli istemciyi dondurur.
+
+    Buraya gelen hata rota failover'ini ZATEN gecmistir: her rota denenmis
+    ve hepsi ayni hatayi vermistir. Bu yuzden 404'u de grup sorunu sayariz.
+    """
+    if not _is_post_route_key_error(exc):
         return None
     with _API_KEY_FALLBACK_LOCK:
         entry = _API_KEY_FALLBACKS.get(scope)
@@ -237,9 +251,12 @@ def _switch_to_backup_api_key(client, scope: str, exc):
     except Exception:
         return None
     reason = _provider_error_context(exc).get("reason", "anahtar/grup hatasi")
+    if _status_code(exc) == 404:
+        reason += " — model bu grupta yok gibi görünüyor"
     message = (
-        f"Ana API anahtari basarisiz ({reason}); ikinci gruba ait yedek "
-        "anahtara geciliyor. Kosunun kalani yedek anahtarla surecek.")
+        f"Ana API anahtarı başarısız ({reason}); tüm rotalarda aynı hata "
+        "alındı, ikinci gruba ait yedek anahtara geçiliyor. Koşunun kalanı "
+        "yedek anahtarla sürecek.")
     if log_fn is not None:
         try:
             log_fn(message, "warn")
