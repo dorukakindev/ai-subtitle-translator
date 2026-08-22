@@ -19,6 +19,7 @@ from app_state import (_interprocess_lock, atomic_write_json, atomic_write_text,
                        best_effort_cancel_remote_batch,
                        is_safe_batch_id, mutate_batch_ids, state_dir, state_path)
 from subtitle_formats import (clean_translation_source_text,
+                              ends_sentence as _sf_ends_sentence,
                               normalize_subtitle_control_artifacts)
 from request_cancellation import RequestCancelled
 from provider_retry import ProviderWaitCancelled
@@ -425,13 +426,11 @@ def idiom_source_present(term: str, text_lower: str) -> bool:
         return False
 
 
-def _ends_sentence(text: str) -> bool:
+def _ends_sentence(text) -> bool:
     """True if text ends with sentence-closing punctuation (handles trailing quotes)."""
-    bracket_trimmed = str(text or "").rstrip().rstrip(")]}")
-    if bracket_trimmed != str(text or "").rstrip():
-        return _ends_sentence(bracket_trimmed)
-    t = text.strip().rstrip('"\'»"\u201d')
-    return bool(t) and t[-1] in '.!?…'
+    # Tek kaynak: subtitle_formats.ends_sentence. GUI ikiziyle birebir aynı
+    # davranmalı, yoksa aynı dosya sync ve hybrid'de farklı chunk'lanıyor.
+    return _sf_ends_sentence(text)
 
 
 def _ellipsis_continues(cur: str, nxt: str) -> bool:
@@ -7327,8 +7326,16 @@ def _sanitize_analysis_recurring_terms(glossary: dict | None,
     return result
 
 
-def quality_glossary_for_source(text: str) -> dict:
-    """Small fixed terminology guard for common subtitle traps seen in QA."""
+def quality_glossary_for_source(text: str, tgt_lang: str = "") -> dict:
+    """Small fixed terminology guard for common subtitle traps seen in QA.
+
+    Tablo TÜRKÇE hedefe göre yazılmıştır ('centerpiece'→'masa süsü'). Payload
+    sözlüğüne taban katman olarak konduğu ve kullanıcı sözlüğünün geçtiği
+    `sanitize_glossary_for_turkish` süzgecinden geçmediği için, dil listesi
+    18→60'a çıktıktan sonra her Türkçe-dışı hedefte doğrudan yanlış-dil
+    dayatması üretiyordu (bug taraması madde 20)."""
+    if not is_turkish_target(tgt_lang):
+        return {}
     text_l = str(text or "").lower()
     return {
         src: tgt
@@ -10691,13 +10698,17 @@ def _has_stem_match(token: str, old_tokens: list[str]) -> bool:
     return any(_share_stem(token, ot) for ot in old_tokens)
 
 
-def is_safe_polish_edit(old: str, new: str) -> bool:
+def is_safe_polish_edit(old: str, new: str, tgt_lang: str = "") -> bool:
     """True if the change is a safe surface edit (typo, case, punct) not a rewrite."""
     from difflib import SequenceMatcher
     if old == new:
         return True
-    o_fixed, _ = _apply_local_fixes(old)
-    n_fixed, _ = _apply_local_fixes(new)
+    # _apply_local_fixes tablosu TÜRKÇE hedefe göre yazılmıştır
+    # ('hell'→'cehennem'); tgt_lang geçilmeyince is_turkish_target("") True
+    # döndüğü için Almanca/Felemenkçe metinde ÖZ kelimeleri eziyordu
+    # (bug taraması madde 28).
+    o_fixed, _ = _apply_local_fixes(old, tgt_lang=tgt_lang)
+    n_fixed, _ = _apply_local_fixes(new, tgt_lang=tgt_lang)
     old_norm = _polish_norm(o_fixed)
     new_norm = _polish_norm(n_fixed)
     if old_norm == new_norm:
@@ -10720,7 +10731,8 @@ def is_safe_polish_edit(old: str, new: str) -> bool:
     return True
 
 
-def _has_content_word_drift(old: str, new: str, source_text: str = "") -> bool:
+def _has_content_word_drift(old: str, new: str, source_text: str = "",
+                            tgt_lang: str = "") -> bool:
     """Reject polish that introduces content words absent from the original.
 
     Uses suffix-stripping stem matching to handle Turkish agglutinative morphology:
@@ -10730,8 +10742,12 @@ def _has_content_word_drift(old: str, new: str, source_text: str = "") -> bool:
     """
     if not old or not new:
         return False
-    o_fixed, _ = _apply_local_fixes(old)
-    n_fixed, _ = _apply_local_fixes(new)
+    # _apply_local_fixes tablosu TÜRKÇE hedefe göre yazılmıştır
+    # ('hell'→'cehennem'); tgt_lang geçilmeyince is_turkish_target("") True
+    # döndüğü için Almanca/Felemenkçe metinde ÖZ kelimeleri eziyordu
+    # (bug taraması madde 28).
+    o_fixed, _ = _apply_local_fixes(old, tgt_lang=tgt_lang)
+    n_fixed, _ = _apply_local_fixes(new, tgt_lang=tgt_lang)
     old_norm = _polish_norm(o_fixed)
     new_norm = _polish_norm(n_fixed)
     o_tokens = [t for t in re.findall(r'\b[a-zA-ZçğıöşüÇĞİÖŞÜ]{3,}\b', old_norm)
@@ -10842,12 +10858,17 @@ def _meaningful_drift_tokens(text: str) -> list[str]:
     ]
 
 
-def _has_content_word_loss(old: str, new: str, source_text: str = "") -> bool:
+def _has_content_word_loss(old: str, new: str, source_text: str = "",
+                           tgt_lang: str = "") -> bool:
     """Reject polish that drops key content words from the accepted Turkish line."""
     if not old or not new:
         return False
-    o_fixed, _ = _apply_local_fixes(old)
-    n_fixed, _ = _apply_local_fixes(new)
+    # _apply_local_fixes tablosu TÜRKÇE hedefe göre yazılmıştır
+    # ('hell'→'cehennem'); tgt_lang geçilmeyince is_turkish_target("") True
+    # döndüğü için Almanca/Felemenkçe metinde ÖZ kelimeleri eziyordu
+    # (bug taraması madde 28).
+    o_fixed, _ = _apply_local_fixes(old, tgt_lang=tgt_lang)
+    n_fixed, _ = _apply_local_fixes(new, tgt_lang=tgt_lang)
     old_norm = _polish_norm(o_fixed)
     new_norm = _polish_norm(n_fixed)
     o_tokens = _meaningful_drift_tokens(old_norm)
@@ -10877,11 +10898,19 @@ def _has_content_word_loss(old: str, new: str, source_text: str = "") -> bool:
     return False
 
 
-def _has_medical_adjective_deletion(source_text: str, original_text: str, candidate_text: str) -> bool:
+def _has_medical_adjective_deletion(source_text: str, original_text: str,
+                                    candidate_text: str,
+                                    tgt_lang: str = "") -> bool:
     if not original_text or not candidate_text:
         return False
-    old_norm = _polish_norm(_apply_local_fixes(original_text)[0])
-    new_norm = _polish_norm(_apply_local_fixes(candidate_text)[0])
+    # _apply_local_fixes tablosu TÜRKÇE hedefe göre yazılmıştır
+    # ('hell'→'cehennem'); tgt_lang geçilmeyince is_turkish_target("") True
+    # döndüğü için Almanca/Felemenkçe metinde ÖZ kelimeleri eziyordu
+    # (bug taraması madde 28).
+    old_norm = _polish_norm(
+        _apply_local_fixes(original_text, tgt_lang=tgt_lang)[0])
+    new_norm = _polish_norm(
+        _apply_local_fixes(candidate_text, tgt_lang=tgt_lang)[0])
     if "tıbbi" not in old_norm or "tıbbi" in new_norm:
         return False
     src_norm = _polish_norm(source_text or "")
@@ -11858,7 +11887,7 @@ def validate_polish_candidate(
         return False, "question_regression"
     if _has_fragment_redistribution_regression(old, new):
         return False, "fragment_redistribution_regression"
-    if _has_medical_adjective_deletion(src, old, new):
+    if _has_medical_adjective_deletion(src, old, new, tgt_lang=tgt_lang):
         return False, "medical_adjective_deletion"
     if _has_identity_slur_loss(src, new):
         return False, "identity_slur_loss"
@@ -11866,9 +11895,9 @@ def validate_polish_candidate(
         return False, "numeric_plural_regression"
     if _has_proposition_drift(old, new, source_text=src):
         return False, "proposition_drift"
-    if _has_content_word_drift(old, new, source_text=src):
+    if _has_content_word_drift(old, new, source_text=src, tgt_lang=tgt_lang):
         return False, "content_word_drift"
-    if _has_content_word_loss(old, new, source_text=src):
+    if _has_content_word_loss(old, new, source_text=src, tgt_lang=tgt_lang):
         return False, "content_word_loss"
     if has_turkish_diacritic_regression(old, new):
         return False, "turkish_diacritic_regression"
@@ -12167,7 +12196,7 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
         return False, "source_negation"
     if src and _has_unanchored_negation_addition(src, old, new):
         return False, "source_negation_addition"
-    if _has_content_word_drift(old, new, source_text=src):
+    if _has_content_word_drift(old, new, source_text=src, tgt_lang=tgt_lang):
         return False, "content_word_drift"
     if _condense_merges_speakers(old, new, src):
         return False, "speaker_merge"
@@ -12383,9 +12412,14 @@ def final_consistency_sweep(
     locked_terms: dict | None = None,
     apply_changes: bool = True, tgt_lang: str = "") -> tuple:
     """Run a second, safety-checked consistency sweep after critic/polish edits."""
+    # tgt_lang İÇ çağrıya da geçmeli: geçmeyince is_turkish_target("") True
+    # döndüğü için Türkçe guard'ları (olumsuzluk zorunluluğu, sen/siz
+    # register'ı, Türkçe-dışı sızıntı süzgeci) Almanca metne uygulanıyor,
+    # bütün adaylar eleniyor ve fonksiyon 'tutarsızlık yok' diyerek ikinci
+    # satırda çıkıyordu (bug taraması madde 21).
     swept, fixes = consistency_sweep(
         cues, tr_blocks, log_fn=None, min_words=min_words,
-        locked_terms=locked_terms, apply_changes=True)
+        locked_terms=locked_terms, apply_changes=True, tgt_lang=tgt_lang)
     if not fixes:
         # first_seen fallback kaldırıldı — bağlam-kördü: majority sweep anlaşamadığında
         # (yani bağlam-bağımlılığın en olası olduğu durumda) ilk görülen çeviriyi diğer
@@ -13816,7 +13850,8 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
         # Active glossary: only inject terms that appear in this chunk
         if chunk_text_lower is None:
             chunk_text_lower = " ".join(_clean_source_text(c.text).lower() for c in chunk)
-        quality_terms = quality_glossary_for_source(chunk_text_lower or "")
+        quality_terms = quality_glossary_for_source(
+            chunk_text_lower or "", tgt_lang)
         if glossary:
             active = {k: v for k, v in glossary.items()
                       if term_in_text(k, chunk_text_lower)}

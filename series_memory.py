@@ -483,6 +483,13 @@ class SeriesMemory:
                         "\0".join(key), tag)
 
     def mark_episode(self, season, ep):
+        # DİKKAT: `updated_eps` DİSK biçimi 2 hanelidir ('s01e01'), köken
+        # etiketleri (`_episode_tag`) 3 hanelidir ('s01e001'). Bu ikisi
+        # BİRBİRİYLE hiç karşılaştırılmaz: `updated_eps` yalnız legacy
+        # bloklamada regex'le parse edilip SAYISAL karşılaştırılır, köken
+        # etiketleri ise `_episode_order` ile. Dolguyu eşitlemek kayıtlı
+        # .series_memory dosyalarının biçimini bozar (bug taraması madde 8:
+        # tutarsızlık gerçek ama zararsız, düzeltmesi zararlı).
         try:
             tag = f"s{int(season):02d}e{int(ep):02d}"
         except Exception:

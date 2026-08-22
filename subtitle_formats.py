@@ -154,6 +154,27 @@ def _replace_word_separators(text: str) -> str:
     return _SOURCE_INLINE_VTT_TS.sub(_timestamp, value)
 
 
+# Cümle sonu tespiti: kapanış işaretleri SOYULDUKTAN SONRA kalan boşluk da
+# temizlenmeli. Eskiden iki ayrı ikiz vardı (GUI döngülü/doğru, hybrid tek
+# geçişli) ve '"Welcome to Miami Beach. "' gibi 'nokta + boşluk + tırnak'
+# biçiminde farklı cevap veriyorlardı; hybrid tarafı cümleyi bitmemiş sayıp
+# iki ayrı cümleyi tek `sentence_groups` girdisinde birleştiriyordu — model de
+# tamamlanmış cümleyi bilerek yarım bırakıyordu (bug taraması madde 18/32).
+SENTENCE_CLOSERS = ")]}\"'»”’›"
+SENTENCE_ENDERS = ".!?…"
+
+
+def ends_sentence(text) -> bool:
+    """Metin cümle bitiren noktalamayla mı bitiyor? (kapanış işaretleri dâhil)"""
+    value = str(text or "").strip()
+    while True:
+        trimmed = value.rstrip(SENTENCE_CLOSERS).rstrip()
+        if trimmed == value:
+            break
+        value = trimmed
+    return bool(value) and value[-1] in SENTENCE_ENDERS
+
+
 def clean_translation_source_text(text: str) -> str:
     """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
     text = _VTT_RUBY_READING_RE.sub("", str(text or ""))

@@ -29,6 +29,8 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               translation_failure_reason,
                               visible_semantic_text,
                               normalize_subtitle_control_artifacts,
+                              ends_sentence as _sf_ends_sentence,
+                              SENTENCE_CLOSERS as _SF_SENTENCE_CLOSERS,
                               _match_full_wrap)
 import credential_store
 import series_memory
@@ -5301,7 +5303,14 @@ _TITLE_WORK_NAME_STOPS = frozenset({
     "incredible", "popper", "magoo", "deeds", "hyde", "brightside",
     "congeniality", "world", "america", "daisy", "grey", "clean",
     "happy", "lucky", "perfect", "pink", "white", "black", "blue",
-    "green", "orange", "brown", "gray", "smith" if False else "sunshine",
+    "green", "orange", "brown", "gray", "sunshine",
+    # DİKKAT: "smith" bu listede OLMAMALI. Buradaki adlar eser adının
+    # parçasıdır (Mr. Robot, Mr. Bean, Mr. Sunshine) ve unvan çevrilmez;
+    # "Mr. Smith" ise gerçek bir hitaptır ve "Bay Smith" olmalıdır
+    # (tests/test_haric_audit_c_20260821: test_a_real_address_is_still_translated,
+    # tests/test_deep_audit_part2_20260820: test_shouted_titles_are_translated).
+    # Eskiden bu, okunmayı zorlaştıran bir `"smith" if False else "sunshine"`
+    # ifadesiyle yazılmıştı; niyet aynı, ifade açıldı (bug taraması madde 11).
 })
 _TITLE_NAME_RE = re.compile(r"\s+([^\W\d_]+)")
 
@@ -7464,18 +7473,13 @@ def _clean_src(text: str) -> str:
 # parantez, sonra yalnız tırnak soyuluyordu; 'The end.]"' gibi İÇ İÇE
 # kapanışlarda cümle bitmemiş sayılıyor ve chunk sınırları bozuluyordu
 # (denetim Part 2, madde 41).
-_SENTENCE_CLOSERS = ")]}\"'»”’›"
+_SENTENCE_CLOSERS = _SF_SENTENCE_CLOSERS
 
 
-def _ends_sentence_gui(text: str) -> bool:
+def _ends_sentence_gui(text) -> bool:
     """True if text ends with sentence-closing punctuation."""
-    t = str(text or "").strip()
-    while True:
-        trimmed = t.rstrip(_SENTENCE_CLOSERS).rstrip()
-        if trimmed == t:
-            break
-        t = trimmed
-    return bool(t) and t[-1] in '.!?…'
+    # Tek kaynak: subtitle_formats.ends_sentence (bkz. hybrid ikizi).
+    return _sf_ends_sentence(text)
 
 
 def _ellipsis_continues_gui(cur: str, nxt: str) -> bool:
@@ -7825,7 +7829,8 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                 if nxt:
                     payload["next_ctx"] = nxt
             # Active glossary: only terms that appear in this chunk
-            quality_terms = ht.quality_glossary_for_source(chunk_text_lower)
+            quality_terms = ht.quality_glossary_for_source(
+                chunk_text_lower, tgt)
             if gloss:
                 active = {k: v for k, v in gloss.items()
                           if ht.term_in_text(k, chunk_text_lower)}
@@ -17758,7 +17763,12 @@ class App(ctk.CTk):
             "<Control-Shift-S>", self._shortcut_show_last_summary, add="+")
         self.bind_all("<F1>", self._shortcut_show_shortcuts, add="+")
         self._apply_media_mode("Dizi", notify=False)
-        self._load_settings()
+        self._applying_workflow_profile = True
+        try:
+            self._load_settings()
+        finally:
+            self._applying_workflow_profile = False
+        self._bind_workflow_profile_watchers()
         self._apply_startup_geometry()
         self._setup_drag_drop()
         self.bind("<Configure>", self._on_window_motion, add="+")
@@ -25349,16 +25359,49 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _mark_workflow_custom(self, *_args):
+        """Profile ait bir ayar ELLE değişti → etiket 'Özel' olsun.
+
+        Bu metot hiç yazılmamıştı ama kapsam menüsünün command'ı ona
+        bağlıydı: menü her değiştiğinde Tk callback'i AttributeError ile
+        düşüyordu. Dahası hiçbir manuel değişiklik profili 'Özel'e
+        çevirmediği için koşu kaydı ve rapor 'Maksimum kalite' derken
+        ayarlar o profile ait olmayabiliyordu (bug taraması madde 24)."""
+        if getattr(self, "_applying_workflow_profile", False):
+            return
+        var = getattr(self, "workflow_profile_var", None)
+        if var is not None and var.get() != "Özel":
+            var.set("Özel")
+
+    def _bind_workflow_profile_watchers(self):
+        """Profilin sahip olduğu her değişkeni izle; elle değişimde 'Özel'e geç."""
+        watched = set()
+        for profile in WORKFLOW_PROFILES.values():
+            watched.update(profile)
+        for attr in sorted(watched):
+            var = getattr(self, attr, None)
+            if var is None:
+                continue
+            try:
+                var.trace_add("write", self._mark_workflow_custom)
+            except Exception:
+                pass
+
     def _apply_workflow_profile(self, profile_name: str):
         profile = WORKFLOW_PROFILES.get(profile_name)
         if not profile:
             return
-        for attr, value in profile.items():
-            var = getattr(self, attr, None)
-            if var is not None:
-                var.set(value)
-        self._apply_media_mode(self.media_mode_var.get(), notify=False)
-        self._toggle_hybrid()
+        # Profil uygularken izleyiciler tetiklenip etiketi 'Özel'e çevirmesin.
+        self._applying_workflow_profile = True
+        try:
+            for attr, value in profile.items():
+                var = getattr(self, attr, None)
+                if var is not None:
+                    var.set(value)
+            self._apply_media_mode(self.media_mode_var.get(), notify=False)
+            self._toggle_hybrid()
+        finally:
+            self._applying_workflow_profile = False
         self._log(f"Çalışma profili uygulandı: {profile_name}", "info")
 
     def _apply_media_mode(self, media_mode: str, *, notify=True):
@@ -35175,11 +35218,14 @@ class App(ctk.CTk):
             # ── Consistency Sweep (dosya içi tekrar tutarsızlıklarını normalize et) ──
             self._update_file_progress(filepath, "Tutarlılık taraması", 87)
             _before_consistency = list(sorted_blocks)
+            # tgt_lang: ikinci tarama (final_consistency_sweep) bunu zaten
+            # geçiriyordu; ilk tarama geçmeyince Türkçe dışı hedeflerde aynı
+            # dosyaya iki farklı politika uygulanıyordu (bug taraması m.22).
             sorted_blocks, _cons_fixes = ht.consistency_sweep(
                 cues, sorted_blocks, log_fn=self._log,
                 locked_terms=_locked_terms,
                 apply_changes=not bool(self._snap_get(
-                    "quality_report_only", True)))
+                    "quality_report_only", True)), tgt_lang=tgt)
             _record_pass_change(
                 _pass_trace, "Consistency", _before_consistency,
                 sorted_blocks, _pass_history)
@@ -37021,7 +37067,8 @@ class App(ctk.CTk):
                                     _orig_cues, pp, log_fn=self._log,
                                     locked_terms=_locked_terms,
                                     apply_changes=not bool(self._snap_get(
-                                        "quality_report_only", True)))
+                                        "quality_report_only", True)),
+                                    tgt_lang=tgt)
                             else:
                                 _cons_fixes = 0
                             _record_pass_change(
@@ -37862,7 +37909,7 @@ class App(ctk.CTk):
                     _src_cues, sorted_blocks, log_fn=self._log,
                     locked_terms=_locked_terms_for(fp),
                     apply_changes=not bool(self._snap_get(
-                        "quality_report_only", True)))
+                        "quality_report_only", True)), tgt_lang=_tgt_lang)
                 _consistency_status.update({
                     "status": "completed", "successful_chunks": 1,
                     "suggested": _cons_fixes,
@@ -39428,7 +39475,7 @@ class App(ctk.CTk):
                         cues, _final_blocks, log_fn=self._log,
                         locked_terms=_file_locked_terms,
                         apply_changes=not bool(self._snap_get(
-                            "quality_report_only", True)))
+                            "quality_report_only", True)), tgt_lang=tgt)
                     _consistency_status.update({
                         "status": "completed", "successful_chunks": 1,
                         "suggested": _cons_fixes,
