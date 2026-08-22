@@ -89,8 +89,41 @@ API_PROFILE_PROVIDERS = {
     "openai_compatible": "OpenAI Uyumlu / Reseller",
     "anthropic": "Anthropic / Claude",
 }
+def _api_profile_provider_url_mismatch(provider: str, base_url: str) -> str:
+    """Saglayici turu ile adres celisiyorsa aciklamayi dondurur, yoksa ''.
+
+    Yeni profil varsayilani 'OpenAI Uyumlu / Reseller' + api.openai.com idi;
+    kullanici reseller anahtarini bu adresle kaydedince her istek 401
+    aliyordu ve hata mesaji gercek OpenAI'ye isaret ettigi icin sebep
+    gorunmuyordu (2026-08-23 kosu logu).
+    """
+    host = (urlparse(str(base_url or "")).hostname or "").casefold()
+    if not host:
+        return ""
+    official_hosts = {"api.openai.com", "openai.com"}
+    if provider == "openai_compatible" and host in official_hosts:
+        return (
+            "Sağlayıcı türü 'OpenAI Uyumlu / Reseller' ama adres gerçek "
+            f"OpenAI'yi ({host}) gösteriyor.\n\n"
+            "Reseller anahtarı bu adrese gönderilirse her istek 401 döner.\n\n"
+            "Ya sağlayıcınızın adresini yazın (ör. https://api.shuaiapi.com/v1) "
+            "ya da sağlayıcı türünü 'OpenAI Resmi' yapın."
+        )
+    if provider == "anthropic" and host in official_hosts:
+        return (
+            "Sağlayıcı türü 'Anthropic / Claude' ama adres OpenAI'yi "
+            f"({host}) gösteriyor. Anthropic adresini yazın "
+            "(ör. https://api.anthropic.com/v1)."
+        )
+    return ""
+
+
 API_PROFILE_ROLE_LABELS = {
     "main": "Ana ceviri",
+    # Ikinci bir new-api grubuna ait anahtar. Rota failover'i grup sorununu
+    # (kota bitti / model gruba kapali / anahtar askida) cozemedigi icin
+    # eklendi; ayrintilar provider_retry.configure_api_key_fallback.
+    "main_backup": "Ana ceviri - yedek anahtar (2. grup)",
     "analysis": "Yardimci analiz + Kisaltma + Auto-Glossary",
     "critic": "Critic + Derin Teslim + Nihai Anlam + Baglam Incelemesi",
     "polish": "Polish + Terim Normalizasyonu + Sezon Kanonu",
@@ -5883,7 +5916,10 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
                 stats["cps"] += 1
         except Exception:
             pass
-    stats["duplicates"] = _delivery_duplicate_count(blocks, source_cues)
+    duplicate_pairs = _delivery_duplicate_pairs(blocks, source_cues)
+    stats["duplicate_pairs"] = duplicate_pairs
+    stats["duplicates"] = len({cue_id for pair in duplicate_pairs
+                               for cue_id in pair})
     src_map = _delivery_source_map(blocks, source_cues) if source_cues else {}
     stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
@@ -5903,7 +5939,7 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     if log_fn:
         problems = [
             (stats["missing"], "eksik çeviri"),
-            (stats["duplicates"], "bitişik yineleme"),
+            (stats["duplicates"], "yakın cue'larda olası çeviri tekrarı"),
             (stats["cps"], f"CPS>{CPS_WARN_LIMIT}"),
             (stats["over_width"], f">{_LINE_THRESHOLD} karakter satır"),
             (stats["over_lines"], f">{_MAX_LINES} satır"),
@@ -5928,8 +5964,10 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
             # BİLGİ amaçlı: sen/siz Türkçede dosya değil İLİŞKİ özelliğidir
             # (aynı karakter patronuna "siz", kardeşine "sen" der). Bu ölçüm
             # dosya genelinde yapıldığı için tek başına tutarsızlık kanıtı
-            # değildir; konuşmacı başına ölçen Critic REGISTER_FLIP kararı
-            # asıldır (bug taraması madde 34).
+            # değildir. Critic'in REGISTER_FLIP'i de ilişkiyi ölçmez: yalnız
+            # konuşmacının kendi satırları içindeki AZINLIK biçimi görür,
+            # muhatabı bilmez (denetim Tur 4, madde 7). İkisi de karar
+            # değil, insan gözüne işarettir (bug taraması madde 34).
             log_fn(
                 f"Teslim taraması: dosya genelinde hitap dağılımı — "
                 f"{register['informal']} cue 'sen', {register['formal']} cue 'siz'. "
@@ -5985,8 +6023,36 @@ def _delivery_scan_suspect_ids(blocks, source_cues,
         suspects.append((str(cue_id), "SCAN_MISSING_PREDICATE"))
     return suspects
 
+def _delivery_duplicate_pairs(blocks, source_cues) -> list:
+    """Yakın cue'larda tekrarlanan çeviri çiftleri: [(id_a, id_b), ...].
+
+    Rapor "bitişik yineleme" diyordu ama dedektör sekiz cue'luk bir pencerede
+    çalışıyor (bkz. _DUP_WIN): Gwen #236 ile #243 arasında yedi cue var. Kullanıcı yalnız
+    ardışık iki cue'ya bakıp bulguyu doğrulayamıyordu (denetim Tur 4, madde 11),
+    bu yüzden çiftler artık rapora yazılıyor.
+    """
+    try:
+        src_map = _delivery_source_map(list(blocks), source_cues)
+        seq = [
+            (str(idx), _align_visible(str(text or "")))
+            for idx, _ts, text in blocks
+        ]
+        seq = [(idx, text) for idx, text in seq if text]
+        pairs: list = []
+        _find_adjacent_duplicate_ids(seq, src_map, pairs_out=pairs)
+        seen = set()
+        unique = []
+        for pair in pairs:
+            if pair not in seen:
+                seen.add(pair)
+                unique.append(pair)
+        return unique
+    except Exception:
+        return []
+
+
 def _delivery_duplicate_count(blocks, source_cues) -> int:
-    """Teslim edilen dosyada BİTİŞİK yinelenen cue sayısı (deterministik).
+    """Teslim edilen dosyada YAKIN cue'larda yinelenen cue sayısı (deterministik).
 
     `detect_alignment_issues` bu sınıfı zaten görüyordu ama bulgular yalnız
     API tabanlı (isteğe bağlı) geçişlere besleniyordu; kapalıyken yinelemeler
@@ -10043,6 +10109,89 @@ def _precontext_analysis_fingerprint(model: str, base_url: str = "") -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# ── Kaynak dil / içerik türü tespitinin kalıcı önbelleği ─────────────────────
+# Tespitler yalnız koşu anlık görüntüsünde ve yarım-koşu kaydında yaşıyordu;
+# program kapanınca kayboluyor, aynı dosya yeniden seçildiğinde yardımcı model
+# baştan çalışıyordu. Bu önbellek dosyanın yanına yazılır ve içerik hash'i
+# değişirse kendiliğinden geçersizleşir.
+
+def _detection_cache_path(filepath: str) -> Path:
+    p = Path(filepath)
+    return p.parent / ".context_cache" / (p.name + ".detect.json")
+
+
+def load_detection_cache(filepath: str) -> dict:
+    """Daha önce tespit edilmiş kaynak dil / içerik türünü döndürür.
+
+    Dosya içeriği değiştiyse (SHA-256 uyuşmazlığı) boş sözlük döner ki
+    bayat tespit sessizce taşınmasın.
+    """
+    try:
+        path = _detection_cache_path(filepath)
+        if not path.exists():
+            return {}
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        current = _precontext_cache_sig(filepath)
+        if not current or data.get("_sig") != current:
+            return {}
+        return data
+    except Exception:
+        return {}
+
+
+def save_detection_cache(filepath: str, source_language=None,
+                         content_type=None) -> bool:
+    """Tespit sonucunu diske yazar.
+
+    None verilen alan DEĞİŞMEZ. 'Otomatik' (ya da boş) verilen alan SİLİNİR:
+    kullanıcı seçimi otomatiğe geri aldıysa bayat tespit yapışıp kalmasın.
+    """
+    sig = _precontext_cache_sig(filepath)
+    if not sig:
+        return False
+    try:
+        path = _detection_cache_path(filepath)
+        data = {}
+        if path.exists():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    old = json.load(f)
+                if isinstance(old, dict) and old.get("_sig") == sig:
+                    data = {k: v for k, v in old.items() if k != "_sig"}
+            except Exception:
+                data = {}
+        if source_language is not None:
+            language = normalize_language_name(source_language)
+            if language and language != AUTO_LANGUAGE:
+                data["source_language"] = language
+            else:
+                data.pop("source_language", None)
+        if content_type is not None:
+            name = normalize_schema_name(content_type)
+            if name and name != "Otomatik":
+                data["content_type"] = name
+            else:
+                data.pop("content_type", None)
+        if not data:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+        data["_sig"] = sig
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 def build_precontext_hint(data: dict, target_language: str = "tr",
                           source_text: str | None = None) -> str:
     """Ön-analiz JSON'ını system prompt'a eklenecek metin bloğuna çevirir.
@@ -11461,7 +11610,7 @@ def _refresh_start_snapshot(current: dict, fresh: dict) -> dict:
         return fresh
     merged = copy.deepcopy(current)
     for key in (
-        "main_api_key", "helper_keys", "file_schemas",
+        "main_api_key", "main_api_key_backup", "helper_keys", "file_schemas",
         "file_glossaries", "file_source_languages", "file_analysis_depths",
     ):
         if key in fresh:
@@ -11500,8 +11649,9 @@ _DUP_WIN, _DUP_TR, _DUP_SRC, _DUP_LCS = 8, 0.90, 0.60, 15
 
 def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                                   window: int = _DUP_WIN, tr_thresh: float = _DUP_TR,
-                                  src_thresh: float = _DUP_SRC, lcs_thresh: int = _DUP_LCS) -> list:
-    """seq: [(id_str, visible_tr_text), ...]. Komşu (±window) çeviri çiftlerinden
+                                  src_thresh: float = _DUP_SRC, lcs_thresh: int = _DUP_LCS,
+                                  pairs_out: list | None = None) -> list:
+    """seq: [(id_str, visible_tr_text), ...]. YAKIN (±window) çeviri çiftlerinden
     TR-benzerliği yüksek AMA kaynak-benzerliği düşük olanların id'lerini döner —
     içerik 'öne kaymış' ve yeniden hizalanırken tekrarlanmış izi (redistribution-
     desync). Guard: kaynak da benziyorsa (refrain) ya da uzun ortak ifade
@@ -11551,6 +11701,8 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                 continue  # kaynaklar uzun ortak ifade paylaşıyor → meşru
             dup_ids.append(seq[a][0])
             dup_ids.append(seq[b][0])
+            if pairs_out is not None:
+                pairs_out.append((seq[a][0], seq[b][0]))
     return dup_ids
 
 
@@ -12254,7 +12406,10 @@ def _acronym_mixed_renderings(blocks: list, src_map: dict) -> list:
         target = text_by_id.get(str(idx))
         if not target:
             continue
-        for term in set(_ACRONYM_TERM_RE.findall(str(source_text or ""))):
+        # sorted: set üzerinde dolaşmak bulgu sırasını PYTHONHASHSEED'e
+        # bağlıyordu; altyazı değişmiyor ama rapor ve anlık görüntü
+        # karşılaştırmaları kararsızlaşıyordu (denetim Tur 4, madde 12).
+        for term in sorted(set(_ACRONYM_TERM_RE.findall(str(source_text or "")))):
             if term in _MIXED_TERM_ACRONYM_STOPS:
                 continue
             bucket = kept if re.search(
@@ -16380,6 +16535,96 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
     return flagged
 
 
+def _delivery_semantic_loss_ids(blocks: list, source_map: dict) -> list[str]:
+    """Kaynak tam cümleyken çevirisi neredeyse boş kalan cue'lar.
+
+    _untranslated_reason bu sınıfı ('near_empty_translation') zaten görüyordu
+    ama teslim denetimi onu HİÇ çağırmıyordu: yalnız kaynak satırının aynen
+    hayatta kalıp kalmadığına bakıyordu. Sonuç, Five Suns #554-556 gibi anlamı
+    tamamen kaybolmuş dosyaların status=ok almasıydı (denetim Tur 4, madde 1).
+    Yalnız RAPORLAR — otomatik düzeltme yok, sert hata da değil.
+    """
+    flagged = []
+    for idx, _timestamp, target_text in blocks or []:
+        source_text = str((source_map or {}).get(str(idx), "") or "")
+        if not source_text:
+            continue
+        if _is_near_empty_translation(source_text, str(target_text or "")):
+            flagged.append(str(idx))
+    return flagged
+
+
+def _delivery_garble_ids(blocks: list, source_map: dict) -> list[str]:
+    """Bozuk/model kaynaklı yazım taşıyan cue'lar (find_garble_tokens).
+
+    Tarayıcı koşu içindeki Critic adaylarında kullanılıyordu; diske YAZILAN
+    dosyanın denetimi onu hiç çalıştırmıyordu (denetim Tur 4, madde 2).
+
+    Kaynağa bağlı muafiyetler cue bazında bakınca yetmiyor: 'carnyx', 'dux',
+    'conquistador' gibi kaynaktan korunan terimler KOMŞU cue'da geçebiliyor ve
+    meşru alıntılar bulgu olarak çıkıyordu. Bu yüzden dosyanın tamamındaki
+    sözcükler bir kez toplanıp bulgular ona göre eleniyor — metni her cue için
+    yeniden taramak bin cue'luk dosyada karesel maliyet demekti.
+    """
+    try:
+        from hybrid_translate import find_garble_tokens
+    except Exception:
+        return []
+    source_words = set()
+    for value in (source_map or {}).values():
+        # Görünür metin: <font color="#ffff00"> gibi biçim etiketleri Rusça
+        # bir kaynağı "Latin alfabeli" gibi gösteriyordu.
+        visible = " ".join(
+            _delivery_visible_line(line)
+            for line in str(value or "").splitlines())
+        for word in re.findall(r"[^\W\d_]+", visible, re.UNICODE):
+            source_words.add(word.lower())
+
+    def _from_source(token: str) -> bool:
+        folded = str(token or "").lower()
+        if not folded:
+            return False
+        if folded in source_words:
+            return True
+        # Türkçe ek almış hâli ('carnyxlerin'): gövdeyi kısaltarak ara.
+        for size in range(len(folded), 3, -1):
+            if folded[:size] in source_words:
+                return True
+        return False
+
+    # R1 (tek başına Latin harfi) ve R2 (w/q/x taşıyan token) kararlarını
+    # ancak kaynak LATİN alfabesindeyse verebilir: Rusça/Arapça kaynakta
+    # 'dux' ya da madde işareti 'a' kaynakta aranamaz ve meşru alıntılar
+    # bulgu olarak çıkar. Böyle dosyalarda bu iki kural susar.
+    latin_source_words = sum(
+        1 for word in source_words if any("a" <= ch <= "z" for ch in word))
+    # Salt SAYI yetmiyor: Rusça bir kaynakta bile 20+ Latin özel ad bulunuyor.
+    # Kaynağın kendisi Latin alfabeliyse bu sözcükler ezici çoğunluktadır.
+    latin_source = (latin_source_words >= 20
+                    and latin_source_words >= len(source_words) / 2)
+    source_bound_rules = {"R1_stray_letter", "R2_wqx_token"}
+
+    flagged = []
+    for idx, _timestamp, target_text in blocks or []:
+        text = str(target_text or "")
+        if not text.strip():
+            continue
+        source_text = str((source_map or {}).get(str(idx), "") or "")
+        try:
+            hits = find_garble_tokens(text, source_text)
+        except Exception:
+            hits = []
+        remaining = []
+        for token, rule in hits:
+            if rule in source_bound_rules:
+                if not latin_source or _from_source(token):
+                    continue
+            remaining.append((token, rule))
+        if remaining:
+            flagged.append(str(idx))
+    return flagged
+
+
 # Sıfır-başlangıç istisnasında baş imzanın bittiği an (ms). Bu pencere
 # diyalogla çakışsa bile teslim denetiminde hata sayılmaz.
 _ZERO_START_SIGNATURE_END_MS = 1
@@ -16554,6 +16799,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     )
     untranslated_fragment_ids = _delivery_untranslated_fragment_ids(
         output_dialogue, output_source_map, target_language, source_language)
+    semantic_loss_ids = _delivery_semantic_loss_ids(
+        output_dialogue, output_source_map)
+    garble_ids = _delivery_garble_ids(output_dialogue, output_source_map)
     # Biçim etiketine sarılmış hata işareti de sayılır (madde 1).
     unresolved_markers = sum(
         bool(translation_failure_reason(text)) for text in output_texts)
@@ -16672,6 +16920,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("residual_speaker_label", output_id=output_id)
     for output_id in foreign_script_ids:
         _add_review_detail("foreign_script", output_id=output_id)
+    for output_id in semantic_loss_ids:
+        _add_review_detail("semantic_loss", output_id=output_id)
+    for output_id in garble_ids:
+        _add_review_detail("garbled_token", output_id=output_id)
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         delivery_owner_mismatch_ids, untranslated_fragment_ids,
@@ -16685,6 +16937,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         introduced_out_of_order_ids, inherited_out_of_order_ids,
         invalid_timestamp_ids,
         reversed_timestamp_ids, signature_overlap_ids,
+        # Anlamsal çöküş ve bozuk yazım SERT hata değil (dosya biçimsel olarak
+        # geçerli) ama 'ok' da değildir: insan gözüne gitmeli.
+        semantic_loss_ids, garble_ids,
     ))
     audit.update({
         "status": "review" if needs_review else "ok",
@@ -16698,6 +16953,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "source_to_output_ids": source_to_output_ids,
         "delivery_owner_mismatch_ids": delivery_owner_mismatch_ids,
         "untranslated_fragment_ids": untranslated_fragment_ids,
+        "semantic_loss_ids": semantic_loss_ids,
+        "garble_ids": garble_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_credit_ids": residual_credit_ids,
@@ -17180,6 +17437,10 @@ def delivery_scan_report_lines(scan: dict) -> list:
     for cue_id, written, expected in (
             scan.get("syllable_typo_details") or [])[:8]:
         lines.append(f"      - #{cue_id} '{written}' → '{expected}'")
+    # Çiftler yazılmazsa kullanıcı ardışık iki cue'ya bakıp bulguyu bulamıyor;
+    # pencere sekiz cue geniş (denetim Tur 4, madde 11).
+    for left, right in (scan.get("duplicate_pairs") or [])[:8]:
+        lines.append(f"      - #{left} ↔ #{right} aynı çeviri")
     return lines
 
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
@@ -17191,7 +17452,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     import datetime as _dt
     fields = [
         ("hata",     "Eksik çeviri satırı"),
-        ("dup",      "Bitişik yinelenen cue"),
+        ("dup",      "Yakın cue'da yinelenen çeviri"),
         ("cps",      f"CPS aşımı (>{CPS_WARN_LIMIT} k/sn)"),
         ("cps_avg",  "Ortalama CPS"),
         ("cps_max",  "Maksimum CPS"),
@@ -21031,6 +21292,54 @@ class App(ctk.CTk):
             pass
 
     # ── Per-file şema ─────────────────────────────────────────────────────────
+    def _remembered_source_language(self, filepath: str, fallback: str) -> str:
+        """Global seçim 'Otomatik' ise diskteki eski tespiti geri getirir.
+
+        Kullanıcı global dili açıkça seçmişse ona dokunulmaz; önbellek
+        yalnızca yardımcı modeli yeniden çalıştıracak boşluğu doldurur.
+        """
+        if normalize_language_name(fallback) != AUTO_LANGUAGE:
+            return fallback
+        cached = normalize_language_name(
+            load_detection_cache(filepath).get("source_language") or "")
+        if not cached or cached == AUTO_LANGUAGE:
+            return fallback
+        self._log(
+            f"[{Path(filepath).name}] Kaynak dil önceki tespitten geri "
+            f"yüklendi: {cached}", "info")
+        return cached
+
+    def _remembered_content_type(self, filepath: str, fallback: str) -> str:
+        """Global tür 'Otomatik' ise diskteki eski tür tespitini geri getirir."""
+        if normalize_schema_name(fallback) != "Otomatik":
+            return fallback
+        cached = normalize_schema_name(
+            load_detection_cache(filepath).get("content_type") or "")
+        if cached == "Otomatik" or cached not in {
+                v["name"] for v in CONTENT_SCHEMAS.values()}:
+            return fallback
+        self._log(
+            f"[{Path(filepath).name}] İçerik türü önceki tespitten geri "
+            f"yüklendi: {cached}", "info")
+        return cached
+
+    def _remember_file_detections(self, files=None):
+        """Onaylanmış kaynak dil / içerik türü tespitlerini diske yazar."""
+        paths = list(files) if files is not None else list(
+            set(getattr(self, "_file_language_vars", {}))
+            | set(getattr(self, "_file_schema_vars", {})))
+        for fp in paths:
+            lang_var = getattr(self, "_file_language_vars", {}).get(fp)
+            schema_var = getattr(self, "_file_schema_vars", {}).get(fp)
+            try:
+                save_detection_cache(
+                    fp,
+                    source_language=lang_var.get() if lang_var is not None else None,
+                    content_type=schema_var.get() if schema_var is not None else None,
+                )
+            except Exception:
+                continue
+
     def _populate_file_list(self, files: list, reset_page: bool = True):
         """Dosya ayarlarını korur; yalnızca görünür sayfanın widget'larını oluşturur."""
         files = sorted(self._dedupe_paths(files), key=lambda p: Path(p).name.lower())
@@ -21073,10 +21382,13 @@ class App(ctk.CTk):
                          row=0, column=0, sticky="ew", padx=(10,4), pady=5)
             lang_var = self._file_language_vars.get(fp)
             if lang_var is None:
-                lang_var = ctk.StringVar(value=default_language)
+                lang_var = ctk.StringVar(
+                    value=self._remembered_source_language(fp, default_language))
                 self._file_language_vars[fp] = lang_var
             ctk.CTkOptionMenu(row_fr, variable=lang_var, values=SOURCE_LANGUAGES,
                               width=105, height=26,
+                              command=lambda _v, _fp=fp: (
+                                  self._remember_file_detections([_fp])),
                               font=ctk.CTkFont("Segoe UI", 10),
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
@@ -21084,10 +21396,13 @@ class App(ctk.CTk):
                               ).grid(row=0, column=1, padx=(4, 2), pady=4)
             var = self._file_schema_vars.get(fp)
             if var is None:
-                var = ctk.StringVar(value=default)
+                var = ctk.StringVar(
+                    value=self._remembered_content_type(fp, default))
                 self._file_schema_vars[fp] = var
             ctk.CTkOptionMenu(row_fr, variable=var, values=schema_names,
                               width=155, height=26,
+                              command=lambda _v, _fp=fp: (
+                                  self._remember_file_detections([_fp])),
                               font=ctk.CTkFont("Segoe UI", 10),
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
@@ -21515,6 +21830,12 @@ class App(ctk.CTk):
             "media_mode": (self.media_mode_var.get()
                            if getattr(self, "media_mode_var", None) else "Dizi"),
             "main_api_key": self._main_api_key(),
+            # getattr: eski test taklitleri (SimpleNamespace) bu resolver'ı
+            # tanımıyor; yokluğunda yedek anahtar sadece boş kalır.
+            "main_api_key_backup": (
+                self._main_api_key_backup()
+                if callable(getattr(self, "_main_api_key_backup", None))
+                else ""),
             "main_api_base_url": self._main_api_base_url(),
             "main_model_name": self._main_model_name(),
             "schema": self._get_schema(),
@@ -24517,6 +24838,54 @@ class App(ctk.CTk):
                         for path, name in saved_schemas.items()
                     }
                 self._resume_snapshot_override = None
+            # Yedek anahtar HER kosuda yeniden kaydedilir: aktif anahtar
+            # birincile geri doner, onceki kosunun gecisi yapisip kalmaz.
+            try:
+                from provider_retry import configure_api_key_fallback
+                snap = getattr(self, "_active_snapshot", {}) or {}
+                primary_key = str(snap.get("main_api_key") or "")
+                backup_key = str(snap.get("main_api_key_backup") or "")
+                # Ana VE yardimci kapsam: ana anahtari devralan roller de
+                # yedege gecer. Kendi anahtari olan rol etkilenmez — gecis
+                # yalniz BIRINCIL anahtari tasiyan isteklerde yapilir.
+                log_fn = getattr(self, "_log", None)
+                if not callable(log_fn):
+                    log_fn = None
+                registered = [
+                    configure_api_key_fallback(
+                        scope, primary_key=primary_key,
+                        backup_key=backup_key, log_fn=log_fn)
+                    for scope in ("main", "helper")
+                ]
+                if log_fn is not None:
+                    # "Doğru API'yi mi deniyor?" — koşu HANGİ profille
+                    # gidiyor, log'dan görülebilsin. Anahtarın kendisi asla
+                    # yazılmaz; kullanıcının pencerede gördüğü ad yazılır.
+                    assignments = getattr(self, "_api_key_assignments", {}) or {}
+                    main_name = self._api_profile_name(assignments.get("main", ""))
+                    host = urlparse(
+                        str(snap.get("main_api_base_url") or "")).hostname or "?"
+                    model = str(snap.get("main_model_name") or "?")
+                    log_fn(
+                        f"Ana çeviri hattı: profil '{main_name}' · {model} @ "
+                        f"{host}", "info")
+                    if any(registered):
+                        backup_name = self._api_profile_name(
+                            assignments.get("main_backup", ""))
+                        log_fn(
+                            f"Yedek anahtar hazır: profil '{backup_name}' "
+                            "(2. grup). Ana anahtar kota/grup hatası verirse "
+                            "ana çeviri ve onu devralan yardımcı görevler "
+                            "buna geçecek.", "info")
+                    else:
+                        log_fn(
+                            "Yedek anahtar YOK: ana anahtar grup hatası "
+                            "verirse geçilecek ikinci bir profil atanmamış.",
+                            "warn")
+            except Exception as exc:
+                log_fn = getattr(self, "_log", None)
+                if callable(log_fn):
+                    log_fn(f"Yedek API anahtarı ayarlanamadı: {exc}", "warn")
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
             if (getattr(self, "_active_snapshot", {}) or {}).get("prevent_sleep"):
@@ -26915,11 +27284,50 @@ class App(ctk.CTk):
             )
         return resolve_helper_model(lbl)
 
+    def _helper_falls_back_to_main(self, role: str) -> bool:
+        """Bu yardimci rol kendi ayarina sahip degil mi?
+
+        True ise rol, ana cevirinin anahtarini VE adresini devralir. Eskiden
+        bu durumda anahtar bos donuyordu (fail-closed) ve kullanici her rol
+        icin ayri profil girmek zorunda kaliyordu. Anahtarla adres birlikte
+        devralindigi icin guvenlik kurali korunuyor: bir anahtar yalnizca
+        kendi servisine gonderiliyor.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return False
+        assignments = getattr(self, "_api_key_assignments", {})
+        if assignments.get(role) in getattr(self, "_api_key_profiles", {}):
+            return False
+        model_vars = getattr(self, "helper_model_vars", {})
+        if role in model_vars and self._is_custom_helper_label(model_vars[role].get()):
+            return False
+        role_keys = getattr(self, "helper_role_key_vars", {})
+        if role in role_keys and role_keys[role].get().strip():
+            return False
+        try:
+            if self._get_current_helper_provider(role) not in {"openai", "openai_helper"}:
+                return False
+            helper_url = self._helper_model_config(role).base_url
+            main_url = self._main_api_base_url() or ""
+        except Exception:
+            return False
+        helper_host = (urlparse(str(helper_url or "")).hostname or "").casefold()
+        main_host = (urlparse(str(main_url or "")).hostname or "").casefold()
+        if not helper_host or helper_host in {"api.openai.com", "openai.com"}:
+            # Resmi OpenAI ucu: kendi anahtarini kullanmali.
+            return False
+        if helper_host == main_host or (
+                _is_shuai_api_route(helper_url) and _is_shuai_api_route(main_url)):
+            return False  # zaten ayni servis; mevcut devretme yolu calisiyor
+        return bool(str(self._main_api_key() or "").strip())
+
     def _helper_api_base_url(self, role: str):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             urls = self._active_snapshot.get("helper_urls") or {}
             if role in urls:
                 return urls[role]
+        if App._helper_falls_back_to_main(self, role):
+            return self._main_api_base_url()
         cfg = self._helper_model_config(role)
         url = cfg.base_url
         assigned = getattr(self, "_api_key_assignments", {}).get(role)
@@ -26949,6 +27357,46 @@ class App(ctk.CTk):
             if role in models:
                 return models[role]
         return self._helper_model_config(role).model
+
+    @staticmethod
+    def _describe_missing_helper_key(helper_url: str, main_url: str,
+                                     role_label: str) -> str:
+        """Yardimci anahtar neden bos kaldi? Sebebi adres adres anlatir.
+
+        Eski mesaj ('Analiz / kalite veya OpenAI API key girin veya Hybrid
+        modu kapatin') en sik sebebi hic soylemiyordu: ana hat ile yardimci
+        FARKLI servise bakiyorsa program ana anahtari yardimciya devretmeyi
+        bilerek reddediyor (fail-closed, bkz. _helper_api_key).
+        """
+        helper_host = (urlparse(str(helper_url or "")).hostname or "").casefold()
+        main_host = (urlparse(str(main_url or "")).hostname or "").casefold()
+        if helper_host and main_host and helper_host != main_host:
+            return (
+                f"{role_label} için API anahtarı yok.\n\n"
+                f"Yardımcı model {helper_host} adresine, ana çeviri ise "
+                f"{main_host} adresine bakıyor. İki farklı servis olduğu için "
+                "ana anahtar yardımcıya devredilmiyor.\n\n"
+                "Çözüm: ikisini aynı servise getirin (API profilinin Base URL "
+                "alanını düzeltin) ya da yardımcı role kendi anahtarını/API "
+                "profilini atayın. Hybrid modu kapatmak da bu kontrolü kaldırır."
+            )
+        return (
+            f"{role_label} için API anahtarı yok.\n\n"
+            "Bu role bir API profili atayın, yardımcı anahtar alanını doldurun "
+            "ya da Hybrid modu kapatın."
+        )
+
+    def _missing_helper_key_reason(self, role: str) -> str:
+        label = API_PROFILE_ROLE_LABELS.get(role, role)
+        try:
+            helper_url = self._helper_api_base_url(role)
+        except Exception:
+            helper_url = ""
+        try:
+            main_url = self._main_api_base_url()
+        except Exception:
+            main_url = ""
+        return App._describe_missing_helper_key(helper_url, main_url, label)
 
     def _helper_api_key(self, role: str):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
@@ -26993,6 +27441,12 @@ class App(ctk.CTk):
                 if same_shuai_service or (
                         main_custom and main_host == helper_host):
                     return self._main_api_key()
+                # Farkli servis: eskiden bos donup "API key girin" hatasi
+                # verirdi. Artik ana hattin anahtarini VE adresini birlikte
+                # devraliyoruz (bkz. _helper_falls_back_to_main), boylece
+                # anahtar yine yalniz kendi servisine gidiyor.
+                if App._helper_falls_back_to_main(self, role):
+                    return self._main_api_key()
                 return ""
         if not k:
             cache_key = "openai_helper" if provider == "openai" else provider
@@ -27022,6 +27476,16 @@ class App(ctk.CTk):
         if self._main_custom_active():
             return self.main_custom_key_entry.get().strip()
         return self.api_key_entry.get().strip()
+
+    def _main_api_key_backup(self) -> str:
+        """İkinci gruba ait yedek anahtar; atanmamışsa boş."""
+        if (threading.current_thread() is not threading.main_thread()
+                and getattr(self, "_active_snapshot", None)):
+            return self._active_snapshot.get("main_api_key_backup", "")
+        assigned = getattr(self, "_api_key_assignments", {}).get("main_backup")
+        if assigned in getattr(self, "_api_key_profiles", {}):
+            return (credential_store.load_key(f"api_profile_{assigned}") or "").strip()
+        return ""
 
     def _main_api_base_url(self):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
@@ -27765,6 +28229,35 @@ class App(ctk.CTk):
         if provider == "openai_official":
             base_url = "https://api.openai.com/v1"
 
+        if role == "main_backup":
+            # Yedek anahtar HICBIR UI alanini ezmez: ana hattin modeli, adresi
+            # ve anahtari oldugu gibi kalir. Yalnizca atama kaydedilir; anahtar
+            # ancak ana anahtar grup/kota hatasi verirse devreye girer.
+            if provider == "anthropic":
+                if notify:
+                    messagebox.showwarning(
+                        "Yedek anahtar",
+                        "Yedek anahtar ana çeviri hattında kullanılır ve "
+                        "OpenAI uyumlu olmalıdır. Bu Claude profilini yardımcı "
+                        "görevlerden birine atayın.",
+                        parent=getattr(self, "_api_keys_dialog", None) or self)
+                return False
+            if getattr(self, "_api_key_assignments", {}).get("main") == profile_id:
+                if notify:
+                    messagebox.showwarning(
+                        "Yedek anahtar",
+                        "Yedek anahtar ana anahtarla aynı profil olamaz. "
+                        "İkinci gruba ait ayrı bir profil oluşturun.",
+                        parent=getattr(self, "_api_keys_dialog", None) or self)
+                return False
+            self._api_key_assignments[role] = profile_id
+            self._save_settings(save_credentials=True)
+            if notify:
+                self._log(
+                    f"API profili atandı: {profile['name']} → "
+                    f"{API_PROFILE_ROLE_LABELS[role]}", "ok")
+            return True
+
         if role == "main":
             if provider == "anthropic":
                 if notify:
@@ -27773,6 +28266,17 @@ class App(ctk.CTk):
                         "Ana çeviri hattı OpenAI uyumlu API kullanıyor. Bu Claude profilini yardımcı görevlerden birine atayın.",
                         parent=getattr(self, "_api_keys_dialog", None) or self)
                 return False
+            # Ters yon: bu profil ZATEN yedek olarak duruyorsa atama sessizce
+            # ana=yedek durumunu yaratir; koşuda yedek anahtar hiç devreye
+            # girmez (aynı anahtar) ama kullanıcı yedeği var sanır.
+            if getattr(self, "_api_key_assignments", {}).get("main_backup") == profile_id:
+                self._api_key_assignments.pop("main_backup", None)
+                if notify:
+                    self._log(
+                        f"'{profile['name']}' ana çeviriye atandı; aynı profil "
+                        "yedek anahtar olarak duruyordu, yedek boşaltıldı. "
+                        "İkinci gruba ait ayrı bir profili yedek olarak atayın.",
+                        "warn")
             if provider == "openai_official":
                 self.main_custom_var.set(False)
                 self._replace_entry_value(self.api_key_entry, key)
@@ -27904,6 +28408,10 @@ class App(ctk.CTk):
         menu.add_command(
             label="Ana çeviri için kullan",
             command=lambda: self._assign_api_profile_group(profile_id, ("main",)))
+        menu.add_command(
+            label="Ana çeviri YEDEĞİ olarak kullan (2. grup)",
+            command=lambda: self._assign_api_profile_group(
+                profile_id, ("main_backup",)))
         menu.add_separator()
         menu.add_command(
             label="Yardımcı analiz için kullan",
@@ -27955,7 +28463,9 @@ class App(ctk.CTk):
         provider_var = ctk.StringVar(value=API_PROFILE_PROVIDERS.get(
             current.get("provider"), "OpenAI Uyumlu / Reseller"))
         model_var = ctk.StringVar(value=current.get("model", "gpt-5.4"))
-        url_var = ctk.StringVar(value=current.get("base_url", "https://api.openai.com/v1"))
+        # Yeni profilde adres BOS baslar: varsayilan saglayici 'Reseller' iken
+        # api.openai.com on-dolu geliyordu ve celiski fark edilmiyordu.
+        url_var = ctk.StringVar(value=current.get("base_url", ""))
 
         ctk.CTkLabel(
             dlg, text="API PROFİLİ", text_color=ACCENT,
@@ -28024,6 +28534,11 @@ class App(ctk.CTk):
                     "Geçersiz adres", "API adresi http:// veya https:// ile başlamalıdır.",
                     parent=dlg)
                 return
+            mismatch = _api_profile_provider_url_mismatch(provider, base_url)
+            if mismatch:
+                messagebox.showwarning("Sağlayıcı ile adres uyuşmuyor",
+                                       mismatch, parent=dlg)
+                return
             if not profile_id and not key:
                 messagebox.showwarning(
                     "Eksik bilgi", "Yeni profil için API anahtarı girin.", parent=dlg)
@@ -28063,6 +28578,288 @@ class App(ctk.CTk):
                       hover_color=BORDER, command=dlg.destroy).pack(side="left", padx=(0, 8))
         ctk.CTkButton(buttons, text="Kaydet", width=110, fg_color=ACCENT,
                       hover_color=ACCENT_HOVER, command=save_profile).pack(side="left")
+
+    def _refresh_shuai_route_panel(self):
+        """Rota ölçüm tablosunu yeniden çizer (hızlıdan yavaşa)."""
+        frame = getattr(self, "_shuai_probe_frame", None)
+        if frame is None:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+        except Exception:
+            return
+        for widget in frame.winfo_children():
+            widget.destroy()
+        try:
+            from provider_retry import shuai_route_probe_report, shuai_probe_ran
+            rows = shuai_route_probe_report()
+            measured = shuai_probe_ran()
+        except Exception:
+            return
+        now = time.monotonic()
+        for index, row in enumerate(rows):
+            if not measured:
+                value, color = "—", FG2
+            elif row["probe_ok"]:
+                value, color = f"{row['median_ms']} ms", GREEN
+            else:
+                value, color = (row["detail"] or "yanıtsız"), WARN
+            ctk.CTkLabel(
+                frame, text=("▸ " if measured and index == 0 and row["probe_ok"]
+                             else "   "),
+                text_color=ACCENT, width=18,
+                font=ctk.CTkFont("Consolas", 10)).grid(
+                    row=index, column=0, sticky="w")
+            ctk.CTkLabel(
+                frame, text=f"{row['label']}  ({row['host']})",
+                text_color=FG, anchor="w",
+                font=ctk.CTkFont("Segoe UI", 10)).grid(
+                    row=index, column=1, sticky="ew", pady=1)
+            note = ""
+            if row["successes"] or row["failures"]:
+                note = f"  {row['successes']}✓/{row['failures']}✕"
+            if row["cooldown_until"] > now:
+                note += f"  ⏳{int(row['cooldown_until'] - now)}s"
+            ctk.CTkLabel(
+                frame, text=note, text_color=FG2, anchor="e",
+                font=ctk.CTkFont("Consolas", 9)).grid(
+                    row=index, column=2, sticky="e", padx=(6, 6))
+            ctk.CTkLabel(
+                frame, text=value, text_color=color, anchor="e", width=90,
+                font=ctk.CTkFont("Consolas", 10, "bold")).grid(
+                    row=index, column=3, sticky="e")
+
+    def _start_shuai_route_probe(self):
+        """'Rotaları Ölç' düğmesi: ölçümü arka planda çalıştırır."""
+        button = getattr(self, "_shuai_probe_btn", None)
+        if button is not None:
+            try:
+                button.configure(state="disabled", text="Ölçülüyor...")
+            except Exception:
+                pass
+
+        def _worker():
+            try:
+                from provider_retry import probe_shuai_routes
+                probe_shuai_routes(attempts=3, log_fn=self._log)
+            except Exception as exc:
+                self._log(f"Rota testi başarısız: {exc}", "warn")
+
+            def _finish():
+                self._refresh_shuai_route_panel()
+                btn = getattr(self, "_shuai_probe_btn", None)
+                if btn is None:
+                    return
+                try:
+                    if btn.winfo_exists():
+                        btn.configure(state="normal", text="⟳  Rotaları Ölç")
+                except Exception:
+                    pass
+
+            _post_ui(self, _finish)
+
+        App._start_worker(self, _worker)
+
+    def _api_profile_endpoint(self, profile_id):
+        """Bir profilin (adres, model) ikilisi; profil yoksa (None, "")."""
+        profile = getattr(self, "_api_key_profiles", {}).get(profile_id)
+        if not profile:
+            return None, ""
+        if profile.get("provider") == "openai_official":
+            return "https://api.openai.com/v1", str(profile.get("model", "") or "")
+        return (_normalize_api_base_url(profile.get("base_url", "")),
+                str(profile.get("model", "") or ""))
+
+    def _api_key_check_targets(self) -> list:
+        """Sınanacak anahtarlar: önce ana, sonra yedek.
+
+        Yedek anahtar BAŞKA bir gruba ait olduğu için kendi profilindeki
+        adres ve model kullanılır; profil bunları boş bırakmışsa ana hattın
+        değerlerine düşer (aynı bayi, farklı grup en sık durum).
+        """
+        main_url = self._main_api_base_url() or ""
+        main_model = self._main_model_name() or ""
+        assignments = getattr(self, "_api_key_assignments", {}) or {}
+        targets = [{
+            "label": "Ana anahtar",
+            # Profil adı, "doğru API'yi mi deniyor?" sorusunun tek cevabı:
+            # anahtarın kendisi loglanamaz, ama kullanıcının pencerede
+            # gördüğü ad loglanabilir.
+            "profile": self._api_profile_name(assignments.get("main", "")),
+            "key": self._main_api_key() or "",
+            "base_url": main_url,
+            "model": main_model,
+        }]
+        backup_key = self._main_api_key_backup() or ""
+        if backup_key:
+            assigned = assignments.get("main_backup")
+            url, model = self._api_profile_endpoint(assigned)
+            targets.append({
+                "label": "Yedek anahtar (2. grup)",
+                "profile": self._api_profile_name(assigned or ""),
+                "key": backup_key,
+                "base_url": url or main_url,
+                "model": model or main_model,
+            })
+        return targets
+
+    def _refresh_api_key_check_panel(self):
+        """Anahtar testi sonuç satırlarını çizer (yeşil = çalışıyor)."""
+        frame = getattr(self, "_api_key_check_frame", None)
+        if frame is None:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+        except Exception:
+            return
+        for widget in frame.winfo_children():
+            widget.destroy()
+        rows = getattr(self, "_api_key_check_results", []) or []
+        if not rows:
+            ctk.CTkLabel(
+                frame,
+                text="Henüz denenmedi. Düğmeye basınca her anahtarla tek "
+                     "küçük istek gönderilir (birkaç jeton).",
+                text_color=FG2, anchor="w", justify="left", wraplength=560,
+                font=ctk.CTkFont("Segoe UI", 9)).grid(
+                    row=0, column=0, columnspan=3, sticky="ew")
+            return
+        for index, row in enumerate(rows):
+            state = row.get("state", "pending")
+            if state == "ok":
+                dot, color = "●", GREEN
+                value = f"{row.get('latency_ms') or 0} ms"
+            elif state == "warn":
+                # Sarı: anahtar/grup doğru ama sağlayıcı kararsız.
+                dot, color = "●", WARN
+                value = f"{row.get('latency_ms') or 0} ms · kararsız"
+            elif state == "pending":
+                dot, color, value = "○", FG2, "deneniyor..."
+            else:
+                dot, color, value = "●", WARN, "başarısız"
+            ctk.CTkLabel(
+                frame, text=dot, text_color=color, width=18,
+                font=ctk.CTkFont("Consolas", 12, "bold")).grid(
+                    row=index * 2, column=0, sticky="w")
+            profile = str(row.get("profile", "") or "")
+            title = row.get("label", "")
+            if profile:
+                title = f"{title}  ·  {profile}"
+            ctk.CTkLabel(
+                frame, text=f"{title}  ·  {row.get('model', '')}",
+                text_color=FG, anchor="w",
+                font=ctk.CTkFont("Segoe UI", 10)).grid(
+                    row=index * 2, column=1, sticky="ew", pady=1)
+            ctk.CTkLabel(
+                frame, text=value, text_color=color, anchor="e", width=110,
+                font=ctk.CTkFont("Consolas", 10, "bold")).grid(
+                    row=index * 2, column=2, sticky="e")
+            detail = str(row.get("detail", "") or "")
+            hint = str(row.get("hint", "") or "")
+            if hint:
+                detail = f"{detail} · {hint}" if detail else hint
+            if detail and state in ("warn", "fail"):
+                ctk.CTkLabel(
+                    frame, text=detail, text_color=FG2, anchor="w",
+                    justify="left", wraplength=520,
+                    font=ctk.CTkFont("Segoe UI", 9)).grid(
+                        row=index * 2 + 1, column=1, columnspan=2,
+                        sticky="ew", pady=(0, 4))
+
+    def _start_api_key_check(self):
+        """'Anahtarları Dene' düğmesi: ana ve yedek anahtarı sırayla sınar."""
+        if getattr(self, "_api_key_check_busy", False):
+            return
+        try:
+            targets = self._api_key_check_targets()
+        except Exception as exc:
+            self._log(f"Anahtar testi hazırlanamadı: {exc}", "warn")
+            return
+        usable = [t for t in targets if t["key"]]
+        if not usable:
+            self._api_key_check_results = [{
+                "label": "Ana anahtar", "model": "", "state": "fail",
+                "detail": "Anahtar girilmemiş."}]
+            self._refresh_api_key_check_panel()
+            return
+        self._api_key_check_busy = True
+        self._api_key_check_results = [
+            {"label": t["label"], "profile": t.get("profile", ""),
+             "model": t["model"], "state": "pending"}
+            for t in usable]
+        self._refresh_api_key_check_panel()
+        button = getattr(self, "_api_key_check_btn", None)
+        if button is not None:
+            try:
+                button.configure(state="disabled", text="Deneniyor...")
+            except Exception:
+                pass
+
+        def _worker():
+            try:
+                from provider_retry import probe_api_key
+                for index, target in enumerate(usable):
+                    try:
+                        # realistic=True: koşunun gönderdiğine benzer
+                        # boyutta gerçek bir çeviri isteği. Küçük "ping"
+                        # yeşil yakarken koşu 502 alıyordu.
+                        outcome = probe_api_key(
+                            target["key"], target["base_url"], target["model"],
+                            realistic=True)
+                    except Exception as exc:
+                        outcome = {"ok": False, "latency_ms": None,
+                                   "detail": f"{type(exc).__name__}: {exc}"[:120],
+                                   "hint": ""}
+                    try:
+                        from provider_retry import api_key_check_stability_note
+                        note = api_key_check_stability_note(outcome)
+                    except Exception:
+                        note = ""
+                    row = {
+                        "label": target["label"],
+                        "profile": target.get("profile", ""),
+                        "model": target["model"],
+                        # Kararsız sağlayıcı yeşil DEĞİL: anahtar doğru ama
+                        # koşunun ilk isteği pekâlâ hataya denk gelebilir.
+                        "state": ("warn" if (outcome.get("ok") and note)
+                                  else "ok" if outcome.get("ok") else "fail"),
+                        "latency_ms": outcome.get("latency_ms"),
+                        "detail": note or outcome.get("detail", ""),
+                        "hint": outcome.get("hint", ""),
+                    }
+                    results = getattr(self, "_api_key_check_results", [])
+                    if index < len(results):
+                        results[index] = row
+                    level = "info" if row["state"] == "ok" else "warn"
+                    note = row["detail"]
+                    if row["hint"]:
+                        note = f"{note} ({row['hint']})"
+                    where = urlparse(
+                        str(outcome.get("route") or target["base_url"] or "")
+                    ).hostname or "?"
+                    self._log(
+                        f"Anahtar testi — {target['label']} "
+                        f"(profil '{target.get('profile', '?')}') / "
+                        f"{target['model']} @ {where}: {note}", level)
+                    _post_ui(self, self._refresh_api_key_check_panel)
+            finally:
+                def _finish():
+                    self._api_key_check_busy = False
+                    self._refresh_api_key_check_panel()
+                    btn = getattr(self, "_api_key_check_btn", None)
+                    if btn is None:
+                        return
+                    try:
+                        if btn.winfo_exists():
+                            btn.configure(state="normal",
+                                          text="✓  Anahtarları Dene")
+                    except Exception:
+                        pass
+                _post_ui(self, _finish)
+
+        App._start_worker(self, _worker)
 
     def _refresh_api_keys_panel(self):
         dlg = getattr(self, "_api_keys_dialog", None)
@@ -28160,6 +28957,55 @@ class App(ctk.CTk):
         self._api_routes_frame = ctk.CTkFrame(route_card, fg_color="transparent")
         self._api_routes_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
         self._api_routes_frame.grid_columnconfigure(0, weight=1)
+        probe_bar = ctk.CTkFrame(route_card, fg_color="transparent")
+        probe_bar.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 4))
+        probe_bar.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            probe_bar, text="SHUAI ROTA TESTİ", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=0, column=0, sticky="w")
+        self._shuai_probe_btn = ctk.CTkButton(
+            probe_bar, text="⟳  Rotaları Ölç", width=140, height=30,
+            fg_color=CARD, hover_color=BORDER,
+            command=self._start_shuai_route_probe)
+        self._shuai_probe_btn.grid(row=0, column=1)
+        ctk.CTkLabel(
+            probe_bar,
+            text="Anahtar göndermeden her rotanın /api/ping ucunu ölçer; "
+                 "sonuç failover sırasını belirler.",
+            text_color=FG2, anchor="w", justify="left", wraplength=560,
+            font=ctk.CTkFont("Segoe UI", 9)).grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self._shuai_probe_frame = ctk.CTkFrame(route_card, fg_color="transparent")
+        self._shuai_probe_frame.grid(row=3, column=0, sticky="ew",
+                                     padx=16, pady=(4, 10))
+        self._shuai_probe_frame.grid_columnconfigure(1, weight=1)
+        self._refresh_shuai_route_panel()
+        key_bar = ctk.CTkFrame(route_card, fg_color="transparent")
+        key_bar.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 4))
+        key_bar.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            key_bar, text="ANAHTAR TESTİ", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=0, column=0, sticky="w")
+        self._api_key_check_btn = ctk.CTkButton(
+            key_bar, text="✓  Anahtarları Dene", width=160, height=30,
+            fg_color=CARD, hover_color=BORDER,
+            command=self._start_api_key_check)
+        self._api_key_check_btn.grid(row=0, column=1)
+        ctk.CTkLabel(
+            key_bar,
+            text="Önce ana, sonra yedek anahtarla gerçek boyutta tek çeviri "
+                 "isteği gönderir; anahtar/grup doğruysa ve sağlayıcı iş "
+                 "yapabiliyorsa yeşil, kararsızsa sarı yanar.",
+            text_color=FG2, anchor="w", justify="left", wraplength=560,
+            font=ctk.CTkFont("Segoe UI", 9)).grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self._api_key_check_frame = ctk.CTkFrame(route_card, fg_color="transparent")
+        self._api_key_check_frame.grid(row=5, column=0, sticky="ew",
+                                       padx=16, pady=(4, 12))
+        self._api_key_check_frame.grid_columnconfigure(1, weight=1)
+        self._refresh_api_key_check_panel()
         self._api_profiles_frame = ctk.CTkScrollableFrame(
             dlg, fg_color=PANEL, corner_radius=12,
             scrollbar_button_color=BORDER, scrollbar_button_hover_color=ACCENT)
@@ -28576,12 +29422,156 @@ class App(ctk.CTk):
                     return None
         return key
 
+    # Canlilik kapisi bir kez gecince kisa sure yeniden sorulmaz: ayni
+    # kosuda dil on analizi, tur on analizi ve ana preflight ard arda
+    # calisiyor ve her biri icin ucretli bir istek gondermek gereksiz.
+    _PROVIDER_LIVE_CHECK_TTL = 120.0
+
+    def _provider_live_check(self, label: str = "") -> bool:
+        """Sağlayıcı GERÇEKTEN iş yapabiliyor mu? (ön analizden önce)
+
+        Rota ölçümü (/api/ping) yalnız yolu görüyor: 2026-08-23 19:03'te üç
+        rota da 3/3 canlı ölçüldü, istekler yine 502 aldı. Küçük "ping"
+        isteği de yetmiyor — kısa istek anında dönüyor, uzun üretimde ağ
+        geçidi zaman aşımına düşüyor. Bu yüzden kapı, koşunun göndereceğine
+        BENZER boyutta gerçek bir çeviri isteği gönderir.
+
+        False dönerse çeviri hiç başlamaz; 11x60 saniyelik yeniden deneme
+        merdiveni boşuna işletilmez.
+        """
+        where = label or "Çeviri"
+        base_url = ""
+        try:
+            base_url = str(self._main_api_base_url() or "")
+        except Exception as exc:
+            self._log(f"Canlılık kontrolü atlandı (adres okunamadı: {exc}).",
+                      "warn")
+            return True
+        if not _is_shuai_api_route(base_url):
+            # Resmî OpenAI ve bilinmeyen adreslerde bu arıza sınıfı
+            # görülmedi; her koşuda ücretli bir istek eklemenin anlamı yok.
+            return True
+        now = time.monotonic()
+        passed_at = getattr(self, "_provider_live_check_ok_at", 0.0) or 0.0
+        if now - passed_at < App._PROVIDER_LIVE_CHECK_TTL:
+            self._log(
+                f"Canlılık kontrolü: {int(now - passed_at)} sn önce geçmişti, "
+                "tekrar sorulmadı.", "info")
+            return True
+        try:
+            from provider_retry import probe_api_key
+            api_key = self._main_api_key() or ""
+            model = str(self._main_model_name() or "")
+        except Exception as exc:
+            self._log(f"Canlılık kontrolü atlandı (ayar okunamadı: {exc}).",
+                      "warn")
+            return True
+        if not api_key or not model:
+            # Kapının SESSİZCE atlanması, olmamasından kötüdür: koruma var
+            # sanılır. Bu yüzden atlama sebebi de loglanır.
+            self._log(
+                "Canlılık kontrolü atlandı: "
+                f"{'anahtar' if not api_key else 'model adı'} okunamadı.",
+                "warn")
+            return True
+        self._set_status("Sağlayıcı canlılık kontrolü")
+        started = time.monotonic()
+        try:
+            outcome = probe_api_key(api_key, base_url, model, realistic=True)
+        except Exception as exc:
+            self._log(f"Canlılık kontrolü çalıştırılamadı, atlanıyor: {exc}",
+                      "warn")
+            return True
+        elapsed = time.monotonic() - started
+        if outcome.get("ok"):
+            self._provider_live_check_ok_at = time.monotonic()
+            failures = int(outcome.get("failures", 0) or 0)
+            host = urlparse(
+                str(outcome.get("route") or base_url or "")).hostname or "?"
+            if failures:
+                self._log(
+                    f"Canlılık kontrolü geçti ama sağlayıcı kararsız: "
+                    f"{outcome.get('attempts')} denemenin {failures} tanesi "
+                    f"başarısız ({host}, {elapsed:.1f} sn). Koşu sırasında "
+                    "kesinti olabilir.", "warn")
+            else:
+                # Basarida da log: ucretli bir kontrolun calistigi
+                # gorulebilmeli, yoksa "koruma var" varsayimi denetlenemez.
+                self._log(
+                    f"Canlılık kontrolü geçti: sağlayıcı gerçek isteği "
+                    f"{elapsed:.1f} sn'de karşıladı ({host}).", "info")
+            return True
+        detail = str(outcome.get("detail", "") or "")
+        hint = str(outcome.get("hint", "") or "")
+        if hint:
+            detail = f"{detail} ({hint})"
+        self._log(
+            f"{where} başlatılmadı — sağlayıcı gerçek bir isteği "
+            f"karşılayamıyor: {detail}. Rota ölçümü yolu canlı gösterse bile "
+            "model kanalı iş yapamıyor; toparlayınca yeniden Başlat'a basın.",
+            "err")
+        self._set_status("Sağlayıcı iş yapamıyor; çeviri başlatılmadı.")
+        return False
+
+    def _shuai_route_preflight(self, attempts: int = 2) -> bool:
+        """Koşu öncesi rota ölçümü + 'hepsi ölü' durumunda hızlı vazgeçme.
+
+        Ölçüm iki iş yapar: (1) soğuk başlangıçta failover sırasını gerçek
+        gecikmeye göre tohumlar, (2) dört rota da yanıt vermiyorsa çeviriyi
+        hiç başlatmayıp istek başına 11x60 sn'lik yeniden deneme merdivenini
+        atlar (2026-08-23: 4/4 rota HTTP 502, ön analiz 10 dakika bekledi).
+        """
+        try:
+            from provider_retry import probe_shuai_routes, normalize_shuai_api_route
+        except Exception:
+            return True
+        self._set_phase("Rota Testi", "SHUAI rotaları ölçülüyor")
+        self._set_status("SHUAI rotaları ölçülüyor")
+        try:
+            probe = probe_shuai_routes(attempts=attempts, log_fn=self._log)
+        except Exception as exc:
+            self._log(f"Rota testi çalıştırılamadı, atlanıyor: {exc}", "warn")
+            return True
+        alive = {url: result for url, result in probe.items() if result.get("ok")}
+        if not alive:
+            self._log(
+                f"Rota testi: {len(probe)} rotanın hiçbiri yanıt vermedi. "
+                "Sağlayıcı ulaşılamıyor; ücretli çeviri başlatılmadı ve uzun "
+                "yeniden deneme merdiveni atlandı. Sağlayıcı toparlayınca "
+                "yeniden Başlat'a basın.", "err")
+            return False
+        fastest_url = min(
+            alive, key=lambda url: alive[url].get("median_ms") or 10 ** 9)
+        fastest_ms = alive[fastest_url].get("median_ms")
+        self._log(
+            f"Rota testi tamam: {len(alive)}/{len(probe)} rota canlı; en hızlı "
+            f"{urlparse(fastest_url).hostname} ({fastest_ms} ms). Failover "
+            "sırası ölçüme göre düzenlendi.", "ok")
+        try:
+            configured = normalize_shuai_api_route(self._main_api_base_url())
+        except Exception:
+            configured = ""
+        if configured and configured not in alive:
+            self._log(
+                f"Seçili ana rota ({urlparse(configured).hostname}) yanıt "
+                "vermiyor; istekler ölçümde canlı çıkan rotaya yönlendirilecek.",
+                "warn")
+        return True
+
     def _provider_model_preflight(self, targets: list) -> bool:
         shuai_targets = [
             target for target in targets if _is_shuai_api_route(target[2])
         ]
         if not shuai_targets:
             return True
+        route_probe = getattr(self, "_shuai_route_preflight", None)
+        if callable(route_probe) and not route_probe():
+            return False
+        # Rota olcumu YOLU gorur; model kanalinin gercekten is yapip
+        # yapmadigini ancak gercek bir istek soyler.
+        live_check = getattr(self, "_provider_live_check", None)
+        if callable(live_check) and not live_check("Çeviri"):
+            return False
         self._set_phase("API Ön Kontrolü", "model ve grup erişimi doğrulanıyor")
         self._set_status("SHUAI model/grup uygunluğu kontrol ediliyor")
         self._log(
@@ -28821,7 +29811,8 @@ class App(ctk.CTk):
         if hybrid:
             mm = self._helper_api_key("analysis")
             if not mm:
-                messagebox.showerror("Hata", "Analiz / kalite veya OpenAI API key girin veya Hybrid modu kapatın.")
+                messagebox.showerror(
+                    "Hata", self._missing_helper_key_reason("analysis"))
                 self._set_running(False)
                 return
             ext_path = self.ext_project_path_var.get().strip()
@@ -31483,6 +32474,7 @@ class App(ctk.CTk):
                             helper_api_key=helper_keys.get("critic", ""),
                             helper_url=helper_urls.get("critic", ""),
                             helper_model=helper_models.get("critic", "gpt-5.4-mini"), tgt_lang=tgt,
+                            src_lang=source_language,
                             log_fn=self._log,
                             glossary=None,
                             analysis_result=analysis_result,
@@ -33132,6 +34124,10 @@ class App(ctk.CTk):
             self.src_var.set(next(iter(all_languages)))
         elif len(all_languages) > 1:
             self.src_var.set(AUTO_LANGUAGE)
+        # Program kapansa bile tespit korunur (bkz. save_detection_cache).
+        remember = getattr(self, "_remember_file_detections", None)
+        if callable(remember):
+            remember(detected.keys())
 
     def _file_preflight_signature(self, files: list):
         items = []
@@ -33712,6 +34708,14 @@ class App(ctk.CTk):
             "info")
 
         def _worker():
+            # Kapi burada: on analiz de UCRETLI istekler gonderiyor ve
+            # saglayici coktugunde 11x60 sn merdivene giriyordu.
+            if not App._provider_live_check(self, "Kaynak dil ön analizi"):
+                def _stop():
+                    self._language_preflight_done = False
+                    self._set_running(False)
+                _post_ui(self, _stop)
+                return
             try:
                 client = OpenAI(api_key=api_key, base_url=base_url if base_url else None)
                 detected = self._detect_source_languages_parallel(
@@ -33853,6 +34857,10 @@ class App(ctk.CTk):
             only = next(iter(resolved))
             if only != "Otomatik":
                 self.content_type_var.set(only)
+        # Program kapansa bile tespit korunur (bkz. save_detection_cache).
+        remember = getattr(self, "_remember_file_detections", None)
+        if callable(remember):
+            remember(detected.keys())
 
     def _show_content_type_confirm_dialog(self, detected: dict) -> bool:
         """Show detected content types before translation. Returns True to continue."""
@@ -34016,6 +35024,12 @@ class App(ctk.CTk):
         )
 
         def _worker():
+            if not App._provider_live_check(self, "İçerik türü ön analizi"):
+                def _stop():
+                    self._content_type_preflight_done = False
+                    self._set_running(False)
+                _post_ui(self, _stop)
+                return
             try:
                 client = OpenAI(
                     api_key=api_key, base_url=base_url if base_url else None)
@@ -35919,7 +36933,7 @@ class App(ctk.CTk):
                         cues=cues,
                         tr_blocks=sorted_blocks,
                         helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"),
-                        tgt_lang=tgt,
+                        tgt_lang=tgt, src_lang=file_src,
                         log_fn=self._log,
                         glossary=_locked_terms,
                         analysis_result=(context, char_examples, pronoun_map,
@@ -37809,6 +38823,11 @@ class App(ctk.CTk):
                                     helper_url=self._helper_api_base_url("critic"),
                                     helper_model=self._helper_api_model("critic"),
                                     tgt_lang=tgt, log_fn=self._log,
+                                    src_lang=(
+                                        source_language
+                                        or self._effective_file_source_language(
+                                            str(_src_path),
+                                            self._snap_get("src_lang", "English"))),
                                     glossary=_locked_terms,
                                     analysis_result=_analysis_result,
                                     change_log=_critic_change_log,
@@ -38659,7 +39678,8 @@ class App(ctk.CTk):
                         helper_api_key=self._helper_api_key("critic"),
                         helper_url=self._helper_api_base_url("critic"),
                         helper_model=self._helper_api_model("critic"),
-                        tgt_lang=_tgt_lang, log_fn=self._log,
+                        tgt_lang=_tgt_lang, src_lang=_file_src_lang,
+                        log_fn=self._log,
                         glossary=_locked_terms_for(fp),
                         analysis_result=_analysis_result,
                         change_log=_critic_change_log,
@@ -40267,6 +41287,7 @@ class App(ctk.CTk):
                             pp_blocks = ht.critic_pass_with_helper(
                                 cues=cues, tr_blocks=pp_blocks,
                                 helper_api_key=self._helper_api_key("critic"), helper_url=self._helper_api_base_url("critic"), helper_model=self._helper_api_model("critic"), tgt_lang=tgt,
+                                src_lang=file_src,
                                 log_fn=self._log,
                                 glossary=_file_locked_terms,
                                 analysis_result=_full_analysis,

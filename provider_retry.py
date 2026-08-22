@@ -5,6 +5,10 @@ import json
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,10 +71,17 @@ _SHUAI_ROUTE_STATES = {
         "attempts": 0, "successes": 0, "failures": 0, "rate_limits": 0,
         "failovers": 0, "total_tokens": 0, "duration_seconds": 0.0,
         "last_error": "",
+        # Koşu öncesi ölçüm (bkz. probe_shuai_routes): soğuk başlangıçta
+        # sıralama artık liste sırasına değil gerçek gecikmeye dayanır.
+        "probe_ok": False, "probe_latency_ms": None, "probe_detail": "",
+        "probe_at": 0.0,
     }
     for _label, url in SHUAI_API_ROUTE_OPTIONS
 }
 _SHUAI_ROUTE_CONDITION = threading.Condition(_SHUAI_FAILOVER_LOCK)
+_SHUAI_PROBE_DONE = False
+SHUAI_ROUTE_PROBE_PATH = "/api/ping"
+_SHUAI_PROBE_UNREACHABLE_RANK = 1_000_000.0
 
 
 def normalize_shuai_api_route(value) -> str:
@@ -88,6 +99,628 @@ def shuai_api_route_label(value) -> str:
         if url == normalized:
             return label
     return SHUAI_API_ROUTE_OPTIONS[0][0]
+
+
+# ── Anahtar / grup yedeklemesi ───────────────────────────────────────────────
+# Rota failover'i base_url'i degistirir, ANAHTARI degistirmez. Sorun rotada
+# degil new-api GRUBUNDA ise (kota bitti, model gruba kapali, anahtar askiya
+# alindi) dort rota da ayni hatayi verir. Bu katman ikinci bir gruba ait yedek
+# anahtara gecer ve gecisi kosu boyunca yapisik tutar.
+_API_KEY_FALLBACK_LOCK = threading.Lock()
+_API_KEY_FALLBACKS = {}
+_API_KEY_GROUP_MARKERS = (
+    "no available channel",
+    "no channel available",
+    "current group",
+    "无可用渠道",   # 无可用渠道
+    "分组",                       # 分组
+)
+
+
+def configure_api_key_fallback(scope: str = "main", primary_key: str = "",
+                               backup_key: str = "", log_fn=None) -> bool:
+    """Bir kapsam icin yedek API anahtarini kaydeder.
+
+    Yedek yoksa (ya da birincil ile ayniysa) kayit silinir ve davranis
+    bugunku haliyle kalir. Her kosu basinda cagrilmalidir: aktif anahtar
+    birincile geri doner.
+    """
+    scope = str(scope or "main")
+    primary = str(primary_key or "").strip()
+    backup = str(backup_key or "").strip()
+    with _API_KEY_FALLBACK_LOCK:
+        if not primary or not backup or primary == backup:
+            _API_KEY_FALLBACKS.pop(scope, None)
+            return False
+        _API_KEY_FALLBACKS[scope] = {
+            "primary": primary,
+            "backup": backup,
+            "active": "primary",
+            "log": log_fn,
+            "switched": False,
+        }
+        return True
+
+
+def reset_api_key_fallback(scope: str = "") -> None:
+    with _API_KEY_FALLBACK_LOCK:
+        if scope:
+            _API_KEY_FALLBACKS.pop(scope, None)
+        else:
+            _API_KEY_FALLBACKS.clear()
+
+
+def api_key_fallback_state(scope: str = "main") -> dict:
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry:
+            return {}
+        return {"active": entry["active"], "switched": bool(entry["switched"])}
+
+
+def _is_api_key_or_group_error(exc) -> bool:
+    """Yedek anahtara gecmeyi hak eden hata mi?
+
+    404 BURADA disarida: tek bir rotada yol/model bulunamadi olabilir ve
+    zaten rota failover'ini tetikler. Rotalar tukendikten SONRA anlami
+    degisir; bkz. _is_post_route_key_error.
+    """
+    status = _status_code(exc)
+    if status in (401, 403):
+        return True
+    text = _provider_error_text(exc).casefold()
+    if any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS):
+        return True
+    if any(marker in text for marker in _API_KEY_GROUP_MARKERS):
+        return True
+    return bool(status == 429 and "insufficient" in text)
+
+
+def _is_post_route_key_error(exc) -> bool:
+    """Rota failover'i tukendikten sonra: 404 de grup sorunudur.
+
+    Dort rotanin dordu de 404 donduyse sorun rotada degil; new-api model
+    grupta yoksa/kanal yoksa bu kodu doner (2026-08-23 kosu logu: gpt-5.4
+    tum rotalarda 404, yedek anahtar hic denenmiyordu).
+
+    ISTISNA: "channel is temporarily unavailable" metnini tasiyan 404 gecici
+    bir bayi arizasidir; onu zaten 11 denemelik gecici-hata merdiveni
+    kurtariyor (ayni gun 16:51 logunda kanal iki dakika sonra geri geldi).
+    Tek atislik yedek gecisini boyle bir dalgalanmaya harcamayiz.
+    """
+    if _is_api_key_or_group_error(exc):
+        return True
+    return _status_code(exc) == 404 and not _is_transient_provider_error(exc)
+
+
+def _client_api_key(client) -> str:
+    api_key = getattr(client, "api_key", "")
+    getter = getattr(api_key, "get_secret_value", None)
+    if callable(getter):
+        try:
+            api_key = getter()
+        except Exception:
+            api_key = ""
+    return str(api_key or "")
+
+
+def _openai_client_for_key(client, api_key: str):
+    try:
+        return client.with_options(api_key=api_key, max_retries=0)
+    except Exception:
+        from openai import OpenAI
+        base_url = str(getattr(client, "base_url", "") or "") or None
+        return OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+
+
+def _apply_active_api_key(client, scope: str):
+    """Kosu icinde yedek anahtara gecildiyse yeni istekler de onu kullanir.
+
+    Yalniz BIRINCIL anahtari tasiyan istemci degistirilir: bir yardimci role
+    kendi anahtarini verdiyse (baska hesap) ona dokunulmaz.
+    """
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry or entry["active"] != "backup":
+            return client
+        primary, backup = entry["primary"], entry["backup"]
+    if _client_api_key(client) != primary:
+        return client
+    try:
+        return _openai_client_for_key(client, backup)
+    except Exception:
+        return client
+
+
+def _switch_to_backup_api_key(client, scope: str, exc):
+    """Hata anahtar/grup kaynakliysa yedek anahtarli istemciyi dondurur.
+
+    Buraya gelen hata rota failover'ini ZATEN gecmistir: her rota denenmis
+    ve hepsi ayni hatayi vermistir. Bu yuzden 404'u de grup sorunu sayariz.
+    """
+    if not _is_post_route_key_error(exc):
+        return None
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry:
+            return None
+        primary, backup = entry["primary"], entry["backup"]
+        # Kendi anahtari olan bir rolu baska hesabin anahtarina cevirmeyiz.
+        if _client_api_key(client) != primary:
+            return None
+        if entry["active"] == "backup":
+            return None
+        entry["active"] = "backup"
+        entry["switched"] = True
+        log_fn = entry.get("log")
+    try:
+        alternate = _openai_client_for_key(client, backup)
+    except Exception:
+        return None
+    reason = _provider_error_context(exc).get("reason", "anahtar/grup hatasi")
+    if _status_code(exc) == 404:
+        reason += " — model bu grupta yok gibi görünüyor"
+    message = (
+        f"Ana API anahtarı başarısız ({reason}); tüm rotalarda aynı hata "
+        "alındı, ikinci gruba ait yedek anahtara geçiliyor. Koşunun kalanı "
+        "yedek anahtarla sürecek.")
+    if log_fn is not None:
+        try:
+            log_fn(message, "warn")
+        except Exception:
+            pass
+    else:
+        _shuai_log(message, "warn")
+    return alternate
+
+
+def shuai_route_probe_url(route_url) -> str:
+    """Rota tabanindan (…/v1) saglik ucunu (…/api/ping) turetir."""
+    normalized = normalize_shuai_api_route(route_url)
+    if not normalized:
+        return ""
+    parsed = urlparse(normalized)
+    return f"{parsed.scheme}://{parsed.netloc}{SHUAI_ROUTE_PROBE_PATH}"
+
+
+def _probe_one_shuai_route(route_url: str, attempts: int, timeout: float) -> dict:
+    """Tek rotayi yoklar. API ANAHTARI GONDERMEZ, yalniz GET atar.
+
+    Her istege rastgele bir nonce konur ve cevapta ayni nonce aranir: ara
+    katman onbelleginden gelen bayat 200 'saglikli' sayilmaz.
+    """
+    probe_url = shuai_route_probe_url(route_url)
+    if not probe_url:
+        return {"ok": False, "successes": 0, "attempts": 0,
+                "median_ms": None, "detail": "invalid-url"}
+    latencies = []
+    detail = ""
+    for _ in range(max(1, int(attempts))):
+        nonce = uuid.uuid4().hex
+        request = urllib.request.Request(
+            f"{probe_url}?nonce={nonce}",
+            headers={
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+                "User-Agent": "SubtitleTranslator-RouteProbe/1.0",
+            },
+        )
+        started = time.perf_counter()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read(65536).decode("utf-8", "replace")
+            elapsed = int((time.perf_counter() - started) * 1000)
+            payload = json.loads(body)
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if (isinstance(payload, dict) and payload.get("success") is True
+                    and isinstance(data, dict)
+                    and data.get("service") == "new-api"
+                    and data.get("nonce") == nonce):
+                latencies.append(max(0, elapsed))
+            elif not detail:
+                detail = "gecersiz yanit"
+        except urllib.error.HTTPError as exc:
+            detail = f"HTTP {exc.code}"
+        except Exception as exc:  # ag/TLS/zaman asimi
+            if not detail:
+                detail = f"{type(exc).__name__}: {exc}"[:120]
+    median = None
+    if latencies:
+        ordered = sorted(latencies)
+        middle = len(ordered) // 2
+        median = (ordered[middle] if len(ordered) % 2
+                  else int(round((ordered[middle - 1] + ordered[middle]) / 2)))
+    return {
+        "ok": bool(latencies),
+        "successes": len(latencies),
+        "attempts": max(1, int(attempts)),
+        "median_ms": median,
+        "detail": "" if latencies else (detail or "yanit yok"),
+    }
+
+
+def probe_shuai_routes(attempts: int = 2, timeout: float = 6.0,
+                       log_fn=None) -> dict:
+    """Dort rotayi paralel yoklar, sonucu sıralamaya tohum olarak yazar.
+
+    Donen: {rota_url: {'ok', 'successes', 'attempts', 'median_ms', 'detail'}}
+    Olcum SADECE siralamayi etkiler; cooldown/health gibi gercek API
+    verisine dokunmaz — ping canli demek, model kanali saglikli demek degil.
+    """
+    global _SHUAI_PROBE_DONE
+    routes = [url for _label, url in SHUAI_API_ROUTE_OPTIONS]
+    results = {}
+    with ThreadPoolExecutor(max_workers=len(routes)) as pool:
+        futures = {
+            pool.submit(_probe_one_shuai_route, url, attempts, timeout): url
+            for url in routes
+        }
+        for future, url in futures.items():
+            try:
+                results[url] = future.result()
+            except Exception as exc:
+                results[url] = {
+                    "ok": False, "successes": 0, "attempts": attempts,
+                    "median_ms": None,
+                    "detail": f"{type(exc).__name__}: {exc}"[:120],
+                }
+    now = time.monotonic()
+    with _SHUAI_ROUTE_CONDITION:
+        for url, result in results.items():
+            state = _SHUAI_ROUTE_STATES.get(url)
+            if state is None:
+                continue
+            state["probe_ok"] = bool(result.get("ok"))
+            state["probe_latency_ms"] = result.get("median_ms")
+            state["probe_detail"] = str(result.get("detail") or "")
+            state["probe_at"] = now
+        _SHUAI_PROBE_DONE = True
+    if log_fn is not None:
+        for label, url in SHUAI_API_ROUTE_OPTIONS:
+            result = results.get(url) or {}
+            host = urlparse(url).hostname or url
+            if result.get("ok"):
+                log_fn(
+                    f"Rota testi: {label} ({host}) "
+                    f"{result.get('successes')}/{result.get('attempts')} "
+                    f"· medyan {result.get('median_ms')} ms", "info")
+            else:
+                log_fn(
+                    f"Rota testi: {label} ({host}) yanit vermedi "
+                    f"({result.get('detail')})", "warn")
+    return results
+
+
+def shuai_route_probe_report() -> list:
+    """GUI tablosu icin satirlar; hizlidan yavasa siralidir."""
+    rows = []
+    with _SHUAI_ROUTE_CONDITION:
+        for label, url in SHUAI_API_ROUTE_OPTIONS:
+            state = dict(_SHUAI_ROUTE_STATES.get(url) or {})
+            rows.append({
+                "label": label,
+                "url": url,
+                "host": urlparse(url).hostname or url,
+                "probe_ok": bool(state.get("probe_ok")),
+                "median_ms": state.get("probe_latency_ms"),
+                "detail": str(state.get("probe_detail") or ""),
+                "health": str(state.get("health") or "unknown"),
+                "cooldown_until": float(state.get("cooldown_until", 0.0) or 0.0),
+                "successes": int(state.get("successes", 0) or 0),
+                "failures": int(state.get("failures", 0) or 0),
+            })
+    rows.sort(key=lambda row: (
+        0 if row["probe_ok"] else 1,
+        row["median_ms"] if row["median_ms"] is not None else 10 ** 9,
+    ))
+    return rows
+
+
+def shuai_probe_ran() -> bool:
+    return _SHUAI_PROBE_DONE
+
+
+def reset_shuai_route_probe() -> None:
+    """Olcum sonuclarini siler (testler ve ayar degisikligi icin)."""
+    global _SHUAI_PROBE_DONE
+    with _SHUAI_ROUTE_CONDITION:
+        for state in _SHUAI_ROUTE_STATES.values():
+            state["probe_ok"] = False
+            state["probe_latency_ms"] = None
+            state["probe_detail"] = ""
+            state["probe_at"] = 0.0
+        _SHUAI_PROBE_DONE = False
+
+
+API_KEY_CHECK_TIMEOUT = 20.0
+_API_KEY_CHECK_PROMPT = "ping"
+# Yanit icerigi onemsiz: HTTP 200 + gecerli 'choices' anahtarin ve grubun
+# o modeli tasidigini kanitlar. gpt-5 ailesinde butce dusunme jetonlarini
+# da kapsadigi icin bos metin donmesi NORMAL, basarisizlik degil.
+_API_KEY_CHECK_BUDGET = 16
+
+# GERCEKCI sinama: 16 jetonluk "ping" bayinin on kapisini olcuyor ama
+# gercek isi olcmuyor. 2026-08-23 19:03'te anahtar testi ust uste UC KEZ
+# ilk denemede yesil dedi, iki dakika sonra kosu dort rotadan da 502 aldi:
+# kisa istek aninda doner, uzun uretimde ag gecidi zaman asimina duser.
+# Bu yuzden kapi isteginin kosunun gonderdigine BENZEMESI gerekiyor.
+_API_KEY_CHECK_REALISTIC_BUDGET = 600
+_API_KEY_CHECK_REALISTIC_PROMPT = (
+    "Translate these subtitle lines into Turkish. Return one line per input "
+    "line and nothing else.\n"
+    "1. We had been walking for hours before the rain finally stopped.\n"
+    "2. Nobody told him the bridge had been closed since the spring floods.\n"
+    "3. She kept the letter in a drawer for almost thirty years.\n"
+    "4. The engine coughed twice, then settled into a steady rhythm.\n"
+    "5. If you leave now you will still reach the harbour before dark.\n"
+    "6. They argued about the price until the market began to empty.\n"
+    "7. It was the last winter anyone remembered the river freezing over.\n"
+    "8. He wrote the whole account down and then never spoke of it again."
+)
+
+
+def _api_key_check_payload(model: str, realistic: bool = False) -> dict:
+    """Sinama istegi.
+
+    realistic=False: bir kac jeton, yalniz anahtar/grup dogrulamasi.
+    realistic=True : kosunun gonderdigine benzer boyutta gercek bir ceviri
+    istegi — bayinin uzun uretimde 502 verip vermedigini de gorur.
+    """
+    model_lower = (model or "").lower()
+    reasoning = (model_lower.startswith(("o1", "o3", "o4", "gpt-5", "codex-")))
+    budget = (_API_KEY_CHECK_REALISTIC_BUDGET if realistic
+              else _API_KEY_CHECK_BUDGET)
+    prompt = (_API_KEY_CHECK_REALISTIC_PROMPT if realistic
+              else _API_KEY_CHECK_PROMPT)
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if reasoning:
+        payload["max_completion_tokens"] = budget
+    else:
+        payload["max_tokens"] = budget
+        payload["temperature"] = 0
+    return payload
+
+
+def _api_key_check_request(url: str, api_key: str, timeout: float,
+                           payload=None) -> tuple:
+    """(status, govde, transport_hatasi) dondurur. Anahtar loglanmaz."""
+    data = None
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": "SubtitleTranslator-KeyCheck/1.0",
+    }
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", "replace"), ""
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return exc.code, body, ""
+    except Exception as exc:
+        return None, "", f"{type(exc).__name__}: {exc}"[:120]
+
+
+_TEMPORARY_CHANNEL_MARKERS = (
+    "temporarily unavailable",
+    "channel is temporarily",
+    "渠道暂时不可用",
+    "暂时不可用",
+)
+
+
+def _is_temporary_channel_text(folded: str) -> bool:
+    """Bayinin ust kaynak kanali gecici kapali mi (model eksikligi DEGIL)?"""
+    return any(marker in folded for marker in _TEMPORARY_CHANNEL_MARKERS)
+
+
+def _api_key_check_is_flaky(status, body: str) -> bool:
+    """Bu basarisizlik anahtarin degil, o anki hattin sorunu mu?
+
+    Oyleyse hem siradaki rota denenir hem de tur bittiginde bir kez daha
+    supurulur: bayi dalgalanirken kirmizi yakmak kullaniciyi yaniltir
+    (2026-08-23 16:49'da kirmizi, 16:51'de ayni anahtar yesildi).
+    """
+    if status is None:
+        return True
+    if status >= 500:
+        return True
+    folded = (body or "").casefold()
+    if _is_temporary_channel_text(folded):
+        return True
+    if status == 429:
+        return not any(marker in folded for marker in _QUOTA_EXHAUSTED_MARKERS)
+    return False
+
+
+def _api_key_check_reason(status, body: str) -> str:
+    """HTTP kodunu kullanicinin anlayacagi tek satira cevirir."""
+    text = ""
+    try:
+        parsed = json.loads(body or "{}")
+        error = parsed.get("error")
+        if isinstance(error, dict):
+            text = str(error.get("message") or "")
+        elif isinstance(error, str):
+            text = error
+        if not text:
+            text = str(parsed.get("message") or "")
+    except Exception:
+        text = (body or "")[:120]
+    text = " ".join(text.split())[:160]
+    folded = (text or "").casefold()
+    labels = {
+        401: "anahtar gecersiz veya askida",
+        403: "anahtarin bu modele/gruba izni yok",
+        404: "model bu grupta yok",
+        429: "kota bitti veya hiz siniri",
+    }
+    label = labels.get(status, f"HTTP {status}" if status else "baglanti yok")
+    # new-api ayni 404'u iki bambaska durum icin doner: model gercekten
+    # grupta yoksa VE ust kaynak kanali gecici kapaliysa. Ikincisi bir kac
+    # dakikada kendi kendine duzelir; "model yok" demek yaniltici olur.
+    if _is_temporary_channel_text(folded):
+        label = "bayinin kanali gecici olarak kapali"
+    elif any(marker in folded for marker in _QUOTA_EXHAUSTED_MARKERS):
+        label = "kota bitti"
+    return f"{label} — {text}" if text else label
+
+
+
+def list_models_for_key(api_key: str, base_url: str,
+                        timeout: float = 10.0) -> list:
+    """Anahtarin grubundaki model adlari (new-api listeyi gruba gore filtreler)."""
+    root = normalize_shuai_api_route(base_url) or str(base_url or "").rstrip("/")
+    if not root:
+        return []
+    status, body, _err = _api_key_check_request(
+        f"{root}/models", api_key, timeout)
+    if status != 200:
+        return []
+    try:
+        payload = json.loads(body or "{}")
+    except Exception:
+        return []
+    names = []
+    for item in payload.get("data") or []:
+        if isinstance(item, dict) and item.get("id"):
+            names.append(str(item["id"]))
+        elif isinstance(item, str):
+            names.append(item)
+    return sorted(set(names))
+
+
+def _model_missing_hint(api_key: str, base_url: str, model: str,
+                        timeout: float) -> str:
+    """404 sonrasi: model gercekten grupta yok mu, yoksa baska sorun mu?"""
+    names = list_models_for_key(api_key, base_url, timeout=timeout)
+    if not names:
+        return ""
+    if model in names:
+        return ("model grubun listesinde var; sorun kanal atamasi "
+                "veya kota olabilir")
+    near = [name for name in names
+            if name.split(":")[0].startswith((model or "")[:5])]
+    if near:
+        return "grupta bunlar var: " + ", ".join(near[:4])
+    return f"grupta {len(names)} model var ama bu yok"
+
+
+def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
+                         timeout: float, tally: dict) -> dict:
+    """Rotalari sirayla dener; ilk KESIN cevap sonucu belirler.
+
+    tally: {"attempts": n, "failures": n} — kac denemede basarildigini
+    cagirana bildirir. Yesil isik tek basina yaniltici olabiliyor: bayi
+    dalgalanirken sekiz denemenin biri 200 donse de kosunun ILK istegi
+    502'ye denk gelebiliyor (2026-08-23 18:43 anahtar testi "calisiyor",
+    18:44 kosusu dort rotadan da 502).
+    """
+    last = {"ok": False, "status": None, "latency_ms": None,
+            "detail": "baglanti yok", "route": "", "hint": "", "flaky": True}
+    for route in route_urls:
+        if not route:
+            continue
+        started = time.monotonic()
+        tally["attempts"] = tally.get("attempts", 0) + 1
+        status, body, transport = _api_key_check_request(
+            f"{route}/chat/completions", api_key, timeout, payload)
+        elapsed = int((time.monotonic() - started) * 1000)
+        if transport or status is None:
+            tally["failures"] = tally.get("failures", 0) + 1
+            last = {"ok": False, "status": None, "latency_ms": elapsed,
+                    "detail": transport or "baglanti yok",
+                    "route": route, "hint": "", "flaky": True}
+            continue
+        if status == 200:
+            return {"ok": True, "status": 200, "latency_ms": elapsed,
+                    "detail": "calisiyor", "route": route, "hint": "",
+                    "flaky": False}
+        tally["failures"] = tally.get("failures", 0) + 1
+        flaky = _api_key_check_is_flaky(status, body)
+        result = {"ok": False, "status": status, "latency_ms": elapsed,
+                  "detail": _api_key_check_reason(status, body),
+                  "route": route, "hint": "", "flaky": flaky}
+        if flaky:
+            # Yol veya kanal dalgalaniyor: bu rotayi anahtara yazmayiz.
+            last = result
+            continue
+        if status == 404:
+            result["hint"] = _model_missing_hint(
+                api_key, route, model, min(timeout, 10.0))
+        return result
+    return last
+
+
+def probe_api_key(api_key: str, base_url: str, model: str,
+                  timeout: float = API_KEY_CHECK_TIMEOUT,
+                  route_urls=None, attempts: int = 2,
+                  retry_delay: float = 3.0, realistic: bool = False) -> dict:
+    """Bir anahtari kucuk bir istekle sinar.
+
+    Kesin cevaplar (401/403/gercek 404) ilk rotada isi bitirir. Gecici
+    gorunen hatalar once siradaki rotaya, tur bitince de kisa bir bekleme
+    sonrasi yeni bir tura devrolur; bayinin kanali dalgalanirken saglam bir
+    anahtari kirmizi yakmamak icin.
+
+    Donen sozlukte 'attempts'/'failures' de bulunur: yesil isik "anahtar ve
+    grup dogru" demektir, "saglayici saglikli" DEMEZ. Kac denemede
+    basarildigini gormeden yesil isik yaniltici olur.
+    """
+    api_key = str(api_key or "").strip()
+    model = str(model or "").strip()
+    if not api_key:
+        return {"ok": False, "status": None, "latency_ms": None,
+                "detail": "anahtar girilmemis", "route": "", "hint": "",
+                "attempts": 0, "failures": 0}
+    if not model:
+        return {"ok": False, "status": None, "latency_ms": None,
+                "detail": "model adi bos", "route": "", "hint": "",
+                "attempts": 0, "failures": 0}
+    if route_urls is None:
+        normalized = normalize_shuai_api_route(base_url)
+        if normalized and urlparse(normalized).hostname in _SHUAI_ROUTE_HOSTS:
+            route_urls = [url for _label, url in SHUAI_API_ROUTE_OPTIONS]
+            if normalized in route_urls:
+                route_urls.remove(normalized)
+            route_urls.insert(0, normalized)
+        else:
+            route_urls = [normalized or str(base_url or "").rstrip("/")]
+    payload = _api_key_check_payload(model, realistic=realistic)
+    tally = {"attempts": 0, "failures": 0}
+    result = {}
+    for turn in range(max(1, int(attempts))):
+        if turn:
+            time.sleep(max(0.0, retry_delay))
+        result = _api_key_check_sweep(
+            api_key, model, route_urls, payload, timeout, tally)
+        if result["ok"] or not result.get("flaky"):
+            break
+    result.pop("flaky", None)
+    result["attempts"] = tally["attempts"]
+    result["failures"] = tally["failures"]
+    return result
+
+
+def api_key_check_stability_note(result: dict) -> str:
+    """Yesil isigin yaninda gosterilecek kararsizlik uyarisi ('' ise temiz)."""
+    if not isinstance(result, dict) or not result.get("ok"):
+        return ""
+    failures = int(result.get("failures", 0) or 0)
+    attempts = int(result.get("attempts", 0) or 0)
+    if failures <= 0:
+        return ""
+    return (f"anahtar ve grup dogru ama saglayici kararsiz: "
+            f"{attempts} denemenin {failures} tanesi basarisiz")
 
 
 def configure_shuai_route_failover(
@@ -129,6 +762,24 @@ def _shuai_route_scope(checkpoint_label: str = "") -> str:
     return "main" if label.startswith(main_prefixes) else "helper"
 
 
+def _shuai_probe_rank(state) -> float:
+    """Ölçüm sıralaması. Hiç ölçüm yapılmadıysa herkese 0 → nötr.
+
+    Ölçüm yapıldıysa cevap vermeyen rota en sona düşer; cevap veren rotalar
+    medyan gecikmeye göre sıralanır. Bu kriter BAŞARI ORANININ ALTINDA durur:
+    ping ölçümü hangi kenarın canlı olduğunu söyler, yukarı akış kanalının
+    sağlığını değil (2026-08-23 sağlayıcı kesintisi).
+    """
+    if not _SHUAI_PROBE_DONE:
+        return 0.0
+    if not state.get("probe_ok"):
+        return _SHUAI_PROBE_UNREACHABLE_RANK
+    latency = state.get("probe_latency_ms")
+    if latency is None:
+        return _SHUAI_PROBE_UNREACHABLE_RANK
+    return float(latency)
+
+
 def _shuai_route_score(route: str, preferred: str, last_working: str) -> tuple:
     state = _SHUAI_ROUTE_STATES.get(route) or {}
     attempts = int(state.get("attempts", 0) or 0)
@@ -139,10 +790,15 @@ def _shuai_route_score(route: str, preferred: str, last_working: str) -> tuple:
         if successes else 999999.0
     )
     success_rate = successes / max(1, successes + failures)
+    probe_rank = _shuai_probe_rank(state)
+    # Olcum yapildi ve bu rota cevap vermediyse 'tercih edilen'/'son calisan'
+    # ayricaligi da dusurulur: olu rotaya bos yere ilk istegi harcamayalim.
+    probe_dead = probe_rank >= _SHUAI_PROBE_UNREACHABLE_RANK
     return (
-        0 if route == last_working else 1,
-        0 if route == preferred else 1,
+        0 if (route == last_working and not probe_dead) else 1,
+        0 if (route == preferred and not probe_dead) else 1,
         -success_rate if attempts else 0.0,
+        probe_rank,
         int(state.get("rate_limits", 0) or 0),
         avg,
     )
@@ -1515,6 +2171,32 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
 
 
 def chat_create_with_shuai_failover(
+        client, model: str, kwargs: dict, requested_format=None,
+        checkpoint_label="", cancel_context=None):
+    """Once rota failover'i, o da tukenirse yedek API anahtari (2. grup).
+
+    Sira onemli: rota hatasi cok daha sik ve ucuz. Anahtar degistirmek ise
+    faturayi baska bir gruba yazar, o yuzden yalnizca hata anahtarin/grubun
+    kendisine isaret ediyorsa yapilir (bkz. _is_api_key_or_group_error).
+    """
+    scope = _shuai_route_scope(checkpoint_label)
+    client = _apply_active_api_key(client, scope)
+    try:
+        return _chat_create_with_route_failover(
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+    except Exception as exc:
+        if cancel_context is not None and cancel_context.is_cancelled():
+            raise
+        alternate = _switch_to_backup_api_key(client, scope, exc)
+        if alternate is None:
+            raise
+    return _chat_create_with_route_failover(
+        alternate, model, kwargs, requested_format=requested_format,
+        checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+
+
+def _chat_create_with_route_failover(
         client, model: str, kwargs: dict, requested_format=None,
         checkpoint_label="", cancel_context=None):
     scope = _shuai_route_scope(checkpoint_label)
