@@ -4961,8 +4961,15 @@ def _cue_fill_move_plan(blocks: list, src_map: dict) -> list:
     return plan
 
 
-def rebalance_cue_fill_pairs(blocks: list, src_map: dict, log_fn=None) -> tuple:
-    """Aşırı dolu cue'nun baş kısmını önceki boş cue'ya taşır. (bloklar, sayı)."""
+def rebalance_cue_fill_pairs(blocks: list, src_map: dict, log_fn=None,
+                             line_breaks: bool = True) -> tuple:
+    """Aşırı dolu cue'nun baş kısmını önceki boş cue'ya taşır. (bloklar, sayı).
+
+    line_breaks: 'Satır Düzenleme' toggle'ı. Eskiden satır kırma bu
+    parametreden bağımsız ve DOSYANIN TAMAMINA uygulanıyordu; toggle'ı
+    kapatan kullanıcı tek bir taşıma olduğu anda bütün dosyada satır
+    kırması alıyordu. Ayrıca kırmanın çıktısı değişmez denetiminin
+    dışında kalıyordu (bug taraması madde 31)."""
     rows = list(blocks or [])
     plan = _cue_fill_move_plan(rows, src_map)
     if not plan:
@@ -4986,7 +4993,20 @@ def rebalance_cue_fill_pairs(blocks: list, src_map: dict, log_fn=None) -> tuple:
             log_fn("Cue-fill taşıma: birleşik metin denetimi başarısız; "
                    "hiçbir cue değiştirilmedi.", "warn")
         return rows, 0
-    out = apply_line_breaks(out)
+    if line_breaks:
+        touched = set(moves)
+        broken = apply_line_breaks(
+            [row for row in out if str(row[0]) in touched])
+        broken_map = {str(idx): text for idx, _ts, text in broken}
+        candidate = [
+            (idx, ts, broken_map.get(str(idx), text))
+            for idx, ts, text in out
+        ]
+        if _joined(candidate) == _joined(rows):
+            out = candidate
+        elif log_fn:
+            log_fn("Cue-fill taşıma: satır kırma denetimi başarısız; "
+                   "kırma uygulanmadı.", "warn")
     if log_fn:
         sample = ", ".join(f"#{idx}→#{prev}" for prev, idx, _p, _t in plan[:6])
         log_fn(f"Cue-fill taşıma: {len(plan)} cue metni komşusuna kaydırıldı "
@@ -5769,14 +5789,20 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     return stats
 
 
-def _delivery_scan_suspect_ids(blocks, source_cues) -> list:
+def _delivery_scan_suspect_ids(blocks, source_cues,
+                               locked_terms=None) -> list:
     """Teslim taramasının bulduğu cue'ları (id, gerekçe) çifti olarak döner.
 
     Derin anlam taraması kapsamını (%35) körlemesine harcamak yerine önce bu
     deterministik bulgulara yönlendirmek için kullanılır. API çağırmaz; hata
     hâlinde sessizce boş döner — bu yalnız bir ÖNCELİK ipucudur, kapı değil."""
     try:
-        stats = _scan_delivery_blocks(list(blocks or []), source_cues)
+        # locked_terms ŞART: kalite raporu aynı fonksiyonu onunla çağırıyor.
+        # Geçmeyince kilitli terimlerin Türkçe ek alması 'kaynak kalıntısı'
+        # sayılıp yanlış şüpheli üretiyor ve derin taramanın %35 bütçesi
+        # raporun zaten bastırdığı bulgulara gidiyordu (bug taraması m.13).
+        stats = _scan_delivery_blocks(
+            list(blocks or []), source_cues, locked_terms=locked_terms)
     except Exception:
         return []
     suspects = []
@@ -6370,7 +6396,8 @@ def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int
 
 
 def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
-                                 log_fn=None, source_cues=None) -> list:
+                                 log_fn=None, source_cues=None,
+                                 locked_terms=None) -> list:
     """Diske yazılmadan önceki son teslim temizliği.
 
     Türkçeye ÖZGÜ adımlar (şapkalı harf düzleştirme, cümle düzenine indirme,
@@ -6451,8 +6478,12 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             # teslim denetiminin çevrilmemiş-parça guard'ını maskelerdi.
             if source_text.strip() and _align_visible(value).casefold() != (
                     _align_visible(source_text).casefold()):
+                # locked_terms ŞART: normalize_foreign_titles kendi içinde
+                # 'bu unvan+ad zaten kilitli terim, dokunma' koruması
+                # taşıyor, ama tek üretim çağrısı parametreyi geçmediği için
+                # guard ölüydü (bug taraması madde 12).
                 value, _titles_fixed = normalize_foreign_titles(
-                    value, source_text)
+                    value, source_text, locked_terms=locked_terms)
                 value, _exonyms_fixed = normalize_foreign_exonyms(value)
                 value, _caps_fixed = fix_source_lowercase_apostrophes(
                     value, source_text)
@@ -8193,12 +8224,17 @@ def _fill_hata_with_source(blocks: list, raw_src_map: dict, log_fn=None):
     olacak şekilde işaretleriz. Döner: (yeni_bloklar, işaretlenen_sayı)."""
     if not raw_src_map:
         return blocks, 0
-    out, marked = [], 0
+    out, marked, dropped = [], 0, 0
     for idx, ts, text in blocks:
         if str(text).startswith("[HATA"):
             src = raw_src_map.get(str(idx))
             if src:
                 if _src_is_sdh_only(src):
+                    # Kaynağı salt-SDH: cue işaretlenmeden DÜŞÜRÜLÜR.
+                    # Bu, çeviri BAŞARISIZ olduğu için tetiklenen bir
+                    # silme yolu; hiçbir sayaca girmeyince kaynak/çıktı
+                    # cue farkı açıklanamaz görünüyordu (bug taraması m.16).
+                    dropped += 1
                     continue
                 out.append((idx, ts, "[ÇEVİRİ EKSİK]"))
                 marked += 1
@@ -8206,6 +8242,10 @@ def _fill_hata_with_source(blocks: list, raw_src_map: dict, log_fn=None):
         out.append((idx, ts, text))
     if marked and log_fn:
         log_fn(f"{marked} çevrilemeyen satır kaynak metne düşürülmedi; [ÇEVİRİ EKSİK] olarak işaretlendi", "warn")
+    if dropped and log_fn:
+        log_fn(
+            f"{dropped} çevrilemeyen cue kaynağı salt-SDH olduğu için "
+            "düşürüldü (kaynak/çıktı cue farkı bu kadar artar)", "info")
     return out, marked
 
 
@@ -12676,13 +12716,18 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     Returns: toplam uyarı sayısı
 
     src_clean_map: {idx_str: etiketsiz kaynak metin} — verilirse dosya yeniden
-    parse edilmez (çağıran zaten parse etmişse disk okumasını atlar)."""
+    parse edilmez (çağıran zaten parse etmişse disk okumasını atlar) ve
+    ikinci bir hizalama turuyla ÜZERİNE YAZILMAZ: o harita zaten teslim
+    id'leriyle kurulmuştur (bug taraması madde 25)."""
     if src_clean_map is not None:
         orig = src_clean_map
     else:
         orig = {}
         try:
-            for idx, ts, text in parse_subtitle(fp):
+            # source_language ŞART: .ass/.ssa kaynaklar paralel OP/ED izi
+            # taşıyabiliyor; verilmezse denetim çevirinin üretildiği izi
+            # değil varsayılan izi okuyordu.
+            for idx, ts, text in parse_subtitle(fp, source_language):
                 clean = re.sub(r'</?[a-zA-Z][^>]*>', '', text).strip()
                 orig[str(idx)] = clean
         except Exception:
@@ -12690,14 +12735,17 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
     orig_by_timestamp = {}
     source_rows = []
     try:
-        for src_idx, src_ts, src_text in parse_subtitle(fp):
+        for src_idx, src_ts, src_text in parse_subtitle(fp, source_language):
             source_rows.append((str(src_idx), str(src_ts), str(src_text or "")))
             orig_by_timestamp[str(src_ts)] = re.sub(
                 r'</?[a-zA-Z][^>]*>', '', str(src_text or '')).strip()
     except Exception:
         pass
     aligned_orig = orig
-    if source_rows:
+    # Çağıran hazır harita verdiyse ona dokunma: `_source_map_for_quality_blocks`
+    # zaten teslim id'lerine göre hizalanmış bir harita üretiyor, diskten
+    # yeniden türetilen eşleme onu bozabiliyordu (bug taraması madde 25).
+    if source_rows and src_clean_map is None:
         mapped = _delivery_source_map(blocks, source_rows)
         aligned_orig = {
             str(idx): re.sub(
@@ -16330,7 +16378,11 @@ def _build_line_by_line_audit_package(
     audit = dict(delivery_audit or _subtitle_delivery_audit(
         source_path, output_path, target_language, source_language))
     output_by_ts = {str(ts): (str(idx), text) for idx, ts, text in output_rows}
-    group_by_id, _groups = _fragment_groups_gui(source_rows)
+    # scene_gap_sec ŞART: aynı rapor içinde sahne sınırları bu eşikle,
+    # cümle grupları ise varsayılan SCENE_GAP_SEC ile hesaplanıyordu
+    # (bug taraması madde 27).
+    group_by_id, _groups = _fragment_groups_gui(
+        source_rows, scene_gap_sec=scene_gap_sec)
     group_by_id = {str(key): str(value) for key, value in group_by_id.items()}
     scene_by_id = {}
     scene_no = 1
@@ -16686,7 +16738,12 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
         ("tm_hits",  "TM önbellek kullanımı"),
         ("cons",     "Tutarlılık düzeltmesi"),
         ("rev",      "İnceleme düzeltmesi"),
-        ("pass_fix", "Kalite geçişi düzeltmesi"),
+        # Bu sayı Tutarlılık taramasından SONRAKİ tüm değişiklikleri kapsar:
+        # Critic/Polish/Native ve Nihai Anlam kadar condense, SDH temizliği,
+        # satır kırma ve terim normalizasyonu da içinde. Yalnız kalite
+        # geçişlerinin etkisi için pass_trace satırlarına bakılmalı
+        # (bug taraması madde 17: eski etiket olduğundan büyük gösteriyordu).
+        ("pass_fix", "Tutarlılık sonrası değişen cue (geçiş + biçimlendirme)"),
         ("qc_auto",  "QC otomatik düzeltmesi"),
         ("qc",       "QC düzeltmesi"),
         ("warn",     "Kalite uyarısı (tarama)"),
@@ -24316,7 +24373,9 @@ class App(ctk.CTk):
         try:
             src_map = _delivery_source_map(list(blocks or []), source_cues)
             moved, count = rebalance_cue_fill_pairs(
-                list(blocks or []), src_map, log_fn=self._log)
+                list(blocks or []), src_map, log_fn=self._log,
+                line_breaks=bool(App._run_setting(
+                    self, "linebreak", "linebreak_var", True)))
         except Exception as move_error:
             self._log(f"Cue-fill taşıma çalışmadı: {move_error}", "warn")
             return blocks
@@ -29464,7 +29523,8 @@ class App(ctk.CTk):
             # Deterministik teslim taraması bulguları burada da şüpheli listesine
             # girer: default-AÇIK derin tarama %35 bütçesini yalnız hizalama ve
             # post-pass adaylarına harcıyordu (denetim 2026-08-20, madde 12).
-            for sid, reason in _delivery_scan_suspect_ids(blocks, cues):
+            for sid, reason in _delivery_scan_suspect_ids(
+                    blocks, cues, locked_terms=locked_terms):
                 extra_reasons.setdefault(str(sid), set()).add(reason)
             cancel_context = self.__dict__.get("_helper_request_canceller")
             target_coverage = self._deep_delivery_target_coverage()
@@ -29634,7 +29694,8 @@ class App(ctk.CTk):
             # azınlığı / kaynak kalıntısı gibi somut bulgular üretiyor; ama
             # teslim ANINDA, yani bu geçişten SONRA koşuyordu. Aynı %35 bütçe
             # artık önce bilinen-şüpheli cue'lara harcanır.
-            for sid, reason in _delivery_scan_suspect_ids(blocks, cues):
+            for sid, reason in _delivery_scan_suspect_ids(
+                    blocks, cues, locked_terms=locked_terms):
                 extra_suspect_reasons.setdefault(str(sid), set()).add(reason)
             cancel_context = self.__dict__.get("_helper_request_canceller")
             cancel_kwargs = (
@@ -34488,7 +34549,8 @@ class App(ctk.CTk):
         if complete:
             write_blocks = _prepare_upload_ready_blocks(
                 write_blocks, target_language=tgt,
-                log_fn=self._log, source_cues=cues)
+                log_fn=self._log, source_cues=cues,
+                locked_terms=locked_terms)
         _write_srt_preserving_text(write_path, write_blocks)
         fingerprint_ok = _write_output_source_fingerprint(
             report_dir, write_path, expected_source_hash,
@@ -35665,7 +35727,7 @@ class App(ctk.CTk):
                 continue
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_rebalance_cue_fill(self._maybe_merge_cues(sorted_blocks, file_path=filepath), cues), tgt, self._log,
-                source_cues=cues)
+                source_cues=cues, locked_terms=_locked_terms)
             # İstatistikler DİSKE YAZILAN bloklardan sayılır: ara listeden sayınca
             # birleştirme/AI segmentasyonun ürettiği CPS ve cue değişimleri rapora
             # hiç yansımıyordu (rapor çıktıyla uyuşmuyordu).
@@ -35717,9 +35779,13 @@ class App(ctk.CTk):
             try:
                 self._record_file_status(
                     filepath, "Nihai Teslim Denetimi", "running")
+                # DİSKE YAZILAN listeyi tara: _prepare_upload_ready_blocks
+                # kozmetik değil, metni değiştiren bir geçiş (SDH temizliği,
+                # BÜYÜK HARF indirme, kredi cue'su düşürme). Eskiden teslim
+                # ÖNCESİ liste taranıyordu (bug taraması madde 3).
                 _w = scan_translation_quality(
-                    filepath, sorted_blocks, log_fn=self._log,
-                    src_clean_map=_source_map_for_quality_blocks(sorted_blocks, cues),
+                    filepath, _delivery_blocks, log_fn=self._log,
+                    src_clean_map=_source_map_for_quality_blocks(_delivery_blocks, cues),
                     issue_fn=self._record_quality_issue,
                     locked_terms=_locked_terms, source_language=file_src)
             except Exception as delivery_error:
@@ -37408,7 +37474,7 @@ class App(ctk.CTk):
                                 break
                             _delivery_blocks = _prepare_upload_ready_blocks(
                                 self._maybe_rebalance_cue_fill(self._maybe_merge_cues(pp, file_path=str(_src_path)), _orig_cues), tgt, self._log,
-                                source_cues=_orig_cues)
+                                source_cues=_orig_cues, locked_terms=_locked_terms)
                             # Eksik sayımı teslim hazırlığından SONRA (bkz. _run_batch, madde 13).
                             _hata_n_pre, _ = _count_hata_cps(_delivery_blocks)
                             _has_missing = _hata_n_pre > 0
@@ -37456,8 +37522,10 @@ class App(ctk.CTk):
                             if _orig_cues:
                                 _src_map = {str(c.index): _clean_src(c.text) for c in _orig_cues}
                                 try:
-                                    scan_translation_quality(str(_src_path), pp,
-                                                             log_fn=self._log, src_clean_map=_src_map,
+                                    scan_translation_quality(str(_src_path), _delivery_blocks,
+                                                             log_fn=self._log,
+                                                             src_clean_map=_source_map_for_quality_blocks(
+                                                                 _delivery_blocks, _orig_cues),
                                                              issue_fn=self._record_quality_issue,
                                                              locked_terms=_locked_terms,
                                                              source_language=(
@@ -38275,7 +38343,7 @@ class App(ctk.CTk):
                 continue
             _delivery_blocks = _prepare_upload_ready_blocks(
                 self._maybe_rebalance_cue_fill(self._maybe_merge_cues(sorted_blocks, file_path=fp), _src_cues), _tgt_lang, self._log,
-                source_cues=_src_cues)
+                source_cues=_src_cues, locked_terms=_locked_terms_for(fp))
             # İstatistikler teslim bloklarından sayılır (bkz. _run_sync).
             _hata_n, _cps_n = _count_hata_cps(_delivery_blocks)
             _delivery_scan = _scan_delivery_blocks(
@@ -38328,9 +38396,9 @@ class App(ctk.CTk):
             try:
                 w = (_hata_n if _has_missing else
                      scan_translation_quality(
-                         fp, sorted_blocks, log_fn=self._log,
+                         fp, _delivery_blocks, log_fn=self._log,
                          src_clean_map=_source_map_for_quality_blocks(
-                             sorted_blocks, _src_cues),
+                             _delivery_blocks, _src_cues),
                          issue_fn=self._record_quality_issue,
                          locked_terms=_locked_terms_for(fp),
                          source_language=_file_src_lang))
@@ -39873,7 +39941,7 @@ class App(ctk.CTk):
                     self._maybe_rebalance_cue_fill(
                         self._maybe_merge_cues(_final_blocks, file_path=filepath),
                         cues), tgt, self._log,
-                    source_cues=cues)
+                    source_cues=cues, locked_terms=_file_locked_terms)
                 # Eksik sayımı TESLİM HAZIRLIĞINDAN SONRA yapılır: sync/hybrid
                 # akışlarındaki kural budur. Önce sayınca, kaynağı gerçek
                 # diyalog olan ama hedefi yalnız '{\an8}' gibi bir cue teslim
@@ -39968,10 +40036,10 @@ class App(ctk.CTk):
                 try:
                     self._record_file_status(
                         filepath, "Nihai Teslim Denetimi", "running")
-                    _w = scan_translation_quality(filepath, _final_blocks,
+                    _w = scan_translation_quality(filepath, _delivery_blocks,
                                                   log_fn=self._log,
                                                   src_clean_map=_source_map_for_quality_blocks(
-                                                      _final_blocks, cues),
+                                                      _delivery_blocks, cues),
                                                   issue_fn=self._record_quality_issue,
                                                   locked_terms=_locked_terms,
                                                   source_language=file_src)

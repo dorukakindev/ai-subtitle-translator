@@ -279,7 +279,9 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn("a.srt", txt)
         self.assertIn("b.srt", txt)
         self.assertIn("İnceleme düzeltmesi", txt)        # düz mod alanı
-        self.assertIn("Kalite geçişi düzeltmesi", txt)   # hybrid alanı
+        # Etiket "Kalite geçişi düzeltmesi" idi; sayı aslında Tutarlılık
+        # sonrasındaki TÜM değişiklikleri kapsıyor (bug taraması madde 17).
+        self.assertIn("Tutarlılık sonrası değişen cue", txt)   # hybrid alanı
         self.assertIn("QC otomatik düzeltmesi", txt)
         self.assertIn("TOPLAM: 2 dosya, 150 satır", txt)
         self.assertIn("123,456", txt)
