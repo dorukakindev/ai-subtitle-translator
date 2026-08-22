@@ -11347,10 +11347,14 @@ def _tr_case_options(token: str) -> set:
 
 
 def _tr_case_map(text: str) -> dict:
+    """Gövde -> görülen hâller. Anahtar ünsüz yumuşamasına dayanıklıdır:
+    'köpek' ile 'köpeği'nin gövdesi ('köpeğ') aynı anahtara düşmeli, yoksa
+    takas çiftinin bir yarısı eşleşmeden kalır."""
     roles = {}
     for token in _TR_ROLE_TOKEN_RE.findall(str(text or "")):
         for stem, case in _tr_case_options(token):
-            roles.setdefault(stem, set()).add(case)
+            roles.setdefault(_turkish_hard_stem(stem) or stem,
+                             set()).add(case)
     return roles
 
 
@@ -12397,6 +12401,11 @@ def validate_polish_candidate(
                  or reliable_turkish_negation_count(new)
                  < reliable_turkish_negation_count(old))):
         return False, "source_negation"
+    # Özne ile nesne yer değiştirdiyse içerik sözcükleri korunmuş olsa da
+    # cümle tam tersini söylüyor; hiçbir mevcut guard bunu görmüyordu
+    # (dış denetim madde 1).
+    if turkish_target and _has_role_swap(old, new):
+        return False, "role_swap"
     if src and _has_because_negation_scope_reversal(src, old, new):
         return False, "negation_scope"
     if src and _has_explicit_answer_polarity_flip(src, new, tgt_lang):
@@ -12520,6 +12529,10 @@ _SEMANTIC_REWRITE_REJECTIONS = {
     "content_word_loss",
     "proposition_drift",
     "question_regression",
+    # Semantic pass'in İŞİ kaynaktan yeniden çevirmek: rolleri YANLIŞ çevrilmiş
+    # bir satırı düzelten aday da takas gibi görünür. Burada kaynak destekli
+    # doğrulamaya devredilir; Polish/Condense'te ise kesin ret (madde 1).
+    "role_swap",
     "too_short",
 }
 
@@ -12802,6 +12815,11 @@ def validate_condense_candidate(original_text: str, candidate_text: str,
                  or reliable_turkish_negation_count(new)
                  < reliable_turkish_negation_count(old))):
         return False, "source_negation"
+    # Özne ile nesne yer değiştirdiyse içerik sözcükleri korunmuş olsa da
+    # cümle tam tersini söylüyor; hiçbir mevcut guard bunu görmüyordu
+    # (dış denetim madde 1).
+    if turkish_target and _has_role_swap(old, new):
+        return False, "role_swap"
     if src and _has_unanchored_negation_addition(src, old, new):
         return False, "source_negation_addition"
     if _has_content_word_drift(old, new, source_text=src, tgt_lang=tgt_lang):
