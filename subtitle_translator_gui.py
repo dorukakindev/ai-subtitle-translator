@@ -90,6 +90,10 @@ API_PROFILE_PROVIDERS = {
 }
 API_PROFILE_ROLE_LABELS = {
     "main": "Ana ceviri",
+    # Ikinci bir new-api grubuna ait anahtar. Rota failover'i grup sorununu
+    # (kota bitti / model gruba kapali / anahtar askida) cozemedigi icin
+    # eklendi; ayrintilar provider_retry.configure_api_key_fallback.
+    "main_backup": "Ana ceviri - yedek anahtar (2. grup)",
     "analysis": "Yardimci analiz + Kisaltma + Auto-Glossary",
     "critic": "Critic + Derin Teslim + Nihai Anlam + Baglam Incelemesi",
     "polish": "Polish + Terim Normalizasyonu + Sezon Kanonu",
@@ -11506,7 +11510,7 @@ def _refresh_start_snapshot(current: dict, fresh: dict) -> dict:
         return fresh
     merged = copy.deepcopy(current)
     for key in (
-        "main_api_key", "helper_keys", "file_schemas",
+        "main_api_key", "main_api_key_backup", "helper_keys", "file_schemas",
         "file_glossaries", "file_source_languages", "file_analysis_depths",
     ):
         if key in fresh:
@@ -21601,6 +21605,7 @@ class App(ctk.CTk):
             "media_mode": (self.media_mode_var.get()
                            if getattr(self, "media_mode_var", None) else "Dizi"),
             "main_api_key": self._main_api_key(),
+            "main_api_key_backup": self._main_api_key_backup(),
             "main_api_base_url": self._main_api_base_url(),
             "main_model_name": self._main_model_name(),
             "schema": self._get_schema(),
@@ -24603,6 +24608,22 @@ class App(ctk.CTk):
                         for path, name in saved_schemas.items()
                     }
                 self._resume_snapshot_override = None
+            # Yedek anahtar HER kosuda yeniden kaydedilir: aktif anahtar
+            # birincile geri doner, onceki kosunun gecisi yapisip kalmaz.
+            try:
+                from provider_retry import configure_api_key_fallback
+                snap = getattr(self, "_active_snapshot", {}) or {}
+                if configure_api_key_fallback(
+                        "main",
+                        primary_key=str(snap.get("main_api_key") or ""),
+                        backup_key=str(snap.get("main_api_key_backup") or ""),
+                        log_fn=self._log):
+                    self._log(
+                        "Ana çeviri için 2. gruba ait yedek API anahtarı hazır; "
+                        "birincil anahtar kota/grup hatası verirse devreye girecek.",
+                        "info")
+            except Exception as exc:
+                self._log(f"Yedek API anahtarı ayarlanamadı: {exc}", "warn")
             App._freeze_run_variable_reads(self)
             self._start_elapsed_timer()
             if (getattr(self, "_active_snapshot", {}) or {}).get("prevent_sleep"):
@@ -27109,6 +27130,16 @@ class App(ctk.CTk):
             return self.main_custom_key_entry.get().strip()
         return self.api_key_entry.get().strip()
 
+    def _main_api_key_backup(self) -> str:
+        """İkinci gruba ait yedek anahtar; atanmamışsa boş."""
+        if (threading.current_thread() is not threading.main_thread()
+                and getattr(self, "_active_snapshot", None)):
+            return self._active_snapshot.get("main_api_key_backup", "")
+        assigned = getattr(self, "_api_key_assignments", {}).get("main_backup")
+        if assigned in getattr(self, "_api_key_profiles", {}):
+            return (credential_store.load_key(f"api_profile_{assigned}") or "").strip()
+        return ""
+
     def _main_api_base_url(self):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             return self._active_snapshot.get("main_api_base_url", None)
@@ -27851,6 +27882,35 @@ class App(ctk.CTk):
         if provider == "openai_official":
             base_url = "https://api.openai.com/v1"
 
+        if role == "main_backup":
+            # Yedek anahtar HICBIR UI alanini ezmez: ana hattin modeli, adresi
+            # ve anahtari oldugu gibi kalir. Yalnizca atama kaydedilir; anahtar
+            # ancak ana anahtar grup/kota hatasi verirse devreye girer.
+            if provider == "anthropic":
+                if notify:
+                    messagebox.showwarning(
+                        "Yedek anahtar",
+                        "Yedek anahtar ana çeviri hattında kullanılır ve "
+                        "OpenAI uyumlu olmalıdır. Bu Claude profilini yardımcı "
+                        "görevlerden birine atayın.",
+                        parent=getattr(self, "_api_keys_dialog", None) or self)
+                return False
+            if getattr(self, "_api_key_assignments", {}).get("main") == profile_id:
+                if notify:
+                    messagebox.showwarning(
+                        "Yedek anahtar",
+                        "Yedek anahtar ana anahtarla aynı profil olamaz. "
+                        "İkinci gruba ait ayrı bir profil oluşturun.",
+                        parent=getattr(self, "_api_keys_dialog", None) or self)
+                return False
+            self._api_key_assignments[role] = profile_id
+            self._save_settings(save_credentials=True)
+            if notify:
+                self._log(
+                    f"API profili atandı: {profile['name']} → "
+                    f"{API_PROFILE_ROLE_LABELS[role]}", "ok")
+            return True
+
         if role == "main":
             if provider == "anthropic":
                 if notify:
@@ -27990,6 +28050,10 @@ class App(ctk.CTk):
         menu.add_command(
             label="Ana çeviri için kullan",
             command=lambda: self._assign_api_profile_group(profile_id, ("main",)))
+        menu.add_command(
+            label="Ana çeviri YEDEĞİ olarak kullan (2. grup)",
+            command=lambda: self._assign_api_profile_group(
+                profile_id, ("main_backup",)))
         menu.add_separator()
         menu.add_command(
             label="Yardımcı analiz için kullan",

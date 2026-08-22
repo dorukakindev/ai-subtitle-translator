@@ -101,6 +101,150 @@ def shuai_api_route_label(value) -> str:
     return SHUAI_API_ROUTE_OPTIONS[0][0]
 
 
+# ── Anahtar / grup yedeklemesi ───────────────────────────────────────────────
+# Rota failover'i base_url'i degistirir, ANAHTARI degistirmez. Sorun rotada
+# degil new-api GRUBUNDA ise (kota bitti, model gruba kapali, anahtar askiya
+# alindi) dort rota da ayni hatayi verir. Bu katman ikinci bir gruba ait yedek
+# anahtara gecer ve gecisi kosu boyunca yapisik tutar.
+_API_KEY_FALLBACK_LOCK = threading.Lock()
+_API_KEY_FALLBACKS = {}
+_API_KEY_GROUP_MARKERS = (
+    "no available channel",
+    "no channel available",
+    "current group",
+    "无可用渠道",   # 无可用渠道
+    "分组",                       # 分组
+)
+
+
+def configure_api_key_fallback(scope: str = "main", primary_key: str = "",
+                               backup_key: str = "", log_fn=None) -> bool:
+    """Bir kapsam icin yedek API anahtarini kaydeder.
+
+    Yedek yoksa (ya da birincil ile ayniysa) kayit silinir ve davranis
+    bugunku haliyle kalir. Her kosu basinda cagrilmalidir: aktif anahtar
+    birincile geri doner.
+    """
+    scope = str(scope or "main")
+    primary = str(primary_key or "").strip()
+    backup = str(backup_key or "").strip()
+    with _API_KEY_FALLBACK_LOCK:
+        if not primary or not backup or primary == backup:
+            _API_KEY_FALLBACKS.pop(scope, None)
+            return False
+        _API_KEY_FALLBACKS[scope] = {
+            "primary": primary,
+            "backup": backup,
+            "active": "primary",
+            "log": log_fn,
+            "switched": False,
+        }
+        return True
+
+
+def reset_api_key_fallback(scope: str = "") -> None:
+    with _API_KEY_FALLBACK_LOCK:
+        if scope:
+            _API_KEY_FALLBACKS.pop(scope, None)
+        else:
+            _API_KEY_FALLBACKS.clear()
+
+
+def api_key_fallback_state(scope: str = "main") -> dict:
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry:
+            return {}
+        return {"active": entry["active"], "switched": bool(entry["switched"])}
+
+
+def _is_api_key_or_group_error(exc) -> bool:
+    """Yedek anahtara gecmeyi hak eden hata mi?
+
+    404 BILEREK disarida: o rota bazinda yol/model bulunamadi demek olabilir
+    ve zaten rota failover'ini tetikliyor. Buraya yalniz anahtarin kendisine
+    ya da ait oldugu gruba bagli hatalar girer.
+    """
+    status = _status_code(exc)
+    if status in (401, 403):
+        return True
+    text = _provider_error_text(exc).casefold()
+    if any(marker in text for marker in _QUOTA_EXHAUSTED_MARKERS):
+        return True
+    if any(marker in text for marker in _API_KEY_GROUP_MARKERS):
+        return True
+    return bool(status == 429 and "insufficient" in text)
+
+
+def _client_api_key(client) -> str:
+    api_key = getattr(client, "api_key", "")
+    getter = getattr(api_key, "get_secret_value", None)
+    if callable(getter):
+        try:
+            api_key = getter()
+        except Exception:
+            api_key = ""
+    return str(api_key or "")
+
+
+def _openai_client_for_key(client, api_key: str):
+    try:
+        return client.with_options(api_key=api_key, max_retries=0)
+    except Exception:
+        from openai import OpenAI
+        base_url = str(getattr(client, "base_url", "") or "") or None
+        return OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+
+
+def _apply_active_api_key(client, scope: str):
+    """Kosu icinde yedek anahtara gecildiyse yeni istekler de onu kullanir."""
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry or entry["active"] != "backup":
+            return client
+        backup = entry["backup"]
+    if _client_api_key(client) == backup:
+        return client
+    try:
+        return _openai_client_for_key(client, backup)
+    except Exception:
+        return client
+
+
+def _switch_to_backup_api_key(client, scope: str, exc):
+    """Hata anahtar/grup kaynakliysa yedek anahtarli istemciyi dondurur."""
+    if not _is_api_key_or_group_error(exc):
+        return None
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry:
+            return None
+        backup = entry["backup"]
+        if entry["active"] == "backup":
+            return None
+        entry["active"] = "backup"
+        entry["switched"] = True
+        log_fn = entry.get("log")
+    if _client_api_key(client) == backup:
+        return None
+    try:
+        alternate = _openai_client_for_key(client, backup)
+    except Exception:
+        return None
+    reason = _provider_error_context(exc).get("reason", "anahtar/grup hatasi")
+    message = (
+        f"Ana API anahtari basarisiz ({reason}); ikinci gruba ait yedek "
+        "anahtara geciliyor. Kosunun kalani yedek anahtarla surecek.")
+    if log_fn is not None:
+        try:
+            log_fn(message, "warn")
+        except Exception:
+            pass
+    else:
+        _shuai_log(message, "warn")
+    return alternate
+
+
 def shuai_route_probe_url(route_url) -> str:
     """Rota tabanindan (…/v1) saglik ucunu (…/api/ping) turetir."""
     normalized = normalize_shuai_api_route(route_url)
@@ -1707,6 +1851,32 @@ def chat_create_with_compat(client, model: str, kwargs: dict, requested_format=N
 
 
 def chat_create_with_shuai_failover(
+        client, model: str, kwargs: dict, requested_format=None,
+        checkpoint_label="", cancel_context=None):
+    """Once rota failover'i, o da tukenirse yedek API anahtari (2. grup).
+
+    Sira onemli: rota hatasi cok daha sik ve ucuz. Anahtar degistirmek ise
+    faturayi baska bir gruba yazar, o yuzden yalnizca hata anahtarin/grubun
+    kendisine isaret ediyorsa yapilir (bkz. _is_api_key_or_group_error).
+    """
+    scope = _shuai_route_scope(checkpoint_label)
+    client = _apply_active_api_key(client, scope)
+    try:
+        return _chat_create_with_route_failover(
+            client, model, kwargs, requested_format=requested_format,
+            checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+    except Exception as exc:
+        if cancel_context is not None and cancel_context.is_cancelled():
+            raise
+        alternate = _switch_to_backup_api_key(client, scope, exc)
+        if alternate is None:
+            raise
+    return _chat_create_with_route_failover(
+        alternate, model, kwargs, requested_format=requested_format,
+        checkpoint_label=checkpoint_label, cancel_context=cancel_context)
+
+
+def _chat_create_with_route_failover(
         client, model: str, kwargs: dict, requested_format=None,
         checkpoint_label="", cancel_context=None):
     scope = _shuai_route_scope(checkpoint_label)
