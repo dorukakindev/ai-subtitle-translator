@@ -27057,6 +27057,46 @@ class App(ctk.CTk):
                 return models[role]
         return self._helper_model_config(role).model
 
+    @staticmethod
+    def _describe_missing_helper_key(helper_url: str, main_url: str,
+                                     role_label: str) -> str:
+        """Yardimci anahtar neden bos kaldi? Sebebi adres adres anlatir.
+
+        Eski mesaj ('Analiz / kalite veya OpenAI API key girin veya Hybrid
+        modu kapatin') en sik sebebi hic soylemiyordu: ana hat ile yardimci
+        FARKLI servise bakiyorsa program ana anahtari yardimciya devretmeyi
+        bilerek reddediyor (fail-closed, bkz. _helper_api_key).
+        """
+        helper_host = (urlparse(str(helper_url or "")).hostname or "").casefold()
+        main_host = (urlparse(str(main_url or "")).hostname or "").casefold()
+        if helper_host and main_host and helper_host != main_host:
+            return (
+                f"{role_label} için API anahtarı yok.\n\n"
+                f"Yardımcı model {helper_host} adresine, ana çeviri ise "
+                f"{main_host} adresine bakıyor. İki farklı servis olduğu için "
+                "ana anahtar yardımcıya devredilmiyor.\n\n"
+                "Çözüm: ikisini aynı servise getirin (API profilinin Base URL "
+                "alanını düzeltin) ya da yardımcı role kendi anahtarını/API "
+                "profilini atayın. Hybrid modu kapatmak da bu kontrolü kaldırır."
+            )
+        return (
+            f"{role_label} için API anahtarı yok.\n\n"
+            "Bu role bir API profili atayın, yardımcı anahtar alanını doldurun "
+            "ya da Hybrid modu kapatın."
+        )
+
+    def _missing_helper_key_reason(self, role: str) -> str:
+        label = API_PROFILE_ROLE_LABELS.get(role, role)
+        try:
+            helper_url = self._helper_api_base_url(role)
+        except Exception:
+            helper_url = ""
+        try:
+            main_url = self._main_api_base_url()
+        except Exception:
+            main_url = ""
+        return App._describe_missing_helper_key(helper_url, main_url, label)
+
     def _helper_api_key(self, role: str):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
             keys = self._active_snapshot.get("helper_keys") or {}
@@ -29125,7 +29165,8 @@ class App(ctk.CTk):
         if hybrid:
             mm = self._helper_api_key("analysis")
             if not mm:
-                messagebox.showerror("Hata", "Analiz / kalite veya OpenAI API key girin veya Hybrid modu kapatın.")
+                messagebox.showerror(
+                    "Hata", self._missing_helper_key_reason("analysis"))
                 self._set_running(False)
                 return
             ext_path = self.ext_project_path_var.get().strip()
