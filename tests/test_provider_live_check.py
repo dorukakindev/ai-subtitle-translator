@@ -113,6 +113,39 @@ class LiveCheckTest(unittest.TestCase):
         # zaten başka yerde hata verir, burada takılıp kalmayız.
         self.assertTrue(self._run(_app(key=""), {"ok": False}))
 
+    def test_every_outcome_leaves_a_trace_in_the_log(self):
+        """Ücretli bir kontrolün çalıştığı log'dan görülebilmeli.
+
+        Sessiz geçen kapı, olmayan kapıdan kötüdür: koruma var sanılır ve
+        gerçekten çalışıp çalışmadığı denetlenemez (2026-08-22 21:19 koşusu:
+        rota testi ile ön kontrol arasında 1 sn vardı, kapının çalışıp
+        çalışmadığı log'dan anlaşılamıyordu).
+        """
+        app = _app()
+        self._run(app, {"ok": True, "attempts": 1, "failures": 0,
+                        "route": "https://api.shuaiapi.com/v1"})
+        self.assertTrue(app.logs, "başarı sessiz kalmamalı")
+        self.assertIn("Canlılık kontrolü geçti", app.logs[0][1])
+
+    def test_a_skipped_check_says_why(self):
+        app = _app(key="")
+        self._run(app, {"ok": False})
+        self.assertTrue(any("atlandı" in msg for _lvl, msg in app.logs))
+
+    def test_the_cached_skip_is_visible_too(self):
+        app = _app()
+        calls = []
+
+        def _fake(*_a, **_k):
+            calls.append(1)
+            return {"ok": True, "attempts": 1, "failures": 0}
+        with mock.patch.object(pr, "probe_api_key", _fake):
+            gui.App._provider_live_check(app, "Çeviri")
+            app.logs.clear()
+            gui.App._provider_live_check(app, "Çeviri")
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(any("tekrar sorulmadı" in msg for _lvl, msg in app.logs))
+
     def test_a_broken_probe_does_not_block_the_run(self):
         app = _app()
         with mock.patch.object(pr, "probe_api_key",

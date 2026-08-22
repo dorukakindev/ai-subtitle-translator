@@ -29388,10 +29388,13 @@ class App(ctk.CTk):
         False dönerse çeviri hiç başlamaz; 11x60 saniyelik yeniden deneme
         merdiveni boşuna işletilmez.
         """
+        where = label or "Çeviri"
         base_url = ""
         try:
             base_url = str(self._main_api_base_url() or "")
-        except Exception:
+        except Exception as exc:
+            self._log(f"Canlılık kontrolü atlandı (adres okunamadı: {exc}).",
+                      "warn")
             return True
         if not _is_shuai_api_route(base_url):
             # Resmî OpenAI ve bilinmeyen adreslerde bu arıza sınıfı
@@ -29400,31 +29403,52 @@ class App(ctk.CTk):
         now = time.monotonic()
         passed_at = getattr(self, "_provider_live_check_ok_at", 0.0) or 0.0
         if now - passed_at < App._PROVIDER_LIVE_CHECK_TTL:
+            self._log(
+                f"Canlılık kontrolü: {int(now - passed_at)} sn önce geçmişti, "
+                "tekrar sorulmadı.", "info")
             return True
         try:
             from provider_retry import probe_api_key
             api_key = self._main_api_key() or ""
             model = str(self._main_model_name() or "")
-        except Exception:
+        except Exception as exc:
+            self._log(f"Canlılık kontrolü atlandı (ayar okunamadı: {exc}).",
+                      "warn")
             return True
         if not api_key or not model:
+            # Kapının SESSİZCE atlanması, olmamasından kötüdür: koruma var
+            # sanılır. Bu yüzden atlama sebebi de loglanır.
+            self._log(
+                "Canlılık kontrolü atlandı: "
+                f"{'anahtar' if not api_key else 'model adı'} okunamadı.",
+                "warn")
             return True
-        where = label or "Çeviri"
         self._set_status("Sağlayıcı canlılık kontrolü")
+        started = time.monotonic()
         try:
             outcome = probe_api_key(api_key, base_url, model, realistic=True)
         except Exception as exc:
             self._log(f"Canlılık kontrolü çalıştırılamadı, atlanıyor: {exc}",
                       "warn")
             return True
+        elapsed = time.monotonic() - started
         if outcome.get("ok"):
             self._provider_live_check_ok_at = time.monotonic()
             failures = int(outcome.get("failures", 0) or 0)
+            host = urlparse(
+                str(outcome.get("route") or base_url or "")).hostname or "?"
             if failures:
                 self._log(
                     f"Canlılık kontrolü geçti ama sağlayıcı kararsız: "
                     f"{outcome.get('attempts')} denemenin {failures} tanesi "
-                    "başarısız. Koşu sırasında kesinti olabilir.", "warn")
+                    f"başarısız ({host}, {elapsed:.1f} sn). Koşu sırasında "
+                    "kesinti olabilir.", "warn")
+            else:
+                # Basarida da log: ucretli bir kontrolun calistigi
+                # gorulebilmeli, yoksa "koruma var" varsayimi denetlenemez.
+                self._log(
+                    f"Canlılık kontrolü geçti: sağlayıcı gerçek isteği "
+                    f"{elapsed:.1f} sn'de karşıladı ({host}).", "info")
             return True
         detail = str(outcome.get("detail", "") or "")
         hint = str(outcome.get("hint", "") or "")
