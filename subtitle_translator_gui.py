@@ -8716,6 +8716,18 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         value = sdh_cleaner._ascii_fold(str(token or "")).casefold()
         value = value.rstrip(".'’-")
         value = re.sub(r"['’].*$", "", value)
+        # Sayıya yapışan harf eki: İngilizce '60S/70s' ile Türkçe
+        # "60'larda" AYNI sayıdır; ek yüzünden eşleşmeyince çeviri
+        # doğru olsa bile sahiplik kayması sanılıyordu (gerçek dosya:
+        # 'THEY HAVE IQS IN THE 60S' → "IQ'ları 60'larda").
+        digits = re.fullmatch(r"(\d+(?:[.,]\d+)*)[^\W\d_]{1,3}", value)
+        if digits:
+            return digits.group(1)
+        # İngilizce çoğul/iyelik 's': 'Ugljeshas' ile "Ugljesha'nın"
+        # aynı özel addır. Eşitlemek dedektörü YALNIZ daha temkinli
+        # yapar; sert hata kapısında doğru yön budur.
+        if len(value) >= 5 and value.endswith("s") and not value.endswith("ss"):
+            value = value[:-1]
         for suffix in ("ovych", "ovymi", "oveho", "ovemu", "ovem", "ovy", "ova", "ovo", "uv"):
             if value.endswith(suffix) and len(value) - len(suffix) >= 4:
                 value = value[:-len(suffix)]
@@ -8723,8 +8735,13 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         return value
 
     def _text_tokens(text):
+        # Üç nokta bir AYIRICIDIR: kaynakta boşluksuz yazılınca
+        # ('El...El-sa.') iki sözcük tek token'a yapışıyor ve hedefteki
+        # doğru karşılığıyla ('El... El-sa.') eşleşmiyordu.
+        text = re.sub(r"(?:\.{2,}|…)", " ", str(text or ""))
         raw = set(re.findall(
-            r"(?<!\w)(?:\d+(?:[.,]\d+)*|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
+            r"(?<!\w)(?:\d+(?:[.,]\d+)*[^\W\d_]{0,3}"
+            r"|[A-ZÇĞİÖŞÜ][\w'’.-]{2,})(?!\w)",
             str(text or "")))
         tokens = {_token_key(token) for token in raw}
         return {

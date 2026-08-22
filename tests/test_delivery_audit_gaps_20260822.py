@@ -127,5 +127,64 @@ class DeliveryCueOrderTest(unittest.TestCase):
             any("cue_sirasi_kaynaktan" in line for line in lines), lines)
 
 
+class OwnerMismatchFalseAlarmTest(unittest.TestCase):
+    """Sahiplik dedektörü: aynı sözcüğün EK almış hâli yabancı sayılmamalı.
+
+    Bu SERT HATA kapısı; yanlış pozitif iyi bir teslimi karantinaya alıyor.
+    Üç sınıf gerçek teslim dosyalarında ölçüldü (16 vuruşun 3'ü yanlıştı).
+    """
+
+    def _mismatch(self, owner_map, items):
+        return g._chunk_content_owner_mismatch_ids(items, owner_map)
+
+    def test_english_plural_number_matches_turkish_suffix(self):
+        # 'THE 60S' ile "60'larda" AYNI sayıdır.
+        owner = {
+            "1": "THEY HAVE IQS IN THE 60S AND 70S.",
+            "2": "Another cue that mentions 60 and 70 as well.",
+        }
+        self.assertEqual(self._mismatch(owner, [
+            {"i": "1", "t": "IQ'ları 60'larda ve 70'lerde."}]), set())
+
+    def test_english_possessive_s_matches_turkish_suffix(self):
+        # 'Ugljeshas' ile "Ugljesha'nın" aynı özel addır.
+        owner = {
+            "1": "Cross out Ugljeshas eight million.",
+            "2": "Ugljesha said nothing at all.",
+        }
+        self.assertEqual(self._mismatch(owner, [
+            {"i": "1", "t": "Ugljesha'nın sekiz milyonunu çıkar."}]), set())
+
+    def test_ellipsis_is_a_token_separator(self):
+        # Kaynakta boşluksuz 'El...El-sa.' iki sözcüktür.
+        owner = {
+            "110": "No. El...El-sa.",
+            "9": "El-sa is here.",
+        }
+        self.assertEqual(self._mismatch(owner, [
+            {"i": "110", "t": "Hayır. El... El-sa."}]), set())
+
+    def test_a_real_content_shift_is_still_caught(self):
+        owner = {
+            "8": "Joba? You mean the hidden city beyond the mountains?",
+            "9": "I have not been back since Joba.",
+        }
+        self.assertEqual(
+            self._mismatch(owner, [
+                {"i": "8", "t": "Sanmıyorum, orada değildim."},
+                {"i": "9", "t": "Joba'dan ayrıldığımdan beri."}]),
+            set())
+
+    def test_a_genuine_content_shift_is_still_a_hard_error(self):
+        # Hedef, BAŞKA cue'ya ait benzersiz adları taşıyor ve kendi
+        # adlarından hiçbiri yok — sahiplik kayması budur.
+        owner = {
+            "1": "Marcus went to Berlin yesterday.",
+            "2": "Sophie stayed behind in Vienna.",
+        }
+        flagged = self._mismatch(owner, [
+            {"i": "2", "t": "Marcus dün Berlin'e gitti."}])
+        self.assertIn("2", flagged)
+
 if __name__ == "__main__":
     unittest.main()
