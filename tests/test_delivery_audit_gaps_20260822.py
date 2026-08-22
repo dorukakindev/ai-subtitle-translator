@@ -243,5 +243,71 @@ class SdhResidueNeedsAnExplicitMarkerTest(unittest.TestCase):
             "Η ΚΛΗΡΟΝΟΜΙΑ ΤΗΣ ΓΛΑΥΚΗΣ"))
 
 
+class UploadCleanupTitleAndSponsorTest(unittest.TestCase):
+    def test_translated_caps_title_card_survives_upload_cleanup(self):
+        source = [("1", "00:00:01,000 --> 00:00:03,000",
+                   "<b>INSTINCT UMAN</b>")]
+        output = [("1", "00:00:01,000 --> 00:00:03,000",
+                   "<b>İNSAN İÇGÜDÜSÜ</b>")]
+
+        cleaned = g._prepare_upload_ready_blocks(
+            output, "Turkish", source_cues=source)
+
+        self.assertIn("<b>İNSAN İÇGÜDÜSÜ</b>",
+                      [text for _idx, _ts, text in cleaned])
+
+    def test_translated_caps_title_card_is_not_an_audit_extra(self):
+        folder = Path(tempfile.mkdtemp())
+        source = folder / "src.srt"
+        output = folder / "out.srt"
+        source.write_text(_srt([
+            ("1", "00:00:01,000", "00:00:03,000", "INSTINCT UMAN")
+        ]), encoding="utf-8")
+        output.write_text(_srt([
+            ("1", "00:00:01,000", "00:00:03,000", "İNSAN İÇGÜDÜSÜ")
+        ]), encoding="utf-8")
+
+        audit = g._subtitle_delivery_audit(
+            str(source), str(output), "Turkish", "Romanian")
+
+        self.assertEqual(audit["missing_dialogue_ids"], [])
+        self.assertEqual(audit["extra_dialogue_ids"], [])
+
+    def test_bare_caps_sfx_is_still_removed(self):
+        source = [("1", "00:00:01,000 --> 00:00:03,000", "MACHINE BEEPS")]
+        output = [("1", "00:00:01,000 --> 00:00:03,000", "MACHINE BEEPS")]
+
+        self.assertEqual(g._prepare_upload_ready_blocks(
+            output, "Turkish", source_cues=source), [])
+
+    def test_portuguese_sponsor_and_branded_credit_sequences_are_removed(self):
+        rows = [
+            ("40", "<b>DEUS EM QUESTÃO</b>"),
+            ("41", "O patrocínio para este programa foi fornecido por..."),
+            ("42", "Fundação John Templeton..."),
+            ("43", "Obrigada."),
+            ("44", "<b>MUSKETEERS / Apresentam</b>"),
+            ("45", "<b>DEUS EM QUESTÃO</b>"),
+            ("46", "<b>MUSKETEERS / Legendas Para a Vida Toda!</b>"),
+        ]
+
+        removable = g._delivery_removable_source_ids(
+            [(idx, "00:00:00,000 --> 00:00:01,000", text)
+             for idx, text in rows])
+
+        self.assertTrue({"41", "42", "43", "44", "46"} <= removable)
+        self.assertNotIn("40", removable)
+        self.assertNotIn("45", removable)
+
+    def test_unclosed_sponsor_mention_does_not_remove_following_dialogue(self):
+        rows = [
+            ("1", "Funding for the program is our next subject."),
+            ("2", "The speaker explains the policy."),
+            ("3", "The discussion continues."),
+        ]
+
+        self.assertEqual(g._production_credit_sequence_ids(rows), set())
+
+
 if __name__ == "__main__":
     unittest.main()

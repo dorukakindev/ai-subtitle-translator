@@ -207,7 +207,7 @@ TRANSLATABLE_CAPITALISED_STOPS = frozenset({
     "european", "asian", "western", "eastern", "northern", "southern",
     "france", "england", "germany", "spain", "italy", "greece", "russia",
     # din / mitoloji
-    "god", "jesus", "christ", "christian", "christianity", "catholic",
+    "god", "deus", "jesus", "christ", "christian", "christianity", "catholic",
     "protestant", "muslim", "islam", "islamic", "judaism", "buddha",
     "buddhist", "hindu", "bible", "gospel", "testament", "church", "lord",
     "saint", "pope", "devil", "satan", "heaven", "hell", "genesis", "eden",
