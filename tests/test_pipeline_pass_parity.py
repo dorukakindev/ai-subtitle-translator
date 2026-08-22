@@ -244,7 +244,15 @@ class PipelinePassParityTest(unittest.TestCase):
         self.assertIn("_analysis_locked_terms = ht.sanitize_glossary_for_turkish", src)
         self.assertIn("_locked_terms = _merge_locked_term_sources(", src)
         self.assertIn("self._get_locked_terms_dict(filepath, tgt)", src)
-        self.assertIn("_expected_source_hash,\n                _locked_terms", src)
+        # Parmak izinin `locked_terms` yuvası GENİŞ sözlüğü taşıyordu; o
+        # sözlük ARAMA anında yeniden üretilemediği için hybrid'in yazdığı
+        # hiçbir TM kaydı bulunamıyordu (494.907 satır, ~58 isabet).
+        # Analizin katkısı artık ayrı bir kanonik bağlam anahtarına giriyor:
+        # izolasyon aynen korunuyor (aynı kaynak + farklı analiz -> farklı
+        # parmak izi), anahtar ise yeniden üretilebilir hâle geldi.
+        self.assertIn("_analysis_fp = _analysis_prompt_fingerprint(", src)
+        self.assertIn(
+            "self._tm_canonical_context(filepath, tgt, _analysis_fp)", src)
         self.assertGreaterEqual(src.count("locked_terms=_locked_terms"), 6)
         self.assertIn("glossary=_locked_terms", src)
         self.assertIn("locked_terms=_locked_terms,", src)

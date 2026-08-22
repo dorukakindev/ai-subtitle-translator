@@ -4556,7 +4556,7 @@ _SDH_SPEAKER_PREFIX_WORDS = (
 )
 _BARE_GERUND_SDH_RE = re.compile(
     r"(?:speaking|talking|chatting|bargaining)"
-    r"(?:\s+(?:at\s+once|quietly|unintelligibly|"
+    r"(?:\s+(?:at\s+once|quietly|unintelligibly|indistinctly|"
     r"in(?:\s+the)?\s+background|in\s+[a-z -]+))?\s*[.!]*",
     re.IGNORECASE)
 _BRACKETED_GERUND_SDH_RE = re.compile(
@@ -13693,6 +13693,92 @@ def _file_content_sha256(path) -> str:
         except Exception:
             break
     return ""
+
+
+def _tm_prefill_chunks(tm, requests, context_fingerprint, tgt_lang="",
+                       model="", profanity="", schema_name="",
+                       source_language="") -> dict:
+    """TM'de TAMAMI bulunan chunk'lar için hazır yanıt üretir.
+
+    Çeviri belleği yalnız `_run_sync` içinde aranıyordu ve `_run_sync`,
+    Yardımcı Analiz açıkken daha ilk satırda `_run_sync_hybrid`'e devredip
+    dönüyor: dört akışın DÖRDÜ de TM'ye yazıyor, yalnız biri okuyor ve o da
+    analiz kapalıyken çalışan mod. Gerçek veritabanında 494.907 satıra
+    karşılık ömür boyu ~58 isabet vardı — bellek pratikte yalnız-yazardı.
+
+    Chunk hep-ya-da-hiç doldurulur: bir satır bile eksikse chunk API'ye
+    gider. Yalnız TAM eşleşme kullanılır (`_run_sync`'teki 0.95 fuzzy adımı
+    burada bilerek yok) — parmak izi aynı olsa bile yaklaşık eşleşmeyi ana
+    çeviriyi tamamen atlayarak uygulamak için yeterli kanıt yok.
+    """
+    filled: dict = {}
+    if not (tm and requests and context_fingerprint):
+        return filled
+
+    def _items(req):
+        try:
+            payload = json.loads(req["body"]["messages"][1]["content"])
+        except Exception:
+            return []
+        return [item for item in payload.get("tr", []) if "t" in item]
+
+    sources = [item["t"] for req in requests for item in _items(req)]
+    if not sources:
+        return filled
+    try:
+        cache = tm.lookup_batch(
+            sources, tgt_lang=tgt_lang, model=model, profanity=profanity,
+            schema_name=schema_name, source_language=source_language,
+            context_fingerprint=context_fingerprint,
+            allow_contextless_final=False)
+    except Exception:
+        return filled
+    for req in requests:
+        items = _items(req)
+        if not items:
+            continue
+        results = []
+        for item in items:
+            cached = cache.get(item["t"])
+            if cached is None:
+                results = []
+                break
+            results.append({"i": item["i"], "t": cached})
+        if results:
+            filled[req["custom_id"]] = json.dumps(results, ensure_ascii=False)
+    return filled
+
+
+def _analysis_prompt_fingerprint(pronoun_map=None, character_styles=None,
+                                 analysis_locked_terms=None) -> str:
+    """Yardımcı analizin PROMPTA giren kısmının kararlı özeti.
+
+    `_tm_canonical_context` yalnız `series_canon` ve varsayılandan farklı
+    `analysis_depth` taşıyordu; dosyanın KENDİ analizinden gelen sen/siz
+    haritası, karakter üslubu ve yinelenen terimler parmak izine hiç
+    girmiyordu. İki farklı analiz aynı TM anahtarını üretiyor, eski kayıt
+    yeni sen/siz kararını ana modeli atlayarak geçersiz kılabiliyordu (dış
+    denetim madde 7).
+
+    Boş analizde boş dize döner: düz sync/batch akışının parmak izi
+    değişmez, mevcut TM kayıtları geçerli kalır.
+    """
+    parts = {}
+    if pronoun_map:
+        parts["pronoun_map"] = pronoun_map
+    if character_styles:
+        parts["character_styles"] = character_styles
+    if analysis_locked_terms:
+        parts["locked_terms"] = analysis_locked_terms
+    if not parts:
+        return ""
+    try:
+        payload = json.dumps(
+            parts, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), default=str)
+    except Exception:
+        return ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def _tm_context_fingerprint(source_hash: str, locked_terms=None,
@@ -30751,13 +30837,16 @@ class App(ctk.CTk):
         except Exception:
             return None, None, None
 
-    def _tm_canonical_context(self, filepath: str, tgt_lang: str = "") -> dict:
+    def _tm_canonical_context(self, filepath: str, tgt_lang: str = "",
+                              analysis_fingerprint: str = "") -> dict:
         """Modele gerçekten enjekte edilen kanonik bağlamın kararlı özeti.
 
         Yalnız VARSA/varsayılandan farklıysa anahtar üretir; boş sözlük
         eski parmak izini korur (bkz. `_tm_context_fingerprint`).
         """
         context = {}
+        if str(analysis_fingerprint or "").strip():
+            context["analysis"] = str(analysis_fingerprint).strip()
         try:
             hint = App._series_hint_for(self, str(filepath))
         except Exception:
@@ -36604,10 +36693,17 @@ class App(ctk.CTk):
             system_prompt += self._series_hint_for(filepath)
             if _file_pm is not None:
                 system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+            # Parmak izinin `locked_terms` yuvasi ARAMA anininda yeniden
+            # uretilebilir olmali. Hybrid kayitlari genis sozlugu (sema +
+            # ANALIZ + dosya) yaziyordu, aramalar ise dar sozlugu; ikisi
+            # hicbir zaman esitlenemiyordu. Analizin katkisi artik ayri bir
+            # `canonical_context['analysis']` anahtarina giriyor.
+            _analysis_fp = _analysis_prompt_fingerprint(
+                pronoun_map, character_styles, _analysis_locked_terms)
             _tm_fingerprint = _tm_context_fingerprint(
                 _expected_source_hash,
-                _locked_terms,
-                self._tm_canonical_context(filepath, tgt),
+                self._get_locked_terms_dict(filepath, tgt),
+                self._tm_canonical_context(filepath, tgt, _analysis_fp),
             )
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                         chunk_size=self._chunk_size, glossary=_locked_terms,
@@ -36669,6 +36765,22 @@ class App(ctk.CTk):
                     batch_reqs, raw_map, scope=_ckpt_scope)
                 completed[0] = len(raw_map)
             used_ckpt_keys.update(prefilled_keys)
+            _tm_prefilled = _tm_prefill_chunks(
+                getattr(self, "_tm", None),
+                [req for req in batch_reqs
+                 if not raw_map.get(req["custom_id"])],
+                _tm_fingerprint, tgt_lang=tgt,
+                model=self._main_model_name(), profanity=profanity,
+                schema_name=schema_dict.get("name", ""),
+                source_language=file_src)
+            if _tm_prefilled:
+                raw_map.update(_tm_prefilled)
+                completed[0] = len(raw_map)
+                for _ in _tm_prefilled:
+                    self._tm.record_hit()
+                self._log(
+                    f"TM önbelleği: {len(_tm_prefilled)} chunk hazır "
+                    "çeviriden geldi; API'ye gönderilmeyecek.", "ok")
             start_ts  = time.time()
             lock      = threading.Lock()
             base_pct  = int((fi + 0.4) / n_files * 100)
@@ -38388,6 +38500,8 @@ class App(ctk.CTk):
                             expected_source_hash=fmap_data.get("source_hash", ""),
                             output_baseline=fmap_data.get("output_baseline"),
                             locked_terms=fmap_data.get("locked_terms"),
+                            tm_context_fingerprint=fmap_data.get(
+                                "tm_context_fingerprint", ""),
                             report_dir=_resolve_report_dir(
                                 str(_saved_context.get("input_dir") or self.input_var.get()),
                                 _saved_out_dir),
@@ -38570,7 +38684,8 @@ class App(ctk.CTk):
                             openai_key, is_last=True, report_rows=None, source_path="",
                             source_language="", target_language="", schema_name="",
                             expected_source_hash="", output_baseline=None,
-                            locked_terms=None, report_dir="", result_out=None):
+                            locked_terms=None, report_dir="", result_out=None,
+                            tm_context_fingerprint=""):
         """Hybrid batch tamamlanınca ht.save_results ile yazar.
         report_rows verilirse bu dosyanın kalite satırı eklenir (resume raporu için).
         source_path: gönderim anında saklanan KAYNAK dosya yolu (fmap'ten) — verilirse
@@ -39226,12 +39341,21 @@ class App(ctk.CTk):
                                         schema_name=schema_name or self._get_file_schema(str(_src_path))["name"],
                                         source_language=source_language or self._effective_file_source_language(
                                             str(_src_path), self._snap_get("src_lang", "English")),
+                                        # Gönderim anındaki parmak izi
+                                        # fmap'te saklı. Burada yeniden
+                                        # türetilemez: analiz çalışmıyor,
+                                        # üstelik eski kod kanonik bağlamı
+                                        # HİÇ vermiyordu ve ürettiği anahtar
+                                        # hiçbir aramayla eşleşmiyordu.
                                         context_fingerprint=(
-                                            _tm_context_fingerprint(
+                                            tm_context_fingerprint
+                                            or (_tm_context_fingerprint(
                                                 _file_content_sha256(_src_path),
                                                 self._get_locked_terms_dict(
+                                                    str(_src_path), tgt),
+                                                self._tm_canonical_context(
                                                     str(_src_path), tgt))
-                                            if _src_path else ""))
+                                                if _src_path else "")))
                             if report_rows is not None:
                                 _hn, _cn = _count_hata_cps(pp)
                                 _cps_avg, _cps_max = _cps_stats(pp)
@@ -40331,7 +40455,7 @@ class App(ctk.CTk):
     def _run_twowave_batches(self, openai_key, requests, fmap, out_path,
                              source_path, output_dir, fname, progress_fn=None,
                              source_language="", target_language="", stage_path=None,
-                             expected_source_hash=""):
+                             expected_source_hash="", tm_context_fingerprint=""):
         """İki-dalgalı zincirli batch (B3) — TEK dosya için sıralı submit-wait-submit-wait.
 
         A dalgasını gönderir, BEKLER, A'nın kuyruk çevirilerini B dalgasının ilk chunk'ına
@@ -40370,6 +40494,7 @@ class App(ctk.CTk):
                                       getattr(self, "_active_snapshot", None) or {},
                                       api_key=openai_key),
                                   locked_terms=frozen_locked_terms,
+                                  tm_context_fingerprint=tm_context_fingerprint,
                                   cancel_check=lambda: self._stop_flag,
                                   expected_source_hash=expected_source_hash)
             if not bid:
@@ -40915,10 +41040,21 @@ class App(ctk.CTk):
                 system_prompt += self._series_hint_for(filepath)
                 if _file_pm is not None:
                     system_prompt += _file_pm.build_context_hint()   # proje hafızası ipucu (sync/batch ile paritede)
+                # Parmak izinin `locked_terms` yuvasi ARAMA anininda yeniden
+                # uretilebilir olmali. Hybrid kayitlari genis sozlugu (sema +
+                # ANALIZ + dosya) yaziyordu, aramalar ise dar sozlugu; ikisi
+                # hicbir zaman esitlenemiyordu. Analizin katkisi artik ayri bir
+                # `canonical_context['analysis']` anahtarina giriyor.
+                _analysis_fp = _analysis_prompt_fingerprint(
+                    pronoun_map, character_styles,
+                    ht.sanitize_glossary_for_turkish(
+                        dict(getattr(context, "recurring_terms", {}) or {}),
+                        target_language=tgt))
                 _tm_fingerprint = _tm_context_fingerprint(
                     _expected_source_hash,
-                    _file_locked_terms,
-                    self._tm_canonical_context(filepath, tgt),
+                    self._get_locked_terms_dict(filepath, tgt),
+                    self._tm_canonical_context(
+                        filepath, tgt, _analysis_fp),
                 )
                 self._record_file_status(
                     filepath, "İstek Hazırlığı", "running")
@@ -40989,6 +41125,7 @@ class App(ctk.CTk):
                     # batch farklı terim kurallarıyla tamamlanıyordu
                     # (dış denetim, madde 2).
                     locked_terms=_file_locked_terms,
+                    tm_context_fingerprint=_tm_fingerprint,
                     cancel_check=lambda: self._stop_flag,
                     expected_source_hash=_expected_source_hash)
                 if batch_id:
@@ -41106,7 +41243,8 @@ class App(ctk.CTk):
                         # BU dosyanın hash'i (döngü değişkeni). Faz 1'den artakalan
                         # `_expected_source_hash` başka bir dosyaya aitti ve çoklu
                         # çeviride 'kaynak dosya değişti' diye durduruyordu.
-                        expected_source_hash=expected_source_hash)
+                        expected_source_hash=expected_source_hash,
+                        tm_context_fingerprint=_tm_fingerprint)
                     if not _tw_result or self._stop_flag:
                         if not self._stop_flag:
                             self._log(f"[{fname}] İki-dalgalı batch tamamlanamadı.", "err")

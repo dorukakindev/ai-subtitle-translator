@@ -14633,6 +14633,7 @@ def submit_batch(
     session_fingerprint: str = "",
     run_context: dict = None,
     locked_terms: dict = None,
+    tm_context_fingerprint: str = "",
     cancel_check=None,
     expected_source_hash: str = "",
 ) -> str | None:
@@ -14663,6 +14664,10 @@ def submit_batch(
             "session_fingerprint": session_fingerprint or "",
             "run_context": dict(run_context or {}),
             "locked_terms": dict(locked_terms or {}),
+            # Resume, parmak izini YENIDEN TURETEMEZ: analiz o anda
+            # calismiyor, hitap haritasi ve karakter uslubu elde yok.
+            # Gonderim anindaki deger aynen saklanir.
+            "tm_context_fingerprint": str(tm_context_fingerprint or ""),
             "source_hash": source_hash,
             "output_baseline": output_baseline,
             "fmap": {cid: [list(x) for x in info] for cid, info in file_map.items()},

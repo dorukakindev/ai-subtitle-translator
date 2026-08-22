@@ -104,7 +104,9 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         self.assertIn("_file_locked_terms = _hybrid_file_locked_terms(", phase_two)
         self.assertIn("locked_terms=_file_locked_terms", phase_two)
         self.assertIn("glossary=_file_locked_terms", phase_two)
-        self.assertIn("_tm_context_fingerprint(\n                    _expected_source_hash,\n                    _file_locked_terms", source)
+        # Aynı gerekçe: analiz katkısı kanonik bağlamda.
+        self.assertIn("_analysis_fp = _analysis_prompt_fingerprint(", source)
+        self.assertIn("filepath, tgt, _analysis_fp)", source)
         self.assertNotIn("dict(glossary or {})", phase_two)
         self.assertNotIn('getattr(context, "recurring_terms"', phase_two)
 
@@ -112,7 +114,15 @@ class HybridBatchTermIsolationTests(unittest.TestCase):
         source = inspect.getsource(gui.App._run_sync_hybrid)
 
         self.assertIn("_locked_terms = _merge_locked_term_sources(", source)
-        self.assertIn("_expected_source_hash,\n                _locked_terms", source)
+        # Parmak izinin `locked_terms` yuvası GENİŞ sözlüğü taşıyordu; o
+        # sözlük ARAMA anında yeniden üretilemediği için hybrid'in yazdığı
+        # hiçbir TM kaydı bulunamıyordu (494.907 satır, ~58 isabet).
+        # Analizin katkısı artık ayrı bir kanonik bağlam anahtarına giriyor:
+        # izolasyon aynen korunuyor (aynı kaynak + farklı analiz -> farklı
+        # parmak izi), anahtar ise yeniden üretilebilir hâle geldi.
+        self.assertIn("_analysis_fp = _analysis_prompt_fingerprint(", source)
+        self.assertIn(
+            "self._tm_canonical_context(filepath, tgt, _analysis_fp)", source)
         self.assertIn("chunk_size=self._chunk_size, glossary=_locked_terms", source)
         self.assertIn("locked_terms=_locked_terms", source)
 
