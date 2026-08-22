@@ -15166,6 +15166,33 @@ def _pass_structure_guard_reason(label: str, before_blocks, after_blocks) -> str
     return ",".join(reasons)
 
 
+# Bir pass atlandığında yalnız 'atlandı' yazmak kullanıcıyı bilgisiz
+# bırakıyordu: neden atlandığı `pass_status[...]['reason']` içinde ZATEN
+# vardı ama hiçbir yerde basılmıyordu.
+_PASS_SKIP_REASONS = {
+    "analysis_incomplete": "yardımcı analiz eksik/bozuk kaldı",
+    "not_series": "dosya bir dizi bölümü olarak tanınmadı",
+    "automatic_repair_disabled": "otomatik onarım kapalı",
+    "postprocess_not_written": "post-işlem çıktısı diske yazılmadı",
+    "permanent_api_error": "API kalıcı hata döndürdü",
+    "locked_term_violation": "aday kilitli terimi bozuyordu",
+    "missing_id": "yanıtta eksik cue kimliği vardı",
+    "duplicate_id": "yanıtta yinelenen cue kimliği vardı",
+    "conflicting_id": "yanıttaki cue kimlikleri çelişiyordu",
+    "source_changed": "kaynak dosya koşu sırasında değişti",
+    "quality_report_only": "yalnız-rapor modu açık",
+}
+
+
+def pass_skip_explanation(status_info) -> str:
+    """Atlama nedeninin okunur karşılığı; bilinmeyen neden ham basılır."""
+    if not isinstance(status_info, dict):
+        return ""
+    reason = str(status_info.get("reason") or "").strip()
+    if not reason:
+        return ""
+    return _PASS_SKIP_REASONS.get(reason, reason)
+
 def _record_pass_change(trace: dict, label: str, before_blocks, after_blocks,
                          history: dict = None) -> int:
     """Record how many lines a quality pass changed and return that count."""
@@ -15304,6 +15331,88 @@ def _pass_efficiency_rows(row: dict) -> list[dict]:
         })
     return result
 
+
+def run_pass_efficiency_table(rows: list) -> list:
+    """Koşu geneli pass verimliliği tablosu (ceviri_raporu.txt için).
+
+    Veri zaten üretiliyordu ama yalnız DOSYA BAŞINA işlem dökümünde
+    görünüyordu; kullanıcı koşu sonunda ceviri_raporu.txt okuyor. Pahalı ama
+    etkisiz bir pass ancak bu tabloda görülebiliyor: kaç cue düzeltti, kaç
+    token harcadı, düzeltme başına kaç token, kaç kez guard tarafından geri
+    alındı."""
+    totals = {}
+    for row in rows or []:
+        for item in _pass_efficiency_rows(row):
+            name = item.get("pass") or "?"
+            bucket = totals.setdefault(name, {
+                "changed": 0, "suggested": 0, "tokens": 0,
+                "cost": 0.0, "rolled_back": 0,
+            })
+            bucket["changed"] += int(item.get("changed") or 0)
+            bucket["suggested"] += int(item.get("suggested") or 0)
+            bucket["tokens"] += int(item.get("tokens") or 0)
+            bucket["cost"] += float(item.get("cost_usd") or 0.0)
+        for event in (row.get("pass_trace") or {}).get(
+                "__guard_events__") or []:
+            name = str(event.get("pass") or "?")
+            bucket = totals.setdefault(name, {
+                "changed": 0, "suggested": 0, "tokens": 0,
+                "cost": 0.0, "rolled_back": 0,
+            })
+            bucket["rolled_back"] += 1
+    if not totals:
+        return []
+    lines = ["", "PASS VERİMİ (koşu geneli)"]
+    order = sorted(
+        totals.items(),
+        key=lambda kv: (-kv[1]["tokens"], kv[0]))
+    for name, data in order:
+        changed, tokens = data["changed"], data["tokens"]
+        parts = [f"{changed} cue düzeltildi"]
+        if data["suggested"]:
+            parts.append(f"{data['suggested']} öneri (uygulanmadı)")
+        if tokens:
+            parts.append(f"{tokens:,} token")
+        if data["cost"]:
+            parts.append(f"${data['cost']:.4f}")
+        if tokens and changed:
+            parts.append(f"{tokens / changed:,.0f} token/düzeltme")
+        elif tokens and not changed and data["suggested"]:
+            parts.append(
+                f"{tokens / data['suggested']:,.0f} token/öneri (yalnız rapor)")
+        elif tokens and not changed:
+            parts.append("DÜZELTME YOK — bu pass bu koşuda karşılıksız")
+        if data["rolled_back"]:
+            parts.append(f"{data['rolled_back']} kez guard geri aldı")
+        lines.append(f"  {name.ljust(24)} : " + "  |  ".join(parts))
+    return lines
+
+def file_stage_summary_line(row: dict, top: int = 3) -> str:
+    """Dosya için KOMPAKT aşama çizelgesi: toplam süre + en yavaş aşamalar.
+
+    Ayrıntılı 'SÜRE ZAMAN ÇİZELGESİ' zaten dosya başına işlem dökümünde var,
+    ama kullanıcı koşu sonunda ceviri_raporu.txt okuyor. Buradaki tek satır,
+    zamanın nereye gittiğini tek bakışta gösterir."""
+    timing = dict(row.get("timing") or {})
+    stages = [
+        stage for stage in (timing.get("stage_timings") or [])
+        if isinstance(stage, dict)
+        and float(stage.get("duration_seconds") or 0) > 0
+    ]
+    total = timing.get("duration_seconds")
+    if not stages and not total:
+        return ""
+    parts = []
+    if total:
+        parts.append(f"toplam {_format_elapsed(total)}")
+    slowest = sorted(
+        stages, key=lambda s: float(s.get("duration_seconds") or 0),
+        reverse=True)[:max(1, int(top))]
+    for stage in slowest:
+        parts.append(
+            f"{stage.get('name', '?')} "
+            f"{_format_elapsed(stage.get('duration_seconds'))}")
+    return "  |  ".join(parts)
 
 def _deep_delivery_segment_coverage(blocks, processed_ids) -> list[dict]:
     ids = [str(block[0]) for block in (blocks or [])]
@@ -15884,7 +15993,10 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
         trace_changed = any(
             int(trace.get(label, 0) or 0) > 0 for label in labels)
         if status_info and status_info.get("status") == "skipped":
-            lines.append(f"{title}: {'atlandı' if enabled else 'kapalı'}")
+            state = 'atlandı' if enabled else 'kapalı'
+            why = pass_skip_explanation(status_info)
+            lines.append(
+                f"{title}: {state}" + (f" — {why}" if why else ""))
             continue
         if not enabled and not status_info and not trace_changed:
             lines.append(f"{title}: kapalı")
@@ -16935,6 +17047,10 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     width = max(len(lbl) for _, lbl in fields)
     for r in rows:
         lines.append(f"\n• {r['name']}  ({r.get('total', 0)} satır)")
+        _stage_line = file_stage_summary_line(r)
+        if _stage_line:
+            lines.append(
+                f"   {'Aşama çizelgesi'.ljust(width)} : {_stage_line}")
         for key, lbl in fields:
             if key in r:
                 shown_label = lbl
@@ -17063,6 +17179,7 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
     ]
     if trace_total:
         lines.append(f"Pass breakdown total: {trace_total}")
+    lines += run_pass_efficiency_table(rows)
     total_multi = 0
     multi_samples = []
     total_overrides = 0
@@ -38144,6 +38261,7 @@ class App(ctk.CTk):
         _tgt_lang  = self.tgt_var.get()
         report_rows = []
         _last_src_cues = []   # diff penceresi için son dosyanın kaynak blokları
+        _last_written_output = None   # diff penceresi DİSKTEKİ finali okur
         _written_files = []
         _skipped_files = []
         _failed_files = list(source_drift_files or ())
@@ -38815,6 +38933,7 @@ class App(ctk.CTk):
                     self._log(f"Auto-Glossary atlandı: {_ag_e}", "warn")
                 _pass_status["Auto-Glossary"] = dict(_auto_glossary_status)
             _written_files.append(fp)
+            _last_written_output = out_path
             self._record_file_status(fp, "Tamamlandı", "done")
             if self._wait_between_files(fi, len(file_blocks), Path(fp).name) == "stopped":
                 break
@@ -38838,10 +38957,32 @@ class App(ctk.CTk):
         # kaynağı yeniden kullan — tekrar disk okuması yok)
         _last_fp    = _written_files[-1] if _written_files else None
         _last_orig  = _last_src_cues if _last_fp else []
-        _last_trans = [file_blocks[_last_fp][k] for k in sorted(
-            file_blocks[_last_fp],
-            key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))
-        )] if _last_fp else []
+        # DİSKE YAZILAN dosyayı oku. `file_blocks` ana çevirinin HAM sonucudur;
+        # Critic, Polish, Native, Condense, SDH temizliği, terim
+        # normalizasyonu, cue birleştirme ve teslim hazırlığının hepsi
+        # `sorted_blocks`/`_delivery_blocks` üzerinde çalışıyor ve
+        # `file_blocks` güncellenmiyordu — kullanıcı ekranda bir metni
+        # onaylarken diskte BAŞKA bir final duruyordu (dış denetim, madde 18).
+        _last_trans = []
+        if _last_fp:
+            if _last_written_output:
+                try:
+                    _last_trans = [
+                        (idx, ts, str(text or ""))
+                        for idx, ts, text in parse_subtitle(
+                            str(_last_written_output), _tgt_lang)
+                        if not _DELIVERY_SIGNATURE_RE.fullmatch(
+                            str(text or "").strip())
+                    ]
+                except Exception as _diff_read_error:
+                    self._log(
+                        f"İnceleme penceresi teslim dosyasını okuyamadı "
+                        f"({_diff_read_error}); ham çeviri gösterilecek.", "warn")
+            if not _last_trans:
+                _last_trans = [file_blocks[_last_fp][k] for k in sorted(
+                    file_blocks[_last_fp],
+                    key=lambda k: (0, int(k)) if str(k).isdigit() else (1, str(k))
+                )]
         def _show_done():
             _rapor_line = "\nRapor: Raporlar\\ceviri_raporu.txt\n" if _report_path else "\n"
             ans = messagebox.askyesno(
