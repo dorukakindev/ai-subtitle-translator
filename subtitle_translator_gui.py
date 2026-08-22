@@ -28424,6 +28424,174 @@ class App(ctk.CTk):
 
         App._start_worker(self, _worker)
 
+    def _api_profile_endpoint(self, profile_id):
+        """Bir profilin (adres, model) ikilisi; profil yoksa (None, "")."""
+        profile = getattr(self, "_api_key_profiles", {}).get(profile_id)
+        if not profile:
+            return None, ""
+        if profile.get("provider") == "openai_official":
+            return "https://api.openai.com/v1", str(profile.get("model", "") or "")
+        return (_normalize_api_base_url(profile.get("base_url", "")),
+                str(profile.get("model", "") or ""))
+
+    def _api_key_check_targets(self) -> list:
+        """Sınanacak anahtarlar: önce ana, sonra yedek.
+
+        Yedek anahtar BAŞKA bir gruba ait olduğu için kendi profilindeki
+        adres ve model kullanılır; profil bunları boş bırakmışsa ana hattın
+        değerlerine düşer (aynı bayi, farklı grup en sık durum).
+        """
+        main_url = self._main_api_base_url() or ""
+        main_model = self._main_model_name() or ""
+        targets = [{
+            "label": "Ana anahtar",
+            "key": self._main_api_key() or "",
+            "base_url": main_url,
+            "model": main_model,
+        }]
+        backup_key = self._main_api_key_backup() or ""
+        if backup_key:
+            assigned = getattr(self, "_api_key_assignments", {}).get("main_backup")
+            url, model = self._api_profile_endpoint(assigned)
+            targets.append({
+                "label": "Yedek anahtar (2. grup)",
+                "key": backup_key,
+                "base_url": url or main_url,
+                "model": model or main_model,
+            })
+        return targets
+
+    def _refresh_api_key_check_panel(self):
+        """Anahtar testi sonuç satırlarını çizer (yeşil = çalışıyor)."""
+        frame = getattr(self, "_api_key_check_frame", None)
+        if frame is None:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+        except Exception:
+            return
+        for widget in frame.winfo_children():
+            widget.destroy()
+        rows = getattr(self, "_api_key_check_results", []) or []
+        if not rows:
+            ctk.CTkLabel(
+                frame,
+                text="Henüz denenmedi. Düğmeye basınca her anahtarla tek "
+                     "küçük istek gönderilir (birkaç jeton).",
+                text_color=FG2, anchor="w", justify="left", wraplength=560,
+                font=ctk.CTkFont("Segoe UI", 9)).grid(
+                    row=0, column=0, columnspan=3, sticky="ew")
+            return
+        for index, row in enumerate(rows):
+            state = row.get("state", "pending")
+            if state == "ok":
+                dot, color = "●", GREEN
+                value = f"{row.get('latency_ms') or 0} ms"
+            elif state == "pending":
+                dot, color, value = "○", FG2, "deneniyor..."
+            else:
+                dot, color, value = "●", WARN, "başarısız"
+            ctk.CTkLabel(
+                frame, text=dot, text_color=color, width=18,
+                font=ctk.CTkFont("Consolas", 12, "bold")).grid(
+                    row=index * 2, column=0, sticky="w")
+            ctk.CTkLabel(
+                frame, text=f"{row.get('label', '')}  ·  {row.get('model', '')}",
+                text_color=FG, anchor="w",
+                font=ctk.CTkFont("Segoe UI", 10)).grid(
+                    row=index * 2, column=1, sticky="ew", pady=1)
+            ctk.CTkLabel(
+                frame, text=value, text_color=color, anchor="e", width=110,
+                font=ctk.CTkFont("Consolas", 10, "bold")).grid(
+                    row=index * 2, column=2, sticky="e")
+            detail = str(row.get("detail", "") or "")
+            hint = str(row.get("hint", "") or "")
+            if hint:
+                detail = f"{detail} · {hint}" if detail else hint
+            if detail and state != "ok":
+                ctk.CTkLabel(
+                    frame, text=detail, text_color=FG2, anchor="w",
+                    justify="left", wraplength=520,
+                    font=ctk.CTkFont("Segoe UI", 9)).grid(
+                        row=index * 2 + 1, column=1, columnspan=2,
+                        sticky="ew", pady=(0, 4))
+
+    def _start_api_key_check(self):
+        """'Anahtarları Dene' düğmesi: ana ve yedek anahtarı sırayla sınar."""
+        if getattr(self, "_api_key_check_busy", False):
+            return
+        try:
+            targets = self._api_key_check_targets()
+        except Exception as exc:
+            self._log(f"Anahtar testi hazırlanamadı: {exc}", "warn")
+            return
+        usable = [t for t in targets if t["key"]]
+        if not usable:
+            self._api_key_check_results = [{
+                "label": "Ana anahtar", "model": "", "state": "fail",
+                "detail": "Anahtar girilmemiş."}]
+            self._refresh_api_key_check_panel()
+            return
+        self._api_key_check_busy = True
+        self._api_key_check_results = [
+            {"label": t["label"], "model": t["model"], "state": "pending"}
+            for t in usable]
+        self._refresh_api_key_check_panel()
+        button = getattr(self, "_api_key_check_btn", None)
+        if button is not None:
+            try:
+                button.configure(state="disabled", text="Deneniyor...")
+            except Exception:
+                pass
+
+        def _worker():
+            try:
+                from provider_retry import probe_api_key
+                for index, target in enumerate(usable):
+                    try:
+                        outcome = probe_api_key(
+                            target["key"], target["base_url"], target["model"])
+                    except Exception as exc:
+                        outcome = {"ok": False, "latency_ms": None,
+                                   "detail": f"{type(exc).__name__}: {exc}"[:120],
+                                   "hint": ""}
+                    row = {
+                        "label": target["label"],
+                        "model": target["model"],
+                        "state": "ok" if outcome.get("ok") else "fail",
+                        "latency_ms": outcome.get("latency_ms"),
+                        "detail": outcome.get("detail", ""),
+                        "hint": outcome.get("hint", ""),
+                    }
+                    results = getattr(self, "_api_key_check_results", [])
+                    if index < len(results):
+                        results[index] = row
+                    level = "info" if outcome.get("ok") else "warn"
+                    note = row["detail"]
+                    if row["hint"]:
+                        note = f"{note} ({row['hint']})"
+                    self._log(
+                        f"Anahtar testi — {target['label']} / "
+                        f"{target['model']}: {note}", level)
+                    _post_ui(self, self._refresh_api_key_check_panel)
+            finally:
+                def _finish():
+                    self._api_key_check_busy = False
+                    self._refresh_api_key_check_panel()
+                    btn = getattr(self, "_api_key_check_btn", None)
+                    if btn is None:
+                        return
+                    try:
+                        if btn.winfo_exists():
+                            btn.configure(state="normal",
+                                          text="✓  Anahtarları Dene")
+                    except Exception:
+                        pass
+                _post_ui(self, _finish)
+
+        App._start_worker(self, _worker)
+
     def _refresh_api_keys_panel(self):
         dlg = getattr(self, "_api_keys_dialog", None)
         if not dlg or not dlg.winfo_exists():
@@ -28541,9 +28709,33 @@ class App(ctk.CTk):
                 row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
         self._shuai_probe_frame = ctk.CTkFrame(route_card, fg_color="transparent")
         self._shuai_probe_frame.grid(row=3, column=0, sticky="ew",
-                                     padx=16, pady=(4, 12))
+                                     padx=16, pady=(4, 10))
         self._shuai_probe_frame.grid_columnconfigure(1, weight=1)
         self._refresh_shuai_route_panel()
+        key_bar = ctk.CTkFrame(route_card, fg_color="transparent")
+        key_bar.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 4))
+        key_bar.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            key_bar, text="ANAHTAR TESTİ", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 11, "bold")).grid(
+                row=0, column=0, sticky="w")
+        self._api_key_check_btn = ctk.CTkButton(
+            key_bar, text="✓  Anahtarları Dene", width=160, height=30,
+            fg_color=CARD, hover_color=BORDER,
+            command=self._start_api_key_check)
+        self._api_key_check_btn.grid(row=0, column=1)
+        ctk.CTkLabel(
+            key_bar,
+            text="Önce ana, sonra yedek anahtarla tek küçük istek gönderir; "
+                 "hangisinin o modele erişimi varsa yeşil yanar.",
+            text_color=FG2, anchor="w", justify="left", wraplength=560,
+            font=ctk.CTkFont("Segoe UI", 9)).grid(
+                row=1, column=0, columnspan=2, sticky="ew", pady=(3, 0))
+        self._api_key_check_frame = ctk.CTkFrame(route_card, fg_color="transparent")
+        self._api_key_check_frame.grid(row=5, column=0, sticky="ew",
+                                       padx=16, pady=(4, 12))
+        self._api_key_check_frame.grid_columnconfigure(1, weight=1)
+        self._refresh_api_key_check_panel()
         self._api_profiles_frame = ctk.CTkScrollableFrame(
             dlg, fg_color=PANEL, corner_radius=12,
             scrollbar_button_color=BORDER, scrollbar_button_hover_color=ACCENT)

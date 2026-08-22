@@ -425,6 +425,180 @@ def reset_shuai_route_probe() -> None:
         _SHUAI_PROBE_DONE = False
 
 
+API_KEY_CHECK_TIMEOUT = 20.0
+_API_KEY_CHECK_PROMPT = "ping"
+# Yanit icerigi onemsiz: HTTP 200 + gecerli 'choices' anahtarin ve grubun
+# o modeli tasidigini kanitlar. gpt-5 ailesinde butce dusunme jetonlarini
+# da kapsadigi icin bos metin donmesi NORMAL, basarisizlik degil.
+_API_KEY_CHECK_BUDGET = 16
+
+
+def _api_key_check_payload(model: str) -> dict:
+    """Sinama istegi. Ucreti bir kac jeton; hicbir sey uretmesi gerekmiyor."""
+    model_lower = (model or "").lower()
+    reasoning = (model_lower.startswith(("o1", "o3", "o4", "gpt-5", "codex-")))
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": _API_KEY_CHECK_PROMPT}],
+    }
+    if reasoning:
+        payload["max_completion_tokens"] = _API_KEY_CHECK_BUDGET
+    else:
+        payload["max_tokens"] = _API_KEY_CHECK_BUDGET
+        payload["temperature"] = 0
+    return payload
+
+
+def _api_key_check_request(url: str, api_key: str, timeout: float,
+                           payload=None) -> tuple:
+    """(status, govde, transport_hatasi) dondurur. Anahtar loglanmaz."""
+    data = None
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": "SubtitleTranslator-KeyCheck/1.0",
+    }
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", "replace"), ""
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return exc.code, body, ""
+    except Exception as exc:
+        return None, "", f"{type(exc).__name__}: {exc}"[:120]
+
+
+def _api_key_check_reason(status, body: str) -> str:
+    """HTTP kodunu kullanicinin anlayacagi tek satira cevirir."""
+    text = ""
+    try:
+        parsed = json.loads(body or "{}")
+        error = parsed.get("error")
+        if isinstance(error, dict):
+            text = str(error.get("message") or "")
+        elif isinstance(error, str):
+            text = error
+        if not text:
+            text = str(parsed.get("message") or "")
+    except Exception:
+        text = (body or "")[:120]
+    text = " ".join(text.split())[:160]
+    labels = {
+        401: "anahtar gecersiz veya askida",
+        403: "anahtarin bu modele/gruba izni yok",
+        404: "model bu grupta yok",
+        429: "kota bitti veya hiz siniri",
+    }
+    label = labels.get(status, f"HTTP {status}" if status else "baglanti yok")
+    if any(marker in (text or "").casefold()
+           for marker in _QUOTA_EXHAUSTED_MARKERS):
+        label = "kota bitti"
+    return f"{label} — {text}" if text else label
+
+
+def list_models_for_key(api_key: str, base_url: str,
+                        timeout: float = 10.0) -> list:
+    """Anahtarin grubundaki model adlari (new-api listeyi gruba gore filtreler)."""
+    root = normalize_shuai_api_route(base_url) or str(base_url or "").rstrip("/")
+    if not root:
+        return []
+    status, body, _err = _api_key_check_request(
+        f"{root}/models", api_key, timeout)
+    if status != 200:
+        return []
+    try:
+        payload = json.loads(body or "{}")
+    except Exception:
+        return []
+    names = []
+    for item in payload.get("data") or []:
+        if isinstance(item, dict) and item.get("id"):
+            names.append(str(item["id"]))
+        elif isinstance(item, str):
+            names.append(item)
+    return sorted(set(names))
+
+
+def _model_missing_hint(api_key: str, base_url: str, model: str,
+                        timeout: float) -> str:
+    """404 sonrasi: model gercekten grupta yok mu, yoksa baska sorun mu?"""
+    names = list_models_for_key(api_key, base_url, timeout=timeout)
+    if not names:
+        return ""
+    if model in names:
+        return "model listede gorunuyor ama istek reddedildi"
+    near = [name for name in names
+            if name.split(":")[0].startswith((model or "")[:5])]
+    if near:
+        return "grupta bunlar var: " + ", ".join(near[:4])
+    return f"grupta {len(names)} model var ama bu yok"
+
+
+def probe_api_key(api_key: str, base_url: str, model: str,
+                  timeout: float = API_KEY_CHECK_TIMEOUT,
+                  route_urls=None) -> dict:
+    """Bir anahtari kucuk bir istekle sinar.
+
+    Shuai adresleri icin butun rotalar sirayla denenir: ilk KESIN cevap
+    (2xx veya 4xx) sonucu belirler; tasima hatasi ve 5xx bir sonraki rotaya
+    gecirtir, cunku bunlar anahtarin degil yolun sorunudur.
+    """
+    api_key = str(api_key or "").strip()
+    model = str(model or "").strip()
+    if not api_key:
+        return {"ok": False, "status": None, "latency_ms": None,
+                "detail": "anahtar girilmemis", "route": "", "hint": ""}
+    if not model:
+        return {"ok": False, "status": None, "latency_ms": None,
+                "detail": "model adi bos", "route": "", "hint": ""}
+    if route_urls is None:
+        normalized = normalize_shuai_api_route(base_url)
+        if normalized and urlparse(normalized).hostname in _SHUAI_ROUTE_HOSTS:
+            route_urls = [url for _label, url in SHUAI_API_ROUTE_OPTIONS]
+            if normalized in route_urls:
+                route_urls.remove(normalized)
+            route_urls.insert(0, normalized)
+        else:
+            route_urls = [normalized or str(base_url or "").rstrip("/")]
+    payload = _api_key_check_payload(model)
+    last = {"ok": False, "status": None, "latency_ms": None,
+            "detail": "baglanti yok", "route": "", "hint": ""}
+    for route in route_urls:
+        if not route:
+            continue
+        started = time.monotonic()
+        status, body, transport = _api_key_check_request(
+            f"{route}/chat/completions", api_key, timeout, payload)
+        elapsed = int((time.monotonic() - started) * 1000)
+        if transport or status is None:
+            last = {"ok": False, "status": None, "latency_ms": elapsed,
+                    "detail": transport or "baglanti yok",
+                    "route": route, "hint": ""}
+            continue
+        if status == 200:
+            return {"ok": True, "status": 200, "latency_ms": elapsed,
+                    "detail": "calisiyor", "route": route, "hint": ""}
+        result = {"ok": False, "status": status, "latency_ms": elapsed,
+                  "detail": _api_key_check_reason(status, body),
+                  "route": route, "hint": ""}
+        if status >= 500:
+            # Sunucu arizasi: yol sorunu olabilir, siradaki rotayi dene.
+            last = result
+            continue
+        if status == 404:
+            result["hint"] = _model_missing_hint(
+                api_key, route, model, min(timeout, 10.0))
+        return result
+    return last
+
+
 def configure_shuai_route_failover(
         enabled=True, preferred_url="", log_fn=None,
         main_preferred_url=""):
