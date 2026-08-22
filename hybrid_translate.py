@@ -10948,6 +10948,92 @@ def _has_introduced_typo(old: str, new: str) -> bool:
     return False
 
 
+# ── Özne–nesne rol değişimi ─────────────────────────────────────────────────
+# İçerik sözcükleri korunduğu için mevcut guard'ların HİÇBİRİ 'Doktor hastayı
+# kurtardı.' -> 'Hasta doktoru kurtardı.' adayını reddetmiyordu: anlam tam
+# tersine dönüyor ama sürüklenme/kayıp dedektörleri aynı kökleri görüp
+# onaylıyordu (dış denetim madde 1). Türkçede özne yalın, belirtili nesne
+# -(y)I ekli olduğu için rol takası ekten okunabilir.
+_TR_CASE_ENDINGS = (
+    ("abl", ("dan", "den", "tan", "ten")),
+    ("gen", ("nın", "nin", "nun", "nün", "ın", "in", "un", "ün")),
+    ("loc", ("da", "de", "ta", "te")),
+    ("dat", ("ya", "ye", "a", "e")),
+    ("acc", ("yı", "yi", "yu", "yü", "ı", "i", "u", "ü")),
+)
+_TR_ENDING_TO_CASE = tuple(sorted(
+    ((ending, case) for case, endings in _TR_CASE_ENDINGS for ending in endings),
+    key=lambda item: len(item[0]), reverse=True))
+_TR_ROLE_TOKEN_RE = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?")
+_TR_MIN_ROLE_STEM = 3
+
+
+def _tr_case_options(token: str) -> set:
+    """Sözcüğün OLASI (gövde, hâl) okumaları.
+
+    Tek okuma yetmiyor: sonu ünlüyle biten yalın bir ad ('Hasta') ekli gibi
+    de ayrıştırılabiliyor ('hast'+yönelme). Bütün okumalar üretilip iki metin
+    arasında ORTAK gövde üzerinden eşleştirilir; yanlış okuma karşılıksız
+    kalıp kendiliğinden elenir.
+    """
+    word = str(token or "").strip()
+    if not word:
+        return set()
+    for mark in ("'", "’"):
+        if mark in word:
+            stem, _sep, ending = word.partition(mark)
+            stem = stem.casefold()
+            folded = ending.casefold()
+            options = {(stem, "nom")} if len(stem) >= _TR_MIN_ROLE_STEM else set()
+            for suffix, case in _TR_ENDING_TO_CASE:
+                if folded == suffix and len(stem) >= _TR_MIN_ROLE_STEM:
+                    options.add((stem, case))
+            return options
+    folded = word.casefold()
+    options = set()
+    if len(folded) >= _TR_MIN_ROLE_STEM:
+        options.add((folded, "nom"))
+    for suffix, case in _TR_ENDING_TO_CASE:
+        if (folded.endswith(suffix)
+                and len(folded) - len(suffix) >= _TR_MIN_ROLE_STEM):
+            options.add((folded[:-len(suffix)], case))
+    return options
+
+
+def _tr_case_map(text: str) -> dict:
+    roles = {}
+    for token in _TR_ROLE_TOKEN_RE.findall(str(text or "")):
+        for stem, case in _tr_case_options(token):
+            roles.setdefault(stem, set()).add(case)
+    return roles
+
+
+def _has_role_swap(old: str, new: str) -> bool:
+    """İki isim özne/nesne rollerini takas etti mi?
+
+    Yalnız KARŞILIKLI takas reddedilir: tek bir sözcüğün hâli değişmiş olması
+    (sıklıkla meşru bir düzeltmedir) yeterli sayılmaz, iki ayrı gövdenin
+    rolleri birbiriyle yer değiştirmiş olmalı.
+    """
+    old_roles = _tr_case_map(old)
+    new_roles = _tr_case_map(new)
+    shared = [
+        stem for stem in old_roles
+        if stem in new_roles and old_roles[stem] != new_roles[stem]
+    ]
+    for first in shared:
+        if not ("nom" in old_roles[first] and "acc" in new_roles[first]
+                and "acc" not in old_roles[first]):
+            continue
+        for second in shared:
+            if second == first:
+                continue
+            if ("acc" in old_roles[second] and "nom" in new_roles[second]
+                    and "acc" not in new_roles[second]):
+                return True
+    return False
+
+
 def _has_word_merge(old: str, new: str) -> bool:
     """Reject a suggestion that merges two ADJACENT Turkish words into one
     (e.g. 'ya törensel' -> 'yatörensel', F2 #183 — a real polish corruption

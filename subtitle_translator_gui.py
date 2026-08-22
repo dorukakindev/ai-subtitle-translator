@@ -31,6 +31,7 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               normalize_subtitle_control_artifacts,
                               ends_sentence as _sf_ends_sentence,
                               is_turkish_second_person_token as _sf_is_tr_second_person,
+                              is_turkish_suffix_form as _sf_is_tr_suffix_form,
                               TR_ADDRESS_FALSE_STEMS as _SF_TR_ADDRESS_FALSE_STEMS,
                               SENTENCE_CLOSERS as _SF_SENTENCE_CLOSERS,
                               _match_full_wrap)
@@ -4504,6 +4505,44 @@ def _branded_release_credit_ids(rows) -> set:
     return removable
 
 
+# Konuşmacı/ortam betimlemesi taşıyan KAPALI önek kümesi. Serbest "0-3 sözcük
+# + speaking|talking" kuralı gerçek diyaloğu SDH sayıyordu: 192 gerçek kaynak
+# dosyada (141.676 cue) bu kural 21 çıplak satır yakaladı ve 20'si düz replikti
+# ("So start talking.", "objectively speaking.", "while I'm talking!") — dış
+# denetim madde 2. Köşeli parantez kanıtı varken serbest önek korunur (konuşmacı
+# adları açık uçludur: [EHAB SPEAKING], [LAWRENCE TALKING INDISTINCTLY]);
+# parantezsiz metinde önek bu kümeden gelmek ZORUNDA.
+_SDH_SPEAKER_PREFIX_WORDS = (
+    r"(?:all|both|others?|they|everyone|man|men|woman|women|lady|ladies|"
+    r"guy|guys|boy|boys|girl|girls|child|children|kids?|people|persons?|"
+    r"crowd|crowds|group|groups|audience|congregation|villagers|students|"
+    r"soldiers|guests|patrons|customers|workers|passengers|prisoners|"
+    r"voices?|monks?|priests?|nuns?|dispatcher|announcer|narrator|reporter|"
+    r"radio|tv|television|indistinct|inaudible|muffled|faint|distant|"
+    r"overlapping|quiet|loud|excited|angry|nervous|foreign|native|background)"
+)
+_BARE_GERUND_SDH_RE = re.compile(
+    r"(?:speaking|talking|chatting|bargaining)"
+    r"(?:\s+(?:at\s+once|quietly|unintelligibly|"
+    r"in(?:\s+the)?\s+background|in\s+[a-z -]+))?\s*[.!]*",
+    re.IGNORECASE)
+_BRACKETED_GERUND_SDH_RE = re.compile(
+    r"(?:[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,3}\s+)?"
+    + _BARE_GERUND_SDH_RE.pattern, re.IGNORECASE)
+_PREFIXED_GERUND_SDH_RE = re.compile(
+    r"(?:" + _SDH_SPEAKER_PREFIX_WORDS + r"\s+){1,3}"
+    + _BARE_GERUND_SDH_RE.pattern, re.IGNORECASE)
+
+
+def _bare_gerund_sdh_label(raw_value: str, folded: str) -> bool:
+    """'... speaking/talking' kalıbı SDH etiketi mi, yoksa replik mi?"""
+    if not folded:
+        return False
+    if re.search(r"[\[\](){}]", str(raw_value or "")):
+        return bool(_BRACKETED_GERUND_SDH_RE.fullmatch(folded))
+    return bool(_PREFIXED_GERUND_SDH_RE.fullmatch(folded))
+
+
 def _is_delivery_sdh_only(text: str) -> bool:
     value = re.sub(r"<[^>\n]+>", "", str(text or "")).strip()
     lines = [line.strip() for line in value.splitlines() if line.strip()]
@@ -4538,12 +4577,11 @@ def _is_delivery_sdh_only(text: str) -> bool:
              r"shortwave\s+radio\s+transmissions?\s*:?|radio\s+fades?\s+in\s+and\s+out|"
              r"various\s+languages,?\s+as\s+radio\s+station\s+is\s+changed|"
              r"part\s+in\s+[a-z -]+language|drums?|"
-             r"(?:[a-z][a-z'-]*(?:\s+[a-z][a-z'-]*){0,3}\s+)?"
-             r"(?:speaking|talking|chatting|bargaining)(?:\s+(?:at\s+once|quietly|"
-             r"unintelligibly|in(?:\s+the)?\s+background|in\s+[a-z -]+))?|"
              r"(?:[\w'-]+\s+)?(?:eats?|chews?)\s+(?:noisily|loudly)|"
             r"frog\s+croaks?|rooster\s+crows?)\s*[.!]*",
             bare_english_sdh, re.IGNORECASE):
+        return True
+    if _bare_gerund_sdh_label(value, bare_english_sdh):
         return True
     bare_folded = sdh_cleaner._ascii_fold(value).strip().rstrip(".!…")
     if re.fullmatch(
@@ -12353,14 +12391,20 @@ def _locked_term_residue_plan(blocks: list, src_map: dict,
             # dedektöre takılmıyordu — `_source_residue_with_turkish_suffix`
             # kilitli terimleri zaten muaf tutuyor, yani tek savunma hattı
             # burasıydı (dış denetim H5).
+            # Serbest 1-6 harf, terimle BAŞLAYAN başka bir sözcüğü kalıntı
+            # sayıyordu ('Cat' kilidi için 'Catalog'): gereksiz düzeltme
+            # adayı, gereksiz maliyet (dış denetim madde 6). Ek artık
+            # `is_turkish_suffix_form` ile doğrulanır.
             target_side_re = re.compile(
-                r"(?<!\w)" + re.escape(source)
-                + r"(?:['’][^\W\d_]{1,6}|[^\W\d_]{1,6})?(?!\w)",
+                r"(?<!\w)" + re.escape(source) + r"(?:['’]?[^\W\d_]*)",
                 re.IGNORECASE)
             source_matches = list(source_re.finditer(str(source_text)))
             if not source_matches:
                 continue
-            if not target_side_re.search(translated):
+            if not any(
+                    _sf_is_tr_suffix_form(
+                        match.group(0), source)
+                    for match in target_side_re.finditer(translated)):
                 continue
             independent_matches = [
                 match for match in source_matches
@@ -12407,10 +12451,17 @@ def _season_canon_suspect_ids(blocks: list, src_map: dict,
                 r"(?<!\w)" + re.escape(source) + r"(?!\w)", re.IGNORECASE)
             if not source_re.search(str(source_text)):
                 continue
-            target_re = re.compile(
-                r"(?<!\w)" + re.escape(target)
-                + r"(?:(?:['’]\w+)|(?:\w{1,8}))?(?!\w)", re.IGNORECASE)
-            if not target_re.search(translated):
+            # Serbest `\w{1,8}` başka bir sözcüğün başlangıcını kanonik
+            # kullanım sayıyordu ('Ada' kanonu için 'Adalet'), yani gerçek
+            # kanon ihlali sessizce elenmiş oluyordu (dış denetim madde 5).
+            # Ek artık kapalı morfem kümesiyle doğrulanır.
+            target_word_re = re.compile(
+                r"(?<!\w)" + re.escape(target) + r"(?:['’]?\w*)",
+                re.IGNORECASE)
+            if not any(
+                    _sf_is_tr_suffix_form(
+                        match.group(0), target)
+                    for match in target_word_re.finditer(translated)):
                 suspects.add(str(idx))
                 break
     return suspects

@@ -231,6 +231,91 @@ def is_turkish_second_person_token(token) -> bool:
         return previous not in TR_VOICELESS_STOPS
     return False
 
+
+# ── Türkçe çekim eki doğrulaması ────────────────────────────────────────────
+# Terim dedektörleri "gövde + serbest 1-8 harf" yazıyordu, yani BAŞKA bir
+# sözcüğün başlangıcını çekimli terim sanıyorlardı: 'Ada' kanonu 'Adalet'i
+# kanonik kullanım (dış denetim madde 5), 'Cat' kilidi 'Catalog'u İngilizce
+# kalıntı (madde 6) sayıyordu. Serbest uzunluk yerine KAPALI ek kümesi:
+# ek dizisi baştan sona bilinen morfemlere ayrıştırılabilmeli.
+_TR_SUFFIX_MORPHEMES = frozenset({
+    # çoğul
+    "ler", "lar",
+    # iyelik
+    "im", "ım", "um", "üm", "in", "ın", "un", "ün",
+    "imiz", "ımız", "umuz", "ümüz", "iniz", "ınız", "unuz", "ünüz",
+    "i", "ı", "u", "ü", "si", "sı", "su", "sü",
+    # hâl ekleri
+    "e", "a", "de", "da", "te", "ta",
+    "den", "dan", "ten", "tan", "nin", "nın", "nun", "nün",
+    "le", "la", "yle", "yla",
+    # yapım/bildirme ekleri (terim biçimini korur)
+    "li", "lı", "lu", "lü", "siz", "sız", "suz", "süz",
+    "ci", "cı", "cu", "cü", "çi", "çı", "çu", "çü",
+    "lik", "lık", "luk", "lük", "ki",
+    "dir", "dır", "dur", "dür", "tir", "tır", "tur", "tür",
+})
+_TR_MAX_SUFFIX_LEN = 12
+_TR_BUFFER_CONSONANTS = "yns"
+_TR_VOWELS = "aeıioöuü"
+
+
+def _tr_suffix_is_parsable(suffix: str, _memo=None) -> bool:
+    """Ek dizisi baştan sona bilinen morfemlere ayrılabiliyor mu?
+
+    Kaynaştırma harfi (y/n/s) SERBEST morfem değildir: yalnız ünlüyle
+    başlayan bir ekin önünde durabilir ve asla sonda kalamaz. Bu kural
+    olmadan 'Ash+le+y' (Ashley) ve 'Sam+a+n+lık' (Samanlık) geçerli çekim
+    gibi ayrıştırılıyordu.
+    """
+    if not suffix:
+        return True
+    if _memo is None:
+        _memo = {}
+    if suffix in _memo:
+        return _memo[suffix]
+    _memo[suffix] = False  # özyineleme kilidi
+    result = False
+    # Uzun morfem önce denenir, ama tutmazsa kısası da denenmeli (geri izleme):
+    # 'let' için 'le' tutar, kalan 't' tutmaz -> tüm dizi reddedilir.
+    for size in range(min(len(suffix), 5), 0, -1):
+        if (suffix[:size] in _TR_SUFFIX_MORPHEMES
+                and _tr_suffix_is_parsable(suffix[size:], _memo)):
+            result = True
+            break
+    if (not result
+            and suffix[0] in _TR_BUFFER_CONSONANTS
+            and len(suffix) > 1
+            and suffix[1] in _TR_VOWELS):
+        result = _tr_suffix_is_parsable(suffix[1:], _memo)
+    _memo[suffix] = result
+    return result
+
+
+def is_turkish_suffix_form(word, stem) -> bool:
+    """`word`, `stem` teriminin Türkçe çekimli hâli mi?
+
+    Gövdenin aynen tekrarı da (`Ada` -> `Ada`) doğru kabul edilir. Kesme
+    işaretli özel ad çekimi (`Ada'ya`) ekten önce ayrılır.
+    """
+    text = str(word or "").strip()
+    root = str(stem or "").strip()
+    if not text or not root or len(text) < len(root):
+        return False
+    if text[:len(root)].casefold() != root.casefold():
+        return False
+    suffix = text[len(root):]
+    if suffix[:1] in ("'", "’"):
+        suffix = suffix[1:]
+        if not suffix:
+            return True
+    if len(suffix) > _TR_MAX_SUFFIX_LEN:
+        return False
+    if not suffix.isalpha() and suffix:
+        return False
+    return _tr_suffix_is_parsable(suffix.casefold())
+
+
 def clean_translation_source_text(text: str) -> str:
     """Çeviri bağlamında VTT konuşmacısını koruyup görsel etiketleri temizle."""
     text = _VTT_RUBY_READING_RE.sub("", str(text or ""))
