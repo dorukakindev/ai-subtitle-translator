@@ -4126,7 +4126,8 @@ _DELIVERY_ASS_POSITION_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_ASS_STYLE_RE = re.compile(r"\\([ibu])([01])", re.IGNORECASE)
-_DELIVERY_UNKNOWN_SOURCE_RE = re.compile(r"^\s*(?:\?{2,}|ENHOH)\s*$", re.I)
+_DELIVERY_UNKNOWN_SOURCE_RE = re.compile(
+    r"^\s*(?:\?{2,}|[@#]{3,}|ENHOH)\s*$", re.I)
 _DELIVERY_CREDIT_ROLE_RE = re.compile(
     r"(?:^|,)\s*(?:translator|translation|timing|typesetter|quality check|"
     r"editor|çeviri|çevirmen|zamanlama|dizgi|kalite kontrol|editör)\s*$",
@@ -4153,6 +4154,7 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"\b(?:çevir(?:i|en|men))\s*:\s*\S|"
     r"(?:^|\n)\s*ترجم\s+من\s+قبل\s*:\s*[^\n]{2,80}\s*(?:$|\n)|"
     r"\b(?:traduzione|revisione)\s*:\s*\S|"
+    r"^\s*legendas\s+exclusivas\s*:\s*[^\n]+(?:\n\s*makingoff\s*)?$|"
     r"\b(?:yeniden\s+eşitleyen|senkron(?:layan)?|resync(?:ed)?)\s*:\s*\S|"
     r"film\s+ve\s+video\s+altyazılama|"
     r"gerhard\s+lehmann\s+ag)",
@@ -4588,7 +4590,8 @@ def _is_delivery_sdh_only(text: str) -> bool:
         return True
     if re.fullmatch(r"[\s*♪♫_]+", value) and re.search(r"[*♪♫_]", value):
         return True
-    token_value = re.sub(r"\s*\r?\n\s*", " ", value)
+    token_value = re.sub(r"\s*\r?\n\s*", " ", value).strip()
+    token_value = token_value.rstrip(" .,!?:;…")
     tokens = list(_DELIVERY_SDH_TOKEN_RE.finditer(token_value))
     if (not tokens
             or "".join(match.group(0) for match in tokens).strip() != token_value):
@@ -4863,6 +4866,7 @@ _MIDWORD_LEGITIMATE_PAIRS = frozenset({
     ("her", "sey"), ("bir", "sey"), ("hic", "kimse"), ("her", "biri"),
     ("her", "gun"), ("bir", "cok"), ("bir", "az"), ("her", "hangi"),
     ("bir", "kac"), ("hic", "bir'"), ("o", "kadar"), ("su", "an"),
+    ("kiz", "kardes"),
 })
 _MIDWORD_MIN_FILE_HITS = 2
 
@@ -5819,6 +5823,7 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
 # hatasıdır. Geçmiyorsa susulur.
 _HEAD_TYPO_MIN_TAIL = 5
 _HEAD_TYPO_WORD_RE = re.compile(r"[^\W\d_]{7,}", re.UNICODE)
+_HEAD_TYPO_LEGITIMATE_PREFIXES = ("baba",)
 
 
 def _repeated_head_typo_ids(blocks) -> list:
@@ -5834,6 +5839,8 @@ def _repeated_head_typo_ids(blocks) -> list:
         for match in _HEAD_TYPO_WORD_RE.finditer(str(text or "")):
             word = match.group(0)
             folded = word.casefold()
+            if folded.startswith(_HEAD_TYPO_LEGITIMATE_PREFIXES):
+                continue
             for size in (2, 3):
                 if folded[:size] != folded[size:size * 2]:
                     continue
@@ -16498,7 +16505,9 @@ def _delivery_semantic_loss_ids(blocks: list, source_map: dict) -> list[str]:
         source_text = str((source_map or {}).get(str(idx), "") or "")
         if not source_text:
             continue
-        if _is_near_empty_translation(source_text, str(target_text or "")):
+        source_visible = sdh_cleaner._SRC_PLAIN_SPEAKER_LABEL_RE.sub(
+            "", source_text).strip()
+        if _is_near_empty_translation(source_visible, str(target_text or "")):
             flagged.append(str(idx))
     return flagged
 
@@ -16754,10 +16763,18 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     # Biçim etiketine sarılmış hata işareti de sayılır (madde 1).
     unresolved_markers = sum(
         bool(translation_failure_reason(text)) for text in output_texts)
+    source_credit_ids = {
+        str(source_idx) for source_idx, _source_ts, source_text in source_rows
+        if _delivery_source_is_all_credit(source_text)
+    }
     residual_credit_ids = [
         str(idx) for idx, _ts, text in output_dialogue
         if _is_delivery_credit(text)
     ]
+    residual_credit_ids = sorted(set(residual_credit_ids) | {
+        str(source_to_output_ids[source_id]) for source_id in source_credit_ids
+        if source_id in source_to_output_ids
+    }, key=lambda value: (0, int(value)) if value.isdigit() else (1, value))
     removable_output_ids = {
         source_to_output_ids[source_idx]
         for source_idx in removable_source_ids
