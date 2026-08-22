@@ -323,6 +323,17 @@ class AutoLockGuardTest(unittest.TestCase):
                     source_term.casefold(),
                     "french" if target == source_term else "")
 
+    def test_portuguese_deus_is_never_identity_locked(self):
+        source = (
+            "Deus existe. Eles falam de Deus hoje. Depois Deus responde. "
+            "A ideia de Deus retorna, e Deus permanece no debate.")
+        rejected = {}
+
+        locked = g.auto_locked_proper_nouns(source, rejected_out=rejected)
+
+        self.assertNotIn("Deus", locked)
+        self.assertEqual(rejected.get("Deus"), "çevrilebilir sınıf")
+
     def test_canonical_names_lock_with_turkish_target(self):
         source = ("Sisyphus pushed the rock. Every day Sisyphus climbed again. "
                   "Camus wrote about Sisyphus and about Camus. Camus died.")

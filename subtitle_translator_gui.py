@@ -4150,6 +4150,21 @@ _DELIVERY_SOURCE_PRODUCTION_CREDIT_RE = re.compile(
     r"[^\r\n]{2,100}\s*$",
     re.IGNORECASE,
 )
+_DELIVERY_SPONSOR_BLOCK_START_RE = re.compile(
+    r"(?:\b(?:sponsor\w*|funding|underwriting)\b.*\bprogram\b|"
+    r"\b(?:patroc\w*|financi\w*)\b.*\bprograma\b|"
+    r"\bprograma\b.*\b(?:patroc\w*|financi\w*)\b)",
+    re.IGNORECASE,
+)
+_DELIVERY_SPONSOR_BLOCK_END_RE = re.compile(
+    r"^(?:thank\s+you|obrigad[oa]|gracias|merci)\s*[.!…]*$",
+    re.IGNORECASE,
+)
+_DELIVERY_BRANDED_CREDIT_RE = re.compile(
+    r"\b(?:presents?|presenta\w*|apresenta\w*|"
+    r"subtitles?|legendas?|legendagem|translation|tradu[cç][aã]o)\b",
+    re.IGNORECASE,
+)
 _DELIVERY_SOURCE_SUBTITLE_CREDIT_RE = re.compile(
     r"^(?:\s*subtitles?\s*:\s*[^\r\n]{2,100}\r?\n\s*broadcast\s+text\s*|"
     r"\s*(?:una\s+)?traducci[oó]n\s+de(?:\s*:\s*|\s+)[^\r\n]{2,100}"
@@ -4299,6 +4314,7 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"THEY\s+SING\s+\"[A-Z\s]+\"\s+IN\s+PARTS|"
     r"\"[A-Z\s]+\"\s+(?:CONTINUES|IS\s+SUNG)|"
     r"(?:CHEERFUL\s+)?HYMN\s+MUSIC|WALKIE-TALKIE\s+BEEPS|"
+    r"(?:MACHINE|HORN|ALARM|BUZZER)\s+(?:BEEPS?|BLARES?|RINGS?|BUZZES?)|"
     r"(?:SHE|HE|THEY|MAN|WOMAN|BABY|CHOIR|MUSICIANS?)\s+(?:ALL\s+)?"
     r"(?:SINGS?|CHANTS?)(?:\s+(?:A\s+)?HYMN|\s+PLAINSONG|"
     r"\s+SEDERUNT\s+PRINCIPES|\s+THROUGH\s+THE\s+CHORD\s+PROGRESSION|"
@@ -4442,6 +4458,50 @@ def _delivery_source_is_all_credit(text: str) -> bool:
         elif not (credit_seen and _DELIVERY_CREDIT_LINE_CONTINUATION_RE.match(line)):
             return False
     return credit_seen
+
+
+def _production_credit_sequence_ids(rows) -> set:
+    removable = set()
+    for pos, (idx, text) in enumerate(rows):
+        folded = sdh_cleaner._ascii_fold(
+            re.sub(r"<[^>\n]+>", " ", str(text or "")))
+        folded = re.sub(r"\s+", " ", folded).strip()
+        if not _DELIVERY_SPONSOR_BLOCK_START_RE.search(folded):
+            continue
+        candidate = []
+        for next_idx, next_text in rows[pos:pos + 20]:
+            candidate.append(next_idx)
+            next_folded = sdh_cleaner._ascii_fold(
+                re.sub(r"<[^>\n]+>", " ", str(next_text or "")))
+            next_folded = re.sub(r"\s+", " ", next_folded).strip()
+            if _DELIVERY_SPONSOR_BLOCK_END_RE.fullmatch(next_folded):
+                removable.update(candidate)
+                break
+    return removable
+
+
+def _branded_release_credit_ids(rows) -> set:
+    groups = {}
+    for idx, text in rows:
+        value = re.sub(r"<[^>\n]+>", " ", str(text or ""))
+        value = re.sub(r"\s+", " ", value).strip()
+        if not re.search(r"[/\n]", str(text or "")):
+            continue
+        brand = sdh_cleaner._ascii_fold(
+            re.split(r"[/\n]", str(text or ""), maxsplit=1)[0])
+        brand = re.sub(r"<[^>\n]+>", " ", brand).strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9 ._-]{1,30}", brand):
+            continue
+        groups.setdefault(brand, []).append((idx, value))
+    removable = set()
+    for entries in groups.values():
+        if len(entries) < 2:
+            continue
+        if not any(_DELIVERY_BRANDED_CREDIT_RE.search(value)
+                   for _idx, value in entries):
+            continue
+        removable.update(idx for idx, _value in entries)
+    return removable
 
 
 def _is_delivery_sdh_only(text: str) -> bool:
@@ -5930,7 +5990,8 @@ def _source_caps_heuristic_allowed(texts, threshold: float = 0.60) -> bool:
     return (caps / total) <= threshold
 
 
-def _delivery_removable_source_ids(source_cues) -> set:
+def _delivery_removable_source_ids(source_cues,
+                                    include_caps_heuristic: bool = True) -> set:
     rows = []
     for cue in source_cues or []:
         try:
@@ -5940,13 +6001,16 @@ def _delivery_removable_source_ids(source_cues) -> set:
                 rows.append((str(cue[0]), str(cue[2] or "")))
         except Exception:
             continue
-    caps_heuristic = _source_caps_heuristic_allowed(
-        text for _idx, text in rows)
+    caps_heuristic = (
+        include_caps_heuristic
+        and _source_caps_heuristic_allowed(text for _idx, text in rows))
     removable = {
         idx for idx, text in rows
         if _source_cue_is_delivery_removable(
             text, allow_caps_heuristic=caps_heuristic)
     }
+    removable |= _production_credit_sequence_ids(rows)
+    removable |= _branded_release_credit_ids(rows)
     removable |= _positional_credit_ids(rows)
     for pos, (idx, text) in enumerate(rows):
         value = re.sub(r"^\s*>>\s*", "", text).strip()
@@ -5964,6 +6028,15 @@ def _delivery_removable_source_ids(source_cues) -> set:
                 removable.update(ids)
             break
     return removable
+
+
+def _caps_only_source_removal(text: str) -> bool:
+    return (
+        _source_cue_is_delivery_removable(
+            text, allow_caps_heuristic=True)
+        and not _source_cue_is_delivery_removable(
+            text, allow_caps_heuristic=False)
+    )
 
 
 def _source_cue_matches_delivery_filename_title(text: str, source_path: str) -> bool:
@@ -6520,9 +6593,16 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     blocks = list(blocks or [])
     removable_source_ids = (
         _delivery_removable_source_ids(source_cues) if source_cues else set())
+    strong_removable_source_ids = (
+        _delivery_removable_source_ids(
+            source_cues, include_caps_heuristic=False)
+        if source_cues else set())
     removable_source_timestamps = (
         _delivery_removable_source_timestamps(
             source_cues, removable_source_ids) if source_cues else set())
+    strong_removable_source_timestamps = (
+        _delivery_removable_source_timestamps(
+            source_cues, strong_removable_source_ids) if source_cues else set())
     quote_markers_fixed = 0
     if source_cues:
         src_map = _delivery_source_map(blocks, source_cues)
@@ -6565,9 +6645,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     foreign_terms_fixed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
-        if source_cues and str(ts) in removable_source_timestamps:
-            continue
         value = str(text or "")
+        if source_cues and str(ts) in removable_source_timestamps:
+            if (str(ts) in strong_removable_source_timestamps
+                    or _is_delivery_sdh_only(value)):
+                continue
         if _DELIVERY_SIGNATURE_RE.fullmatch(value.strip()):
             continue
         value, removed = _strip_delivery_position_tags(value)
@@ -16268,9 +16350,22 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     source_rows = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in source]
     removable_source_ids = _delivery_removable_source_ids(source_rows)
+    strong_removable_source_ids = _delivery_removable_source_ids(
+        source_rows, include_caps_heuristic=False)
     removable_source_ids -= {
         source_idx for source_idx, _ts, source_text in source_rows
         if _source_cue_matches_delivery_filename_title(source_text, source_path)
+    }
+    output_by_timestamp = defaultdict(list)
+    for _output_idx, output_ts, output_text in output:
+        output_by_timestamp[str(output_ts)].append(str(output_text or ""))
+    removable_source_ids -= {
+        source_idx for source_idx, source_ts, source_text in source_rows
+        if source_idx not in strong_removable_source_ids
+        and _caps_only_source_removal(source_text)
+        and any(
+            not _is_delivery_sdh_only(output_text)
+            for output_text in output_by_timestamp.get(str(source_ts), ()))
     }
     output_dialogue = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in output

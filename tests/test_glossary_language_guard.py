@@ -26,6 +26,10 @@ import hybrid_translate as ht
 
 
 class ContextSensitiveGlossaryGuardTest(unittest.TestCase):
+    def test_portuguese_deus_identity_lock_is_dropped_for_turkish(self):
+        self.assertEqual(
+            ht.sanitize_glossary_for_turkish({"Deus": "Deus"}), {})
+
     def test_normalizes_ascii_degraded_turkish_targets(self):
         result = ht.sanitize_glossary_for_turkish({
             "snake": "yilan",
