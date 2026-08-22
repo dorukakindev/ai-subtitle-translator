@@ -106,8 +106,8 @@ _SDH_KEYWORDS = {
     "sniffles", "cough", "coughs", "coughing", "sneeze", "sneezes",
     "breathing", "panting", "grunting", "whisper", "whispers",
     "whispering", "murmur", "murmurs", "murmuring", "chanting",
-    "music", "song", "singing", "sings", "plays", "playing",
-    "tense", "dramatic", "ominous", "somber", "upbeat", "soft",
+    "music", "song", "singing", "sings", "plays", "playing", "speaking in tongues",
+    "tense", "dramatic", "ominous", "somber", "upbeat", "soft", "sing songy",
     "door", "knock", "knocks", "phone", "ringing", "beeping", "alarm",
     "thunder", "thundering", "thunderclap", "explosion", "gunshot", "siren", "engine", "crowd",
     "noise", "silence", "chatter", "conversation", "inaudible", "indistinct", "overlapping",
@@ -177,7 +177,8 @@ _SDH_KEYWORDS = {
 _SPEAKER_WORDS = {
     "man", "woman", "male", "female", "boy", "girl", "child", "kid",
     "narrator", "announcer", "speaker", "voice", "voiceover", "interviewer",
-    "host", "reporter", "crowd", "sheriff", "deputy", "sergeant",
+    "host", "co host", "co hosts", "both", "reporter", "crowd",
+    "congregant", "congregation", "sheriff", "deputy", "sergeant",
     "spokesman", "spokesperson", "detective", "agent",
     "adam", "kadin", "erkek", "cocuk", "anlatici", "sunucu", "konusmaci",
     "ses", "dis ses", "roportajci", "muhabir", "kalabalik",
@@ -236,6 +237,8 @@ _SPEAKER_LABEL_TRANSLATIONS = {
     "woman": "Kadın",
     "male": "Erkek",
     "female": "Kadın",
+    "male speaker": "Erkek Konuşmacı",
+    "female speaker": "Kadın Konuşmacı",
     "boy": "Oğlan",
     "girl": "Kız",
     "child": "Çocuk",
@@ -250,6 +253,8 @@ _SPEAKER_LABEL_TRANSLATIONS = {
     "reporter": "Muhabir",
     "crowd": "Kalabalık",
     "audience": "Seyirci",
+    "congregant": "Cemaat Üyesi",
+    "congregation": "Cemaat",
     "news anchor": "Haber Sunucusu",
     "anchor": "Sunucu",
     "director": "Yönetmen",
@@ -1230,6 +1235,7 @@ def src_is_sfx_only(src_text: str, allow_caps_heuristic: bool = False) -> bool:
     spans = _bracket_group_spans(text)
     residue = _replace_bracket_groups(text, lambda _raw: "")
     residue = MUSIC_NOTE_RE.sub("", residue).replace("_", "").strip()
+    residue = residue.strip(" .,!?:;…")
     if not spans:
         return bool(SFX_ONLY_STRUCTURAL_RE.match(text))
     if residue:
@@ -1302,7 +1308,8 @@ def _src_has_plain_speaker_label(src_line: str) -> bool:
 _SRC_PLAIN_SPEAKER_LABEL_RE = re.compile(
     r"(?m)(?:^|(?<=[.!?…]))\s*(?:(?:>>|&gt;&gt;)\s*)?(?:-\s*)?"
     r"(?:[A-Z][A-Z0-9 .'\-]{1,30}(?:,\s*(?:VOICE[- ]OVER|V\.?O\.?))?|"
-    r"[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?){0,2}):\s*"
+    r"[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?(?:\s+[A-Z][a-z]+(?:[-'][A-Za-z][a-z]*)?){0,2})"
+    r"(?:\s*\((?:OFFSCREEN|ONSCREEN|O\.?S\.?|V\.?O\.?)\))?:\s*"
 )
 # Konuşmacı/dış ses etiketleri yalnız Türkçe harf kümesiyle aranınca Almanca
 # (ERZÄHLER:), Fransızca (NARRATEUR:) ve İspanyolca (NARRADOR:) etiketleri son
@@ -1356,6 +1363,9 @@ def _target_is_source_speaker_label_only(tr_line: str, src_line: str) -> bool:
 def _plain_speaker_label_key(value: str) -> str:
     value = re.sub(r"^\s*(?:(?:>>|&gt;&gt;)\s*)?-?\s*", "", str(value or ""))
     value = re.sub(
+        r"\s*\((?:OFFSCREEN|ONSCREEN|O\.?S\.?|V\.?O\.?)\)\s*$",
+        "", value, flags=re.IGNORECASE)
+    value = re.sub(
         r",\s*(?:VOICE[- ]OVER|V\.?O\.?|VO|SES ÜSTÜ|DIŞ SES)\s*$",
         "", value, flags=re.IGNORECASE)
     return _ascii_fold(value.strip().rstrip(":").strip())
@@ -1379,6 +1389,10 @@ def _target_has_source_plain_speaker_label(tr_line: str, src_line: str) -> bool:
         "both": {"ikisi birlikte", "ikisi"},
         "recording": {"kayit"},
     }
+    if re.search(
+            r"\((?:OFFSCREEN|ONSCREEN|O\.?S\.?|V\.?O\.?)\)\s*$",
+            source_label, re.IGNORECASE):
+        return True
     return target_key in {source_key, mapped_key, *aliases.get(source_key, set())}
 
 
