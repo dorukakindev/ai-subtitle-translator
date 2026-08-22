@@ -16482,6 +16482,96 @@ def _delivery_untranslated_fragment_ids(blocks: list, source_map: dict,
     return flagged
 
 
+def _delivery_semantic_loss_ids(blocks: list, source_map: dict) -> list[str]:
+    """Kaynak tam cümleyken çevirisi neredeyse boş kalan cue'lar.
+
+    _untranslated_reason bu sınıfı ('near_empty_translation') zaten görüyordu
+    ama teslim denetimi onu HİÇ çağırmıyordu: yalnız kaynak satırının aynen
+    hayatta kalıp kalmadığına bakıyordu. Sonuç, Five Suns #554-556 gibi anlamı
+    tamamen kaybolmuş dosyaların status=ok almasıydı (denetim Tur 4, madde 1).
+    Yalnız RAPORLAR — otomatik düzeltme yok, sert hata da değil.
+    """
+    flagged = []
+    for idx, _timestamp, target_text in blocks or []:
+        source_text = str((source_map or {}).get(str(idx), "") or "")
+        if not source_text:
+            continue
+        if _is_near_empty_translation(source_text, str(target_text or "")):
+            flagged.append(str(idx))
+    return flagged
+
+
+def _delivery_garble_ids(blocks: list, source_map: dict) -> list[str]:
+    """Bozuk/model kaynaklı yazım taşıyan cue'lar (find_garble_tokens).
+
+    Tarayıcı koşu içindeki Critic adaylarında kullanılıyordu; diske YAZILAN
+    dosyanın denetimi onu hiç çalıştırmıyordu (denetim Tur 4, madde 2).
+
+    Kaynağa bağlı muafiyetler cue bazında bakınca yetmiyor: 'carnyx', 'dux',
+    'conquistador' gibi kaynaktan korunan terimler KOMŞU cue'da geçebiliyor ve
+    meşru alıntılar bulgu olarak çıkıyordu. Bu yüzden dosyanın tamamındaki
+    sözcükler bir kez toplanıp bulgular ona göre eleniyor — metni her cue için
+    yeniden taramak bin cue'luk dosyada karesel maliyet demekti.
+    """
+    try:
+        from hybrid_translate import find_garble_tokens
+    except Exception:
+        return []
+    source_words = set()
+    for value in (source_map or {}).values():
+        # Görünür metin: <font color="#ffff00"> gibi biçim etiketleri Rusça
+        # bir kaynağı "Latin alfabeli" gibi gösteriyordu.
+        visible = " ".join(
+            _delivery_visible_line(line)
+            for line in str(value or "").splitlines())
+        for word in re.findall(r"[^\W\d_]+", visible, re.UNICODE):
+            source_words.add(word.lower())
+
+    def _from_source(token: str) -> bool:
+        folded = str(token or "").lower()
+        if not folded:
+            return False
+        if folded in source_words:
+            return True
+        # Türkçe ek almış hâli ('carnyxlerin'): gövdeyi kısaltarak ara.
+        for size in range(len(folded), 3, -1):
+            if folded[:size] in source_words:
+                return True
+        return False
+
+    # R1 (tek başına Latin harfi) ve R2 (w/q/x taşıyan token) kararlarını
+    # ancak kaynak LATİN alfabesindeyse verebilir: Rusça/Arapça kaynakta
+    # 'dux' ya da madde işareti 'a' kaynakta aranamaz ve meşru alıntılar
+    # bulgu olarak çıkar. Böyle dosyalarda bu iki kural susar.
+    latin_source_words = sum(
+        1 for word in source_words if any("a" <= ch <= "z" for ch in word))
+    # Salt SAYI yetmiyor: Rusça bir kaynakta bile 20+ Latin özel ad bulunuyor.
+    # Kaynağın kendisi Latin alfabeliyse bu sözcükler ezici çoğunluktadır.
+    latin_source = (latin_source_words >= 20
+                    and latin_source_words >= len(source_words) / 2)
+    source_bound_rules = {"R1_stray_letter", "R2_wqx_token"}
+
+    flagged = []
+    for idx, _timestamp, target_text in blocks or []:
+        text = str(target_text or "")
+        if not text.strip():
+            continue
+        source_text = str((source_map or {}).get(str(idx), "") or "")
+        try:
+            hits = find_garble_tokens(text, source_text)
+        except Exception:
+            hits = []
+        remaining = []
+        for token, rule in hits:
+            if rule in source_bound_rules:
+                if not latin_source or _from_source(token):
+                    continue
+            remaining.append((token, rule))
+        if remaining:
+            flagged.append(str(idx))
+    return flagged
+
+
 # Sıfır-başlangıç istisnasında baş imzanın bittiği an (ms). Bu pencere
 # diyalogla çakışsa bile teslim denetiminde hata sayılmaz.
 _ZERO_START_SIGNATURE_END_MS = 1
@@ -16656,6 +16746,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     )
     untranslated_fragment_ids = _delivery_untranslated_fragment_ids(
         output_dialogue, output_source_map, target_language, source_language)
+    semantic_loss_ids = _delivery_semantic_loss_ids(
+        output_dialogue, output_source_map)
+    garble_ids = _delivery_garble_ids(output_dialogue, output_source_map)
     # Biçim etiketine sarılmış hata işareti de sayılır (madde 1).
     unresolved_markers = sum(
         bool(translation_failure_reason(text)) for text in output_texts)
@@ -16774,6 +16867,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("residual_speaker_label", output_id=output_id)
     for output_id in foreign_script_ids:
         _add_review_detail("foreign_script", output_id=output_id)
+    for output_id in semantic_loss_ids:
+        _add_review_detail("semantic_loss", output_id=output_id)
+    for output_id in garble_ids:
+        _add_review_detail("garbled_token", output_id=output_id)
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         delivery_owner_mismatch_ids, untranslated_fragment_ids,
@@ -16787,6 +16884,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         introduced_out_of_order_ids, inherited_out_of_order_ids,
         invalid_timestamp_ids,
         reversed_timestamp_ids, signature_overlap_ids,
+        # Anlamsal çöküş ve bozuk yazım SERT hata değil (dosya biçimsel olarak
+        # geçerli) ama 'ok' da değildir: insan gözüne gitmeli.
+        semantic_loss_ids, garble_ids,
     ))
     audit.update({
         "status": "review" if needs_review else "ok",
@@ -16800,6 +16900,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "source_to_output_ids": source_to_output_ids,
         "delivery_owner_mismatch_ids": delivery_owner_mismatch_ids,
         "untranslated_fragment_ids": untranslated_fragment_ids,
+        "semantic_loss_ids": semantic_loss_ids,
+        "garble_ids": garble_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_credit_ids": residual_credit_ids,

@@ -6389,6 +6389,81 @@ def _garble_last_vowel(word: str) -> str:
     return ""
 
 
+_GARBLE_DOTLESS_I_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+
+def _garble_stem_is_harmonic(stem: str) -> bool:
+    """Gövdenin KENDİ ünlüleri Türkçe uyumuna uyuyor mu?
+
+    Ek uyumunu ancak gövde Türkçe biçimliyse yargılayabiliriz. "Mısır" (ı-ı)
+    uyumludur, dolayısıyla "Mısır'in" gerçekten hatalıdır. "François" (a-o-i)
+    ve "Thödol" (ö-o) uyumsuzdur; bunlar yabancı adlardır ve Türkçe eki
+    TELAFFUZA göre alır, yazılışa göre değil — "François'yı" (Fransua) doğrudur.
+    """
+    vowels = [ch for ch in str(stem or "").casefold()
+              if ch in _GARBLE_BACK_VOWELS or ch in _GARBLE_FRONT_VOWELS]
+    if not vowels:
+        return False
+    return (all(v in _GARBLE_BACK_VOWELS for v in vowels)
+            or all(v in _GARBLE_FRONT_VOWELS for v in vowels))
+
+
+def _garble_dotless_i_tokens(text: str, source_text: str) -> list:
+    """Kaynaktaki i/I çeviride ı olmuş sözcükler.
+
+    Kök sebep: ALL-CAPS İngilizce kaynak (SDH/PBS altyazıları) Türkçe küçültme
+    kurallarıyla indirilince 'I' -> 'ı' oluyor: SAHIB -> sahıb, PATTI -> pattı
+    (Earths Sacred Wonders E02 #570/#719/#746/#749/#763). Sinyal ÇOK dar
+    tutuldu: sözcüğün yalnız ı->i değiştirilmiş hâli kaynakta TAM SÖZCÜK olarak
+    bulunmalı, kendi hâli ise bulunmamalı. Türkçe bir sözcüğün i'li hâlinin
+    İngilizce kaynakta birebir geçmesi pratikte olmaz.
+    """
+    value = str(source_text or "")
+    if not value:
+        return []
+    # re.IGNORECASE 'ı' ile 'I'yi EŞLEŞTİRİR ('ı'.upper() == 'I'), yani tam da
+    # ayırmak istediğimiz farkı siler. Bu yüzden iki taraf da str.lower() ile
+    # (Türkçe değil, Unicode varsayılanı: 'I' -> 'i') indirilip düz aranır.
+    folded = value.lower()
+    found = []
+    for match in _GARBLE_DOTLESS_I_WORD_RE.finditer(str(text or "")):
+        word = match.group(0)
+        if "ı" not in word or len(word) < 4:
+            continue
+        lowered = word.lower()
+        dotted = lowered.replace("ı", "i")
+        if re.search(rf"(?<![^\W\d_]){re.escape(lowered)}(?![^\W\d_])", folded):
+            continue  # kaynakta zaten böyle yazılıyor
+        if re.search(rf"(?<![^\W\d_]){re.escape(dotted)}(?![^\W\d_])", folded):
+            found.append((word, "R9_dotless_i_from_caps"))
+    return found
+
+
+def _garble_stem_in_source(token: str, source_text: str,
+                           min_stem: int = 4) -> bool:
+    """Token, Türkçe eki soyulduğunda kaynakta geçiyor mu?
+
+    Gerçek arşiv ölçümü (129.878 teslim cue'su): R1 ve R2 kurallarının
+    bulgularının TAMAMI yanlış-pozitifti ve hepsinin ortak özelliği aynıydı —
+    'carnyx', 'conquistador', 'huaquero', 'dux', 'queen' ve 'a)' madde
+    işareti kaynakta zaten duruyordu. Ek almış hâlleri ('carnyxlerin')
+    birebir eşleşmediği için mevcut kaynak muafiyeti tutmuyordu; kısalan
+    gövdeyi de aramak sınıfı tümüyle kapatıyor. Uydurma bir w/q/x sözcüğü
+    kaynakta HİÇBİR biçimde bulunmadığı için sinyal olarak kalır.
+    """
+    value = str(source_text or "")
+    token = str(token or "").strip()
+    if not value or not token:
+        return False
+    folded = token.casefold()
+    floor = max(min_stem, 1) if len(folded) > 1 else 1
+    for size in range(len(folded), floor - 1, -1):
+        stem = folded[:size]
+        if re.search(rf"(?<![A-Za-z]){re.escape(stem)}", value, re.IGNORECASE):
+            return True
+    return False
+
+
 def find_garble_tokens(text, source_text: str = "") -> list:
     """Bozuk/yabancı token'ları deterministik kurallarla yakalar (API yok, ~sıfır
     yanlış-pozitif hedefli). Döner: [(token, kural_adı), ...].
@@ -6418,6 +6493,9 @@ def find_garble_tokens(text, source_text: str = "") -> list:
             continue
         if _garble_neighbor_is_capitalized(s, m.start(), m.end()):
             continue  # özel-isim dizisinin parçası olabilir (ör. "Monumento a la Humanidad")
+        if re.search(rf"(?<![A-Za-z]){re.escape(m.group(0))}(?![A-Za-z])",
+                     str(source_text or ""), re.IGNORECASE):
+            continue  # kaynakta da tek başına duruyor: madde işareti/şema etiketi
         found.append((m.group(0), "R1_stray_letter"))
 
     for m in _GARBLE_LINEBREAK_DUP_INITIAL_RE.finditer(s):
@@ -6426,16 +6504,9 @@ def find_garble_tokens(text, source_text: str = "") -> list:
     for m in _GARBLE_WQX_RE.finditer(s):
         tok = m.group(0)
         source_value = str(source_text or "")
-        source_bound_turkish_plural = False
-        token_folded = tok.casefold()
-        for suffix in ("lar", "ler"):
-            if token_folded.endswith(suffix) and len(token_folded) > len(suffix) + 2:
-                stem = token_folded[:-len(suffix)]
-                if re.search(
-                        rf"(?<![A-Za-z]){re.escape(stem)}(?:s|es)?(?![A-Za-z])",
-                        source_value, re.IGNORECASE):
-                    source_bound_turkish_plural = True
-                    break
+        # Eskiden yalnız 'lar'/'ler' çoğulu kaynağa bağlanıyordu; 'carnyxlerin',
+        # 'conquistadorları', 'huaqueroların' gibi ek zincirleri kaçıyordu.
+        source_bound_turkish_plural = _garble_stem_in_source(tok, source_value)
         # Tek harfli "x"/"w"/"q" matematik sembolü/değişken/kısaltma olabilir
         # (gerçek garble değil) — yalnızca 2+ harfli token'lar (ör. "simwolika",
         # "wedges") sayılır.
@@ -6471,10 +6542,12 @@ def find_garble_tokens(text, source_text: str = "") -> list:
         stem, suffix = m.group(1), m.group(2)
         if not any(c in _GARBLE_TR_SPECIAL_CHARS for c in stem):
             continue  # ASCII gövde (yabancı özel isim) — atla
-        if (stem[:1].isupper()
-                and re.search(rf"(?<![A-Za-zÇĞİÖŞÜçğıöşü]){re.escape(stem)}"
-                              rf"(?![A-Za-zÇĞİÖŞÜçğıöşü])",
-                              str(source_text or ""))):
+        if stem[:1].isupper() and not _garble_stem_is_harmonic(stem):
+            # Yabancı özel adda ek TELAFFUZA göre gelir, yazılışa göre değil:
+            # "François'yı" (Fransua) ve "Thödol'e" doğrudur ama ünlü uyumu
+            # kuralına aykırı görünür. Ayıraç gövdenin KENDİSİDİR: kendi
+            # ünlüleri uyumsuzsa Türkçe biçimli değildir ve ekine karışmayız.
+            # "Mısır" uyumludur, dolayısıyla "Mısır'in" hâlâ yakalanır.
             continue
         stem_vowel = _garble_last_vowel(stem)
         suffix_vowel = _garble_first_vowel(suffix)
@@ -6493,6 +6566,8 @@ def find_garble_tokens(text, source_text: str = "") -> list:
 
     for match in _SERIALIZED_JSON_RESIDUE_RE.finditer(s):
         found.append((match.group(0), "R8_serialized_json_residue"))
+
+    found.extend(_garble_dotless_i_tokens(s, source_text))
 
     return found
 
