@@ -178,5 +178,71 @@ class SemanticExemptionDoesNotForgiveNewDamageTest(unittest.TestCase):
         self.assertIn("role_swap", ht._SEMANTIC_REWRITE_REJECTIONS)
 
 
+
+class DeterministicFileOrderTest(unittest.TestCase):
+    """Dosya sırası CHUNK TAMAMLANMA sırasına düşüyordu.
+
+    `raw_map` paralel akışta `as_completed` ile dolduğu için ağ hızı sonraki
+    adımların sırasını belirliyordu; dizi hafızası "ilk karar kanon"
+    politikasıyla bu sırayla commit edildiğinden aynı girdi farklı kanon
+    üretebiliyordu.
+    """
+
+    FILE_MAP = {
+        "cA": [("1", "ts", "A.srt"), ("2", "ts", "A.srt")],
+        "cB": [("1", "ts", "B.srt")],
+    }
+
+    @staticmethod
+    def _raw(ids):
+        return json.dumps([{"i": i, "t": "X" + i} for i in ids],
+                          ensure_ascii=False)
+
+    def test_completion_order_does_not_change_file_order(self):
+        forward = {"cA": self._raw(["1", "2"]), "cB": self._raw(["1"])}
+        reverse = {"cB": self._raw(["1"]), "cA": self._raw(["1", "2"])}
+        self.assertEqual(list(g.collect_results(forward, self.FILE_MAP)),
+                         ["A.srt", "B.srt"])
+        self.assertEqual(list(g.collect_results(reverse, self.FILE_MAP)),
+                         ["A.srt", "B.srt"])
+
+    def test_the_content_is_identical_either_way(self):
+        forward = {"cA": self._raw(["1", "2"]), "cB": self._raw(["1"])}
+        reverse = {"cB": self._raw(["1"]), "cA": self._raw(["1", "2"])}
+        self.assertEqual(g.collect_results(forward, self.FILE_MAP),
+                         g.collect_results(reverse, self.FILE_MAP))
+
+    def test_a_file_missing_from_the_map_is_still_kept(self):
+        raw = {"cA": self._raw(["1", "2"]), "cB": self._raw(["1"])}
+        result = g.collect_results(raw, self.FILE_MAP)
+        self.assertEqual(set(result), {"A.srt", "B.srt"})
+
+
+class AlignmentComparisonIgnoresMarkupTest(unittest.TestCase):
+    """Biçim etiketleri benzerlik hesabına giriyordu.
+
+    202 gerçek çiftte bulgu 2.122 -> 2.118; adjacent_duplicate 75 -> 70.
+    Elle doğrulanmış üç gerçek desync'in üçü de korundu.
+    """
+
+    def test_tags_are_stripped_before_comparing(self):
+        self.assertEqual(
+            g._align_visible('<font color="#FFFFFF">Merhaba dostum.</font>'),
+            "Merhaba dostum.")
+        self.assertEqual(g._align_visible("<i>Eğik</i>"), "Eğik")
+
+    def test_plain_text_is_unchanged(self):
+        self.assertEqual(g._align_visible("  iki   boşluk "), "iki boşluk")
+
+    def test_two_cues_differing_only_in_tags_compare_as_equal(self):
+        a = g._align_visible('<font color="#FF0000">Bir.</font>')
+        b = g._align_visible("Bir.")
+        self.assertEqual(a, b)
+
+    def test_the_reverted_sentence_rule_is_documented(self):
+        # Denenip GERI ALINDI: gercek bir desync'i kaciriyordu.
+        source = inspect.getsource(g._find_adjacent_duplicate_ids)
+        self.assertIn("DENENDİ VE GERİ ALINDI", source)
+
 if __name__ == "__main__":
     unittest.main()

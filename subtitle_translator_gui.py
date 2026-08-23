@@ -11527,7 +11527,20 @@ def collect_results(raw_map, file_map, log_fn=None):
                 # setdefault: zaten başka bir yoldan dolmuşsa dokunma
                 file_blocks.setdefault(fp, {}).setdefault(
                     orig_idx, (str(orig_idx), ts, "[HATA]"))
-    return file_blocks
+    # Dosya sırası CHUNK TAMAMLANMA sırasına düşüyordu: `raw_map` paralel
+    # akışta `as_completed` ile dolduğu için ağ hızı sonraki adımların
+    # sırasını belirliyordu. Dizi hafızası "ilk karar kanon" politikasıyla bu
+    # sırayla commit edildiğinden aynı girdi farklı kanon üretebiliyordu;
+    # post-işlem, rapor ve son önizleme sırası da koşudan koşuya değişiyordu.
+    # `file_map` istek kurulum (=seçilen dosya) sırasındadır ve deterministik.
+    ordered = {}
+    for info in file_map.values():
+        for (_orig_idx, _ts, fp) in info:
+            if fp in file_blocks and fp not in ordered:
+                ordered[fp] = file_blocks[fp]
+    for fp, blocks in file_blocks.items():
+        ordered.setdefault(fp, blocks)
+    return ordered
 
 
 def _file_translation_chunk_count(file_map: dict, filepath) -> int:
@@ -11858,7 +11871,16 @@ def _resolve_hybrid_resume_output_path(fmap_data: dict) -> str:
 
 
 def _align_visible(text) -> str:
-    return re.sub(r'\s+', ' ', str(text or '')).strip()
+    """Hizalama karşılaştırmalarının gördüğü metin.
+
+    Yalnız boşluk sıkıştırılıyordu; `<font color="...">` ve `{\\an8}` gibi
+    biçim etiketleri benzerlik ve uzunluk hesabına giriyordu. Aynı etiketle
+    sarılmış iki komşu cue, metinleri farklı olsa bile uzun ortak etiket
+    dizesi yüzünden birbirine benziyor ve 'adjacent_duplicate' yanlış
+    alarmı üretiyordu. Etiketler ekranda görünmez; karşılaştırmada da
+    görünmemeli.
+    """
+    return re.sub(r'\s+', ' ', visible_semantic_text(text)).strip()
 
 
 def _align_ratio(a: str, b: str) -> float:
@@ -11927,6 +11949,12 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                 continue
             if _align_lcs_len(sa, sb) >= lcs_thresh:
                 continue  # kaynaklar uzun ortak ifade paylaşıyor → meşru
+            # DENENDİ VE GERİ ALINDI: "kaynak cümle bitmiyorsa Türkçe SOV
+            # yeniden dağıtımıdır, atla" kuralı yanlış alarmı 70'ten 62'ye
+            # düşürüyor AMA elle doğrulanmış üç gerçek desync'ten birini
+            # (The Men Who Made Us Spend S01E03 #140, kaynağı 'Ocak 1979' —
+            # cümle bitirmeyen bir tarih parçası) kaçırıyordu. Sekiz yanlış
+            # alarm için bir gerçek kayma feda edilmez.
             dup_ids.append(seq[a][0])
             dup_ids.append(seq[b][0])
             if pairs_out is not None:
