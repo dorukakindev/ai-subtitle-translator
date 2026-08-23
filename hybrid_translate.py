@@ -7865,6 +7865,27 @@ _RELIABLE_NEGATION_VERB_RE = re.compile(
 )
 
 
+# Yukarıdaki desen yalnız bitmiş fiil çekimlerini görüyordu; olumsuzluğu
+# EK ÜZERİNDEN taşıyan koca bir aile dışarıda kalmıştı: '-mAyAn' sıfat-fiili
+# (olmayan), '-mAyIş' isim-fiili (gelmeyişi), '-mAyAlIm' istek kipi
+# (olmayalım), '-mAyAbil' yeterlilik (olmayabilirler), '-mAyArAk' zarf-fiili
+# ve ünsüz yumuşamasına uğramış gelecek zaman (kopyalayamayacağı -> 'ğ').
+# Bu önemli: sayaç, Polish ve Condense adaylarının olumsuzluk DÜŞÜRMESİNİ
+# engelleyen guard'ı besliyor; tanımadığı biçimde eski ve yeni metin de 0
+# döndüğü için 'gelmeyişi' -> 'gelişi' gibi anlamı tersine çeviren bir aday
+# hiç fark edilmeden geçebiliyordu.
+#
+# Gövde için EN AZ İKİ harf şart: 'Mayan' (Maya uygarlığı), 'Mayıs' gibi
+# özel adlar aksi hâlde 'ma+yan' diye olumsuz sayılırdı.
+_RELIABLE_NEGATION_SUFFIX_RE = re.compile(
+    r"(?<!\w)[^\W\d_]{2,}?"
+    r"(?:ma(?:yan|y[ıi]ş|yal[ıi]m|yab[ıi]l|yarak|yacağ|yaks[ıi]z[ıi]n)"
+    r"|me(?:yen|yiş|yelim|yebil|yerek|yeceğ|yeksizin)"
+    r")\w*(?!\w)",
+    re.IGNORECASE,
+)
+
+
 def reliable_turkish_negation_count(text) -> int:
     """Metindeki ŞÜPHESİZ olumsuzluk işareti sayısı."""
     value = _semantic_text_for_validator(text)
@@ -7872,6 +7893,7 @@ def reliable_turkish_negation_count(text) -> int:
         return 0
     count = len(_RELIABLE_NEGATION_WORD_RE.findall(value))
     count += len(_RELIABLE_NEGATION_VERB_RE.findall(value))
+    count += len(_RELIABLE_NEGATION_SUFFIX_RE.findall(value))
     return count
 
 def _question_mark_mismatch(src_text: str, tr_text: str) -> bool:
