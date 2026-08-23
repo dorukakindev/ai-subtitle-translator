@@ -25759,8 +25759,13 @@ class App(ctk.CTk):
         Fiyat YALNIZCA resmi OpenAI rotasında gösterilir: kullanıcı kendi proxy'sini
         veya indirimli bir sağlayıcıyı kullanırken ekrana sahte OpenAI USD tutarları
         basılıyordu (bkz. _verified_token_price)."""
+        # Boş adres = resmî OpenAI varsayılanı. `_update_tokens` bunu
+        # `default_is_official=True` ile çözüyordu, burası çözmüyordu:
+        # resmî Batch varsayılan adresle kullanıldığında token sayılıyor
+        # ama maliyet "sağlayıcı panelinden doğrulanmalı" olarak kalıyordu.
         price = _verified_token_price(
-            self._main_model_name(), self._main_api_base_url())
+            self._main_model_name(), self._main_api_base_url(),
+            default_is_official=True)
         self._update_tokens(
             added, price=None if price is None else price * 0.5, cached=cached,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
@@ -29744,6 +29749,43 @@ class App(ctk.CTk):
     # calisiyor ve her biri icin ucretli bir istek gondermek gereksiz.
     _PROVIDER_LIVE_CHECK_TTL = 120.0
 
+    def _record_live_check_usage(self, outcome) -> None:
+        """Canlılık kontrolünün ücretini kendi pass'ine yazar.
+
+        `usage` gelmezse bile kayıt açılır: "1 ücretli istek, token
+        bilinmiyor" demek, hiç göstermemekten iyidir — aksi hâlde rapor
+        toplamı faturayı olduğundan küçük gösteriyor.
+        """
+        usage = (outcome or {}).get("usage") if isinstance(outcome, dict) else None
+        prompt_tokens = completion_tokens = 0
+        if isinstance(usage, dict):
+            try:
+                prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+            except Exception:
+                prompt_tokens = completion_tokens = 0
+        total = prompt_tokens + completion_tokens
+        try:
+            model = str(self._main_model_name() or "")
+            base_url = str(self._main_api_base_url() or "")
+        except Exception:
+            model, base_url = "", ""
+        try:
+            # Fiyat çözümü `_update_tokens` içinde; burada tekrar edilmez.
+            App._update_tokens(
+                self, total, _DEFAULT_TOKEN_PRICE, cached=0,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens, model=model,
+                pass_name="API Canlılık Kontrolü", base_url=base_url,
+                usage_available=bool(total))
+        except Exception:
+            pass
+        if not total:
+            self._log(
+                "Canlılık kontrolü: 1 ücretli istek gönderildi, sağlayıcı "
+                "token bilgisi vermedi; raporda token bilinmiyor sayılır.",
+                "warn")
+
     def _provider_live_check(self, label: str = "") -> bool:
         """Sağlayıcı GERÇEKTEN iş yapabiliyor mu? (ön analizden önce)
 
@@ -29817,6 +29859,11 @@ class App(ctk.CTk):
                 self._log(
                     f"Canlılık kontrolü geçti: sağlayıcı gerçek isteği "
                     f"{elapsed:.1f} sn'de karşıladı ({host}).", "info")
+            # Bu ÜCRETLİ bir istek ve muhasebe dışındaydı: gerçek bir
+            # çeviri gönderiliyor, yanıtın `usage`'ı okunmadan
+            # atılıyordu. Loglarda 5 başarılı canlılık kontrolü
+            # hiçbir toplama girmemişti.
+            App._record_live_check_usage(self, outcome)
             return True
         detail = str(outcome.get("detail", "") or "")
         hint = str(outcome.get("hint", "") or "")
@@ -34830,6 +34877,20 @@ class App(ctk.CTk):
             int(getattr(self, "_unknown_cost_tokens", 0) or 0) + int(unknown))
         try:
             self.stat_tokens_var.set(f"{self._token_total:,}")
+        except Exception:
+            pass
+        # Devir yalnız GENEL sayaçlara yazılıyordu; pass kırılımı bu kadar
+        # eksik kalıyor ve "hangi geçiş ne harcadı" tablosu toplamı
+        # tutturmuyordu (son dizi koşusunda 61.020 token, toplamın %0,86'sı).
+        # `_record_api_usage` yalnız raporlama görünümlerini yazar, genel
+        # sayaçlara dokunmaz — çift sayım olmaz.
+        try:
+            App._record_api_usage(
+                self, int(tokens), int(cached), float(cost),
+                unknown_added=int(unknown),
+                model=str(self._main_model_name() or ""),
+                pass_name="Ön Analiz (ön kontrol)",
+                usage_available=bool(tokens))
         except Exception:
             pass
         self._log(

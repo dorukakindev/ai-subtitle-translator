@@ -642,9 +642,19 @@ def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
                     "route": route, "hint": "", "flaky": True}
             continue
         if status == 200:
+            # Bu ucretli bir istek: `realistic=True` kosunun gonderdigine
+            # BENZER boyutta gercek bir ceviri yolluyor. Yanit govdesindeki
+            # `usage` okunmadan atiliyordu, yani harcama hicbir yerde
+            # gorunmuyordu. Cagiran muhasebeye yazabilsin diye tasinir.
+            usage = None
+            try:
+                usage = (json.loads(body) or {}).get("usage")
+            except Exception:
+                usage = None
             return {"ok": True, "status": 200, "latency_ms": elapsed,
                     "detail": "calisiyor", "route": route, "hint": "",
-                    "flaky": False}
+                    "flaky": False,
+                    "usage": usage if isinstance(usage, dict) else None}
         tally["failures"] = tally.get("failures", 0) + 1
         flaky = _api_key_check_is_flaky(status, body)
         result = {"ok": False, "status": status, "latency_ms": elapsed,
