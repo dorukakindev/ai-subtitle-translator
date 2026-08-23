@@ -118,12 +118,22 @@ _API_KEY_GROUP_MARKERS = (
 
 
 def configure_api_key_fallback(scope: str = "main", primary_key: str = "",
-                               backup_key: str = "", log_fn=None) -> bool:
-    """Bir kapsam icin yedek API anahtarini kaydeder.
+                               backup_key: str = "", log_fn=None,
+                               primary_base_url: str = "",
+                               primary_model: str = "",
+                               backup_base_url: str = "",
+                               backup_model: str = "") -> bool:
+    """Bir kapsam icin yedek API profilini kaydeder.
 
     Yedek yoksa (ya da birincil ile ayniysa) kayit silinir ve davranis
     bugunku haliyle kalir. Her kosu basinda cagrilmalidir: aktif anahtar
     birincile geri doner.
+
+    Adres ve model de saklanir: profil penceresi yedek icin ayri bir URL ve
+    model girmene izin veriyor ve anahtar sinamasi bunlari kullaniyor, ama
+    gercek gecis yalnizca ANAHTARI degistiriyordu. Yedegi farkli bir bayiye
+    baglayan biri, yeni anahtarin eski adrese gonderildigini ancak 401
+    alinca fark ederdi.
     """
     scope = str(scope or "main")
     primary = str(primary_key or "").strip()
@@ -135,6 +145,10 @@ def configure_api_key_fallback(scope: str = "main", primary_key: str = "",
         _API_KEY_FALLBACKS[scope] = {
             "primary": primary,
             "backup": backup,
+            "primary_model": str(primary_model or "").strip(),
+            "backup_model": str(backup_model or "").strip(),
+            "primary_base_url": str(primary_base_url or "").strip(),
+            "backup_base_url": str(backup_base_url or "").strip(),
             "active": "primary",
             "log": log_fn,
             "switched": False,
@@ -204,13 +218,38 @@ def _client_api_key(client) -> str:
     return str(api_key or "")
 
 
-def _openai_client_for_key(client, api_key: str):
+def _openai_client_for_key(client, api_key: str, base_url: str = ""):
+    """Yedek profilin adresi verildiyse istemci ONA baglanir."""
+    target = str(base_url or "").strip()
     try:
+        if target:
+            return client.with_options(
+                api_key=api_key, base_url=target, max_retries=0)
         return client.with_options(api_key=api_key, max_retries=0)
     except Exception:
         from openai import OpenAI
-        base_url = str(getattr(client, "base_url", "") or "") or None
-        return OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+        fallback_url = target or str(getattr(client, "base_url", "") or "")
+        return OpenAI(api_key=api_key, base_url=fallback_url or None,
+                      max_retries=0)
+
+
+def _fallback_model(scope: str, model: str) -> str:
+    """Yedek aktifken istenen modeli yedek profilin modeliyle degistirir.
+
+    YALNIZ istenen model birincil profilinkiyle ayniysa: 'main' yedegini
+    devralan bir yardimci rol kendi modelini (ornegin mini) kaybetmemeli.
+    """
+    with _API_KEY_FALLBACK_LOCK:
+        entry = _API_KEY_FALLBACKS.get(scope)
+        if not entry or entry["active"] != "backup":
+            return model
+        primary_model = entry.get("primary_model") or ""
+        backup_model = entry.get("backup_model") or ""
+    if not primary_model or not backup_model or backup_model == primary_model:
+        return model
+    if str(model or "").strip() != primary_model:
+        return model
+    return backup_model
 
 
 def _apply_active_api_key(client, scope: str):
@@ -224,10 +263,11 @@ def _apply_active_api_key(client, scope: str):
         if not entry or entry["active"] != "backup":
             return client
         primary, backup = entry["primary"], entry["backup"]
+        backup_url = entry.get("backup_base_url") or ""
     if _client_api_key(client) != primary:
         return client
     try:
-        return _openai_client_for_key(client, backup)
+        return _openai_client_for_key(client, backup, backup_url)
     except Exception:
         return client
 
@@ -245,6 +285,7 @@ def _switch_to_backup_api_key(client, scope: str, exc):
         if not entry:
             return None
         primary, backup = entry["primary"], entry["backup"]
+        backup_url = entry.get("backup_base_url") or ""
         # Kendi anahtari olan bir rolu baska hesabin anahtarina cevirmeyiz.
         if _client_api_key(client) != primary:
             return None
@@ -254,7 +295,7 @@ def _switch_to_backup_api_key(client, scope: str, exc):
         entry["switched"] = True
         log_fn = entry.get("log")
     try:
-        alternate = _openai_client_for_key(client, backup)
+        alternate = _openai_client_for_key(client, backup, backup_url)
     except Exception:
         return None
     reason = _provider_error_context(exc).get("reason", "anahtar/grup hatasi")
@@ -2256,6 +2297,8 @@ def chat_create_with_shuai_failover(
     """
     scope = _shuai_route_scope(checkpoint_label)
     client = _apply_active_api_key(client, scope)
+    # Kosunun ilerisindeki istekler de yedegin modeliyle gitmeli.
+    model = _fallback_model(scope, model)
     try:
         return _chat_create_with_route_failover(
             client, model, kwargs, requested_format=requested_format,
@@ -2266,8 +2309,11 @@ def chat_create_with_shuai_failover(
         alternate = _switch_to_backup_api_key(client, scope, exc)
         if alternate is None:
             raise
+    # Yedek profil kendi modelini tasiyorsa istek de onunla gitmeli; aksi
+    # halde yeni anahtar, o hesapta bulunmayan bir model adiyla kullanilir.
     return _chat_create_with_route_failover(
-        alternate, model, kwargs, requested_format=requested_format,
+        alternate, _fallback_model(scope, model), kwargs,
+        requested_format=requested_format,
         checkpoint_label=checkpoint_label, cancel_context=cancel_context)
 
 

@@ -12054,7 +12054,8 @@ def _refresh_start_snapshot(current: dict, fresh: dict) -> dict:
         return fresh
     merged = copy.deepcopy(current)
     for key in (
-        "main_api_key", "main_api_key_backup", "helper_keys", "file_schemas",
+        "main_api_key", "main_api_key_backup", "main_base_url_backup",
+        "main_model_backup", "helper_keys", "file_schemas",
         "file_glossaries", "file_source_languages", "file_analysis_depths",
     ):
         if key in fresh:
@@ -22480,6 +22481,14 @@ class App(ctk.CTk):
                 else ""),
             "main_api_base_url": self._main_api_base_url(),
             "main_model_name": self._main_model_name(),
+            "main_base_url_backup": (
+                self._main_api_base_url_backup()
+                if callable(getattr(self, "_main_api_base_url_backup", None))
+                else ""),
+            "main_model_backup": (
+                self._main_model_name_backup()
+                if callable(getattr(self, "_main_model_name_backup", None))
+                else ""),
             "schema": self._get_schema(),
             "global_glossary_path": self.glossary_var.get().strip(),
             "helper_keys": helper_keys,
@@ -25496,7 +25505,13 @@ class App(ctk.CTk):
                 registered = [
                     configure_api_key_fallback(
                         scope, primary_key=primary_key,
-                        backup_key=backup_key, log_fn=log_fn)
+                        backup_key=backup_key, log_fn=log_fn,
+                        primary_base_url=str(
+                            snap.get("main_api_base_url") or ""),
+                        primary_model=str(snap.get("main_model_name") or ""),
+                        backup_base_url=str(
+                            snap.get("main_base_url_backup") or ""),
+                        backup_model=str(snap.get("main_model_backup") or ""))
                     for scope in ("main", "helper")
                 ]
                 if log_fn is not None:
@@ -28212,6 +28227,26 @@ class App(ctk.CTk):
         if assigned in getattr(self, "_api_key_profiles", {}):
             return (credential_store.load_key(f"api_profile_{assigned}") or "").strip()
         return ""
+
+    def _main_api_profile_field_backup(self, field: str) -> str:
+        """Yedek profilin kendi adresi/modeli; atanmamışsa boş.
+
+        Profil penceresi bu alanları doldurtuyor ve anahtar sınaması onları
+        kullanıyordu, ama gerçek geçişe hiç ulaşmıyorlardı.
+        """
+        if (threading.current_thread() is not threading.main_thread()
+                and getattr(self, "_active_snapshot", None)):
+            return self._active_snapshot.get(
+                f"main_{field}_backup", "") or ""
+        assigned = getattr(self, "_api_key_assignments", {}).get("main_backup")
+        profile = getattr(self, "_api_key_profiles", {}).get(assigned) or {}
+        return str(profile.get(field) or "").strip()
+
+    def _main_api_base_url_backup(self) -> str:
+        return self._main_api_profile_field_backup("base_url")
+
+    def _main_model_name_backup(self) -> str:
+        return self._main_api_profile_field_backup("model")
 
     def _main_api_base_url(self):
         if threading.current_thread() is not threading.main_thread() and hasattr(self, "_active_snapshot") and self._active_snapshot:
