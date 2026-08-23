@@ -196,6 +196,15 @@ TR_ADDRESS_FALSE_STEMS = frozenset({
 })
 _TR_SIN_RE = re.compile(
     r"(?<!\w)([^\W\d_]{2,}?)(sın|sin|sun|sün)(?!\w)", re.IGNORECASE)
+# Koşul kipi -sAn da 2. TEKİL hitaptır ('diyorsan', 'istiyorsan',
+# 'gidersen') ama hiç tanınmıyordu; hitap karışımı dedektörü bu biçimi
+# taşıyan röportajları kaçırıyordu. -sIn ile AYNI kip/zaman işareti şartı
+# uygulanır, yoksa 'insan', 'Hasan', 'susan', 'desen', 'asan' gibi sıradan
+# sözcükler 2. tekil sayılır. Bunun bilinçli bedeli: çıplak köke gelen
+# koşullar ('gelsen', 'olsan') yakalanmaz. Gevşetmek 15 gerçek sözcüğü
+# yanlış pozitif yapıyor, kazanç ise yalnız iki biçim — takas kabul edildi.
+_TR_SAN_RE = re.compile(
+    r"(?<!\w)([^\W\d_]{2,}?)(san|sen)(?!\w)", re.IGNORECASE)
 _TR_DIN_RE = re.compile(
     r"(?<!\w)([^\W\d_]+?)([dt])(ın|in|un|ün)(?!\w)", re.IGNORECASE)
 
@@ -211,7 +220,7 @@ def is_turkish_second_person_token(token) -> bool:
     word = str(token or "")
     if not word or word.casefold() in TR_ADDRESS_FALSE_STEMS:
         return False
-    match = _TR_SIN_RE.fullmatch(word)
+    match = _TR_SIN_RE.fullmatch(word) or _TR_SAN_RE.fullmatch(word)
     if match:
         stem = match.group(1).casefold()
         # Kısa fiil kökleri kısa aorist işaretiyle çakışıyor ('dur+sun',

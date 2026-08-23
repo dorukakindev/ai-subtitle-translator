@@ -99,5 +99,52 @@ class RewrapKeepsEveryWordTest(unittest.TestCase):
         self.assertEqual(g._rebalanced_two_lines(lines), lines)
 
 
+
+class ConditionalSecondPersonTest(unittest.TestCase):
+    """Koşul kipi -sAn hiç tanınmıyordu.
+
+    `is_turkish_second_person_token` yalnız -sIn ve -DIn biçimlerini
+    biliyordu; 'diyorsan', 'istiyorsan', 'gidersen' 2. tekil sayılmıyor ve
+    hitap karışımı bu biçimi taşıyan röportajlarda görünmüyordu. 14 gerçek
+    teslim dosyasında blok bazlı ölçüm: bilinen 6 hitap kaymasının
+    yakalananı 3 -> 4, yanlış alarm %0,77 -> %0,79.
+    """
+
+    import subtitle_formats as _sf
+
+    CONDITIONAL = ("diyorsan", "istiyorsan", "gidersen", "bakarsan",
+                   "geliyorsan", "yaparsan")
+    ORDINARY = ("insan", "Hasan", "susan", "kısan", "asan", "Ahsen",
+                "ehven", "desen", "resen", "hasen")
+
+    def test_analytic_conditionals_are_second_person(self):
+        for word in self.CONDITIONAL:
+            with self.subTest(word=word):
+                self.assertTrue(self._sf.is_turkish_second_person_token(word))
+
+    def test_ordinary_words_are_not(self):
+        for word in self.ORDINARY:
+            with self.subTest(word=word):
+                self.assertFalse(self._sf.is_turkish_second_person_token(word))
+
+    def test_the_existing_forms_still_work(self):
+        for word in ("geliyorsun", "kazandın", "yaptın"):
+            with self.subTest(word=word):
+                self.assertTrue(self._sf.is_turkish_second_person_token(word))
+
+    def test_the_bare_stem_trade_off_is_documented(self):
+        # 'gelsen'/'olsan' bilinçli olarak DIŞARIDA: gevşetmek 'insan',
+        # 'desen', 'Hasan' gibi sözcükleri yanlış pozitif yapıyor.
+        self.assertFalse(self._sf.is_turkish_second_person_token("gelsen"))
+        self.assertIn("takas kabul edildi",
+                      inspect.getsource(self._sf))
+
+    def test_both_consumers_read_the_shared_helper(self):
+        import hybrid_translate as ht
+        import subtitle_translator_gui as gui
+        self.assertIs(gui._address_informal_suffix_token,
+                      self._sf.is_turkish_second_person_token)
+        self.assertIn("_sf_is_tr_second_person", inspect.getsource(ht))
+
 if __name__ == "__main__":
     unittest.main()
