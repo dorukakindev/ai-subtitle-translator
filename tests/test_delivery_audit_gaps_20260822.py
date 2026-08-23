@@ -174,6 +174,22 @@ class OwnerMismatchFalseAlarmTest(unittest.TestCase):
         self.assertEqual(self._mismatch(owner, [
             {"i": "110", "t": "Hayır. El... El-sa."}]), set())
 
+    def test_joined_kinship_name_matches_translated_separated_name(self):
+        owner = {
+            "709": "What's the matter, UncleJohn?",
+            "710": "John stayed outside.",
+        }
+        self.assertEqual(self._mismatch(owner, [
+            {"i": "709", "t": "Ne oldu, John Amca?"}]), set())
+
+    def test_grouped_thousands_match_turkish_bin_rendering(self):
+        owner = {
+            "1288": "She'll have 40,000 or 50,000 bucks.",
+            "1289": "He has 40 reasons to leave.",
+        }
+        self.assertEqual(self._mismatch(owner, [
+            {"i": "1288", "t": "40 bin ya da 50 bin doları olacak."}]), set())
+
     def test_a_real_content_shift_is_still_caught(self):
         owner = {
             "8": "Joba? You mean the hidden city beyond the mountains?",

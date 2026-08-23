@@ -502,6 +502,14 @@ _SDH_ACTION_VERBS = {
     "dialing", "kissing", "chokes", "choking", "sniffs", "sniffing",
     "wails", "wailing", "yawns", "yawning", "whirrs", "bleeping",
     "play", "tolling", "beating", "jingle", "blasts", "neigh",
+    "clatters", "draw", "departing", "muttering", "cursing", "chatters",
+    "shivering", "stomps", "pounding", "arguing", "jabbering", "approaching",
+}
+
+_TITLE_ACTION_PHRASE_VERBS = {
+    "approaching", "arguing", "blows", "chatters", "clatters", "cursing",
+    "departing", "draw", "gasping", "jabbering", "muttering", "pounding",
+    "shivering", "shouting", "stomps",
 }
 
 _SDH_SOUND_MODIFIERS = {
@@ -650,6 +658,14 @@ def is_sdh_descriptor(content: str, bare_text: bool = False,
     if _is_heading_label(content):
         return False
     raw_words = str(content or "").strip().split()
+    raw_keys = [_descriptor_key(word) for word in raw_words]
+    title_action_phrase = bool(
+        raw_keys and (
+            raw_keys[0] in _TITLE_ACTION_PHRASE_VERBS
+            or (len(raw_keys) > 1
+                and raw_keys[1] in _TITLE_ACTION_PHRASE_VERBS)
+        )
+    )
     title_case = (2 <= len(raw_words) <= 6
                   and any(any(ch.islower() for ch in word) for word in raw_words)
                   and all(not word[:1].isalpha() or word[:1].isupper()
@@ -658,6 +674,7 @@ def is_sdh_descriptor(content: str, bare_text: bool = False,
         first_key = _descriptor_key(raw_words[0])
         last_key = _descriptor_key(raw_words[-1])
         if (first_key not in _SPEAKER_WORDS
+                and not title_action_phrase
                 and last_key not in _KNOWN_LANGUAGES
                 and last_key not in _SPEAKER_WORDS
                 and last_key not in _SDH_ACTION_VERBS
@@ -704,6 +721,15 @@ def is_sdh_descriptor(content: str, bare_text: bool = False,
                 or words_no_digits[0] in _SDH_SOUND_NOUNS)
 
     pronouns = {"i", "you", "he", "she", "we", "they", "it"}
+    if not bare_text and not any(word in pronouns for word in words):
+        if title_action_phrase and len(words) <= 6:
+            return True
+        if (words[0] in _SPEAKER_WORDS
+                and all(word in _SPEAKER_WORDS
+                        or word in _SDH_SOUND_MODIFIERS
+                        or word in {"on", "off", "over", "the", "radio", "tv"}
+                        for word in words[1:])):
+            return True
     instruments = {
         "trumpet", "piano", "violin", "drums", "guitar", "flute", "solo",
     }
@@ -859,6 +885,8 @@ def is_sdh_only(text: str) -> bool:
         return True
     text = FORMAT_TAG_RE.sub("", text).strip()
     text = MUSIC_NOTE_RE.sub("", text).strip()
+    if re.fullmatch(r"[-–—]?\s*#+", text):
+        return True
     if not text or EMPTY_DASH_RE.match(text):
         return True
 
@@ -1190,7 +1218,7 @@ def _is_translation_failure_marker(text: str) -> bool:
 # bu yol kaynağa (henüz çevrilmemiş İngilizce metne) bakarak karar verir.
 # subtitle_translator_gui._SDH_ONLY_SRC_RE ile aynı desen (bilinçli tekrar —
 # sdh_cleaner.py, gui modülüne bağımlı olmamalı).
-SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
+SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[#♪_\s]+)+$')
 _VTT_VOICE_TAG_RE = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
 _BARE_FRENCH_SDH_RE = re.compile(
     r"^(?:"
@@ -1221,8 +1249,9 @@ def src_is_sfx_only(src_text: str, allow_caps_heuristic: bool = False) -> bool:
     text = _strip_mojibake_music_ornament(
         re.sub(r'\{\\[^}]*\}', '', str(src_text or '')))
     text = _VTT_VOICE_TAG_RE.sub('', text)
+    text = FORMAT_TAG_RE.sub('', text)
     text = CHEVRON_SPEAKER_RE.sub("", text).strip()
-    text = re.sub(r"(?m)^\s*[-–—]\s*(?=[\[(])", "", text)
+    text = re.sub(r"(?m)^\s*[-–—]\s*(?=[\[(#])", "", text)
     text = re.sub(r"\s*\n\s*", " ", text)
     if not text:
         return False
@@ -1234,7 +1263,7 @@ def src_is_sfx_only(src_text: str, allow_caps_heuristic: bool = False) -> bool:
         return True
     spans = _bracket_group_spans(text)
     residue = _replace_bracket_groups(text, lambda _raw: "")
-    residue = MUSIC_NOTE_RE.sub("", residue).replace("_", "").strip()
+    residue = MUSIC_NOTE_RE.sub("", residue).replace("_", "").replace("#", "").strip()
     residue = residue.strip(" .,!?:;…")
     if not spans:
         return bool(SFX_ONLY_STRUCTURAL_RE.match(text))
@@ -1507,8 +1536,8 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     stripped = _replace_bracket_groups(tr_line, _strip_verified)
     stripped = _ORPHANED_LABEL_COLON_RE.sub(r"\1", stripped)
     stripped = re.sub(r"\s{2,}", " ", stripped).strip()
-    if _DASH_ONLY_LINE_RE.match(stripped):
-        return ""
+    if _DASH_ONLY_LINE_RE.match(FORMAT_TAG_RE.sub("", stripped)):
+        return "".join(re.findall(r"</(?:i|b|u|font)\s*>", stripped, re.I))
     return stripped
 
 
@@ -1607,7 +1636,11 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
                 if cleaned:
                     lines.append(cleaned)
             if lines:
-                result.append((idx, ts, "\n".join(lines)))
+                joined = "\n".join(lines)
+                joined = re.sub(
+                    r"\n+(</(?:i|b|u|font)\s*>)", r"\1", joined,
+                    flags=re.IGNORECASE)
+                result.append((idx, ts, joined))
             continue
         lines = []
         for line in original.split("\n"):

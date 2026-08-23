@@ -4378,6 +4378,18 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"HE\s+BLOWS\s+HORN|"
     r"SPEAKING\s+(?:IN\s+)?GEORGIAN|COCKEREL\s+CROWS?|"
     r"GREETINGS\s+IN\s+(?:A\s+)?LOCAL\s+LANGUAGE|"
+    r"GREETINGS\s+IN\s+[A-Z]+|"
+    r"(?:HE|SHE|THEY|MAN|WOMAN|[A-Z][A-Z'’-]*)\s+(?:"
+    r"TRANSLATES|LAUGHS|MUMBLES|ASKS\s+A\s+QUESTION|MAKE\s+TOASTS|"
+    r"STARTS\s+MACHINERY|SPEAKS?(?:(?:\s+IN)?\s+[A-Z]+)?|"
+    r"SHOUTS\s+IN\s+[A-Z]+)|"
+    r"CONGREGATION\s+SINGS|STATION\s+ANNOUNCEMENT|"
+    r"MUSICAL\s+INTRO\s+PLAYS|MOBILE\s+PHONES\s+RING|"
+    r"(?:A\s+)?(?:BELL\s+PEALS|DOG\s+YAPS)|"
+    r"(?:LOUD\s+)?DRILLING|DRILL\s+SLOWS(?:\s+FURTHER)?|DRILLING\s+STOPS|"
+    r"LIFT\s+RUMBLES|CAMERA\s+CLICKS|"
+    r"(?:(?:LOUD|QUIETER)\s+)?SUCKING\s+NOISE|HISS\s+OF\s+AIR|"
+    r"CRACKLING|INAUDIBLE|"
     r"[A-Z0-9]+\s+READS|SPEAKS\s+CORNISH|"
     r"(?:[A-Z][A-Z'\-]*(?:\s+[A-Z][A-Z'\-]*){0,4}\s+)?"
     r"SPEAKING\s+NATIVE\s+LANGUAGE|"
@@ -8904,9 +8916,15 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
             for token in identity_tokens
         )
     )
+    identity_is_repeated_interjection = bool(
+        identity_tokens and len(identity_tokens) <= 12
+        and all(token.casefold() in _IDENTITY_INTERJECTIONS
+                for token in identity_tokens)
+    )
     if (src_norm == tr_norm and src_norm not in _LOANWORDS
             and not identity_is_cultural_expression
-            and not identity_is_short_interjection):
+            and not identity_is_short_interjection
+            and not identity_is_repeated_interjection):
         if not _src_is_sdh_only(src_text):
             if _src_all_caps:
                 if re.search(r"[!?]", str(src_text)):
@@ -9048,6 +9066,17 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         own = unique_tokens.get(idx, set())
 
         def _related_to_own(token):
+            if token.isdigit() and any(
+                    re.fullmatch(rf"{re.escape(token)}(?:[.,]000)+", own_token)
+                    for own_token in own):
+                return True
+            if len(token) >= 4 and any(
+                    own_token in {
+                        "uncle" + token, "aunt" + token, "doctor" + token,
+                        "mister" + token,
+                    }
+                    for own_token in own):
+                return True
             return any(
                 len(token) >= 6
                 and len(own_token) - len(token) >= 4

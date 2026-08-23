@@ -6356,6 +6356,7 @@ _TRANSLATABLE_EN_RESIDUE_PATTERNS = (
     re.compile(r"\b(?:God|Jesus|Christ)\b", re.IGNORECASE),
     re.compile(r"\bChristianity\b", re.IGNORECASE),
     re.compile(r"\bFrench\s+colonists\b", re.IGNORECASE),
+    re.compile(r"\b(?:butter|table|London|Soviet)\b", re.IGNORECASE),
 )
 
 

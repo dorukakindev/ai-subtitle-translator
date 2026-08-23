@@ -7,6 +7,70 @@ import subtitle_translator_gui as gui
 
 
 class DeliveryRealRunRegressionsTest(unittest.TestCase):
+    def test_english_surgeon_bare_sdh_labels_are_strongly_removable(self):
+        labels = (
+            "GREETINGS IN UKRAINIAN", "HE STARTS MACHINERY", "A BELL PEALS",
+            "WOMAN SPEAKS IN UKRAINIAN", "CONGREGATION SINGS", "DRILLING",
+            "STATION ANNOUNCEMENT", "MUSICAL INTRO PLAYS", "IGOR TRANSLATES",
+            "SHE ASKS A QUESTION", "MOBILE PHONES RING", "LIFT RUMBLES",
+            "HENRY LAUGHS", "CAMERA CLICKS", "HENRY MUMBLES",
+            "DRILL SLOWS FURTHER", "DRILLING STOPS", "SUCKING NOISE",
+            "HISS OF AIR", "LOUD DRILLING", "CRACKLING", "INAUDIBLE",
+            "THEY SPEAK IN UKRAINIAN", "THEY MAKE TOASTS",
+            "HE SPEAKS UKRAINIAN",
+        )
+        for value in labels:
+            with self.subTest(value=value):
+                self.assertTrue(gui._source_cue_is_delivery_removable(value))
+
+    def test_html_wrapped_and_hash_only_sdh_sources_are_removed(self):
+        cases = (
+            ("<i>[Cup Clatters]</i>", "<i>[Cup Clatters]</i>"),
+            ("<i>[Boys Shouting, Arguing]</i>",
+             "<i>[Boys Shouting, Arguing]</i>"),
+            ("[Stomps Ice Puddle]", "[Stomps Ice Puddle]"),
+            ("[Gasping, Pounding On Floor]",
+             "[Gasping, Pounding On Floor]"),
+            ("[Susan Pounding On Floor]", "[Susan Pounding On Floor]"),
+            ("## [Continues, Indistinct]", "##"),
+            ("- [Chattering]\n- ## [Singing]", "- ##"),
+        )
+        for source, target in cases:
+            with self.subTest(source=source):
+                self.assertTrue(sdh.src_is_sfx_only(source))
+                self.assertEqual(
+                    sdh.clean_sdh_blocks(
+                        [("1", "00:00:01,000 --> 00:00:02,000", target)],
+                        src_map={"1": source}, source_driven=True),
+                    [],
+                )
+
+    def test_real_mixed_warrendale_labels_are_stripped(self):
+        cases = (
+            ("<i>- Turn around.\n- [Woman On Radio]... metro area.</i>",
+             "<i>- Dön.\n- [Woman On Radio]... şehir bölgesi.</i>",
+             "<i>- Dön.\n- ... şehir bölgesi.</i>"),
+            ("<i>- Thank you, Davey.\n- [Blows Nose]</i>",
+             "<i>- Teşekkürler, Davey.\n- [Blows Nose]</i>",
+             "<i>- Teşekkürler, Davey.</i>"),
+            ("- Good morning.\n- [Girl, Muffled] Fuck off.",
+             "- Günaydın.\n- [Girl, Muffled] Siktir git.",
+             "- Günaydın.\n- Siktir git."),
+            ("<i>- It's all right.\n- [Footsteps Approaching]</i>",
+             "<i>- Tamam.\n- [Footsteps Approaching]</i>",
+             "<i>- Tamam.</i>"),
+        )
+        for source, target, expected in cases:
+            with self.subTest(source=source):
+                result = sdh.clean_sdh_blocks(
+                    [("1", "00:00:01,000 --> 00:00:02,000", target)],
+                    src_map={"1": source}, source_driven=True)
+                self.assertEqual(result[0][2], expected)
+
+    def test_repeated_hey_is_a_valid_unchanged_interjection(self):
+        value = "Hey, hey. Hey, hey, hey, hey."
+        self.assertEqual(gui._untranslated_reason(value, value), "")
+
     def test_repeated_at_and_hash_placeholders_are_removable(self):
         for value in ("@@@@@", "#####"):
             with self.subTest(value=value):
