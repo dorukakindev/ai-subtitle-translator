@@ -10361,6 +10361,24 @@ def save_detection_cache(filepath: str, source_language=None,
         return False
     try:
         path = _detection_cache_path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Kaynak dili ve icerik turu AYRI cagrilarla yaziliyor ve
+        # ikisi ayni dosyaya dokunuyor. Kilitsiz read-modify-write ile
+        # biri digerinin alanini siliyordu; ustelik gecici dosya adi
+        # butun thread/surecler icin ayniydi, yani `os.replace` de
+        # yarisa giriyordu. Iki thread ile 100 turluk olcumde her
+        # turda en az bir alan kayboldu, 66 turda okunabilir sonuc
+        # bile kalmadi.
+        with _interprocess_lock(path):
+            return _save_detection_cache_locked(
+                path, sig, source_language, content_type)
+    except Exception:
+        return False
+
+
+def _save_detection_cache_locked(path, sig, source_language, content_type) -> bool:
+    """Kilit ALTINDA calisir; cagiran `_interprocess_lock` tutar."""
+    try:
         data = {}
         if path.exists():
             try:
@@ -10389,11 +10407,9 @@ def save_detection_cache(filepath: str, source_language=None,
                 pass
             return False
         data["_sig"] = sig
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, path)
+        # Sabit '.tmp' adi yerine atomik yazici: es zamanli iki
+        # yazici ayni gecici dosyayi ezmesin.
+        atomic_write_json(path, data)
         return True
     except Exception:
         return False
@@ -18916,6 +18932,20 @@ class App(ctk.CTk):
             self._log("Çökme sonrası otomatik devam iptal edildi.", "warn")
 
     def _restore_interrupted_run(self, record: dict):
+        # Geri sayım modal DEĞİL: kullanıcı 10 saniye içinde yeni dosya
+        # seçip çeviriyi başlatmış olabilir. Eskiden bu kontrol yoktu ve
+        # sayaç dolunca AKTİF koşunun dosya listesi eski yarım kuyrukla
+        # değiştiriliyor, eski ayarlar `_resume_snapshot_override`e
+        # yazılıyordu; `_start` aktif koşu yüzünden geri dönse bile o
+        # override sahipsiz kalıp SONRAKİ başlatmaya sızıyordu.
+        if getattr(self, "_is_running", False) or getattr(
+                self, "_is_shutting_down", False):
+            self._cancel_crash_resume(forget=False)
+            self.__dict__.pop("_resume_snapshot_override", None)
+            self._log(
+                "Yarım çalışma kurtarması iptal edildi: bu pencerede yeni bir "
+                "çeviri sürüyor; mevcut kuyruk ve ayarlar korundu.", "warn")
+            return
         self._cancel_crash_resume(forget=False)
         record_path = str(record.get("_state_path") or "").strip()
         if (record_path and not _claim_interrupted_run_record(
@@ -30097,6 +30127,11 @@ class App(ctk.CTk):
         # (denetim 2026-08-20, madde 27).
         App._cancel_pending_auto_shutdown(self)
         App._cancel_pending_auto_retry(self)
+        # Yarım-çalışma geri sayımı da iptal edilir: kullanıcı kendi
+        # kuyruğunu başlattıysa 10 saniyelik sayaç onu ezmemeli. Kayıt
+        # unutulmaz (forget=False), yalnız otomatik devralma durur.
+        if getattr(self, "_crash_resume_after_id", None) is not None:
+            App._cancel_crash_resume(self, forget=False)
 
         if getattr(self, "_api_translation_test_busy", False):
             messagebox.showwarning(
@@ -35148,6 +35183,17 @@ class App(ctk.CTk):
             def _finish():
                 if getattr(self, "_is_shutting_down", False):
                     return
+                # DUR terminaldir: `RequestCancelled` genel `except
+                # Exception` tarafından sıradan bir analiz hatası gibi
+                # yakalanıp "Otomatik" sonucu üretiliyor, ardından bu
+                # pencere açılıyordu. Kullanıcı durdurduğu bir işin onay
+                # penceresiyle karşılaşmamalı (iki ön analizde de 2/2).
+                if getattr(self, "_stop_flag", False):
+                    self._log(
+                        "Ön analiz iptal edildi: kullanıcı durdurdu; "
+                        "onay penceresi açılmadı.", "warn")
+                    self._set_running(False)
+                    return
                 try:
                     should_continue = self._show_source_language_confirm_dialog(detected)
                 except Exception as e:
@@ -35465,6 +35511,17 @@ class App(ctk.CTk):
 
             def _finish():
                 if getattr(self, "_is_shutting_down", False):
+                    return
+                # DUR terminaldir: `RequestCancelled` genel `except
+                # Exception` tarafından sıradan bir analiz hatası gibi
+                # yakalanıp "Otomatik" sonucu üretiliyor, ardından bu
+                # pencere açılıyordu. Kullanıcı durdurduğu bir işin onay
+                # penceresiyle karşılaşmamalı (iki ön analizde de 2/2).
+                if getattr(self, "_stop_flag", False):
+                    self._log(
+                        "Ön analiz iptal edildi: kullanıcı durdurdu; "
+                        "onay penceresi açılmadı.", "warn")
+                    self._set_running(False)
                     return
                 self._log("İçerik türü ön analizi tamamlandı; onay penceresi açılıyor.", "ok")
                 try:
