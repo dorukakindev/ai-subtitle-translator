@@ -890,6 +890,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         app = gui.App.__new__(gui.App)
         app._active_snapshot = None
         app.semantic_reconcile_var = SimpleNamespace(get=lambda: True)
+        # Bu test uygulama davranisini olcuyor; "Yalniz Raporla"
+        # cozulemezse resolver guvenli tarafta kalip True donuyor.
+        app.quality_report_only_var = SimpleNamespace(get=lambda: False)
         app.backtrans_var = SimpleNamespace(get=lambda: False)
         app.src_var = SimpleNamespace(get=lambda: "English")
         app.tgt_var = SimpleNamespace(get=lambda: "Turkish")
@@ -937,6 +940,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         app = gui.App.__new__(gui.App)
         app._pm = None
         app.semantic_reconcile_var = SimpleNamespace(get=lambda: True)
+        # Bu test uygulama davranisini olcuyor; "Yalniz Raporla"
+        # cozulemezse resolver guvenli tarafta kalip True donuyor.
+        app.quality_report_only_var = SimpleNamespace(get=lambda: False)
         app.src_var = SimpleNamespace(get=lambda: "English")
         app.tgt_var = SimpleNamespace(get=lambda: "Turkish")
         app._log = MagicMock()
@@ -972,6 +978,9 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
         app = gui.App.__new__(gui.App)
         app._pm = None
         app.semantic_reconcile_var = SimpleNamespace(get=lambda: True)
+        # Bu test uygulama davranisini olcuyor; "Yalniz Raporla"
+        # cozulemezse resolver guvenli tarafta kalip True donuyor.
+        app.quality_report_only_var = SimpleNamespace(get=lambda: False)
         app.src_var = SimpleNamespace(get=lambda: "English")
         app.tgt_var = SimpleNamespace(get=lambda: "Turkish")
         app._log = MagicMock()

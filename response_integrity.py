@@ -100,16 +100,28 @@ def translation_items_from_raw(raw: str) -> tuple[list | None, str]:
         balanced = _balanced_json(value[pos:])
         if balanced and balanced not in candidates:
             candidates.append(balanced)
+    # Ilk gecerli aday SESSIZCE seciliyordu: model ilk cevabini duzeltip
+    # ikinci bir tam blok urettiginde o blok tamamen yok sayiliyordu.
+    # Birden fazla TAM payload varsa ve icerikleri farkliysa hicbirini
+    # secmek guvenli degil; birebir ayni tekrar ise tek payload kabul edilir.
+    found = []
     for candidate in candidates:
         try:
             parsed = json.loads(candidate)
         except Exception:
             continue
         if isinstance(parsed, list):
-            return parsed, "array"
-        if isinstance(parsed, dict) and isinstance(parsed.get("tr"), list):
-            return parsed["tr"], "envelope"
-        continue
+            found.append((parsed, "array"))
+        elif isinstance(parsed, dict) and isinstance(parsed.get("tr"), list):
+            found.append((parsed["tr"], "envelope"))
+    if found:
+        shapes = {
+            json.dumps(items, sort_keys=True, ensure_ascii=False)
+            for items, _mode in found
+        }
+        if len(shapes) > 1:
+            return None, "ambiguous_multiple_payloads"
+        return found[0]
     salvaged = _salvage_array(value)
     if salvaged:
         return salvaged, "salvaged"

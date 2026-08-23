@@ -3263,7 +3263,44 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
         if not first or not second:
             break
         lines = lines[:en_i] + [first, second] + lines[en_i + 1:]
+    # Bütçe DOLU ama satırlar kötü dağılmış: döngü yalnız satır EKLERKEN
+    # çalışıyor, dolayısıyla '1 uzun + 1 kısa' biçimindeki cue hiç
+    # düzeltilmiyordu. Kırılma noktasını taşımak metni DEĞİŞTİRMEZ — sözcük
+    # dizisi aynı kalır, yalnız satır sınırı kayar; semantik risk sıfır.
+    # 139 gerçek teslim dosyasında (90.102 cue) ölçüldü: 42 karakteri aşan
+    # 13.527 satırın 9.883'ü yalnız bu yeniden dengelemeyle düzeliyor.
+    if len(lines) == max_lines == 2:
+        lines = _rebalanced_two_lines(lines)
     return '\n'.join(lines)
+
+
+def _rebalanced_two_lines(lines: list) -> list:
+    """İki satırlı cue'yu sözcük değiştirmeden yeniden dengele.
+
+    DİYALOG DOKUNULMAZ: iki tireli cue'da satır yapısı konuşmacı ayrımıdır.
+    Yeni bölüm yalnız EN UZUN satırı kısaltıyorsa kabul edilir.
+    """
+    if len(lines) != 2:
+        return lines
+    if all(_visible_len(line) <= _LINE_THRESHOLD for line in lines):
+        return lines
+    if sum(1 for line in lines
+           if line.lstrip().startswith(('-', '–', '—'))) >= 2:
+        return lines
+    words = " ".join(line.strip() for line in lines if line.strip()).split()
+    if len(words) < 2:
+        return lines
+    current = max(_visible_len(line) for line in lines)
+    best = None
+    for cut in range(1, len(words)):
+        first = " ".join(words[:cut])
+        second = " ".join(words[cut:])
+        worst = max(_visible_len(first), _visible_len(second))
+        if best is None or worst < best[0]:
+            best = (worst, first, second)
+    if best is None or best[0] >= current:
+        return lines
+    return [best[1], best[2]]
 
 
 # Satır bölme yerleşimi: 36 dosyada 1.046 ihlal sayıldı. İki satırlı bir cue'da
@@ -6529,6 +6566,59 @@ def _source_cue_has_explicit_sdh_marker(text) -> bool:
     return bool(sdh_cleaner.CHEVRON_SPEAKER_RE.match(value.strip()))
 
 
+_THOUSANDS_GROUP_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?![\d,])")
+
+
+def _normalize_thousands_separators(blocks, src_map, neighbourhood: int = 2):
+    """İngilizce binlik ayracını Türkçe biçime çevirir — KAYNAĞA bakarak.
+
+    `1,200` çoğu zaman İngilizce binlik ayracıdır ve Türkçede `1.200`
+    olmalıdır. Ama `1,618` (altın oran) Türkçede DOĞRU ondalıktır; salt
+    biçime bakan bir kural onu bozar. Karar kaynaktan verilir: aynı jeton
+    kaynakta virgüllü geçiyorsa binlik, noktalı geçiyorsa ondalıktır.
+
+    Türkçe SOV sayıyı komşu cue'ya taşıyabildiği için kaynak penceresi
+    ±`neighbourhood` cue'dur. 202 gerçek teslimde ölçüldü: 19 gerçek binlik
+    dönüştürülüyor, 15 gerçek ondalık (hepsi aynı belgeselin altın oran
+    cue'ları) korunuyor, belirsiz vaka kalmıyor.
+    """
+    rows = list(blocks or [])
+    if not rows or not src_map:
+        return rows, 0
+
+    def _source_window(idx):
+        try:
+            centre = int(str(idx))
+        except (TypeError, ValueError):
+            return str(src_map.get(str(idx), "") or "")
+        parts = [
+            str(src_map.get(str(centre + step), "") or "")
+            for step in range(-neighbourhood, neighbourhood + 1)
+        ]
+        return " ".join(part for part in parts if part)
+
+    changed = 0
+    out = []
+    for idx, ts, text in rows:
+        value = str(text or "")
+        if not _THOUSANDS_GROUP_RE.search(value):
+            out.append((idx, ts, text))
+            continue
+        window = _source_window(idx)
+
+        def _replace(match, window=window):
+            nonlocal changed
+            token = match.group(0)
+            if token.replace(",", ".") in window:
+                return token          # kaynakta noktalı → gerçek ondalık
+            if token in window:
+                changed += 1
+                return token.replace(",", ".")
+            return token              # kanıt yok → dokunma
+        out.append((idx, ts, _THOUSANDS_GROUP_RE.sub(_replace, value)))
+    return out, changed
+
+
 def delivery_line_count(blocks) -> int:
     """Diske YAZILAN gerçek çeviri cue sayısı (teslim imzaları hariç).
 
@@ -6889,6 +6979,16 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 text, src_map.get(str(idx), "")))
             for idx, ts, text in blocks
         ]
+        if is_turkish:
+            # İngilizce binlik ayracı çeviriye sızıyor ('1,200 yıl').
+            # Karar KAYNAKTAN verilir: aynı jeton kaynakta noktalıysa
+            # gerçek ondalıktır ('1.618' altın oranı) ve korunur.
+            blocks, _thousands_fixed = _normalize_thousands_separators(
+                blocks, src_map)
+            if _thousands_fixed and log_fn:
+                log_fn(
+                    f"Binlik ayracı Türkçe biçime çevrildi: "
+                    f"{_thousands_fixed} sayı.", "ok")
         sdh_src_map = {}
         for cue_id, source_text in src_map.items():
             source_lines = str(source_text or "").splitlines()
@@ -9453,9 +9553,14 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
                 and not _source_cue_is_delivery_removable(chunk_src_map.get(idx, ""))
             ]
             required_set = set(required_ids)
+            # Eşleme KİMLİK üzerinden yapılıyor; doğru id-metin çiftlerinin
+            # yalnız liste SIRASININ değişmesi veriyi bozmaz. Sıra da zorunlu
+            # tutulunca sağlam bir yanıt gereksiz yere hedefli onarıma
+            # sokuluyordu. İçerik kayması ayrı sinyallerle (owner mismatch,
+            # adjacent duplicate) zaten aranıyor.
             if (len(actual_ids) != len(set(actual_ids))
                     or not set(actual_ids) <= set(expected_ids)
-                    or [idx for idx in actual_ids if idx in required_set] != required_ids):
+                    or (required_set - set(actual_ids))):
                 return "id_integrity"
             for it in items:
                 idx = str(it.get("i"))
@@ -11625,7 +11730,20 @@ def collect_results(raw_map, file_map, log_fn=None):
                 # setdefault: zaten başka bir yoldan dolmuşsa dokunma
                 file_blocks.setdefault(fp, {}).setdefault(
                     orig_idx, (str(orig_idx), ts, "[HATA]"))
-    return file_blocks
+    # Dosya sırası CHUNK TAMAMLANMA sırasına düşüyordu: `raw_map` paralel
+    # akışta `as_completed` ile dolduğu için ağ hızı sonraki adımların
+    # sırasını belirliyordu. Dizi hafızası "ilk karar kanon" politikasıyla bu
+    # sırayla commit edildiğinden aynı girdi farklı kanon üretebiliyordu;
+    # post-işlem, rapor ve son önizleme sırası da koşudan koşuya değişiyordu.
+    # `file_map` istek kurulum (=seçilen dosya) sırasındadır ve deterministik.
+    ordered = {}
+    for info in file_map.values():
+        for (_orig_idx, _ts, fp) in info:
+            if fp in file_blocks and fp not in ordered:
+                ordered[fp] = file_blocks[fp]
+    for fp, blocks in file_blocks.items():
+        ordered.setdefault(fp, blocks)
+    return ordered
 
 
 def _file_translation_chunk_count(file_map: dict, filepath) -> int:
@@ -11956,7 +12074,16 @@ def _resolve_hybrid_resume_output_path(fmap_data: dict) -> str:
 
 
 def _align_visible(text) -> str:
-    return re.sub(r'\s+', ' ', str(text or '')).strip()
+    """Hizalama karşılaştırmalarının gördüğü metin.
+
+    Yalnız boşluk sıkıştırılıyordu; `<font color="...">` ve `{\\an8}` gibi
+    biçim etiketleri benzerlik ve uzunluk hesabına giriyordu. Aynı etiketle
+    sarılmış iki komşu cue, metinleri farklı olsa bile uzun ortak etiket
+    dizesi yüzünden birbirine benziyor ve 'adjacent_duplicate' yanlış
+    alarmı üretiyordu. Etiketler ekranda görünmez; karşılaştırmada da
+    görünmemeli.
+    """
+    return re.sub(r'\s+', ' ', visible_semantic_text(text)).strip()
 
 
 def _align_ratio(a: str, b: str) -> float:
@@ -12025,6 +12152,12 @@ def _find_adjacent_duplicate_ids(seq: list, src_map: dict,
                 continue
             if _align_lcs_len(sa, sb) >= lcs_thresh:
                 continue  # kaynaklar uzun ortak ifade paylaşıyor → meşru
+            # DENENDİ VE GERİ ALINDI: "kaynak cümle bitmiyorsa Türkçe SOV
+            # yeniden dağıtımıdır, atla" kuralı yanlış alarmı 70'ten 62'ye
+            # düşürüyor AMA elle doğrulanmış üç gerçek desync'ten birini
+            # (The Men Who Made Us Spend S01E03 #140, kaynağı 'Ocak 1979' —
+            # cümle bitirmeyen bir tarih parçası) kaçırıyordu. Sekiz yanlış
+            # alarm için bir gerçek kayma feda edilmez.
             dup_ids.append(seq[a][0])
             dup_ids.append(seq[b][0])
             if pairs_out is not None:
@@ -14898,6 +15031,14 @@ def _intended_output_folder(source_path, settings: dict):
         return None
 
 
+# Koşu durumu Türkçe yazılıyor (`_finalize_run_record` -> 'tamamlandı'),
+# hazır-işaret planı ise yalnız İngilizce değerleri tanıyordu. Sonuç:
+# BAŞARILI her koşuda 'YÜKLEMEYE HAZIR.txt' yazılmadığı gibi, varsa
+# bayat sayılıp SİLİNİYORDU. İki taraf tek kaynaktan okur.
+RUN_STATUS_DONE = "tamamlandı"
+RUN_STATUS_SUCCESS = frozenset({RUN_STATUS_DONE, "done", "completed", ""})
+
+
 def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     """(yazılacak {klasör: [(ad, hash)]}, silinecek klasörler).
 
@@ -14944,7 +15085,7 @@ def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     # Çalışma terminal durumda 'done' değilse hiçbir klasör hazır sayılmaz;
     # eski işaretler yine de temizlenir.
     run_status = str(record.get("status") or "").strip().casefold()
-    if run_status and run_status not in {"done", "completed", ""}:
+    if run_status and run_status not in RUN_STATUS_SUCCESS:
         stale.update(ready)
         ready = {}
     return ready, stale
@@ -15135,6 +15276,10 @@ def _count_hata_cps(blocks) -> tuple:
     hata = cps_n = 0
     for _idx, _ts, _txt in blocks:
         _value = str(_txt or "")
+        # Teslim imzası çeviri değildir; satır sayısı onu paydadan
+        # çıkarırken CPS sayıyordu (dış denetim, madde 6).
+        if _DELIVERY_SIGNATURE_RE.fullmatch(_value.strip()):
+            continue
         if translation_failure_reason(_value):
             hata += 1
             continue
@@ -15825,6 +15970,13 @@ def _cps_stats(blocks) -> tuple:
     for _idx, _ts, _txt in blocks:
         raw = str(_txt or "")
         if not raw.strip() or raw.startswith("[HATA"):
+            continue
+        # Teslim imzaları çeviri değildir: `delivery_line_count` onları
+        # paydadan çıkarıyor, CPS ise ölçüyordu. 208 gerçek teslimin
+        # HEPSİNDE üç imza var; 57 dosyada ortalama/maksimum CPS'yi,
+        # 25 dosyada CPS aşım sayısını değiştiriyorlardı. İki sayı aynı
+        # içeriği ölçmeli.
+        if _DELIVERY_SIGNATURE_RE.fullmatch(raw.strip()):
             continue
         try:
             dur = max(_ts_end_sec_gui(_ts) - _ts_to_sec_gui(_ts), 0.1)
@@ -17873,6 +18025,41 @@ def delivery_scan_report_lines(scan: dict) -> list:
         lines.append(f"      - #{left} ↔ #{right} aynı çeviri")
     return lines
 
+def realised_pass_line(row: dict) -> str:
+    """Gerçekten NE OLDU: `pass_status` ve tamamlanmış `pass_trace`den.
+
+    `pass_coverage` açık UI kutularından kuruluyor, yani İSTENEN
+    geçişleri anlatıyor; rapor onu 'Uygulanan geçişler' diye
+    gösteriyordu. 100 koşu raporundaki 323 dosya satırında 20 dosyada
+    21 çelişki ölçüldü (kısmi/atlanmış/başarısız geçişler 'uygulandı'
+    görünüyordu). Bu satır yalnız gerçekleşenden üretilir.
+    """
+    status = row.get("pass_status") or {}
+    trace = row.get("pass_trace") or {}
+    parts = []
+    for name in sorted(set(status) | set(trace)):
+        if str(name).startswith("__"):
+            continue
+        info = status.get(name) if isinstance(status.get(name), dict) else {}
+        state = str(info.get("status") or "").strip().casefold()
+        changed = trace.get(name)
+        if state in {"failed", "cancelled"}:
+            parts.append(f"{name}: başarısız")
+        elif state == "partial":
+            parts.append(f"{name}: kısmi")
+        elif state == "skipped":
+            why = pass_skip_explanation(info)
+            parts.append(f"{name}: atlandı" + (f" ({why})" if why else ""))
+        elif info.get("report_only"):
+            parts.append(f"{name}: yalnız rapor")
+        elif isinstance(changed, int):
+            parts.append(f"{name}: {changed} değişiklik"
+                         if changed else f"{name}: değişiklik yok")
+        else:
+            parts.append(str(name))
+    return ", ".join(parts)
+
+
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                               total_tokens: int, actual_cost: float = None,
                               unknown_cost_tokens: int = 0,
@@ -17947,7 +18134,12 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             lines.append(f"   {'İçerik türü'.ljust(width)} : {schema_used}")
         passes = r.get("pass_coverage", "")
         if passes:
-            lines.append(f"   {'Uygulanan geçişler'.ljust(width)} : {passes}")
+            lines.append(
+                f"   {'İstenen geçişler'.ljust(width)} : {passes}")
+        realised = realised_pass_line(r)
+        if realised:
+            lines.append(
+                f"   {'Gerçekleşen geçişler'.ljust(width)} : {realised}")
         scan_lines = delivery_scan_report_lines(r.get("delivery_scan"))
         if scan_lines:
             lines.append("   Teslim taraması:")
@@ -22766,7 +22958,7 @@ class App(ctk.CTk):
             if getattr(self, "_stop_flag", False):
                 record["status"] = "durduruldu"
             elif states and all(state == "done" for state in states):
-                record["status"] = "tamamlandı"
+                record["status"] = RUN_STATUS_DONE
             elif any(state == "done" for state in states):
                 record["status"] = "kısmen tamamlandı"
             elif any(state == "error" for state in states):
@@ -22774,7 +22966,7 @@ class App(ctk.CTk):
             elif any(state in {"pending", "running"} for state in states):
                 record["status"] = "eksik"
             else:
-                record["status"] = "tamamlandı"
+                record["status"] = RUN_STATUS_DONE
             api = record.setdefault("api", {})
             baseline = dict(api.get("token_baseline") or {})
             token_lock = getattr(self, "_token_lock", threading.Lock())
@@ -26065,7 +26257,10 @@ class App(ctk.CTk):
                     max_completion_tokens=2048,
                     temperature=0.0,
                 )
-                fixed = (resp.choices[0].message.content or "").strip()
+                # Normal cagri yolu kesilmis yaniti reddediyor; onarim
+                # `message.content`i dogrudan okudugu icin
+                # finish_reason=length yanitini kabul ediyordu.
+                fixed = _validated_chat_content(resp)
                 _report_response_usage(
                     _app_token_callback(
                         self, self._main_model_name(), "JSON Onarımı",
@@ -26094,11 +26289,22 @@ class App(ctk.CTk):
                              if str(value).isdigit() else (1, str(value)))
                          if cue_id in merged],
                         ensure_ascii=False)
-                repaired += 1
-                self._log(
-                    f"  🔧 {cid}: JSON onarımı birleştirildi "
-                    f"({len(parsed_repair.translations)} yeni, "
-                    f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
+                # Herhangi bir alt kume donse bile 'kurtarildi'
+                # sayiliyordu; kullaniciya ve rapora chunk tamamlanmis
+                # gibi yanlis bilgi gidiyordu.
+                _complete = len(merged) >= len(expected_ids)
+                if _complete:
+                    repaired += 1
+                    self._log(
+                        f"  🔧 {cid}: JSON onarımı birleştirildi "
+                        f"({len(parsed_repair.translations)} yeni, "
+                        f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
+                else:
+                    self._log(
+                        f"  ↺ {cid}: JSON onarımı KISMİ "
+                        f"({len(merged)}/{len(expected_ids)} korundu, "
+                        f"{len(expected_ids) - len(merged)} çözülmedi); "
+                        "chunk kurtarılmış sayılmadı", "warn")
             except RequestCancelled:
                 raise
             except Exception as repair_error:
@@ -31825,6 +32031,12 @@ class App(ctk.CTk):
                     "Nihai Mutabakat",
                     f"{Path(source_path).name if source_path else 'Geçerli dosya'}  —  hazırlanıyor",
                 )
+            # getattr: eski test taklitleri (SimpleNamespace) bu
+            # resolver'i tanimiyor; yoklugunda uygulama davranisi korunur.
+            _report_only = getattr(
+                self, "_delivery_report_only_enabled", None)
+            _semantic_apply = not (
+                _report_only() if callable(_report_only) else False)
             result, stats = ht.semantic_reconciliation_pass(
                 src_map=src_clean_map,
                 tr_blocks=blocks,
@@ -31855,12 +32067,20 @@ class App(ctk.CTk):
                     file_path=str(source_path or "")),
                 progress_callback=semantic_progress,
                 status_out=status_out,
+                # 'Yalnız Raporla' sozlesmesi: bu mod otomatik yeniden
+                # ceviriyi RAPORLAR, uygulamaz. `apply_changes`
+                # verilmedigi icin varsayilan True kullaniliyor ve
+                # sonuc dogrudan teslim metnine yaziliyordu. Derin
+                # Teslim taramasi ayni pass'i zaten apply_changes=False
+                # ile cagiriyor.
+                apply_changes=_semantic_apply,
                 **cancel_kwargs,
             )
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
                 return 0
-            blocks[:] = result
+            if _semantic_apply:
+                blocks[:] = result
             rpath = stale_report_path
             if stats.get("clusters"):
                 try:
@@ -37031,6 +37251,7 @@ class App(ctk.CTk):
                         "pass_trace": {
                             "Repair": int(_repair_only_result.get("repaired", 0))},
                         "pass_history": {},
+                        "schema_name": (schema_dict or {}).get("name", ""),
                         "pass_coverage": "repair-only",
                         "tm_hits": self._tm.hit_count_session(),
                         "run_status": "done" if _repair_complete else "error",
@@ -37362,7 +37583,13 @@ class App(ctk.CTk):
                           "(önceki çeviriler bağlama eklenir)", "info")
                 prev_pairs = []
                 for req in batch_reqs:
-                    if self._stop_flag:
+                    # 'Dosyayi atla' butun kosunun PAYLASILAN canceller'ini
+                    # iptal ediyor; bu dongu yalnizca `_stop_flag`e bakip
+                    # devam ediyor ve her chunk `RequestCancelled` ile
+                    # dusuyordu. Gercek loglarda tek atlama 201 ve 172
+                    # sahte 'Chunk hatasi' uretti.
+                    if self._stop_flag or App._file_skip_requested(
+                            self, filepath):
                         break
                     cid_hint = req.get("custom_id", "?")
                     if not _req_has_ctx(req):
@@ -37426,6 +37653,12 @@ class App(ctk.CTk):
                         prev_pairs = _extend_chain_pairs(
                             prev_pairs, _chain_pairs_from_chunk_response(
                                 req, text, fmap.get(cid, [])), self._context_lines)
+                    except RequestCancelled:
+                        # Atlama/durdurma iptali hata DEGILDIR.
+                        if (self._stop_flag
+                                or App._file_skip_requested(self, filepath)):
+                            break
+                        raise
                     except Exception as e:
                         # Hatalı chunk zincire eklenmez; daha eski doğrulanmış bağlamı
                         # sonraki aynı-sahne chunk'ı için koru.
@@ -37441,7 +37674,8 @@ class App(ctk.CTk):
                     futures = {ex.submit(send_one, req): req
                                for req in batch_reqs if req["custom_id"] not in raw_map}
                     for fut in as_completed(futures):
-                        if self._stop_flag:
+                        if self._stop_flag or App._file_skip_requested(
+                                self, filepath):
                             ex.shutdown(wait=False, cancel_futures=True)
                             break
                         req = futures[fut]
@@ -37459,6 +37693,12 @@ class App(ctk.CTk):
                                 base_url=self._main_api_base_url(),
                                 file_path=filepath)
                             self._save_sync_ckpt_entry(cid, text, src_h)
+                        except RequestCancelled:
+                            if (self._stop_flag
+                                    or App._file_skip_requested(self, filepath)):
+                                ex.shutdown(wait=False, cancel_futures=True)
+                                break
+                            raise
                         except Exception as e:
                             with lock:
                                 failed[0] += 1
@@ -37569,9 +37809,16 @@ class App(ctk.CTk):
                 locked_terms=_locked_terms,
                 apply_changes=not bool(self._snap_get(
                     "quality_report_only", True)), tgt_lang=tgt)
-            _record_pass_change(
-                _pass_trace, "Consistency", _before_consistency,
-                sorted_blocks, _pass_history)
+            _cons_report_only = bool(self._snap_get(
+                "quality_report_only", True))
+            # Bkz. düz sync'teki aynı not: etiket pass_status'a bağlı.
+            _pass_status["Consistency"] = {
+                "status": "completed", "successful_chunks": 1,
+                "failed_chunks": 0, "total_chunks": 1,
+                "suggested": _cons_fixes, "report_only": _cons_report_only,
+                "changed": _record_pass_change(
+                    _pass_trace, "Consistency", _before_consistency,
+                    sorted_blocks, _pass_history)}
             # Rapor için taban çizgisi: kalite geçişleri öncesi metinler
             _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
             _qc_fixes = 0
@@ -39435,9 +39682,21 @@ class App(ctk.CTk):
                                     tgt_lang=tgt)
                             else:
                                 _cons_fixes = 0
-                            _record_pass_change(
-                                _pass_trace, "Consistency", _before_consistency,
-                                pp, _pass_history)
+                            # Rapor etiketi yalnız pass_status['Consistency']
+                            # varsa 'öneri (uygulanmadı)'ya döner ve uygulanan
+                            # düzeltme toplamından düşülür; bunu yalnız batch
+                            # akışları kuruyordu, düz sync yalnız-rapor modunda
+                            # adayları uygulanmış düzeltme gibi gösteriyordu.
+                            _cons_report_only = bool(self._snap_get(
+                                "quality_report_only", True))
+                            _pass_status["Consistency"] = {
+                                "status": "completed", "successful_chunks": 1,
+                                "failed_chunks": 0, "total_chunks": 1,
+                                "suggested": _cons_fixes,
+                                "report_only": _cons_report_only,
+                                "changed": _record_pass_change(
+                                    _pass_trace, "Consistency",
+                                    _before_consistency, pp, _pass_history)}
                             _pre_pass = {str(b[0]): b[2] for b in pp}
                             _qc_fixes = 0
                             _qc_auto_fixes = 0
@@ -42394,6 +42653,7 @@ class App(ctk.CTk):
                         "pass_trace": _pass_trace,
                         "pass_status": _pass_status,
                         "pass_history": _pass_history,
+                        "schema_name": (schema_dict or {}).get("name", ""),
                         "pass_coverage": _partial_coverage,
                         "run_status": "error",
                         "delivery_scan_failed": True,

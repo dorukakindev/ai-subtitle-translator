@@ -6227,11 +6227,20 @@ def normalize_latin_homoglyphs(text: str) -> str:
     """
     return str(text or "").translate(_CYRILLIC_LATIN_HOMOGLYPH_TRANS)
 
+# ÖLÇÜM (202 gerçek kaynak-teslim çifti, 148.662 cue): bu tablo tek bir
+# belgeselden kalma ve düz sözcük eşleşmesiyle HER dosyaya dayatılıyordu.
+# Dayatılan karşılığın teslimde gerçekten kullanılma oranı: "pupils" 0/8,
+# "pupil" 1/15 (hepsi ÖĞRENCİ: Mahabharata, Galileo, sağır okulu),
+# "mummy" 6/29 (çoğu ANNE), "rat" 24/48, "macabre" seçenek listesiydi
+# (tek çeviri bile değil). "mortuary" gerçekte "mortuary temple =
+# ölüler tapınağı", "authentic" ise "özgün" olmalıydı. Deyimler düz alt
+# dizi eşleşiyordu: "break a leg" GERÇEK bacak kırmada, "on the house"
+# ise "Keep an eye on the house" içinde tetiklendi. Bağlamı olan ana
+# model çoğunu yine doğru çevirdi, ama zayıf model dayatmaya uyar.
+# Bu yüzden çok anlamlı genel sözcükler ve düz-anlamı olabilen deyimler
+# çıkarıldı; yalnız tek anlamlı alan terimleri kaldı. YENİ GİRDİ EKLERKEN:
+# sözcüğün başka yaygın anlamı varsa buraya KOYMA — dosya sözlüğü kullan.
 _COMMON_TURKISH_TERM_GUARD = (
-    ("holiday party", "tatil/bayram/yılbaşı partisi"),
-    ("holiday parties", "tatil/bayram/yılbaşı partileri"),
-    ("holiday centerpiece", "tatil/bayram masa süsü"),
-    ("centerpiece", "masa süsü"),
     ("taxidermy", "taksidermi"),
     ("taxidermist", "taksidermist"),
     ("automatonophobia", "otomatonofobi"),
@@ -6242,30 +6251,22 @@ _COMMON_TURKISH_TERM_GUARD = (
     ("skull preparation", "kafatası hazırlığı"),
     ("chiropractor", "kiropraktör"),
     ("polio braces", "polio korseleri"),
-    ("braces", "korseler"),
     ("orthotics", "ortezler"),
     ("mortuary school", "cenaze hizmetleri okulu"),
-    ("mortuary", "cenaze hazırlığı"),
     ("wound-filler", "yara dolgusu"),
     ("wound filler", "yara dolgusu"),
     ("sideshow performer", "yan gösteri sanatçısı"),
     ("sideshow stunts", "yan gösteri numaraları"),
     ("body modification", "beden modifikasyonu"),
     ("mummy parts", "mumya parçaları"),
-    ("mummy", "mumya"),
     ("phallus", "fallus"),
     ("mummified phallus", "mumyalanmış fallus"),
     ("repeat customer", "devamlı müşteri"),
-    ("authentic", "gerçek"),
     ("uppercut", "aparkat"),
     ("gold leaf", "altın varak"),
     ("gilding", "altın yaldız"),
     ("linen wrappings", "keten sargılar"),
-    ("rat", "sıçan"),
-    ("client", "müşteri"),
-    ("macabre", "ürkütücü/ölüm temalı"),
     ("macabre mobile", "ürkütücü araba"),
-    ("medical stuff", "tıbbi şeyler"),
     ("coroner's office", "adli tabip ofisi"),
     ("coroner's table", "adli tabip masası"),
     ("coroner's tools", "adli tabip aletleri"),
@@ -6280,8 +6281,6 @@ _COMMON_TURKISH_TERM_GUARD = (
     ("life mask", "yaşam maskesi"),
     ("death mask", "ölüm maskesi"),
     ("abdominal scar", "karındaki yara izi"),
-    ("scars", "yara izleri"),
-    ("scar", "yara izi"),
     ("reindeer", "ren geyiği"),
     ("caribou", "karibu"),
     ("competition piece", "yarışma parçası"),
@@ -6290,18 +6289,6 @@ _COMMON_TURKISH_TERM_GUARD = (
     ("stay under your budget", "bütçeni aşmamak"),
     ("stayed under your budget", "bütçeni aşmadım"),
     ("under your budget", "bütçenin altında"),
-    ("pupils", "göz bebekleri"),
-    ("pupil", "göz bebeği"),
-    ("fake out", "şaşırtmak"),
-    ("on the house", "ikram"),
-    ("under the weather", "keyfi yerinde değil"),
-    ("break a leg", "bol şans"),
-    ("piece of cake", "çocuk oyuncağı"),
-    ("cut me some slack", "biraz anlayış göster"),
-    ("on thin ice", "bıçak sırtında"),
-    ("call it a day", "paydos etmek"),
-    ("in the bag", "çantada keklik"),
-    ("i'm flattered", "sağ ol"),
 )
 
 _DANGLING_FRAGMENT_TAIL_RE = re.compile(
@@ -7890,6 +7877,27 @@ _RELIABLE_NEGATION_VERB_RE = re.compile(
 )
 
 
+# Yukarıdaki desen yalnız bitmiş fiil çekimlerini görüyordu; olumsuzluğu
+# EK ÜZERİNDEN taşıyan koca bir aile dışarıda kalmıştı: '-mAyAn' sıfat-fiili
+# (olmayan), '-mAyIş' isim-fiili (gelmeyişi), '-mAyAlIm' istek kipi
+# (olmayalım), '-mAyAbil' yeterlilik (olmayabilirler), '-mAyArAk' zarf-fiili
+# ve ünsüz yumuşamasına uğramış gelecek zaman (kopyalayamayacağı -> 'ğ').
+# Bu önemli: sayaç, Polish ve Condense adaylarının olumsuzluk DÜŞÜRMESİNİ
+# engelleyen guard'ı besliyor; tanımadığı biçimde eski ve yeni metin de 0
+# döndüğü için 'gelmeyişi' -> 'gelişi' gibi anlamı tersine çeviren bir aday
+# hiç fark edilmeden geçebiliyordu.
+#
+# Gövde için EN AZ İKİ harf şart: 'Mayan' (Maya uygarlığı), 'Mayıs' gibi
+# özel adlar aksi hâlde 'ma+yan' diye olumsuz sayılırdı.
+_RELIABLE_NEGATION_SUFFIX_RE = re.compile(
+    r"(?<!\w)[^\W\d_]{2,}?"
+    r"(?:ma(?:yan|y[ıi]ş|yal[ıi]m|yab[ıi]l|yarak|yacağ|yaks[ıi]z[ıi]n)"
+    r"|me(?:yen|yiş|yelim|yebil|yerek|yeceğ|yeksizin)"
+    r")\w*(?!\w)",
+    re.IGNORECASE,
+)
+
+
 def reliable_turkish_negation_count(text) -> int:
     """Metindeki ŞÜPHESİZ olumsuzluk işareti sayısı."""
     value = _semantic_text_for_validator(text)
@@ -7897,6 +7905,7 @@ def reliable_turkish_negation_count(text) -> int:
         return 0
     count = len(_RELIABLE_NEGATION_WORD_RE.findall(value))
     count += len(_RELIABLE_NEGATION_VERB_RE.findall(value))
+    count += len(_RELIABLE_NEGATION_SUFFIX_RE.findall(value))
     return count
 
 def _question_mark_mismatch(src_text: str, tr_text: str) -> bool:
@@ -12643,6 +12652,12 @@ def validate_semantic_reconciliation_candidate(
     # revalidated against itself. That used to discard the before→after semantic
     # comparison and allowed a fluent but unrelated source claim through.
     if _source_backed_semantic_rewrite_resolves_validator_issue(old, new, src):
+        # Muafiyet "eski sorunlardan biri kayboldu" ölçütüne bakıyor; adayın
+        # AYNI ANDA yeni bir bozulma eklemesini engellemiyordu. Soru işaretini
+        # düzeltirken özne ile nesneyi takas eden bir aday böyle geçiyordu.
+        # Rol takası kaynaktan doğrulanamıyorsa muafiyet uygulanmaz.
+        if is_turkish_target(tgt_lang) and _has_role_swap(old, new):
+            return False, "role_swap"
         return True, ""
     return False, "semantic_rewrite_unverified"
 

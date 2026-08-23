@@ -184,6 +184,82 @@ def series_memory_root(filename: str) -> Path:
     return root
 
 
+# Dosya adı diziyi tek başına taşımadığında kullanılan klasör geri dönüşleri.
+# 145 gerçek dizi kaynağının 30'u (%20,7) hiç tanınmıyordu: 'S01E01 New York'
+# gibi dizi adı taşımayan adlar ve '02. Геракл и Иолай' gibi bölüm işareti
+# yalnız KLASÖR adında olan yayınlar. Tanınmayan dosya dizi hafızasına hiç
+# girmiyor; yani bölümler arası terim/ad kanonu o dizide çalışmıyor.
+_BARE_SXXEXX = re.compile(
+    r'^[Ss](?P<season>\d{1,2})[ ._\-]?[Ee](?P<ep>\d{1,3})(?=$|[ ._\-])')
+_BARE_NXNN = re.compile(
+    r'^(?P<season>\d{1,2})x(?P<ep>\d{1,3})(?=$|[ ._\-])')
+# Program çıktısının kendi alt klasörleri dizi adı değildir.
+_GENERIC_DIRS = frozenset({
+    "raporlar", "kaynak", "kurtarma", "son denetim", "çıktı", "cikti",
+    "yüklenecek", "yuklenecek", "yüklenecekler", "yuklenecekler",
+    "yüklendi", "yuklendi",
+})
+
+
+# 'The.Question.Of.God.1of4' / 'BBC.Sacred.Music.Series1.1of4' — BBC tarzı
+# çok bölümlü belgesel numaralandırması. Mevcut _N_OF_TOTAL yalnız ayrı bir
+# 'tv' kök işareti varken çalışıyordu, bu yayınlarda ise yok. Bölünmüş FİLM
+# dosyaları da 'CD1of2' biçimini kullandığı için o önekler dışlanır.
+_SHOW_N_OF_TOTAL = re.compile(
+    r'^(?P<show>.+?)[ ._\-]+(?P<ep>\d{1,3})of\d{1,3}(?=$|[ ._\-])',
+    re.IGNORECASE)
+_SPLIT_MEDIA_TAIL = re.compile(
+    r'(?i)(?:^|[ ._\-])(?:cd|disc|disk|dvd|pt|part|vol)$')
+# Sezonu 'Series1' / 'Series.2' diye yazan yayınlar: sezon numarası dizi
+# adının içinde kalırsa her sezon ayrı bir diziymiş gibi hafızaya girer.
+_TRAILING_SERIES_NO = re.compile(
+    r'(?i)[ ._\-]*series[ ._\-]*(?P<season>\d{1,2})$')
+# 'A History of Art in Three Colours S0103' — sezon ve bölüm ayraçsız bitişik.
+_SXXEXX_COMPACT = re.compile(
+    r'^(?P<show>.+?)[ ._\-]+[Ss](?P<season>\d{2})(?P<ep>\d{2})(?=$|[ ._\-])')
+
+
+def _show_and_season(show: str, default_season: int):
+    """'BBC.Sacred.Music.Series2' → ('bbc-sacred-music', 2)."""
+    match = _TRAILING_SERIES_NO.search(show)
+    if match:
+        return _slugify(show[:match.start()]), int(match.group("season"))
+    return _slugify(show), default_season
+
+
+def _is_episode_marker_dir(name: str) -> bool:
+    """Klasör adı dizi adı değil, bölüm/sezon işareti mi?"""
+    return bool(_BARE_SXXEXX.match(name) or _BARE_NXNN.match(name)
+                or _EPISODE_DIR.match(name) or _SEASON_DIR.match(name))
+
+
+def _series_key_from_folders(path):
+    """Dosya adı yetmediğinde klasör zincirinden dizi anahtarı çıkar."""
+    parents = [p.name for p in path.parents
+               if p.name and p.name.casefold() not in _GENERIC_DIRS]
+    if not parents:
+        return None
+    bare = _BARE_SXXEXX.match(path.stem) or _BARE_NXNN.match(path.stem)
+    if bare:
+        # Sezon/bölüm dosyadan kesin; dizi adı bölüm işareti TAŞIMAYAN ilk
+        # üst klasördür ('S01E01 New York' klasörü atlanır).
+        for name in parents:
+            if _is_episode_marker_dir(name):
+                continue
+            return (_slugify(name), int(bare.group("season")),
+                    int(bare.group("ep")))
+        return None
+    # Dosya adı hiç ayrışmıyorsa yalnız en yakın iki klasöre bakılır; daha
+    # yukarısı 'HAZIR DİZİLER' gibi toplu klasörlere kayar.
+    for name in parents[:2]:
+        for rx in (_SXXEXX, _NXNN):
+            m = rx.match(name)
+            if m:
+                return (_slugify(m.group("show")), int(m.group("season")),
+                        int(m.group("ep")))
+    return None
+
+
 def parse_series_key(filename: str):
     """'Show.Name.S01E05.720p.srt' → ('show-name', 1, 5). Dizi değilse None."""
     path = Path(filename)
@@ -211,7 +287,18 @@ def parse_series_key(filename: str):
             slug = root_info[1] if root_info else _slugify(m.group("show"))
             season = root_info[2] if root_info else 1
             return slug, season, int(m.group("ep"))
-    return None
+    m = _SXXEXX_COMPACT.match(stem)
+    if m:
+        slug = root_info[1] if root_info else _slugify(m.group("show"))
+        return slug, int(m.group("season")), int(m.group("ep"))
+    m = _SHOW_N_OF_TOTAL.match(stem)
+    if m and not _SPLIT_MEDIA_TAIL.search(m.group("show")):
+        if root_info:
+            return root_info[1], root_info[2], int(m.group("ep"))
+        slug, season = _show_and_season(m.group("show"), 1)
+        if slug:
+            return slug, season, int(m.group("ep"))
+    return _series_key_from_folders(path)
 
 
 def sort_files_by_episode(files: list) -> list:
