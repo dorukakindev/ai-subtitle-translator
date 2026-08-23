@@ -115,6 +115,14 @@ JSON_INSTRUCTION = (
     "this over guessing from ctx/next_ctx when both are present), \"tone\" (overall mood/emotional "
     "trajectory \u2014 preserve it in word choices). Use these only to resolve ambiguity in the current "
     "lines; do NOT translate this key or invent facts beyond what it states.\n"
+    # Bu anahtar YALNIZ d\u00fcz sync prompt'unda belgeliydi; hybrid sistem
+    # prompt'u onar\u0131m yoluna oldu\u011fu gibi ge\u00e7ti\u011fi i\u00e7in model, kom\u015fu
+    # \u00e7evirilerin sadece referans oldu\u011funu bilmiyordu ve anlamlar\u0131n\u0131
+    # onar\u0131lan cue'ya \u00e7ekebiliyordu. Ortak yerde belgelenir.
+    '  "repair_neighbors" \u2014 (optional, single-cue repair only) already accepted '
+    "translations of OTHER cues from the SAME source sentence. Keep the information "
+    "split across ids: do NOT repeat a neighbor's meaning or pull its words into the "
+    'repaired cue. The optional "frag" field marks start/mid/end of that sentence.\n'
     '  "idioms"   \u2014 (optional) idiom mappings active in this chunk. Use these Turkish equivalents \u2014 do NOT translate literally.\n'
     '  "glossary" \u2014 (optional) fixed term mappings {source: target}. Use the given target by default. '
     "If the visible scene context clearly proves the glossary target has the wrong sense for this occurrence, "

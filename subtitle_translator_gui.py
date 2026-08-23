@@ -8221,9 +8221,25 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                     ) >= scene_gap_sec
                 except Exception:
                     pass
-                nxt = ([] if crosses_scene else
-                       [{"i": idx, "t": _clean_src(text)}
-                        for (idx, ts, text) in next_chunk[:lookahead_lines]])
+                # İleri bakış da yalnız chunk sınırındaki kesimde duruyordu;
+                # pencerenin İÇİNDEKİ sahne kesimlerini aşıp sonraki sahneyi
+                # bu chunk'ın bağlamı gibi gösteriyordu (936 chunk, %15).
+                nxt = []
+                if not crosses_scene:
+                    _nxt_prev_end = None
+                    for (idx, ts, text) in next_chunk[:lookahead_lines]:
+                        try:
+                            _cue_start = _ts_to_sec_gui(ts)
+                        except Exception:
+                            _cue_start = None
+                        if (_nxt_prev_end is not None and _cue_start is not None
+                                and (_cue_start - _nxt_prev_end) >= scene_gap_sec):
+                            break
+                        nxt.append({"i": idx, "t": _clean_src(text)})
+                        try:
+                            _nxt_prev_end = _ts_end_sec_gui(ts)
+                        except Exception:
+                            _nxt_prev_end = None
                 if nxt:
                     payload["next_ctx"] = nxt
             # Active glossary: only terms that appear in this chunk
@@ -8242,10 +8258,30 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                 prev_end_sec = _ts_end_sec_gui(chunk[-1][1])
             except Exception:
                 prev_end_sec = None
-            chunk_ctx = [
-                {"i": idx, "t": _clean_src(text)}
-                for (idx, ts, text) in chunk
-            ]
+            # Sahne kesimi YALNIZ chunk'lar arasında aranıyordu; chunk'ın
+            # KENDİ içindeki boşluklar işlenmeden bütün chunk bağlama
+            # ekleniyordu. 208 gerçek dosyada ölçüldü: 6.237 chunk'ın
+            # 1.309'unda (%21) `ctx` eski sahneleri taşıyor, 195 dosya
+            # etkileniyor. Aynı kuyruk `prev_scene`i de besliyor, orada
+            # 3.614 sahne sınırının 1.405'i (%38,9) birkaç eski sahneyi
+            # birden köprülüyordu. İç kesimde kuyruk sıfırlanınca ikisi de
+            # kapanıyor.
+            chunk_ctx = []
+            _ctx_prev_end = None
+            for (idx, ts, text) in chunk:
+                try:
+                    _cue_start = _ts_to_sec_gui(ts)
+                except Exception:
+                    _cue_start = None
+                if (_ctx_prev_end is not None and _cue_start is not None
+                        and (_cue_start - _ctx_prev_end) >= scene_gap_sec):
+                    prev_ctx = []
+                    chunk_ctx = []
+                chunk_ctx.append({"i": idx, "t": _clean_src(text)})
+                try:
+                    _ctx_prev_end = _ts_end_sec_gui(ts)
+                except Exception:
+                    _ctx_prev_end = None
             prev_ctx = ((prev_ctx + chunk_ctx)[-context_lines:]
                         if context_lines else [])
 
@@ -9713,6 +9749,14 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
 
         base_sys_prompt = system_prompt or _build_sync_system_prompt(
             src_lang, tgt_lang, schema, profanity)
+        # Onarım payload'ı ctx/next_ctx/repair_neighbors/frag taşıyor ama
+        # DIŞARIDAN verilen prompt bu anahtarları belgelemeyebilir: hybrid
+        # sistem prompt'u JSON_INSTRUCTION içermiyor ve `_run_sync_hybrid`
+        # onu onarıma olduğu gibi geçiyor. Model o zaman komşu çevirilerin
+        # yalnız referans olduğunu bilmiyor ve anlamlarını onarılan cue'ya
+        # çekebiliyor — daha önce içerik-sahipliği hatası olarak görülen sınıf.
+        if "Input JSON keys" not in base_sys_prompt:
+            base_sys_prompt += JSON_INSTRUCTION
         source_order = [
             (str(idx), _clean_src(text))
             for idx, text in raw_src_map.items()
@@ -32937,6 +32981,23 @@ class App(ctk.CTk):
                         "warn",
                     )
 
+                # Etiket geri yükleme ve eksik-çeviri işaretleme cue
+                # KİMLİĞİNE göre çalışır; cue birleştirme ise cue'ları
+                # 1..N yeniden numaralandırır. Sıra ters olduğu için
+                # birleştirilmiş #156'ya kaynak #156'nın etiketi
+                # uygulanıyordu, oysa o cue zaman olarak kaynak #198'di.
+                # 208 gerçek dosyada ölçüldü: birleştirme 190 dosyada
+                # çalışıyor ve 134.101 cue'nun 9.249'u (%6,9) sonucu
+                # değişen yanlış etiket alıyordu. Dört normal akış bunu
+                # zaten birleştirmeden ÖNCE yapıyor
+                # (`_finalize_translation_blocks`); manuel post-işlem
+                # tek istisnaydı.
+                if orig_cues:
+                    _raw_map = _raw_src_map_from_cues(orig_cues)
+                    blocks, _ = _fill_hata_with_source(
+                        blocks, _raw_map, log_fn=self._log)
+                    blocks = _restore_tags_blocks(blocks, _raw_map)
+
                 # Parçalı cue birleştirme (en son — dengeli 2 satır, senkron korunur)
                 # AI segmentasyon seçiliyse onun (anlamsal) sürümü, değilse hızlı algoritma.
                 if do_ai_merge and mm_key:
@@ -32985,11 +33046,6 @@ class App(ctk.CTk):
                         delivery_source_path=str(source_path or backup_path)))
                     failed_files.append(fp)
                     continue
-
-                if orig_cues:
-                    _raw_map = _raw_src_map_from_cues(orig_cues)
-                    blocks, _ = _fill_hata_with_source(blocks, _raw_map, log_fn=self._log)
-                    blocks = _restore_tags_blocks(blocks, _raw_map)
 
                 _delivery_blocks = _prepare_upload_ready_blocks(
                     blocks, tgt, self._log, source_cues=orig_cues,

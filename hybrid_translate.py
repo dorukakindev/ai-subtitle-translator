@@ -14502,8 +14502,25 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
             except Exception:
                 pass
             if include_lookahead:
-                next_items = [{"i": c.index, "t": _clean_source_text(c.text)}
-                              for c in chunks[ci + 1][:lookahead_lines]]
+                # Pencerenin İÇİNDEKİ sahne kesimi de durdurmalı; yalnız
+                # chunk sınırına bakmak sonraki sahneyi bu chunk'ın bağlamı
+                # gibi gösteriyordu (GUI ikiziyle aynı hata).
+                next_items = []
+                _nxt_prev_end = None
+                for c in chunks[ci + 1][:lookahead_lines]:
+                    try:
+                        _cue_start = _ts_to_sec(c.start)
+                    except Exception:
+                        _cue_start = None
+                    if (_nxt_prev_end is not None and _cue_start is not None
+                            and (_cue_start - _nxt_prev_end) >= scene_gap_sec):
+                        break
+                    next_items.append(
+                        {"i": c.index, "t": _clean_source_text(c.text)})
+                    try:
+                        _nxt_prev_end = _ts_to_sec(c.end)
+                    except Exception:
+                        _nxt_prev_end = None
                 if next_items:
                     payload["next_ctx"] = next_items
         # Lowercased chunk text — bu chunk için bir kez hesapla (glossary + idiom eşleşmesi paylaşır)
@@ -14542,8 +14559,26 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
 
         # Update for next iteration — enrich only the new lines with TM.
         # A context window can be wider than one chunk, so preserve its tail.
+        # Sahne kesimi yalnız chunk'lar ARASINDA aranıyordu; chunk'ın kendi
+        # içindeki boşluk işlenmeden bütün chunk bağlama giriyordu. Aynı
+        # kuyruk `prev_scene` köprüsünü de besliyor, orada birkaç eski sahne
+        # birden taşınıyordu. İç kesimde kuyruk sıfırlanınca ikisi de kapanır
+        # (GUI ikiziyle aynı düzeltme).
         chunk_ctx = []
+        _ctx_prev_end = None
         for c in chunk:
+            try:
+                _cue_start = _ts_to_sec(c.start)
+            except Exception:
+                _cue_start = None
+            if (_ctx_prev_end is not None and _cue_start is not None
+                    and (_cue_start - _ctx_prev_end) >= scene_gap_sec):
+                prev_ctx = []
+                chunk_ctx = []
+            try:
+                _ctx_prev_end = _ts_to_sec(c.end)
+            except Exception:
+                _ctx_prev_end = None
             item = {"i": c.index, "t": _clean_source_text(c.text)}
             if tm is not None and use_tm_context and context_fingerprint:
                 clean_source = _clean_source_text(c.text)

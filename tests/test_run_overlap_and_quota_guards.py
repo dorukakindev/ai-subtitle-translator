@@ -125,7 +125,13 @@ class PermanentQuotaFailureTest(unittest.TestCase):
 
         messages = create.call_args.kwargs["messages"]
         payload = __import__("json").loads(messages[1]["content"])
-        self.assertEqual(messages[0]["content"], "RICH FILE CONTEXT")
+        # Zengin prompt KULLANILMALI (jenerik olan degil), ama payload
+        # ctx/next_ctx/repair_neighbors tasidigi icin bu anahtarlari
+        # belgelemeyen bir prompta JSON_INSTRUCTION eklenir.
+        self.assertTrue(
+            messages[0]["content"].startswith("RICH FILE CONTEXT"))
+        self.assertIn("Input JSON keys", messages[0]["content"])
+        self.assertIn("repair_neighbors", messages[0]["content"])
         # ctx/next_ctx sistem istemindeki {"i","t"} şemasını taşır
         self.assertEqual(payload["ctx"], [{"i": "1", "t": "Before."}])
         self.assertEqual(payload["next_ctx"], [{"i": "3", "t": "After."}])
