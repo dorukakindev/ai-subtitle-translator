@@ -52,6 +52,13 @@ class LineBudgetReflowTest(unittest.TestCase):
         out = g.apply_line_breaks([("1", "ts", text)])[0][2]
         self.assertEqual(len(out.split(NL)), g._MAX_LINES)
 
+    def test_rebalance_does_not_restore_an_overwide_line(self):
+        text = ("ve şirketlerle bireylerin," + NL
+                + "istedikleri gibi harcama hakkı olduğunu")
+        out = g.apply_line_breaks([("1", "ts", text)])[0][2]
+        self.assertTrue(all(g._visible_len(line) <= g._LINE_THRESHOLD
+                            for line in out.split(NL)))
+
 
 class VisibleCpsTest(unittest.TestCase):
     """Madde 4: CPS görünmez biçim etiketlerini karakter sayıyordu.

@@ -3380,9 +3380,10 @@ def _redistribute_two_lines(text: str, threshold: int = None) -> str:
         # Hiçbir dağılım sınırı sağlamıyorsa (metin 2*eşikten uzun) modelin kendi
         # anlamsal bölmesi korunur; bu bir condense işidir, teslim taraması raporlar.
         return value
-    candidate = _rebalance_line_break(best[0] + "\n" + best[1])
+    balanced = best[0] + "\n" + best[1]
+    candidate = _rebalance_line_break(balanced)
     if any(_visible_len(line) > limit for line in candidate.split("\n")):
-        return value  # dengeleme kelimeyi geri taşıyıp sınırı yeniden aşıyor
+        return balanced  # dengeleme sınırı bozuyorsa genişliği koruyan dağılım kazanır
     return candidate
 
 def apply_line_breaks(blocks: list) -> list:
@@ -4329,7 +4330,19 @@ _DELIVERY_BARE_SOURCE_SDH_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
-    r"^(?:U+H+|APPLAUSE|CHEERING|SINGING(?:\s+(?:CONTINUES|ENDS))?|"
+    r"^(?:U+H+|APPLAUSE|CHEERING|APPROACHING\s+FOOTSTEPS|"
+    r"OMINOUS\s+CHORAL\s+MUSIC|CHAINSAW\s+SOUNDS?|CLANGING|THUNDER|"
+    r"SHRILL\s+SCREAM|CAT\s+YOWLS|BANGING(?:\s+STOPS)?|LOUD\s+HUM|"
+    r"WAILING\s+OF\s+AIR\s+RAID\s+SIRENS|CAR\s+ENGINE\s+STARTS\s+UP|"
+    r"GROWLING|SCREECHING\s+BRAKES|CLATTERING|"
+    r"SCREECHING\s+AND\s+SCREAMING|SCREAMING(?:\s+CONTINUES)?|"
+    r"SCREAMS\s+CONTINUE|EVERYBODY\s+SCREAMING|"
+    r"GUNSHOT|THEME\s+FROM\s+HALLOWEEN|"
+    r"(?:HE|SHE|THEY|EVERYBODY|WOMAN|MARK|THE\s+MONSTER)\s+(?:"
+    r"GRUNTS?|CHOKES?|SCREAMS?|GROANS?|WHIMPERS?|SQUAWKS?|COUGHS?|"
+    r"LAUGHS?|RETCHES?|WHISTLES?|GASPS?(?:\s+AND\s+SCREAMS)?|"
+    r"SINGS?\s+AND\s+WHISTLES?)|"
+    r"SINGING(?:\s+(?:CONTINUES|ENDS))?|"
     r"PEOPLE\s+PRAYING|SAYING\s+MANTRAS?|SINGING\s+MANTRAS?|"
     r"(?:MONASTIC\s+)?CHANTING|SHOUTING|HAMMERING|BABY\s+CRIES|"
     r"WATER\s+SPLASHES|EXPLOSIONS?|CALL\s+TO\s+PRAYER|"
@@ -4459,6 +4472,8 @@ def _is_delivery_credit(text: str) -> bool:
     label_match = _DELIVERY_CREDIT_LABEL_RE.fullmatch(value)
     if label_match:
         payload = label_match.group(1).strip()
+        if payload.startswith(("'", '"', "‘", "’", "“", "”")):
+            return False
         if (re.match(r"^\s*(?:translation|çeviri)\s*:", value, re.IGNORECASE)
                 and re.search(r"[.!?…]\s*$", payload)):
             return False
@@ -4916,7 +4931,7 @@ _MIDWORD_LEGITIMATE_PAIRS = frozenset({
     ("her", "sey"), ("bir", "sey"), ("hic", "kimse"), ("her", "biri"),
     ("her", "gun"), ("bir", "cok"), ("bir", "az"), ("her", "hangi"),
     ("bir", "kac"), ("hic", "bir'"), ("o", "kadar"), ("su", "an"),
-    ("kiz", "kardes"),
+    ("kiz", "kardes"), ("good", "will"), ("dot", "com"),
 })
 _MIDWORD_MIN_FILE_HITS = 2
 
@@ -5454,17 +5469,22 @@ def fix_common_noun_apostrophes(text: str) -> tuple[str, int]:
     kesmesiz alır ('durası', 'pubise'). Gövde tamamen küçük harfliyse özel ad
     değildir. Ek, tanınan Türkçe çekim eklerinden biri olmalı — 'd'Artagnan'
     gibi yabancı yazımlar (gövde <3 harf) etkilenmez."""
+    value = str(text or "")
     changed = 0
 
     def _replace(match):
         nonlocal changed
         stem, suffix = match.group(1), match.group(2)
+        stem_start = match.start(1)
+        if (stem_start >= 2 and value[stem_start - 1] == "."
+                and value[stem_start - 2].isalnum()):
+            return match.group(0)  # alan adı: Facebook.com'u, example.org'dan
         if not _TURKISH_SUFFIX_AFTER_APOSTROPHE.fullmatch(suffix):
             return match.group(0)
         changed += 1
         return f"{stem}{suffix}"
 
-    return _COMMON_NOUN_APOSTROPHE_RE.sub(_replace, str(text or "")), changed
+    return _COMMON_NOUN_APOSTROPHE_RE.sub(_replace, value), changed
 
 
 # Büyük harfle yazılmış ORTAK ad + kesme işareti: "Dura'sı" (#264), "Lamina'yı".
@@ -5496,10 +5516,16 @@ def fix_source_lowercase_apostrophes(text: str, source_text: str) -> tuple[str, 
         changed += 1
         # Satır başındaki büyük harf meşrudur, korunur; kesme her hâlde düşer.
         line_start = value.rfind("\n", 0, match.start()) + 1
-        # Diyalog çizgisi ve açılış tırnağı da satır başıdır: '- Pain'i' →
-        # '- paini' oluyordu, cümlenin ilk harfi küçülüyordu (Part 2, madde 6).
-        prefix = value[line_start:match.start()].strip(" -–—\"'“”«»…")
-        at_line_start = not prefix
+        # Sıradan satır kırılması cümle başı değildir: "görüşlerimizi\nWeb'de"
+        # biçimi "webde" olmalı. Diyalog çizgisi/açılış tırnağıyla başlayan yeni
+        # konuşmacı satırıysa gerçek başlangıçtır ve büyük harf korunur.
+        line_prefix = value[line_start:match.start()]
+        before = value[:match.start()].rstrip()
+        cue_prefix = before.strip(" -–—\"'“”«»…\n\t")
+        marked_line_start = bool(re.fullmatch(
+            r"\s*[-–—\"'“”«»…]+\s*", line_prefix))
+        sentence_start = bool(re.search(r"[.!?…][\"'”»)]?\s*$", before))
+        at_line_start = not cue_prefix or marked_line_start or sentence_start
         return f"{stem if at_line_start else stem.lower()}{suffix}"
 
     return _CAPITAL_APOSTROPHE_RE.sub(_replace, value), changed
@@ -5698,6 +5724,9 @@ def _partial_echo_ids(blocks, src_map=None) -> list:
 _DANGLING_VERBAL_NOUN_RE = re.compile(
     r"m[ae]s[ıi]n(?:[ae]|[ıi]|d[ae]|d[ae]n)$", re.UNICODE)
 _SENTENCE_END_PUNCT_RE = re.compile(r"[.!?…][\"'”’»]?$")
+_PREVIOUS_PRESENT_PREDICATE_RE = re.compile(
+    r"[ıiuü]yor(?:um|sun|uz|sunuz|lar|lar mı|lar mi|lar mu|lar mü)?$",
+    re.IGNORECASE)
 
 
 def _missing_predicate_ids(blocks, src_map=None) -> list:
@@ -5725,6 +5754,12 @@ def _missing_predicate_ids(blocks, src_map=None) -> list:
         if (source_value.endswith(("...", "…"))
                 and value.endswith(("...", "…"))):
             continue
+        if pos:
+            previous = _align_visible(str(rows[pos - 1][2] or "")).strip()
+            previous_words = previous.rstrip(" ,;:—–-\"'”’»").split()
+            if (previous_words and _PREVIOUS_PRESENT_PREDICATE_RE.search(
+                    previous_words[-1].casefold())):
+                continue
         next_value = _align_visible(str(rows[pos + 1][2] or "")).strip()
         first = next((char for char in next_value if char.isalpha()), "")
         if first and first.isupper():
@@ -5844,7 +5879,8 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
             continue
         # Türkçe kanonlar YALNIZ Türkçe hedefte geçerlidir; Almanca/Rusça
         # hedefe 'Sisyphus → Sisifos' taşımak yanlış olur (madde 3).
-        canonical = (CANONICAL_TURKISH_NAMES.get(key)
+        canonical = ((CANONICAL_TURKISH_NAMES.get(key)
+                      or FOREIGN_EXONYM_MAP.get(key))
                      if _turkish_target(target_language) else None)
         if canonical:
             locked[form] = canonical
@@ -6478,22 +6514,37 @@ def _normalize_delivery_ocr_quote_markers(blocks: list, src_map: dict) -> tuple[
                 changed += updated_line != value_line
                 value_lines[line_no] = updated_line
             value = "\n".join(value_lines)
-        starts_quote = bool(re.match(r"^\s*'", source)) and not bool(
+        starts_quote = bool(re.match(
+            r"^\s*(?:(?:TRANSLATOR|INTERPRETER)\s*:\s*)?'",
+            source, re.IGNORECASE)) and not bool(
             _LEADING_APOSTROPHE_CONTRACTION_RE.match(source))
-        ends_quote = bool(re.search(r"'{2}[.!?]?\s*$", source))
+        ends_quote = bool(re.search(r"'{2}[.!?]?\s*$", source)) or bool(
+            (quote_open or starts_quote)
+            and re.search(r"[,;:.!?]'\s*$", source))
         # OCR sometimes uses a trailing # as a quote marker, but C# is a
         # real dialogue/programming token and must survive delivery cleanup.
         ends_marker = bool(re.search(r"#\s*$", source)) and not bool(
             re.search(r"\bC#\s*$", source, re.IGNORECASE))
         if starts_quote:
-            updated = re.sub(r'^\s*(?:[\'"“”]+\s*)?', '"', value, count=1)
+            if quote_open:
+                updated = re.sub(r'^\s*[\'"“”]+\s*', '', value, count=1)
+            else:
+                updated = re.sub(r'^\s*(?:[\'"“”]+\s*)?', '"', value, count=1)
             changed += updated != value
             value = updated
-            quote_open = not ends_quote
             if ends_quote:
-                updated = re.sub(r'[\'"“”]+\s*$', '"', value, count=1)
+                if re.search(r'[\'"“”]+\s*$', value):
+                    updated = re.sub(r'[\'"“”]+\s*$', '"', value, count=1)
+                else:
+                    updated = value.rstrip() + '"'
                 changed += updated != value
                 value = updated
+                quote_open = False
+            else:
+                updated = re.sub(r"'\s*$", "", value).rstrip()
+                changed += updated != value
+                value = updated
+                quote_open = True
         if ends_marker:
             if re.search(r"#\s*$", value):
                 closer = '"' if quote_open else "."
@@ -6501,8 +6552,9 @@ def _normalize_delivery_ocr_quote_markers(blocks: list, src_map: dict) -> tuple[
                 changed += updated != value
                 value = updated
             quote_open = False
-        elif quote_open and re.search(r"'{2}\s*$", value):
-            value = re.sub(r"'{2}\s*$", '"', value).rstrip()
+        elif (quote_open and ends_quote
+              and re.search(r"['\"”]+\s*$", value)):
+            value = re.sub(r"['\"”]+\s*$", '"', value).rstrip()
             changed += 1
             quote_open = False
         elif quote_open and re.search(r'["”]\s*$', value):
@@ -9091,7 +9143,23 @@ def _chunk_content_owner_mismatch_ids(items: list, owner_src_map: dict) -> set[s
         }
         own_present = bool(own & target_tokens) or any(
             _related_to_own(token) for token in target_tokens)
-        if foreign and own and not own_present:
+        foreign_owners = {
+            owner for token in foreign for owner in token_owners.get(token, ())
+            if owner != idx
+        }
+        adjacent_continuation = False
+        if len(foreign_owners) == 1 and idx.isdigit():
+            foreign_owner = next(iter(foreign_owners))
+            foreign_source = str(owner_src_map.get(foreign_owner, "") or "").lstrip()
+            adjacent_continuation = (
+                foreign_owner.isdigit()
+                and abs(int(foreign_owner) - int(idx)) == 1
+                and bool(re.match(
+                    r"(?i)(?:and|as|because|but|for|from|if|in|of|on|or|so|than|"
+                    r"that|then|to|when|where|which|who|whose|with)\b",
+                    foreign_source))
+            )
+        if foreign and own and not own_present and not adjacent_continuation:
             mismatched.add(idx)
     return mismatched
 
@@ -16763,6 +16831,10 @@ def _delivery_garble_ids(blocks: list, source_map: dict) -> list[str]:
         for word in re.findall(r"[^\W\d_]+", visible, re.UNICODE):
             source_words.add(word.lower())
 
+    short_source_suffixes = {
+        "web": {"i", "in", "e", "de", "den", "deki", "le", "ler", "leri", "lerin"},
+    }
+
     def _from_source(token: str) -> bool:
         folded = str(token or "").lower()
         if not folded:
@@ -16772,6 +16844,10 @@ def _delivery_garble_ids(blocks: list, source_map: dict) -> list[str]:
         # Türkçe ek almış hâli ('carnyxlerin'): gövdeyi kısaltarak ara.
         for size in range(len(folded), 3, -1):
             if folded[:size] in source_words:
+                return True
+        for stem, suffixes in short_source_suffixes.items():
+            if (stem in source_words and folded.startswith(stem)
+                    and folded[len(stem):] in suffixes):
                 return True
         return False
 

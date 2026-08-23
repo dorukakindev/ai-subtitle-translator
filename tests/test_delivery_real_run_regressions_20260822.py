@@ -23,6 +23,39 @@ class DeliveryRealRunRegressionsTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertTrue(gui._source_cue_is_delivery_removable(value))
 
+    def test_horror_run_bare_sdh_labels_are_strongly_removable(self):
+        labels = (
+            "CHAINSAW SOUNDS", "CLANGING", "THUNDER",
+            "APPROACHING FOOTSTEPS", "HE GRUNTS", "HE CHOKES",
+            "SHE SCREAMS", "HE GROANS", "SHE WHIMPERS", "SHE SQUAWKS",
+            "HE COUGHS", "THE MONSTER SCREAMS", "CAR ENGINE STARTS UP",
+            "GROWLING", "SCREECHING BRAKES", "CLATTERING",
+            "SCREECHING AND SCREAMING", "SCREAMING", "GUNSHOT",
+            "SHRILL SCREAM", "CAT YOWLS", "BANGING", "BANGING STOPS",
+            "EVERYBODY SCREAMING", "OMINOUS CHORAL MUSIC", "MARK LAUGHS",
+            "SCREAMS CONTINUE", "HE RETCHES", "SHE GASPS AND SCREAMS",
+            "THEME FROM HALLOWEEN", "SHE SINGS AND WHISTLES", "LOUD HUM",
+            "WAILING OF AIR RAID SIRENS",
+        )
+        for value in labels:
+            with self.subTest(value=value):
+                self.assertTrue(gui._source_cue_is_delivery_removable(value))
+
+    def test_horror_run_geographies_are_locked_to_turkish_exonyms(self):
+        source = (
+            "London welcomed them. Later London changed. They left London. "
+            "Britain objected. Later Britain agreed. They returned to Britain. "
+            "Iran protested. Later Iran responded. They travelled through Iran. "
+            "Scotland watched. Later Scotland spoke. They returned to Scotland. "
+            "Wikipedia grew. Later Wikipedia changed. They edited Wikipedia."
+        )
+        locked = gui.auto_locked_proper_nouns(source)
+        self.assertEqual(locked.get("London"), "Londra")
+        self.assertEqual(locked.get("Britain"), "Britanya")
+        self.assertEqual(locked.get("Iran"), "İran")
+        self.assertEqual(locked.get("Scotland"), "İskoçya")
+        self.assertEqual(locked.get("Wikipedia"), "Vikipedi")
+
     def test_html_wrapped_and_hash_only_sdh_sources_are_removed(self):
         cases = (
             ("<i>[Cup Clatters]</i>", "<i>[Cup Clatters]</i>"),

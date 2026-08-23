@@ -113,6 +113,17 @@ class GarbleIdsTest(unittest.TestCase):
         self.assertEqual(
             gui._delivery_garble_ids(blocks, {"1": "Hello world"}), [])
 
+    def test_web_with_turkish_suffixes_is_not_garble(self):
+        blocks = [(1, "00:00:01,000 --> 00:00:02,000",
+                   "Webi inceliyor, webde yazıyor ve webden indiriyor.")]
+        sources = {
+            "1": "He studies the web and writes on the web every day",
+            "2": ("the quick brown fox jumps over a lazy dog while seven bright "
+                  "ships sail past every harbour wall and many people watch them "
+                  "from their windows"),
+        }
+        self.assertEqual(gui._delivery_garble_ids(blocks, sources), [])
+
 
 class DotlessIRuleTest(unittest.TestCase):
     """R9: ALL-CAPS kaynağın Türkçe kurallarıyla küçültülmesi."""

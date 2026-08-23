@@ -50,6 +50,42 @@ class TerraGuiRecoveryHardeningTest(unittest.TestCase):
             blocks, gui._delivery_source_map(blocks, source))
         self.assertEqual(result[0][2], "C# biliyorum.")
 
+    def test_continued_ocr_quote_is_not_reopened_in_every_cue(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Bence hükümet,"),
+            ("2", "00:00:02,000 --> 00:00:03,000", "ama siyaset açısından'"),
+            ("3", "00:00:03,000 --> 00:00:04,000", "kaygı duyuyor."),
+        ]
+        source = {
+            "1": "TRANSLATOR: 'I think the Government wants to",
+            "2": "'but in terms of politics",
+            "3": "'they are worried.''",
+        }
+        result, _count = gui._normalize_delivery_ocr_quote_markers(blocks, source)
+        self.assertEqual([text for _idx, _ts, text in result], [
+            '"Bence hükümet,',
+            "ama siyaset açısından",
+            'kaygı duyuyor."',
+        ])
+
+    def test_single_apostrophe_ocr_quote_closes_as_double_quote(self):
+        blocks = [
+            ("1", "00:00:01,000 --> 00:00:02,000", "Anne, kan!'"),
+            ("2", "00:00:03,000 --> 00:00:04,000", "Bu ilk satır,"),
+            ("3", "00:00:04,000 --> 00:00:05,000", "ve bu son satır.'"),
+        ]
+        source = {
+            "1": "'Mother, blood!'",
+            "2": "'This is the first line,",
+            "3": "'and this is the last line.'",
+        }
+        result, _count = gui._normalize_delivery_ocr_quote_markers(blocks, source)
+        self.assertEqual([text for _idx, _ts, text in result], [
+            '"Anne, kan!"',
+            '"Bu ilk satır,',
+            've bu son satır."',
+        ])
+
     def test_non_turkish_writer_does_not_latinize_cyrillic(self):
         with tempfile.TemporaryDirectory() as root:
             output = Path(root) / "ru.srt"

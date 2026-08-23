@@ -65,6 +65,16 @@ class MissingPredicateTest(unittest.TestCase):
         }
         self.assertEqual(g._missing_predicate_ids(blocks, src_map), [])
 
+    def test_previous_finite_predicate_owns_verbal_noun_complement(self):
+        for previous, complement in (
+                ("Onun dönüşümüne şaşırmıyor;", "bir silaha dönüşmesine."),
+                ("En teknoloji meraklıları bile garip buluyor,",
+                 "çocuklarının ekran başında daha rahat olmasını.")):
+            with self.subTest(complement=complement):
+                blocks = [("1", "ts", previous), ("2", "ts", complement),
+                          ("3", "ts", "Sonraki cümle burada başlıyor.")]
+                self.assertEqual(g._missing_predicate_ids(blocks), [])
+
 
 class AddressRegisterMixTest(unittest.TestCase):
     def test_false_stems_do_not_count_as_informal(self):
@@ -157,6 +167,18 @@ class CapitalisedCommonNounApostropheTest(unittest.TestCase):
             "Lamina'yı çıkardılar.", "They removed the lamina.")
         self.assertEqual(out, "Laminayı çıkardılar.")
 
+    def test_wrapped_continuation_is_not_treated_as_sentence_start(self):
+        out, _ = g.fix_source_lowercase_apostrophes(
+            "Ve görüşlerimizi de\nWeb'de ifade ediyoruz.",
+            "And the web is where we express opinion.")
+        self.assertEqual(out, "Ve görüşlerimizi de\nwebde ifade ediyoruz.")
+
+    def test_real_sentence_after_period_keeps_its_capital(self):
+        out, _ = g.fix_source_lowercase_apostrophes(
+            "Bunu mümkün kılan bu. Web'i çok kullanıyorum.",
+            "That made it possible. I use the web a lot.")
+        self.assertEqual(out, "Bunu mümkün kılan bu. Webi çok kullanıyorum.")
+
     def test_proper_noun_is_untouched(self):
         for tr, src in (("Bugün Ankara'ya gitti.", "He went to Ankara today."),
                         ("O gün Lee'nin evindeydi.", "He was at Lee's house."),
@@ -172,6 +194,11 @@ class CapitalisedCommonNounApostropheTest(unittest.TestCase):
                          "laminasını aldı")
         self.assertEqual(g.fix_common_noun_apostrophes("d'Artagnan geldi")[0],
                          "d'Artagnan geldi")
+
+    def test_domain_suffix_keeps_apostrophe(self):
+        for value in ("Facebook.com'u açtım", "example.org'dan indirdim"):
+            with self.subTest(value=value):
+                self.assertEqual(g.fix_common_noun_apostrophes(value), (value, 0))
 
 
 class RepeatedHeadSyllableTest(unittest.TestCase):

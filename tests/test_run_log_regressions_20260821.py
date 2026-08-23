@@ -32,6 +32,16 @@ class RunLogRegressionTests(unittest.TestCase):
             ["154"],
         )
 
+    def test_title_and_dotcom_spelling_variants_are_not_midword_breaks(self):
+        blocks = [
+            ("1", "ts", "Good Will Hunting'de oynadı."),
+            ("2", "ts", "dot-com patlaması sırasında büyüdü."),
+        ]
+        self.assertEqual(gui._midword_space_ids(blocks, {
+            "1": "He acted in Goodwill Hunting.",
+            "2": "It grew during the dotcom boom.",
+        }), [])
+
     def test_owner_detector_ignores_dutch_kan_and_compound_roentgen(self):
         items = [
             {"i": "57", "t": "Röntgen gösterileri daha çok insan çekti."},

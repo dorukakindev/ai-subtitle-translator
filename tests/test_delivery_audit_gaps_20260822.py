@@ -212,6 +212,27 @@ class OwnerMismatchFalseAlarmTest(unittest.TestCase):
             {"i": "2", "t": "Marcus dün Berlin'e gitti."}])
         self.assertIn("2", flagged)
 
+    def test_adjacent_continuation_may_redistribute_proper_names(self):
+        owner = {
+            "375": "Rather insane to react more strongly to Jerry Springer",
+            "376": "than to Hitler and Saddam Hussein",
+        }
+        flagged = self._mismatch(owner, [{
+            "i": "375",
+            "t": "Jerry Springer'a, Hitler ve Saddam Hussein'den daha güçlü",
+        }])
+        self.assertEqual(flagged, set())
+
+    def test_adjacent_complete_sentence_shift_is_still_caught(self):
+        owner = {
+            "1": "Marcus went to Berlin yesterday.",
+            "2": "Sophie stayed behind in Vienna.",
+        }
+        flagged = self._mismatch(owner, [
+            {"i": "2", "t": "Marcus dün Berlin'e gitti."},
+        ])
+        self.assertIn("2", flagged)
+
 class SdhResidueNeedsAnExplicitMarkerTest(unittest.TestCase):
     """Kaynağın "kaldırılabilir" olması tek başına kalıntı kanıtı değil.
 
@@ -260,6 +281,13 @@ class SdhResidueNeedsAnExplicitMarkerTest(unittest.TestCase):
 
 
 class UploadCleanupTitleAndSponsorTest(unittest.TestCase):
+    def test_translator_label_with_quoted_dialogue_is_not_a_credit(self):
+        self.assertFalse(g._is_delivery_credit(
+            'ÇEVİRMEN: "Bence\nHükümet bunu istiyor'))
+        self.assertFalse(g._is_delivery_credit(
+            "TRANSLATOR: 'My role was such\nthat I was an initiator"))
+        self.assertTrue(g._is_delivery_credit("Çevirmen: Ahmet Yılmaz"))
+
     def test_translated_caps_title_card_survives_upload_cleanup(self):
         source = [("1", "00:00:01,000 --> 00:00:03,000",
                    "<b>INSTINCT UMAN</b>")]
