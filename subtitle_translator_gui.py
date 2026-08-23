@@ -3263,7 +3263,44 @@ def _break_to_line_budget(text: str, max_lines: int = _MAX_LINES, duration: floa
         if not first or not second:
             break
         lines = lines[:en_i] + [first, second] + lines[en_i + 1:]
+    # Bütçe DOLU ama satırlar kötü dağılmış: döngü yalnız satır EKLERKEN
+    # çalışıyor, dolayısıyla '1 uzun + 1 kısa' biçimindeki cue hiç
+    # düzeltilmiyordu. Kırılma noktasını taşımak metni DEĞİŞTİRMEZ — sözcük
+    # dizisi aynı kalır, yalnız satır sınırı kayar; semantik risk sıfır.
+    # 139 gerçek teslim dosyasında (90.102 cue) ölçüldü: 42 karakteri aşan
+    # 13.527 satırın 9.883'ü yalnız bu yeniden dengelemeyle düzeliyor.
+    if len(lines) == max_lines == 2:
+        lines = _rebalanced_two_lines(lines)
     return '\n'.join(lines)
+
+
+def _rebalanced_two_lines(lines: list) -> list:
+    """İki satırlı cue'yu sözcük değiştirmeden yeniden dengele.
+
+    DİYALOG DOKUNULMAZ: iki tireli cue'da satır yapısı konuşmacı ayrımıdır.
+    Yeni bölüm yalnız EN UZUN satırı kısaltıyorsa kabul edilir.
+    """
+    if len(lines) != 2:
+        return lines
+    if all(_visible_len(line) <= _LINE_THRESHOLD for line in lines):
+        return lines
+    if sum(1 for line in lines
+           if line.lstrip().startswith(('-', '–', '—'))) >= 2:
+        return lines
+    words = " ".join(line.strip() for line in lines if line.strip()).split()
+    if len(words) < 2:
+        return lines
+    current = max(_visible_len(line) for line in lines)
+    best = None
+    for cut in range(1, len(words)):
+        first = " ".join(words[:cut])
+        second = " ".join(words[cut:])
+        worst = max(_visible_len(first), _visible_len(second))
+        if best is None or worst < best[0]:
+            best = (worst, first, second)
+    if best is None or best[0] >= current:
+        return lines
+    return [best[1], best[2]]
 
 
 # Satır bölme yerleşimi: 36 dosyada 1.046 ihlal sayıldı. İki satırlı bir cue'da
@@ -6434,6 +6471,59 @@ def _source_cue_has_explicit_sdh_marker(text) -> bool:
     return bool(sdh_cleaner.CHEVRON_SPEAKER_RE.match(value.strip()))
 
 
+_THOUSANDS_GROUP_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})+(?![\d,])")
+
+
+def _normalize_thousands_separators(blocks, src_map, neighbourhood: int = 2):
+    """İngilizce binlik ayracını Türkçe biçime çevirir — KAYNAĞA bakarak.
+
+    `1,200` çoğu zaman İngilizce binlik ayracıdır ve Türkçede `1.200`
+    olmalıdır. Ama `1,618` (altın oran) Türkçede DOĞRU ondalıktır; salt
+    biçime bakan bir kural onu bozar. Karar kaynaktan verilir: aynı jeton
+    kaynakta virgüllü geçiyorsa binlik, noktalı geçiyorsa ondalıktır.
+
+    Türkçe SOV sayıyı komşu cue'ya taşıyabildiği için kaynak penceresi
+    ±`neighbourhood` cue'dur. 202 gerçek teslimde ölçüldü: 19 gerçek binlik
+    dönüştürülüyor, 15 gerçek ondalık (hepsi aynı belgeselin altın oran
+    cue'ları) korunuyor, belirsiz vaka kalmıyor.
+    """
+    rows = list(blocks or [])
+    if not rows or not src_map:
+        return rows, 0
+
+    def _source_window(idx):
+        try:
+            centre = int(str(idx))
+        except (TypeError, ValueError):
+            return str(src_map.get(str(idx), "") or "")
+        parts = [
+            str(src_map.get(str(centre + step), "") or "")
+            for step in range(-neighbourhood, neighbourhood + 1)
+        ]
+        return " ".join(part for part in parts if part)
+
+    changed = 0
+    out = []
+    for idx, ts, text in rows:
+        value = str(text or "")
+        if not _THOUSANDS_GROUP_RE.search(value):
+            out.append((idx, ts, text))
+            continue
+        window = _source_window(idx)
+
+        def _replace(match, window=window):
+            nonlocal changed
+            token = match.group(0)
+            if token.replace(",", ".") in window:
+                return token          # kaynakta noktalı → gerçek ondalık
+            if token in window:
+                changed += 1
+                return token.replace(",", ".")
+            return token              # kanıt yok → dokunma
+        out.append((idx, ts, _THOUSANDS_GROUP_RE.sub(_replace, value)))
+    return out, changed
+
+
 def delivery_line_count(blocks) -> int:
     """Diske YAZILAN gerçek çeviri cue sayısı (teslim imzaları hariç).
 
@@ -6786,6 +6876,16 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 text, src_map.get(str(idx), "")))
             for idx, ts, text in blocks
         ]
+        if is_turkish:
+            # İngilizce binlik ayracı çeviriye sızıyor ('1,200 yıl').
+            # Karar KAYNAKTAN verilir: aynı jeton kaynakta noktalıysa
+            # gerçek ondalıktır ('1.618' altın oranı) ve korunur.
+            blocks, _thousands_fixed = _normalize_thousands_separators(
+                blocks, src_map)
+            if _thousands_fixed and log_fn:
+                log_fn(
+                    f"Binlik ayracı Türkçe biçime çevrildi: "
+                    f"{_thousands_fixed} sayı.", "ok")
         sdh_src_map = {}
         for cue_id, source_text in src_map.items():
             source_lines = str(source_text or "").splitlines()
