@@ -206,9 +206,23 @@ class ProjectMemory:
 
     # ── Glossary ──────────────────────────────────────────────────────────────
 
+    # Prompt ipucu terim listesini KIRPIYOR; kilitli kume ise
+    # kirpilmiyordu. Modele hic soylenmemis bir terim dogrulayiciya
+    # dayatiliyor: yanlis locked_term_violation redleri ve gereksiz
+    # terim-normalizasyonu adaylari. Kullanicinin gercek dosyasinda
+    # 49 terimin 19'u bu durumdaydi.
+    MAX_HINT_TERMS = 30
+
     def get_glossary(self) -> dict:
+        """Sozlugun TAMAMI — gosterim ve duzenleme icin."""
         with self._lock:
             return dict(self._data.get("glossary", {}))
+
+    def get_locked_glossary(self) -> dict:
+        """Cevirilerde DAYATILACAK kume: prompt ipucuyla AYNI kesme."""
+        with self._lock:
+            items = list((self._data.get("glossary") or {}).items())
+            return dict(items[:self.MAX_HINT_TERMS])
 
     def update_glossary(self, new_terms: dict):
         """Yeni terim çiftlerini proje sözlüğüne ekler (mevcut girişler korunur)."""
@@ -285,7 +299,9 @@ class ProjectMemory:
             parts = []
             gl = self.get_glossary()
             if gl:
-                term_lines = [f"  {s} → {t}" for s, t in list(gl.items())[:30]]
+                term_lines = [
+                    f"  {s} → {t}"
+                    for s, t in list(gl.items())[:self.MAX_HINT_TERMS]]
                 parts.append("PROJE TERİMLERİ (bu çeviride tutarlı kullan):\n" + "\n".join(term_lines))
             chars = self.get_characters()
             if chars:

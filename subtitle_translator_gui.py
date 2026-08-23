@@ -31709,7 +31709,9 @@ class App(ctk.CTk):
                 file_pm = getattr(self, "_pm", None)
             if file_pm is not None:
                 try:
-                    project_terms = file_pm.get_glossary() or {}
+                    # Kilitli kume prompt ipucundan BUYUK olamaz
+                    # (bkz. ProjectMemory.get_locked_glossary).
+                    project_terms = file_pm.get_locked_glossary() or {}
                 except RequestCancelled:
                     raise
                 except Exception:

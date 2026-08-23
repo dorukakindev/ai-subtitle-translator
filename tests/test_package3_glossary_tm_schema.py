@@ -84,7 +84,7 @@ class TestPackage3GlossaryAndTmSchema(unittest.TestCase):
         app._get_file_glossary = MagicMock(return_value="")
 
         pm = MagicMock()
-        pm.get_glossary.return_value = {
+        pm.get_locked_glossary.return_value = {
             "sword": "kılıç",
             "shield": "kalkan",
             "Caesar": "Caesar (Sezar)",

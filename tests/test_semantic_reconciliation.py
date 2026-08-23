@@ -1006,7 +1006,7 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
     def test_locked_terms_merge_file_project_and_series_memory(self):
         app = gui.App.__new__(gui.App)
         app._pm = MagicMock()
-        app._pm.get_glossary.return_value = {"Project Term": "Proje Terimi"}
+        app._pm.get_locked_glossary.return_value = {"Project Term": "Proje Terimi"}
         app._get_file_glossary = MagicMock(return_value="glossary.json")
         app._get_file_schema = MagicMock(return_value={
             "glossary": {"Schema Term": "Şema Terimi"}
@@ -1034,7 +1034,7 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
     def test_explicit_file_glossary_overrides_auto_memory_conflict(self):
         app = gui.App.__new__(gui.App)
         app._pm = MagicMock()
-        app._pm.get_glossary.return_value = {"Oracle": "Proje Kehaneti"}
+        app._pm.get_locked_glossary.return_value = {"Oracle": "Proje Kehaneti"}
         app._get_file_glossary = MagicMock(return_value="glossary.json")
         app._get_file_schema = MagicMock(return_value={
             "glossary": {"Oracle": "Şema Kehaneti"}
@@ -1059,7 +1059,7 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
     def test_locked_terms_fail_closed_when_sanitizer_crashes(self):
         app = gui.App.__new__(gui.App)
         app._pm = MagicMock()
-        app._pm.get_glossary.return_value = {"Project": "Proje"}
+        app._pm.get_locked_glossary.return_value = {"Project": "Proje"}
         app._get_file_glossary = MagicMock(return_value="glossary.json")
         app._get_file_schema = MagicMock(return_value={
             "glossary": {"Schema": "Şema"}
@@ -1078,7 +1078,7 @@ class SemanticGuiIntegrationTest(unittest.TestCase):
     def test_locked_terms_propagates_project_memory_cancellation(self):
         app = gui.App.__new__(gui.App)
         app._pm = MagicMock()
-        app._pm.get_glossary.side_effect = gui.RequestCancelled("cancelled")
+        app._pm.get_locked_glossary.side_effect = gui.RequestCancelled("cancelled")
         app._get_file_glossary = MagicMock(return_value="")
         app._get_file_schema = MagicMock(return_value={})
         app._effective_file_source_language = MagicMock(return_value="English")

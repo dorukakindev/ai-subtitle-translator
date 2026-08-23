@@ -108,5 +108,49 @@ class SeriesTermCutTest(unittest.TestCase):
                       inspect.getsource(sm.SeriesMemory.get_terms))
 
 
+
+class ProjectGlossaryCutTest(unittest.TestCase):
+    """Proje hafızasında da kilitli küme ipucundan büyüktü.
+
+    Kullanıcının gerçek `.project_memory` dosyası: 49 terim, ipucunda 30 —
+    19 terim modele hiç söylenmeden dayatılıyordu.
+    """
+
+    def _memory(self, count):
+        import project_memory as pm
+        with TemporaryDirectory() as td:
+            memory = pm.ProjectMemory(td)
+            memory.update_glossary(
+                {"Term%03d" % i: "Terim%03d" % i for i in range(count)})
+            return memory, memory.build_context_hint()
+
+    def test_the_locked_set_is_capped(self):
+        import project_memory as pm
+        memory, _hint = self._memory(49)
+        self.assertEqual(len(memory.get_glossary()), 49)
+        self.assertEqual(len(memory.get_locked_glossary()),
+                         pm.ProjectMemory.MAX_HINT_TERMS)
+
+    def test_every_locked_term_is_in_the_hint(self):
+        memory, hint = self._memory(49)
+        for source in memory.get_locked_glossary():
+            with self.subTest(source=source):
+                self.assertIn(source, hint)
+
+    def test_the_full_glossary_is_still_available_for_display(self):
+        memory, _hint = self._memory(49)
+        self.assertEqual(len(memory.get_glossary()), 49)
+
+    def test_a_small_glossary_is_unaffected(self):
+        memory, _hint = self._memory(5)
+        self.assertEqual(memory.get_locked_glossary(), memory.get_glossary())
+
+    def test_the_run_uses_the_capped_accessor(self):
+        import inspect
+        import subtitle_translator_gui as g
+        source = inspect.getsource(g.App._get_locked_terms_dict)
+        self.assertIn("get_locked_glossary()", source)
+        self.assertNotIn("file_pm.get_glossary()", source)
+
 if __name__ == "__main__":
     unittest.main()
