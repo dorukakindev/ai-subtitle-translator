@@ -32,11 +32,11 @@ python -c "import subtitle_translator_gui as g; a=g.App(); a.update_idletasks();
 
 ## Architecture
 
-### Three translation flows (all in `subtitle_translator_gui.py`, ~6400 lines)
+### Four translation flows (all in `subtitle_translator_gui.py`, ~43k lines)
 `_start()` dispatches by mode × hybrid toggle:
 - **`_run_sync`** — plain sync: `ThreadPoolExecutor`, one `chat.completions` call per chunk.
 - **`_run_batch` → `_wait_batch` → `_write_results`** — OpenAI Batch API (50% cheaper, async). `_resume_batches` recovers a crashed batch run from `batch_id.txt` + `batch_fmap_<id>.json`.
-- **`_run_sync_hybrid` / `_run_hybrid`** — "Yardımcı Analiz" on: a pre-pass analyzes the whole file (characters, tone, terms, pronoun/sen-siz map, scene emotions) and injects that into the translation prompt; quality passes run after.
+- **`_run_sync_hybrid` / `_run_hybrid`** — "Yardımcı Analiz" on (`_run_sync_hybrid` is the flow the project owner actually runs): a pre-pass analyzes the whole file (characters, tone, terms, pronoun/sen-siz map, scene emotions) and injects that into the translation prompt; quality passes run after.
 
 When extending, **a change usually has to be applied to all relevant flows** — they share helpers but each has its own write/TM/report block. Grep for the existing feature's call site to find every flow.
 
