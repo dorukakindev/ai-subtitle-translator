@@ -12631,6 +12631,12 @@ def validate_semantic_reconciliation_candidate(
     # revalidated against itself. That used to discard the before→after semantic
     # comparison and allowed a fluent but unrelated source claim through.
     if _source_backed_semantic_rewrite_resolves_validator_issue(old, new, src):
+        # Muafiyet "eski sorunlardan biri kayboldu" ölçütüne bakıyor; adayın
+        # AYNI ANDA yeni bir bozulma eklemesini engellemiyordu. Soru işaretini
+        # düzeltirken özne ile nesneyi takas eden bir aday böyle geçiyordu.
+        # Rol takası kaynaktan doğrulanamıyorsa muafiyet uygulanmaz.
+        if is_turkish_target(tgt_lang) and _has_role_swap(old, new):
+            return False, "role_swap"
         return True, ""
     return False, "semantic_rewrite_unverified"
 

@@ -9350,9 +9350,14 @@ def _chunk_response_retry_reason(raw, req: dict | None) -> str:
                 and not _source_cue_is_delivery_removable(chunk_src_map.get(idx, ""))
             ]
             required_set = set(required_ids)
+            # Eşleme KİMLİK üzerinden yapılıyor; doğru id-metin çiftlerinin
+            # yalnız liste SIRASININ değişmesi veriyi bozmaz. Sıra da zorunlu
+            # tutulunca sağlam bir yanıt gereksiz yere hedefli onarıma
+            # sokuluyordu. İçerik kayması ayrı sinyallerle (owner mismatch,
+            # adjacent duplicate) zaten aranıyor.
             if (len(actual_ids) != len(set(actual_ids))
                     or not set(actual_ids) <= set(expected_ids)
-                    or [idx for idx in actual_ids if idx in required_set] != required_ids):
+                    or (required_set - set(actual_ids))):
                 return "id_integrity"
             for it in items:
                 idx = str(it.get("i"))
@@ -25913,7 +25918,10 @@ class App(ctk.CTk):
                     max_completion_tokens=2048,
                     temperature=0.0,
                 )
-                fixed = (resp.choices[0].message.content or "").strip()
+                # Normal cagri yolu kesilmis yaniti reddediyor; onarim
+                # `message.content`i dogrudan okudugu icin
+                # finish_reason=length yanitini kabul ediyordu.
+                fixed = _validated_chat_content(resp)
                 _report_response_usage(
                     _app_token_callback(
                         self, self._main_model_name(), "JSON Onarımı",
@@ -25942,11 +25950,22 @@ class App(ctk.CTk):
                              if str(value).isdigit() else (1, str(value)))
                          if cue_id in merged],
                         ensure_ascii=False)
-                repaired += 1
-                self._log(
-                    f"  🔧 {cid}: JSON onarımı birleştirildi "
-                    f"({len(parsed_repair.translations)} yeni, "
-                    f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
+                # Herhangi bir alt kume donse bile 'kurtarildi'
+                # sayiliyordu; kullaniciya ve rapora chunk tamamlanmis
+                # gibi yanlis bilgi gidiyordu.
+                _complete = len(merged) >= len(expected_ids)
+                if _complete:
+                    repaired += 1
+                    self._log(
+                        f"  🔧 {cid}: JSON onarımı birleştirildi "
+                        f"({len(parsed_repair.translations)} yeni, "
+                        f"{len(merged)}/{len(expected_ids)} toplam)", "ok")
+                else:
+                    self._log(
+                        f"  ↺ {cid}: JSON onarımı KISMİ "
+                        f"({len(merged)}/{len(expected_ids)} korundu, "
+                        f"{len(expected_ids) - len(merged)} çözülmedi); "
+                        "chunk kurtarılmış sayılmadı", "warn")
             except RequestCancelled:
                 raise
             except Exception as repair_error:
@@ -31673,6 +31692,12 @@ class App(ctk.CTk):
                     "Nihai Mutabakat",
                     f"{Path(source_path).name if source_path else 'Geçerli dosya'}  —  hazırlanıyor",
                 )
+            # getattr: eski test taklitleri (SimpleNamespace) bu
+            # resolver'i tanimiyor; yoklugunda uygulama davranisi korunur.
+            _report_only = getattr(
+                self, "_delivery_report_only_enabled", None)
+            _semantic_apply = not (
+                _report_only() if callable(_report_only) else False)
             result, stats = ht.semantic_reconciliation_pass(
                 src_map=src_clean_map,
                 tr_blocks=blocks,
@@ -31703,12 +31728,20 @@ class App(ctk.CTk):
                     file_path=str(source_path or "")),
                 progress_callback=semantic_progress,
                 status_out=status_out,
+                # 'Yalnız Raporla' sozlesmesi: bu mod otomatik yeniden
+                # ceviriyi RAPORLAR, uygulamaz. `apply_changes`
+                # verilmedigi icin varsayilan True kullaniliyor ve
+                # sonuc dogrudan teslim metnine yaziliyordu. Derin
+                # Teslim taramasi ayni pass'i zaten apply_changes=False
+                # ile cagiriyor.
+                apply_changes=_semantic_apply,
                 **cancel_kwargs,
             )
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
                 return 0
-            blocks[:] = result
+            if _semantic_apply:
+                blocks[:] = result
             rpath = stale_report_path
             if stats.get("clusters"):
                 try:
@@ -37209,7 +37242,13 @@ class App(ctk.CTk):
                           "(önceki çeviriler bağlama eklenir)", "info")
                 prev_pairs = []
                 for req in batch_reqs:
-                    if self._stop_flag:
+                    # 'Dosyayi atla' butun kosunun PAYLASILAN canceller'ini
+                    # iptal ediyor; bu dongu yalnizca `_stop_flag`e bakip
+                    # devam ediyor ve her chunk `RequestCancelled` ile
+                    # dusuyordu. Gercek loglarda tek atlama 201 ve 172
+                    # sahte 'Chunk hatasi' uretti.
+                    if self._stop_flag or App._file_skip_requested(
+                            self, filepath):
                         break
                     cid_hint = req.get("custom_id", "?")
                     if not _req_has_ctx(req):
@@ -37273,6 +37312,12 @@ class App(ctk.CTk):
                         prev_pairs = _extend_chain_pairs(
                             prev_pairs, _chain_pairs_from_chunk_response(
                                 req, text, fmap.get(cid, [])), self._context_lines)
+                    except RequestCancelled:
+                        # Atlama/durdurma iptali hata DEGILDIR.
+                        if (self._stop_flag
+                                or App._file_skip_requested(self, filepath)):
+                            break
+                        raise
                     except Exception as e:
                         # Hatalı chunk zincire eklenmez; daha eski doğrulanmış bağlamı
                         # sonraki aynı-sahne chunk'ı için koru.
@@ -37288,7 +37333,8 @@ class App(ctk.CTk):
                     futures = {ex.submit(send_one, req): req
                                for req in batch_reqs if req["custom_id"] not in raw_map}
                     for fut in as_completed(futures):
-                        if self._stop_flag:
+                        if self._stop_flag or App._file_skip_requested(
+                                self, filepath):
                             ex.shutdown(wait=False, cancel_futures=True)
                             break
                         req = futures[fut]
@@ -37306,6 +37352,12 @@ class App(ctk.CTk):
                                 base_url=self._main_api_base_url(),
                                 file_path=filepath)
                             self._save_sync_ckpt_entry(cid, text, src_h)
+                        except RequestCancelled:
+                            if (self._stop_flag
+                                    or App._file_skip_requested(self, filepath)):
+                                ex.shutdown(wait=False, cancel_futures=True)
+                                break
+                            raise
                         except Exception as e:
                             with lock:
                                 failed[0] += 1
