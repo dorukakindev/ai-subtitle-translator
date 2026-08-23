@@ -14828,6 +14828,14 @@ def _intended_output_folder(source_path, settings: dict):
         return None
 
 
+# Koşu durumu Türkçe yazılıyor (`_finalize_run_record` -> 'tamamlandı'),
+# hazır-işaret planı ise yalnız İngilizce değerleri tanıyordu. Sonuç:
+# BAŞARILI her koşuda 'YÜKLEMEYE HAZIR.txt' yazılmadığı gibi, varsa
+# bayat sayılıp SİLİNİYORDU. İki taraf tek kaynaktan okur.
+RUN_STATUS_DONE = "tamamlandı"
+RUN_STATUS_SUCCESS = frozenset({RUN_STATUS_DONE, "done", "completed", ""})
+
+
 def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     """(yazılacak {klasör: [(ad, hash)]}, silinecek klasörler).
 
@@ -14874,7 +14882,7 @@ def upload_ready_marker_plan(record: dict) -> tuple[dict, set]:
     # Çalışma terminal durumda 'done' değilse hiçbir klasör hazır sayılmaz;
     # eski işaretler yine de temizlenir.
     run_status = str(record.get("status") or "").strip().casefold()
-    if run_status and run_status not in {"done", "completed", ""}:
+    if run_status and run_status not in RUN_STATUS_SUCCESS:
         stale.update(ready)
         ready = {}
     return ready, stale
@@ -15065,6 +15073,10 @@ def _count_hata_cps(blocks) -> tuple:
     hata = cps_n = 0
     for _idx, _ts, _txt in blocks:
         _value = str(_txt or "")
+        # Teslim imzası çeviri değildir; satır sayısı onu paydadan
+        # çıkarırken CPS sayıyordu (dış denetim, madde 6).
+        if _DELIVERY_SIGNATURE_RE.fullmatch(_value.strip()):
+            continue
         if translation_failure_reason(_value):
             hata += 1
             continue
@@ -15755,6 +15767,13 @@ def _cps_stats(blocks) -> tuple:
     for _idx, _ts, _txt in blocks:
         raw = str(_txt or "")
         if not raw.strip() or raw.startswith("[HATA"):
+            continue
+        # Teslim imzaları çeviri değildir: `delivery_line_count` onları
+        # paydadan çıkarıyor, CPS ise ölçüyordu. 208 gerçek teslimin
+        # HEPSİNDE üç imza var; 57 dosyada ortalama/maksimum CPS'yi,
+        # 25 dosyada CPS aşım sayısını değiştiriyorlardı. İki sayı aynı
+        # içeriği ölçmeli.
+        if _DELIVERY_SIGNATURE_RE.fullmatch(raw.strip()):
             continue
         try:
             dur = max(_ts_end_sec_gui(_ts) - _ts_to_sec_gui(_ts), 0.1)
@@ -17803,6 +17822,41 @@ def delivery_scan_report_lines(scan: dict) -> list:
         lines.append(f"      - #{left} ↔ #{right} aynı çeviri")
     return lines
 
+def realised_pass_line(row: dict) -> str:
+    """Gerçekten NE OLDU: `pass_status` ve tamamlanmış `pass_trace`den.
+
+    `pass_coverage` açık UI kutularından kuruluyor, yani İSTENEN
+    geçişleri anlatıyor; rapor onu 'Uygulanan geçişler' diye
+    gösteriyordu. 100 koşu raporundaki 323 dosya satırında 20 dosyada
+    21 çelişki ölçüldü (kısmi/atlanmış/başarısız geçişler 'uygulandı'
+    görünüyordu). Bu satır yalnız gerçekleşenden üretilir.
+    """
+    status = row.get("pass_status") or {}
+    trace = row.get("pass_trace") or {}
+    parts = []
+    for name in sorted(set(status) | set(trace)):
+        if str(name).startswith("__"):
+            continue
+        info = status.get(name) if isinstance(status.get(name), dict) else {}
+        state = str(info.get("status") or "").strip().casefold()
+        changed = trace.get(name)
+        if state in {"failed", "cancelled"}:
+            parts.append(f"{name}: başarısız")
+        elif state == "partial":
+            parts.append(f"{name}: kısmi")
+        elif state == "skipped":
+            why = pass_skip_explanation(info)
+            parts.append(f"{name}: atlandı" + (f" ({why})" if why else ""))
+        elif info.get("report_only"):
+            parts.append(f"{name}: yalnız rapor")
+        elif isinstance(changed, int):
+            parts.append(f"{name}: {changed} değişiklik"
+                         if changed else f"{name}: değişiklik yok")
+        else:
+            parts.append(str(name))
+    return ", ".join(parts)
+
+
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
                               total_tokens: int, actual_cost: float = None,
                               unknown_cost_tokens: int = 0,
@@ -17877,7 +17931,12 @@ def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
             lines.append(f"   {'İçerik türü'.ljust(width)} : {schema_used}")
         passes = r.get("pass_coverage", "")
         if passes:
-            lines.append(f"   {'Uygulanan geçişler'.ljust(width)} : {passes}")
+            lines.append(
+                f"   {'İstenen geçişler'.ljust(width)} : {passes}")
+        realised = realised_pass_line(r)
+        if realised:
+            lines.append(
+                f"   {'Gerçekleşen geçişler'.ljust(width)} : {realised}")
         scan_lines = delivery_scan_report_lines(r.get("delivery_scan"))
         if scan_lines:
             lines.append("   Teslim taraması:")
@@ -22696,7 +22755,7 @@ class App(ctk.CTk):
             if getattr(self, "_stop_flag", False):
                 record["status"] = "durduruldu"
             elif states and all(state == "done" for state in states):
-                record["status"] = "tamamlandı"
+                record["status"] = RUN_STATUS_DONE
             elif any(state == "done" for state in states):
                 record["status"] = "kısmen tamamlandı"
             elif any(state == "error" for state in states):
@@ -22704,7 +22763,7 @@ class App(ctk.CTk):
             elif any(state in {"pending", "running"} for state in states):
                 record["status"] = "eksik"
             else:
-                record["status"] = "tamamlandı"
+                record["status"] = RUN_STATUS_DONE
             api = record.setdefault("api", {})
             baseline = dict(api.get("token_baseline") or {})
             token_lock = getattr(self, "_token_lock", threading.Lock())
@@ -36939,6 +36998,7 @@ class App(ctk.CTk):
                         "pass_trace": {
                             "Repair": int(_repair_only_result.get("repaired", 0))},
                         "pass_history": {},
+                        "schema_name": (schema_dict or {}).get("name", ""),
                         "pass_coverage": "repair-only",
                         "tm_hits": self._tm.hit_count_session(),
                         "run_status": "done" if _repair_complete else "error",
@@ -42317,6 +42377,7 @@ class App(ctk.CTk):
                         "pass_trace": _pass_trace,
                         "pass_status": _pass_status,
                         "pass_history": _pass_history,
+                        "schema_name": (schema_dict or {}).get("name", ""),
                         "pass_coverage": _partial_coverage,
                         "run_status": "error",
                         "delivery_scan_failed": True,

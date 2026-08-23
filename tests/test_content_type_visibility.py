@@ -71,8 +71,16 @@ class ReportShowsTheTypeTest(unittest.TestCase):
         self.assertNotIn("İçerik türü", text)
 
     def test_every_flow_fills_the_field(self):
+        # Dört ana akış + iki yan yol (yalnız-onarım, hybrid kısmi/başarısız):
+        # bu satırlar da içerik türü yazmalı, yoksa rapor eksik kalıyor.
         source = inspect.getsource(g)
-        self.assertEqual(source.count('"schema_name": ('), 4)
+        self.assertGreaterEqual(source.count('"schema_name": ('), 6)
+
+    def test_the_side_paths_also_fill_it(self):
+        for method in (g.App._run_sync_hybrid, g.App._run_hybrid):
+            with self.subTest(method=method.__name__):
+                self.assertIn('"schema_name": (schema_dict or {}).get',
+                              inspect.getsource(method))
 
 
 if __name__ == "__main__":
