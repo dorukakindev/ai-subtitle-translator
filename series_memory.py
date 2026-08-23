@@ -531,6 +531,27 @@ class SeriesMemory:
         core_count = limit // 2
         return items[:core_count] + items[-(limit - core_count):]
 
+    def _origin_allowed(self, origin, cutoff, cutoff_order,
+                        legacy_blocked=False) -> bool:
+        """Bu koken etiketi kesme noktasindan ONCE mi?
+
+        `build_hint` ile `get_terms` AYNI kumeyi dondurmek zorunda
+        (bkz. get_terms docstring'i): kilitli terim modele soylenmemis
+        olmamali. Iki ayri kopya kacinilmaz olarak ayrisiyordu, tek
+        kaynaga alindi."""
+        if not cutoff:
+            return True
+        if not origin:
+            return not legacy_blocked
+        # Dize karsilastirmasi dolgusuz eski etiketlerde ('s1e10' < 's1e2')
+        # yanlis sonuc verip kanon ipuclarini gereksiz eliyordu
+        # (denetim Part 2, madde 19). Sayisal karsilastir, cozulemezse
+        # eski davranisa dus.
+        origin_order = _episode_order(origin)
+        if origin_order is not None and cutoff_order is not None:
+            return origin_order < cutoff_order
+        return str(origin) < cutoff
+
     def build_hint(self, before_episode=None, term_filter=None) -> str:
         terms = self._data.get("terms") or {}
         chars = self._data.get("characters") or {}
@@ -550,18 +571,8 @@ class SeriesMemory:
         cutoff_order = _episode_order(cutoff)
 
         def allowed(origin):
-            if not cutoff:
-                return True
-            if not origin:
-                return not legacy_blocked
-            # Dize karşılaştırması dolgusuz eski etiketlerde ('s1e10' < 's1e2')
-            # yanlış sonuç verip kanon ipuçlarını gereksiz eliyordu
-            # (denetim Part 2, madde 19). Sayısal karşılaştır, çözülemezse
-            # eski davranışa düş.
-            origin_order = _episode_order(origin)
-            if origin_order is not None and cutoff_order is not None:
-                return origin_order < cutoff_order
-            return str(origin) < cutoff
+            return self._origin_allowed(
+                origin, cutoff, cutoff_order, legacy_blocked)
 
         term_origins = self._data.get("term_origins") or {}
         char_origins = self._data.get("character_origins") or {}
@@ -627,20 +638,23 @@ class SeriesMemory:
         terms = dict(self._data.get("terms") or {})
         if not before_episode:
             return terms
-        cutoff_order = _episode_order(self._episode_tag(*before_episode))
+        cutoff = self._episode_tag(*before_episode)
+        cutoff_order = _episode_order(cutoff)
         if cutoff_order is None:
             return terms
         origins = self._data.get("term_origins") or {}
         allowed = {}
         for source, target in terms.items():
             origin = origins.get(_term_origin_key(source))
-            if not origin:
+            if self._origin_allowed(origin, cutoff, cutoff_order):
                 allowed[source] = target
-                continue
-            origin_order = _episode_order(origin)
-            if origin_order is None or origin_order < cutoff_order:
-                allowed[source] = target
-        return allowed
+        # `build_hint` terim listesini MAX_TERMS'te KIRPIYOR; burası
+        # kırpmıyordu. Kırpılan terim modele hiç söylenmiyor ama kilitli
+        # kümeye giriyor ve doğrulayıcı onu dayatıyordu — bu fonksiyonun
+        # var oluş nedeni tam olarak bunu önlemekti. Gerçek dosyalarda
+        # ölçüldü: 15 .series_memory dosyasının 2'sinde 12 ve 48 terim
+        # yalnız kilitte vardı, hint'te yoktu.
+        return dict(self._core_and_recent(allowed.items(), self.MAX_TERMS))
 
     def get_address_map(self) -> list:
         return [dict(item) for item in (self._data.get("address_map") or [])

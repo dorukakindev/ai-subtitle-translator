@@ -210,6 +210,33 @@ def _is_safe_target(target: str, source_text: str = "", tgt_lang: str = "tr") ->
     return True
 
 
+def _stored_target_is_usable(source: str, target: str, tgt_lang: str = "") -> bool:
+    """Saklanan kayıt BUGÜN hâlâ servis edilebilir mi?
+
+    Kapılar yalnız YAZARKEN uygulanıyordu, oysa `_is_safe_target`'ın kendi
+    gerekçesi "DB'ye girmiş hatalı çeviri gelecek bölümlere geri taşınır"
+    diyor: kapı eklenmeden ÖNCE yazılmış satırlar tam olarak o yoldan
+    geçiyor. Gerçek veritabanında (500.015 satır) bugünün kapılarından
+    geçemeyecek 351 satır var ve 10'u okunabilir durumda; biri model
+    yanıtından sızmış JSON parçası taşıyor ('halüsinasyon yapan?},{').
+
+    Ucuz denetimler HER ZAMAN çalışır (eksik-çeviri işareti, kaynak==hedef);
+    hybrid_translate'e bağlı ağır guard yalnız kullanılabilirken çalışır ki
+    guard bir kez patladığında TM tamamen körelmesin.
+    """
+    text = str(target or "").strip()
+    if not text:
+        return False
+    if _is_missing_translation(target):
+        return False
+    if str(source or "").strip().lower() == text.lower():
+        return False
+    if _TM_GUARD_AVAILABLE and not _is_safe_target(
+            text, str(source or "").strip(), tgt_lang):
+        return False
+    return True
+
+
 class TranslationMemory:
     def __init__(self, db_path=None):
         if db_path is None:
@@ -374,7 +401,13 @@ class TranslationMemory:
                     and _entry_shape(row[0]) != _entry_shape(source)):
                 row = None
         try:
-            return row[1] if row else None
+            if not row:
+                return None
+            # Kapilar yalniz YAZARKEN uygulaniyordu; kapi eklenmeden
+            # once yazilmis satir dogrudan nihai altyazi oluyordu.
+            if not _stored_target_is_usable(row[0], row[1], tgt_lang):
+                return None
+            return row[1]
         except Exception:
             return None
 
@@ -420,7 +453,9 @@ class TranslationMemory:
                         for src in uniq.get(h, ()):
                             # Aynı hash farklı yüzey biçimi ('RUN.' ↔ 'Run.')
                             # taşıyorsa isabet sayma (madde 10).
-                            if _entry_shape(src) == shape:
+                            if (_entry_shape(src) == shape
+                                    and _stored_target_is_usable(
+                                        db_source, target, tgt_lang)):
                                 result[src] = target
         except Exception:
             return {}
@@ -445,7 +480,9 @@ class TranslationMemory:
                                 f"WHERE hash IN ({ph})", batch):
                             shape = _entry_shape(db_source)
                             for src in uniq2.get(h, ()):
-                                if _entry_shape(src) == shape:
+                                if (_entry_shape(src) == shape
+                                        and _stored_target_is_usable(
+                                            db_source, target, tgt_lang)):
                                     result[src] = target
             except Exception:
                 return result
@@ -513,6 +550,10 @@ class TranslationMemory:
         for db_src, db_tgt in rows:
             candidate_norm = " ".join(db_src.strip().lower().split())
             if not _fuzzy_semantically_compatible(source, db_src):
+                continue
+            # Bulanık eşleşme, kapı eklenmeden önce yazılmış bozuk bir kaydı
+            # BAŞKA bir cue'ya taşıyabilir — guard'ın kendi gerekçesi bu.
+            if not _stored_target_is_usable(db_src, db_tgt, tgt_lang):
                 continue
             matcher.set_seq1(candidate_norm)
             ratio = matcher.ratio()
