@@ -224,23 +224,19 @@ class SourceLanguageLeftoverTest(unittest.TestCase):
             "Can we get a discount on the rat?"
             "The client wants a macabre ride in the Macabre Mobile."
         )
-        self.assertEqual(guard["holiday centerpiece"], "tatil/bayram masa süsü")
-        self.assertEqual(guard["centerpiece"], "masa süsü")
+        self.assertEqual(guard["gold leaf"], "altın varak")
         self.assertEqual(guard["taxidermy"], "taksidermi")
         self.assertEqual(guard["reindeer"], "ren geyiği")
         self.assertEqual(guard["competition piece"], "yarışma parçası")
         self.assertEqual(guard["cash in hand"], "nakit parayla")
-        self.assertEqual(guard["call it a day"], "paydos etmek")
-        self.assertEqual(guard["mummy"], "mumya")
         self.assertEqual(guard["phallus"], "fallus")
         self.assertEqual(guard["gilding"], "altın yaldız")
         self.assertEqual(guard["gold leaf"], "altın varak")
         self.assertEqual(guard["linen wrappings"], "keten sargılar")
         self.assertEqual(guard["abdominal scar"], "karındaki yara izi")
-        self.assertEqual(guard["scar"], "yara izi")
-        self.assertEqual(guard["rat"], "sıçan")
-        self.assertEqual(guard["client"], "müşteri")
-        self.assertEqual(guard["macabre"], "ürkütücü/ölüm temalı")
+        # "mummy"/"rat"/"client"/"scar"/"macabre"/"call it a day" gibi çok
+        # anlamlı girdiler tablodan çıkarıldı — 202 gerçek dosyada dayatma
+        # neredeyse hep yanlıştı; bkz. test_quality_glossary_polysemy.
         self.assertEqual(guard["macabre mobile"], "ürkütücü araba")
 
     def test_validator_flags_cash_in_hand_mistranslation(self):

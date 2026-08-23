@@ -37656,9 +37656,16 @@ class App(ctk.CTk):
                 locked_terms=_locked_terms,
                 apply_changes=not bool(self._snap_get(
                     "quality_report_only", True)), tgt_lang=tgt)
-            _record_pass_change(
-                _pass_trace, "Consistency", _before_consistency,
-                sorted_blocks, _pass_history)
+            _cons_report_only = bool(self._snap_get(
+                "quality_report_only", True))
+            # Bkz. düz sync'teki aynı not: etiket pass_status'a bağlı.
+            _pass_status["Consistency"] = {
+                "status": "completed", "successful_chunks": 1,
+                "failed_chunks": 0, "total_chunks": 1,
+                "suggested": _cons_fixes, "report_only": _cons_report_only,
+                "changed": _record_pass_change(
+                    _pass_trace, "Consistency", _before_consistency,
+                    sorted_blocks, _pass_history)}
             # Rapor için taban çizgisi: kalite geçişleri öncesi metinler
             _pre_pass = {str(b[0]): b[2] for b in sorted_blocks}
             _qc_fixes = 0
@@ -39521,9 +39528,21 @@ class App(ctk.CTk):
                                     tgt_lang=tgt)
                             else:
                                 _cons_fixes = 0
-                            _record_pass_change(
-                                _pass_trace, "Consistency", _before_consistency,
-                                pp, _pass_history)
+                            # Rapor etiketi yalnız pass_status['Consistency']
+                            # varsa 'öneri (uygulanmadı)'ya döner ve uygulanan
+                            # düzeltme toplamından düşülür; bunu yalnız batch
+                            # akışları kuruyordu, düz sync yalnız-rapor modunda
+                            # adayları uygulanmış düzeltme gibi gösteriyordu.
+                            _cons_report_only = bool(self._snap_get(
+                                "quality_report_only", True))
+                            _pass_status["Consistency"] = {
+                                "status": "completed", "successful_chunks": 1,
+                                "failed_chunks": 0, "total_chunks": 1,
+                                "suggested": _cons_fixes,
+                                "report_only": _cons_report_only,
+                                "changed": _record_pass_change(
+                                    _pass_trace, "Consistency",
+                                    _before_consistency, pp, _pass_history)}
                             _pre_pass = {str(b[0]): b[2] for b in pp}
                             _qc_fixes = 0
                             _qc_auto_fixes = 0

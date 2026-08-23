@@ -49,14 +49,14 @@ class TurkishGuardsStayOutOfOtherTargetsTest(unittest.TestCase):
     """Madde 20/21/28: Türkçe guard'ları Türkçe dışı hedefe sızmamalı."""
 
     def test_quality_glossary_is_turkish_only(self):
-        text = "the centerpiece and the taxidermy"
+        text = "the orrery and the taxidermy"
         self.assertTrue(ht.quality_glossary_for_source(text, "Turkish"))
         self.assertEqual(ht.quality_glossary_for_source(text, "German"), {})
         self.assertEqual(ht.quality_glossary_for_source(text, "Spanish"), {})
 
     def test_empty_target_still_behaves_as_turkish(self):
         # Çağrı yerleri hedefi geçmediğinde eski davranış korunur.
-        self.assertTrue(ht.quality_glossary_for_source("the centerpiece", ""))
+        self.assertTrue(ht.quality_glossary_for_source("the taxidermy", ""))
 
     def test_final_sweep_forwards_target_to_inner_sweep(self):
         import inspect
