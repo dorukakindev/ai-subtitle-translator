@@ -216,6 +216,7 @@ class AiResegmentTest(unittest.TestCase):
             _helper_api_model=lambda role: "fake-model",
             _merge_max_chars=84,
             _merge_max_gap_ms=800,
+            _cached_blocks_for=lambda _path: self.BLOCKS,
             _log=lambda *args: None,
         )
         original = gui.ai_resegment_cues

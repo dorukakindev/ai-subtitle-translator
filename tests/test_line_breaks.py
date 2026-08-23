@@ -57,6 +57,7 @@ class CondenseThresholdTest(unittest.TestCase):
 
         class DummyApp:
             condense_var = Flag()
+            quality_report_only_var = type("Off", (), {"get": lambda self: False})()
 
             def _set_status(self, *_args, **_kwargs):
                 pass
@@ -75,8 +76,10 @@ class CondenseThresholdTest(unittest.TestCase):
             return kwargs["tr_blocks"], 0
 
         blocks = [("1", "00:00:00,000 --> 00:00:01,000", "Çok uzun bir satır.")]
+        app = DummyApp()
+        app._active_snapshot = {"quality_report_only": False}
         with patch("hybrid_translate.condense_fast_lines", side_effect=fake_condense_fast_lines):
-            gui.App._maybe_condense(DummyApp(), blocks, "key", "url", "model", "Turkish")
+            gui.App._maybe_condense(app, blocks, "key", "url", "model", "Turkish")
 
         self.assertEqual(calls[0]["cps_limit"], 21.0)
 

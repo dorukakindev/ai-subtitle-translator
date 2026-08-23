@@ -414,9 +414,14 @@ class TwoLineWidthTest(unittest.TestCase):
                  "- Hiçbir şey yapmadım.")
         self.assertEqual(g._redistribute_two_lines(value), value)
 
-    def test_tagged_cue_is_left_alone(self):
+    def test_tagged_cue_is_rebalanced_without_tag_damage(self):
         value = "<i>Bu satır etiketli ve gerçekten çok uzun bir satır</i>\nkısa"
-        self.assertEqual(g._redistribute_two_lines(value), value)
+        out = g._redistribute_two_lines(value)
+        self.assertEqual(out.replace("\n", " ").split(),
+                         value.replace("\n", " ").split())
+        self.assertEqual(out.count("<i>"), 1)
+        self.assertEqual(out.count("</i>"), 1)
+        self.assertTrue(all(width <= g._LINE_THRESHOLD for width in self.widths(out)))
 
     def test_text_too_long_for_two_lines_keeps_model_break(self):
         value = ("Bu iki satırın ikisi de kırk iki karakter sınırını aşıyor bak\n"

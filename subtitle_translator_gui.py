@@ -3304,6 +3304,8 @@ def _rebalance_line_break(text: str) -> str:
     lines = value.split("\n")
     if len(lines) != 2:
         return value
+    if re.search(r"<[^>\n]*\s+[^>\n]*>|\{[^{}\n]*\s+[^{}\n]*\}", value):
+        return value
     first, second = lines[0].rstrip(), lines[1].lstrip()
     if not first or not second:
         return value
@@ -3318,18 +3320,28 @@ def _rebalance_line_break(text: str) -> str:
 
     second_words = second.split()
     first_words = first.split()
+    if (_visible_len(first) == 1 and len(second_words) > 1
+            and _visible_len(f"{first} {second_words[0]}") <= _LINE_BALANCE_MAX):
+        return f"{first} {second_words[0]}\n{' '.join(second_words[1:])}"
+    if (_visible_len(second) == 1 and len(first_words) > 1
+            and _visible_len(f"{first_words[-1]} {second}") <= _LINE_BALANCE_MAX):
+        return f"{' '.join(first_words[:-1])}\n{first_words[-1]} {second}"
     if second_words:
         head = _boundary_word_key(second_words[0])
+        remainder = " ".join(second_words[1:])
         if (head in _LINE_PULL_UP_WORDS and len(second_words) > 1
+                and _visible_len(remainder) > 1
                 and _visible_len(f"{first} {second_words[0]}") <= _LINE_BALANCE_MAX):
-            return f"{first} {second_words[0]}\n{' '.join(second_words[1:])}"
+            return f"{first} {second_words[0]}\n{remainder}"
     if first_words:
         tail = _boundary_word_key(first_words[-1])
         tail_is_number = bool(re.fullmatch(r"[\d.,]+", tail))
+        remainder = " ".join(first_words[:-1])
         if ((tail in _LINE_PUSH_DOWN_WORDS or tail_is_number)
                 and len(first_words) > 1
+                and _visible_len(remainder) > 1
                 and _visible_len(f"{first_words[-1]} {second}") <= _LINE_BALANCE_MAX):
-            return f"{' '.join(first_words[:-1])}\n{first_words[-1]} {second}"
+            return f"{remainder}\n{first_words[-1]} {second}"
     return value
 
 
@@ -3358,21 +3370,22 @@ def _redistribute_two_lines(text: str, threshold: int = None) -> str:
         return value
     if _is_dialogue_cue(value):
         return value  # '- A' / '- B' iki ayrı konuşmacı, satırlar birleştirilemez
-    if "<" in value or "{" in value:
-        return value  # etiketli cue: kelimeleri taşımak italik sınırını kaydırır
     first, second = lines[0].strip(), lines[1].strip()
     if not first or not second:
         return value
     current = max(_visible_len(first), _visible_len(second))
     if current <= limit:
         return value
-    words = f"{first} {second}".split(" ")
-    if len(words) < 2:
-        return value
+    flattened = f"{first} {second}"
+    spans = _tag_spans(flattened)
     best, best_width = None, current
-    for cut in range(1, len(words)):
-        left = " ".join(words[:cut])
-        right = " ".join(words[cut:])
+    for cut, char in enumerate(flattened):
+        if char != " " or _position_is_inside_tag(cut, spans):
+            continue
+        left = flattened[:cut].rstrip()
+        right = flattened[cut + 1:].lstrip()
+        if not left or not right:
+            continue
         width = max(_visible_len(left), _visible_len(right))
         if width < best_width:
             best, best_width = (left, right), width
@@ -3433,10 +3446,48 @@ def _is_sdh_only(text: str) -> bool:
     """Sadece ses betimlemesi/efekt mi? ([Laughing], (sighs), ♪, _ gibi)."""
     return sdh_cleaner.src_is_sfx_only(text)
 
+
+def _source_blocks_for_merge(source_cues) -> list:
+    blocks = []
+    for cue in source_cues or []:
+        if hasattr(cue, "index") and not callable(getattr(cue, "index")):
+            blocks.append((
+                str(cue.index), f"{cue.start} --> {cue.end}", str(cue.text or "")))
+        else:
+            idx, ts, text = cue
+            blocks.append((str(idx), str(ts), str(text or "")))
+    return blocks
+
+
+def _source_fragment_pairs(source_cues) -> set:
+    source_blocks = _source_blocks_for_merge(source_cues)
+    source_ids = [str(idx) for idx, _ts, _text in source_blocks]
+    if len(source_ids) != len(set(source_ids)):
+        return set()
+    _frag_ids, source_groups = _fragment_groups_gui(source_blocks)
+    source_ts = {
+        str(idx): _srt_timestamp_bounds(ts)
+        for idx, ts, _text in source_blocks
+    }
+    timestamp_counts = Counter(source_ts.values())
+    return {
+        (source_ts[str(left)], source_ts[str(right)])
+        for group in source_groups
+        for left, right in zip(group.get("items", []), group.get("items", [])[1:])
+        if str(left) in source_ts and str(right) in source_ts
+        and timestamp_counts[source_ts[str(left)]] == 1
+        and timestamp_counts[source_ts[str(right)]] == 1
+    }
+
+
+def _source_merge_permissions(source_cues) -> dict:
+    """Kaynak fragman çözümleyicisinin kanıtladığı ardışık zaman çiftleri."""
+    return {pair: True for pair in _source_fragment_pairs(source_cues)}
+
 def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                           max_gap_ms: int = MERGE_MAX_GAP_MS,
                           only_continuation: bool = True,
-                          source_cues=None) -> list:
+                          source_cues=None, groups_out: list | None = None) -> list:
     """Art arda gelen, aynı cümleye ait kısa cue'ları tek bloğa birleştirir
     (Amazon WEB-DL gibi kelime-kelime bölünmüş kaynaklar için).
 
@@ -3450,27 +3501,9 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
     source_pairs = None
     if source_cues is not None:
         try:
-            source_blocks = []
-            for cue in source_cues:
-                if hasattr(cue, "index") and not callable(getattr(cue, "index")):
-                    source_blocks.append((
-                        cue.index, f"{cue.start} --> {cue.end}", str(cue.text or "")))
-                else:
-                    idx, ts, text = cue
-                    source_blocks.append((idx, ts, str(text or "")))
-            _frag_ids, source_groups = _fragment_groups_gui(source_blocks)
-            source_ts = {
-                str(idx): _srt_timestamp_bounds(ts)
-                for idx, ts, _text in source_blocks
-            }
-            source_pairs = {
-                (source_ts[str(left)], source_ts[str(right)])
-                for group in source_groups
-                for left, right in zip(group.get("items", []), group.get("items", [])[1:])
-                if str(left) in source_ts and str(right) in source_ts
-            }
+            source_pairs = _source_fragment_pairs(source_cues)
         except Exception:
-            source_pairs = None
+            source_pairs = set()
     groups = []
     for idx, ts, text in blocks:
         parts = str(ts).split('-->')
@@ -3513,6 +3546,7 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
                 g["last_id"] = idx
                 g["last_start_ms"], g["last_end_ms"] = _srt_timestamp_bounds(ts)
                 g["count"] += 1
+                g["ids"].append(str(idx))
                 continue
         try:
             last_start_ms, last_end_ms = _srt_timestamp_bounds(ts)
@@ -3521,13 +3555,39 @@ def merge_fragmented_cues(blocks: list, max_chars: int = MERGE_MAX_CHARS,
         groups.append({"id": idx, "start": start_str, "end": end_str, "start_sec": cs,
                        "end_sec": ce, "text": text, "count": 1, "ts": ts,
                        "last_id": idx, "last_start_ms": last_start_ms,
-                       "last_end_ms": last_end_ms})
+                       "last_end_ms": last_end_ms, "ids": [str(idx)]})
     out = []
     for i, g in enumerate(groups, 1):
         txt = _break_to_line_budget(g["text"], 2) if g["count"] > 1 else g["text"]
         ts  = f"{g['start']} --> {g['end']}" if g["end"] else g["ts"]
         out.append((str(i), ts, txt))
+        if groups_out is not None:
+            groups_out.append(tuple(g["ids"]))
     return out
+
+
+def _merge_resolved_fast_ids(blocks: list, source_cues,
+                             cps_limit: float = 21.0,
+                             max_chars: int = MERGE_MAX_CHARS,
+                             max_gap_ms: int = MERGE_MAX_GAP_MS) -> set:
+    """Kesin birleşme sonrasında CPS sınırına inecek özgün cue kimlikleri."""
+    if not blocks or not source_cues:
+        return set()
+    groups = []
+    merged = merge_fragmented_cues(
+        list(blocks), max_chars=max_chars, max_gap_ms=max_gap_ms,
+        source_cues=source_cues, groups_out=groups)
+    fast_ids = {
+        str(idx) for idx, ts, text in blocks
+        if (_cue_reading_speed(str(text or ""), ts) or 0.0) > cps_limit
+    }
+    resolved = set()
+    for row, member_ids in zip(merged, groups):
+        if len(member_ids) < 2:
+            continue
+        if (_cue_reading_speed(str(row[2] or ""), row[1]) or 0.0) <= cps_limit:
+            resolved.update(fast_ids.intersection(member_ids))
+    return resolved
 
 
 # ── AI destekli akıllı segmentasyon ───────────────────────────────────────────
@@ -3576,7 +3636,8 @@ def _join_cue_texts(texts: list) -> str:
 
 
 def _segmentation_candidates(blocks: list, max_gap_ms: int = MERGE_MAX_GAP_MS,
-                             max_window: int = 6) -> list:
+                             max_window: int = 6,
+                             source_permissions: dict | None = None) -> list:
     """AI segmentasyonu için aday pencereleri bulur: ardışık, küçük boşluklu (0..max_gap_ms),
     diyalog/SDH olmayan ve en az bir 'devam' (önceki cue cümle bitmiyor) sınırı içeren cue
     dizileri. Tam cümle/bağımsız uzun cue'lar pencereye girmez (boşuna token harcanmaz).
@@ -3601,6 +3662,13 @@ def _segmentation_candidates(blocks: list, max_gap_ms: int = MERGE_MAX_GAP_MS,
                 break
             if not (0 <= gap_ms <= max_gap_ms):
                 break
+            if source_permissions is not None:
+                try:
+                    boundary = (_srt_timestamp_bounds(ts), _srt_timestamp_bounds(nts))
+                except ValueError:
+                    break
+                if not source_permissions.get(boundary, False):
+                    break
             run.append(j + 1)
             j += 1
         if len(run) >= 2:
@@ -3617,7 +3685,8 @@ def _segmentation_candidates(blocks: list, max_gap_ms: int = MERGE_MAX_GAP_MS,
 
 def _enforce_segment_groups(window_blocks: list, groups: list,
                             max_chars: int = MERGE_MAX_CHARS,
-                            cps_limit: int = None):
+                            cps_limit: int = None,
+                            source_permissions: dict | None = None):
     """AI'nin bir penceredeki gruplama önerisini deterministik kurallarla uygular.
     AI yalnızca GRUPLAMA + satır kırma önerir; ZAMANLAMA (ilk başı→son sonu) ve CPS
     matematikle zorlanır. Metin orijinal parçalardan kurulur; AI metni yalnızca SADIK
@@ -3649,6 +3718,16 @@ def _enforce_segment_groups(window_blocks: list, groups: list,
     for g in groups:
         ids = [str(x) for x in g["ids"]]
         members = [by_id[i] for i in ids]
+        if len(members) > 1 and source_permissions is not None:
+            for left, right in zip(members, members[1:]):
+                try:
+                    boundary = (
+                        _srt_timestamp_bounds(left[1]),
+                        _srt_timestamp_bounds(right[1]))
+                except ValueError:
+                    return None
+                if not source_permissions.get(boundary, False):
+                    return None
         # AI metnini güvenli karakter kümesine indir (CR/NBSP/sıfır-genişlik smuggle'ı kapat)
         ai_text = _sanitize_ai_text(g.get("text") or "")
         if len(members) == 1:
@@ -3704,7 +3783,8 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
                       model: str = "gpt-5.4-mini", log_fn=None,
                       max_chars: int = MERGE_MAX_CHARS, max_gap_ms: int = MERGE_MAX_GAP_MS,
                       cps_limit: int = None, max_window: int = 6,
-                      token_callback=None, cancel_context=None) -> list:
+                      token_callback=None, cancel_context=None,
+                      source_cues=None) -> list:
     """AI destekli akıllı cue segmentasyonu. Yalnızca aday pencereler (kelime kelime
     bölünmüş olabilecek ardışık diziler) modele gönderilir; model gruplamayı + satır
     kırmayı önerir, zamanlama/CPS deterministik zorlanır, metin orijinalden kurulur.
@@ -3713,19 +3793,30 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
         cps_limit = CPS_WARN_LIMIT
     if not blocks or len(blocks) < 2:
         return list(blocks)
+    source_permissions = None
+    if source_cues is not None:
+        try:
+            source_permissions = _source_merge_permissions(source_cues)
+        except Exception:
+            source_permissions = {}
     try:
-        windows = _segmentation_candidates(blocks, max_gap_ms, max_window)
+        windows = _segmentation_candidates(
+            blocks, max_gap_ms, max_window, source_permissions)
     except Exception:
         windows = []
     if not windows:
-        return merge_fragmented_cues(blocks, max_chars=max_chars, max_gap_ms=max_gap_ms)
+        return merge_fragmented_cues(
+            blocks, max_chars=max_chars, max_gap_ms=max_gap_ms,
+            source_cues=source_cues)
     try:
         import hybrid_translate as ht
         client = OpenAI(api_key=api_key, base_url=url)
     except Exception as e:
         if log_fn:
             log_fn(f"AI segmentasyon bağlantı hatası, hızlı birleştirmeye düşülüyor: {e}", "warn")
-        return merge_fragmented_cues(blocks, max_chars=max_chars, max_gap_ms=max_gap_ms)
+        return merge_fragmented_cues(
+            blocks, max_chars=max_chars, max_gap_ms=max_gap_ms,
+            source_cues=source_cues)
 
     resolved = {}        # (start_pos, end_pos) -> [(ts, text), ...]
     BATCH = 20
@@ -3780,14 +3871,18 @@ def ai_resegment_cues(blocks: list, api_key: str, url: str = "https://api.openai
             groups = res_by_win.get(w)
             if groups:
                 try:
-                    applied = _enforce_segment_groups(window_blocks, groups, max_chars, cps_limit)
+                    applied = _enforce_segment_groups(
+                        window_blocks, groups, max_chars, cps_limit,
+                        source_permissions)
                 except Exception:
                     applied = None
             if applied is not None:
                 resolved[(s, e)] = applied
                 n_ai += 1
             else:
-                det = merge_fragmented_cues(window_blocks, max_chars=max_chars, max_gap_ms=max_gap_ms)
+                det = merge_fragmented_cues(
+                    window_blocks, max_chars=max_chars, max_gap_ms=max_gap_ms,
+                    source_cues=source_cues)
                 resolved[(s, e)] = [(ts, txt) for (_idx, ts, txt) in det]
                 n_fallback += 1
 
@@ -6715,8 +6810,8 @@ def _tr_sentence_case(text: str, source_text: str = "") -> str:
 
 
 _DELIVERY_TYPOGRAPHY_MAP = str.maketrans({
-    "’": "'", "‘": "'", "‛": "'", "′": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
+    "’": "'", "‘": "'", "‛": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"',
     "«": '"', "»": '"',
 })
 
@@ -6725,7 +6820,8 @@ def _normalize_delivery_typography(text: str) -> str:
     """Eğik tırnak/kesme ve Fransız tırnaklarını düz karşılıklarına indirir.
 
     Aynı dosyada 'Camelot’taki' ile "Camelot'un" yan yana duruyordu; 36 dosyada
-    546 karakter. Türkçe altyazıda bu karakterlerin yeri yok, dönüşüm kayıpsız."""
+    546 karakter. Ölçü bildiren asal/çift asal (′/″) karakterleri tırnak değildir
+    ve bilgi kaybı olmaması için korunur."""
     return str(text or "").translate(_DELIVERY_TYPOGRAPHY_MAP)
 
 
@@ -6735,6 +6831,13 @@ def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int
     ABD closed-caption kaynakları büyük harfle yazılır; model bunu vurgu sanıp
     Türkçeyi de büyük harfle üretiyor ve aynı dosyada caps/normal karışıyordu.
     Yalnız KENDİ kaynağı da tamamı büyük harf olan cue'lara dokunulur."""
+    source_rows = []
+    for source_text in (src_map or {}).values():
+        letters = [char for char in str(source_text or "") if char.isalpha()]
+        if len(letters) >= 4:
+            source_rows.append(all(char.isupper() for char in letters))
+    if not source_rows or (sum(source_rows) / len(source_rows)) < 0.80:
+        return list(blocks or []), 0
     changed = 0
     out = []
     for idx, ts, text in blocks:
@@ -25493,7 +25596,7 @@ class App(ctk.CTk):
 
     def _maybe_condense(self, blocks, mm_k, mm_u, mm_m, tgt, src_map=None,
                         locked_terms=None, status_out: dict | None = None,
-                        file_path: str = ""):
+                        file_path: str = "", source_cues=None):
         """condense_var açıksa CPS sınırını aşan satırları kısaltır. Aksi halde blocks aynen döner."""
         if status_out is not None:
             status_out.clear()
@@ -25505,17 +25608,50 @@ class App(ctk.CTk):
             if status_out is not None:
                 status_out["status"] = "skipped"
             return blocks
-        if not blocks or not mm_k:
+        if not blocks:
             if status_out is not None:
                 status_out.update({
-                    "status": "skipped" if not blocks else "failed",
-                    "error": "missing_api_key" if blocks else "",
+                    "status": "skipped", "error": "",
                 })
             return blocks
         import hybrid_translate as ht
+        if App._delivery_report_only_enabled(self):
+            candidates = ht.find_fast_lines(blocks, 21.0)
+            if status_out is not None:
+                status_out.update({
+                    "status": "skipped", "skip_reason": "report_only",
+                    "candidates": len(candidates),
+                })
+            if candidates:
+                self._log(
+                    f"Okuma hızı: {len(candidates)} hızlı cue yalnız raporlandı; "
+                    "teslim metni değiştirilmedi.", "warn")
+            return blocks
+        if not mm_k:
+            if status_out is not None:
+                status_out.update({
+                    "status": "failed", "error": "missing_api_key",
+                })
+            return blocks
         try:
             cancel_context = self.__dict__.get("_helper_request_canceller")
             self._set_status("Okuma hızı kısaltma...")
+            ai_merge_on = bool(App._run_setting(
+                self, "ai_segment", "ai_segment_var", False))
+            fast_merge_on = bool(App._run_setting(
+                self, "merge_cues", "merge_cues_var", False))
+            merge_resolved = set()
+            if fast_merge_on and not ai_merge_on and source_cues:
+                merge_resolved = _merge_resolved_fast_ids(
+                    blocks, source_cues, cps_limit=21.0,
+                    max_chars=getattr(self, "_merge_max_chars", MERGE_MAX_CHARS),
+                    max_gap_ms=getattr(
+                        self, "_merge_max_gap_ms", MERGE_MAX_GAP_MS))
+                if merge_resolved:
+                    self._log(
+                        f"Okuma hızı: {len(merge_resolved)} cue kesin birleşme "
+                        "sonrasında sınır içine ineceği için API'ye gönderilmedi.",
+                        "info")
             new_blocks, _n = ht.condense_fast_lines(
                 tr_blocks=blocks,
                 helper_api_key=mm_k, helper_url=mm_u, helper_model=mm_m,
@@ -25527,7 +25663,10 @@ class App(ctk.CTk):
                 src_map=src_map,
                 locked_terms=locked_terms,
                 cancel_context=cancel_context,
-                status_out=status_out)
+                status_out=status_out,
+                skip_ids=merge_resolved)
+            if status_out is not None:
+                status_out["merge_resolved"] = len(merge_resolved)
             if self.__dict__.get("_stop_flag", False) or (
                     cancel_context is not None and cancel_context.is_cancelled()):
                 if status_out is not None:
@@ -25557,6 +25696,13 @@ class App(ctk.CTk):
             return blocks
         try:
             src_map = _delivery_source_map(list(blocks or []), source_cues)
+            if App._delivery_report_only_enabled(self):
+                candidates = _cue_fill_move_plan(list(blocks or []), src_map)
+                if candidates:
+                    self._log(
+                        f"Cue-fill taşıma: {len(candidates)} aday yalnız raporlandı; "
+                        "teslim metni değiştirilmedi.", "warn")
+                return blocks
             moved, count = rebalance_cue_fill_pairs(
                 list(blocks or []), src_map, log_fn=self._log,
                 line_breaks=bool(App._run_setting(
@@ -25578,6 +25724,12 @@ class App(ctk.CTk):
         if not (ai_on or fast_on):
             return blocks
         try:
+            source_cues = self._cached_blocks_for(file_path) if file_path else None
+            if not source_cues:
+                self._log(
+                    "Cue birleştirme: kaynak cue'lar doğrulanamadı; teslim metni "
+                    "değiştirilmedi.", "warn")
+                return blocks
             if ai_on:
                 key = self._helper_api_key("analysis")
                 if key:
@@ -25591,9 +25743,9 @@ class App(ctk.CTk):
                             base_url=self._helper_api_base_url("analysis"),
                             file_path=file_path),
                         cancel_context=self.__dict__.get(
-                            "_helper_request_canceller"))
+                            "_helper_request_canceller"),
+                        source_cues=source_cues)
                 self._log("AI segmentasyon: API anahtarı yok, hızlı birleştirmeye düşülüyor", "warn")
-            source_cues = self._cached_blocks_for(file_path) if file_path else None
             out = merge_fragmented_cues(blocks,
                                         max_chars=self._merge_max_chars,
                                         max_gap_ms=self._merge_max_gap_ms,
@@ -33094,7 +33246,8 @@ class App(ctk.CTk):
                                 self, mm_model, "AI Segmentasyon",
                                 base_url=mm_url, file_path=fp),
                             cancel_context=self.__dict__.get(
-                                "_helper_request_canceller"))
+                                "_helper_request_canceller"),
+                            source_cues=orig_cues)
                         self._log(f"AI segmentasyon: {_before} → {len(blocks)} blok", "ok")
                     except RequestCancelled:
                         raise
@@ -37617,7 +37770,8 @@ class App(ctk.CTk):
                     tgt, src_map=_src_map_for_condense,
                     locked_terms=_locked_terms,
                     status_out=_condense_status,
-                    file_path=filepath)
+                    file_path=filepath,
+                    source_cues=cues)
                 _pass_status["Condense"] = dict(_condense_status)
             if self._stop_flag:
                 break
@@ -39432,7 +39586,8 @@ class App(ctk.CTk):
                                 src_map=_src_map_from_cues(_orig_cues),
                                 locked_terms=_locked_terms,
                                 status_out=_condense_status,
-                                file_path=str(_src_path))
+                                file_path=str(_src_path),
+                                source_cues=_orig_cues)
                             _pass_status["Condense"] = dict(_condense_status)
                             if self._stop_flag:
                                 break
@@ -40351,7 +40506,8 @@ class App(ctk.CTk):
                     src_map=src_blocks,
                     locked_terms=_locked_terms_for(fp),
                     status_out=_condense_status,
-                    file_path=fp)
+                    file_path=fp,
+                    source_cues=_src_cues)
                 _pass_status["Condense"] = dict(_condense_status)
                 if self._stop_flag:
                     break
@@ -41939,7 +42095,8 @@ class App(ctk.CTk):
                             tgt, src_map=_src_map_from_cues(cues),
                             locked_terms=_file_locked_terms,
                             status_out=_condense_status,
-                            file_path=filepath)
+                            file_path=filepath,
+                            source_cues=cues)
                         _pass_status["Condense"] = dict(_condense_status)
                         if self._stop_flag:
                             break

@@ -4708,20 +4708,25 @@ def _block_duration(ts: str) -> float:
         return 0.0
 
 
-def find_fast_lines(tr_blocks: list, cps_limit: float = 21.0) -> list:
+def find_fast_lines(tr_blocks: list, cps_limit: float = 21.0,
+                    skip_ids=None) -> list:
     """CPS (karakter/saniye) sınırını aşan satırları döner.
     Returns: [(id_str, text, char_budget), ...]
     char_budget = okunabilir uzunluk hedefi (cps_limit * süre).
     Saf fonksiyon — API çağrısı yok, test edilebilir."""
     fast = []
+    skipped = {str(value) for value in (skip_ids or ())}
     for idx, ts, text in tr_blocks:
+        if str(idx) in skipped:
+            continue
         if not text or text.strip() == "[HATA]":
             continue
         dur = _block_duration(ts)
         if dur <= 0:
             continue
-        visible = len(text.replace('\n', ' ').strip())
-        if visible / dur > cps_limit:
+        visible = _POLISH_FORMAT_RE.sub(
+            '', str(text or '')).replace('\n', ' ').strip()
+        if len(visible) / dur > cps_limit:
             budget = max(int(cps_limit * dur), 1)
             fast.append((str(idx), text, budget))
     return fast
@@ -4740,6 +4745,7 @@ def condense_fast_lines(
     locked_terms: dict | None = None,
     cancel_context=None,
     status_out: dict | None = None,
+    skip_ids=None,
 ) -> tuple:
     """Okuma hızı sınırını aşan satırları, anlamı ve tonu koruyarak kısaltır.
     Profesyonel altyazıcının 'ekrana sığdırma' refleksini taklit eder.
@@ -4755,12 +4761,18 @@ def condense_fast_lines(
             status_out["status"] = "skipped"
         return tr_blocks, 0
 
-    fast = find_fast_lines(tr_blocks, cps_limit)
+    fast = find_fast_lines(tr_blocks, cps_limit, skip_ids=skip_ids)
     if not fast:
         if status_out is not None:
             status_out["status"] = "completed"
         if log_fn:
-            log_fn("Okuma hızı: tüm satırlar sınır içinde ✓", "ok")
+            if skip_ids:
+                log_fn(
+                    f"Okuma hızı: {len(set(map(str, skip_ids)))} cue sonraki "
+                    "deterministik adıma bırakıldı; API'ye gönderilecek hızlı "
+                    "satır kalmadı ✓", "ok")
+            else:
+                log_fn("Okuma hızı: tüm satırlar sınır içinde ✓", "ok")
         return tr_blocks, 0
 
     if log_fn:
