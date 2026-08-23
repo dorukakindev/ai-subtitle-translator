@@ -25508,10 +25508,21 @@ class App(ctk.CTk):
                     host = urlparse(
                         str(snap.get("main_api_base_url") or "")).hostname or "?"
                     model = str(snap.get("main_model_name") or "?")
-                    log_fn(
-                        f"Ana çeviri hattı: profil '{main_name}' · {model} @ "
-                        f"{host}", "info")
-                    if any(registered):
+                    # _set_running(True) her onay penceresinden sonra yeniden
+                    # cagriliyor; 2026-08-24 oturumunda bu blok 7 kez yazildi
+                    # ve log okunmaz hale geldi. Yapilan is aynen kaliyor,
+                    # yalnizca DEGISMEYEN duyuru tekrar yazilmiyor.
+                    announce = (main_name, model, host, bool(any(registered)))
+                    already = (self.__dict__.get("_run_pipeline_announced")
+                               == announce)
+                    self._run_pipeline_announced = announce
+                    if not already:
+                        log_fn(
+                            f"Ana çeviri hattı: profil '{main_name}' · {model} @ "
+                            f"{host}", "info")
+                    if already:
+                        pass
+                    elif any(registered):
                         backup_name = self._api_profile_name(
                             assignments.get("main_backup", ""))
                         log_fn(
@@ -25532,9 +25543,14 @@ class App(ctk.CTk):
             self._start_elapsed_timer()
             if (getattr(self, "_active_snapshot", {}) or {}).get("prevent_sleep"):
                 self._sleep_prevention_active = _set_windows_sleep_prevention(True)
-                if self._sleep_prevention_active:
+                if self._sleep_prevention_active and not self.__dict__.get(
+                        "_sleep_prevention_announced"):
+                    self._sleep_prevention_announced = True
                     self._log("Çeviri boyunca Windows uyku modu engellendi.", "info")
         elif not running:
+            # Sonraki GERCEK kosu duyuruyu yine yazsin.
+            self._run_pipeline_announced = None
+            self._sleep_prevention_announced = False
             for route_line in format_shuai_route_metrics():
                 self._log(f"Shuai rota özeti: {route_line}", "info")
             finalizer = getattr(self, "_finalize_run_record", None)
@@ -30224,7 +30240,13 @@ class App(ctk.CTk):
         self._set_status("Sağlayıcı canlılık kontrolü")
         started = time.monotonic()
         try:
-            outcome = probe_api_key(api_key, base_url, model, realistic=True)
+            # Durdur bu kontrolü de kesebilmeli: sonda 20 sn x 4 rota x 2
+            # tur yürüyor ve sağlayıcı asılıyken ~163 sn sürüyor. İptal
+            # bağlamı geçilmediği için 2026-08-24 koşusunda Durdur'a
+            # basıldıktan 58 sn sonra etki etmişti.
+            outcome = probe_api_key(
+                api_key, base_url, model, realistic=True,
+                should_cancel=lambda: bool(getattr(self, '_stop_flag', False)))
         except Exception as exc:
             self._log(f"Canlılık kontrolü çalıştırılamadı, atlanıyor: {exc}",
                       "warn")
@@ -30253,6 +30275,12 @@ class App(ctk.CTk):
             # hiçbir toplama girmemişti.
             App._record_live_check_usage(self, outcome)
             return True
+        if outcome.get("cancelled"):
+            # Durdur'a basildi: saglayiciyi suclama, sessizce cik.
+            self._log(f"{where} başlatılmadı: canlılık kontrolü sırasında "
+                      "durduruldu.", "warn")
+            self._set_status("Durduruldu.")
+            return False
         detail = str(outcome.get("detail", "") or "")
         hint = str(outcome.get("hint", "") or "")
         if hint:

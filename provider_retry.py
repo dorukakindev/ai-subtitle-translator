@@ -616,7 +616,8 @@ def _model_missing_hint(api_key: str, base_url: str, model: str,
 
 
 def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
-                         timeout: float, tally: dict) -> dict:
+                         timeout: float, tally: dict,
+                         should_cancel=None) -> dict:
     """Rotalari sirayla dener; ilk KESIN cevap sonucu belirler.
 
     tally: {"attempts": n, "failures": n} — kac denemede basarildigini
@@ -630,6 +631,14 @@ def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
     for route in route_urls:
         if not route:
             continue
+        # Kullanici Durdur'a bastiysa KALAN rotalari hic deneme. Ucusta olan
+        # okuma guvenle kesilemez, ama 20 sn x 4 rota x 2 tur = ~163 sn'lik
+        # dizinin geri kalani kesilebilir; 2026-08-24 kosusunda Durdur'un
+        # etki etmesi tam bu yuzden 58 sn surmustu.
+        if should_cancel is not None and should_cancel():
+            last["detail"] = "kullanici durdurdu"
+            last["cancelled"] = True
+            break
         started = time.monotonic()
         tally["attempts"] = tally.get("attempts", 0) + 1
         status, body, transport = _api_key_check_request(
@@ -674,7 +683,8 @@ def _api_key_check_sweep(api_key: str, model: str, route_urls, payload: dict,
 def probe_api_key(api_key: str, base_url: str, model: str,
                   timeout: float = API_KEY_CHECK_TIMEOUT,
                   route_urls=None, attempts: int = 2,
-                  retry_delay: float = 3.0, realistic: bool = False) -> dict:
+                  retry_delay: float = 3.0, realistic: bool = False,
+                  should_cancel=None) -> dict:
     """Bir anahtari kucuk bir istekle sinar.
 
     Kesin cevaplar (401/403/gercek 404) ilk rotada isi bitirir. Gecici
@@ -709,12 +719,28 @@ def probe_api_key(api_key: str, base_url: str, model: str,
     tally = {"attempts": 0, "failures": 0}
     result = {}
     for turn in range(max(1, int(attempts))):
-        if turn:
-            time.sleep(max(0.0, retry_delay))
-        result = _api_key_check_sweep(
-            api_key, model, route_urls, payload, timeout, tally)
-        if result["ok"] or not result.get("flaky"):
+        if should_cancel is not None and should_cancel():
             break
+        if turn:
+            # Beklemeyi de parcali uyu, yoksa Durdur 3 sn daha gec etki eder.
+            waited = 0.0
+            while waited < max(0.0, retry_delay):
+                if should_cancel is not None and should_cancel():
+                    break
+                time.sleep(0.25)
+                waited += 0.25
+        result = _api_key_check_sweep(
+            api_key, model, route_urls, payload, timeout, tally,
+            should_cancel=should_cancel)
+        if result["ok"] or not result.get("flaky") or result.get("cancelled"):
+            break
+    if not result:
+        # Ilk turda iptal edildi: bu bir SAGLAYICI arizasi degil, kullanici
+        # karari. Ayirt edilmezse cagiran "saglayici is yapamiyor" diye
+        # yanlis suclar.
+        result = {"ok": False, "status": None, "latency_ms": None,
+                  "detail": "kullanici durdurdu", "route": "", "hint": "",
+                  "cancelled": True}
     result.pop("flaky", None)
     result["attempts"] = tally["attempts"]
     result["failures"] = tally["failures"]
