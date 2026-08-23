@@ -64,3 +64,40 @@ tools/old_outputs_report.txt
 tools/ffmpeg/
 retry_and_resend_restored.py
 retry_recovered.py
+
+# ---- Kullanıcı altyazı arşivi (kaynak kod değil, çok büyük) ----
+# Bunlar yoksayılmadığı için `git add -A` binlerce altyazıyı depoya
+# sürüklemeye kalkıyordu; yalnız 'dosya adı çok uzun' hatası durdurdu.
+DİZİLER/
+FİLMLER/
+HAZIR DİZİLER/
+HAZIR FİLMLER/
+Raporlar/
+ÇEVRİLEN FİLMLER.txt
+
+# ---- Ajan/denetim ara klasörleri ----
+.audit_sources/
+.codex-*/
+.tmp_*/
+tools/.tmp_*/
+
+# ---- Çalışma zamanı (pid ekli biçimler) ----
+active_run.*.json
+
+# ---- Tek seferlik onarım/inceleme betikleri ----
+check_cues.py
+check_cues2.py
+check_flags.py
+fix.py
+fix_indent.py
+fix_read_errors.py
+fix_resume_batch.py
+fix_srt.py
+refactor.py
+refactor2.py
+tools/tmp_*.py
+check_report.txt
+cues_align.txt
+cues_check.txt
+cues_output.txt
+salome_check.txt
