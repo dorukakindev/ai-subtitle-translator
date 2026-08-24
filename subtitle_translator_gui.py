@@ -1609,6 +1609,94 @@ def resolve_source_language_preflight(detected_input: dict, user_selections: dic
     return (should_continue, final_map)
 
 
+def enumerate_monitor_work_areas() -> list:
+    """[(x, y, genişlik, yükseklik)] — görünür monitörlerin çalışma alanları.
+
+    Windows dışında ya da hata halinde boş liste döner; çağıran o zaman
+    kırpma yapmadan eski davranışı sürdürür.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return []
+    try:
+        user32 = ctypes.windll.user32
+    except Exception:
+        return []
+
+    class _RECT(ctypes.Structure):
+        _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                    ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+    class _MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", _RECT),
+                    ("rcWork", _RECT), ("dwFlags", wintypes.DWORD)]
+
+    found = []
+    callback_type = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+        ctypes.POINTER(_RECT), wintypes.LPARAM)
+
+    def _collect(handle, _hdc, _rect, _param):
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if user32.GetMonitorInfoW(handle, ctypes.byref(info)):
+            work = info.rcWork
+            found.append((int(work.left), int(work.top),
+                          int(work.right - work.left),
+                          int(work.bottom - work.top)))
+        return True
+
+    try:
+        user32.EnumDisplayMonitors(0, None, callback_type(_collect), 0)
+    except Exception:
+        return []
+    return found
+
+
+def clamp_dialog_to_monitor(x: int, y: int, width: int, height: int,
+                            monitors=None) -> tuple:
+    """Diyalogu GÖRÜNÜR bir monitörün içine çeker.
+
+    İki monitörlü, farklı DPI'lı düzenlerde ('deactivate_automatic_dpi_awareness'
+    nedeniyle Tk birincil ekranı 1707 görürken ikincil monitör X=2560'ta
+    başlıyor) hesaplanan konum hiçbir monitöre denk gelmeyen ölü bölgeye
+    düşebiliyordu. Diyalog `grab_set` + `wait_window` ile modal olduğu için
+    sonuç, kullanıcının göremediği bir pencere ve tamamen donmuş görünen bir
+    uygulama oluyordu.
+
+    Monitör listesi alınamazsa konum DEĞİŞTİRİLMEZ: kör bir düzeltme,
+    çalışan bir yerleşimi bozmaktan iyidir.
+    """
+    areas = enumerate_monitor_work_areas() if monitors is None else list(monitors)
+    if not areas:
+        return int(x), int(y)
+    x, y, width, height = int(x), int(y), int(width), int(height)
+
+    def _overlap(area):
+        ax, ay, aw, ah = area
+        return (max(0, min(x + width, ax + aw) - max(x, ax))
+                * max(0, min(y + height, ay + ah) - max(y, ay)))
+
+    best = max(areas, key=_overlap)
+    if _overlap(best) >= width * height * 0.6:
+        return x, y          # zaten büyük ölçüde görünür
+    # En çok kesişen monitör yoksa pencere merkezine en yakın olanı seç.
+    center_x, center_y = x + width // 2, y + height // 2
+
+    def _distance(area):
+        ax, ay, aw, ah = area
+        return ((center_x - (ax + aw // 2)) ** 2
+                + (center_y - (ay + ah // 2)) ** 2)
+
+    target = best if _overlap(best) else min(areas, key=_distance)
+    tx, ty, tw, th = target
+    new_x = min(max(x, tx), tx + max(tw - width, 0))
+    new_y = min(max(y, ty), ty + max(th - height, 0))
+    return new_x, new_y
+
+
 def centered_dialog_geometry(parent_x: int, parent_y: int, parent_width: int,
                              parent_height: int, dialog_width: int,
                              dialog_height: int) -> str:
@@ -35583,14 +35671,17 @@ class App(ctk.CTk):
         """Ön analiz dialogunu ana pencerenin üzerinde ve görünür konumda açar."""
         dlg.transient(self)
         self.update_idletasks()
-        dlg.geometry(centered_dialog_geometry(
-            self.winfo_rootx(),
-            self.winfo_rooty(),
-            max(self.winfo_width(), 1),
-            max(self.winfo_height(), 1),
-            width,
-            height,
-        ))
+        # Konumu ebeveynin içinde ortala, sonra GÖRÜNÜR bir monitöre çek:
+        # DPI farkındalığı kapalı olduğu için Tk birincil ekranı 1707 görürken
+        # ikincil monitör 2560'ta başlıyor ve arada hiçbir monitörün olmadığı
+        # bir bölge kalıyor. Kırpma yalnız buradaki gerçek pencere için;
+        # `centered_dialog_geometry` saf ve donanımdan bağımsız kalır.
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        pos_x = parent_x + max((max(self.winfo_width(), 1) - width) // 2, 0)
+        pos_y = parent_y + max((max(self.winfo_height(), 1) - height) // 2, 0)
+        pos_x, pos_y = clamp_dialog_to_monitor(pos_x, pos_y, width, height)
+        dlg.geometry(f"{int(width)}x{int(height)}{int(pos_x):+d}{int(pos_y):+d}")
         dlg.deiconify()
         dlg.lift()
         dlg.attributes("-topmost", True)
@@ -35606,6 +35697,33 @@ class App(ctk.CTk):
         dlg.after(250, _release_topmost)
         dlg.focus_force()
         dlg.grab_set()
+
+        # `-topmost` 250 ms sonra bırakılıyor, ama `grab_set` modal kilidi açık
+        # kalıyor: kullanıcı ana pencereye tıklarsa ana pencere öne geliyor,
+        # diyalog ARKASINA düşüyor ve tıklamalar kilit yüzünden yutuluyor.
+        # Windows o anda ana pencereyi "yanıt vermiyor" olarak işaretliyor —
+        # 2026-08-24 ölçümünde 36 saniye boyunca CPU %0, disk %0 ile "donmuş"
+        # görünen şey buydu. Ana pencere odak alırsa diyalogu geri öne alıyoruz.
+        def _keep_modal_visible(_event=None):
+            try:
+                if dlg.winfo_exists():
+                    dlg.lift()
+                    dlg.focus_force()
+            except Exception:
+                pass
+
+        try:
+            binding = self.bind("<FocusIn>", _keep_modal_visible, "+")
+
+            def _drop_binding():
+                try:
+                    self.unbind("<FocusIn>", binding)
+                except Exception:
+                    pass
+
+            dlg.bind("<Destroy>", lambda _e: _drop_binding(), "+")
+        except Exception:
+            pass
 
     def _capture_preflight_usage(self):
         """Ön kontrolde harcanan API kullanımını koşuya devretmek üzere saklar.

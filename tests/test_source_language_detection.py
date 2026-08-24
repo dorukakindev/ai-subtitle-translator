@@ -64,11 +64,75 @@ class SourceLanguageDetectionTest(unittest.TestCase):
             winfo_height=lambda: 1040,
         )
         dialog = Dialog()
-        gui.App._present_preflight_dialog(parent, dialog, 760, 520)
+        # Ebeveyn, birincil ekranın SOLUNDAKİ monitörde. Konum artık görünür
+        # bir monitöre kırpıldığı için o monitörün varlığı açıkça bildirilir;
+        # aksi halde test, koşan makinenin gerçek ekran düzenine bağlı olur.
+        left_monitor = [(-1920, 40, 1920, 1040), (0, 0, 1707, 920)]
+        original = gui.enumerate_monitor_work_areas
+        gui.enumerate_monitor_work_areas = lambda: left_monitor
+        try:
+            gui.App._present_preflight_dialog(parent, dialog, 760, 520)
+        finally:
+            gui.enumerate_monitor_work_areas = original
 
         self.assertIn(("geometry", "760x520-1340+300"), calls)
         self.assertLess(calls.index(("deiconify",)), calls.index(("grab",)))
         self.assertIn(("attributes", "-topmost", False), calls)
+
+    def test_present_preflight_dialog_pulls_an_offscreen_position_back(self):
+        """Hiçbir monitöre denk gelmeyen konum görünür alana çekilir.
+
+        DPI farkındalığı kapalı ve iki monitör farklı ölçekteyken hesaplanan
+        konum ölü bölgeye düşebiliyordu; pencere modal olduğu için uygulama
+        tamamen donmuş görünüyordu (2026-08-24 ölçümü: 36 sn, CPU %0).
+        """
+        seen = []
+
+        class Dialog:
+            def transient(self, _parent):
+                pass
+
+            def geometry(self, value):
+                seen.append(value)
+
+            def deiconify(self):
+                pass
+
+            def lift(self):
+                pass
+
+            def attributes(self, *_args):
+                pass
+
+            def after(self, _ms, fn):
+                fn()
+
+            def winfo_exists(self):
+                return True
+
+            def focus_force(self):
+                pass
+
+            def grab_set(self):
+                pass
+
+        parent = SimpleNamespace(
+            update_idletasks=lambda: None,
+            winfo_rootx=lambda: 1900,   # 1707 ile 2560 arasi OLU BOLGE
+            winfo_rooty=lambda: 400,
+            winfo_width=lambda: 700,
+            winfo_height=lambda: 500,
+        )
+        monitors = [(0, 0, 1707, 920), (2560, 116, 1920, 1040)]
+        original = gui.enumerate_monitor_work_areas
+        gui.enumerate_monitor_work_areas = lambda: monitors
+        try:
+            gui.App._present_preflight_dialog(parent, Dialog(), 700, 500)
+        finally:
+            gui.enumerate_monitor_work_areas = original
+
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].startswith("700x500+2560"), seen[0])
 
     def test_content_preflight_dialog_failure_reenables_ui_and_keeps_results(self):
         done = threading.Event()
