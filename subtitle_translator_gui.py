@@ -46,7 +46,7 @@ from prompt_constants import (PROFANITY_RULES, JSON_INSTRUCTION,
                                UNTRUSTED_REFERENCE_RULE, meaning_readability_rule,
                                transliteration_guard_rule,
                                TRANSLATABLE_CAPITALISED_STOPS, FOREIGN_EXONYM_MAP,
-                               CANONICAL_TURKISH_NAMES)
+                               CANONICAL_TURKISH_NAMES, REGISTER_GUIDANCE)
 from folder_picker import pick_multiple_folders
 from request_cancellation import RequestCancelled, RunRequestCanceller
 from provider_retry import (ProviderWaitCancelled, SHUAI_API_ROUTE_OPTIONS,
@@ -7807,6 +7807,20 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
 
     profanity_rule = "\n".join(PROFANITY_RULES.get(profanity, PROFANITY_RULES["Orta"]))
 
+    # Tür register rehberi paylaşılan bir sabit olmasına rağmen YALNIZ hybrid
+    # promptunda kullanılıyordu; düz sync ve batch belgeselde teknik kesinlik,
+    # komedide zamanlama, dramda alt metin kurallarını hiç almıyordu. CLAUDE.md
+    # iki promptun semantik hizada kalmasını şart koşuyor.
+    register_block = ""
+    try:
+        import hybrid_translate as _ht
+        _register = _ht._infer_register("", schema=schema)
+        _guidance = REGISTER_GUIDANCE.get(_register, "")
+        if _guidance:
+            register_block = f"\n## REGISTER — {_register.upper()}\n{_guidance}\n"
+    except Exception:
+        register_block = ""
+
     # Colloquial markers: skip for documentary/narration/news content
     # (hybrid yolu bunu context.tone register'ından çıkarır — sync'te şema adıyla paritede tut)
     schema_name = (schema or {}).get("name", "").lower()
@@ -7846,6 +7860,7 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         f"If you see 'temple', 'mosque', 'shrine', translate to Turkish words: "
         f"tapınak, cami, türbe — NEVER use the word's form in another language's script.\n"
         + schema_block
+        + register_block
         + "Rules:\n"
         f"- Natural, fluent {tgt} — never word-for-word literal\n"
         + meaning_readability_rule(tgt) + "\n"

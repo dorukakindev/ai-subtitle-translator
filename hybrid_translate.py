@@ -3854,11 +3854,18 @@ def _infer_register(tone: str, schema: dict | None = None) -> str:
     if (any(w in tone_l for w in ("documentary", "narrator", "exposition", "neutral"))
             or any(w in schema_name for w in non_colloquial)):
         return "documentary"
-    if any(w in tone_l for w in ("comedy", "humor", "humorous", "sitcom", "funny", "jokes")):
+    # Şema adı da tür taşıyor ('Komedi (Sitcom)', 'Aksiyon / Suç', 'Dram
+    # (Genel)'). Önceden yalnız TONE'a bakılıyordu; tonu olmayan düz sync
+    # yolu bu yüzden komedi/aksiyon/dram rehberini hiç alamıyordu.
+    if (any(w in tone_l for w in ("comedy", "humor", "humorous", "sitcom", "funny", "jokes"))
+            or any(w in schema_name for w in ("komedi", "comedy", "sitcom", "mizah"))):
         return "comedy"
-    if any(w in tone_l for w in ("action", "thriller", "tense", "suspense")):
+    if (any(w in tone_l for w in ("action", "thriller", "tense", "suspense"))
+            or any(w in schema_name for w in ("aksiyon", "action", "gerilim",
+                                              "thriller", "korku", "suç"))):
         return "action"
-    if any(w in tone_l for w in ("drama", "emotional", "serious", "gritty")):
+    if (any(w in tone_l for w in ("drama", "emotional", "serious", "gritty"))
+            or any(w in schema_name for w in ("dram", "drama"))):
         return "drama"
     return "general"
 
@@ -3998,7 +4005,16 @@ def build_system_prompt(
     )
     if safe_recurring_terms:
         parts.append("## MANDATORY TERM TRANSLATIONS")
-        parts.append("Use these exact translations every time — no substitutions allowed:")
+        # "no substitutions allowed" mutlaklığı, payload'daki ortak kuralla
+        # çelişiyordu: orada "bağlam sözlüğün yanlış anlamda olduğunu açıkça
+        # gösteriyorsa sahne niyetini önceliklendir" yazıyor. Bağlamın üstün
+        # gelmesi YENİ ve doğru politika — 202 gerçek dosyada ölçüldüğünde
+        # modeli 'pupil → göz bebeği' gibi yanlış dayatmalardan kurtaran şey
+        # tam olarak buydu. İki metin aynı sözlüğü tarif ettiği için
+        # mutlaklık ifadesi buradan kaldırıldı.
+        parts.append(
+            "Use these translations by default. Only depart from one when the "
+            "scene clearly shows that sense is wrong here:")
         for src, tgt in safe_recurring_terms.items():
             parts.append(f"  {src} → {tgt}")
         parts.append("")
@@ -4069,7 +4085,14 @@ def build_system_prompt(
         "- Do NOT invent pseudo-Turkish or foreign-looking words. If a term is unknown, use established Turkish, "
         "an accepted loanword, or a concise natural paraphrase.",
         "- If 'ctx' key present: those are preceding context only — do NOT translate them",
-        "- Output ONLY the translated text — no notes, no explanations",
+        # "Output ONLY the translated text" satırı buradaydı ve JSON
+        # sözleşmesiyle DOĞRUDAN çelişiyordu: build_batch_requests her
+        # sistem promptunun sonuna JSON_INSTRUCTION ekliyor, yani model
+        # aynı mesajda hem "yalnız düz metin" hem "yalnız JSON dizisi"
+        # emri alıyordu (aralarında ~11.000 karakter). Çıktı biçimi JSON'a
+        # geçtiğinde unutulmuş bayat bir satır. Kalması gereken kısım —
+        # not/açıklama eklememe — aşağıda korunuyor.
+        "- Do NOT add notes, explanations or translator commentary",
         "",
         "## CONCRETE EXAMPLES — CORRECT vs WRONG",
         "  'IT'S A DETONATOR.' → CORRECT: 'BU BİR DETONATÖR.' | WRONG: 'BU BİR DÜRTÜKLEYİCİ.'",
