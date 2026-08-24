@@ -213,6 +213,27 @@ TRANSLATABLE_CAPITALISED_STOPS = frozenset({
     "irish", "scottish", "iranian", "welsh", "dutch", "danish", "swedish", "norwegian",
     "polish", "czech", "hungarian", "portuguese", "brazilian", "african",
     "european", "asian", "western", "eastern", "northern", "southern",
+
+    # 2026-08-24 ölçümü (202 gerçek kaynak): otomatik ad kilidi bunları özel
+    # ad sanıp ana modele "ÇEVİRME" diyordu. Hepsi gerçek dosyalardan geldi,
+    # uydurma değil.
+    #
+    # Ünlem / onay / dikkat sözcükleri — bir belgeselde 'Action!' yönetmenin
+    # komutudur ve Türkçesi 'Motor!'dur:
+    "okay", "yeah", "yep", "sure", "alright", "hey", "listen", "look",
+    "watch", "wait", "relax", "hold", "check", "action", "cut", "cause",
+    "well", "come", "go", "let", "please", "thanks", "sorry",
+    # Ulanan fiil biçimleri (cümle başında büyük harfle çok geçiyor):
+    "dying", "laughing", "shouts", "shouting", "works", "petting",
+    "talking", "crying", "screaming", "singing",
+    # Akrabalık ve hitap:
+    "mama", "papa", "mummy", "daddy", "grandad", "granddad", "grandma",
+    "grandpa", "sir", "madam", "eminence", "highness", "majesty", "baron",
+    # Meslek / topluluk adları:
+    "archaeologists", "archaeologist", "historians", "historian",
+    "scientists", "scientist", "soldiers", "trooper", "troopers",
+    # Türkçe dışı sıradan sözcükler (çok dilli kaynaklarda çıkıyor):
+    "monsieur", "madame", "quando", "dieu", "criador", "senhor", "senor",
     "france", "england", "germany", "spain", "italy", "greece", "russia",
     # din / mitoloji
     "god", "deus", "jesus", "christ", "christian", "christianity", "catholic",
@@ -248,6 +269,14 @@ FOREIGN_EXONYM_MAP = {
     "ocidente": "Batı", "occident": "Batı", "oriente": "Doğu",
     "orient": "Doğu", "alemanha": "Almanya", "espanha": "İspanya",
     "grécia": "Yunanistan", "grecia": "Yunanistan", "índia": "Hindistan",
+    # 2026-08-24 ölçümü: bunlar kimlikle kilitleniyordu, yani Türkçe altyazıda
+    # İngilizce kalıyorlardı. 'Troy' bu sınıfın bilinen bir vakası — daha önce
+    # Strangest Things S02E03'te 35 cue elle 'Truva'ya düzeltilmişti.
+    "troy": "Truva", "argentina": "Arjantin", "california": "Kaliforniya",
+    "christmas": "Noel", "athens": "Atina", "moscow": "Moskova",
+    "warsaw": "Varşova", "prague": "Prag", "munich": "Münih",
+    "cologne": "Köln", "geneva": "Cenevre", "florence": "Floransa",
+    "naples": "Napoli", "venice": "Venedik", "lisbon": "Lizbon",
 }
 
 

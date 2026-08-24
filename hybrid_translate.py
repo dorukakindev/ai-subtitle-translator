@@ -3180,6 +3180,7 @@ def _analyze_context_openai_compatible(
     token_callback=None,
     allow_partial=False,
     cancel_context=None,
+    full_source_cues: list | None = None,
 ):
     _ensure_path()
     from openai import OpenAI
@@ -3316,6 +3317,17 @@ def _analyze_context_openai_compatible(
         _clean_source_text(getattr(cue, "text", str(cue)))
         for cue in cues
     )
+    # Otomatik ad kilidi DOSYA kanıtına dayanmalı: elemeleri ('okay' kaynakta
+    # küçük harfle de geçiyor, 'Hold' hep cümle başında) sağlayan kanıt başka
+    # bir chunk'ta olabilir. Buraya yalnız chunk verildiği için 2026-08-24
+    # koşusunda 'Okay', 'Check', 'Action' özel ad sanılıp kilitlendi — ana
+    # modele "bunları ÇEVİRME" denmiş oldu ('Action!' = 'Motor!').
+    full_blob = source_blob
+    if full_source_cues:
+        full_blob = " ".join(
+            _clean_source_text(getattr(cue, "text", str(cue)))
+            for cue in full_source_cues
+        ) or source_blob
     recurring_terms = {
         source: target
         for source, target in recurring_terms.items()
@@ -3330,7 +3342,7 @@ def _analyze_context_openai_compatible(
     try:
         from subtitle_translator_gui import auto_locked_proper_nouns
         auto_locked = auto_locked_proper_nouns(
-            source_blob, recurring_terms, rejected_out=auto_rejected,
+            full_blob, recurring_terms, rejected_out=auto_rejected,
             target_language=target_language)
     except Exception:
         auto_locked = {}
@@ -3476,6 +3488,7 @@ def analyze_with_helper(
                         log_fn=log_fn,
                         allow_partial=(attempt == 2),
                         cancel_context=cancel_context,
+                        full_source_cues=cues,
                     )
                 return i, provider.analyze_context(req)
             except Exception as e:
