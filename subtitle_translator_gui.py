@@ -6984,6 +6984,49 @@ def _delivery_token_keeps_upper(stem: str, source_tokens=()) -> bool:
     return not (set(stem) & _TR_UPPER_VOWELS)
 
 
+def _lower_stem_by_origin(stem: str, source_tokens):
+    """Gövdeyi PARÇA PARÇA kendi diline göre küçültür; hiçbiri kaynaktan
+    gelmiyorsa None döner (çağıran Türkçe kuralını uygular).
+
+    'ANTI-GEZINTI' gibi bileşiklerde ilk parça kaynaktan ('ANTI-CRUISE'),
+    ikincisi Türkçedir; tek parça sayınca 'Antı' çıkıyordu.
+    """
+    core = str(stem or "")
+    if not core:
+        return None
+    parts = core.split("-")
+    if not any(_token_comes_from_source(part, source_tokens) for part in parts):
+        return None
+    out = []
+    for part in parts:
+        if _token_comes_from_source(part, source_tokens):
+            out.append(part.lower())
+        else:
+            # Türkçe parça, belirsiz I çözümünden geçer: model 'GEZİNTİ'yi
+            # 'GEZINTI' diye yazdığında düz çeviri 'gezıntı' üretiyordu.
+            out.append(_tr_resolve_ambiguous_i(part)
+                       .translate(_TR_LOWER_MAP).lower())
+    return "-".join(out)
+
+
+def _token_comes_from_source(stem: str, source_tokens) -> bool:
+    """Sözcük kaynak metinde birebir geçiyor mu? (yalnız ASCII harfli olanlar)
+
+    Kaynaktan taşınan bir özel ad/sözcük hedef dilin küçültme kuralına değil,
+    KENDİ diline aittir. Türkçeye özgü harf taşıyan token (İ, Ş, Ğ...) kaynak
+    listesinde bulunsa bile Türkçe sayılır.
+    """
+    core = str(stem or "")
+    if not core or not core.isascii() or not any(c.isalpha() for c in core):
+        return False
+    folded = core.casefold()
+    for candidate in (source_tokens or ()):
+        text = str(candidate or "")
+        if text and text.isascii() and text.casefold() == folded:
+            return True
+    return False
+
+
 def _tr_sentence_case(text: str, source_text: str = "") -> str:
     """Tamamı büyük harfle yazılmış Türkçe metni normal cümle düzenine indirir.
 
@@ -6992,10 +7035,14 @@ def _tr_sentence_case(text: str, source_text: str = "") -> str:
     value = str(text or "")
     if not value.strip():
         return value
-    source_tokens = {
-        part.strip("\"'“”‘’()[]{}.,!?;:…-–—")
-        for part in str(source_text or "").split()
-    }
+    source_tokens = set()
+    for part in str(source_text or "").split():
+        cleaned = part.strip("\"'“”‘’()[]{}.,!?;:…-–—")
+        if not cleaned:
+            continue
+        source_tokens.add(cleaned)
+        # Bileşiğin parçaları da kaynak sayılır: 'ANTI-CRUISE' → 'ANTI'.
+        source_tokens.update(piece for piece in cleaned.split("-") if piece)
 
     def _lower_token(token: str) -> str:
         core = token.strip("\"'“”‘’()[]{}.,!?;:…-–—")
@@ -7019,6 +7066,19 @@ def _tr_sentence_case(text: str, source_text: str = "") -> str:
             return token.replace(core, f"{stem}{sep}{lowered_suffix}")
         if len(core) == 1 and core.isalpha():
             return token
+        # KAYNAKTAN gelen sözcüğe Türkçe I→ı uygulanmaz. Kaynak İngilizce ve
+        # tamamı büyük harf olduğunda 'VILLAGE' → 'vıllage', 'PAINE' → 'paıne',
+        # 'TWAIN' → 'twaın' oluyordu; teslim denetimi bunları haklı olarak
+        # bozuk token diye işaretliyor (The Cruise, 11 cue). Ölçüt sözcüğün
+        # kaynakta geçmesi: 'KIZ' gibi gerçek Türkçe sözcükler kaynakta
+        # bulunmaz ve Türkçe kuralıyla küçültülmeyi sürdürür.
+        lowered_stem = _lower_stem_by_origin(stem, source_tokens)
+        if lowered_stem is not None:
+            if not sep:
+                return token.replace(core, lowered_stem)
+            return token.replace(
+                core, lowered_stem + sep
+                + suffix.translate(_TR_LOWER_MAP).lower())
         return _tr_resolve_ambiguous_i(token).translate(
             _TR_LOWER_MAP).lower()
 
