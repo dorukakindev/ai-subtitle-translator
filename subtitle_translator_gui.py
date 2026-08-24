@@ -18734,7 +18734,8 @@ SYNC_CKPT_STORE_VER = 2
 SYNC_STAGE_STORE_VER = 2
 
 
-def load_sync_ckpt_store(path: Path) -> dict:
+def load_sync_ckpt_store(path: Path, preloaded_content: str | None = None,
+                         preloaded_data=None) -> dict:
     """Sync checkpoint deposunu okur (v2 JSON veya legacy JSONL dönüşümü).
     Döndürür: {'version': 2, 'entries': {key: {'cid': ..., 'h': ..., 't': ..., 'updated_at': ...}}}
     Boş/bozuk dosyada güvenli boş depo yapısı döndürür.
@@ -18751,11 +18752,19 @@ def load_sync_ckpt_store(path: Path) -> dict:
         return store
 
     try:
-        content = target_path.read_text(encoding="utf-8")
+        # Depo 20 MB'a ulaştı ve her chunk kaydında iki kez okunup parse
+        # ediliyordu: bir kez güvenlik kontrolünde, bir kez burada. JSON
+        # parse GIL'i tuttuğu için Tkinter arayüzü o sürede hiç çalışamıyor
+        # — ölçüm: chunk başına ~0,44 sn, koşu sırasında tıklamada donma.
+        # Çağıran metni zaten okuduysa tekrar okumuyoruz.
+        content = (preloaded_content if preloaded_content is not None
+                   else target_path.read_text(encoding="utf-8"))
         if not content.strip():
             return store
         try:
-            d = json.loads(content)
+            # Güvenlik kontrolü zaten parse ettiyse tekrar etmiyoruz: 20 MB'lık
+            # deponun parse'ı tek başına ~0,10 sn ve GIL'i tutuyor.
+            d = preloaded_data if preloaded_data is not None else json.loads(content)
             if isinstance(d, dict) and d.get("version") == SYNC_CKPT_STORE_VER and isinstance(d.get("entries"), dict):
                 store["entries"] = d["entries"]
                 return store
@@ -18784,7 +18793,9 @@ def load_sync_ckpt_store(path: Path) -> dict:
     return store
 
 
-def _sync_ckpt_store_mutation_safe(path: Path) -> bool:
+def _sync_ckpt_store_mutation_safe(path: Path, return_content: bool = False):
+    """Depo güvenle üzerine yazılabilir mi? `return_content` ile okunan metni
+    de döndürür; çağıran aynı dosyayı ikinci kez okumak zorunda kalmasın."""
     path = Path(path)
     target = path
     if not target.exists() and target.suffix == ".json":
@@ -18792,13 +18803,13 @@ def _sync_ckpt_store_mutation_safe(path: Path) -> bool:
         if legacy.exists():
             target = legacy
     if not target.exists():
-        return True
+        return (True, None, None) if return_content else True
     try:
         content = target.read_text(encoding="utf-8")
     except Exception:
-        return False
+        return (False, None, None) if return_content else False
     if not content.strip():
-        return True
+        return (True, content, None) if return_content else True
     try:
         data = json.loads(content)
     except Exception:
@@ -18806,7 +18817,7 @@ def _sync_ckpt_store_mutation_safe(path: Path) -> bool:
     if (isinstance(data, dict)
             and data.get("version") == SYNC_CKPT_STORE_VER
             and isinstance(data.get("entries"), dict)):
-        return True
+        return (True, content, data) if return_content else True
     valid_legacy = 0
     for line in content.splitlines():
         if not line.strip():
@@ -18817,7 +18828,8 @@ def _sync_ckpt_store_mutation_safe(path: Path) -> bool:
             continue
         if isinstance(row, dict) and row.get("cid"):
             valid_legacy += 1
-    return valid_legacy > 0
+    ok = valid_legacy > 0
+    return (ok, content, None) if return_content else ok
 
 
 def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str, log_fn=None) -> bool:
@@ -18826,11 +18838,14 @@ def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str
     key = f"{cid}:{src_hash}"
     try:
         with _interprocess_lock(path):
-            if not _sync_ckpt_store_mutation_safe(path):
+            safe, content, parsed = _sync_ckpt_store_mutation_safe(
+                path, return_content=True)
+            if not safe:
                 raise ValueError(
                     "mevcut checkpoint deposu bozuk; veri kaybını önlemek için "
                     "üzerine yazılmadı")
-            store = load_sync_ckpt_store(path)
+            store = load_sync_ckpt_store(
+                path, preloaded_content=content, preloaded_data=parsed)
             entries = store.get("entries", {})
             entries[key] = {
                 "cid": cid,
