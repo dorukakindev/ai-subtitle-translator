@@ -4122,7 +4122,7 @@ def build_system_prompt(
         "- Turkish is SOV — let the finite verb fall at the clause end; do NOT carry English S-V-O order when it yields stilted Turkish.",
         "- AVOID premature verb closure (erken yüklem kapanması) on cross-cue sentences. If a sentence continues in the next block, do NOT write a finished Turkish verb in the current block (e.g. do NOT translate 'Throughout history, humanity has struggled / with fears of Armageddon' as 'Tarih boyunca insanlık boğuştu, / Armageddon korkularıyla'). Instead, delay the verb to the end of the sentence or keep the sentence open using Turkish relative clauses, participles, or conjunctions.",
         "- Subtitle Sentence Splitting & Info Flow: When a single sentence spans across multiple contiguous subtitle blocks:",
-        "  * If they are close in time (dialogue flows naturally), prioritize natural Turkish word order (SOV). It is preferred to shift information across boundaries (e.g. putting the dependent clause 'Yağmur yağdığı için' in the first subtitle, and the verb 'markete gittim' in the second) to keep the Turkish flow smooth and standard.",
+        "  * If they are close in time (dialogue flows naturally), prioritize natural Turkish word order (SOV). Within ONE source sentence — the ids the payload marks with 'frag'/'sentence_groups' — it is preferred to shift information across those boundaries (e.g. putting the dependent clause 'Yağmur yağdığı için' in the first subtitle, and the verb 'markete gittim' in the second) to keep the Turkish flow smooth and standard. This permission does NOT extend to ids that belong to DIFFERENT sentences: never move a whole clause's meaning from one sentence's cue into another's.",
         "  * If there is a noticeable time gap (> 1.5 seconds) between the subtitles, try to keep the meaning of each block self-contained. In this case, you may use natural-sounding inverted sentences (devrik cümle) or conjunctions ('çünkü', 'fakat') to prevent displaying translations of future speech too early.",
         "- English subordinate clauses ('when/because/after X, Y') usually collapse into ONE Turkish clause via "
         "a converb/participle: 'When he arrived, she left' → 'O gelince kadın gitti' (NOT two sentences).",
@@ -7165,6 +7165,7 @@ def _glossary_gloss_or_instruction_marker(value: str) -> str | None:
 # burası da "sadece bu terim" tarafında, "tüm sözlük" tarafında değil).
 _GLOSSARY_VERBOSE_WORD_THRESHOLD = 10
 _GLOSSARY_CONTEXT_SENSITIVE_SOURCE_KEYS = frozenset({
+    "action",
     "be", "can", "could", "do", "had", "has", "have", "is", "may",
     "might", "must", "shall", "should", "superior", "was", "were", "will",
     "take", "work", "works", "would",
@@ -7173,10 +7174,12 @@ _ROMAN_NUMERAL_RE = re.compile(
     r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
 )
 _GLOSSARY_KNOWN_BAD_PAIRS = {
+    ("atmosphere", "figürasyon ortamı"),
     ("confessor", "günah çıkardığı rahip"),
     ("guardia civil", "civil guard"),
     ("madam", "sayın hakim"),
     ("pontoon", "sallay"),
+    ("in the can", "kutuda"),
 }
 
 
@@ -8078,6 +8081,60 @@ def _tr_number_values_unfiltered(text: str) -> list:
     return values
 
 
+# Emperyal -> metrik dönüşüm çarpanları. Guard eskiden kaynakta emperyal,
+# hedefte metrik birim görünce cue'yu HİÇ denetlemeden geçiyordu; 202 gerçek
+# dosyada böyle 88 cue var ve biri yanlıştı: '200-Pound ladies' -> '200 kiloluk
+# kadınlar' (doğrusu ~91 kg). Artık iki taraf da tek ve açık bir ölçüm
+# taşıyorsa aritmetik doğrulanıyor, belirsizse sessiz kalınıyor.
+_UNIT_CONVERSIONS = (
+    (r"pounds?|lbs?", r"kilo(?:gram)?\w*|kg", 0.45359237),
+    (r"feet|foot|ft", r"metre\w*", 0.3048),
+    (r"miles?", r"kilometre\w*|km", 1.609344),
+    (r"inch(?:es)?", r"santim\w*", 2.54),
+    (r"yards?", r"metre\w*", 0.9144),
+    (r"gallons?", r"litre\w*", 3.785411784),
+    (r"ounces?|oz", r"gram\w*", 28.349523125),
+    (r"acres?", r"hektar\w*", 0.40468564),
+)
+_UNIT_NUMBER = r"\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+_UNIT_TOLERANCE = 0.25
+
+
+def _unit_amounts(text: str, unit_pattern: str) -> list:
+    """Birimin HEMEN öncesindeki sayı değerleri."""
+    values = []
+    pattern = re.compile(
+        r"(" + _UNIT_NUMBER + r")\s*[-–]?\s*(?:" + unit_pattern + r")",
+        re.IGNORECASE)
+    for match in pattern.finditer(str(text or "")):
+        value = _normalize_numeric_token(match.group(1))
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _imperial_conversion_is_wrong(src_text: str, tr_text: str) -> bool:
+    """Dönüşüm aritmetiği açıkça yanlışsa True; karar verilemiyorsa False."""
+    for src_unit, tgt_unit, factor in _UNIT_CONVERSIONS:
+        source = _unit_amounts(src_text, src_unit)
+        target = _unit_amounts(tr_text, tgt_unit)
+        if len(source) != 1 or len(target) != 1:
+            continue
+        expected = source[0] * factor
+        if expected <= 0:
+            return False
+        return abs(target[0] - expected) / expected > _UNIT_TOLERANCE
+    # 'degrees Fahrenheit' biçiminde sayı 'degrees'in önünde kalıyor.
+    source = _unit_amounts(src_text, r"(?:degrees?\s+)?fahrenheit|°\s*F")
+    target = _unit_amounts(tr_text, r"santigrat\w*|derece")
+    if len(source) == 1 and len(target) == 1:
+        expected = (source[0] - 32.0) * 5.0 / 9.0
+        return abs(target[0] - expected) > max(2.0, abs(expected) * _UNIT_TOLERANCE)
+    return False
+
+
 def _numeric_token_mismatch(src_text: str, tr_text: str) -> bool:
     """Kaynaktaki bir sayı çeviride hiç karşılık bulmuyorsa True.
 
@@ -8097,7 +8154,8 @@ def _numeric_token_mismatch(src_text: str, tr_text: str) -> bool:
     target_value = str(tr_text or "")
     if (_IMPERIAL_UNIT_RE.search(source_value)
             and _METRIC_UNIT_RE.search(target_value)):
-        return False  # dönüşüm bekleniyor; token eşitliğiyle doğrulanamaz
+        # Token eşitliğiyle doğrulanamaz, ama ARİTMETİK doğrulanabilir.
+        return _imperial_conversion_is_wrong(source_value, target_value)
     target_pool = set(_numeric_digit_groups(target_value))
     target_pool.update(_tr_number_values_unfiltered(target_value))
     return any(value not in target_pool for value in src_groups)

@@ -107,6 +107,78 @@ def _character_identity(value) -> str:
     return "".join(char for char in text if not unicodedata.combining(char)).replace("ı", "i")
 
 
+def _split_pair_key(key, known_names):
+    """'Anlatıcı-Mark Gatiss' → ('Anlatıcı', 'Mark Gatiss'); değilse None.
+
+    Hybrid analiz hitap kararlarını `{"A-B": "sen"}` biçiminde, yani ÇİFT
+    anahtarlı bir sözlükle gönderiyor. `merge_address_map`'in sözlük dalı ise
+    her anahtarı tek bir karakter adı sayıyordu; sonuçta 15 gerçek dizi
+    hafızasındaki 147 kaydın 147'sinde `b` boş kalmış ve yönlü ilişki
+    tamamen kaybolmuştu. Prompt'a `- Anlatıcı-Mark Gatiss: 'siz'` diye
+    bozuk tek bir ad yazılıyordu.
+
+    Ad İÇİNDE de tire olabildiği için ('Mary-Ann Ochota') körlemesine
+    bölmüyoruz: yalnız İKİ YARISI DA bilinen karaktere denk gelen bir
+    bölme kabul edilir, birden çok aday varsa hiçbiri seçilmez.
+    """
+    text = str(key or "").strip()
+    if not text:
+        return None
+    lookup = {_character_identity(name): str(name)
+              for name in (known_names or []) if str(name or "").strip()}
+    if not lookup:
+        return None
+    matches = []
+    for index, char in enumerate(text):
+        if char != "-":
+            continue
+        left = text[:index].strip()
+        right = text[index + 1:].strip()
+        if not left or not right:
+            continue
+        left_id = _character_identity(left)
+        right_id = _character_identity(right)
+        if left_id in lookup and right_id in lookup and left_id != right_id:
+            matches.append((lookup[left_id], lookup[right_id]))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _repair_collapsed_address_pairs(data) -> int:
+    """Diske yazılmış çökmüş çiftleri onarır; onarılan kayıt sayısını döner.
+
+    Eski kayıtlarda `a` alanı çift anahtarını, `b` alanı boşu tutuyor.
+    Köken anahtarı da eski çökmüş biçimde yazıldığı için birlikte taşınır;
+    yoksa bölüm kesme filtresi onarılan kaydın kökenini bulamaz.
+    """
+    amap = data.get("address_map")
+    if not isinstance(amap, list) or not amap:
+        return 0
+    known = list((data.get("characters") or {}).keys())
+    if not known:
+        return 0
+    origins = data.get("address_origins")
+    if not isinstance(origins, dict):
+        origins = {}
+        data["address_origins"] = origins
+    repaired = 0
+    for entry in amap:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("b") or "").strip():
+            continue
+        pair = _split_pair_key(entry.get("a"), known)
+        if not pair:
+            continue
+        old_key = "\0".join((_character_identity(entry.get("a")), ""))
+        entry["a"], entry["b"] = pair[0], pair[1]
+        new_key = "\0".join((_character_identity(pair[0]),
+                              _character_identity(pair[1])))
+        if old_key in origins and new_key not in origins:
+            origins[new_key] = origins.pop(old_key)
+        repaired += 1
+    return repaired
+
+
 def _tv_root_info(filename: str):
     path = Path(filename)
     for parent in path.parents:
@@ -395,6 +467,8 @@ class SeriesMemory:
         for key in ("term_origins", "character_origins", "address_origins"):
             if not isinstance(data.get(key), dict):
                 data[key] = {}
+        # Diskte çökmüş çift kayıtları varsa yüklerken onarılır.
+        _repair_collapsed_address_pairs(data)
         if previous_version < cls.VERSION:
             data.setdefault("legacy_unscoped", bool(data.get("updated_eps")))
         else:
@@ -575,9 +649,19 @@ class SeriesMemory:
         }
         entries = []
         if isinstance(pairs, dict):
+            known = list((self._data.get("characters") or {}).keys())
             for name, reg in pairs.items():
-                if name and reg:
-                    entries.append({"a": str(name), "b": "", "register": str(reg)})
+                if not (name and reg):
+                    continue
+                # Anahtar bir ÇİFT ise ('A-B') yönlü kayda ayrıştır; değilse
+                # eski karakter-başına davranış korunur (testle kilitli).
+                pair = _split_pair_key(name, known)
+                if pair:
+                    entries.append({"a": pair[0], "b": pair[1],
+                                    "register": str(reg)})
+                else:
+                    entries.append({"a": str(name), "b": "",
+                                    "register": str(reg)})
         elif isinstance(pairs, (list, tuple)):
             for p in pairs:
                 if isinstance(p, dict) and p.get("a") and p.get("register"):

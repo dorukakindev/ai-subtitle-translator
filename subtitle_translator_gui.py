@@ -1297,8 +1297,24 @@ _LANGUAGE_ISO639_1 = {
 def _lang_iso639_1(name: str) -> str:
     """LANGUAGES display name -> correct ISO 639-1 code (falls back to a naive
     2-letter slice for anything not in the table above)."""
-    key = str(name or "").strip().lower()
-    return _LANGUAGE_ISO639_1.get(key) or key[:2]
+    raw = str(name or "").strip()
+    key = raw.lower()
+    code = _LANGUAGE_ISO639_1.get(key)
+    if code:
+        return code
+    # Tablo İNGİLİZCE adlarla yazılmış; arayüz Türkçe ad gönderiyor. Önce
+    # normalize etmeden 'İngilizce' iki harfe kırpılıp 'i̇' oluyordu (nokta
+    # birleştiricisi dahil) ve 'English' ile eşleşmediği için her İngilizce
+    # kaynağa sahte "dosya adı başka dil işaretli" uyarısı çıkıyordu.
+    try:
+        canonical = normalize_language_name(raw, allow_auto=False)
+    except Exception:
+        canonical = ""
+    if canonical:
+        code = _LANGUAGE_ISO639_1.get(str(canonical).strip().lower())
+        if code:
+            return code
+    return key[:2]
 
 
 # Model ve dosya adları dili SIK SIK başka bir adla söylüyor: 'Farsi',
@@ -2723,6 +2739,8 @@ CONTENT_SCHEMAS = {
             "- [TERMINOLOGY] Film titles: use the ESTABLISHED Turkish release title if one exists ('The Godfather'→'Baba', 'Vertigo'→'Ölüm Korkusu'); otherwise keep original.",
             "- [TERMINOLOGY] Director, actor, screenwriter, studio and character names stay EXACTLY as written.",
             "- [TERMINOLOGY] Keep film-craft terminology precise and standard: 'shot'→'plan/çekim', 'cut'→'kesme', 'mise-en-scène'→'mizansen', 'montage'→'kurgu/montaj', 'framing'→'kadraj', 'close-up'→'yakın çekim', 'tracking shot'→'kaydırma çekim', 'depth of field'→'alan derinliği'.",
+            "- [TERMINOLOGY] On a film set, the command 'Action!' is 'Motor!' or 'Başla!', never the genre noun 'Aksiyon'; 'Take 2' is 'ikinci çekim'.",
+            "- [TERMINOLOGY] Production idioms are contextual: 'in the can' means the footage/shoot is completed, 'atmosphere' in a breakdown means background extras, and a 'cement splice' is a film-cement join — never translate these word-for-word.",
             "- [DIALECT & CHARACTER] Distinguish narrator/critic analysis from QUOTED film dialogue or interview clips.",
             "- [TERMINOLOGY] Movements, genres and eras use accepted Turkish/critical names: 'New Wave'→'Yeni Dalga', 'film noir'→'kara film/film noir', 'auteur'→'auteur', 'silent era'→'sessiz sinema dönemi'.",
             "- [TONE & REGISTER] Cinephile/critical register: keep the passion and precision of film writing — do not flatten.",
@@ -4838,6 +4856,15 @@ def _looks_like_work_attribution(text: str) -> bool:
 def _source_cue_is_delivery_removable(text: str, *,
                                       allow_caps_heuristic: bool = False) -> bool:
     value = str(text or "")
+    # "UH!" gibi tamamı büyük, ünlemli tekil vokalizasyonlar SDH olarak
+    # düşürülebilir; fakat "Uh..." gerçek konuşmadaki duraksamadır. Önceki
+    # U+H+ kalıbı ikisini ayırmadığı için American Movie'de üç gerçek cue
+    # teslimden sessizce silindi. Üç nokta/ellipsis taşıyan biçimi diyalog say.
+    bare_value = re.sub(
+        r"</?(?:font|i|b|u)\b[^>]*>", "", value, flags=re.IGNORECASE).strip()
+    bare_value = re.sub(r"^\s*>>\s*", "", bare_value).strip()
+    if re.fullmatch(r"u+h+\s*(?:\.{2,}|…+)", bare_value, re.IGNORECASE):
+        return False
     # 'МУЗЫКА: "Theme 21"' biçimi: TAMAMI BÜYÜK etiket + eser adı. Etiket
     # yapısal sinyali taşıyor ama şarkı adı karışık harfli olduğu için
     # 'satırın tamamı büyük harf' testine takılmıyordu; SDH temizliğinin
@@ -6912,7 +6939,12 @@ def _normalize_delivery_typography(text: str) -> str:
     Aynı dosyada 'Camelot’taki' ile "Camelot'un" yan yana duruyordu; 36 dosyada
     546 karakter. Ölçü bildiren asal/çift asal (′/″) karakterleri tırnak değildir
     ve bilgi kaybı olmaması için korunur."""
-    return str(text or "").translate(_DELIVERY_TYPOGRAPHY_MAP)
+    value = str(text or "").translate(_DELIVERY_TYPOGRAPHY_MAP)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"[ \t]+(?=\n|$)", "", value)
+    # Kapanış tırnağından hemen önce sarkan boşluk: 'dostum. "' -> 'dostum."'
+    value = re.sub(r"([.!?…])\s+([\"'])\s*$", r"\1\2", value)
+    return value
 
 
 def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int]:
@@ -7550,6 +7582,46 @@ def _subtitle_cue_digest(cues) -> str:
     return hashlib.sha256("\n".join(rows).encode("utf-8")).hexdigest()
 
 
+# Latin dışı yazı sistemleri. Beklenen kaynak dili Latin alfabesi kullanıyorken
+# içeriğin neredeyse tamamı bunlardan biriyse dosya adı ne derse desin içerik o
+# dil değildir. Gerçek vaka: 'The.Men.Who.Made.Us.Spend.S01E0*.eng.srt' üç
+# dosyanın içeriği tamamen Arapça ve hiçbir uyarı çıkmıyordu — içerik dili
+# kontrolü YALNIZ kaynak dili 'Otomatik' seçiliyken çalışıyor.
+_NON_LATIN_SCRIPT_PREFIXES = frozenset({
+    "ARABIC", "CYRILLIC", "GREEK", "HEBREW", "CJK", "HIRAGANA", "KATAKANA",
+    "HANGUL", "THAI", "DEVANAGARI", "ARMENIAN", "GEORGIAN", "BENGALI",
+    "TAMIL", "TELUGU", "ETHIOPIC", "SYRIAC", "THAANA", "MYANMAR", "KHMER",
+    "LAO", "TIBETAN",
+})
+# Latin alfabesiyle yazılan diller: bunlarda uyarı anlamlı. Yunanca, Rusça,
+# Arapça gibi hedeflerde Latin dışı içerik BEKLENEN durumdur.
+_LATIN_SCRIPT_LANGUAGE_CODES = frozenset({
+    "en", "tr", "de", "fr", "es", "it", "pt", "nl", "sv", "no", "da", "fi",
+    "pl", "cs", "sk", "sl", "hr", "hu", "ro", "et", "lv", "lt", "is", "ga",
+    "cy", "eu", "ca", "gl", "af", "sq", "id", "ms", "vi", "tl", "sw", "az",
+    "uz", "tk", "mt",
+})
+_SCRIPT_MISMATCH_RATIO = 0.90
+
+
+def non_latin_script_ratio(text: str) -> float:
+    """Harflerin kaçta kaçı Latin DIŞI bir yazı sisteminde? Harf yoksa 0."""
+    latin = other = 0
+    for char in str(text or ""):
+        if not char.isalpha():
+            continue
+        try:
+            name = unicodedata.name(char)
+        except ValueError:
+            continue
+        if name.startswith("LATIN"):
+            latin += 1
+        elif name.split()[0] in _NON_LATIN_SCRIPT_PREFIXES:
+            other += 1
+    total = latin + other
+    return (other / total) if total else 0.0
+
+
 def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                             same_folder=False, selected_roots=(),
                             expected_source_language=AUTO_LANGUAGE,
@@ -7639,6 +7711,27 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "path": str(path), "message": "Geçerli altyazı cue'su bulunamadı.",
             })
         else:
+            # İçerik gerçekten seçilen dilde mi? Ad kontrolü yalnız dosya
+            # adına bakıyor ve 'Otomatik' dışında içerik hiç denetlenmiyordu.
+            if (expected_source_language != AUTO_LANGUAGE
+                    and _lang_iso639_1(expected_source_language)
+                    in _LATIN_SCRIPT_LANGUAGE_CODES):
+                # parse_subtitle (id, zaman, metin) TUPLE'ı döndürüyor.
+                sample = " ".join(
+                    str(cue[2] if isinstance(cue, (tuple, list)) and len(cue) > 2
+                        else getattr(cue, "text", "") or "")
+                    for cue in cues[:600])
+                ratio = non_latin_script_ratio(sample)
+                if ratio >= _SCRIPT_MISMATCH_RATIO:
+                    issues.append({
+                        "severity": "warning", "code": "script_mismatch",
+                        "path": str(path),
+                        "message": (
+                            f"İçeriğin %{ratio * 100:.0f}'i Latin dışı bir "
+                            f"yazı sisteminde; seçili kaynak dili "
+                            f"{expected_source_language}. Dosya adı ne derse "
+                            "desin içerik bu dilde değil."),
+                    })
             movie_key, movie_label = _selected_movie_title_year_identity(path)
             if movie_key:
                 movie_identities.setdefault(movie_key, {
@@ -7959,7 +8052,7 @@ def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity
         "- AVOID premature verb closure (erken yüklem kapanması) on cross-cue sentences. If a sentence continues in the next block, do NOT write a finished Turkish verb in the current block (e.g. do NOT translate 'Throughout history, humanity has struggled / with fears of Armageddon' as 'Tarih boyunca insanlık boğuştu, / Armageddon korkularıyla'). Instead, delay the verb to the end of the sentence or keep the sentence open using Turkish relative clauses, participles, or conjunctions.\n"
         "- During a single-cue repair, 'repair_neighbors' contains already accepted translations from the same source sentence. Keep the information split across ids: do not repeat a neighbor's meaning or pull its words into the repaired cue. The optional 'frag' field marks start/mid/end of that sentence.\n"
         "- Subtitle Sentence Splitting & Info Flow: When a single sentence spans across multiple contiguous subtitle blocks:\n"
-        "  * If they are close in time (dialogue flows naturally), prioritize natural Turkish word order (SOV). It is preferred to shift information across boundaries (e.g. putting the dependent clause 'Yağmur yağdığı için' in the first subtitle, and the verb 'markete gittim' in the second) to keep the Turkish flow smooth and standard.\n"
+        "  * If they are close in time (dialogue flows naturally), prioritize natural Turkish word order (SOV). Within ONE source sentence — the ids the payload marks with 'frag'/'sentence_groups' — it is preferred to shift information across those boundaries (e.g. putting the dependent clause 'Yağmur yağdığı için' in the first subtitle, and the verb 'markete gittim' in the second) to keep the Turkish flow smooth and standard. This permission does NOT extend to ids that belong to DIFFERENT sentences: never move a whole clause's meaning from one sentence's cue into another's.\n"
         "  * If there is a noticeable time gap (> 1.5 seconds) between the subtitles, try to keep the meaning of each block self-contained. In this case, you may use natural-sounding inverted sentences (devrik cümle) or conjunctions ('çünkü', 'fakat') to prevent displaying translations of future speech too early.\n"
         "- English subordinate clauses ('when/because/after X, Y') usually collapse into ONE Turkish clause "
         "via a converb/participle: 'When he arrived, she left' → 'O gelince kadın gitti' (NOT two sentences).\n"
@@ -17215,6 +17308,24 @@ def _delivery_garble_ids(blocks: list, source_map: dict) -> list[str]:
     return flagged
 
 
+def _delivery_ocr_artifact_ids(blocks: list, source_map: dict) -> list[str]:
+    """Kaynak OCR'ından hedefe taşınmış belirsiz dikey çizgi kalıntıları.
+
+    Bunlar otomatik düzeltilmez: ``a||`` gerçek metinde ``all`` da olabilir,
+    başka bir şey de. Teslim raporu kaynak-hedef kümesini insan denetimine
+    bırakır. Kaynaktaki tekil programlama/tablolaştırma ``|`` işaretleri ise
+    ancak hedefte de sözcüğe yapışık yaşarsa işaretlenir.
+    """
+    flagged = []
+    artifact_re = re.compile(r"(?<=\w)\|+(?=\W|$)|(?<!\w)\|+(?=\w)")
+    for idx, _timestamp, target_text in blocks or []:
+        source_text = str((source_map or {}).get(str(idx), "") or "")
+        target_text = str(target_text or "")
+        if artifact_re.search(source_text) and artifact_re.search(target_text):
+            flagged.append(str(idx))
+    return flagged
+
+
 # Sıfır-başlangıç istisnasında baş imzanın bittiği an (ms). Bu pencere
 # diyalogla çakışsa bile teslim denetiminde hata sayılmaz.
 _ZERO_START_SIGNATURE_END_MS = 1
@@ -17392,6 +17503,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     semantic_loss_ids = _delivery_semantic_loss_ids(
         output_dialogue, output_source_map)
     garble_ids = _delivery_garble_ids(output_dialogue, output_source_map)
+    ocr_artifact_ids = _delivery_ocr_artifact_ids(
+        output_dialogue, output_source_map)
     # Biçim etiketine sarılmış hata işareti de sayılır (madde 1).
     unresolved_markers = sum(
         bool(translation_failure_reason(text)) for text in output_texts)
@@ -17428,10 +17541,14 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     residual_sdh_cues = len(residual_sdh_ids)
     residual_speaker_label_ids = [
         str(idx) for idx, _ts, text in output_dialogue
-        if sdh_cleaner._src_has_plain_speaker_label(
-            output_source_map.get(str(idx), ""))
-        and sdh_cleaner._target_has_source_plain_speaker_label(
-            str(text or ""), output_source_map.get(str(idx), ""))
+        if ((sdh_cleaner._src_has_plain_speaker_label(
+                 output_source_map.get(str(idx), ""))
+             and sdh_cleaner._target_has_source_plain_speaker_label(
+                 str(text or ""), output_source_map.get(str(idx), "")))
+            or sdh_cleaner._target_has_source_bracket_speaker_prefix(
+                str(text or ""), output_source_map.get(str(idx), ""))
+            or sdh_cleaner._target_has_source_ocr_speaker_prefix(
+                str(text or ""), output_source_map.get(str(idx), "")))
     ]
     residual_literal_newline_cues = sum(
         "\\n" in text and "\\n" not in output_source_map.get(str(idx), "")
@@ -17522,6 +17639,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("semantic_loss", output_id=output_id)
     for output_id in garble_ids:
         _add_review_detail("garbled_token", output_id=output_id)
+    for output_id in ocr_artifact_ids:
+        _add_review_detail("ocr_artifact", output_id=output_id)
     needs_review = any((
         missing_dialogue, extras, timestamp_mismatches, unresolved_markers,
         delivery_owner_mismatch_ids, untranslated_fragment_ids,
@@ -17537,7 +17656,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         reversed_timestamp_ids, signature_overlap_ids,
         # Anlamsal çöküş ve bozuk yazım SERT hata değil (dosya biçimsel olarak
         # geçerli) ama 'ok' da değildir: insan gözüne gitmeli.
-        semantic_loss_ids, garble_ids,
+        semantic_loss_ids, garble_ids, ocr_artifact_ids,
     ))
     audit.update({
         "status": "review" if needs_review else "ok",
@@ -17553,6 +17672,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "untranslated_fragment_ids": untranslated_fragment_ids,
         "semantic_loss_ids": semantic_loss_ids,
         "garble_ids": garble_ids,
+        "ocr_artifact_ids": ocr_artifact_ids,
         "unresolved_markers": unresolved_markers,
         "residual_credit_cues": residual_credit_cues,
         "residual_credit_ids": residual_credit_ids,
@@ -17838,6 +17958,7 @@ def _file_process_report_text(row: dict, run_id: str = "") -> str:
         ("residual_sdh_cues", "Kalan SDH cue'ları"),
         ("residual_sdh_ids", "Kalan SDH kimlikleri"),
         ("residual_speaker_label_ids", "Kalan konuşmacı etiketi kimlikleri"),
+        ("ocr_artifact_ids", "Kaynak OCR dikey çizgi kalıntıları"),
         ("foreign_script_ids", "Türkçe dışı alfabe kimlikleri"),
         ("residual_literal_newline_cues", "Düz metin \\n kalıntısı olan cue'lar"),
         ("residual_position_tags", "Kalan konum kodları"),
@@ -37115,6 +37236,16 @@ class App(ctk.CTk):
                 write_blocks, target_language=tgt,
                 log_fn=self._log, source_cues=cues,
                 locked_terms=locked_terms)
+            # Teslim taraması (yinelenme, hitap karışımı, garble, terim
+            # sızıntısı) diğer üç akışta çalışıyor, yalnız bu onarım yolunda
+            # atlanıyordu: onarılan dosya taranmadan teslim ediliyor ve
+            # bulguları kalite raporuna hiç girmiyordu.
+            try:
+                _scan_delivery_blocks(
+                    write_blocks, cues, self._log,
+                    locked_terms=locked_terms)
+            except Exception as exc:
+                self._log(f"Teslim taraması çalıştırılamadı: {exc}", "warn")
         _write_srt_preserving_text(write_path, write_blocks)
         fingerprint_ok = _write_output_source_fingerprint(
             report_dir, write_path, expected_source_hash,
