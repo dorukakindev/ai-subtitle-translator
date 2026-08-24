@@ -7974,11 +7974,53 @@ def _resolve_report_dir(input_dir: str, output_dir: str) -> Path:
     return Path(out_dir) / "Raporlar"
 
 
+_TOKEN_ENCODING = None
+_TOKEN_ENCODING_TRIED = False
+# tiktoken YOKKEN kullanılan oranlar. Ölçüm (12 gerçek dosya, 950 bin karakter):
+# İngilizce kaynak 3,70 karakter/token, Türkçe hedef 3,27. Tek bir orana
+# indirgemek hangi tarafı seçersen seç diğerini %8-23 yanıltıyordu.
+_CHARS_PER_TOKEN_SOURCE = 3.7
+_CHARS_PER_TOKEN_TARGET = 3.3
+
+
+def _token_encoding():
+    """tiktoken kodlayıcısı; yoksa None. Bir kez denenir."""
+    global _TOKEN_ENCODING, _TOKEN_ENCODING_TRIED
+    if not _TOKEN_ENCODING_TRIED:
+        _TOKEN_ENCODING_TRIED = True
+        try:
+            import tiktoken
+            _TOKEN_ENCODING = tiktoken.get_encoding("o200k_base")
+        except Exception:
+            _TOKEN_ENCODING = None
+    return _TOKEN_ENCODING
+
+
+def count_tokens(text: str, chars_per_token: float = _CHARS_PER_TOKEN_SOURCE) -> int:
+    """Metnin token sayısı. tiktoken varsa GERÇEK sayım, yoksa oran tahmini.
+
+    Eski kod tiktoken'i yalnız 'kurulu mu' diye yokluyor ve orana karar
+    veriyordu; "tam tokenizasyon çok yavaş" notu ölçülünce yanlış çıktı —
+    950 bin karakter 0,1 saniyede sayılıyor. Oranla tahmin kaynakta %23'e
+    varan sapma veriyordu.
+    """
+    value = str(text or "")
+    if not value:
+        return 0
+    encoding = _token_encoding()
+    if encoding is not None:
+        try:
+            return len(encoding.encode(value, disallowed_special=()))
+        except Exception:
+            pass
+    return int(len(value) / max(chars_per_token, 1.0))
+
+
 def estimate_tokens(srt_files, chunk_size=None, cancel_check=None):
     """Token tahmini. chunk_size belirtilmezse mevcut mod CHUNK değeri kullanılır."""
     if chunk_size is None:
         chunk_size = CHUNK
-    total_chars, total_blocks = 0, 0
+    total_chars, total_blocks, content_tokens = 0, 0, 0
     for pos, fp in enumerate(srt_files):
         if pos % 8 == 0 and cancel_check is not None and cancel_check():
             return None, None
@@ -7988,23 +8030,22 @@ def estimate_tokens(srt_files, chunk_size=None, cancel_check=None):
         total_blocks += len(blocks)
         for _, _, text in blocks:
             total_chars += len(text)
+            content_tokens += count_tokens(text)
     n_req       = math.ceil(total_blocks / max(chunk_size, 1))
     # Sistem prompt'u HER isteğe ekleniyor; sabit 180 gerçekçi değildi (asıl prompt
     # ~1500-1800 token). Prompt'u bir kez ölç (char/3 ~ token), önemli ölçüde daha doğru.
     try:
-        _sys_chars   = len(_build_sync_system_prompt("English", "Turkish", None, "Orta"))
-        _sys_per_req = max(180, _sys_chars // 3)
+        _sys_per_req = max(180, count_tokens(
+            _build_sync_system_prompt("English", "Turkish", None, "Orta")))
     except Exception:
         _sys_per_req = 1500
-    sys_tokens  = n_req * _sys_per_req
-    # tiktoken kuruluysa daha iyi oran (chars/3), yoksa chars/4 tahmini.
-    # Not: tam tokenizasyon çok yavaş; sadece kurulu olup olmadığına göre oran seçiyoruz.
-    try:
-        import tiktoken  # noqa: F401
-        content_tok = total_chars // 3
-    except ImportError:
-        content_tok = total_chars // 4
-    return sys_tokens + content_tok * 2, total_blocks
+    sys_tokens = n_req * _sys_per_req
+    # `* 2`: bir kez giriş, bir kez çıkış. Hedef Türkçe kaynaktan biraz daha
+    # fazla token tutuyor (3,27'ye karşı 3,70 karakter/token), bu yüzden çıkış
+    # tarafı ölçülen oranla ölçekleniyor.
+    output_tokens = int(content_tokens
+                        * (_CHARS_PER_TOKEN_SOURCE / _CHARS_PER_TOKEN_TARGET))
+    return sys_tokens + content_tokens + output_tokens, total_blocks
 
 def _build_sync_system_prompt(src: str, tgt: str, schema: dict = None, profanity: str = "Orta") -> str:
     schema_block = ""
