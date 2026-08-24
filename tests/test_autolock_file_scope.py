@@ -119,5 +119,31 @@ class NamesWithATurkishFormAreLockedToItTest(unittest.TestCase):
                 self.assertNotIn(name, g.FOREIGN_EXONYM_MAP)
 
 
+
+class AQuotedWordIsNotAWorkTitleTest(unittest.TestCase):
+    """202 gerçek kaynakta tırnaklı 3.230 adayın 778'i tek küçük harfli
+    sözcüktü — 'to,', 'beach', 'computer', 'free'. Bunlar eser adı değil,
+    ANILAN sözcük; girdiyi düşürmek terim tutarlılığını boşuna kaybettiriyor.
+    """
+
+    SOURCE = ('You know what "cathartic" means? '
+              'He watched "Dawn of the Dead" twice.')
+
+    def test_a_mentioned_word_keeps_its_glossary_entry(self):
+        kept = ht.drop_quoted_work_title_terms(
+            {"cathartic": "katartik"}, self.SOURCE)
+        self.assertEqual(kept, {"cathartic": "katartik"})
+
+    def test_a_real_title_is_still_dropped(self):
+        kept = ht.drop_quoted_work_title_terms(
+            {"Dawn of the Dead": "Ölülerin Şafağı"}, self.SOURCE)
+        self.assertEqual(kept, {})
+
+    def test_a_capitalised_single_word_title_is_still_dropped(self):
+        source = 'She loved "Coven" the most.'
+        kept = ht.drop_quoted_work_title_terms({"Coven": "Cadılar"}, source)
+        self.assertEqual(kept, {})
+
+
 if __name__ == "__main__":
     unittest.main()

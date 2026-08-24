@@ -7448,10 +7448,20 @@ def drop_quoted_work_title_terms(glossary: dict | None, source_text: str,
     titles = quoted_work_titles(source_text)
     if not titles:
         return entries
+    # Tek ve tamamen küçük harfli bir sözcük eser adı değildir; ANILAN bir
+    # sözcüktür: 'You know what "cathartic" means?'. 202 gerçek kaynakta
+    # tırnaklı 3.230 adayın 778'i (%24) bu sınıftaydı — 'to,', 'beach',
+    # 'computer', 'free', 'emocional'. Bunlar için sözlük girdisini düşürmek
+    # terim tutarlılığını gereksiz yere kaybettiriyordu.
+    def _looks_like_a_title(value: str) -> bool:
+        return " " in value or not value.islower()
+
     kept, dropped = {}, []
     for source, target in entries.items():
         key = " ".join(str(source or "").split()).casefold()
-        if key and key in titles and key != str(target or "").strip().casefold():
+        raw = " ".join(str(source or "").split())
+        if (key and key in titles and _looks_like_a_title(raw)
+                and key != str(target or "").strip().casefold()):
             dropped.append(f"{source}->{target}")
             continue
         kept[source] = target
