@@ -203,7 +203,7 @@ class ParseAssTest(unittest.TestCase):
         os.unlink(path)
 
     def test_ass_two_digit_hour_parsed(self):
-        """10+ saatlik içerik: (\d) yerine (\d{1,2}) gerekir."""
+        r"""10+ saatlik içerik: (\d) yerine (\d{1,2}) gerekir."""
         content = (
             self._HEADER +
             "Dialogue: 0,10:00:01.00,10:00:03.00,Default,,0,0,0,,Long content\n"

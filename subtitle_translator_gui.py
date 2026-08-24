@@ -31384,7 +31384,11 @@ class App(ctk.CTk):
 
                 blocks, _n_filled_save = _finalize_translation_blocks(
                     blocks, _raw_map_pre, source_cues=cues,
-                    log_fn=self._log, line_breaks=bool(do_linebrk))
+                    # `do_linebrk` BAŞKA bir metotta (_run_post_process)
+                    # tanımlı; burada okumak NameError veriyordu. Bu yol
+                    # bir UI eylemi, canlı geçiş doğru kaynak.
+                    log_fn=self._log,
+                    line_breaks=bool(self.linebreak_var.get()))
                 remaining_missing_ids = _partial_missing_translation_ids(
                     blocks, _raw_map_pre, cues,
                     locked_terms=_repair_locked_terms,
@@ -37729,7 +37733,12 @@ class App(ctk.CTk):
                         "pass_trace": {
                             "Repair": int(_repair_only_result.get("repaired", 0))},
                         "pass_history": {},
-                        "schema_name": (schema_dict or {}).get("name", ""),
+                        # Bu blok `schema_dict` ATANMADAN ÖNCE koşuyor
+                        # (atama ~44 satır aşağıda) ve UnboundLocalError
+                        # veriyordu. Dosyanın şeması doğrudan sorulur.
+                        "schema_name": (
+                            (self._get_file_schema(filepath) or {})
+                            .get("name", "")),
                         "pass_coverage": "repair-only",
                         "tm_hits": self._tm.hit_count_session(),
                         "run_status": "done" if _repair_complete else "error",
@@ -42337,7 +42346,9 @@ class App(ctk.CTk):
                         dict(getattr(context, "recurring_terms", {}) or {}),
                         target_language=tgt))
                 _tm_fingerprint = _tm_context_fingerprint(
-                    _expected_source_hash,
+                    # `_expected_source_hash` yalnız _run_sync_hybrid'de
+                    # atanıyor; bu akışta adı `_stable_source_hash`.
+                    _stable_source_hash,
                     self._get_locked_terms_dict(filepath, tgt),
                     self._tm_canonical_context(
                         filepath, tgt, _analysis_fp),
