@@ -290,6 +290,12 @@ _TRAILING_SERIES_NO = re.compile(
 # 'A History of Art in Three Colours S0103' — sezon ve bölüm ayraçsız bitişik.
 _SXXEXX_COMPACT = re.compile(
     r'^(?P<show>.+?)[ ._\-]+[Ss](?P<season>\d{2})(?P<ep>\d{2})(?=$|[ ._\-])')
+# Eski TV arşivlerinde 'Show 104 Title' = sezon 1, bölüm 04. Yalnız yolun
+# doğrulanmış bir `.tv.sNN` kökü varsa kullanılır; böylece film adlarındaki
+# sıradan üç haneli sayılar dizi bölümü sanılmaz.
+_LEGACY_COMPACT_EPISODE = re.compile(
+    r'^(?P<show>.+?)[ ._\-]+(?P<season>[1-9])(?P<ep>\d{2})(?=$|[ ._\-])',
+    re.IGNORECASE)
 
 
 def _show_and_season(show: str, default_season: int):
@@ -345,6 +351,11 @@ def parse_series_key(filename: str):
             return slug, int(m.group("season")), int(m.group("ep"))
     if root_info:
         _root, slug, season = root_info
+        compact = _LEGACY_COMPACT_EPISODE.match(stem)
+        if compact and int(compact.group("season")) == season:
+            episode = int(compact.group("ep"))
+            if episode > 0:
+                return slug, season, episode
         parent_match = _EPISODE_DIR.match(path.parent.name)
         if parent_match:
             return slug, season, int(parent_match.group("ep"))

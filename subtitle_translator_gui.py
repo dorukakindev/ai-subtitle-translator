@@ -7712,6 +7712,10 @@ def _upload_filename_issue(path) -> str:
         separator_episode = re.search(
             r"(?i)\s+-\s*(\d{1,3})\s+-\s+", stem)
         episode_number = separator_episode.group(1) if separator_episode else None
+    if not episode_number:
+        series_key = series_memory.parse_series_key(str(source))
+        if series_key and int(series_key[1]) == season:
+            episode_number = str(series_key[2])
     episode_hint = (
         f" (beklenen: S{season:02d}E{int(episode_number):02d})"
         if episode_number else "")

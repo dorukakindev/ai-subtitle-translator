@@ -159,6 +159,9 @@ class DeliveryHardeningTest(unittest.TestCase):
             Path("Show/Season 1/The Last Machine - 3 - The Body Electric.srt")))
         self.assertIn("S01E06", gui._upload_filename_issue(
             Path("Show/Season 1/The Human Animal Ep. 6 - Beyond Survival.srt")))
+        self.assertIn("S01E04", gui._upload_filename_issue(Path(
+            "the.secret.life.of.machines.(1988).tv.s01.eng.6cd/episode 2/"
+            "Secret Life Of Machines 104 The Washing Machine.srt")))
 
     def test_postprocess_source_is_resolved_from_delivery_report(self):
         with tempfile.TemporaryDirectory() as td:

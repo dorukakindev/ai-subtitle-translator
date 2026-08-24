@@ -47,6 +47,13 @@ class FolderFallbackTest(unittest.TestCase):
                 "X:/D/The Human Animal Ep. 6 - Beyond Survival.srt"),
             ("the-human-animal", 1, 6))
 
+    def test_legacy_compact_code_outranks_wrapper_folder_order(self):
+        self.assertEqual(
+            sm.parse_series_key(
+                "X:/the.secret.life.of.machines.(1988).tv.s01.eng.6cd/"
+                "episode 2/Secret Life Of Machines 104 The Washing Machine.srt"),
+            ("the-secret-life-of-machines", 1, 4))
+
 
 class MultiPartDocumentaryTest(unittest.TestCase):
 
