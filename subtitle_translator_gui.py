@@ -18981,6 +18981,39 @@ def _sync_ckpt_store_mutation_safe(path: Path, return_content: bool = False):
     return (ok, content, None) if return_content else ok
 
 
+# Depo hiç budanmıyordu: 11.283 kayıt / 20 MB'a ulaşmıştı ve her chunk
+# kaydında bütünüyle okunup yeniden yazıldığı için arayüz donuyordu.
+# Bir checkpoint'in işi YARIM kalmış bir koşuyu kurtarmaktır; tek koşu
+# ~30 chunk üretiyor, dolayısıyla binlerce eski kayıt hiçbir kurtarmaya
+# hizmet etmiyor. İki sınır birlikte uygulanır ve budama yalnız sınır
+# aşıldığında çalışır.
+SYNC_CKPT_MAX_ENTRIES = 3000
+SYNC_CKPT_MAX_AGE_DAYS = 30
+
+
+def _prune_sync_ckpt_entries(entries: dict) -> int:
+    """Yaş ve sayı sınırına göre budar; düşen kayıt sayısını döner."""
+    if not entries:
+        return 0
+    before = len(entries)
+    cutoff = time.time() - SYNC_CKPT_MAX_AGE_DAYS * 86400
+    # Zaman damgası OLMAYAN kayıt (eski JSONL'den göç edenler `updated_at=0`
+    # taşıyor) yaş kuralından muaftır: 0'ı "çok eski" saymak geçerli kurtarma
+    # verisini sessizce siliyordu.
+    for key in [k for k, v in entries.items()
+                if float((v or {}).get("updated_at") or 0)
+                and float(v["updated_at"]) < cutoff]:
+        entries.pop(key, None)
+    if len(entries) > SYNC_CKPT_MAX_ENTRIES:
+        # En YENİ kayıtlar tutulur: yarım kalan koşu en yenidir.
+        keep = sorted(entries.items(),
+                      key=lambda kv: float((kv[1] or {}).get("updated_at") or 0),
+                      reverse=True)[:SYNC_CKPT_MAX_ENTRIES]
+        entries.clear()
+        entries.update(keep)
+    return before - len(entries)
+
+
 def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str, log_fn=None) -> bool:
     """Süreçler arası kilit altında sync checkpoint deposuna tek kaydı atomik günceller/ekler."""
     path = Path(path)
@@ -19002,8 +19035,13 @@ def save_sync_ckpt_entry_to_store(path: Path, cid: str, text: str, src_hash: str
                 "t": text,
                 "updated_at": time.time(),
             }
+            dropped = _prune_sync_ckpt_entries(entries)
             store["entries"] = entries
             atomic_write_json(path, store)
+            if dropped and log_fn:
+                log_fn(
+                    f"Checkpoint deposu budandı: {dropped} eski kayıt "
+                    f"düşürüldü, {len(entries)} kayıt kaldı.", "info")
             return True
     except Exception as e:
         if log_fn:
@@ -19184,6 +19222,20 @@ def clear_sync_stage_entry_from_store(path: Path, source_path: str,
         if log_fn:
             log_fn(f"Aşama checkpoint'i temizlenemedi: {exc}", "warn")
         return False
+
+
+def _snap_max_retry(app) -> int:
+    """Koşu anlık görüntüsündeki max_retry; yoksa canlı değer.
+
+    getattr: eski test taklitleri (SimpleNamespace) `_snap_get` tanımlamıyor.
+    """
+    getter = getattr(app, "_snap_get", None)
+    if callable(getter):
+        try:
+            return getter("max_retry", getattr(app, "_max_retry", 2))
+        except Exception:
+            pass
+    return getattr(app, "_max_retry", 2)
 
 
 def should_clear_sync_ckpt(is_stop_flag: bool, is_full_success: bool) -> bool:
@@ -20834,11 +20886,12 @@ class App(ctk.CTk):
             sb,
             text="Varsayılan güvenli mod. Şunları YALNIZ raporlar:\n"
                  "teslim karantinası/taşıma, otomatik yeniden çeviri,\n"
-                 "tutarlılık süpürmesi. Sorunlu dosya yüklemeye hazır\n"
+                 "tutarlılık süpürmesi, Kısaltma, Terim Normalizasyonu\n"
+                 "ve Cue-fill taşıma. Bu geçişler aday bulur ve raporlar,\n"
+                 "ama çıktıyı DEĞİŞTİRMEZ. Sorunlu dosya yüklemeye hazır\n"
                  "veya tamamlanmış sayılmaz.\n"
-                 "AÇIKÇA seçtiğin geçişleri (Polish, Native, QC, Kısaltma,\n"
-                 "Terim Normalizasyonu, Cue-fill) DURDURMAZ — onların\n"
-                 "kendi anahtarları vardır.",
+                 "Polish, Native ve QC kendi anahtarlarıyla çalışmayı\n"
+                 "sürdürür.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260).grid(
                 row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -21486,7 +21539,7 @@ class App(ctk.CTk):
             width=44, height=22, fg_color=BORDER, progress_color=ACCENT,
         ).grid(row=0, column=0)
         ctk.CTkLabel(
-            retry_fr, text="Başarısız dosyaları otomatik yeniden dene",
+            retry_fr, text="Başarısız dosyaları otomatik yeniden dene (Anında)",
             font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
@@ -22490,6 +22543,13 @@ class App(ctk.CTk):
             except Exception:
                 pass
 
+    # Gelişmiş ayarlar (chunk, bağlam, worker, sıcaklık, max_retry, sahne
+    # boşluğu) anlık görüntüye alınıyor; ama işçi kodunun çoğu bunları hâlâ
+    # doğrudan `self._...` üzerinden okuyor. Devam ettirilen bir koşuda anlık
+    # görüntü yeniden kurulup dondurulduktan sonra bile uygulamanın GÜNCEL
+    # değeri uygulanabiliyordu. `max_rounds` okumalarının onu (dört akış +
+    # resume, 10 çağrı yeri) buradan geçiyor; kalan gelişmiş ayarlar için
+    # aynı geçiş henüz yapılmadı.
     def _snap_get(self, key: str, default=None):
         """Snapshot'tan ayar değerini güvenli şekilde döndürür."""
         if hasattr(self, "_active_snapshot") and isinstance(self._active_snapshot, dict) and key in self._active_snapshot:
@@ -29012,8 +29072,11 @@ class App(ctk.CTk):
                     if d["analysis_depth"] in ("Standart", "Gelismis", "Maksimum"):
                         self.analysis_depth_var.set(d["analysis_depth"])
             if d.get("glossary"):       self.glossary_var.set(d["glossary"])
-            if d.get("ext_project_path"):
-                self.ext_project_path_var.set(d["ext_project_path"])
+            # Boolean geçişlerdeki 'kayıtlı false yutulur' hatasının StringVar
+            # karşılığı: kullanıcı yolu bilerek boşalttıysa `d.get(...)` bunu
+            # yutuyor ve varsayılan dolu yol geri geliyordu.
+            if "ext_project_path" in d:
+                self.ext_project_path_var.set(str(d["ext_project_path"] or ""))
             if "clean_sdh" in d:
                 self.clean_sdh_var.set(bool(d["clean_sdh"]))
             if d.get("content_type"):
@@ -37015,7 +37078,7 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry,
+                                max_rounds=_snap_max_retry(self),
                                 file_map=file_map)
                             raw = raw_map.get(cid, raw)
                         prev_pairs = _extend_chain_pairs(
@@ -37035,7 +37098,7 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry,
+                                max_rounds=_snap_max_retry(self),
                                 file_map=file_map)
                             raw = raw_map.get(cid, raw)
                         prev_pairs = _extend_chain_pairs(
@@ -37057,7 +37120,7 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(text, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry,
+                                max_rounds=_snap_max_retry(self),
                                 file_map=file_map)
                             text = raw_map.get(cid_r, text)
                         self._save_sync_ckpt_entry(cid_r, text, src_h)
@@ -37114,7 +37177,7 @@ class App(ctk.CTk):
 
         if not self._stop_flag:
             unresolved = self._retry_hata(
-                client, raw_map, requests, max_rounds=self._max_retry,
+                client, raw_map, requests, max_rounds=_snap_max_retry(self),
                 file_map=file_map)
             for req in requests:
                 cid = req.get("custom_id", "")
@@ -37857,7 +37920,7 @@ class App(ctk.CTk):
                                 and _chunk_response_retry_reason(raw, req)):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry,
+                                max_rounds=_snap_max_retry(self),
                                 file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
                         prev_pairs = _extend_chain_pairs(
@@ -37875,7 +37938,7 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(raw, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry,
+                                max_rounds=_snap_max_retry(self),
                                 file_path=filepath)
                             raw = raw_map.get(cid_hint, raw)
                         prev_pairs = _extend_chain_pairs(
@@ -37898,7 +37961,7 @@ class App(ctk.CTk):
                         if _chunk_response_retry_reason(text, req):
                             self._retry_hata(
                                 client, raw_map, [req],
-                                max_rounds=self._max_retry,
+                                max_rounds=_snap_max_retry(self),
                                 file_path=filepath)
                             text = raw_map.get(cid, text)
                         self._save_sync_ckpt_entry(cid, text, src_h)
@@ -37967,7 +38030,7 @@ class App(ctk.CTk):
             # ── Retry + Birleştir ─────────────────────────────────────────────
             if not _partial_repair_only:
                 self._retry_hata(
-                    client, raw_map, batch_reqs, max_rounds=self._max_retry,
+                    client, raw_map, batch_reqs, max_rounds=_snap_max_retry(self),
                     file_path=filepath)
             for req in batch_reqs:
                 cid = req.get("custom_id", "")
@@ -39086,7 +39149,7 @@ class App(ctk.CTk):
         if not self._stop_flag and accumulated_raw_map and all_terminal:
             self._retry_hata(
                 client, accumulated_raw_map, requests,
-                max_rounds=self._max_retry, file_map=file_map)
+                max_rounds=_snap_max_retry(self), file_map=file_map)
             missing_ids = set(file_map) - set(accumulated_raw_map)
             if missing_ids:
                 self._log(f"{len(missing_ids)} batch sonucu eksik; final dosya yazılmadı.", "warn")
@@ -39679,7 +39742,7 @@ class App(ctk.CTk):
                 ]
                 self._retry_hata(
                     group["client"], group["raw_map"], retry_list,
-                    max_rounds=self._max_retry,
+                    max_rounds=_snap_max_retry(self),
                     file_map=group["file_map"])
                 missing_ids = set(group["file_map"]) - set(group["raw_map"])
                 if missing_ids:

@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -25,7 +26,7 @@ class TheStoreIsReadOncePerSaveTest(unittest.TestCase):
         self.path = Path(self.dir) / "ckpt.json"
         store = {"version": g.SYNC_CKPT_STORE_VER,
                  "entries": {f"c{i}:h{i}": {"cid": f"c{i}", "h": f"h{i}",
-                                            "t": "metin", "updated_at": 1.0}
+                                            "t": "metin", "updated_at": time.time()}
                              for i in range(20)}}
         self.path.write_text(json.dumps(store), encoding="utf-8")
 
