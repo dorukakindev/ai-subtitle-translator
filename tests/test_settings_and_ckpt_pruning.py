@@ -118,5 +118,50 @@ class SettingsLoadAndLabelsTest(unittest.TestCase):
         self.assertEqual(g._snap_max_retry(SimpleNamespace(_max_retry=7)), 7)
 
 
+
+class AbandonedResponseCheckpointsArePrunedTest(unittest.TestCase):
+    """Bir namespace ancak koşusu tam başarıyla bitince temizleniyor; yarım
+    kalan koşuların klasörü kalıcı oluyordu. Ölçüm: 52 namespace / 9.130
+    dosya, 40'ı yedi günden eski. Her API yanıtı buraya fsync'li bir dosya
+    yazıyor.
+    """
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _namespace(self, name, age_days):
+        ns = self.dir / name
+        ns.mkdir()
+        entry = ns / "a.json"
+        entry.write_text("{}", encoding="utf-8")
+        stamp = time.time() - age_days * 86400
+        os.utime(entry, (stamp, stamp))
+        os.utime(ns, (stamp, stamp))
+        return ns
+
+    def test_an_abandoned_namespace_is_removed(self):
+        old = self._namespace("eski", g.QUALITY_CKPT_MAX_AGE_DAYS + 5)
+        self.assertEqual(g.prune_response_checkpoint_namespaces(self.dir), 1)
+        self.assertFalse(old.exists())
+
+    def test_a_live_namespace_survives(self):
+        fresh = self._namespace("yeni", 0)
+        g.prune_response_checkpoint_namespaces(self.dir)
+        self.assertTrue(fresh.exists())
+
+    def test_a_missing_root_is_not_an_error(self):
+        self.assertEqual(
+            g.prune_response_checkpoint_namespaces(self.dir / "yok"), 0)
+
+    def test_it_runs_at_startup_next_to_log_rotation(self):
+        source = inspect.getsource(g)
+        marker = source.index("rotate_logs(_log_dir)")
+        self.assertIn("prune_response_checkpoint_namespaces",
+                      source[marker:marker + 600])
+
 if __name__ == "__main__":
     unittest.main()

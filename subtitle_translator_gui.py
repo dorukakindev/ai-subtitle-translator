@@ -18481,6 +18481,43 @@ def _quality_report_applied_fix_count(rows: list) -> int:
 _LOG_PID_RE = re.compile(r"\.pid(\d+)\.log$")
 
 
+QUALITY_CKPT_MAX_AGE_DAYS = 30
+
+
+def prune_response_checkpoint_namespaces(root, max_age_days: int = None) -> int:
+    """Terk edilmiş yanıt-checkpoint klasörlerini siler; silineni döner.
+
+    Bir namespace ancak koşusu tam başarıyla bitince temizleniyor; yarım
+    kalan koşuların klasörü kalıcı oluyordu. Ölçüm: 52 namespace / 9.130
+    dosya, 40'ı yedi günden eski. Her API yanıtı buraya fsync'li küçük bir
+    dosya yazdığı için birikinti hem diski hem dizin taramasını yoruyor.
+    Yaş ölçütü, çalışan koşunun klasörüne dokunmamayı garanti eder.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return 0
+    limit = QUALITY_CKPT_MAX_AGE_DAYS if max_age_days is None else max_age_days
+    cutoff = time.time() - max(1, int(limit)) * 86400
+    removed = 0
+    for namespace_dir in list(root.iterdir()):
+        if not namespace_dir.is_dir():
+            continue
+        try:
+            newest = max(
+                (item.stat().st_mtime for item in namespace_dir.iterdir()),
+                default=namespace_dir.stat().st_mtime)
+            if newest >= cutoff:
+                continue
+            for item in namespace_dir.iterdir():
+                if item.is_file():
+                    item.unlink(missing_ok=True)
+            namespace_dir.rmdir()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def rotate_logs(log_dir: Path, keep: int = 100) -> int:
     """En yeni `keep` log dosyasını tutar, eskileri siler. Silinen sayısını döner.
 
@@ -19381,6 +19418,14 @@ class App(ctk.CTk):
         _log_dir = state_path(__file__, "logs")
         _log_dir.mkdir(exist_ok=True)
         rotate_logs(_log_dir)   # canlı oturumlar korunur; kalan en yeni 100 tutulur
+        try:
+            # Terk edilmiş yanıt-checkpoint klasörleri: her API yanıtı buraya
+            # fsync'li bir dosya yazıyor ve yarım kalan koşuların klasörü hiç
+            # silinmiyordu (ölçüm: 9.130 dosya / 52 namespace).
+            _pruned_ns = prune_response_checkpoint_namespaces(
+                state_path(__file__, ".quality_response_checkpoint"))
+        except Exception:
+            _pruned_ns = 0
         _stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         # Dosya adına pid gömülü — rotate_logs bunu canlı-süreç korumasında kullanır
         # (bkz. yukarıdaki fonksiyon docstring'i + _LOG_PID_RE).
