@@ -161,5 +161,39 @@ class TheShiftingPermissionIsScopedTest(unittest.TestCase):
                 self.assertIn("DIFFERENT sentences", source)
 
 
+
+class FormatCoverageLossIsCountedTest(unittest.TestCase):
+    """202 gerçek teslimde 1.111 cue'nun kaynağı baştan sona tek bir etiketle
+    sarılıyken teslimi çıplak. Mevcut kod zinciri ölçülünce etiketleri DOĞRU
+    geri koyuyor ve kayıp yeniden üretilemedi, bu yüzden otomatik düzeltme
+    eklenmedi; sayaç sınıf tekrarlarsa görünür olsun diye var.
+    """
+
+    TS = "00:00:01,000 --> 00:00:03,000"
+
+    def test_a_stripped_full_wrap_is_counted(self):
+        blocks = [("1", self.TS, "Burası BBC Televizyon Servisi.")]
+        src = {"1": "<i>This is the BBC Television Service.</i>"}
+        self.assertEqual(g._format_coverage_lost_ids(blocks, src), ["1"])
+
+    def test_a_kept_tag_is_not_counted(self):
+        blocks = [("1", self.TS, "<i>Burası BBC.</i>")]
+        src = {"1": "<i>This is the BBC.</i>"}
+        self.assertEqual(g._format_coverage_lost_ids(blocks, src), [])
+
+    def test_a_partially_tagged_source_is_not_counted(self):
+        # Kısmi satır-içi etiket bilinçli olarak geri konmuyor.
+        blocks = [("1", self.TS, "hayır dedi")]
+        src = {"1": "he said <i>no</i>"}
+        self.assertEqual(g._format_coverage_lost_ids(blocks, src), [])
+
+    def test_an_untagged_source_is_not_counted(self):
+        blocks = [("1", self.TS, "Merhaba")]
+        self.assertEqual(g._format_coverage_lost_ids(blocks, {"1": "Hello"}), [])
+
+    def test_the_delivery_scan_reports_it(self):
+        source = inspect.getsource(g._scan_delivery_blocks)
+        self.assertIn("format_coverage_lost", source)
+
 if __name__ == "__main__":
     unittest.main()

@@ -6097,6 +6097,28 @@ def _repeated_head_typo_ids(blocks) -> list:
                     break
     return findings
 
+_ANY_MARKUP_RE = re.compile(r"<[^>\n]+>|\{[^{}\n]*\}")
+
+
+def _format_coverage_lost_ids(blocks, src_map) -> list:
+    """Kaynağı tamamen sarılı, teslimi çıplak kalan cue kimlikleri."""
+    if not src_map:
+        return []
+    lost = []
+    for idx, _ts, text in blocks or []:
+        source = str(src_map.get(str(idx)) or "")
+        if not source or not _ANY_MARKUP_RE.search(source):
+            continue
+        if _ANY_MARKUP_RE.search(str(text or "")):
+            continue
+        try:
+            if _match_full_wrap(source.strip()):
+                lost.append(str(idx))
+        except Exception:
+            continue
+    return lost
+
+
 def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
                           locked_terms=None) -> dict:
     """DİSKE YAZILAN blokları deterministik olarak tarar.
@@ -6135,6 +6157,12 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     stats["duplicates"] = len({cue_id for pair in duplicate_pairs
                                for cue_id in pair})
     src_map = _delivery_source_map(blocks, source_cues) if source_cues else {}
+    # Kaynağı BAŞTAN SONA tek bir biçim etiketiyle sarılıyken teslimde hiç
+    # etiket taşımayan cue'lar. 202 gerçek teslimde 1.111 böyle cue bulundu
+    # (65 dosya, ağırlıkla <font>). Mevcut kod zinciri ölçülünce etiketleri
+    # DOĞRU geri koyuyor ve kayıp yeniden üretilemedi; bu yüzden otomatik
+    # düzeltme eklenmedi. Sayaç, sınıf tekrarlarsa görünür olsun diye var.
+    stats["format_coverage_lost"] = _format_coverage_lost_ids(blocks, src_map)
     stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     cue_fill = _cue_fill_imbalances(blocks, src_map)
