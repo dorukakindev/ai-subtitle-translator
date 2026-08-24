@@ -41,6 +41,12 @@ class FolderFallbackTest(unittest.TestCase):
         self.assertEqual(sm.parse_series_key("X:/Show/Season 2/S02E05 Title.srt"),
                          ("show", 2, 5))
 
+    def test_dotted_ep_abbreviation_is_recognised(self):
+        self.assertEqual(
+            sm.parse_series_key(
+                "X:/D/The Human Animal Ep. 6 - Beyond Survival.srt"),
+            ("the-human-animal", 1, 6))
+
 
 class MultiPartDocumentaryTest(unittest.TestCase):
 

@@ -37,7 +37,8 @@ _N_OF_TOTAL = re.compile(
     r'(?i)(?:^|[ ._\-])(?P<ep>\d{1,3})[ ._\-]+of[ ._\-]+\d{1,3}(?:\D|$)')
 # 'Show Name Episode 05' / 'Show Name Ep 05' / 'Show Name Bölüm 05' → show + ep
 _EPISODE_WORD = re.compile(
-    r'(?i)^(?P<show>.+?)[ ._\-]+(?:episode|bölüm|bolum|ep)[ ._\-]*'
+    r'(?i)^(?P<show>.+?)[ ._\-]+(?:episode|bölüm|bolum|ep\.?)'
+    r'[ ._\-]*'
     r'(?P<ep>\d{1,3})(?:\D|$)')
 # Anime yayın biçimi: 'Show Name - 05 [1080p]'. Ayraç olarak boşluklu tire şart —
 # 'Film - 2019' (4 hane) ve 'Show-05' gibi belirsiz adlar eşleşmez.

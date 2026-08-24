@@ -7701,7 +7701,7 @@ def _upload_filename_issue(path) -> str:
             "sezon/bölüm numarası yüklemeden önce doğrulanmalı.")
     episode_match = re.search(
         r"(?i)(?:^|[ ._\-])(?:"
-        r"(?:episode|ep|bölüm|part|pt|parte)\s*(\d{1,3})"
+        r"(?:episode|ep\.?|bölüm|part|pt|parte)\s*(\d{1,3})"
         r"|(?:part|pt|parte)?\s*(\d{1,3})\s*of\s*\d{1,3}"
         r")(?=$|[ ._\-])",
         stem)
@@ -22840,8 +22840,9 @@ class App(ctk.CTk):
     # aynı geçiş henüz yapılmadı.
     def _snap_get(self, key: str, default=None):
         """Snapshot'tan ayar değerini güvenli şekilde döndürür."""
-        if hasattr(self, "_active_snapshot") and isinstance(self._active_snapshot, dict) and key in self._active_snapshot:
-            return self._active_snapshot[key]
+        snapshot = self.__dict__.get("_active_snapshot")
+        if isinstance(snapshot, dict) and key in snapshot:
+            return snapshot[key]
         return default
 
     def _run_scene_gap(self) -> float:
