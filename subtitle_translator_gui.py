@@ -9436,6 +9436,56 @@ def _is_near_empty_translation(src_text: str, tr_text: str) -> bool:
             and len(re.findall(r"[^\W\d_]+", target, re.UNICODE)) <= 1)
 
 
+def _leak_word_is_kept_proper_noun(word: str, src_text: str, tr_text: str) -> bool:
+    """Sızıntı sanılan sözcük aslında KORUNAN çok kelimeli özel adın parçası mı?
+
+    'American Film Institute', 'American State Bank' gibi kurum adları hedefte
+    olduğu gibi kalır; tek tek 'american' arayan denetim bunları sızıntı sanıp
+    doğru çeviriyi reddediyordu (2026-08-24 koşusunda 2 dosyada 3 cue). Ölçüt:
+    sözcük hedefte ardından gelen büyük harfli sözcüklerle bir öbek kuruyor ve
+    AYNI öbek kaynakta da büyük harfle geçiyor.
+    """
+    # Yalnız sızıntı sözcüğü büyük/küçük harf duyarsız aranır. Bayrak desenin
+    # tamamına verilirse büyük harf sınıfı küçük harfleri de yutar ve öbeğe
+    # "tez filmiydi" gibi sıradan sözcükler karışır.
+    pattern = re.compile(
+        r"\b(?i:" + re.escape(word) + r")(?:\s+[A-ZÇĞİÖŞÜ][\w'’\-]*)+")
+    for match in pattern.finditer(str(tr_text or "")):
+        parts = match.group(0).split()
+        if not all(part[:1].isupper() for part in parts):
+            continue
+        # Türkçe ek kesme işaretiyle bağlanır: hedefteki "Institute'taki"
+        # kaynaktaki "Institute" ile eşleşsin diye ek düşürülür.
+        stems = [re.split(r"['’]", part)[0] for part in parts]
+        if not all(stems):
+            continue
+        pattern = r"(?<![A-Za-z])" + r"\s+".join(
+            re.escape(stem) for stem in stems) + r"(?![A-Za-z])"
+        if re.search(pattern, str(src_text or ""), re.I):
+            return True
+    return False
+
+
+def _mask_locked_term_spans(text: str, locked_terms) -> str:
+    """Kaynakla aynı kalması KARARLAŞTIRILMIŞ terimleri metinden düşürür.
+
+    'Plan 10 from Outer Space' dosyanın kilitli terimiydi ve hedefte olduğu
+    gibi duruyordu; İngilizce örtüşme denetimi bunu çevrilmemişlik sanıyordu.
+    """
+    value = str(text or "")
+    for source_term, target_term in (locked_terms or {}).items():
+        term = str(source_term or "").strip()
+        if len(term.split()) < 2:
+            continue
+        if str(target_term or "").strip().casefold() != term.casefold():
+            continue
+        pattern = (r"(?<![^\W\d_])"
+                   + r"\s+".join(re.escape(part) for part in term.split())
+                   + r"(?![^\W\d_])")
+        value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
+    return value
+
+
 def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
                          source_language: str | None = None,
                          target_language: str | None = None) -> str:
@@ -9463,6 +9513,8 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
         leaked = {word.lower() for word in _PARTIAL_ENGLISH_LEAK_RE.findall(src_text)}
         for word in sorted(leaked):
             if re.search(rf'\b{re.escape(word)}\b', tr_text, re.I):
+                if _leak_word_is_kept_proper_noun(word, src_text, tr_text):
+                    continue
                 return f"partial_english_token:{word}"
         phrase_check_applies = (
             target_language is None
@@ -9487,7 +9539,9 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
         import hybrid_translate as ht
         if ht.is_vocalization_only_text(src_text):
             return ""
-        if source_is_english and ht.has_source_english_overlap(src_text, tr_text):
+        if source_is_english and ht.has_source_english_overlap(
+                _mask_locked_term_spans(src_text, locked_terms),
+                _mask_locked_term_spans(tr_text, locked_terms)):
             return "source_english_overlap"
     except Exception:
         pass
