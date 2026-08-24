@@ -1367,6 +1367,12 @@ _TR_PLAIN_SPEAKER_LABEL_CAPTURE_RE = re.compile(
 _SRC_BRACKET_SPEAKER_PREFIX_RE = re.compile(
     r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*"
 )
+_SRC_MALFORMED_BRACKET_SPEAKER_PREFIX_RE = re.compile(
+    r"(?mi)^\s*(?:-\s*)?['\"“]?(?P<label>[A-Z][A-Za-z'\-]{1,30})\]\s+(?=\S)"
+)
+_SRC_PIPE_SPEAKER_PREFIX_RE = re.compile(
+    r"(?mi)^\s*(?:-\s*)?(?P<label>[A-Z][A-Za-z'\-]{1,30})\|+\s+(?=\S)"
+)
 _SRC_QUOTED_SPEAKER_PREFIX_RE = re.compile(
     r"(?mi)^\s*(?:-\s*)?[A-Z][A-Za-z'\-]*"
     r"(?:\s+[A-Z][A-Za-z'\-]*){0,2},\s*[\"“]"
@@ -1440,6 +1446,83 @@ def _strip_target_source_plain_speaker_label(tr_line: str, src_line: str) -> str
     return pattern.sub(r"\1\g<prefix>", tr_line, count=1)
 
 
+def _source_ocr_speaker_prefix(src_line: str):
+    """Return a source-confirmed OCR-damaged speaker prefix, if present."""
+    plain = FORMAT_TAG_RE.sub("", str(src_line or ""))
+    for kind, pattern in (
+            ("bracket", _SRC_MALFORMED_BRACKET_SPEAKER_PREFIX_RE),
+            ("pipe", _SRC_PIPE_SPEAKER_PREFIX_RE)):
+        match = pattern.search(plain)
+        if match:
+            return kind, match.group("label")
+    return None
+
+
+def _target_has_source_ocr_speaker_prefix(tr_line: str, src_line: str) -> bool:
+    found = _source_ocr_speaker_prefix(src_line)
+    if not found:
+        return False
+    kind, label = found
+    plain = FORMAT_TAG_RE.sub("", str(tr_line or ""))
+    escaped = re.escape(label)
+    if kind == "bracket":
+        pattern = rf"(?mi)^\s*(?:-\s*)?['\"“]?\[?{escaped}\]\s+(?=\S)"
+    else:
+        pattern = rf"(?mi)^\s*(?:-\s*)?{escaped}\|+\s+(?=\S)"
+    return bool(re.search(pattern, plain, re.IGNORECASE))
+
+
+def _strip_target_source_ocr_speaker_prefix(tr_line: str, src_line: str) -> str:
+    found = _source_ocr_speaker_prefix(src_line)
+    if not found:
+        return tr_line
+    kind, label = found
+    escaped = re.escape(label)
+    tag = r"</?(?:i|b|u|font)\b[^>]*>"
+    if kind == "bracket":
+        label_pattern = rf"['\"“]?\[?{escaped}\]"
+    else:
+        label_pattern = rf"{escaped}\|+"
+    pattern = re.compile(
+        rf"(?mi)(^|(?<=[.!?…]))(?P<prefix>\s*(?:{tag}\s*)*(?:-\s*)?)"
+        rf"{label_pattern}\s+(?=\S)")
+    return pattern.sub(r"\1\g<prefix>", str(tr_line or ""), count=1)
+
+
+def _has_bracket_speaker_prefix(text: str) -> bool:
+    plain = FORMAT_TAG_RE.sub("", str(text or ""))
+    return bool(re.search(
+        r"(?m)^\s*(?:-\s*)?\[[^\]\n]{1,40}\]\s*(?=\S)", plain))
+
+
+def _target_has_source_bracket_speaker_prefix(tr_line: str, src_line: str) -> bool:
+    """Whether a source-leading bracket label also survived in the target."""
+    return _has_bracket_speaker_prefix(src_line) and _has_bracket_speaker_prefix(tr_line)
+
+
+def _same_line_structural_speaker_label(content: str) -> bool:
+    """Strong speaker evidence for ``[label] dialogue`` on the same line.
+
+    A bracket prefix alone is not enough: ``[Soft Power] A documentary.`` and
+    ``[Sesame Street] is a show.`` contain visible title text.  Single-token
+    names/roles and caption qualifiers such as ``Bill, sarcastically`` or
+    ``Buck on radio`` are speaker labels; ambiguous multiword title case is
+    preserved.
+    """
+    value = str(content or "").strip()
+    if not value or _is_heading_label(value):
+        return False
+    if re.fullmatch(r"[A-Za-z][A-Za-z'\-]{1,30}", value):
+        return True
+    return bool(re.fullmatch(
+        r"[A-Za-z][A-Za-z'\-]{1,30}"
+        r"(?:\s+[A-Za-z][A-Za-z'\-]{1,30}){0,2}"
+        r"(?:\s*,\s*(?:sarcastically|whispering|shouting|laughing|"
+        r"crying|angrily|softly|quietly)|\s+(?:on|over)\s+(?:radio|tv)|"
+        r"\s+(?:voice[- ]?over|off[- ]?screen))",
+        value, re.IGNORECASE))
+
+
 def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     """Kaynak satırında (cue'nun kaynak metninde) parantez/köşeli grup VARSA,
     çeviri satırındaki tüm parantez/köşeli gruplarını sök (kalan repliği bırak).
@@ -1459,6 +1542,7 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
     kaçar)."""
     tr_line = CHEVRON_SPEAKER_RE.sub("", str(tr_line or ""))
     src_line = str(src_line or "")
+    tr_line = _strip_target_source_ocr_speaker_prefix(tr_line, src_line)
     if _SRC_NARRATOR_LABEL_RE.search(src_line):
         tr_line = _TR_NARRATOR_LABEL_RE.sub("", tr_line)
     plain_source_label = _src_has_plain_speaker_label(src_line)
@@ -1490,14 +1574,18 @@ def strip_labels_by_source(tr_line: str, src_line: str) -> str:
         colon_follows = src_line[end:].lstrip().startswith(":")
         is_descriptor = is_sdh_descriptor(inner)
         is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
-        structural_speaker = (
-            not src_line[:start].strip()
-            and bool(re.match(r"\s*\r?\n", src_line[end:]))
-            and not _is_heading_label(inner)
-        )
         followed_by_dialogue = bool(
             src_line[end:].lstrip()
             and not src_line[end:].lstrip().startswith(("[", "(")))
+        source_prefix = FORMAT_TAG_RE.sub("", src_line[:start])
+        source_prefix = re.sub(r"^\s*-\s*", "", source_prefix)
+        structural_speaker = (
+            not source_prefix.strip()
+            and (bool(re.match(r"\s*\r?\n", src_line[end:]))
+                 or (followed_by_dialogue
+                     and _same_line_structural_speaker_label(inner)))
+            and not _is_heading_label(inner)
+        )
         ambiguous_mixed_label = (
             is_speaker and not colon_follows and len(source_spans) > 1
             and source_has_descriptor and not is_descriptor

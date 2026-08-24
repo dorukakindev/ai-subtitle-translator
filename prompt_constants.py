@@ -223,6 +223,9 @@ TRANSLATABLE_CAPITALISED_STOPS = frozenset({
     "okay", "yeah", "yep", "sure", "alright", "hey", "listen", "look",
     "watch", "wait", "relax", "hold", "check", "action", "cut", "cause",
     "well", "come", "go", "let", "please", "thanks", "sorry",
+    # Bayram adı Türkçede yerleşik karşılığa sahiptir; özel ad diye kimlik
+    # kilidine alınırsa bütün dosyada İngilizce kalır.
+    "thanksgiving",
     # Ulanan fiil biçimleri (cümle başında büyük harfle çok geçiyor):
     "dying", "laughing", "shouts", "shouting", "works", "petting",
     "talking", "crying", "screaming", "singing",
