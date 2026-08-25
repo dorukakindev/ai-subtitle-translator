@@ -3,9 +3,9 @@
 Kaynak: 2026-08-24/25 koşu loglarından çıkan 18 maddelik liste.
 Ölçüm tabanı: 377 teslim `.srt`, 278 kaynak/teslim çifti, 2.083 dosyalık ham
 arşiv, 102 gerçek log dosyası.
-Suite: **4787 test, hepsi geçiyor.** GUI smoke temiz.
+Suite: **4798 test, hepsi geçiyor.** GUI smoke temiz.
 
-**Madde 8 yapılmadı** — high effort ister, aşağıda gerekçesi var.
+Madde 8 ayrı bir high-effort turunda yapıldı; ölçümü aşağıda.
 
 ---
 
@@ -181,19 +181,47 @@ Sonuç:    YANLIŞ POZİTİF — ama etiket yanıltıcıydı ve DÜZELTİLDİ:
 ### 8 — `consistency_sweep` yalnız tam-cümle tekrarına bakıyor
 
 ```
-Yer:      hybrid_translate.py:13078 consistency_sweep
-Girdi:    Aynı terimin dosya içinde farklı çevrilmesi
-Beklenen: Terim düzeyinde tutarsızlık yakalanmalı
-Gözlenen: 55/55 dosya "tutarlı" raporlandı
-Etki:     ÖLÇÜLMEDİ (bu oturumda yapılmadı)
-Sonuç:    YAPILMADI — HIGH EFFORT gerekiyor.
+Yer:      hybrid_translate.py:13078 consistency_sweep (source_groups
+          gruplaması) + subtitle_translator_gui.py:13313
+          detect_mixed_term_renderings (yeni süzgeç)
+Girdi:    Aynı terim dosya içinde iki farklı biçimde çevrilmiş
+Beklenen: Bildirilmeli; en azından '✓' yeşil tiki yanıltmamalı
+Gözlenen: Sweep'in birimi cue'nun TAMAMI: ancak birebir aynı kaynak satır
+          iki kez geçerse (ve >=3 sözcükse) karşılaştırma yapılıyor. Farklı
+          cümlelerde geçen terim hiç kapsama girmiyor, geçiş yine de
+          "tutarsızlık bulunamadı ✓" yazıyor.
+Etki:     278 gerçek çift → 24 dosya bu tiki alırken gerçek terim
+          tutarsızlığı taşıyor (London/Londra, Hattusilis/Hattuşili,
+          Gothic/Gotik, Pylos/Pilos, Khayyam/Hayyam...).
+Sonuç:    DÜZELTİLDİ — iki parça hâlinde.
 ```
 
-**Neden high:** karşılaştırma birimini cümleden terime çevirmek dedektör
-semantiği değişikliğidir ve iki yönlü ölçüm ister. Bu oturumda tam bu
-sınıfta **üç ayrı ucuz kural ölçülüp reddedildi** (madde 2, 3, 4). Medium
-efforta sıkıştırmak ya eksik ölçüm ya da tutarlılık taramasını körleştirme
-riski taşır.
+**8a — dedektörün kendi yanlış pozitifi önce kapatıldı.** Çıktısını sweep'e
+taşımak, hatalarını da taşımak demekti. `_mixed_term_clusters` renderingleri
+yüzey benzerliğiyle eşliyor ve **`Rama` ile `Ravana`yı aynı adın iki yazımı
+sanıyordu** — aynı destanın kahramanı ile iblis kralı; `Arjuna`/`Karna` ve
+`Troy`/`Troad` de öyle. Kural: *bir rendering kaynakta geçen başka bir
+sözcüğün kendisiyse, bu iki ayrı varlığın birleşmesidir.* Gerçek Türkçe
+karşılık (Londra, Gotik, Amerikalı) İngilizce kaynakta geçmez, o yüzden
+süzgeç gerçek bulguyu düşürmez.
+
+| ölçüm (278 çift, 26 benzersiz bulgu) | sonuç |
+|---|---|
+| süzgeçle düşen | **5** |
+| düşenlerden yanlış pozitif | **5 / 5** |
+| kaybedilen gerçek bulgu | **0** |
+| kalan zayıf-kanıt yanlış pozitifi | 2 (Henry/Henrique, Arvid/Artık) |
+
+**8b — sweep artık terim düzeyini de bildiriyor.** `consistency_sweep`
+`term_findings` parametresi aldı; dört akış da `App._term_level_findings`
+ile besliyor. Bulgu varsa yeşil tik yerine uyarı çıkıyor, yoksa mesaj
+kendi kapsamını söylüyor ("tekrar eden cümlelerde... terim düzeyi ayrıca
+taranır"). **Yalnız rapor** — terim kararını uygulamak `_normalize_mixed_terms`
+geçişinin işidir ve o kendi anahtarıyla kapalı kalır.
+
+Süzgeçten sonra son durum: **20 dosya** terim tutarsızlığı taşıyor ve
+hepsi artık tik yerine uyarı alıyor (önce 24'tü; 4 dosyanın bütün bulguları
+yanlış pozitifmiş).
 
 ### 9 — Terim normalizasyonu `response_not_array` ile çöktü
 
@@ -291,12 +319,11 @@ Sonuç:    DÜZELTİLDİ — Raporlar/teslim_taramasi.txt (R2),
 
 | durum | maddeler |
 |---|---|
-| DÜZELTİLDİ | 1, 3, 4, 6, 9, 10, 11, 12a, 17, R1, R2, R3, R4, R5 |
+| DÜZELTİLDİ | 1, 3, 4, 6, **8**, 9, 10, 11, 12a, 17, R1, R2, R3, R4, R5 |
 | KISMEN | 2 (22→17; kalan sınıf için aday kural ölçülüp reddedildi) |
 | YANLIŞ POZİTİF | 5, 7, 12b + madde 1 mojibake notu + madde 4 "boşluk körlüğü" |
 | ÖLÇÜLEMEDİ | madde 2'nin TM alt notu |
-| YAPILMADI | 8 (high effort) |
 
-**Ölçüm üç kez kendi düzeltmemi reddetti** (madde 2 aday kuralı, madde 3 ilk
-sanitizer, madde 4 ilk kök listesi). Üçü de sentetik testte "çalışıyor"
+**Ölçüm dört kez kendi düzeltmemi ya da denetimin önerdiğini reddetti** (madde 2 aday kuralı, madde 3 ilk
+sanitizer, madde 4 ilk kök listesi, madde 8'de dedektörün ham çıktısı). Üçü de sentetik testte "çalışıyor"
 görünüyordu ve yalnız gerçek arşive karşı ölçünce yanlış çıktı.
