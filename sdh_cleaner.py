@@ -1279,6 +1279,13 @@ def src_is_sfx_only(src_text: str, allow_caps_heuristic: bool = False) -> bool:
         if re.match(r'^#\s*(?:["“‘\']|(?:theme|music|song)\b)', inner, re.I):
             continue
         colon_follows = text[end:].lstrip().startswith(":")
+        # Salt nota taşıyan grup ('[ ♪♪♪ ]') ne betimleyici ne konuşmacıdır,
+        # bu yüzden reddediliyordu; oysa çıplak hâli ('♪♪♪') SFX sayılıyor.
+        # 300 gerçek kaynakta 6 dosyanın 211 cue'su bu yüzden "çeviri eksik"
+        # işaretlenip dosyaları partial bıraktı (How We Got to Now S01E01-06).
+        if (MUSIC_NOTE_RE.search(inner)
+                and not re.search(r"[^\W_]", MUSIC_NOTE_RE.sub("", inner))):
+            continue
         is_descriptor = is_sdh_descriptor(inner)
         is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
         if (is_speaker and not colon_follows and len(spans) > 1
