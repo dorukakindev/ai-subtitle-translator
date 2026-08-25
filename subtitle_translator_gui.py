@@ -5356,15 +5356,19 @@ def _cue_fill_imbalances(blocks: list, src_map: dict) -> list:
     return findings
 
 
-def _cue_fill_report_lines(findings: list, limit: int = 8) -> list:
+def _cue_fill_report_lines(findings: list, limit: int | None = 8) -> list:
     """'#369 (0,4 sn / 122 kar, 305 kar/sn) — metni #368'e kaydırın' satırları."""
     lines = []
-    for item in list(findings)[:max(0, int(limit))]:
+    rows = list(findings)
+    # limit=None: rapor yolu, kırpma yok.
+    if limit is not None:
+        rows = rows[:max(0, int(limit))]
+    for item in rows:
         lines.append(
             f"  #{item['id']} ({item['duration']:.1f} sn / {item['chars']} kar, "
             f"{item['cps']:.0f} kar/sn) — metni #{item['prev_id']}'e kaydırın "
             f"(orada {item['prev_cps']:.0f} kar/sn ile yer var)")
-    if len(findings) > limit:
+    if limit is not None and len(findings) > limit:
         lines.append(f"  … +{len(findings) - limit} cue daha")
     return lines
 
@@ -18555,14 +18559,19 @@ def delivery_scan_report_lines(scan: dict) -> list:
             f"   {'Hitap dağılımı (bilgi)'.ljust(width)} : "
             f"{register.get('informal', 0)} 'sen' / "
             f"{register.get('formal', 0)} 'siz' cue")
-    for line in _cue_fill_report_lines(scan.get("cue_fill_details") or []):
+    # RAPOR KIRPILMAZ. Log kırpabilir çünkü akışı okunur tutar; rapor
+    # dosyası bulgunun tek kalıcı kaydıdır ve '+N cue daha' diyen bir
+    # satır o cue'ları görünmez yapar. 68 dosyada 19.736 cue böyle
+    # gizlenmişti.
+    for line in _cue_fill_report_lines(
+            scan.get("cue_fill_details") or [], limit=None):
         lines.append(f"      - {line}")
     for cue_id, written, expected in (
-            scan.get("syllable_typo_details") or [])[:8]:
+            scan.get("syllable_typo_details") or []):
         lines.append(f"      - #{cue_id} '{written}' → '{expected}'")
     # Çiftler yazılmazsa kullanıcı ardışık iki cue'ya bakıp bulguyu bulamıyor;
     # pencere sekiz cue geniş (denetim Tur 4, madde 11).
-    for left, right in (scan.get("duplicate_pairs") or [])[:8]:
+    for left, right in (scan.get("duplicate_pairs") or []):
         lines.append(f"      - #{left} ↔ #{right} aynı çeviri")
     return lines
 
@@ -18599,6 +18608,192 @@ def realised_pass_line(row: dict) -> str:
         else:
             parts.append(str(name))
     return ", ".join(parts)
+
+
+# ── Rapor çıktıları (R2-R5) ────────────────────────────────────────────────
+# Teslim taraması bulguları yalnız log'a gidiyordu; log rotasyona giriyor ve
+# kullanıcı koşu sonunda Raporlar klasörünü okuyor. Üç dosya üretilir ve
+# hiçbiri KIRPILMAZ.
+#
+# Öncelik sırası kullanıcının okuma sırasıdır: önce teslimi durduran şey,
+# sonra terim tutarlılığı, en son biçim.
+REPORT_PRIORITY_GROUPS = (
+    ("KRİTİK", (
+        "missing_translation", "alignment", "cue_id_leak", "source_residue",
+        "garbled_token", "missing_predicate",
+    )),
+    ("TERİM", (
+        "mixed_term", "partial_echo",
+    )),
+    ("BİÇİM", (
+        "over_width", "over_lines", "cps", "cue_fill", "midword_space",
+        "syllable_typo", "register_mixed",
+    )),
+)
+
+_REPORT_GROUP_BY_KEY = {
+    key: group for group, keys in REPORT_PRIORITY_GROUPS for key in keys
+}
+
+# Bulgu sınıfını hangi aracın kapattığı. Karar izi kaybolmasın diye
+# KARARLAR.md'de her bulgunun yanında durur.
+REPORT_DECISION_TOOLS = {
+    "missing_translation": "_repair_untranslated_sync",
+    "alignment": "detect_alignment_issues + elle karşılaştırma",
+    "cue_id_leak": "_restore_tags_blocks",
+    "source_residue": "_repair_untranslated_sync",
+    "garbled_token": "find_garble_tokens",
+    "missing_predicate": "elle inceleme",
+    "mixed_term": "_normalize_mixed_terms",
+    "partial_echo": "consistency_sweep",
+    "over_width": "apply_line_breaks",
+    "over_lines": "apply_line_breaks",
+    "cps": "_cue_fill_report_lines + elle taşıma",
+    "cue_fill": "_apply_cue_fill_moves",
+    "midword_space": "clean_sdh",
+    "syllable_typo": "_repeated_head_typo_ids",
+    "register_mixed": "elle inceleme (bilgi amaçlı)",
+}
+
+
+def _report_finding_rows(rows) -> list:
+    """(dosya, anahtar, etiket, sayı) dörtlüleri — KIRPILMADAN."""
+    out = []
+    for row in rows or []:
+        name = str(row.get("name") or row.get("source_path") or "?")
+        scan = dict(row.get("delivery_scan") or {})
+        for key, label in _DELIVERY_SCAN_REPORT_FIELDS:
+            count = int(scan.get(key) or 0)
+            if count:
+                out.append((name, key, label, count))
+        if scan.get("register_mixed"):
+            register = scan.get("register") or {}
+            out.append((name, "register_mixed", "Hitap dağılımı (bilgi)",
+                        int(register.get("informal", 0))
+                        + int(register.get("formal", 0))))
+        missing = int(row.get("hata_count") or 0)
+        if missing:
+            out.append((name, "missing_translation", "Eksik çeviri", missing))
+    return out
+
+
+def build_delivery_scan_report_text(rows, run_id: str = "") -> str:
+    """R2 — Raporlar/teslim_taramasi.txt içeriği. Kırpma yok."""
+    findings = _report_finding_rows(rows)
+    lines = [
+        "TESLİM TARAMASI",
+        f"Çalıştırma kimliği: {run_id or '-'}",
+        f"Dosya: {len({name for name, _, _, _ in findings})} | "
+        f"Bulgu satırı: {len(findings)}",
+        "",
+    ]
+    if not findings:
+        lines.append("Teslim taramasında bulgu yok.")
+        return "\n".join(lines) + "\n"
+    by_file = {}
+    for name, key, label, count in findings:
+        by_file.setdefault(name, []).append((key, label, count))
+    for name in sorted(by_file):
+        lines.append(f"── {name} ──")
+        items = by_file[name]
+        items.sort(key=lambda item: (
+            [group for group, _ in REPORT_PRIORITY_GROUPS].index(
+                _REPORT_GROUP_BY_KEY.get(item[0], "BİÇİM")),
+            -item[2]))
+        for key, label, count in items:
+            group = _REPORT_GROUP_BY_KEY.get(key, "BİÇİM")
+            lines.append(f"   [{group}] {label}: {count}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def build_report_index_text(rows, run_id: str = "",
+                            report_files=()) -> str:
+    """R3 — Raporlar/00-OZET.md: tek giriş noktası."""
+    findings = _report_finding_rows(rows)
+    totals = {}
+    for _name, key, _label, count in findings:
+        group = _REPORT_GROUP_BY_KEY.get(key, "BİÇİM")
+        totals.setdefault(group, {}).setdefault(key, 0)
+        totals[group][key] += count
+    lines = [
+        "# Çeviri Raporu — Özet",
+        "",
+        f"- Çalıştırma kimliği: `{run_id or '-'}`",
+        f"- Dosya: {len(rows or [])}",
+        f"- Bulgu satırı: {len(findings)}",
+        "",
+    ]
+    for group, _keys in REPORT_PRIORITY_GROUPS:
+        bucket = totals.get(group) or {}
+        total = sum(bucket.values())
+        lines.append(f"## {group} — {total}")
+        lines.append("")
+        if not bucket:
+            lines.append("Bulgu yok.")
+            lines.append("")
+            continue
+        label_by_key = dict(_DELIVERY_SCAN_REPORT_FIELDS)
+        label_by_key.setdefault("register_mixed", "Hitap dağılımı (bilgi)")
+        label_by_key.setdefault("missing_translation", "Eksik çeviri")
+        for key, count in sorted(bucket.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- **{label_by_key.get(key, key)}**: {count}")
+        lines.append("")
+    if report_files:
+        lines.append("## Ayrıntı dosyaları")
+        lines.append("")
+        for path in report_files:
+            name = str(path).replace("\\", "/").rsplit("/", 1)[-1]
+            lines.append(f"- [{name}]({name})")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def build_decisions_report_text(rows, run_id: str = "") -> str:
+    """R4 — Raporlar/KARARLAR.md: her bulgunun yanında karar ve aracı."""
+    findings = _report_finding_rows(rows)
+    lines = [
+        "# Kararlar",
+        "",
+        f"Çalıştırma kimliği: `{run_id or '-'}`",
+        "",
+        "Her satır bir bulgu sınıfıdır. `karar:` alanı boşsa karar henüz",
+        "verilmemiştir; doldurulduğunda o kararı uygulayan araç yanında yazar.",
+        "",
+        "| Dosya | Grup | Bulgu | Sayı | karar | uygulayan |",
+        "| --- | --- | --- | ---: | --- | --- |",
+    ]
+    for name, key, label, count in findings:
+        group = _REPORT_GROUP_BY_KEY.get(key, "BİÇİM")
+        tool = REPORT_DECISION_TOOLS.get(key, "-")
+        safe_name = str(name).replace("|", "/")
+        lines.append(
+            f"| {safe_name} | {group} | {label} | {count} |  | `{tool}` |")
+    if not findings:
+        lines.append("| — | — | bulgu yok | 0 |  | — |")
+    return "\n".join(lines) + "\n"
+
+
+def verify_report_coverage(rows, *texts) -> dict:
+    """R5 — değişmez: bulunan == dosyaya yazılan.
+
+    Her bulgu satırının dosya adı + sayısı üretilen metinlerin EN AZ
+    BİRİNDE geçmeli. Geçmiyorsa rapor sessizce kırpılmış demektir.
+    """
+    findings = _report_finding_rows(rows)
+    blob = "\n".join(str(text or "") for text in texts)
+    missing = []
+    for name, key, label, count in findings:
+        if f"{label}: {count}" in blob or f"| {label} | {count} |" in blob:
+            continue
+        missing.append({"file": name, "key": key,
+                        "label": label, "count": count})
+    return {
+        "found": len(findings),
+        "written": len(findings) - len(missing),
+        "missing": missing,
+        "ok": not missing,
+    }
 
 
 def build_quality_report_text(rows: list, model_name: str, tgt: str, mode: str,
@@ -35487,6 +35682,34 @@ class App(ctk.CTk):
             p = rep_dir / "ceviri_raporu.txt"
             atomic_write_text(p, txt, encoding="utf-8")
             report_paths = [p]
+            # R2-R5: teslim taraması yalnız log'a gidiyordu; log rotasyona
+            # giriyor, kullanıcı ise koşu sonunda Raporlar klasörünü okuyor.
+            scan_text = build_delivery_scan_report_text(report_rows, run_id)
+            decisions_text = build_decisions_report_text(report_rows, run_id)
+            scan_path = rep_dir / "teslim_taramasi.txt"
+            decisions_path = rep_dir / "KARARLAR.md"
+            atomic_write_text(scan_path, scan_text, encoding="utf-8")
+            atomic_write_text(decisions_path, decisions_text, encoding="utf-8")
+            report_paths.extend([scan_path, decisions_path])
+            index_text = build_report_index_text(
+                report_rows, run_id,
+                [path.name for path in report_paths])
+            index_path = rep_dir / "00-OZET.md"
+            atomic_write_text(index_path, index_text, encoding="utf-8")
+            report_paths.append(index_path)
+            # R5 değişmezi: bulunan == dosyaya yazılan.
+            coverage = verify_report_coverage(
+                report_rows, scan_text, decisions_text)
+            if not coverage["ok"]:
+                self._log(
+                    f"⚠ Rapor kapsamı eksik: {coverage['found']} bulgunun "
+                    f"{coverage['written']} tanesi yazıldı; "
+                    f"{len(coverage['missing'])} bulgu dosyaya girmedi.",
+                    "err")
+            else:
+                self._log(
+                    f"Rapor kapsamı doğrulandı: {coverage['found']} bulgunun "
+                    f"tamamı dosyaya yazıldı.", "ok")
             json_payload = {
                 "run_id": run_id,
                 "model": self._main_model_name(),
