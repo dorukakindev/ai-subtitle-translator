@@ -9306,6 +9306,10 @@ def _src_is_proper_name_phrase(src_text: str) -> bool:
     name_particles = {
         "al", "au", "da", "de", "del", "della", "der", "di", "do", "dos",
         "du", "la", "las", "le", "los", "no", "van", "von", "y", "and",
+        # Kurum ve eser adlarının bağlayıcıları: 'Bank of England',
+        # 'Tower of London', 'Plan 10 from Outer Space'. Bunlar olmadan
+        # bütün 'X of Y' özel adları çevrilmemiş sayılıyordu.
+        "of", "from",
     }
     if (not tokens[0][0].isupper()
             or not tokens[-1][0].isupper()
@@ -9568,7 +9572,11 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
     ])
     src_norm = re.sub(r'[^\w\s]', '', src_text.lower()).strip()
     tr_norm  = re.sub(r'[^\w\s]', '', tr_text.lower()).strip()
-    identity_tokens = re.findall(r"[^\W\d_]+", str(src_text), re.UNICODE)
+    # Biçim etiketi önce soyulur: '<i># Hey, hey #</i>' token listesine
+    # etiketin kendi 'i' harfini katıyordu ve tekrarlı ünlem muafiyeti
+    # bu yüzden hiç çalışmıyordu (Warrendale #41).
+    identity_tokens = re.findall(
+        r"[^\W\d_]+", _ANY_MARKUP_RE.sub(" ", str(src_text)), re.UNICODE)
     identity_words = src_norm.split()
     identity_content_words = [
         token for token in identity_words
