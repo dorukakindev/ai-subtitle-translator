@@ -6205,7 +6205,14 @@ def auto_locked_proper_nouns(source_text: str, existing: dict | None = None,
 # hatasıdır. Geçmiyorsa susulur.
 _HEAD_TYPO_MIN_TAIL = 5
 _HEAD_TYPO_WORD_RE = re.compile(r"[^\W\d_]{7,}", re.UNICODE)
-_HEAD_TYPO_LEGITIMATE_PREFIXES = ("baba",)
+# 'bir' karşılıklılık zamirinin parçasıdır ('birbirinden'), tekrar değil.
+_HEAD_TYPO_LEGITIMATE_PREFIXES = ("baba", "bir")
+# Türkçe ettirgen eki kökle AYNI hecede biterse ikileme gibi görünür:
+# 'dur' + '-dur' = 'durdur-'. Bunlar gerçek çatı ekidir, yazım hatası değil.
+# 377 gerçek teslimde kuralın ürettiği 9 bulgunun 9'u bu iki sınıftandı;
+# gerçek bulgu yoktu.
+_HEAD_TYPO_CAUSATIVE_PREFIXES = frozenset(
+    {"dir", "dır", "dur", "dür", "tir", "tır", "tur", "tür"})
 
 
 def _repeated_head_typo_ids(blocks) -> list:
@@ -6225,6 +6232,8 @@ def _repeated_head_typo_ids(blocks) -> list:
                 continue
             for size in (2, 3):
                 if folded[:size] != folded[size:size * 2]:
+                    continue
+                if folded[:size] in _HEAD_TYPO_CAUSATIVE_PREFIXES:
                     continue
                 trimmed = folded[size:]
                 if len(trimmed) - size < _HEAD_TYPO_MIN_TAIL:
@@ -8901,6 +8910,33 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                 "body": req_body
             })
     return requests, file_map
+
+def _missing_recovery_kind(all_items, missing) -> str:
+    """Eksik blokların dağılımına bakarak kurtarma türünü adlandırır."""
+    items = list(all_items or [])
+    missing_items = list(missing or [])
+    if not items or not missing_items:
+        return "kurtarma"
+    if len(missing_items) == len(items):
+        return "sağlayıcı kurtarması"
+    order = [str(it.get("i")) for it in items if isinstance(it, dict) and "i" in it]
+    missing_ids = {
+        str(it.get("i")) for it in missing_items
+        if isinstance(it, dict) and "i" in it
+    }
+    if not order or not missing_ids:
+        return "kurtarma"
+    # Eksikler dizinin SONUNDAN kesintisiz geliyorsa yanıt kesilmiştir.
+    tail = 0
+    for cue_id in reversed(order):
+        if cue_id in missing_ids:
+            tail += 1
+            continue
+        break
+    if tail == len(missing_ids):
+        return "kesilme kurtarması"
+    return "atlanan cue kurtarması"
+
 
 def _is_unresolved_chain_translation(value) -> bool:
     text = str(value or "").strip()
@@ -27516,7 +27552,12 @@ class App(ctk.CTk):
         _ml     = model.lower()
         _no_temp = _ml.startswith(("gpt-5", "o1", "o3", "o4", "codex-"))
         n_requests = len(repair_units)
-        recovery_kind = "sağlayıcı kurtarması" if len(missing) == len(all_items) else "kesilme kurtarması"
+        # Etiket her kısmi eksikte "kesilme" diyordu ve yanıt kesilmiş
+        # sanılıyordu. Ölçüldüğünde token bütçesi suçsuz çıktı: 284.076
+        # cue'da en dolu chunk bütçenin %47'sini kullanıyor, aşan yok.
+        # Gerçek kesilmede eksikler chunk'ın SONUNDA toplanır; dağınıksa
+        # model cue atlamıştır. İkisi farklı sorun, ayrı adlandırılır.
+        recovery_kind = _missing_recovery_kind(all_items, missing)
         self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
                   f"{n_requests} küçük istekle tamamlanıyor ({recovery_kind})", "warn")
         if deferred_fragment_ids:
