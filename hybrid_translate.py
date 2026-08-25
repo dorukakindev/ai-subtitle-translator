@@ -13084,6 +13084,7 @@ def consistency_sweep(
     locked_terms: dict | None = None,
     apply_changes: bool = True,
     tgt_lang: str = "",
+    term_findings=None,
 ) -> tuple:
     """Normalize recurring source phrases to their most common translation.
     By default, only normalizes when a strict majority (>50%) of occurrences agree.
@@ -13180,8 +13181,23 @@ def consistency_sweep(
                     "altyazı değiştirilmedi",
                     "warn",
                 )
+        elif term_findings:
+            # Geçişin BİRİMİ cue'nun tamamıdır: ancak birebir aynı kaynak
+            # satır iki kez geçerse karşılaştırma yapılır. Terim düzeyi bu
+            # yüzden görünmez ve '✓' yanlış yeşil ışık oluyordu. 278 gerçek
+            # çiftte 24 dosya sweep'ten temiz çıkarken terim tutarsızlığı
+            # taşıyordu.
+            preview = ", ".join(
+                str((item or {}).get("term", "?")) for item in term_findings[:6])
+            log_fn(
+                f"Consistency sweep: tekrar eden cümlede tutarsızlık yok, "
+                f"ama {len(term_findings)} terim dosya içinde karışık "
+                f"çevrilmiş ({preview}) — teslim raporuna bakın",
+                "warn")
         else:
-            log_fn("Consistency sweep: tutarsızlık bulunamadı ✓", "ok")
+            log_fn(
+                "Consistency sweep: tekrar eden cümlelerde tutarsızlık "
+                "bulunamadı ✓ (terim düzeyi ayrıca taranır)", "ok")
 
     return (result if apply_changes else list(tr_blocks)), fixes
 

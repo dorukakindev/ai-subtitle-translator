@@ -13310,6 +13310,41 @@ def _mixed_term_clusters(blocks: list, src_map: dict) -> dict:
     return result
 
 
+def _mixed_term_source_words(src_map: dict) -> set:
+    """Kaynak metindeki 3+ harfli sözcükler (küçük harfe indirgenmiş)."""
+    return {
+        word.casefold()
+        for text in (src_map or {}).values()
+        for word in re.findall(r"[^\W\d_]{3,}", str(text or ""))
+    }
+
+
+def _mixed_rendering_is_misalignment(term, renderings, term_keys,
+                                     source_words) -> bool:
+    """Bulgu, iki AYRI varlığın kümeleyicide birleşmesinden mi doğdu?
+
+    Kümeleyici renderingleri yüzey benzerliğiyle eşliyor; 'Rama' ile 'Ravana'
+    ya da 'Arjuna' ile 'Karna' benzer başladığı için aynı terimin iki yazımı
+    sanılıyor. Oysa ikisi de kaynakta geçen AYRI karakterlerdir.
+
+    Ölçüt: alternatif rendering, kaynakta geçen başka bir sözcüğün kendisi.
+    Gerçek bir Türkçe karşılık (Londra, Gotik, Amerikalı) İngilizce kaynakta
+    geçmez, o yüzden bu süzgeç gerçek bulguyu düşürmez.
+
+    278 gerçek çiftte 26 benzersiz bulgu ölçüldü: 5'i düştü, 5'i de yanlış
+    pozitifti (Arjuna/Karna ×2, Rama/Ravana ×2, Troy/Troad); kaybedilen
+    gerçek bulgu 0.
+    """
+    own = str(term or "").casefold()
+    for label in renderings or ():
+        stem = str(label or "").rstrip("*").strip().casefold()
+        if not stem or stem == own:
+            continue
+        if stem in (term_keys or ()) or stem in (source_words or ()):
+            return True
+    return False
+
+
 def detect_mixed_term_renderings(blocks: list, src_map: dict) -> list:
     """Kaynakta tekrarlanan özel-isim adaylarının (ör. Incas, Ouija, Boy King)
     dosya içinde TUTARSIZ çevrildiğini (İnka* vs Incas*) tespit eder — helper-model
@@ -13326,10 +13361,15 @@ def detect_mixed_term_renderings(blocks: list, src_map: dict) -> list:
     clusters_by_term = _mixed_term_clusters(blocks, src_map)
     findings = []
     seen_terms = set()
+    term_keys = {str(key).casefold() for key in clusters_by_term}
+    source_words = _mixed_term_source_words(src_map)
     for term, clusters in clusters_by_term.items():
         real_clusters = [c for c in clusters if len(c) >= 2]
         if len(real_clusters) >= 2:
             renderings = {f"{c[0][1]}*": len(c) for c in real_clusters}
+            if _mixed_rendering_is_misalignment(
+                    term, renderings, term_keys, source_words):
+                continue
             findings.append({"term": term, "renderings": renderings})
             seen_terms.add(term.casefold())
     for finding in _acronym_mixed_renderings(blocks, src_map):
@@ -23113,6 +23153,22 @@ class App(ctk.CTk):
         var = getattr(self, "_file_language_vars", {}).get(filepath)
         value = var.get() if var else self.src_var.get()
         return normalize_language_name(value)
+
+    def _term_level_findings(self, blocks, cues):
+        """Sweep'in göremediği terim düzeyi tutarsızlıklar.
+
+        consistency_sweep'in birimi cue'nun TAMAMIDIR: ancak birebir aynı
+        kaynak satır iki kez geçerse karşılaştırma yapılır. Terim düzeyi bu
+        yüzden görünmez ve '✓' yanlış yeşil ışık oluyordu — 278 gerçek
+        çiftte 24 dosya sweep'ten temiz çıkarken terim tutarsızlığı
+        taşıyordu. Bulgu YALNIZ raporlanır; uygulamak _normalize_mixed_terms
+        geçişinin işidir ve o kendi anahtarıyla kapalı tutulur.
+        """
+        try:
+            return detect_mixed_term_renderings(
+                list(blocks or []), _src_map_from_cues(cues))
+        except Exception:
+            return []
 
     def _source_language_log_text(self, filepath: str) -> str:
         """Log satırı için kaynak dil: çözülmüş değer + nereden geldiği."""
@@ -38833,6 +38889,8 @@ class App(ctk.CTk):
             # dosyaya iki farklı politika uygulanıyordu (bug taraması m.22).
             sorted_blocks, _cons_fixes = ht.consistency_sweep(
                 cues, sorted_blocks, log_fn=self._log,
+                term_findings=App._term_level_findings(
+                    self, sorted_blocks, cues),
                 locked_terms=_locked_terms,
                 apply_changes=not bool(self._snap_get(
                     "quality_report_only", True)), tgt_lang=tgt)
@@ -40703,6 +40761,8 @@ class App(ctk.CTk):
                                 self._set_status("Consistency sweep...")
                                 pp, _cons_fixes = ht.consistency_sweep(
                                     _orig_cues, pp, log_fn=self._log,
+                                    term_findings=App._term_level_findings(
+                                        self, pp, _orig_cues),
                                     locked_terms=_locked_terms,
                                     apply_changes=not bool(self._snap_get(
                                         "quality_report_only", True)),
@@ -41581,6 +41641,8 @@ class App(ctk.CTk):
             try:
                 sorted_blocks, _cons_fixes = ht.consistency_sweep(
                     _src_cues, sorted_blocks, log_fn=self._log,
+                    term_findings=App._term_level_findings(
+                        self, sorted_blocks, _src_cues),
                     locked_terms=_locked_terms_for(fp),
                     apply_changes=not bool(self._snap_get(
                         "quality_report_only", True)), tgt_lang=_tgt_lang)
@@ -43210,6 +43272,8 @@ class App(ctk.CTk):
                         filepath, "Tutarlılık Taraması", "running")
                     _final_blocks, _cons_fixes = ht.consistency_sweep(
                         cues, _final_blocks, log_fn=self._log,
+                        term_findings=App._term_level_findings(
+                            self, _final_blocks, cues),
                         locked_terms=_file_locked_terms,
                         apply_changes=not bool(self._snap_get(
                             "quality_report_only", True)), tgt_lang=tgt)
