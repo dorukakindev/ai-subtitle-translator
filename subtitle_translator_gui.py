@@ -12249,6 +12249,31 @@ def _file_translation_chunk_count(file_map: dict, filepath) -> int:
     return count
 
 
+_SUBTITLE_MAP_EXTENSIONS = frozenset({".srt", ".vtt", ".ass", ".ssa", ".sub"})
+
+
+def _file_map_rows_carry_paths(file_map) -> bool:
+    """file_map satırlarının üçüncü öğesi dosya YOLU mu, zaman damgası mı?
+
+    Düz akış yol yazar, hibrit akış bitiş zamanı yazar. Zaman damgasında
+    dizin ayracı ya da altyazı uzantısı bulunmaz; ayrım buradan yapılır.
+    Harita hiç yol taşımıyorsa dosya süzgeci uygulanamaz — hibritte harita
+    zaten tek dosyaya aittir, süzmeye gerek de yoktur.
+    """
+    for rows in (file_map or {}).values():
+        for row in rows or ():
+            if len(row) < 3:
+                continue
+            value = str(row[2] or "")
+            if not value:
+                continue
+            if os.sep in value or "/" in value:
+                return True
+            if os.path.splitext(value)[1].lower() in _SUBTITLE_MAP_EXTENSIONS:
+                return True
+    return False
+
+
 def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> dict:
     """Summarize context actually carried by built translation requests."""
     target = (
@@ -12269,13 +12294,22 @@ def _context_payload_metrics(requests: list, filepath=None, file_map=None) -> di
     chunk_context = []
     allowed_ids = None
     if target and file_map:
-        allowed_ids = set()
-        for custom_id, rows in file_map.items():
-            if any(
-                    len(row) >= 3
-                    and os.path.normcase(os.path.abspath(str(row[2]))) == target
-                    for row in rows or ()):
-                allowed_ids.add(custom_id)
+        # file_map'in satır biçimi akışa göre DEĞİŞİYOR:
+        #   düz akış  (gui build_requests)      → (cue_id, ts, DOSYA_YOLU)
+        #   hibrit    (ht.build_batch_requests) → (cue.index, start, END_ZAMANI)
+        # Üçüncü öğe her zaman dosya yolu sanılıyordu; hibritte bir zaman
+        # damgası olduğu için hiçbir chunk eşleşmiyor, allowed_ids boş kalıyor
+        # ve BÜTÜN istekler eleniyor. Sonuç: hibrit koşuların kalite raporunda
+        # "Zincirleme Bağlam: açık; gerçek enjeksiyon ölçümü bulunamadı".
+        # Gerçek koşuda 38 dosyanın 38'i böyle raporlandı.
+        if _file_map_rows_carry_paths(file_map):
+            allowed_ids = set()
+            for custom_id, rows in file_map.items():
+                if any(
+                        len(row) >= 3
+                        and os.path.normcase(os.path.abspath(str(row[2]))) == target
+                        for row in rows or ()):
+                    allowed_ids.add(custom_id)
     for req in requests or ():
         if allowed_ids is not None and req.get("custom_id") not in allowed_ids:
             continue
