@@ -1,5 +1,34 @@
 import json
+import re
 from dataclasses import dataclass, field
+
+# Kesik/bozuk yanıt kurtarılırken JSON ayracı cue metnine karışıp teslim
+# dosyasına yazılıyordu: 2.083 gerçek .srt tarandığında 15 dosyada 17 cue
+# '},{' taşıyordu ve bazıları YALNIZ ondan ibaretti (yani çeviri tamamen
+# kayıp, ama cue dolu göründüğü için eksik sayılmadı).
+#
+# Yalnız hiçbir altyazıda meşru olmayan dizi temizlenir. Köşeli parantez
+# tek başına dokunulmaz — '[MÜZİK]' gibi gerçek SDH etiketleri onu kullanır.
+_JSON_OBJECT_SEPARATOR_RE = re.compile(r"\}\s*,\s*\{")
+# Yalnız ayraçtan ibaret metin; en az bir süslü/köşeli parantez ŞART, yoksa
+# tek başına duran bir virgül de silinirdi ve bu maddenin konusu değil.
+_JSON_STRUCTURE_ONLY_RE = re.compile(r"^(?=[\s,]*[{}\[\]])[\s{}\[\],]+$")
+
+
+def strip_json_structure_residue(text: str) -> str:
+    """Cue metnindeki JSON nesne ayracını düşürür.
+
+    Metin yalnız ayraçtan ibaretse boş döner; çağıran onu geçersiz sayıp
+    cue'yu eksik listesine alır, böylece onarım yolu devreye girer.
+
+    Satır sonundaki tek süslü parantez KIRPILMAZ: ölçüldüğünde 61 dosyadaki
+    736 cue'nun ASS biçim etiketini ('{\\i0}') bozuyordu. Yalnız '},{'
+    dizisi güvenli; o hiçbir altyazı metninde meşru değildir.
+    """
+    value = str(text or "")
+    if _JSON_STRUCTURE_ONLY_RE.match(value):
+        return ""
+    return _JSON_OBJECT_SEPARATOR_RE.sub(" ", value).strip()
 
 
 @dataclass
@@ -154,7 +183,12 @@ def parse_translation_payload(raw: str, expected_ids) -> TranslationParseResult:
         if not isinstance(item["t"], str) or not item["t"].strip():
             result.invalid_text_ids.add(cue_id)
             continue
-        result.translations[cue_id] = item["t"]
+        cleaned = strip_json_structure_residue(item["t"])
+        if not cleaned:
+            # Metin yalnız ayraçtan ibaretti: çeviri gerçekte yok.
+            result.invalid_text_ids.add(cue_id)
+            continue
+        result.translations[cue_id] = cleaned
     for cue_id in result.duplicate_ids:
         result.translations.pop(cue_id, None)
     result.missing_ids = expected - set(result.translations)
