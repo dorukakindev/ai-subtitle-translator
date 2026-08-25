@@ -558,6 +558,13 @@ _SECRET_HEADER_RE = re.compile(
     r"(?i)(\b(?:authorization|x-api-key)\s*[:=]\s*(?:bearer\s+)?)([^\s,;]+)")
 
 
+def _fold_log_record(message: str) -> str:
+    """Log kaydını tek satıra indirir; satır sonu görünür işaretle korunur."""
+    text = str(message or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\n", " ⏎ ")
+
+
 def _sanitize_settings_backup_text(text: str) -> str:
     text = str(text or "")
     text = _SETTINGS_SECRET_KEY_RE.sub(r"\1[REDACTED]\3", text)
@@ -23773,9 +23780,15 @@ class App(ctk.CTk):
 
         # Log dosyasına yaz (zaman damgası ile) — lock: concurrent worker thread'ler
         disk_warning = ""
+        # Bir kayıt = bir satır. Mesajın İÇİNDE gerçek satır sonu olabiliyor
+        # (cue metni alıntılayan tutarlılık/onarım satırları); o zaman tek
+        # kayıt birden çok fiziksel satıra yayılıyor, devam satırlarında
+        # zaman damgası olmuyor ve satır bazlı ayrıştırma iki kaydı birleşmiş
+        # görüyordu. Arayüzde çok satırlı görünüm korunur, DOSYADA katlanır.
+        disk_line = _fold_log_record(disk_msg)
         try:
             with self._log_lock:
-                self._log_file.write(f"[{ts}] {icon}  {disk_msg}\n")
+                self._log_file.write(f"[{ts}] {icon}  {disk_line}\n")
                 self._log_file.flush()
         except Exception as exc:
             if not self.__dict__.get("_disk_log_failure_reported", False):
