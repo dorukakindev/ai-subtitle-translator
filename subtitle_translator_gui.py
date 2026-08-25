@@ -337,6 +337,33 @@ def _file_list_page(files, page: int, page_size: int = FILE_LIST_PAGE_SIZE):
     return items[start:start + size], current, pages
 
 
+def _folders_all_inside(paths, root: str) -> bool:
+    """Eklenen klasorlerin HEPSI `root` agacinin altinda mi?
+
+    Giris klasoru secili ve tek tek dosya secilmemisken "klasor ekle"
+    once butun giris klasorunu secime dolduruyordu. Eklenen klasorler
+    zaten onun altindaysa bu DARALTMAYI GENISLETMEYE cevirir: kullanici
+    15 belgesel klasoru secerken kuyruga 484 dosya giriyor ve added=0
+    goruluyordu. Yanlislikla baslatilirsa istenmeyen dosyalar cevrilir.
+    """
+    base = str(root or "").strip()
+    items = [str(p or "").strip() for p in (paths or []) if str(p or "").strip()]
+    if not base or not items:
+        return False
+    try:
+        base_abs = os.path.normcase(os.path.abspath(base))
+    except (OSError, ValueError):
+        return False
+    for item in items:
+        try:
+            item_abs = os.path.normcase(os.path.abspath(item))
+        except (OSError, ValueError):
+            return False
+        if item_abs != base_abs and not item_abs.startswith(base_abs + os.sep):
+            return False
+    return True
+
+
 def _nested_output_exclusions(roots, output_path="", same_folder=False):
     if same_folder or not str(output_path or "").strip():
         return []
@@ -28233,6 +28260,7 @@ class App(ctk.CTk):
             self.input_var.get()
             if not selected_before
             and getattr(self, "_input_folder_explicitly_selected", False)
+            and not _folders_all_inside(paths, self.input_var.get())
             else ""
         )
         output_var = getattr(self, "output_var", None)
@@ -28275,11 +28303,12 @@ class App(ctk.CTk):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken klasör eklenemez.", "warn")
             return 0
+        paths = self._dedupe_paths(paths)
         if (not self._selected_files
                 and getattr(self, "_input_folder_explicitly_selected", False)
-                and self.input_var.get()):
+                and self.input_var.get()
+                and not _folders_all_inside(paths, self.input_var.get())):
             self._selected_files = self._get_srt_files()
-        paths = self._dedupe_paths(paths)
         output_var = getattr(self, "output_var", None)
         output_path = (output_var.get() if output_var is not None else "") or ""
         same_folder_var = getattr(self, "same_folder_var", None)
