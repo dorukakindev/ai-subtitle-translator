@@ -3252,8 +3252,30 @@ def _strip_sdh_line(line: str) -> str:
     # Parentheses around any descriptor: (LAUGHS), (dramatic music), (quietly), etc.
     # Collapse any multiple spaces left behind
 
-def clean_sdh(blocks, src_map=None, source_driven=False):
-    return sdh_cleaner.clean_sdh_blocks(blocks, src_map=src_map, source_driven=source_driven)
+def clean_sdh(blocks, src_map=None, source_driven=False, log_fn=None):
+    """SDH temizliği. `log_fn` verilirse kaç cue düştüğünü bildirir.
+
+    Geçiş sessizdi: log'da yalnız 'SDH Temizleme | 0.1 sn' görünüyor ve
+    silinen cue sayısı hiç yazılmıyordu — yani hiç çalışmadığını fark
+    etmenin yolu yoktu."""
+    before = list(blocks or [])
+    kept = sdh_cleaner.clean_sdh_blocks(
+        before, src_map=src_map, source_driven=source_driven)
+    if log_fn:
+        removed = len(before) - len(kept)
+        emptied = sum(
+            1 for cid, _ts, text in kept
+            if not str(text or "").strip()
+            and str(dict((b[0], b[2]) for b in before).get(cid) or "").strip()
+        )
+        if removed or emptied:
+            log_fn(
+                f"SDH temizleme: {removed} cue düşürüldü"
+                + (f", {emptied} cue boşaltıldı" if emptied else ""),
+                "info")
+        else:
+            log_fn("SDH temizleme: silinecek etiket bulunmadı", "info")
+    return kept
 
 
 # ── Satır kırma optimizasyonu ─────────────────────────────────────────────────
@@ -31489,7 +31511,7 @@ class App(ctk.CTk):
                 if clean_sdh_on:
                     blocks = clean_sdh(
                         blocks, src_map=_src_map_from_cues(cues),
-                        source_driven=True)
+                        source_driven=True, log_fn=self._log)
 
                 # Apply Polish Pass if enabled
                 if polish_on and blocks:
@@ -33996,7 +34018,7 @@ class App(ctk.CTk):
                 if do_sdh:
                     try:
                         self._update_file_progress(fp, "SDH Temizle", 85)
-                        blocks = clean_sdh(blocks, src_map=None, source_driven=False)
+                        blocks = clean_sdh(blocks, src_map=None, source_driven=False, log_fn=self._log)
                     except Exception as e:
                         self._log(f"SDH temizleme hatası: {e}", "warn")
                         postprocess_failed = True
@@ -38683,7 +38705,7 @@ class App(ctk.CTk):
             if self.clean_sdh_var.get():
                 self._record_file_status(filepath, "SDH Temizleme", "running")
                 _before_pass = list(sorted_blocks)
-                sorted_blocks = clean_sdh(sorted_blocks, src_map=_src_map_for_condense, source_driven=True)
+                sorted_blocks = clean_sdh(sorted_blocks, src_map=_src_map_for_condense, source_driven=True, log_fn=self._log)
                 _record_pass_change(_pass_trace, "SDH", _before_pass, sorted_blocks, _pass_history)
 
             if self.linebreak_var.get() and sorted_blocks:
@@ -41433,7 +41455,7 @@ class App(ctk.CTk):
                 # kaynak GEÇMİYORDU (bkz. plans/sdh-kaynak-gutlu-temizlik-brief.md Adım 3) —
                 # hem kaynak-güdümlü tespiti hem de boş-cue güvenlik ağını (_src_is_real_dialogue)
                 # etkinleştirmek için diğer akışlardaki gibi burada da geçiyoruz.
-                sorted_blocks = clean_sdh(sorted_blocks, src_map=src_blocks, source_driven=True)
+                sorted_blocks = clean_sdh(sorted_blocks, src_map=src_blocks, source_driven=True, log_fn=self._log)
                 _record_pass_change(_pass_trace, "SDH", _before_pass, sorted_blocks, _pass_history)
             if self.linebreak_var.get() and sorted_blocks:
                 self._record_file_status(fp, "Satır Düzenleme", "running")

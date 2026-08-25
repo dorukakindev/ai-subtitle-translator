@@ -638,12 +638,76 @@ def _bracket_shape_is_label(content: str, standalone: bool = True) -> bool:
     return standalone and has_lower_initial and len(words) <= 4
 
 
+# Türkçe ses etiketleri tanınmıyordu: 377 anahtar sözcüğün tamamına yakını
+# İngilizce. 377 gerçek teslimde 284.076 cue tarandığında 10 dosyada 17
+# parantezli etiket ayakta kalmıştı ve 15'i Türkçe ses tarifiydi
+# ('KEDİ MİYAVLAR', 'KEÇİ MELEMESİ', 'YAZAR KASA ZİLİ').
+#
+# Sözcük listesi yerine KÖK listesi tutulur: Türkçe eklemeli bir dildir ve
+# 'ulu-' kökü 'uluma', 'ulumasi', 'uluyor', 'ulur' hepsini üretir.
+_TR_SDH_SOUND_ROOTS = (
+    # Yalnız ses TARİFİNE özgü kökler. Sıradan replikte geçen genel adlar
+    # (ses, zil, telefon, muzik, sarki, nefes, patlama...) BİLEREK yok:
+    # ilk deneme onları içeriyordu ve 'Sesi duydun mu?' repliğini etiket
+    # sayıp siliyordu. Bu geçiş cue SİLER; yanlış pozitifin bedeli ağırdır.
+    "miyav", "havla", "uluma", "ulumasi", "meleme", "melemesi",
+    "kisne", "bogur", "tisla", "hirla", "civil", "vizil",
+    "inleme", "inlemesi", "hickir", "misilda", "mirilda", "homurdan",
+    "oksurme", "oksuruk", "hapsir", "horlama", "islik",
+    "gicirt", "gicirda", "cinlama", "tikirti", "catirti", "gumburtu",
+    "vinlama", "ugultu", "tezahurat", "kahkaha", "tukurme",
+    "cigliklar", "fisilti", "homurtu", "iniltisi", "hirilti",
+)
+
+# Bu ekler konuşmacıyı işaret eder: gerçek replik demektir, etiket değil.
+# Ölçülen iki gerçek vaka: 'yukarı çıkıyoruz.' ve 'beni davet etselerdi...!'
+_TR_SPEECH_PERSON_RE = re.compile(
+    r"(?:\b(?:ben|sen|biz|siz|beni|seni|bizi|sizi|bana|sana|bize|size)\b"
+    r"|(?:yorum|yoruz|yorsun|yorsunuz|acagim|acağım|ecegim|eceğim"
+    r"|acagiz|acağız|ecegiz|eceğiz|misin|mısın|musun|müsün"
+    r"|dim|dık|dim|dik|duk|dük|tim|tik|selerdi|salardi|salardı)\b)",
+    re.IGNORECASE)
+
+
+def _tr_sdh_label(content: str, bracketed_hint: bool = False) -> bool:
+    """Türkçe ses/eylem etiketi mi? Konuşma eki taşıyan metin etiket sayılmaz."""
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if _TR_SPEECH_PERSON_RE.search(text):
+        return False
+    # Kök TEK BASINA ayirt edici degil: olculdugunde 'kibirli bir homurtuyla
+    # cekip gittiler;', 'Kahkaha, demokrasiden yana bir guctur' gibi GERCEK
+    # replikleri siliyordu. Gercek etiketin ortak bicimi: parantez icinde ya
+    # da bastan sona buyuk harf, ve kisa bir ad obegi.
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    if not (bracketed_hint or all(ch.isupper() for ch in letters)):
+        return False
+    folded = _ascii_fold(text).lower()
+    words = re.findall(r"[a-z]+", folded)
+    if not words or len(words) > 4:
+        return False
+    for root in _TR_SDH_SOUND_ROOTS:
+        key = _ascii_fold(root).lower()
+        if " " in key:
+            if key in folded:
+                return True
+            continue
+        if any(word.startswith(key) for word in words):
+            return True
+    return False
+
+
 def is_sdh_descriptor(content: str, bare_text: bool = False,
                       bracketed: bool = False,
                       standalone: bool = True) -> bool:
     # `bracketed`: içerik gerçekten [..]/(..) içinden geldiyse biçim kuralı
     # uygulanır. Çıplak metinde (bare_text) parantez sinyali yoktur.
     if bracketed and _bracket_shape_is_label(content, standalone):
+        return True
+    if _tr_sdh_label(content, bracketed_hint=bracketed):
         return True
     key = _descriptor_key(content)
     if not key:
