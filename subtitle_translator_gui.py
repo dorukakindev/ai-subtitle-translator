@@ -11805,6 +11805,10 @@ def _strip_md(raw):
         return inner
     return "\n".join(raw.split("\n")[1:]).rsplit("```", 1)[0].strip()
 
+# Terim normalizasyonunda bozuk yanit icin kac deneme yapilir.
+TERM_NORMALIZATION_MAX_ATTEMPTS = 2
+
+
 def _extract_json_array(raw):
     """Extracts a JSON array from raw text, even with preamble/postamble."""
     from response_integrity import translation_items_from_raw
@@ -13803,33 +13807,58 @@ def _normalize_mixed_terms(sorted_blocks: list, src_map: dict, helper_key: str, 
             break
         chunk = items[cs:cs + CHUNK]
         chunk_ids = {str(item["id"]) for item in chunk}
-        try:
-            resp = _safe_chat_create(
-                client, model=helper_model, cancel_context=cancel_context,
-                _checkpoint_label="term_normalization",
-                messages=[{"role": "system", "content": sys_prompt},
-                         {"role": "user", "content": json.dumps({"items": chunk}, ensure_ascii=False)}],
-                max_tokens=max(800, len(chunk) * 100),
-                temperature=0.2,
-            )
-            _report_response_usage(
-                token_callback, resp, log_fn=log_fn,
-                pass_name="Terim Normalizasyonu")
-            if not resp.choices:
-                raise ValueError("empty_response")
-            content = resp.choices[0].message.content or ""
-            raw = _extract_json_array(content)
-            if not raw.strip():
-                raise ValueError("response_not_array")
-            data = json.loads(raw)
-            if not isinstance(data, list):
-                raise ValueError("response_not_array")
-        except RequestCancelled:
-            cancelled = True
+        # Bozuk yanıtta paket SESSİZCE düşüyordu: tek bir 'response_not_array'
+        # o paketin bütün terim normalizasyonunu kaybettiriyor ve koşu
+        # bitene kadar fark edilmiyordu. Sınırlı tekrar + açık log.
+        data = None
+        last_error = None
+        for _attempt in range(TERM_NORMALIZATION_MAX_ATTEMPTS):
+            try:
+                resp = _safe_chat_create(
+                    client, model=helper_model, cancel_context=cancel_context,
+                    _checkpoint_label="term_normalization",
+                    messages=[{"role": "system", "content": sys_prompt},
+                             {"role": "user", "content": json.dumps({"items": chunk}, ensure_ascii=False)}],
+                    max_tokens=max(800, len(chunk) * 100),
+                    temperature=0.2,
+                )
+                _report_response_usage(
+                    token_callback, resp, log_fn=log_fn,
+                    pass_name="Terim Normalizasyonu")
+                if not resp.choices:
+                    raise ValueError("empty_response")
+                content = resp.choices[0].message.content or ""
+                raw = _extract_json_array(content)
+                if not raw.strip():
+                    raise ValueError("response_not_array")
+                parsed = json.loads(raw)
+                if not isinstance(parsed, list):
+                    raise ValueError("response_not_array")
+                data = parsed
+                break
+            except RequestCancelled:
+                cancelled = True
+                break
+            except Exception as chunk_error:
+                last_error = chunk_error
+                if _attempt + 1 < TERM_NORMALIZATION_MAX_ATTEMPTS:
+                    if log_fn:
+                        log_fn(
+                            f"Terim normalizasyonu yanıtı bozuk ({chunk_error}); "
+                            f"paket yeniden deneniyor "
+                            f"{_attempt + 2}/{TERM_NORMALIZATION_MAX_ATTEMPTS}",
+                            "warn")
+                    continue
+        if cancelled:
             break
-        except Exception as chunk_error:
+        if data is None:
+            response_issues.append(str(last_error or "bilinmeyen"))
             if log_fn:
-                log_fn(f"Terim normalizasyonu paketi atlandı: {chunk_error}", "warn")
+                log_fn(
+                    f"Terim normalizasyonu paketi "
+                    f"{TERM_NORMALIZATION_MAX_ATTEMPTS} denemede alınamadı "
+                    f"({last_error}); {len(chunk)} terim normalize edilmedi",
+                    "warn")
             continue
         chunk_results = {}
         conflicting_ids = set()
@@ -22846,6 +22875,15 @@ class App(ctk.CTk):
         var = getattr(self, "_file_language_vars", {}).get(filepath)
         value = var.get() if var else self.src_var.get()
         return normalize_language_name(value)
+
+    def _source_language_log_text(self, filepath: str) -> str:
+        """Log satırı için kaynak dil: çözülmüş değer + nereden geldiği."""
+        chosen = self._get_file_source_language(filepath)
+        effective = self._effective_file_source_language(
+            filepath, self.src_var.get())
+        if chosen == AUTO_LANGUAGE:
+            return f"{effective} (otomatik tespit)"
+        return f"{effective} (seçildi)"
 
     def _effective_file_source_language(self, filepath: str, fallback: str = "English") -> str:
         language = self._get_file_source_language(filepath)
@@ -38033,6 +38071,12 @@ class App(ctk.CTk):
                     + (schema_dict.get("name") or "Otomatik"), "info")
                 self._log(
                     f"[{fname}] Analiz derinligi: {analysis_depth}", "info")
+                # Hangi dilden çevrildiği log'da hiç yazmıyordu; teşhis
+                # sırasında dosya ADINA bakmak zorunda kalınıyordu ve
+                # addaki dil etiketi otorite değil.
+                self._log(
+                    f"[{fname}] Kaynak dil: "
+                    + App._source_language_log_text(self, filepath), "info")
 
                 cached = self._load_context_cache_for_file(
                     ht, filepath, tgt, file_src,
@@ -42396,6 +42440,12 @@ class App(ctk.CTk):
                     + (schema_dict.get("name") or "Otomatik"), "info")
                 self._log(
                     f"[{fname}] Analiz derinligi: {analysis_depth}", "info")
+                # Hangi dilden çevrildiği log'da hiç yazmıyordu; teşhis
+                # sırasında dosya ADINA bakmak zorunda kalınıyordu ve
+                # addaki dil etiketi otorite değil.
+                self._log(
+                    f"[{fname}] Kaynak dil: "
+                    + App._source_language_log_text(self, filepath), "info")
 
                 cached = self._load_context_cache_for_file(
                     ht, filepath, tgt, file_src,
