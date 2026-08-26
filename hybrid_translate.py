@@ -221,9 +221,11 @@ def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
         except (TypeError, ValueError, IndexError):
             continue
     covered = set()
+    raw_covered = set()
     referent_scenes = 0
     goal_scenes = 0
     valid_scenes = 0
+    empty_scenes = 0
     for scene in scenes or []:
         if not isinstance(scene, dict):
             continue
@@ -234,7 +236,17 @@ def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
         if end < start:
             continue
         valid_scenes += 1
-        covered.update(idx for idx in cue_ids if start <= idx <= end)
+        in_range = {idx for idx in cue_ids if start <= idx <= end}
+        raw_covered.update(in_range)
+        # Yalnız start/end taşıyan bir kayıt modele HİÇBİR ŞEY göndermiyor:
+        # payload üreticisi onu atıyor. Kapsamı ham aralıktan saymak, o
+        # cue'lar sahne bağlamı almadığı hâlde raporun "%100 kapsandı"
+        # demesine yol açıyordu. Kararı payload üreticisinin kendisine
+        # sorarız ki iki taraf bir daha ayrışmasın.
+        if _scene_plan_payload_entry(scene) is None:
+            empty_scenes += 1
+            continue
+        covered.update(in_range)
         referent_scenes += bool(scene.get("referents"))
         goal_scenes += bool(scene.get("speaker_goals"))
     depth_key = normalize_analysis_depth(analysis_depth)
@@ -259,6 +271,8 @@ def analysis_effectiveness_metrics(analysis_result, cues, analysis_depth,
         "examples": len(examples or {}),
         "pronoun_pairs": len(pronouns or {}),
         "scenes": valid_scenes,
+        "empty_scenes": empty_scenes,
+        "scene_raw_covered_cues": len(raw_covered),
         "scene_covered_cues": len(covered),
         "scene_coverage_pct": round(100.0 * len(covered) / len(cue_ids), 1) if cue_ids else 0.0,
         "scene_uncovered_cues": len(uncovered),
@@ -306,6 +320,11 @@ def analysis_effectiveness_log_line(metrics: dict) -> str:
         if len(ranges) > 20:
             detail += f",+{len(ranges) - 20} aralik"
         line += f" | sahne plani disinda {uncovered} cue [{detail or '-'}]"
+    # Bos sahne aralik olarak var ama modele hicbir sey gondermiyor; kapsam
+    # dususunun NEDENI gorunsun diye ayrica yazilir.
+    empty_scenes = int(m.get("empty_scenes", 0) or 0)
+    if empty_scenes:
+        line += f" | icerigi bos sahne: {empty_scenes}"
     return line
 
 
