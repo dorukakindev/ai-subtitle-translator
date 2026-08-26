@@ -97,6 +97,10 @@ def _has_bracket_group(text: str) -> bool:
 _SDH_KEYWORDS = {
     # English hearing-impaired captions
     "applause", "applauding", "cheering", "cheers", "booing",
+    # 290 gercek kaynakta olculen ciplak CAPS kacaklari: sozluk bu ses
+    # sozcuklerini bilmiyordu. 'garbled voices' 12 cue ile en cogu.
+    "garbled", "voices", "groans", "shrieks", "shrieking", "buzzing",
+    "surge", "musicians", "static", "crackling", "hissing",
     "laugh", "laughs", "laughing", "laughter", "chuckle", "chuckles",
     "chuckling", "giggle", "giggles", "giggling",
     "sigh", "sighs", "sighing", "gasp", "gasps", "gasping",
