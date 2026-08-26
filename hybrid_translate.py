@@ -6645,16 +6645,54 @@ def find_translatable_english_residue(source_text, target_text,
     return list(dict.fromkeys(found))
 
 # On-screen text detection: all-caps short lines, date/location patterns, standalone labels.
+# BUYUK/KUCUK HARF DUYARLI derlenir. IGNORECASE aciktir diye:
+#   - acik [A-Z] siniflari etkisizlesiyor ('london, 1959' de eslesiyordu),
+#   - kart sozcukleri siradan repligi yakaliyordu ('Part 2 of the story...').
+# Ayrica son dalin birim grubu OPSIYONELDI: desen fiilen "rakamla baslayan
+# her satir" demek oluyordu ve '303 heroic warriors die in the battle.'
+# ekran yazisi sayiliyordu. Ekran yazisi isaretli cue prompt'ta "tabela gibi
+# cevir, konusma dili ve HITAP BICIMI ekleme" talimatiyla gidiyor; yani
+# yanlis isaret dogrudan ceviri kalitesini dusuruyor.
 _OST_DETECT_RE = re.compile(
     r"^(?:\d{1,4}[-–—]\d{1,4}|[A-Z][a-zçğıöşü]+,\s*\d{4}|"
     r"[A-Z][a-zçğıöşü]+(?:–|—)[A-Z][a-zçğıöşü]+"
-    r"|(?:CHAPTER|SECTION|PART|ACT|SCENE|DAY|NIGHT|LATER|THEN|SIX|YEAR|MONTH|YEAR)\s+\d+|\d+\s+(?:MINUTES|SECONDS|HOURS|DAYS)?)",
-    re.IGNORECASE,
+    r"|(?:CHAPTER|SECTION|PART|ACT|SCENE|DAY|NIGHT|LATER|THEN|SIX|YEAR|MONTH)\s+\d+"
+    r"|\d+\s+(?:MINUTES|SECONDS|HOURS|DAYS)\b)",
 )
 
 
-def looks_like_on_screen_text(text: str) -> bool:
-    """SRT/VTT'de ekran yazısı olma olasılığı yüksek satırları tespit eder."""
+def source_is_all_caps_file(cues) -> bool:
+    """Kaynagin TAMAMI buyuk harf mi? (kapali altyazi kaynaklari boyledir)
+
+    Boyle bir dosyada 'tamami buyuk harf' sinyali hicbir sey ayirt etmez:
+    her satir oyle. Ekran yazisi yedegi orada calisirsa gercek replik de
+    tabela sayilir. Ayni karar `sdh_cleaner.src_is_sfx_only` icin de dosya
+    duzeyinde veriliyor (allow_caps_heuristic).
+    """
+    rows = []
+    for cue in cues or ():
+        text = getattr(cue, "text", None)
+        if text is None:
+            try:
+                text = cue[2]
+            except Exception:
+                continue
+        letters = [ch for ch in str(text or "") if ch.isalpha()]
+        if len(letters) >= 4:
+            rows.append(all(ch.isupper() for ch in letters))
+    if not rows:
+        return False
+    return (sum(rows) / len(rows)) >= 0.80
+
+
+def looks_like_on_screen_text(text: str,
+                              allow_caps_heuristic: bool = True) -> bool:
+    """SRT/VTT'de ekran yazısı olma olasılığı yüksek satırları tespit eder.
+
+    `allow_caps_heuristic=False`: kaynağın tamamı büyük harf olduğu için
+    caps sinyali ayırt edici değil; yalnız yapısal kalıplar (tarih, bölüm
+    kartı, süre) kabul edilir. Kararı çağıran dosya düzeyinde verir.
+    """
     core = _clean_source_text(str(text or ""))
     core = re.sub(r"^\s*[-–—]?\s*[^:\n]{1,40}:\s*", "", core).strip()
     core = re.sub(r"\[[^\]]*\]|\([^)]*\)", "", core).strip()
@@ -6662,8 +6700,14 @@ def looks_like_on_screen_text(text: str) -> bool:
         return False
     if _has_speaker_label(core):
         return False
-    if _OST_DETECT_RE.search(core):
+    # Kart cue'nun TAMAMIDIR. `search` kullanilinca konusmaci etiketi
+    # soyulmus replikler de yakalaniyordu: 'EAGLEMAN. VOICE OVER: 6 SECONDS
+    # ELAPSED BETWEEN THE MOMENT' -> '6 SECONDS ELAPSED...' sure karti
+    # sanildi. Tam eslesme sarti bunu keser, gercek kartlari etkilemez.
+    if _OST_DETECT_RE.fullmatch(core.rstrip(" .")):
         return True
+    if not allow_caps_heuristic:
+        return False
     stripped = core.rstrip()
     return bool(
         stripped.isupper()
@@ -14588,6 +14632,9 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
 
     requests = []
     file_map = {}
+    # Kaynagin tamami buyuk harfse ekran yazisi caps yedegi ayirt edici degil:
+    # o dosyalarda her satir caps ve gercek replik de tabela sayiliyordu.
+    _ost_caps_ok = not source_is_all_caps_file(cues)
     prev_ctx        = []
     prev_scene_ctx  = []   # last lines of the most recently completed scene
     prev_end_sec    = None
@@ -14618,7 +14665,7 @@ def build_batch_requests(cues: list, system_prompt: str, model: str,
             except Exception:
                 dur = 2.0
             item = {"i": c.index, "t": _clean_source_text(c.text), "d": dur}
-            if looks_like_on_screen_text(c.text):
+            if looks_like_on_screen_text(c.text, _ost_caps_ok):
                 item["is_ost"] = True
             tag = frag_tags.get(c.index, "none")
             if tag != "none":

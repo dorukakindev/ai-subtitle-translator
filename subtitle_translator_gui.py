@@ -8793,6 +8793,10 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
             blocks = list(parse_subtitle(fp))
         if not blocks:
             continue
+        # Kaynağın tamamı büyük harfse ekran yazısı caps yedeği ayırt edici
+        # değil: o dosyalarda her satır caps ve gerçek replik de tabela
+        # sayılıyordu. Karar dosya düzeyinde verilir.
+        _ost_caps_ok = not ht.source_is_all_caps_file(blocks)
         # Dosya düzeyi ön-bağlam hint'i (özet, karakterler, sen/siz, terimler)
         _fhint = (file_hints or {}).get(fp)
         file_sys_prompt = sys_prompt + _fhint if _fhint else sys_prompt
@@ -8836,7 +8840,7 @@ def build_requests(srt_files, src, tgt, model, chunk_size=CHUNK, schema=None,
                     dur   = 2.0
                 clean = _clean_src(text)
                 item  = {"i": idx, "t": clean, "d": dur}
-                if ht.looks_like_on_screen_text(text):
+                if ht.looks_like_on_screen_text(text, _ost_caps_ok):
                     item["is_ost"] = True
                 tag = frag_tags.get(idx, "none")
                 if tag != "none":
