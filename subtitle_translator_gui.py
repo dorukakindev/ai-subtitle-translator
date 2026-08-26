@@ -3474,8 +3474,14 @@ _LINE_PULL_UP_WORDS = frozenset({
     "beraber", "birlikte", "ise", "bile", "dahi", "de", "da",
     "mi", "mı", "mu", "mü", "midir", "mıdır", "mudur", "müdür",
 })
+# 'ile' BURAYA GİRMEZ: yukarı-çekilenler listesinde de duruyordu ve tek
+# başına `_rebalance_line_break` sonsuz bir salınım üretiyordu — nerede
+# olursa olsun sözcük öbür satıra taşınıyor, bir sonraki geçiş geri
+# alıyordu. Gerçek arşivde 63 dosya/86 cue hiçbir tekrar sayısında sabit
+# noktaya ulaşmıyordu. 'ile' bir edattır ve kendinden ÖNCEKİ adı yönetir
+# ('Hippolyte ile'), yani satır başlatmaz — yeri yukarı-çekilenlerdir.
 _LINE_PUSH_DOWN_WORDS = frozenset({
-    "ve", "veya", "ya", "ile", "ki", "hem", "her", "bir", "bu", "şu",
+    "ve", "veya", "ya", "ki", "hem", "her", "bir", "bu", "şu",
     "çok", "daha", "en", "tam", "hiç", "ne", "o",
 })
 _LINE_BALANCE_MAX = 58
@@ -3494,8 +3500,25 @@ def _boundary_word_key(word: str) -> str:
     return cleaned.strip("\"'“”«»([{)]}").casefold()
 
 
-def _rebalance_line_break(text: str) -> str:
-    """İki satırlı bir cue'da sarkan edat/bağlacı doğru satıra taşır.
+def _rebalance_line_break(text: str, _max_steps: int = 4) -> str:
+    """İki satırlı bir cue'da sarkan edat/bağlaçları doğru satıra taşır.
+
+    Sabit noktaya kadar yinelenir. Tek adım taşımak yetmiyordu: 'için de'
+    gibi ARDIŞIK iki edatta ilk çağrı yalnız 'için'i alıyor, 'de' bir
+    sonraki geçişe kalıyordu — yani geçiş idempotent olmuyordu. Yineleme
+    ancak salınım kaynakları kapatıldıktan sonra güvenli; adım sayısı yine
+    de sınırlı tutulur."""
+    value = str(text or "")
+    for _ in range(max(1, _max_steps)):
+        moved = _rebalance_line_break_once(value)
+        if moved == value:
+            return value
+        value = moved
+    return value
+
+
+def _rebalance_line_break_once(text: str) -> str:
+    """Tek taşıma adımı.
 
     Satır doğal cümle sınırıyla (noktalama) bitiyorsa DOKUNULMAZ; taşıma sonucu
     satır _LINE_BALANCE_MAX'i aşacaksa taşıma yapılmaz."""
@@ -3536,7 +3559,14 @@ def _rebalance_line_break(text: str) -> str:
         tail = _boundary_word_key(first_words[-1])
         tail_is_number = bool(re.fullmatch(r"[\d.,]+", tail))
         remainder = " ".join(first_words[:-1])
+        # İtmek yeni bir 'itilecek' sözcük açığa çıkarıyorsa bu satır hiçbir
+        # tekrar sayısında durulmaz: 'Bu tam' gibi ardışık iki sözcükte biri
+        # inince öbürü sona geçiyor, sonraki geçiş onu da itiyor ve düzen iki
+        # biçim arasında sonsuza dek salınıyordu.
+        next_tail = (_boundary_word_key(first_words[-2])
+                     if len(first_words) > 1 else "")
         if ((tail in _LINE_PUSH_DOWN_WORDS or tail_is_number)
+                and next_tail not in _LINE_PUSH_DOWN_WORDS
                 and len(first_words) > 1
                 and _visible_len(remainder) > 1
                 and _visible_len(f"{first_words[-1]} {second}") <= _LINE_BALANCE_MAX):
@@ -3595,7 +3625,28 @@ def _redistribute_two_lines(text: str, threshold: int = None) -> str:
     balanced = best[0] + "\n" + best[1]
     candidate = _rebalance_line_break(balanced)
     if any(_visible_len(line) > limit for line in candidate.split("\n")):
-        return balanced  # dengeleme sınırı bozuyorsa genişliği koruyan dağılım kazanır
+        # Dengeleme sınırı bozuyor. Eskiden burada dengelenmemiş `balanced`
+        # döndürülüyordu — ama o biçimi bir sonraki geçiş hemen değiştiriyor,
+        # yani sabit nokta değil: iki yordam sonsuza dek birbirinin işini
+        # bozuyordu. Bunun yerine dengelemenin ZATEN dokunmayacağı kesimler
+        # arasından en dengelisi seçilir; sonuç tanımı gereği kararlıdır.
+        stable, stable_width = None, None
+        for cut, char in enumerate(flattened):
+            if char != " " or _position_is_inside_tag(cut, spans):
+                continue
+            left = flattened[:cut].rstrip()
+            right = flattened[cut + 1:].lstrip()
+            if not left or not right:
+                continue
+            width = max(_visible_len(left), _visible_len(right))
+            if width > limit:
+                continue
+            option = left + "\n" + right
+            if _rebalance_line_break(option) != option:
+                continue
+            if stable_width is None or width < stable_width:
+                stable, stable_width = option, width
+        return stable if stable is not None else balanced
     return candidate
 
 def apply_line_breaks(blocks: list) -> list:
