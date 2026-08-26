@@ -37768,6 +37768,13 @@ class App(ctk.CTk):
                 self._block_cache[fp] = blocks
                 valid_files.append(fp)
                 source_hashes[fp] = after_hash
+                # Hangi dilden çevrildiği log'da yazmıyordu; teşhis sırasında
+                # dosya ADINA bakmak zorunda kalınıyor ve addaki dil etiketi
+                # otorite değil. Hibrit akışlarda yazılıyordu, düz senkron ve
+                # batch akışında eksikti.
+                self._log(
+                    f"[{Path(fp).name}] Kaynak dil: "
+                    + App._source_language_log_text(self, fp), "info")
         if not valid_files:
             if source_drift_files:
                 self._save_quality_report(
