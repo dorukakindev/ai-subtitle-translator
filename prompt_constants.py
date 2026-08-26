@@ -139,6 +139,11 @@ JSON_INSTRUCTION = (
     "  frag='mid'   \u2014 this subtitle is the middle of a multi-line sentence\n"
     "  frag='end'   \u2014 this subtitle closes a multi-line sentence\n"
     "  (no frag key = standalone complete sentence)\n"
+    # Bu alan her parca cue'da GONDERILIYORDU ama hicbir promptta
+    # aciklanmiyordu: model 'frag_group' degerini gorup onu
+    # 'sentence_groups' kaydiyla kendi eslestirmek zorunda kaliyordu.
+    "  'frag_group' \u2014 the id of the 'sentence_groups' entry this cue belongs to; "
+    "cues sharing one frag_group are ONE source sentence.\n"
     "FRAGMENT RULES:\n"
     "  - If a 'sentence_groups' entry is present, first reconstruct that source sentence from the listed tr item ids, "
     "then distribute the Turkish naturally back across those same item ids.\n"
