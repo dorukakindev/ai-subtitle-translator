@@ -26709,6 +26709,8 @@ class App(ctk.CTk):
             return
         if not running:
             _release_translation_run_owner()
+            # Koşu başına bir kez yazılan bilgilendirmeler yeni koşuda tekrarlansın.
+            self._tm_read_off_logged = False
         s = "disabled" if (running or getattr(self, "_folder_scan_busy", False)) else "normal"
         self.start_btn.configure(state=s)
         test_btn = getattr(self, "test_btn", None)
@@ -38939,6 +38941,20 @@ class App(ctk.CTk):
                 self._get_locked_terms_dict(filepath, tgt),
                 self._tm_canonical_context(filepath, tgt, _analysis_fp),
             )
+            # Zincirleme bağlam açıkken her chunk'ın promptu ÖNCEKİ çevirilere
+            # bağlıdır; önbellekten gelen hazır çeviri o zinciri yansıtmaz, bu
+            # yüzden TM okuması bilinçli olarak kapatılır. Ama rapordaki
+            # 'tm_hits: 0' satırı bunu söylemiyordu: yarım milyon satırlık bir
+            # bellek dururken sıfır isabet, bellek bozukmuş gibi okunuyor.
+            _tm_read_enabled = not App._run_setting(
+                self, "chain_ctx", "chain_ctx_var", True)
+            if not _tm_read_enabled and not getattr(
+                    self, "_tm_read_off_logged", False):
+                self._tm_read_off_logged = True
+                self._log(
+                    "Çeviri Belleği okuması kapalı: Zincirleme Bağlam açık "
+                    "(önbellekteki çeviri zinciri yansıtmaz). Kayıt sürüyor; "
+                    "raporda TM isabeti 0 görünecek.", "info")
             batch_reqs, fmap = ht.build_batch_requests(cues, system_prompt, model,
                                                         chunk_size=self._chunk_size, glossary=_locked_terms,
                                                         scene_emotions=scene_emotions,
@@ -38953,8 +38969,7 @@ class App(ctk.CTk):
                                                          scene_gap_sec=float(self._snap_get(
                                                              "scene_gap_seconds", self._scene_gap_seconds)),
                                                          temperature=self._temperature,
-                                                         use_tm_context=not App._run_setting(
-                                                             self, "chain_ctx", "chain_ctx_var", True),
+                                                         use_tm_context=_tm_read_enabled,
                                                          context_fingerprint=_tm_fingerprint)
             total     = len(batch_reqs)
             completed = [0]
