@@ -11975,6 +11975,19 @@ def _has_question_main_content_drift(source_text: str, original_text: str,
     return not _share_stem(old_tokens[0], new_tokens[0])
 
 
+# Turkcenin EN SIK fiilleri iki harflidir ve desenler uc harflik govde
+# istedigi icin bu ailenin tamami gorunmezdi: 'ediyorum' -> 'ediyor',
+# 'olacagim' -> 'olacak', 'diyorum' -> 'diyor' kisi kaymasi yakalanmiyordu.
+# 'et-' ayrica butun birlesik fiil ailesini tasir (tesekkur etmek, kabul
+# etmek, devam etmek). Esigi toptan ikiye indirmek sahte imza uretir
+# ('kadin' -> 'ka'+'di'+'n'), bu yuzden yalnizca gercek iki harfli
+# fiil kokleri kabul edilir.
+_TR_SHORT_VERB_ROOTS = frozenset({
+    "et", "ed", "de", "di", "ye", "yi", "ol", "um", "uy", "ko", "ku",
+    "gi", "gid", "ver", "var", "yap",
+})
+
+
 def _turkish_person_signature(token: str) -> tuple[str, str] | None:
     """Return a conservative finite-verb stem/person signature for common forms."""
     word = _polish_norm(token)
@@ -11993,6 +12006,12 @@ def _turkish_person_signature(token: str) -> tuple[str, str] | None:
     for pattern, signature in patterns:
         match = re.match(pattern, word)
         if match:
+            return match.group(1), signature
+    # Uc harf sarti kisa fiil koklerini eliyordu; yalniz onlar icin
+    # ayni desenler iki harflik govdeyle bir kez daha denenir.
+    for pattern, signature in patterns:
+        match = re.match(pattern.replace("(.{3,}?)", "(.{2,}?)"), word)
+        if match and match.group(1) in _TR_SHORT_VERB_ROOTS:
             return match.group(1), signature
     return None
 
