@@ -6502,29 +6502,13 @@ def _delivery_duplicate_count(blocks, source_cues) -> int:
 
 
 def _source_caps_heuristic_allowed(texts, threshold: float = 0.60) -> bool:
-    """Yapısal 'tamamı büyük harf = SDH etiketi' sinyali bu dosyada kullanılabilir mi?
+    """Bkz. `sdh_cleaner.caps_heuristic_allowed` — karar TEK yerde verilir.
 
-    ABD closed-caption kaynakları bazen BAŞTAN SONA büyük harfle yazılır; orada bu
-    sinyal her cue'yu etiket sanıp dosyayı silerdi. Büyük harfli cue oranı eşiği
-    aşıyorsa heuristik devre dışı bırakılır.
-
-    Biçim etiketi harf sayılmaz: `<i>FOR</i> A LONG TIME` içindeki `<i>`
-    küçük bir 'i' getirdiği için cue karışık harfli görünüyor, tamamı büyük
-    harfle yazılmış bir dosya eşiğin altında kalıyor ve kapı — tam da
-    kapatması gereken yerde — açık kalıyordu."""
-    total = 0
-    caps = 0
-    for text in texts:
-        value = _ANY_MARKUP_RE.sub("", str(text or "")).strip()
-        letters = [char for char in value if char.isalpha()]
-        if len(letters) < 4:
-            continue
-        total += 1
-        if all(char.isupper() for char in letters):
-            caps += 1
-    if total < 8:
-        return False
-    return (caps / total) <= threshold
+    Bu sarmalayici geriye donuk cagri noktalari icin duruyor; mantigin
+    kopyasi burada tutulunca cumle gruplamasindaki ikiziyle arada kalan
+    dosyalarda ters karar veriyordu."""
+    import sdh_cleaner
+    return sdh_cleaner.caps_heuristic_allowed(texts, threshold=threshold)
 
 
 def _delivery_removable_source_ids(source_cues,
@@ -8695,7 +8679,9 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
     # ve cümle grubunu keser. Bkz. hybrid_translate._tag_fragments.
     try:
         import sdh_cleaner as _sdh
-        _caps_allowed = _source_caps_heuristic_allowed(
+        # Hibrit ikizle AYNI yordam; ayrı eşikli iki kopya arada kalan
+        # dosyalarda birbirine ters karar veriyordu.
+        _caps_allowed = _sdh.caps_heuristic_allowed(
             str(b[2] or "") for b in blocks)
         _structural = {
             k for k in range(n)

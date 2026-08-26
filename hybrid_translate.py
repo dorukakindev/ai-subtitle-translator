@@ -527,7 +527,13 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
     # de gidiyordu. Konuşmacı ayırıcısı gibi yapısal sınır sayılır.
     try:
         import sdh_cleaner as _sdh
-        _caps_allowed = not source_is_all_caps_file(cues)
+        # Kapıyı ortak yordam verir. Burada `not source_is_all_caps_file(...)`
+        # kullanmak GUI ikiziyle TERS karar üretiyordu: iki yordam da "caps
+        # sinyaline güvenilir mi" sorusuna yanıt ama eşikleri farklı (0.80'e
+        # karşı 0.60) ve birbirinin tümleyeni değiller; arada kalan bir
+        # dosyada (%78,3) ikizler 66 cue'da ayrışıyordu.
+        _caps_allowed = _sdh.caps_heuristic_allowed(
+            str(getattr(c, "text", "") or "") for c in cues)
         _structural = {
             k for k in range(n)
             if _sdh.is_structural_sdh_cue(

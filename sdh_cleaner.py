@@ -1882,3 +1882,31 @@ def is_structural_sdh_cue(text, allow_caps_heuristic: bool = True) -> bool:
     if _STRUCTURAL_BRACKETS_RE.match(flat) or _STRUCTURAL_NOTES_RE.match(flat):
         return True
     return bool(src_is_sfx_only(text, allow_caps_heuristic=allow_caps_heuristic))
+
+
+def caps_heuristic_allowed(texts, threshold: float = 0.60) -> bool:
+    """Bu dosyada 'tamamı büyük harf = SDH etiketi' sinyaline güvenilir mi?
+
+    ABD kapalı-altyazı kaynakları baştan sona büyük harfle yazılır; orada
+    caps hiçbir şeyi ayırt etmez ve her replik etiket sanılır. Karar dosya
+    düzeyinde bir kez verilir ve etiket temizliği, ekran yazısı sezgisi ve
+    cümle gruplaması AYNI yanıtı kullanmalıdır — üç yerde ayrı eşik olunca
+    aradaki dosyalarda birbirine ters karar veriyorlardı (ölçülen bir vaka
+    %78,3 oranla tam iki eşiğin arasına düşüyordu).
+
+    Biçim etiketi harf sayılmaz: `<i>` bir küçük 'i' getirip tamamı büyük
+    harfli bir cue'yu karışık harfli gösteriyordu.
+    """
+    total = 0
+    caps = 0
+    for text in texts:
+        value = _STRUCTURAL_MARKUP_RE.sub("", str(text or "")).strip()
+        letters = [char for char in value if char.isalpha()]
+        if len(letters) < 4:
+            continue
+        total += 1
+        if all(char.isupper() for char in letters):
+            caps += 1
+    if total < 8:
+        return False
+    return (caps / total) <= threshold
