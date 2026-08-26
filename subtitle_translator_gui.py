@@ -7070,7 +7070,7 @@ def _delivery_token_keeps_upper(stem: str, source_tokens=()) -> bool:
     return not (set(stem) & _TR_UPPER_VOWELS)
 
 
-def _lower_stem_by_origin(stem: str, source_tokens):
+def _lower_stem_by_origin(stem: str, source_tokens, locked_casing=None):
     """Gövdeyi PARÇA PARÇA kendi diline göre küçültür; hiçbiri kaynaktan
     gelmiyorsa None döner (çağıran Türkçe kuralını uygular).
 
@@ -7086,7 +7086,10 @@ def _lower_stem_by_origin(stem: str, source_tokens):
     out = []
     for part in parts:
         if _token_comes_from_source(part, source_tokens):
-            out.append(part.lower())
+            # Kilitli terim sozlugu dogru yazimi biliyorsa onu kullan;
+            # yoksa kaynak dilinin kucuk harf kurali uygulanir.
+            known = (locked_casing or {}).get(part.casefold())
+            out.append(known if known else part.lower())
         else:
             # Türkçe parça, belirsiz I çözümünden geçer: model 'GEZİNTİ'yi
             # 'GEZINTI' diye yazdığında düz çeviri 'gezıntı' üretiyordu.
@@ -7113,7 +7116,33 @@ def _token_comes_from_source(stem: str, source_tokens) -> bool:
     return False
 
 
-def _tr_sentence_case(text: str, source_text: str = "") -> str:
+def _locked_term_word_casing(locked_terms) -> dict:
+    """Kilitli terimlerin HEDEF yazimindan {kucuk_harf: dogru_yazim} haritasi.
+
+    Kaynagi bastan sona BUYUK HARF olan dosyalarda hangi sozcugun ozel ad
+    oldugu metinden anlasilmaz: 'THE BRAIN WITH DAVID EAGLEMAN' icinde hepsi
+    ayni gorunur. Cumle duzenine indirirken kaynaktan gelen sozcuk kucuk
+    harfe iniyor ve 'david eagleman' cikiyordu. Dosyanin kilitli terim
+    sozlugu dogru yazimi zaten tasiyor; tek dogru bilgi kaynagi odur.
+    """
+    casing = {}
+    for source_term, target_term in (locked_terms or {}).items():
+        for value in (target_term, source_term):
+            text = str(value or "").strip()
+            if not text:
+                continue
+            for word in re.findall(r"[^\W\d_]+", text, re.UNICODE):
+                if not word[:1].isupper():
+                    continue
+                # Kaynak terim tamami buyuk harfse yazim bilgisi tasimaz.
+                if word.isupper() and len(word) > 1 and value is source_term:
+                    continue
+                casing.setdefault(word.casefold(), word)
+    return casing
+
+
+def _tr_sentence_case(text: str, source_text: str = "",
+                      locked_casing: dict | None = None) -> str:
     """Tamamı büyük harfle yazılmış Türkçe metni normal cümle düzenine indirir.
 
     Türkçe'ye duyarlı: I→ı, İ→i. Kısaltmalar (_DELIVERY_KEEP_UPPER), rakam içeren
@@ -7158,7 +7187,8 @@ def _tr_sentence_case(text: str, source_text: str = "") -> str:
         # bozuk token diye işaretliyor (The Cruise, 11 cue). Ölçüt sözcüğün
         # kaynakta geçmesi: 'KIZ' gibi gerçek Türkçe sözcükler kaynakta
         # bulunmaz ve Türkçe kuralıyla küçültülmeyi sürdürür.
-        lowered_stem = _lower_stem_by_origin(stem, source_tokens)
+        lowered_stem = _lower_stem_by_origin(
+            stem, source_tokens, locked_casing)
         if lowered_stem is not None:
             if not sep:
                 return token.replace(core, lowered_stem)
@@ -7209,7 +7239,8 @@ def _normalize_delivery_typography(text: str) -> str:
     return value
 
 
-def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int]:
+def _normalize_all_caps_delivery(blocks: list, src_map: dict,
+                                 locked_terms=None) -> tuple[list, int]:
     """Kaynağı BAŞTAN SONA büyük harf olan dosyalarda çeviriyi cümle düzenine indirir.
 
     ABD closed-caption kaynakları büyük harfle yazılır; model bunu vurgu sanıp
@@ -7224,6 +7255,7 @@ def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int
         return list(blocks or []), 0
     changed = 0
     out = []
+    locked_casing = _locked_term_word_casing(locked_terms)
     for idx, ts, text in blocks:
         value = str(text or "")
         letters = [char for char in value if char.isalpha()]
@@ -7232,7 +7264,7 @@ def _normalize_all_caps_delivery(blocks: list, src_map: dict) -> tuple[list, int
         if (len(letters) >= 4 and all(char.isupper() for char in letters)
                 and len(source_letters) >= 4
                 and all(char.isupper() for char in source_letters)):
-            fixed = _tr_sentence_case(value, source_text)
+            fixed = _tr_sentence_case(value, source_text, locked_casing)
             if fixed != value:
                 changed += 1
                 value = fixed
@@ -7303,7 +7335,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         if is_turkish:
             # Cümle düzenine indirme Türkçe harf kurallarına (I/İ) bağlı.
             blocks, caps_normalized = _normalize_all_caps_delivery(
-                blocks, src_map)
+                blocks, src_map, locked_terms)
             if caps_normalized and log_fn:
                 log_fn(
                     f"Teslim: {caps_normalized} satır BÜYÜK HARF kaynaktan normal "
