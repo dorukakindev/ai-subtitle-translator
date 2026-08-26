@@ -197,3 +197,39 @@ class FormatCoverageLossIsCountedTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheFormatCoverageCounterIsActuallyReportedTest(unittest.TestCase):
+    """Sayaç hesaplanıp hiçbir yerde kullanılmıyordu: ne rapor alanları
+    listesinde vardı ne log'da. Kendi yorumu "sınıf tekrarlarsa görünür
+    olsun diye var" diyordu ama görünmüyordu.
+
+    278 gerçek çiftte ölçüldü: bağlandığında 29 dosyada 574 bulgu görünür
+    hâle geliyor (en çoğu A History of Art S01E02'de 225 cue).
+    """
+
+    TS = "00:00:01,000 --> 00:00:03,000"
+
+    def test_the_count_is_a_number_and_the_ids_are_kept(self):
+        blocks = [("1", self.TS, "Burası BBC."),
+                  ("2", self.TS, "<i>İtalik kaldı.</i>")]
+        cues = [("1", self.TS, "<i>This is the BBC.</i>"),
+                ("2", self.TS, "<i>Italic kept.</i>")]
+        scan = g._scan_delivery_blocks(blocks, cues)
+        self.assertEqual(scan["format_coverage_lost"], 1)
+        self.assertEqual(scan["format_coverage_lost_ids"], ["1"])
+
+    def test_it_appears_in_the_report_lines(self):
+        blocks = [("1", self.TS, "Burası BBC.")]
+        cues = [("1", self.TS, "<i>This is the BBC.</i>")]
+        scan = g._scan_delivery_blocks(blocks, cues)
+        text = "\n".join(g.delivery_scan_report_lines(scan))
+        self.assertIn("Kaynaktaki biçim etiketi kaybolmuş", text)
+
+    def test_a_clean_file_reports_nothing(self):
+        blocks = [("1", self.TS, "<i>Burası BBC.</i>")]
+        cues = [("1", self.TS, "<i>This is the BBC.</i>")]
+        scan = g._scan_delivery_blocks(blocks, cues)
+        self.assertEqual(scan["format_coverage_lost"], 0)
+        text = "\n".join(g.delivery_scan_report_lines(scan))
+        self.assertNotIn("Kaynaktaki biçim etiketi", text)

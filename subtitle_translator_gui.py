@@ -6336,7 +6336,12 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     # (65 dosya, ağırlıkla <font>). Mevcut kod zinciri ölçülünce etiketleri
     # DOĞRU geri koyuyor ve kayıp yeniden üretilemedi; bu yüzden otomatik
     # düzeltme eklenmedi. Sayaç, sınıf tekrarlarsa görünür olsun diye var.
-    stats["format_coverage_lost"] = _format_coverage_lost_ids(blocks, src_map)
+    # Sayaç hesaplanıp HİÇBİR YERDE kullanılmıyordu: ne rapor alanları
+    # listesinde vardı ne log'da. Yorumu "sınıf tekrarlarsa görünür olsun
+    # diye var" diyor; görünmüyordu.
+    _format_lost_ids = _format_coverage_lost_ids(blocks, src_map)
+    stats["format_coverage_lost_ids"] = _format_lost_ids
+    stats["format_coverage_lost"] = len(_format_lost_ids)
     stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     cue_fill = _cue_fill_imbalances(blocks, src_map)
@@ -18757,6 +18762,7 @@ _DELIVERY_SCAN_REPORT_FIELDS = (
     ("missing_predicate", "Yüklemsiz biten cue"),
     ("source_residue", "Türkçe ekli kaynak kalıntısı"),
     ("syllable_typo", "Hece tekrarı yazım hatası"),
+    ("format_coverage_lost", "Kaynaktaki biçim etiketi kaybolmuş"),
 )
 
 
