@@ -4434,6 +4434,15 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"(?:^|\n)\s*(?:[\w-]+\.)+(?:com|net|org|info|tv|io|ru|pt|it)"
     r"(?:/\S*)?\s*(?:$|\n)|"
     r"\bcopyright\s*(?:(?:©|\(c\))\s*)?\d{4}\b|"
+    # 'copyright' sözcüğü olmadan yazılmış künyeler kapıdan geçiyordu:
+    # 'Subtitles ©almoner, 2012' ve '© 2016 Chain Production Ltd.' iki gerçek
+    # teslimde temizlenmeden kaldı ve denetimden 'ok' aldı.
+    # Altyazı hazırlayanının künyesi — 'Subtitles by' dalına girmeyen biçim:
+    r"\b(?:subtitles?|altyaz[ıi]lar?)\s*(?:©|\(c\))\s*\S|"
+    # Cue'nun TAMAMI telif künyesi: © + yıl + ad. Cümle içinde geçen telif
+    # sözünü yakalamasın diye satır başı/sonu şartı var.
+    r"^\s*(?:©|\(c\))\s*(?:19|20)\d{2}\s+[^\n]{2,60}?\s*$|"
+    r"^\s*[^\n]{2,60}?\s*(?:©|\(c\))\s*(?:19|20)\d{2}\s*$|"
     r"\brevised\s+(?:\w+\s+)?subtitles?\s*\n\s*by\s+\S+|"
     r"\bsubtitles?\s+created\s+(?:using|by)\b|"
     r"^\s*e-?mail\s*:\s*\S+@\S+\s*$|"
@@ -4686,10 +4695,18 @@ _DELIVERY_BARE_ENGLISH_SDH_RE = re.compile(
     r"SPEAKING\s+(?:IN\s+)?GEORGIAN|COCKEREL\s+CROWS?|"
     r"GREETINGS\s+IN\s+(?:A\s+)?LOCAL\s+LANGUAGE|"
     r"GREETINGS\s+IN\s+[A-Z]+|"
-    r"(?:HE|SHE|THEY|MAN|WOMAN|[A-Z][A-Z'’-]*)\s+(?:"
+    # BÜYÜK HARF ŞARTI: bu dal 'herhangi bir ad + konuşma fiili' kadar geniş
+    # ve desenin tamamı re.IGNORECASE ile derlendiği için sıradan cümleyi de
+    # yutuyordu — 'You speak Portuguese.' gerçek diyaloğu SDH sanılıp teslimden
+    # siliniyor, teslim denetimi de kaybı 'beklenen silme' sayıyordu.
+    # Gerçek etiket her zaman BÜYÜK HARF yazılır ('HE SPEAKS KOREAN'), bu
+    # yüzden yalnız bu dalda büyük/küçük harf duyarlılığı geri açılır.
+    # Diğer dallar (U+H+ gibi) duyarsız kalır: 250 çıplak CAPS etiketi ve
+    # 8 'Uh...' tereddüdü aynen silinmeye devam eder.
+    r"(?-i:(?:HE|SHE|THEY|MAN|WOMAN|[A-Z][A-Z'’-]*)\s+(?:"
     r"TRANSLATES|LAUGHS|MUMBLES|ASKS\s+A\s+QUESTION|MAKE\s+TOASTS|"
     r"STARTS\s+MACHINERY|SPEAKS?(?:(?:\s+IN)?\s+[A-Z]+)?|"
-    r"SHOUTS\s+IN\s+[A-Z]+)|"
+    r"SHOUTS\s+IN\s+[A-Z]+))|"
     r"CONGREGATION\s+SINGS|STATION\s+ANNOUNCEMENT|"
     r"MUSICAL\s+INTRO\s+PLAYS|MOBILE\s+PHONES\s+RING|"
     r"(?:A\s+)?(?:BELL\s+PEALS|DOG\s+YAPS)|"
