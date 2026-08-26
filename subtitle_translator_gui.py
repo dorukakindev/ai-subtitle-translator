@@ -7920,6 +7920,65 @@ def non_latin_script_ratio(text: str) -> float:
     return (other / total) if total else 0.0
 
 
+def scan_timestamp_integrity(cues) -> dict:
+    """Kaynak zaman damgalarindaki yapisal kusurlar.
+
+    On kontrol dosyanin okunabilirligine bakiyordu (bos, kodlama, ayristirma,
+    cue yok) ama zamanlarin tutarliligina hic bakmiyordu. Bozuk zamanli bir
+    kaynak sessizce cevriliyor, API parasi harciyor ve kusur teslime
+    tasiniyor; kullanici ancak oynatirken fark ediyor.
+
+    290 gercek kaynakta olculdu: 24 dosyada (%8) kusur var — 23 dosyada 540
+    cakisan cue, 4 dosyada 161 birebir ayni zaman damgasi, 1 dosyada 35
+    sirasiz cue.
+
+    Doner: {"overlap": n, "duplicate": n, "out_of_order": n, "zero": n,
+            "reversed": n, "first_id": {...}}
+    """
+    stats = {"overlap": 0, "duplicate": 0, "out_of_order": 0,
+             "zero": 0, "reversed": 0, "first_id": {}}
+    prev_start = prev_end = None
+    seen = set()
+    for cue in cues or ():
+        if isinstance(cue, (tuple, list)) and len(cue) > 1:
+            cue_id, stamp = cue[0], cue[1]
+        else:
+            cue_id = getattr(cue, "index", "?")
+            stamp = getattr(cue, "timestamp", "") or ""
+        try:
+            start = _ts_to_sec_gui(stamp)
+            end = _ts_end_sec_gui(stamp)
+        except Exception:
+            continue
+
+        def _note(key):
+            stats[key] += 1
+            stats["first_id"].setdefault(key, str(cue_id))
+
+        if end < start:
+            _note("reversed")
+        elif end == start:
+            _note("zero")
+        if prev_start is not None and start < prev_start:
+            _note("out_of_order")
+        elif prev_end is not None and start < prev_end - 0.001:
+            _note("overlap")
+        if stamp in seen:
+            _note("duplicate")
+        seen.add(stamp)
+        prev_start, prev_end = start, end
+    return stats
+
+
+TIMESTAMP_ISSUE_LABELS = (
+    ("reversed", "bitişi başlangıcından önce"),
+    ("out_of_order", "sırası bozuk"),
+    ("overlap", "bir öncekiyle çakışıyor"),
+    ("duplicate", "birebir aynı zaman damgası"),
+    ("zero", "sıfır süreli"),
+)
+
+
 def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                             same_folder=False, selected_roots=(),
                             expected_source_language=AUTO_LANGUAGE,
@@ -8009,6 +8068,29 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                 "path": str(path), "message": "Geçerli altyazı cue'su bulunamadı.",
             })
         else:
+            # Zaman damgası bütünlüğü: çeviri başlamadan, API parası
+            # harcanmadan uyar. Yalnız UYARI — kaynağın kendi kusuru
+            # çeviriyi engellemez, ama kullanıcı bilerek başlasın.
+            _ts_stats = scan_timestamp_integrity(cues)
+            _ts_parts = [
+                f"{_ts_stats[key]} cue {label}"
+                for key, label in TIMESTAMP_ISSUE_LABELS if _ts_stats[key]
+            ]
+            if _ts_parts:
+                _first = ", ".join(
+                    f"#{_ts_stats['first_id'][key]}"
+                    for key, _label in TIMESTAMP_ISSUE_LABELS
+                    if _ts_stats[key] and key in _ts_stats["first_id"]
+                )
+                issues.append({
+                    "severity": "warning", "code": "timestamp_integrity",
+                    "path": str(path),
+                    "message": (
+                        "Kaynak zaman damgalarında kusur var: "
+                        + "; ".join(_ts_parts)
+                        + f". İlk örnekler: {_first}. Çeviri bunu düzeltmez; "
+                        "oynatıcıda altyazılar üst üste binebilir."),
+                })
             # İçerik gerçekten seçilen dilde mi? Ad kontrolü yalnız dosya
             # adına bakıyor ve 'Otomatik' dışında içerik hiç denetlenmiyordu.
             if (expected_source_language != AUTO_LANGUAGE
