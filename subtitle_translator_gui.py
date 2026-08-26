@@ -14536,7 +14536,17 @@ def scan_translation_quality(fp: str, blocks: list, log_fn=None,
                 "alignment", all_ids,
                 f"  🚨 {fname}: OLASI CUE HİZALAMA/KAYMA SORUNU ({', '.join(types)}) "
                 f"— çeviri satırları yanlış cue'ya kaymış olabilir. Şu cue'ları "
-                f"kaynakla ELLE KARŞILAŞTIRIN: {_fmt_align_ranges(all_ids)}", "err")
+                f"kaynakla ELLE KARŞILAŞTIRIN: {_fmt_align_ranges(all_ids)} "
+                # Numaralar TESLİM dosyasınındır. Teslime baş/orta/son imza
+                # cue'su ekleniyor ve kimlikler sıralı kalsın diye sonraki
+                # cue'lar bir ileri kayıyor (bu tasarım
+                # test_upload_ready_finalization ile kilitli). 278 gerçek
+                # çiftte 206.882 cue ölçüldü: 275 dosyada 103.845 cue'nun
+                # (%50,2) numarası kaynaktakiyle FARKLI. Kullanıcıyı
+                # kaynağa yönlendiren mesaj bunu söylemek zorunda.
+                "(numaralar teslim dosyasınındır; kaynakta karşılığını "
+                "ZAMAN DAMGASINDAN bulun — teslime eklenen imza cue'ları "
+                "numaraları kaydırır)", "err")
 
     # Bozuk/yabancı token taraması (deterministik, run_validators'la aynı kurallar) —
     # critic API'ye gitmeyen sync akışında veya critic'in kaçırdığı satırlarda son
