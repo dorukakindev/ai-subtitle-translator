@@ -13535,6 +13535,134 @@ def _mixed_rendering_is_misalignment(term, renderings, term_keys,
     return False
 
 
+# Yerleşik Türkçe karşılığı olan İngilizce özel adlar. Türkçesi AYNI olan
+# adlar (Sparta, Stockholm, Libya) BURAYA GİRMEZ — ilk ölçümde girmişlerdi
+# ve 70 sahte bulgu ürettiler.
+_EXONYM_TR = {
+    "Troy": "Truva", "Trojan": "Truva", "Greeks": "Yunan",
+    "Greek": "Yunan", "Greece": "Yunanistan",
+    "Mycenaean": "Miken", "Mycenaeans": "Miken",
+    "Babylonians": "Babil", "Babylonian": "Babil", "Babylon": "Babil",
+    "Aegean": "Ege", "Crete": "Girit", "Cretan": "Girit",
+    "Anatolia": "Anadolu", "Anatolian": "Anadolu",
+    "Ireland": "İrlanda", "Irish": "İrlanda",
+    "Egyptians": "Mısır", "Egyptian": "Mısır", "Egypt": "Mısır",
+    "Hittites": "Hitit", "Hittite": "Hitit",
+    "Assyria": "Asur", "Assyrians": "Asur", "Assyrian": "Asur",
+    "Persians": "Pers", "Persian": "Pers", "Persia": "Pers",
+    "Romans": "Romalı", "Roman": "Romalı", "Rome": "Roma",
+    "Athens": "Atina", "Constantinople": "Konstantinopolis",
+    "Byzantium": "Bizans", "Byzantines": "Bizans", "Byzantine": "Bizans",
+    "Mesopotamia": "Mezopotamya", "Phoenicians": "Fenike",
+    "Phoenician": "Fenike", "Carthage": "Kartaca",
+    "Macedonia": "Makedonya", "Macedonian": "Makedon",
+    "Thrace": "Trakya", "Cyprus": "Kıbrıs", "Damascus": "Şam",
+    "Jerusalem": "Kudüs", "Vienna": "Viyana", "Venice": "Venedik",
+    "Genoa": "Cenova", "Florence": "Floransa", "Naples": "Napoli",
+    "Milan": "Milano", "Munich": "Münih", "Cologne": "Köln",
+    "Prague": "Prag", "Warsaw": "Varşova", "Moscow": "Moskova",
+    "Wales": "Galler", "Welsh": "Galli", "Scotland": "İskoçya",
+    "Scottish": "İskoç", "England": "İngiltere", "Britain": "Britanya",
+    "Netherlands": "Hollanda", "Switzerland": "İsviçre",
+    "Sweden": "İsveç", "Norway": "Norveç", "Denmark": "Danimarka",
+    "Poland": "Polonya", "Hungary": "Macaristan", "Austria": "Avusturya",
+    "Bavaria": "Bavyera", "Prussia": "Prusya", "Spain": "İspanya",
+    "Portugal": "Portekiz", "Italy": "İtalya", "Sicily": "Sicilya",
+    "Algeria": "Cezayir", "Morocco": "Fas", "Tunisia": "Tunus",
+    "Syria": "Suriye", "Lebanon": "Lübnan", "India": "Hindistan",
+    "China": "Çin", "Japan": "Japonya",
+}
+_EXONYM_EN_RE = {
+    name: re.compile(r"(?<![\w'’])%s(?![a-zA-Z])" % re.escape(name))
+    for name in _EXONYM_TR
+}
+_EXONYM_TR_RE = {
+    name: re.compile(r"(?<![\w])%s[a-zçğıöşü'’]*" % re.escape(turkish),
+                     re.IGNORECASE)
+    for name, turkish in _EXONYM_TR.items()
+}
+_EXONYM_CAPWORD_RE = re.compile(r"[A-ZÇĞİÖŞÜ][\w'’-]*")
+_EXONYM_ROMAN_RE = re.compile(r"^[IVXLC]+[a-z]?$")
+_EXONYM_NAME_HEADS = frozenset({"new", "little", "anglo", "old", "great"})
+
+
+def _exonym_neighbour_is_name(token: str) -> bool:
+    """Bitişik büyük harfli sözcük gerçek bir AD sözcüğü mü.
+
+    'Egyptian Sonics' (kitap adı) ve 'New England' (ABD bölgesi) yanlış
+    alarmlarını eleyen sinyal bu. Ama 'Troy VI' / 'Troy VIIa' uzun bir ad
+    değil, roma rakamlı nitelemedir — ayrılmazsa gerçek bulgular düşüyor.
+    """
+    if not token or not _EXONYM_CAPWORD_RE.match(token):
+        return False
+    if _EXONYM_ROMAN_RE.match(token):
+        return False
+    return len(token) >= 3 and any(ch.islower() for ch in token)
+
+
+def _exonym_is_part_of_longer_name(text: str, start: int, end: int) -> bool:
+    """Egzonim daha uzun bir özel adın parçası mı."""
+    if text[end:end + 1] == " ":
+        after = _EXONYM_CAPWORD_RE.match(text[end:].lstrip())
+        if after and _exonym_neighbour_is_name(after.group(0)):
+            return True
+    before = text[:start].rstrip()
+    prev = re.search(r"([A-Za-zÀ-ɏ'’-]+)\s$", text[:start])
+    if prev and _exonym_neighbour_is_name(prev.group(1)):
+        head = before[:len(before) - len(prev.group(1))].strip()
+        if head and not head.endswith((".", "!", "?", ":", "-", "—", "–", '"')):
+            return True
+        if prev.group(1).casefold() in _EXONYM_NAME_HEADS:
+            return True
+    return False
+
+
+def detect_untranslated_exonyms(blocks: list, src_map: dict,
+                                min_side: int = 2) -> list:
+    """Aynı dosya bir yeri hem 'Troy' hem 'Truva' diye yazıyor mu.
+
+    `detect_mixed_term_renderings` bunu GÖREMİYOR: kümeleyicisi hedefteki
+    biçimi kaynak sözcüğe BENZERLİĞİNDEN buluyor, dolayısıyla iki yazım da
+    kaynağa benziyorsa (Incas/İnka) çalışıyor ama doğru çeviri kaynağa hiç
+    benzemiyorsa (Troy→Truva) ikinci küme hiç kurulamıyor ve "≥2 küme"
+    koşulu sağlanmadığı için bulgu çıkmıyor. Gerçek arşivde altı Truva
+    bölümünün hepsinde `Troy` ile `Truva` yan yana duruyordu ve mevcut
+    dedektör altısında da sıfır bulgu veriyordu.
+
+    Buradaki ölçüt YOKLUĞA dayanmaz — bu yüzden 'çevrilmedi mi yoksa hiç
+    anılmadı mı' belirsizliğine düşmez: her iki biçim de teslim metninde
+    AÇIKÇA en az `min_side` kez görünmelidir.
+
+    Yalnız rapor eder; otomatik düzeltme yoktur.
+    """
+    rows = list(blocks or [])
+    if not rows:
+        return []
+    body = _ANY_MARKUP_RE.sub("", " ".join(str(text or "") for _i, _t, text in rows))
+    if not body:
+        return []
+    source_body = " ".join(str(text or "") for text in (src_map or {}).values())
+    findings = []
+    for name, turkish in _EXONYM_TR.items():
+        if not _EXONYM_EN_RE[name].search(source_body):
+            continue
+        leaks = 0
+        for match in _EXONYM_EN_RE[name].finditer(body):
+            if not _exonym_is_part_of_longer_name(body, match.start(), match.end()):
+                leaks += 1
+        if leaks < min_side:
+            continue
+        translated = len(_EXONYM_TR_RE[name].findall(body))
+        if translated < min_side:
+            continue
+        findings.append({
+            "term": name,
+            "turkish": turkish,
+            "renderings": {name: leaks, turkish: translated},
+        })
+    return findings
+
+
 def detect_mixed_term_renderings(blocks: list, src_map: dict) -> list:
     """Kaynakta tekrarlanan özel-isim adaylarının (ör. Incas, Ouija, Boy King)
     dosya içinde TUTARSIZ çevrildiğini (İnka* vs Incas*) tespit eder — helper-model
@@ -23366,10 +23494,17 @@ class App(ctk.CTk):
         geçişinin işidir ve o kendi anahtarıyla kapalı tutulur.
         """
         try:
-            return detect_mixed_term_renderings(
-                list(blocks or []), _src_map_from_cues(cues))
+            src_map = _src_map_from_cues(cues)
         except Exception:
             return []
+        findings = []
+        for detector in (detect_mixed_term_renderings,
+                         detect_untranslated_exonyms):
+            try:
+                findings.extend(detector(list(blocks or []), src_map))
+            except Exception:
+                continue
+        return findings
 
     def _source_language_log_text(self, filepath: str) -> str:
         """Log satırı için kaynak dil: çözülmüş değer + nereden geldiği."""
