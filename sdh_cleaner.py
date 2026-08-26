@@ -700,6 +700,37 @@ def _tr_sdh_label(content: str, bracketed_hint: bool = False) -> bool:
     return False
 
 
+_SPEECH_LABEL_RE = re.compile(
+    r"^(?:[A-Z][A-Za-z'’.-]*\s+)*"          # istege bagli konusmaci adi
+    r"(?:SPEAK(?:S|ING)?|TALK(?:S|ING)?|CONVERSE(?:S|ING)?|CHANT(?:S|ING)?|"
+    r"RECITE(?:S|ING)?|SING(?:S|ING)?|REPEAT(?:S|ING)?|MUTTER(?:S|ING)?|"
+    r"PRAY(?:S|ING)?|GREET(?:S|ING|INGS)?|ORDER(?:S|ING)?|DISCUSS(?:ES|ING)?)"
+    # 'SPEAKING OF WHICH' bir deyimdir, etiket degil: fiilden sonra 'of'
+    # gelirse eslesme reddedilir.
+    r"(?:\s+IN)?\s+(?!(?:OF)\b)\S.*$",
+    re.IGNORECASE)
+
+
+def _is_speech_activity_label(inner: str) -> bool:
+    """'<Ad> SPEAKING <dil>' kalibi — dil adi sozlukte olmasa bile etiket.
+
+    Betimleyici sozlugu GERCEK dil adlariyla calisiyor; 'SPEAKING NATIVE
+    LANGUAGE', 'SPEAKS CORNISH', 'SPEAKING IN QUECHUA' gibi genel ya da
+    listede olmayan biçimleri kaciriyordu. Bu kalip konusma FIILINE bakar,
+    dil adina degil.
+
+    Bicim (parantez + buyuk harf) TEK BASINA yetmez: '[PARIS]' ve
+    '[CHAPTER ONE]' de oyle gorunur ama konum/baslik karti olarak korunur.
+    """
+    text = str(inner or "").strip().strip(".!?,;:")
+    if not text or not text.isascii():
+        return False
+    words = re.findall(r"[A-Za-z]+", text)
+    if len(words) < 2:
+        return False
+    return bool(_SPEECH_LABEL_RE.match(text))
+
+
 def is_sdh_descriptor(content: str, bare_text: bool = False,
                       bracketed: bool = False,
                       standalone: bool = True) -> bool:
@@ -1349,6 +1380,17 @@ def src_is_sfx_only(src_text: str, allow_caps_heuristic: bool = False) -> bool:
         # işaretlenip dosyaları partial bıraktı (How We Got to Now S01E01-06).
         if (MUSIC_NOTE_RE.search(inner)
                 and not re.search(r"[^\W_]", MUSIC_NOTE_RE.sub("", inner))):
+            continue
+        # Parantez içi BAŞTAN SONA büyük harf Latin ise etiket olduğu
+        # biçiminden bellidir; sözlükte olmasına gerek yok. Betimleyici
+        # sözlüğü gerçek dil adlarıyla çalıştığı için genel ifadeleri
+        # ('SPEAKING NATIVE LANGUAGE'), 'IN' biçimini ('SPEAKING IN
+        # GEORGIAN') ve listede olmayan ses sözcüklerini ('SHEEP BAAS',
+        # 'SNAPS FINGERS') kaçırıyordu.
+        #
+        # Latin DIŞI içerik bilerek dışarıda: '[東京都庁]' gibi gerçek ekran
+        # tabelaları o yolda korunuyor (denetim 2026-08-21, madde 38).
+        if _is_speech_activity_label(inner):
             continue
         is_descriptor = is_sdh_descriptor(inner)
         is_speaker = _is_speaker_name(inner, colon_follows=colon_follows)
