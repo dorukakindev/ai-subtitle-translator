@@ -1855,3 +1855,30 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
         if lines:
             result.append((idx, ts, "\n".join(lines)))
     return result
+
+
+_STRUCTURAL_MARKUP_RE = re.compile(r"<[^>\n]+>|\{[^{}\n]*\}")
+_STRUCTURAL_BRACKETS_RE = re.compile(r"^(?:\s*[\[(][^\[\]()]*[\])]\s*)+$")
+_STRUCTURAL_NOTES_RE = re.compile(r"^[\s\u266a\u266b\u266c\u2669]+$")
+
+
+def is_structural_sdh_cue(text, allow_caps_heuristic: bool = True) -> bool:
+    """Cue BÜTÜNÜYLE bir SDH etiketi mi — yani gramatik bir cümlenin üyesi olamaz mı?
+
+    `[Prayer]`, `[Baby crying]`, `EXPLOSION`, `♪♪` gibi cue'lar noktayla
+    kapanmadıkları için cümle parçası sanılıyor ve peşlerindeki gerçek
+    konuşmayı aynı "cümle" grubuna çekiyorlardı; model o grubu tek cümle
+    sanıp anlamı ID'ler arasında dağıtabiliyor, sonra SDH temizliği
+    etiketi silince taşınan içerik de gidiyordu.
+
+    `allow_caps_heuristic` kararını ÇAĞIRAN dosya düzeyinde verir: baştan
+    sona büyük harfle yazılmış bir kaynakta caps sinyali hiçbir şeyi ayırt
+    etmez ve gerçek replikleri etiket sanar.
+    """
+    flat = _STRUCTURAL_MARKUP_RE.sub("", str(text or ""))
+    flat = re.sub(r"\s+", " ", flat).strip()
+    if not flat:
+        return False
+    if _STRUCTURAL_BRACKETS_RE.match(flat) or _STRUCTURAL_NOTES_RE.match(flat):
+        return True
+    return bool(src_is_sfx_only(text, allow_caps_heuristic=allow_caps_heuristic))

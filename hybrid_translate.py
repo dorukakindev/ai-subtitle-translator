@@ -501,9 +501,28 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
             r"^\s*(?:[-–—]\s+|[^\W\d_][^:\n]{0,39}:\s+)",
             text, re.UNICODE))
 
+    # Bütünüyle SDH etiketi olan cue gramatik cümlenin üyesi olamaz.
+    # Nokta ile kapanmadığı için cümle AÇIYOR ve peşindeki gerçek konuşmayı
+    # aynı gruba çekiyordu; model o grubu tek cümle sanıp anlamı ID'ler
+    # arasında dağıtabiliyor, SDH temizliği etiketi silince taşınan içerik
+    # de gidiyordu. Konuşmacı ayırıcısı gibi yapısal sınır sayılır.
+    try:
+        import sdh_cleaner as _sdh
+        _caps_allowed = not source_is_all_caps_file(cues)
+        _structural = {
+            k for k in range(n)
+            if _sdh.is_structural_sdh_cue(
+                cues[k].text, allow_caps_heuristic=_caps_allowed)
+        }
+    except Exception:
+        _structural = set()
+
     i = 0
     while i < n:
-        if _closes(i) or i == n - 1:
+        if i in _structural:
+            tags[cues[i].index] = "none"
+            i += 1
+        elif _closes(i) or i == n - 1:
             tags[cues[i].index] = "none"
             i += 1
         else:
@@ -512,7 +531,8 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
             j = i + 1
             closed = False
             while j < n:
-                if _scene_break_before(j) or _speaker_break_before(j):
+                if (_scene_break_before(j) or _speaker_break_before(j)
+                        or j in _structural):
                     break
                 group.append(j)
                 if _closes(j) or j == n - 1:
@@ -6661,6 +6681,9 @@ _OST_DETECT_RE = re.compile(
 )
 
 
+_CAPS_MARKUP_RE = re.compile(r"<[^>\n]+>|\{[^{}\n]*\}")
+
+
 def source_is_all_caps_file(cues) -> bool:
     """Kaynagin TAMAMI buyuk harf mi? (kapali altyazi kaynaklari boyledir)
 
@@ -6677,7 +6700,10 @@ def source_is_all_caps_file(cues) -> bool:
                 text = cue[2]
             except Exception:
                 continue
-        letters = [ch for ch in str(text or "") if ch.isalpha()]
+        # Bicim etiketi harf sayilmaz: `<i>` bir kucuk 'i' getirip tamami
+        # buyuk harfli bir cue'yu karisik harfli gosteriyordu.
+        stripped = _CAPS_MARKUP_RE.sub("", str(text or ""))
+        letters = [ch for ch in stripped if ch.isalpha()]
         if len(letters) >= 4:
             rows.append(all(ch.isupper() for ch in letters))
     if not rows:

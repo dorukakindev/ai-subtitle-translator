@@ -6506,11 +6506,16 @@ def _source_caps_heuristic_allowed(texts, threshold: float = 0.60) -> bool:
 
     ABD closed-caption kaynakları bazen BAŞTAN SONA büyük harfle yazılır; orada bu
     sinyal her cue'yu etiket sanıp dosyayı silerdi. Büyük harfli cue oranı eşiği
-    aşıyorsa heuristik devre dışı bırakılır."""
+    aşıyorsa heuristik devre dışı bırakılır.
+
+    Biçim etiketi harf sayılmaz: `<i>FOR</i> A LONG TIME` içindeki `<i>`
+    küçük bir 'i' getirdiği için cue karışık harfli görünüyor, tamamı büyük
+    harfle yazılmış bir dosya eşiğin altında kalıyor ve kapı — tam da
+    kapatması gereken yerde — açık kalıyordu."""
     total = 0
     caps = 0
     for text in texts:
-        value = str(text or "").strip()
+        value = _ANY_MARKUP_RE.sub("", str(text or "")).strip()
         letters = [char for char in value if char.isalpha()]
         if len(letters) < 4:
             continue
@@ -8686,9 +8691,26 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
             r"^\s*(?:[-–—]\s+|[^\W\d_][^:\n]{0,39}:\s+)",
             text, re.UNICODE))
 
+    # Hibrit ikizle aynı kural: bütünüyle SDH etiketi olan cue cümle açmaz
+    # ve cümle grubunu keser. Bkz. hybrid_translate._tag_fragments.
+    try:
+        import sdh_cleaner as _sdh
+        _caps_allowed = _source_caps_heuristic_allowed(
+            str(b[2] or "") for b in blocks)
+        _structural = {
+            k for k in range(n)
+            if _sdh.is_structural_sdh_cue(
+                blocks[k][2], allow_caps_heuristic=_caps_allowed)
+        }
+    except Exception:
+        _structural = set()
+
     i = 0
     while i < n:
-        if _closes(i) or i == n - 1:
+        if i in _structural:
+            tags[blocks[i][0]] = "none"
+            i += 1
+        elif _closes(i) or i == n - 1:
             tags[blocks[i][0]] = "none"
             i += 1
         else:
@@ -8696,7 +8718,8 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
             j = i + 1
             closed = False
             while j < n:
-                if _scene_break_before(j) or _speaker_break_before(j):
+                if (_scene_break_before(j) or _speaker_break_before(j)
+                        or j in _structural):
                     break
                 group.append(j)
                 if _closes(j) or j == n - 1:
