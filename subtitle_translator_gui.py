@@ -4453,7 +4453,14 @@ _DELIVERY_CREDIT_STRONG_RE = re.compile(
     r"encod(?:ed|er)?)\s*:\s*[\w@._-]{2,}|"
     r"\b(?:sous[- ]?titrage|altyaz[ıi])\s*:\s*[\w@._ -]{2,}\s*$|"
     r"\b(?:script|metni)\s*:\s*[\w.-]{1,40}\s*$|"
-    r"\bripped\s+and\s+(?:spread|shared)\s+by\b|\bprocessed\s+by\b|"
+    r"\bripped\s+and\s+(?:spread|shared)\s+by\b|"
+    # 'processed by' TEK BAŞINA künye değil: 'ARE PROCESSED BY THE BRAIN AT
+    # DIFFERENT SPEEDS.' edilgen bir anlatı cümlesi ve künye sayılıyordu.
+    # Gerçek künye altyazıdan söz eder ('Subtitle ripped and processed by').
+    # Ölçüm: dal 3 kez ateşliyor, 2'si yanlış (%66,7).
+    r"(?:^|\n)\s*processed\s+by\b|"
+    r"\b(?:subtitles?|subs?|sync(?:hroniz(?:ed|ation))?)\b[^\n]{0,40}?"
+    r"\bprocessed\s+by\b|"
     r"^\s*(?:dvd|blu-?ray)\s+(?:authoring|mastering)(?:\s+(?:by|:))?"
     r"\s+[\w ._-]{2,}\s*$|"
     r"\b(?:çevir(?:i|en|men))\s*:\s*\S|"

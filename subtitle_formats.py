@@ -193,6 +193,16 @@ TR_ADDRESS_FALSE_STEMS = frozenset({
     "düşün", "görüşün", "yazın", "kışın", "yarısın",
     "kadın", "aydın", "günaydın", "vücudun", "gidin", "affedin", "edin",
     "odun", "düğün", "üzüldün",
+    # Sonu '-din/-sen/-tin' ile biten ÖZEL ADLAR ve yer adları: ek değil,
+    # kökün parçası. 375 gerçek teslimde ölçüldü — bu adlar 14 dosyada 61
+    # cue'yu yanlışlıkla 'samimi hitap' saydırıyor ve 2 dosyanın karışık
+    # hitap kararını tek başına ters çeviriyordu.
+    #
+    # Konuma bakan bir kural denendi ve ÖLÇÜM REDDETTİ: altyazıda replikler
+    # tire ile başladığı için 'cümle ortasında büyük harf' ölçütü
+    # 'Affedersin', 'Anladın', 'Bilirsin' gibi 366 gerçek hitabı da eliyordu.
+    "andersen", "petersen", "augustin", "odin", "bardin", "sikhandin",
+    "myrddin", "austin", "rodin", "verdun", "ürdün", "avangardın",
 })
 _TR_SIN_RE = re.compile(
     r"(?<!\w)([^\W\d_]{2,}?)(sın|sin|sun|sün)(?!\w)", re.IGNORECASE)

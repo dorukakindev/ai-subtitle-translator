@@ -7957,11 +7957,25 @@ def _has_turkish_negation(text: str) -> bool:
 # ve olumsuz fiil çekimleri. Çıplak emir kipi (-ma/-me + noktalama) BİLEREK
 # dışarıda: 'Gitme.' ile 'sinema.' biçimsel olarak ayrılamıyor.
 _RELIABLE_NEGATION_WORD_RE = re.compile(
-    r"(?<!\w)(?:değil\w*|yok\w*|hiç\w*|asla|sakın|hayır)(?!\w)",
+    # 'sakın' (olumsuz emir) büyük/küçük harf DUYARLI aranır: re.IGNORECASE
+    # altında 'sakin' (huzurlu) de eşleşiyor ve sıradan bir sıfat olumsuzluk
+    # sayılıyordu. Cümle başındaki büyük harf için iki biçim de yazılır.
+    r"(?<!\w)(?:değil\w*|yok\w*|hiç\w*|asla|(?-i:[sS]akın)|hayır)(?!\w)",
     re.IGNORECASE,
 )
+# Bu adlar olumsuzluk EKİ taşımaz; '-ma/-me' harfleri köklerinin parçasıdır.
+# Gövde uzunluğu şartı bunları elemiyor ('Ta|mam', 'Aga|mem|non') çünkü
+# gövde gerçekten iki harften uzun. Kapalı ve kısa bir liste doğru araç.
+_NEGATION_LOOKALIKE_RE = re.compile(
+    r"(?<!\w)(?:tamam\w*|agamemnon\w*|amazon\w*|memnun\w*|mezar\w*)(?!\w)",
+    re.IGNORECASE,
+)
+
+# GÖVDE EN AZ İKİ HARF: gövde serbest bırakılınca ('*?') sıfır harfle de
+# eşleşiyordu ve 'Memnun' ('' + me + m), 'Mezar' ('' + me + z), 'Amazon'
+# ('A' + ma + z) olumsuz sayılıyordu. Aynı şart zaten ek deseninde vardı.
 _RELIABLE_NEGATION_VERB_RE = re.compile(
-    r"(?<!\w)[^\W\d_]*?"
+    r"(?<!\w)[^\W\d_]{2,}?"
     r"(?:m[ıiuü]yor"
     r"|ma(?:d[ıi]|dan|z|m|yacak|sın|yın|mış|ktan)"
     r"|me(?:d[ıi]|den|z|m|yecek|sin|yin|miş|kten)"
@@ -7996,6 +8010,10 @@ def reliable_turkish_negation_count(text) -> int:
     value = _semantic_text_for_validator(text)
     if not value:
         return 0
+    # Kökünde '-ma/-me' harfleri geçen adlar sayımdan ÖNCE düşürülür; aksi
+    # hâlde 'Tamam.' tek başına bir olumsuzluk sayılıyor ve guard, gerçek
+    # olumsuzluğu koruyan doğru bir adayı reddedebiliyordu.
+    value = _NEGATION_LOOKALIKE_RE.sub(" ", value)
     count = len(_RELIABLE_NEGATION_WORD_RE.findall(value))
     count += len(_RELIABLE_NEGATION_VERB_RE.findall(value))
     count += len(_RELIABLE_NEGATION_SUFFIX_RE.findall(value))
