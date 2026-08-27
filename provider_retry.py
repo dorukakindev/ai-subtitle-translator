@@ -1516,7 +1516,11 @@ def _provider_error_context(exc) -> dict:
         reason = "bağlam uzunluğu aşıldı"
     elif "model_not_found" in text or "available channel" in text:
         reason = "model veya kanal kullanılamıyor"
-    elif status == 408 or "timeout" in text or "timed out" in text:
+    # 524 = Cloudflare origin timeout. Sunucu hatası DEĞİL, zaman aşımı —
+    # 408'in yanına ait. Gövde metninde "timeout" geçmesine güvenmek kırılgan,
+    # durum kodu açıkça yazılır.
+    elif (status in {408, 524}
+            or "timeout" in text or "timed out" in text):
         reason = "zaman aşımı"
     elif status in {500, 502, 503, 504, 529}:
         reason = "sağlayıcı sunucu hatası"
@@ -1775,7 +1779,9 @@ class ProviderCooldownRegistry:
             self._clear_circuit_state(key)
             return None
         if not (
-            status in {408, 500, 502, 503, 504, 529}
+            # 524 (Cloudflare origin timeout) burada eksikti: yeniden
+            # denenebilir sayılıyor ama devre kesici sıfırlanmıyordu.
+            status in {408, 500, 502, 503, 504, 524, 529}
             or "temporarily unavailable" in text
             or "timeout" in text
             or "timed out" in text

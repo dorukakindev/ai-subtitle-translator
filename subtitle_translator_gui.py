@@ -12442,7 +12442,10 @@ def _is_transient_retry_error(exc) -> bool:
     if codes & {400, 401, 403, 404, 409, 422}:
         return False
     return (
-        bool(codes & {408, 429, 500, 502, 503, 504, 529})
+        # 524 = Cloudflare origin timeout; bu ağ geçidinde gerçekten oluyor
+        # (koşu logunda HTTP 524 ile rota düşmesi var). Dört yeniden-deneme
+        # kümesinin yalnız birinde vardı.
+        bool(codes & {408, 429, 500, 502, 503, 504, 524, 529})
         or "rate limit" in lowered
         or "timeout" in lowered
         or "connection" in lowered
