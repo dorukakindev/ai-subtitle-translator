@@ -16123,6 +16123,57 @@ def _upload_ready_marker_text(record: dict, entries: list) -> str:
     return "\n".join(lines) + "\n"
 
 
+_UPLOAD_READY_ENTRY_RE = re.compile(
+    r"^-\s*(?P<name>.+?)\s\sSHA-256:\s*(?P<digest>[0-9a-fA-F]{64}|-)\s*$")
+
+
+def verify_upload_ready_marker(marker_path) -> dict:
+    """İşaret hâlâ diskteki dosyaları mı anlatıyor.
+
+    İşaret dosya başına SHA-256 yazıyordu ama hiçbir yer onu GERİ OKUYUP
+    doğrulamıyordu. Arşivde 115 işaret var ve hiçbiri doğrulanamıyor;
+    28'i bugünkü kapıya göre sert hatalı. Doğrulanamayan bir işaret,
+    işaretsizlikten kötüdür — güven verir ve dayanağı yoktur.
+
+    Döner: {"ok": [...], "changed": [...], "missing": [...],
+            "no_hash": [...], "total": n, "verifiable": bool}
+    """
+    result = {"ok": [], "changed": [], "missing": [], "no_hash": [],
+              "total": 0, "verifiable": False}
+    try:
+        marker = Path(str(marker_path))
+        text = marker.read_text(encoding="utf-8")
+    except Exception:
+        return result
+    folder = marker.parent
+    for line in text.splitlines():
+        match = _UPLOAD_READY_ENTRY_RE.match(line.strip())
+        if not match:
+            continue
+        result["total"] += 1
+        name = match.group("name").strip()
+        digest = match.group("digest")
+        if digest == "-":
+            result["no_hash"].append(name)
+            continue
+        target = folder / name
+        if not target.is_file():
+            result["missing"].append(name)
+            continue
+        try:
+            actual = _file_content_sha256(str(target))
+        except Exception:
+            result["no_hash"].append(name)
+            continue
+        if str(actual).lower() == digest.lower():
+            result["ok"].append(name)
+        else:
+            result["changed"].append(name)
+    result["verifiable"] = bool(
+        result["total"] and not result["no_hash"])
+    return result
+
+
 def _intended_output_folder(source_path, settings: dict):
     """Bu kaynak için çıktının GİDECEĞİ klasör (dosya hiç yazılmasa bile).
 
@@ -16223,6 +16274,23 @@ def _write_upload_ready_markers(record: dict,
         if not target.is_dir():
             continue
         marker = target / _UPLOAD_READY_MARKER_NAME
+        # Üstüne yazmadan önce eskisinin hâlâ geçerli olup olmadığını söyle.
+        # İşaret dosya başına SHA-256 taşıyordu ama kimse geri okumuyordu:
+        # arşivdeki 159 işaretin 158'i okunabilir girdi bile taşımıyor.
+        # `local_errors` sonunda OSError'a dönüşüyor; bu bir hata değil,
+        # yalnız kayıt. Çağıran bir liste verdiyse oraya yazılır.
+        if marker.is_file() and isinstance(errors, list):
+            try:
+                previous = verify_upload_ready_marker(marker)
+                if previous["changed"] or previous["missing"]:
+                    errors.append(
+                        "%s: önceki yükleme işareti artık geçerli değildi "
+                        "(%d dosya değişmiş, %d dosya kayıp); "
+                        "yenisiyle değiştirildi."
+                        % (marker, len(previous["changed"]),
+                           len(previous["missing"])))
+            except Exception:
+                pass
         try:
             atomic_write_text(
                 marker, _upload_ready_marker_text(record, sorted(entries)),
