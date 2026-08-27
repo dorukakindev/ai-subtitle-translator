@@ -4226,13 +4226,25 @@ def parse_srt(filepath):
     return [(str(i), ts, text) for i, (_idx, ts, text) in enumerate(parsed, 1)]
 
 
-def _srt_raw_cue_id_issues(filepath) -> tuple[list, list]:
-    """SRT ayrıştırıcısının geriye-dönük yeniden numaralandırmasından önceki ID sorunları."""
+def _srt_raw_cue_id_issues(filepath) -> tuple[list, list, list, list]:
+    """SRT ayrıştırıcısının geriye-dönük yeniden numaralandırmasından önceki ID sorunları.
+
+    Üçüncü liste GERİ GİDEN numaradır (`id <= önceki`). Bu, teslim yazıldıktan
+    SONRA dosyayı yeniden numaralayan bir dış aracın/elle düzenlemenin izidir:
+    gövde cue'ları 1..N'e çekilir, imza cue'ları eski yüksek numaralarıyla
+    kalır ve `584 -> [1192] -> 585` gibi monoton olmayan bir dosya çıkar.
+    Arşivde 167 teslim dosyası bu hâlde bulundu ve tek alarm üretmemişti;
+    yineleme/numarasız satır bakılıyordu ama sıra bakılmıyordu.
+
+    BOŞLUK bilerek raporlanmaz: `_normalize_delivery_ids` normal cue'ya
+    `max(kendi, önceki+1)` verdiği için teslimde boşluk meşrudur.
+    """
     try:
         lines = read_subtitle_text(filepath).splitlines()
     except Exception:
-        return [], []
+        return [], [], [], []
     raw_ids = []
+    raw_is_signature = []
     unnumbered_lines = []
     pos = 0
     while pos < len(lines):
@@ -4240,7 +4252,14 @@ def _srt_raw_cue_id_issues(filepath) -> tuple[list, list]:
         current = line.strip()
         if (re.fullmatch(r"\d+", current) and pos + 1 < len(lines)
               and _TS_LINE_RE.match(lines[pos + 1].strip())):
+            body = []
+            scan = pos + 2
+            while scan < len(lines) and lines[scan].strip():
+                body.append(lines[scan].strip())
+                scan += 1
             raw_ids.append(current)
+            raw_is_signature.append(bool(
+                _DELIVERY_SIGNATURE_RE.fullmatch("\n".join(body).strip())))
             pos += 2
             continue
         if _TS_LINE_RE.match(current):
@@ -4252,7 +4271,31 @@ def _srt_raw_cue_id_issues(filepath) -> tuple[list, list]:
         if idx in seen and idx not in duplicate_ids:
             duplicate_ids.append(idx)
         seen.add(idx)
-    return duplicate_ids, unnumbered_lines
+    non_monotonic_ids = []
+    signature_id_ids = []
+    previous = None
+    for idx, is_signature in zip(raw_ids, raw_is_signature):
+        try:
+            value = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if previous is None:
+            # Baş imza cue'su 0 numarasını taşır ve teslim bütünlük işareti
+            # buna dayanır (`_normalize_delivery_ids`, previous = -1).
+            if is_signature and value != 0:
+                signature_id_ids.append(idx)
+        else:
+            if value <= previous:
+                non_monotonic_ids.append(idx)
+            # İmza cue'su programın kendi sözleşmesinde TAM `önceki+1`dir
+            # (`_normalize_delivery_ids`). Sapma, dosyanın yazıldıktan sonra
+            # yeniden numaralandığını söyler; ileri sapma monoton olduğu için
+            # yukarıdaki genel kurala takılmaz.
+            elif is_signature and value != previous + 1:
+                signature_id_ids.append(idx)
+        previous = value
+    return (duplicate_ids, unnumbered_lines, non_monotonic_ids,
+            signature_id_ids)
 
 
 def parse_subtitle(filepath: str, source_language: str | None = None) -> list:
@@ -18455,7 +18498,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     invalid_timestamp_ids = []
     reversed_timestamp_ids = []
     signature_overlap_ids = []
-    duplicate_cue_ids, unnumbered_cue_lines = _srt_raw_cue_id_issues(output_path)
+    (duplicate_cue_ids, unnumbered_cue_lines, non_monotonic_cue_ids,
+     signature_cue_id_ids) = _srt_raw_cue_id_issues(output_path)
     timed_output = []
     for output_idx, output_ts, output_text in output:
         try:
@@ -18791,6 +18835,8 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "signature_overlap_ids": signature_overlap_ids,
         "duplicate_cue_ids": duplicate_cue_ids,
         "unnumbered_cue_lines": unnumbered_cue_lines,
+        "non_monotonic_cue_ids": non_monotonic_cue_ids,
+        "signature_cue_id_ids": signature_cue_id_ids,
         "review_details": review_details,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
@@ -18835,6 +18881,8 @@ def _delivery_audit_has_hard_error(audit: dict) -> bool:
         audit.get("signature_overlap_ids"),
         audit.get("duplicate_cue_ids"),
         audit.get("unnumbered_cue_lines"),
+        audit.get("non_monotonic_cue_ids"),
+        audit.get("signature_cue_id_ids"),
         # Kaynakta OLMAYAN sıra bozukluğu = biz kırdık.
         audit.get("introduced_out_of_order_ids"),
     ))
@@ -18881,6 +18929,8 @@ def _delivery_audit_log_details(audit: dict, limit: int = 12) -> list[str]:
             ("untranslated_fragment_ids", "untranslated_fragment"),
             ("invalid_timestamp_ids", "invalid_timestamp"),
             ("duplicate_cue_ids", "duplicate_cue_id"),
+            ("non_monotonic_cue_ids", "cue_numarasi_geri_gidiyor"),
+            ("signature_cue_id_ids", "imza_cue_numarasi_sapmis"),
             ("introduced_out_of_order_ids", "cue_sirasi_bozuldu"),
         )
         for key, label in fields:
@@ -19378,6 +19428,8 @@ _FINDING_CLASSES = {
     "invalid_timestamp_ids": ("kesin", "Geçersiz zaman damgası", "Zaman damgasını düzelt."),
     "reversed_timestamp_ids": ("kesin", "Ters zaman damgası", "Başlangıç bitişten sonra; düzelt."),
     "duplicate_cue_ids": ("kesin", "Yinelenen cue kimliği", "Kimliği tekilleştir."),
+    "non_monotonic_cue_ids": ("kesin", "Cue numarası geri gidiyor", "Numaraları yeniden sırala."),
+    "signature_cue_id_ids": ("kesin", "İmza cue numarası sapmış", "Baş imza 0, diğerleri öncekinin bir fazlası olmalı."),
     "signature_overlap_ids": ("kesin", "İmza cue'su çakışıyor", "İmza zamanını kaydır."),
     "serialized_json_residue_ids": ("kesin", "Metne sızmış JSON kalıntısı", "Kalıntıyı sil."),
     "missing_dialogue_ids": ("muhtemel", "Teslimde eksik diyalog", "Kaynaktaki repliği çevirip ekle."),
