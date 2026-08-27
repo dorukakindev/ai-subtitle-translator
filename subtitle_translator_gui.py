@@ -5996,6 +5996,18 @@ def normalize_foreign_exonyms(text: str) -> tuple[str, int]:
         target = _FOREIGN_EXONYM_MAP.get(stem.casefold())
         if not target:
             return match.group(0)
+        # Ad daha UZUN bir özel adın parçasıysa dokunma. Ek şartı tek başına
+        # yetmiyordu: gerçek arşivde `Historic England'ın` → `Historic
+        # İngiltere'nin` ve `New Mexico'da` → `New Meksika'da` çıkıyordu.
+        # Birincisi bir kurum, ikincisi bir ABD eyaleti; ikisi de yeniden
+        # yazılmamalı.
+        before = value[:match.start()]
+        prev = re.search(r"([A-Za-zÀ-ɏ'’-]+)\s$", before)
+        if prev:
+            head = prev.group(1)
+            if (head[:1].isupper() and len(head) >= 3
+                    and any(ch.islower() for ch in head)):
+                return match.group(0)
         changed += 1
         # Gövde değişince ek de uyuma girmeli: 'China'daki' → 'Çin'deki'.
         return f"{target}'{turkish_suffix_for_stem(target, suffix)}"
@@ -13729,62 +13741,47 @@ def _mixed_rendering_is_misalignment(term, renderings, term_keys,
 # Yerleşik Türkçe karşılığı olan İngilizce özel adlar. Türkçesi AYNI olan
 # adlar (Sparta, Stockholm, Libya) BURAYA GİRMEZ — ilk ölçümde girmişlerdi
 # ve 70 sahte bulgu ürettiler.
-_EXONYM_TR = {
-    "Troy": "Truva", "Trojan": "Truva", "Greeks": "Yunan",
-    "Greek": "Yunan", "Greece": "Yunanistan",
+# Tespit tablosu, otomatik düzeltmenin kullandığı PAYLAŞILAN tablodan
+# TÜRETİLİR. Bugün iki ayrı liste vardı (biri burada, biri
+# prompt_constants'ta) ve modern ülke adları yalnız buradakine eklenmişti —
+# yani bu oturum boyunca kovaladığım "aynı karar iki yerde" sınıfını kendim
+# üretmişim. Artık tek kaynak var, aşağıdaki ek liste ise açıkça
+# gerekçelendirilmiş bir GENİŞLETME.
+#
+# Neden ek liste gerekiyor: otomatik düzeltme ekli biçimi YENİDEN YAZIYOR
+# (`China'daki` → `Çin'deki`). `Troy'un`, `Milan'ın`, `Sofia'nın` kişi adı
+# da olabilir; onları yeniden yazmak yanlış olur. Ama TESPİT bunları
+# rahatça kullanabilir, çünkü rapor eder, değiştirmez — üstelik bulgu
+# ölçütü iki biçimin de metinde bulunmasıdır.
+_DETECTION_ONLY_EXONYMS = {
+    "Troy": "Truva", "Trojan": "Truva", "Greeks": "Yunan", "Greek": "Yunan",
     "Mycenaean": "Miken", "Mycenaeans": "Miken",
     "Babylonians": "Babil", "Babylonian": "Babil", "Babylon": "Babil",
-    "Aegean": "Ege", "Crete": "Girit", "Cretan": "Girit",
-    "Anatolia": "Anadolu", "Anatolian": "Anadolu",
+    "Cretan": "Girit", "Anatolian": "Anadolu",
     "Ireland": "İrlanda", "Irish": "İrlanda",
-    "Egyptians": "Mısır", "Egyptian": "Mısır", "Egypt": "Mısır",
+    "Egyptians": "Mısır", "Egyptian": "Mısır",
     "Hittites": "Hitit", "Hittite": "Hitit",
     "Assyria": "Asur", "Assyrians": "Asur", "Assyrian": "Asur",
     "Persians": "Pers", "Persian": "Pers", "Persia": "Pers",
     "Romans": "Romalı", "Roman": "Romalı", "Rome": "Roma",
-    "Athens": "Atina", "Constantinople": "Konstantinopolis",
     "Byzantium": "Bizans", "Byzantines": "Bizans", "Byzantine": "Bizans",
-    "Mesopotamia": "Mezopotamya", "Phoenicians": "Fenike",
-    "Phoenician": "Fenike", "Carthage": "Kartaca",
-    "Macedonia": "Makedonya", "Macedonian": "Makedon",
-    "Thrace": "Trakya", "Cyprus": "Kıbrıs", "Damascus": "Şam",
-    "Jerusalem": "Kudüs", "Vienna": "Viyana", "Venice": "Venedik",
-    "Genoa": "Cenova", "Florence": "Floransa", "Naples": "Napoli",
-    "Milan": "Milano", "Munich": "Münih", "Cologne": "Köln",
-    "Prague": "Prag", "Warsaw": "Varşova", "Moscow": "Moskova",
-    "Wales": "Galler", "Welsh": "Galli", "Scotland": "İskoçya",
-    "Scottish": "İskoç", "England": "İngiltere", "Britain": "Britanya",
-    "Netherlands": "Hollanda", "Switzerland": "İsviçre",
-    "Sweden": "İsveç", "Norway": "Norveç", "Denmark": "Danimarka",
-    "Poland": "Polonya", "Hungary": "Macaristan", "Austria": "Avusturya",
-    "Bavaria": "Bavyera", "Prussia": "Prusya", "Spain": "İspanya",
-    "Portugal": "Portekiz", "Italy": "İtalya", "Sicily": "Sicilya",
-    "Algeria": "Cezayir", "Morocco": "Fas", "Tunisia": "Tunus",
-    "Syria": "Suriye", "Lebanon": "Lübnan", "India": "Hindistan",
-    "China": "Çin", "Japan": "Japonya",
-    # 2026-08-27 devri: Amazon 4of6'da Brazil/Brezilya ve Colombia/Kolombiya
-    # aynı dosyada geçtiği hâlde dedektör susuyordu — adlar tabloda yoktu.
-    "Brazil": "Brezilya", "Brazilian": "Brezilyalı",
-    "Colombia": "Kolombiya", "Colombian": "Kolombiyalı",
-    "Atlantic": "Atlantik", "Pacific": "Pasifik",
-    "Mediterranean": "Akdeniz", "Baltic": "Baltık",
-    "Caspian": "Hazar", "Caucasus": "Kafkasya", "Siberia": "Sibirya",
-    "Romania": "Romanya", "Romanian": "Romen",
-    "Bulgaria": "Bulgaristan", "Serbia": "Sırbistan",
-    "Croatia": "Hırvatistan", "Ukraine": "Ukrayna",
-    "Belgium": "Belçika", "Georgia": "Gürcistan",
-    "Armenia": "Ermenistan", "Azerbaijan": "Azerbaycan",
-    "Kazakhstan": "Kazakistan", "Afghanistan": "Afganistan",
-    "Bangladesh": "Bangladeş", "Thailand": "Tayland",
-    "Philippines": "Filipinler", "Indonesia": "Endonezya",
-    "Malaysia": "Malezya", "Mexico": "Meksika",
-    "Argentina": "Arjantin", "Chile": "Şili", "Bolivia": "Bolivya",
-    "Ecuador": "Ekvador", "Cuba": "Küba", "Jamaica": "Jamaika",
-    "Canada": "Kanada", "Australia": "Avustralya",
-    "Ethiopia": "Etiyopya", "Nigeria": "Nijerya", "Somalia": "Somali",
-    "Ghana": "Gana", "Congo": "Kongo", "Zimbabwe": "Zimbabve",
-    "Mozambique": "Mozambik", "Madagascar": "Madagaskar",
+    "Phoenicians": "Fenike", "Phoenician": "Fenike",
+    "Macedonian": "Makedon", "Genoa": "Cenova", "Milan": "Milano",
+    "Wales": "Galler", "Welsh": "Galli", "Scottish": "İskoç",
+    "Brazilian": "Brezilyalı", "Colombian": "Kolombiyalı",
+    "Romanian": "Romen", "Caucasus": "Kafkasya",
+    "Argentina": "Arjantin", "Chile": "Şili", "Ghana": "Gana",
+    "Congo": "Kongo", "Saxony": "Saksonya", "Bohemia": "Bohemya",
+    "Bucharest": "Bükreş", "Belgrade": "Belgrat", "Sofia": "Sofya",
+    "Budapest": "Budapeşte", "Copenhagen": "Kopenhag",
 }
+_EXONYM_TR = {
+    **{name.title(): turkish
+       for name, turkish in FOREIGN_EXONYM_MAP.items()
+       if name.isascii() and name.title().casefold() != turkish.casefold()},
+    **_DETECTION_ONLY_EXONYMS,
+}
+
 _EXONYM_EN_RE = {
     name: re.compile(r"(?<![\w'’])%s(?![a-zA-Z])" % re.escape(name))
     for name in _EXONYM_TR

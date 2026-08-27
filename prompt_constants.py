@@ -285,6 +285,40 @@ FOREIGN_EXONYM_MAP = {
     "warsaw": "Varşova", "prague": "Prag", "munich": "Münih",
     "cologne": "Köln", "geneva": "Cenevre", "florence": "Floransa",
     "naples": "Napoli", "venice": "Venedik", "lisbon": "Lizbon",
+    # 2026-08-27: tablo antik dünyada ve birkaç Avrupa şehrinde kalmıştı;
+    # modern ülke/deniz adları yoktu. Ölçüm (272 gerçek teslim): ekli
+    # biçimde geçen 3 vaka var ve üçü de gerçek hata —
+    # `Mediterranean'deki`, `Mediterranean'ın`, `Romania'daki`.
+    # Buraya YALNIZ tek anlamlı adlar girer: düzeltme ekli biçimi yeniden
+    # yazdığı için `Troy'un`/`Milan'ın`/`Sofia'nın` gibi kişi adı da
+    # olabilecek biçimler DIŞARIDA tutulur (onlar yalnız tespit tablosunda).
+    "brazil": "Brezilya", "colombia": "Kolombiya",
+    "atlantic": "Atlantik", "pacific": "Pasifik",
+    "mediterranean": "Akdeniz", "baltic": "Baltık",
+    "caspian": "Hazar", "siberia": "Sibirya",
+    "romania": "Romanya", "bulgaria": "Bulgaristan",
+    "serbia": "Sırbistan", "croatia": "Hırvatistan",
+    "ukraine": "Ukrayna", "belgium": "Belçika",
+    "armenia": "Ermenistan", "azerbaijan": "Azerbaycan",
+    "kazakhstan": "Kazakistan", "afghanistan": "Afganistan",
+    "bangladesh": "Bangladeş", "thailand": "Tayland",
+    "philippines": "Filipinler", "indonesia": "Endonezya",
+    "malaysia": "Malezya", "mexico": "Meksika",
+    "bolivia": "Bolivya", "ecuador": "Ekvador", "cuba": "Küba",
+    "jamaica": "Jamaika", "canada": "Kanada", "australia": "Avustralya",
+    "ethiopia": "Etiyopya", "nigeria": "Nijerya", "somalia": "Somali",
+    "zimbabwe": "Zimbabve", "mozambique": "Mozambik",
+    "madagascar": "Madagaskar", "netherlands": "Hollanda",
+    "switzerland": "İsviçre", "sweden": "İsveç", "norway": "Norveç",
+    "denmark": "Danimarka", "poland": "Polonya", "hungary": "Macaristan",
+    "austria": "Avusturya", "bavaria": "Bavyera", "prussia": "Prusya",
+    "portugal": "Portekiz", "sicily": "Sicilya", "algeria": "Cezayir",
+    "morocco": "Fas", "tunisia": "Tunus", "syria": "Suriye",
+    "lebanon": "Lübnan", "mesopotamia": "Mezopotamya",
+    "carthage": "Kartaca", "macedonia": "Makedonya",
+    "thrace": "Trakya", "cyprus": "Kıbrıs", "damascus": "Şam",
+    "jerusalem": "Kudüs", "constantinople": "Konstantinopolis",
+    "anatolia": "Anadolu", "aegean": "Ege", "crete": "Girit",
 }
 
 
