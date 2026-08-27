@@ -19259,6 +19259,81 @@ _FINDING_CLASSES = {
 
 _FINDING_CONFIDENCE_ORDER = {"kesin": 0, "muhtemel": 1, "bilgi": 2}
 
+# ── Ham ↔ teslim içerik koruma (B5) ──────────────────────────────────────────
+# Program her dosyanın kalite geçişlerinden ÖNCEKİ hâlini `.ham.srt` olarak
+# saklıyor ve hiçbir zaman ona bakmıyordu. Üç teslim dosyasında gerçek
+# diyalog kaybı bulundu; üçü de ham yedekte DOĞRU ÇEVRİLMİŞ hâlde duruyordu.
+# Kaynak↔teslim farkı meşru olabilir (SDH, künye); ham↔teslim farkı
+# olmamalı — ham zaten çeviridir, sonraki geçişler yalnız düzeltir.
+_HAM_NOTE_ONLY_RE = re.compile(r"^[\s*♪♫♬♩~_-]+$")
+_HAM_DIALOGUE_DASH_RE = re.compile(r"^\s*[-–—]\s*")
+
+
+def _ham_cue_is_removable(text: str) -> bool:
+    """Ham metnin KENDİSİ etiket mi — teslimden çıkması doğru mu.
+
+    `skip` kümesi kaynak tarafına bakıyor; ham metni Türkçe olduğu için
+    `[ÇIĞLIK]` / `♪♪` gibi ÇEVRİLMİŞ etiketler oradan görünmüyordu ve
+    doğru silinmiş 730 etiket alarm üretiyordu.
+    """
+    body = _ANY_MARKUP_RE.sub("", str(text or ""))
+    body = re.sub(r"\s+", " ", body).strip()
+    if not body or _HAM_NOTE_ONLY_RE.match(body):
+        return True
+    stripped = _HAM_DIALOGUE_DASH_RE.sub("", body)
+    if not stripped or _HAM_NOTE_ONLY_RE.match(stripped):
+        return True
+    try:
+        import sdh_cleaner as _sdh
+        return bool(
+            _sdh.src_is_sfx_only(stripped, allow_caps_heuristic=True)
+            or _sdh.is_structural_sdh_cue(stripped, allow_caps_heuristic=True))
+    except Exception:
+        return False
+
+
+def detect_lost_translated_cues(ham_cues, output_cues,
+                                expected_removed_timestamps=()) -> list:
+    """Ham'da çevrilmiş metin var, teslimde o zaman aralığı yok.
+
+    Zaman damgasıyla eşleşir — cue numarası teslimde yeniden numaralandığı
+    için kimlik güvenilir bir anahtar değil.
+
+    Ölçüm (309 eşleşen ham/teslim çifti): 71 bulgu, bilinen üç gerçek
+    kaybın üçü de içinde.
+    """
+    output_timestamps = {str(c[1]) for c in (output_cues or ())}
+    skip = {str(value) for value in (expected_removed_timestamps or ())}
+    lost = []
+    for cue in ham_cues or ():
+        timestamp = str(cue[1])
+        text = str(cue[2] or "")
+        visible = re.sub(r"\s+", " ", _ANY_MARKUP_RE.sub("", text)).strip()
+        if not visible or _DELIVERY_SIGNATURE_RE.search(visible):
+            continue
+        if timestamp in output_timestamps or timestamp in skip:
+            continue
+        if _ham_cue_is_removable(text):
+            continue
+        lost.append((str(cue[0]), timestamp, visible))
+    return lost
+
+
+def _ham_backup_path(output_path):
+    """Teslim dosyasının ham yedeği: <bölüm>/Raporlar/Ham/<ad>.<hash>.ham.srt"""
+    try:
+        target = Path(str(output_path))
+        ham_dir = target.parent / "Raporlar" / "Ham"
+        if not ham_dir.is_dir():
+            return None
+        stem = target.stem
+        matches = sorted(ham_dir.glob(f"{stem}.*.ham.srt"))
+        if not matches:
+            matches = sorted(ham_dir.glob(f"{stem}.ham.srt"))
+        return matches[-1] if matches else None
+    except Exception:
+        return None
+
 
 def _finding_id(file_name: str, finding_class: str, timestamp: str,
                 cue_no: str) -> str:
@@ -19341,6 +19416,35 @@ def build_finding_rows(rows, read_cues=None) -> list:
                         "teslim": delivered,
                         "oneri": suggestion,
                     })
+
+        # Ham yedeğe karşı içerik koruma: kaynağa değil, ÇEVİRİNİN kendi
+        # önceki hâline bakar; bu yüzden meşru fark yoktur.
+        ham_path = _ham_backup_path(output_path)
+        if ham_path is not None:
+            expected_ts = {
+                timestamp for timestamp, _text in source_by_id.values()
+                if timestamp and timestamp not in output_by_ts
+                and _delivery_expected_removed_extra_ids(
+                    [("x", timestamp, _text)])
+            }
+            for cue_no, timestamp, body in detect_lost_translated_cues(
+                    cues_of(str(ham_path)), output_cues, expected_ts):
+                findings.append({
+                    "id": _finding_id(name, "lost_translated_cue",
+                                      timestamp, cue_no),
+                    "dosya": name,
+                    "kaynak_yolu": source_path,
+                    "teslim_yolu": output_path,
+                    "sinif": "lost_translated_cue",
+                    "baslik": "Çevrilmiş satır teslimde yok",
+                    "guven": "muhtemel",
+                    "cue_no": str(cue_no),
+                    "zaman": timestamp,
+                    "kaynak": source_by_id.get(str(cue_no), ("", ""))[1],
+                    "teslim": "",
+                    "ham": body,
+                    "oneri": "Ham yedekteki çeviriyi geri koy.",
+                })
 
     findings.sort(key=lambda f: (
         _FINDING_CONFIDENCE_ORDER.get(f["guven"], 9),

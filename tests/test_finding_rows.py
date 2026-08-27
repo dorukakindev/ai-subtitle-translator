@@ -161,5 +161,56 @@ class FindingDecisionsTest(unittest.TestCase):
         self.assertEqual(g.load_finding_decisions("yok-boyle-bir-dosya.json"), {})
 
 
+class LostTranslatedCueTest(unittest.TestCase):
+    """Ham yedekte çevrilmiş satır var, teslimde yok.
+
+    Program her dosyanın kalite geçişlerinden önceki hâlini `.ham.srt`
+    olarak saklıyor ve hiç bakmıyordu. Üç teslim dosyasında gerçek diyalog
+    kaybı bulundu; üçü de ham yedekte DOĞRU ÇEVRİLMİŞ hâlde duruyordu.
+
+    Ölçüm (309 eşleşen ham/teslim çifti): ham tarafı etiket filtresi
+    eklenmeden 813 alarm, eklendikten sonra 71 — bilinen üç gerçek kayıp
+    her iki durumda da içinde.
+    """
+
+    HAM = [
+        ("1", "00:00:01,000 --> 00:00:02,000", "Portekizce konuşuyorsun."),
+        ("2", "00:00:03,000 --> 00:00:04,000", "[ÇIĞLIK]"),
+        ("3", "00:00:05,000 --> 00:00:06,000", "♪♪"),
+        ("4", "00:00:07,000 --> 00:00:08,000", "-[İspanyolca konuşuluyor]"),
+        ("5", "00:00:09,000 --> 00:00:10,000", "Bu satır teslimde duruyor."),
+    ]
+    OUT = [("1", "00:00:09,000 --> 00:00:10,000", "Bu satır teslimde duruyor.")]
+
+    def test_real_dialogue_loss_is_reported(self):
+        lost = g.detect_lost_translated_cues(self.HAM, self.OUT)
+        self.assertEqual([row[2] for row in lost],
+                         ["Portekizce konuşuyorsun."])
+
+    def test_translated_sdh_labels_are_not_losses(self):
+        # `[ÇIĞLIK]`, `♪♪`, `-[İspanyolca konuşuluyor]` teslimden doğru
+        # olarak çıkmış; bunlar alarm üretirse gerçek kayıp gürültüde
+        # kaybolur (ölçüldü: 813 alarmın 730'u bu sınıftı).
+        lost = g.detect_lost_translated_cues(self.HAM, self.OUT)
+        bodies = [row[2] for row in lost]
+        for label in ("[ÇIĞLIK]", "♪♪", "-[İspanyolca konuşuluyor]"):
+            self.assertNotIn(label, bodies)
+
+    def test_expected_removal_timestamps_are_skipped(self):
+        lost = g.detect_lost_translated_cues(
+            self.HAM, self.OUT,
+            expected_removed_timestamps={"00:00:01,000 --> 00:00:02,000"})
+        self.assertEqual(lost, [])
+
+    def test_matching_is_by_timestamp_not_cue_number(self):
+        # Teslimde cue numarası 1, ham'da o zamana ait numara 5.
+        lost = g.detect_lost_translated_cues(self.HAM, self.OUT)
+        self.assertNotIn("5", [row[0] for row in lost])
+
+    def test_empty_input_is_safe(self):
+        self.assertEqual(g.detect_lost_translated_cues([], []), [])
+        self.assertEqual(g.detect_lost_translated_cues(None, None), [])
+
+
 if __name__ == "__main__":
     unittest.main()
