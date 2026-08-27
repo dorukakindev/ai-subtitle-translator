@@ -27,6 +27,13 @@ _SOURCE_MALFORMED_FORMAT_TAG = re.compile(
     re.IGNORECASE,
 )
 _VTT_VOICE_TAG = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
+# WebVTT cue ayarları zaman satırının SONUNDA gelir ve SRT'de karşılığı yok:
+# 'align:left position:0%,start line:86,67% size:100%'. Yalnız bilinen
+# anahtarlar atılır — zaman satırının sonuna gelen her şeyi silmek, bozuk
+# ama anlamlı bir satırı sessizce kırpardı.
+_VTT_CUE_SETTINGS_RE = re.compile(
+    r'(?:\s+(?:align|position|line|size|vertical|region)\s*:\s*[^\s]+)+\s*$',
+    re.IGNORECASE)
 # ruby/rt: Japonca WebVTT dosyalarında okunuş etiketleri. SRT'de karşılığı yok;
 # geri yüklenirlerse oynatıcılarda '<ruby>Türkçe</ruby>' olarak ekrana basılır.
 _VTT_SRT_UNSAFE_TAG = re.compile(
@@ -370,6 +377,9 @@ def _srt_fraction_to_millis(fraction: str) -> str:
 def normalize_srt_timestamp_separators(text: str) -> str:
     """SRT zaman satırlarındaki hatalı ayraçları ve milisaniyeleri düzeltir.
 
+    Zaman satırının sonundaki WebVTT cue ayarları atılır — SRT'de karşılığı
+    yoktur (bkz. `_VTT_CUE_SETTINGS_RE`).
+
     Kesir alanı OPSİYONELDİR: '00:00:01 --> 00:00:03' ve mikro saniyeli
     '00:00:01,123456' biçimleri eskiden hiç cue üretmiyor, dosya boş
     sanılıyordu (denetim 2026-08-21, madde 25). Tolerans yalnız İKİ UCU da
@@ -381,6 +391,14 @@ def normalize_srt_timestamp_separators(text: str) -> str:
 
     def replace(match):
         lead, sh, sm, ss, sms, arrow, eh, em, es, ems, tail = match.groups()
+        # WebVTT cue ayarları ('align:left position:0%,start line:86,67%')
+        # zaman satırının sonunda gelir; SRT'de böyle bir alan YOKTUR ve
+        # oynatıcılar satırı reddedebilir. Kuyruk buraya kadar korunuyordu;
+        # `parse_any` zaman damgasını bileşenlerden yeniden kurduğu için
+        # teslime sızmıyordu, ama normalleştirilmiş METNİ doğrudan yazan
+        # herhangi bir yol onu taşırdı. Gerçek vaka: Marjoe kaynağında
+        # 551 satır böyle.
+        tail = _VTT_CUE_SETTINGS_RE.sub("", tail or "")
         # Saat 2 haneye tamamlanmalı: '0:01:23,456' biçimini donanımsal oynatıcılar
         # ve bazı yazılımlar yüklemiyor.
         return (
