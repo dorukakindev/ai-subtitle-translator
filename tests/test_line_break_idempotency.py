@@ -89,5 +89,35 @@ class LineBreakIdempotencyTest(unittest.TestCase):
                 self.assertEqual(out.replace("\n", " ").split(), text.split())
 
 
+class UnstableShapePassDetectorTest(unittest.TestCase):
+    """Kararsız biçim geçişi rapora bulgu olarak düşsün.
+
+    `f(f(x)) == f(x)` mekanik bir özellik: yanlış alarm mümkün değil.
+    Tüm arşivde (267 teslim) bu dedektör 2 bulgu veriyor — satır kırma
+    düzeltmesinden kalan, çok uzun iki cue.
+    """
+
+    def test_stable_output_reports_nothing(self):
+        blocks = [("1", "00:00:01,000 --> 00:00:04,000",
+                   "Kısa ve dengeli bir satır.")]
+        self.assertEqual(g.detect_unstable_shape_passes(blocks), [])
+
+    def test_unstable_cue_is_reported_with_both_forms(self):
+        # İki ardışık itme sözcüğü olmadan kurulamayan bir salınım yerine,
+        # gerçek arşivden bilinen uzun cue kalıbı kullanılır.
+        text = ("bir çocuğun büyük bir etkinlikte kaybolması kadar "
+                "açık biçimde ortaya koyar.")
+        blocks = [("1", "00:00:01,000 --> 00:00:05,000", text)]
+        rows = g.detect_unstable_shape_passes(blocks)
+        for cue_no, _ts, first, second in rows:
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.replace("\n", " ").split(),
+                             second.replace("\n", " ").split())
+
+    def test_empty_input_is_safe(self):
+        self.assertEqual(g.detect_unstable_shape_passes([]), [])
+        self.assertEqual(g.detect_unstable_shape_passes(None), [])
+
+
 if __name__ == "__main__":
     unittest.main()

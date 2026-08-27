@@ -19392,6 +19392,32 @@ def detect_lost_translated_cues(ham_cues, output_cues,
     return lost
 
 
+def detect_unstable_shape_passes(blocks) -> list:
+    """Deterministik biçim geçişi kendi çıktısını yeniden değiştiriyor mu.
+
+    `f(f(x)) == f(x)` olmalı. Değilse aynı girdi her koşuda başka bir dosya
+    üretir — ve daha kötüsü, geçişler birbirinin işini bozup sonsuza dek
+    salınabilir. Gerçek olay: satır kırma 63 dosyada 86 cue'yu iki düzen
+    arasında sonsuza dek çeviriyordu ve hiçbir şey uyarmıyordu.
+
+    Döner: [(cue_no, zaman, birinci_hâl, ikinci_hâl), ...]
+    """
+    rows = list(blocks or [])
+    if not rows:
+        return []
+    try:
+        once = apply_line_breaks(rows)
+        twice = apply_line_breaks(once)
+    except Exception:
+        return []
+    unstable = []
+    for first, second in zip(once, twice):
+        if str(first[2]) != str(second[2]):
+            unstable.append((str(first[0]), str(first[1]),
+                             str(first[2]), str(second[2])))
+    return unstable
+
+
 def _ham_backup_path(output_path):
     """Teslim dosyasının ham yedeği: <bölüm>/Raporlar/Ham/<ad>.<hash>.ham.srt"""
     try:
@@ -19518,6 +19544,26 @@ def build_finding_rows(rows, read_cues=None) -> list:
                     "ham": body,
                     "oneri": "Ham yedekteki çeviriyi geri koy.",
                 })
+
+        # Biçim geçişi kendi çıktısını yeniden değiştiriyor mu.
+        for cue_no, timestamp, first, second in detect_unstable_shape_passes(
+                output_cues):
+            findings.append({
+                "id": _finding_id(name, "unstable_shape_pass",
+                                  timestamp, cue_no),
+                "dosya": name,
+                "kaynak_yolu": source_path,
+                "teslim_yolu": output_path,
+                "sinif": "unstable_shape_pass",
+                "baslik": "Biçim geçişi kararsız (f(f(x)) != f(x))",
+                "guven": "kesin",
+                "cue_no": str(cue_no),
+                "zaman": timestamp,
+                "kaynak": first,
+                "teslim": second,
+                "oneri": "Satır düzeni sabit noktaya ulaşmıyor; kırma "
+                         "kurallarını incele.",
+            })
 
     findings.sort(key=lambda f: (
         _FINDING_CONFIDENCE_ORDER.get(f["guven"], 9),
