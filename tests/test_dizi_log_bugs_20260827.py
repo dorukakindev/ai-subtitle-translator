@@ -121,5 +121,81 @@ class FindingAddressTest(unittest.TestCase):
         self.assertIn("teslim_cue_no", body)
 
 
+class CriticalFindingsReachJsonlTest(unittest.TestCase):
+    """Madde 5: KRİTİK sınıflar adreslenebilir çıktıya hiç girmiyordu.
+
+    Tarama kimlikleri hesaplayıp `len()` ile atıyordu; sayı rapora giriyor
+    ama cue düzeyi kayıt üretilemiyordu. Bu koşuda 20 KRİTİK bulgunun hiçbiri
+    `bulgular.jsonl`'e ulaşmadı.
+    """
+
+    def test_scan_keeps_ids_for_critical_classes(self):
+        for key in ("cue_id_leak_ids", "source_residue_ids",
+                    "missing_predicate_ids", "format_coverage_lost_ids"):
+            with self.subTest(key=key):
+                self.assertIn(key, gui._FINDING_CLASSES)
+
+    def test_leaked_cue_number_becomes_an_addressable_finding(self):
+        blocks = [("106", "00:00:01,000 --> 00:00:02,000", "Bir cümle."),
+                  ("107", "00:00:03,000 --> 00:00:04,000",
+                   "Sadakati bu kadar yücelten sen,\n108"),
+                  ("109", "00:00:05,000 --> 00:00:06,000", "Son cümle.")]
+        scan = gui._scan_delivery_blocks(blocks, [])
+        self.assertIn("107", scan.get("cue_id_leak_ids") or [])
+        self.assertEqual(scan.get("cue_id_leak"), 1)
+
+        rows = [{"name": "x", "source_path": "s.srt", "output_path": "o.srt",
+                 "delivery_scan": {"cue_id_leak_ids":
+                                   scan["cue_id_leak_ids"]}}]
+        found = gui.build_finding_rows(
+            rows, read_cues=lambda path: blocks)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["cue_no"], "107")
+        self.assertEqual(found[0]["teslim_cue_no"], "107")
+        self.assertTrue(found[0]["zaman"])
+
+    def test_counts_are_still_reported(self):
+        """Sayılar kaldırılmadı - kimlikler YANINA eklendi."""
+        blocks = [("1", "00:00:01,000 --> 00:00:02,000", "Bir.")]
+        scan = gui._scan_delivery_blocks(blocks, [])
+        for key in ("cue_id_leak", "source_residue", "missing_predicate"):
+            with self.subTest(key=key):
+                self.assertIsInstance(scan.get(key), int)
+
+
+class DeliveryFontTagTest(unittest.TestCase):
+    """Madde 3: `<font color>` teslimde kararsız kalıyordu.
+
+    `restore_format_tags` yalnız kaynağı TAM SARAN etiketi geri koyabiliyor;
+    gerisi modelin etiketi koruyup korumamasına kalıyordu. Real Hustle E01:
+    kaynakta 525 cue etiketli, teslimde 78. Etiket sadık biçimde geri
+    konamadığına göre tutarlı tek durum onu kaldırmak.
+    """
+
+    def _delivered(self, text):
+        blocks = [("1", "00:00:05,000 --> 00:00:07,000", text)]
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        return result[0][2]
+
+    def test_full_wrap_font_tag_is_removed(self):
+        self.assertEqual(
+            self._delivered('<font color="#ffff00">Renkli satır.</font>'),
+            "Renkli satır.")
+
+    def test_inline_font_tag_is_removed(self):
+        self.assertEqual(
+            self._delivered('Yarısı <font color="#00ff00">renkli</font> satır.'),
+            "Yarısı renkli satır.")
+
+    def test_italic_and_bold_survive(self):
+        self.assertEqual(self._delivered("<i>Eğik.</i>"), "<i>Eğik.</i>")
+        self.assertEqual(self._delivered("<b>Kalın.</b>"), "<b>Kalın.</b>")
+
+    def test_position_tag_removal_is_unchanged(self):
+        """Konum kodu teslimde ZATEN kaldırılıyordu; renk değişikliği ona
+        dokunmadı (ayrı sayaç: position_tags_removed)."""
+        self.assertEqual(self._delivered(r"{\an8}Üstte."), "Üstte.")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4844,6 +4844,27 @@ _LEADING_APOSTROPHE_CONTRACTION_RE = re.compile(
     r"^\s*'(?:cause|em|tis|twas|round|til|bout)\b", re.IGNORECASE)
 
 
+_DELIVERY_FONT_TAG_RE = re.compile(r"</?font\b[^>]*>", re.IGNORECASE)
+
+
+def _strip_delivery_font_tags(text: str) -> tuple[str, int]:
+    """Dekoratif `<font ...>` etiketini teslimden çıkarır (`<i>`/`<b>` kalır).
+
+    `restore_format_tags` yalnız kaynağı TAM SARAN etiketi geri koyabiliyor;
+    satır içi/kısmi etiket "güvenle geri konamaz" diye atlanıyor ve çeviri
+    zaten etiketle başlıyorsa hiç dokunulmuyor. Sonuç modelin etiketi koruyup
+    korumamasına kalıyordu: Real Hustle S01E01'de kaynağın 582 cue'sunun
+    525'inde font etiketi varken teslimde 78'inde kaldı — satırların %13'ü
+    renkli, %87'si normal, dosya bozuk görünüyor (dizi logu, madde 3).
+
+    Etiketin TAMAMI sadık biçimde geri konamadığına göre renk zaten anlamını
+    yitirmiş durumda; tutarlı olarak ulaşılabilir tek durum onu kaldırmak.
+    """
+    value = str(text or "")
+    cleaned, count = _DELIVERY_FONT_TAG_RE.subn("", value)
+    return cleaned, count
+
+
 def _strip_delivery_position_tags(text: str) -> tuple[str, int]:
     removed = 0
 
@@ -6457,15 +6478,27 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     _format_lost_ids = _format_coverage_lost_ids(blocks, src_map)
     stats["format_coverage_lost_ids"] = _format_lost_ids
     stats["format_coverage_lost"] = len(_format_lost_ids)
-    stats["cue_id_leak"] = len(_cue_id_leak_ids(blocks))
+    # KRİTİK sınıflar da cue düzeyinde SAKLANIR. Eskiden yalnız `len()`
+    # alınıyordu; sayı rapora giriyor ama `bulgular.jsonl`'e giremiyordu, yani
+    # bu koşudaki 20 KRİTİK bulgunun hiçbiri adreslenebilir çıktıya ulaşmadı
+    # (dizi logu, madde 5). `format_coverage_lost_ids` bunu zaten yapıyordu.
+    _leak_ids = _cue_id_leak_ids(blocks)
+    stats["cue_id_leak_ids"] = _leak_ids
+    stats["cue_id_leak"] = len(_leak_ids)
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     cue_fill = _cue_fill_imbalances(blocks, src_map)
     stats["cue_fill"] = len(cue_fill)
     stats["cue_fill_details"] = cue_fill
     stats["partial_echo"] = len(_partial_echo_ids(blocks, src_map))
-    stats["missing_predicate"] = len(_missing_predicate_ids(blocks, src_map))
-    stats["source_residue"] = len(
-        _source_residue_with_turkish_suffix(blocks, src_map, locked_terms))
+    _predicate_ids = _missing_predicate_ids(blocks, src_map)
+    stats["missing_predicate_ids"] = [str(v) for v in _predicate_ids]
+    stats["missing_predicate"] = len(_predicate_ids)
+    # Bu tespit sözlük döner ({'id', 'token', 'stem'}); adres için kimlik gerek.
+    _residue = _source_residue_with_turkish_suffix(blocks, src_map, locked_terms)
+    stats["source_residue_ids"] = [
+        str(item.get("id")) if isinstance(item, dict) else str(item)
+        for item in _residue]
+    stats["source_residue"] = len(_residue)
     head_typos = _repeated_head_typo_ids(blocks)
     stats["syllable_typo"] = len(head_typos)
     stats["syllable_typo_details"] = head_typos
@@ -7478,6 +7511,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     work = []
     hats_removed = 0
     position_tags_removed = 0
+    font_tags_removed = 0
     sdh_removed = 0
     typography_fixed = 0
     foreign_terms_fixed = 0
@@ -7492,6 +7526,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             continue
         value, removed = _strip_delivery_position_tags(value)
         position_tags_removed += removed
+        value, _font_removed = _strip_delivery_font_tags(value)
+        font_tags_removed += _font_removed
         value = _normalize_delivery_ass_style_tags(value)
         source_credit_lines = _delivery_credit_line_indexes(source_text)
         value_lines = value.splitlines()
@@ -7610,10 +7646,11 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
             )
         elif cleaned:
             log_fn(
-                "Nihai teslim koruması: güvenli baş/orta/son discord imzaları yenilendi; "
+                "Nihai teslim koruması: son discord imzası yenilendi; "
                 f"{credits_removed} eski kredi cue'su, "
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "
+                f"{font_tags_removed} renk etiketi, "
                 f"{sdh_removed} SDH/müzik cue'su temizlendi, "
                 f"{quote_markers_fixed} bozuk OCR tırnak işareti, "
                 f"{typography_fixed} tipografik tırnak/kesme, "
@@ -19362,6 +19399,12 @@ _FINDING_CLASSES = {
     "foreign_script_ids": ("muhtemel", "Yabancı yazı sistemi", "Hedef dile çevir."),
     "ocr_artifact_ids": ("muhtemel", "OCR kalıntısı", "Kaynağa göre düzelt."),
     "format_coverage_lost_ids": ("muhtemel", "Kaynaktaki biçim etiketi kaybolmuş", "Etiketi geri koy."),
+    # Teslim taramasının KRİTİK sınıfları. Güven "muhtemel": ölçümde
+    # `source_residue` doğru Türkçeyi de işaretliyor (`PIN'ini`, `ATM'de`),
+    # `missing_predicate` ise cue'ya bölünmüş cümlenin ilk yarısını.
+    "cue_id_leak_ids": ("kesin", "Metne sızmış cue numarası", "Sızan numarayı sil."),
+    "source_residue_ids": ("muhtemel", "Türkçe ekli kaynak kalıntısı", "Sözcüğü Türkçeye çevir."),
+    "missing_predicate_ids": ("muhtemel", "Yüklemsiz biten cue", "Cümle sonraki cue'da tamamlanıyor mu bak."),
     "introduced_out_of_order_ids": ("muhtemel", "Sıra bozulması (bu koşuda)", "Sırayı düzelt."),
     "expected_removed_ids": ("bilgi", "Bilinçli silinen cue", "Beklenen davranış; kayıt için."),
     "inherited_out_of_order_ids": ("bilgi", "Sıra bozulması (kaynaktan)", "Kaynakta da var."),
