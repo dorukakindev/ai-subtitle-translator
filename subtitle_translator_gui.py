@@ -8039,6 +8039,63 @@ def non_latin_script_ratio(text: str) -> float:
     return (other / total) if total else 0.0
 
 
+# ── Kaynak kodlama denetimi (B6) ─────────────────────────────────────────────
+# Gerçek olay: `Qu'est ce que l'acte de creation.srt` Rusça bir metin ama
+# yanlış kod sayfasıyla okunmuş; her satır `ЩРН АСДСР БНОПНЯШ` gibi. Dosya
+# bu hâliyle baştan sona çevrildi, para harcandı ve teslim edildi.
+#
+# Sinyal 'Latin dışı yazı' OLAMAZ — Yunanca/Arapça/Kiril kaynaklar meşru.
+# Ölçüm (286 kaynak, 11 baskın Kiril dosyası) iki sinyalde tam ayrım verdi:
+#
+#            sesli harf     büyük harf
+#   mojibake     %28,7          %98,3
+#   gerçek   %41,9–42,8      %2,1–5,3
+#
+# Hiçbir doğal metin %98 büyük harf değildir; sesli oranı da gerçek
+# dosyalarda çok dar bir bantta. İkisi birlikte istenir — yalnız büyük harf
+# bakmak, tamamı büyük harfle yazılmış meşru bir kaynağı yakalardı.
+_CYRILLIC_RE = re.compile(r"[Ѐ-ӿ]")
+_GREEK_RE = re.compile(r"[Ͱ-Ͽ]")
+_CYRILLIC_VOWELS = frozenset("аеёиоуыэюя")
+_GREEK_VOWELS = frozenset("αεηιουω")
+_MOJIBAKE_UPPER_RATIO = 0.90
+_MOJIBAKE_VOWEL_RATIO = 0.35
+
+
+def scan_source_encoding(cues, min_letters: int = 200) -> dict:
+    """Kaynak yanlış kod sayfasıyla mı okunmuş.
+
+    Döner: {"suspect": bool, "script": str, "vowel_ratio": float,
+            "upper_ratio": float, "letters": int}
+    """
+    body = " ".join(
+        str(cue[2] if isinstance(cue, (tuple, list)) and len(cue) > 2
+            else getattr(cue, "text", "") or "")
+        for cue in (cues or ()))
+    result = {"suspect": False, "script": "", "vowel_ratio": 0.0,
+              "upper_ratio": 0.0, "letters": 0}
+    for name, pattern, vowels in (("Kiril", _CYRILLIC_RE, _CYRILLIC_VOWELS),
+                                  ("Yunan", _GREEK_RE, _GREEK_VOWELS)):
+        letters = pattern.findall(body)
+        if len(letters) < min_letters:
+            continue
+        lowered = [ch.lower() for ch in letters]
+        vowel_ratio = sum(1 for ch in lowered if ch in vowels) / len(lowered)
+        upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
+        if (upper_ratio >= _MOJIBAKE_UPPER_RATIO
+                and vowel_ratio < _MOJIBAKE_VOWEL_RATIO):
+            result.update({"suspect": True, "script": name,
+                           "vowel_ratio": vowel_ratio,
+                           "upper_ratio": upper_ratio,
+                           "letters": len(letters)})
+            return result
+        if not result["letters"]:
+            result.update({"script": name, "vowel_ratio": vowel_ratio,
+                           "upper_ratio": upper_ratio,
+                           "letters": len(letters)})
+    return result
+
+
 def scan_timestamp_integrity(cues) -> dict:
     """Kaynak zaman damgalarindaki yapisal kusurlar.
 
@@ -8209,6 +8266,22 @@ def scan_subtitle_preflight(files, input_dir="", output_dir="", *,
                         + "; ".join(_ts_parts)
                         + f". İlk örnekler: {_first}. Çeviri bunu düzeltmez; "
                         "oynatıcıda altyazılar üst üste binebilir."),
+                })
+            # Kaynak yanlış kod sayfasıyla mı okunmuş? Böyle bir dosya
+            # baştan sona çevrilip para harcıyor ve teslim ediliyor;
+            # kusur ancak okunurken fark ediliyor.
+            _enc = scan_source_encoding(cues)
+            if _enc["suspect"]:
+                issues.append({
+                    "severity": "warning", "code": "source_encoding",
+                    "path": str(path),
+                    "message": (
+                        f"Kaynak {_enc['script']} harfleriyle okunuyor ama "
+                        f"harf dağılımı doğal metne benzemiyor "
+                        f"(%{100 * _enc['upper_ratio']:.0f} büyük harf, "
+                        f"%{100 * _enc['vowel_ratio']:.0f} sesli). Dosya "
+                        "büyük olasılıkla YANLIŞ KOD SAYFASIYLA okunmuş; "
+                        "bu hâliyle çevrilirse tamamı yanlış çıkar."),
                 })
             # İçerik gerçekten seçilen dilde mi? Ad kontrolü yalnız dosya
             # adına bakıyor ve 'Otomatik' dışında içerik hiç denetlenmiyordu.
