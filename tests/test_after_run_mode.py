@@ -74,5 +74,32 @@ class AfterRunModeTest(unittest.TestCase):
         self.assertEqual(second, [])
 
 
+class ToggleDescriptionHintTest(unittest.TestCase):
+    """Metni yeniden yazan her kutunun açıklaması ne zaman kapalı
+    tutulacağını söylesin.
+
+    Kutuların ne yaptığını anlatan açıklamaları zaten vardı; eksik olan,
+    kullanıcının asıl kararı: sonradan bir LLM okuyacaksa bu geçiş kapalı
+    kalmalı.
+    """
+
+    def test_every_rewriting_toggle_description_carries_the_hint(self):
+        import io
+        import re
+        source = io.open("subtitle_translator_gui.py",
+                         encoding="utf-8", errors="replace").read()
+        label_re = re.compile(
+            r'ctk\.CTkLabel\(\s*sb,\s*text="((?:[^"\\]|\\.)*)"', re.S)
+        for name in gui.App._TEXT_REWRITING_TOGGLES:
+            with self.subTest(name=name):
+                match = re.search(r"variable=self\.%s\b" % re.escape(name),
+                                  source)
+                self.assertIsNotNone(match, name)
+                window = source[match.end():match.end() + 2500]
+                label = label_re.search(window)
+                self.assertIsNotNone(label, name)
+                self.assertIn("LLM'e vereceksen", label.group(1), name)
+
+
 if __name__ == "__main__":
     unittest.main()

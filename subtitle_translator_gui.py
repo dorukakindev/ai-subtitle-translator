@@ -22367,7 +22367,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(rev_fr, text="Bağlam İncelemesi (Batch)",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Batch çevirisi bitince ana model dosyayı\nkaynakla karşılaştırıp baştan sona okur:\nterim/hitap tutarsızlıklarını ve çeviri\nhatalarını düzeltir. (~%40-60 ek maliyet)",
+        ctk.CTkLabel(sb, text="Batch çevirisi bitince ana model dosyayı\nkaynakla karşılaştırıp baştan sona okur:\nterim/hitap tutarsızlıklarını ve çeviri\nhatalarını düzeltir. (~%40-60 ek maliyet)\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22403,7 +22403,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(tna_fr, text="  └ Düzeltmeleri uygula",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Kapalıyken yalnızca rapor edilir. Uygulanan\ndüzeltmeler zaten iki katmanlı denetimden\ngeçer: plan sadece 'çevrilmeden kalmış' sınıfını\nseçer, aday da satır bazında doğrulanır.",
+        ctk.CTkLabel(sb, text="Kapalıyken yalnızca rapor edilir. Uygulanan\ndüzeltmeler zaten iki katmanlı denetimden\ngeçer: plan sadece 'çevrilmeden kalmış' sınıfını\nseçer, aday da satır bazında doğrulanır.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0, 8)); r += 1
@@ -22421,7 +22421,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(cfm_fr, text="Cue-fill taşıma",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Türkçe söz dizimi yüzünden 0,4 saniyelik bir\ncue'ya yığılan metni, önünde boş duran cue'ya\ngeri kaydırır. Zaman damgasına ve metnin\nkendisine dokunmaz. Sığmayan metin için\ndeğil (o condense işi) — yalnız yer varken.",
+        ctk.CTkLabel(sb, text="Türkçe söz dizimi yüzünden 0,4 saniyelik bir\ncue'ya yığılan metni, önünde boş duran cue'ya\ngeri kaydırır. Zaman damgasına ve metnin\nkendisine dokunmaz. Sığmayan metin için\ndeğil (o condense işi) — yalnız yer varken.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0, 8)); r += 1
@@ -22478,7 +22478,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(critic_fr, text="Critic Pass",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Seçili yardımcı model şüpheli anlam, bağlam ve\nterim noktalarını yalnız raporlar; altyazıyı değiştirmez.",
+        ctk.CTkLabel(sb, text="Seçili yardımcı model şüpheli anlam, bağlam ve\nterim noktalarını yalnız raporlar; altyazıyı değiştirmez.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22495,7 +22495,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(polish_fr, text="Polish Pass",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Çeviri bittikten sonra seçili yardımcı modelle\nikinci geçiş — doğal Türkçeye çevirir.",
+        ctk.CTkLabel(sb, text="Çeviri bittikten sonra seçili yardımcı modelle\nikinci geçiş — doğal Türkçeye çevirir.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22512,7 +22512,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(qc_fr, text="QC Kontrolü",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Seçili yardımcı model çeviriyi inceler, şüpheli\nsatırları işaretler. Onayınla düzeltir.",
+        ctk.CTkLabel(sb, text="Seçili yardımcı model çeviriyi inceler, şüpheli\nsatırları işaretler. Onayınla düzeltir.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22528,7 +22528,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(native_fr, text="🇹🇷 Native Okuyucu",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Türk izleyici gözüyle 'çevrilmiş gibi\nduran' satırları tespit edip doğallaştırır.",
+        ctk.CTkLabel(sb, text="Türk izleyici gözüyle 'çevrilmiş gibi\nduran' satırları tespit edip doğallaştırır.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22544,7 +22544,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(bt_fr, text="Geri Çeviri Anlam Kontrolü",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Türkçeyi tekrar İngilizceye çevirip anlamı\nkaynaktan SAPAN satırları yakalar; güvenli\nönerileri otomatik düzeltir ve raporlar.\n(Ek maliyet)",
+        ctk.CTkLabel(sb, text="Türkçeyi tekrar İngilizceye çevirip anlamı\nkaynaktan SAPAN satırları yakalar; güvenli\nönerileri otomatik düzeltir ve raporlar.\n(Ek maliyet)\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22559,7 +22559,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(sr_fr, text="Nihai Anlam Mutabakatı",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Riskli ve çoklu-cue cümleleri kaynakla ±2 komşu\niçinde karşılaştırır; kapsam yaklaşık en az %65'tir.\nKüme güvenli değilse hiçbir değişiklik yapmaz.\n(Yüksek ek maliyet)",
+        ctk.CTkLabel(sb, text="Riskli ve çoklu-cue cümleleri kaynakla ±2 komşu\niçinde karşılaştırır; kapsam yaklaşık en az %65'tir.\nKüme güvenli değilse hiçbir değişiklik yapmaz.\n(Yüksek ek maliyet)\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22590,7 +22590,7 @@ class App(ctk.CTk):
         ).grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
         ctk.CTkLabel(
             sb,
-            text="Final altyazıyı kaynakla; cümle/fragment,\n"
+            text="Final altyazıyı kaynakla; cümle/fragment,\n\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak."
                  "komşu cue ve sahne bağlamında inceler. Özne-nesne,\n"
                  "kip/olumsuzluk, eksik-tekrar anlam ve Critic bozmasını\n"
                  "cue numarasıyla raporlar; metni asla değiştirmez.\n"
@@ -22644,7 +22644,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(lb_fr, text="Satır Kırma",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="42+ karakterlik satırları virgül/\nbağlaçtan böler. (EBU standardı)",
+        ctk.CTkLabel(sb, text="42+ karakterlik satırları virgül/\nbağlaçtan böler. (EBU standardı)\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22660,7 +22660,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(mc_fr, text="Parçalı Cue Birleştir",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="'Peki, ananla ne yapacaksın' / 'ki?' gibi\nkelime kelime bölünmüş ardışık cue'ları\ntek bloğa toplar. Senkron korunur; sadece\ndevam eden (cümle bitmeyen) satırlar birleşir.",
+        ctk.CTkLabel(sb, text="'Peki, ananla ne yapacaksın' / 'ki?' gibi\nkelime kelime bölünmüş ardışık cue'ları\ntek bloğa toplar. Senkron korunur; sadece\ndevam eden (cümle bitmeyen) satırlar birleşir.\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -22692,7 +22692,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(cd_fr, text="Okuma Hızı Kısaltma",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Ekrana sığmayan (çok hızlı) satırları\nanlamı koruyarak kısaltır. (gpt-5.4-mini ile)",
+        ctk.CTkLabel(sb, text="Ekrana sığmayan (çok hızlı) satırları\nanlamı koruyarak kısaltır. (gpt-5.4-mini ile)\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
