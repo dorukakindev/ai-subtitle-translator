@@ -22236,6 +22236,35 @@ class App(ctk.CTk):
         sep()
         section("KALİTE")
 
+        # Sonrası kipi: 35 kutunun hangilerinin açık olması gerektiği tek
+        # bir soruya bağlı — çeviriyi sonradan bir LLM okuyacak mı. Okuyacaksa
+        # programın metni kendi yeniden yazması hem gereksiz hem riskli;
+        # okumayacaksa program elinden geleni yapmalı. Kutular yerinde kalır,
+        # bu yalnız hepsini tek kararla ayarlar.
+        after_fr = ctk.CTkFrame(sb, fg_color="transparent")
+        after_fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
+        after_fr.grid_columnconfigure(0, weight=1)
+        ctk.CTkButton(
+            after_fr, text="Sonrası: LLM incelemesi",
+            height=30, fg_color=CARD, border_color=BORDER, border_width=1,
+            text_color=FG, hover_color=BORDER,
+            command=lambda: App._apply_after_run_mode(self, "llm"),
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        ctk.CTkButton(
+            after_fr, text="Sonrası: Doğrudan teslim",
+            height=30, fg_color=CARD, border_color=BORDER, border_width=1,
+            text_color=FG, hover_color=BORDER,
+            command=lambda: App._apply_after_run_mode(self, "dogrudan"),
+        ).grid(row=1, column=0, sticky="ew")
+        ctk.CTkLabel(
+            sb,
+            text=("LLM incelemesi: metni değiştiren geçişler kapanır,\n"
+                  "rapor ayrıntılı kalır — düzeltmeyi Codex/Claude yapar.\n"
+                  "Doğrudan teslim: program elinden geleni kendi düzeltir."),
+            font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+            justify="left", wraplength=260).grid(
+            row=r, column=0, sticky="w", padx=4, pady=(2, 8)); r += 1
+
         # Zincirleme Bağlam (sync modda önceki chunk çevirileri bağlam olur)
         self.chain_ctx_var = ctk.BooleanVar(value=True)
         chain_fr = ctk.CTkFrame(sb, fg_color="transparent")
@@ -24123,6 +24152,60 @@ class App(ctk.CTk):
             return float(value)
         except (TypeError, ValueError):
             return 3.0
+
+    # Metni YENİDEN YAZAN geçişler. Sonrasında bir LLM okuyacaksa bunların
+    # açık olması hem gereksiz (okuyan zaten düzeltecek) hem riskli
+    # (otomatik düzeltmenin yanlış-alarm oranı ölçüldü ve yüksek).
+    # Metni değiştirmeyen kutular (twowave, same_folder, notify…) BU LİSTEYE
+    # GİRMEZ — kip yalnız yeniden yazmayı kapatır, akışı değil.
+    _TEXT_REWRITING_TOGGLES = (
+        "critic_var", "polish_var", "native_var", "condense_var", "qc_var",
+        "linebreak_var", "review_pass_var", "backtrans_var",
+        "term_normalize_apply_var", "cue_fill_move_var",
+        "semantic_reconcile_var", "merge_cues_var",
+        "deep_delivery_semantic_var",
+    )
+    # LLM kipinde AÇIK kalması gerekenler: rapor ayrıntılı olsun ve ham
+    # yedek üretilsin — ham↔teslim içerik koruma kontrolü ona dayanıyor.
+    _LLM_MODE_REQUIRED_ON = ("quality_report_only_var", "backup_raw_var")
+
+    def _apply_after_run_mode(self, mode: str):
+        """Kip seçicisi: 35 kutuyu tek kararla ayarlar."""
+        rewriting_on = mode != "llm"
+        changed = []
+        for name in self._TEXT_REWRITING_TOGGLES:
+            var = getattr(self, name, None)
+            if var is None:
+                continue
+            try:
+                if bool(var.get()) != rewriting_on:
+                    var.set(rewriting_on)
+                    changed.append(name)
+            except Exception:
+                continue
+        if mode == "llm":
+            for name in self._LLM_MODE_REQUIRED_ON:
+                var = getattr(self, name, None)
+                if var is None:
+                    continue
+                try:
+                    if not bool(var.get()):
+                        var.set(True)
+                        changed.append(name)
+                except Exception:
+                    continue
+        label = ("LLM incelemesi" if mode == "llm" else "Doğrudan teslim")
+        if changed:
+            self._log(
+                f"Kip: {label} — {len(changed)} ayar değişti "
+                f"({', '.join(name[:-4] for name in changed)}).", "info")
+        else:
+            self._log(f"Kip: {label} — ayarlar zaten böyleydi.", "info")
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+        return changed
 
     def _run_setting(self, key: str, var_name: str, default=None):
         snapshot = getattr(self, "_active_snapshot", None)
