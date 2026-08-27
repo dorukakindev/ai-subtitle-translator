@@ -19222,6 +19222,138 @@ def _report_finding_rows(rows) -> list:
     return out
 
 
+# ── Bulgu düzeyinde liste (A1–A3) ─────────────────────────────────────────────
+# Rapor JSON'u DOSYA düzeyinde: `missing_dialogue_ids: [325]` gibi. Bulguyu
+# okuyan (Codex/Claude) altyazıyı açıp o numarayı bulmak zorunda kalıyor —
+# ve teslimde cue numaraları YENİDEN NUMARALANIYOR, yani numara güvenilir
+# bir adres değil (gerçek olay: kimlik eşlemesi 23.398 sahte ihlal üretti).
+# Bu liste her bulguyu tek satıra indirir ve ZAMAN DAMGASIYLA adresler.
+
+# Sınıf -> (güven, insan okunur ad, öneri)
+#   kesin   : yorum gerektirmez, mekanik olarak doğrulanabilir
+#   muhtemel: gerçek sınıf ama ölçülmüş yanlış alarmı var
+#   bilgi   : çoğunlukla doğru davranış, yalnız kayıt için
+_FINDING_CLASSES = {
+    "invalid_timestamp_ids": ("kesin", "Geçersiz zaman damgası", "Zaman damgasını düzelt."),
+    "reversed_timestamp_ids": ("kesin", "Ters zaman damgası", "Başlangıç bitişten sonra; düzelt."),
+    "duplicate_cue_ids": ("kesin", "Yinelenen cue kimliği", "Kimliği tekilleştir."),
+    "signature_overlap_ids": ("kesin", "İmza cue'su çakışıyor", "İmza zamanını kaydır."),
+    "serialized_json_residue_ids": ("kesin", "Metne sızmış JSON kalıntısı", "Kalıntıyı sil."),
+    "missing_dialogue_ids": ("muhtemel", "Teslimde eksik diyalog", "Kaynaktaki repliği çevirip ekle."),
+    "untranslated_fragment_ids": ("muhtemel", "Çevrilmemiş parça", "Kaynaktan çevir."),
+    "garble_ids": ("muhtemel", "Bozulmuş sözcük", "Kaynağa göre yeniden yaz."),
+    "semantic_loss_ids": ("muhtemel", "Anlam kaybı", "Kaynakla karşılaştır."),
+    "residual_sdh_ids": ("muhtemel", "Kalıntı SDH etiketi", "Etiketi sil."),
+    "residual_credit_ids": ("muhtemel", "Kalıntı künye", "Cue'yu sil."),
+    "residual_speaker_label_ids": ("muhtemel", "Kalıntı konuşmacı etiketi", "Öneki soy."),
+    "foreign_script_ids": ("muhtemel", "Yabancı yazı sistemi", "Hedef dile çevir."),
+    "ocr_artifact_ids": ("muhtemel", "OCR kalıntısı", "Kaynağa göre düzelt."),
+    "format_coverage_lost_ids": ("muhtemel", "Kaynaktaki biçim etiketi kaybolmuş", "Etiketi geri koy."),
+    "introduced_out_of_order_ids": ("muhtemel", "Sıra bozulması (bu koşuda)", "Sırayı düzelt."),
+    "expected_removed_ids": ("bilgi", "Bilinçli silinen cue", "Beklenen davranış; kayıt için."),
+    "inherited_out_of_order_ids": ("bilgi", "Sıra bozulması (kaynaktan)", "Kaynakta da var."),
+    "delivery_owner_mismatch_ids": ("bilgi", "Sahiplik eşleşmedi", "Eşleme incelemesi."),
+    "timestamp_mismatch_ids": ("bilgi", "Zaman damgası kaymış", "Eşleme incelemesi."),
+    "extra_dialogue_ids": ("bilgi", "Kaynakta olmayan cue", "Fazladan içerik mi bak."),
+}
+
+_FINDING_CONFIDENCE_ORDER = {"kesin": 0, "muhtemel": 1, "bilgi": 2}
+
+
+def _finding_id(file_name: str, finding_class: str, timestamp: str,
+                cue_no: str) -> str:
+    """Koşular arasında KARARLI bulgu kimliği.
+
+    Karar dosyası (bulgu_kararlari.json) bununla eşleşiyor: aynı bulgu
+    ikinci koşuda aynı kimliği almalı ki 'yanlış alarm' işareti kalıcı
+    olsun. Cue numarası değişebildiği için zaman damgası da anahtara girer.
+    """
+    key = "|".join([
+        str(file_name or ""), str(finding_class or ""),
+        str(timestamp or ""), str(cue_no or ""),
+    ])
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+
+
+def build_finding_rows(rows, read_cues=None) -> list:
+    """Dosya düzeyindeki rapor satırlarını BULGU düzeyine indirger.
+
+    `read_cues(path) -> [(idx, ts, text), ...]`; verilmezse gerçek dosyalar
+    okunur. Okuma başarısızsa bulgu yine üretilir, yalnız metin alanları
+    boş kalır — bulgunun kaybolmaması okunabilirlikten önce gelir.
+    """
+    if read_cues is None:
+        def read_cues(path):
+            return list(parse_subtitle(str(path)))
+
+    cache = {}
+
+    def cues_of(path):
+        key = str(path or "")
+        if not key:
+            return []
+        if key not in cache:
+            try:
+                cache[key] = list(read_cues(key))
+            except Exception:
+                cache[key] = []
+        return cache[key]
+
+    findings = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "")
+        source_path = str(row.get("source_path") or "")
+        output_path = str(row.get("output_path") or "")
+        source_cues = cues_of(source_path)
+        output_cues = cues_of(output_path)
+        source_by_id = {str(c[0]): (str(c[1]), str(c[2] or ""))
+                        for c in source_cues}
+        output_by_ts = {}
+        for c in output_cues:
+            output_by_ts.setdefault(str(c[1]), []).append(str(c[2] or ""))
+
+        for block_name in ("delivery_audit", "delivery_scan"):
+            block = row.get(block_name)
+            if not isinstance(block, dict):
+                continue
+            for field, ids in block.items():
+                meta = _FINDING_CLASSES.get(field)
+                if not meta or not isinstance(ids, (list, tuple)):
+                    continue
+                confidence, label, suggestion = meta
+                for cue_no in ids:
+                    timestamp, source_text = source_by_id.get(
+                        str(cue_no), ("", ""))
+                    delivered = " / ".join(output_by_ts.get(timestamp, ()))
+                    findings.append({
+                        "id": _finding_id(name, field, timestamp, cue_no),
+                        "dosya": name,
+                        "kaynak_yolu": source_path,
+                        "teslim_yolu": output_path,
+                        "sinif": field,
+                        "baslik": label,
+                        "guven": confidence,
+                        "cue_no": str(cue_no),
+                        "zaman": timestamp,
+                        "kaynak": source_text,
+                        "teslim": delivered,
+                        "oneri": suggestion,
+                    })
+
+    findings.sort(key=lambda f: (
+        _FINDING_CONFIDENCE_ORDER.get(f["guven"], 9),
+        f["dosya"], f["zaman"], f["sinif"]))
+    return findings
+
+
+def build_findings_jsonl(rows, read_cues=None) -> str:
+    """`bulgular.jsonl` gövdesi: satır başına bir bulgu."""
+    lines = [json.dumps(item, ensure_ascii=False)
+             for item in build_finding_rows(rows, read_cues=read_cues)]
+    return "\n".join(lines) + ("\n" if lines else "")
+
 def build_delivery_scan_report_text(rows, run_id: str = "") -> str:
     """R2 — Raporlar/teslim_taramasi.txt içeriği. Kırpma yok."""
     findings = _report_finding_rows(rows)
@@ -36293,6 +36425,41 @@ class App(ctk.CTk):
             json_path = rep_dir / "ceviri_raporu.json"
             atomic_write_json(json_path, json_payload)
             report_paths.append(json_path)
+            # Bulgu düzeyinde liste: rapor JSON'u dosya düzeyinde olduğu için
+            # bulguyu okuyanın altyazıyı açıp cue numarası eşleştirmesi
+            # gerekiyordu — ve o numara teslimde yeniden numaralanıyor.
+            try:
+                findings = build_finding_rows(report_rows)
+                # Eyleme geçirilebilir olanlar ayrı dosyada: bir koşuda 204
+                # bulgunun 196'sı "bilinçli silindi" bilgisi oluyor ve bu
+                # dosya doğrudan Codex/Claude'a veriliyor — bilgi satırları
+                # orada saf token maliyeti. Hiçbiri kaybolmuyor, ikinci
+                # dosyaya yazılıyor.
+                actionable = [f for f in findings if f["guven"] != "bilgi"]
+                informational = [f for f in findings if f["guven"] == "bilgi"]
+
+                def _dump(path, items):
+                    atomic_write_text(
+                        path,
+                        "\n".join(json.dumps(item, ensure_ascii=False)
+                                  for item in items) + ("\n" if items else ""),
+                        encoding="utf-8")
+                    report_paths.append(path)
+
+                findings_path = rep_dir / "bulgular.jsonl"
+                _dump(findings_path, actionable)
+                if informational:
+                    _dump(rep_dir / "bulgular-bilgi.jsonl", informational)
+                by_confidence = Counter(f["guven"] for f in findings)
+                self._log(
+                    "Bulgu listesi: %d eylem (%d kesin, %d muhtemel) → %s"
+                    " | %d bilgi satırı ayrı dosyada" % (
+                        len(actionable), by_confidence.get("kesin", 0),
+                        by_confidence.get("muhtemel", 0), findings_path.name,
+                        len(informational)),
+                    "info")
+            except Exception as exc:
+                self._log(f"Bulgu listesi yazılamadı: {exc}", "warn")
             if run_id:
                 run_path = rep_dir / f"ceviri_raporu_{run_id}.txt"
                 atomic_write_text(run_path, txt, encoding="utf-8")
