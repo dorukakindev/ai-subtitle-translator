@@ -13689,6 +13689,28 @@ _EXONYM_TR = {
     "Algeria": "Cezayir", "Morocco": "Fas", "Tunisia": "Tunus",
     "Syria": "Suriye", "Lebanon": "Lübnan", "India": "Hindistan",
     "China": "Çin", "Japan": "Japonya",
+    # 2026-08-27 devri: Amazon 4of6'da Brazil/Brezilya ve Colombia/Kolombiya
+    # aynı dosyada geçtiği hâlde dedektör susuyordu — adlar tabloda yoktu.
+    "Brazil": "Brezilya", "Brazilian": "Brezilyalı",
+    "Colombia": "Kolombiya", "Colombian": "Kolombiyalı",
+    "Atlantic": "Atlantik", "Pacific": "Pasifik",
+    "Mediterranean": "Akdeniz", "Baltic": "Baltık",
+    "Caspian": "Hazar", "Caucasus": "Kafkasya", "Siberia": "Sibirya",
+    "Romania": "Romanya", "Romanian": "Romen",
+    "Bulgaria": "Bulgaristan", "Serbia": "Sırbistan",
+    "Croatia": "Hırvatistan", "Ukraine": "Ukrayna",
+    "Belgium": "Belçika", "Georgia": "Gürcistan",
+    "Armenia": "Ermenistan", "Azerbaijan": "Azerbaycan",
+    "Kazakhstan": "Kazakistan", "Afghanistan": "Afganistan",
+    "Bangladesh": "Bangladeş", "Thailand": "Tayland",
+    "Philippines": "Filipinler", "Indonesia": "Endonezya",
+    "Malaysia": "Malezya", "Mexico": "Meksika",
+    "Argentina": "Arjantin", "Chile": "Şili", "Bolivia": "Bolivya",
+    "Ecuador": "Ekvador", "Cuba": "Küba", "Jamaica": "Jamaika",
+    "Canada": "Kanada", "Australia": "Avustralya",
+    "Ethiopia": "Etiyopya", "Nigeria": "Nijerya", "Somalia": "Somali",
+    "Ghana": "Gana", "Congo": "Kongo", "Zimbabwe": "Zimbabve",
+    "Mozambique": "Mozambik", "Madagascar": "Madagaskar",
 }
 _EXONYM_EN_RE = {
     name: re.compile(r"(?<![\w'’])%s(?![a-zA-Z])" % re.escape(name))
