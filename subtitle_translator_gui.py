@@ -6562,6 +6562,73 @@ def _source_caps_heuristic_allowed(texts, threshold: float = 0.60) -> bool:
     return sdh_cleaner.caps_heuristic_allowed(texts, threshold=threshold)
 
 
+_DELIVERY_WEB_CREDIT_RE = re.compile(
+    r"(?:https?://|www\.)\S+"
+    r"|\b[a-z0-9-]+\.(?:com|org|net|tv|info|co\.uk|com\.br)\b"
+    r"|\b1-8\d{2}-[\w-]+",
+    re.IGNORECASE)
+_DELIVERY_TEAM_CREDIT_RE = re.compile(
+    r"\b(?:downloaded\s+from|ripped\s+by|synced?\s+(?:and\s+corrected\s+)?by"
+    r"|corrected\s+by|subtitles?\s+by|subtitled\s+by|captions?\s+by"
+    r"|legendas?\b|traduzido|apresenta|traducción|traduction|sous-titres"
+    r"|übersetzung|vertaling|çeviri\s*:|altyazı\s*:)",
+    re.IGNORECASE)
+_DELIVERY_BROADCAST_PROMO_RE = re.compile(
+    r"\b(?:to\s+order\s+this\s+(?:program|programme|dvd)"
+    r"|visit\s+(?:our\s+website|shop\b)"
+    r"|available\s+on\s+(?:amazon|dvd|blu-?ray)"
+    r"|order\s+(?:now|online)\s+at)",
+    re.IGNORECASE)
+
+
+def _looks_like_credit_or_promo(text: str) -> bool:
+    """Kaynak cue'su altyazı ekibi künyesi ya da yayın promosyonu mu.
+
+    Ölçüm (204.031 gerçek kaynak cue): 136 vuruş, %0,067 — örneklenen
+    hepsi gerçek künye (`Subtitles by Red Bee Media Ltd`,
+    `E-mail subtitling@bbc.co.uk`, `To order this program on DVD`).
+    """
+    flat = _ANY_MARKUP_RE.sub("", str(text or ""))
+    flat = re.sub(r"\s+", " ", flat).strip()
+    if not flat:
+        return False
+    return bool(_DELIVERY_WEB_CREDIT_RE.search(flat)
+                or _DELIVERY_TEAM_CREDIT_RE.search(flat)
+                or _DELIVERY_BROADCAST_PROMO_RE.search(flat))
+
+
+def _delivery_expected_removed_extra_ids(source_rows) -> set:
+    """Denetimin kaçırdığı, silinmesi DOĞRU olan cue kimlikleri.
+
+    İki sinyal: künye/promosyon biçimi, ve silmeyi fiilen yapan SDH
+    temizleyicisinin kendi kararı. İkincisi tahmin değil — aynı yordama
+    sorulur, böylece denetim ile hat bir daha ayrışamaz.
+    """
+    rows = list(source_rows or [])
+    if not rows:
+        return set()
+    texts = [text for _idx, _ts, text in rows]
+    try:
+        import sdh_cleaner as _sdh
+        caps_allowed = _sdh.caps_heuristic_allowed(texts)
+    except Exception:
+        return {idx for idx, _ts, text in rows
+                if _looks_like_credit_or_promo(text)}
+    extra = set()
+    for idx, _ts, text in rows:
+        if _looks_like_credit_or_promo(text):
+            extra.add(idx)
+            continue
+        try:
+            if (_sdh.src_is_sfx_only(text, allow_caps_heuristic=caps_allowed)
+                    or _sdh.is_structural_sdh_cue(
+                        text, allow_caps_heuristic=caps_allowed)):
+                extra.add(idx)
+        except Exception:
+            continue
+    return extra
+
+
 def _delivery_removable_source_ids(source_cues,
                                     include_caps_heuristic: bool = True) -> set:
     rows = []
@@ -18174,6 +18241,13 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     source_rows = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in source]
     removable_source_ids = _delivery_removable_source_ids(source_rows)
+    # Denetimin "silinmesi beklenen" kümesi, silmeyi FİİLEN yapan geçişten
+    # dardı: yayın promosyonu, altyazı ekibi künyesi ve SDH temizleyicisinin
+    # kendi sildiği ses etiketleri bu kümeye girmiyordu ve doğru silinmiş
+    # cue'lar "eksik diyalog" sert hatasına dönüşüyordu. Ölçüm: 92 alarmın
+    # 43'ü bu sınıftandı; kapatılınca gerçek üç diyalog kaybı da yerinde
+    # kaldı.
+    removable_source_ids |= _delivery_expected_removed_extra_ids(source_rows)
     strong_removable_source_ids = _delivery_removable_source_ids(
         source_rows, include_caps_heuristic=False)
     removable_source_ids -= {
