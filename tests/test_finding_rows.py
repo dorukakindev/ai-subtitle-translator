@@ -108,5 +108,58 @@ class FindingRowsTest(unittest.TestCase):
         self.assertEqual(g.build_findings_jsonl([]), "")
 
 
+class FindingDecisionsTest(unittest.TestCase):
+    """Önceki koşunun kararı bu koşuda gürültüyü kapatsın.
+
+    Codex bir bulguyu 'yanlış alarm' diye işaretlediğinde sonraki koşu onu
+    eylem listesine yazmamalı; yoksa aynı satır her turda yeniden okunuyor
+    ve okuyan taraf her turda aynı tokeni ödüyor.
+    """
+
+    def _findings(self):
+        return g.build_finding_rows(_rows(), read_cues=_reader)
+
+    def test_false_alarm_is_suppressed(self):
+        findings = self._findings()
+        target = findings[0]["id"]
+        kept, suppressed = g.apply_finding_decisions(
+            findings, {target: {"karar": "yanlis_alarm", "not": "kasıtlı"}})
+        self.assertEqual(len(kept), len(findings) - 1)
+        self.assertEqual(len(suppressed), 1)
+        self.assertEqual(suppressed[0]["onceki_karar"], "yanlis_alarm")
+        self.assertEqual(suppressed[0]["karar_notu"], "kasıtlı")
+
+    def test_plain_string_verdict_is_accepted(self):
+        findings = self._findings()
+        kept, suppressed = g.apply_finding_decisions(
+            findings, {findings[0]["id"]: "duzeltildi"})
+        self.assertEqual(len(suppressed), 1)
+
+    def test_unknown_verdict_keeps_the_finding(self):
+        # Yanlış yazılmış tek kelime gerçek bir kaybı gizlememeli.
+        findings = self._findings()
+        kept, suppressed = g.apply_finding_decisions(
+            findings, {findings[0]["id"]: "belki"})
+        self.assertEqual(len(kept), len(findings))
+        self.assertEqual(suppressed, [])
+
+    def test_deferred_stays_in_the_list(self):
+        findings = self._findings()
+        kept, suppressed = g.apply_finding_decisions(
+            findings, {findings[0]["id"]: {"karar": "ertelendi"}})
+        self.assertEqual(len(kept), len(findings))
+
+    def test_missing_or_broken_decision_file_suppresses_nothing(self):
+        findings = self._findings()
+        for table in (None, {}, [], "bozuk"):
+            with self.subTest(table=table):
+                kept, suppressed = g.apply_finding_decisions(findings, table)
+                self.assertEqual(len(kept), len(findings))
+                self.assertEqual(suppressed, [])
+
+    def test_loader_tolerates_a_missing_file(self):
+        self.assertEqual(g.load_finding_decisions("yok-boyle-bir-dosya.json"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

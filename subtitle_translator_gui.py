@@ -19354,6 +19354,61 @@ def build_findings_jsonl(rows, read_cues=None) -> str:
              for item in build_finding_rows(rows, read_cues=read_cues)]
     return "\n".join(lines) + ("\n" if lines else "")
 
+
+# Karar dosyasında tanınan değerler. Bilinmeyen bir karar YOK SAYILMAZ —
+# bulgu listede kalır; sessizce elemek, yanlış yazılmış tek bir kelimenin
+# gerçek bir kaybı gizlemesi demek olurdu.
+_FINDING_DECISIONS = ("yanlis_alarm", "duzeltildi", "ertelendi")
+
+
+def apply_finding_decisions(findings, decisions) -> tuple:
+    """Önceki koşuda verilmiş kararları bulgulara uygular.
+
+    Codex/Claude bir bulguyu 'yanlış alarm' diye işaretlediğinde, sonraki
+    koşu onu eylem listesine YAZMAZ — yoksa aynı gürültü her turda yeniden
+    okunuyor ve okuyan taraf her turda aynı tokeni ödüyor. Kararlar bulgu
+    kimliğiyle eşleşir; kimlik dosya + sınıf + zaman damgasından türediği
+    için cue numarası değişse bile tutar.
+
+    Döner: (eylem_listesi, elenen_listesi). Hiçbir bulgu kaybolmaz —
+    elenenler ayrı dosyaya yazılır.
+    """
+    table = decisions if isinstance(decisions, dict) else {}
+    kept, suppressed = [], []
+    for finding in findings or []:
+        record = table.get(str(finding.get("id") or ""))
+        verdict = ""
+        if isinstance(record, dict):
+            verdict = str(record.get("karar") or "").strip().lower()
+        elif isinstance(record, str):
+            verdict = record.strip().lower()
+        if verdict in ("yanlis_alarm", "duzeltildi"):
+            item = dict(finding)
+            item["onceki_karar"] = verdict
+            note = ""
+            if isinstance(record, dict):
+                note = str(record.get("not") or "")
+            if note:
+                item["karar_notu"] = note
+            suppressed.append(item)
+        else:
+            kept.append(finding)
+    return kept, suppressed
+
+
+def load_finding_decisions(path) -> dict:
+    """Karar dosyasını oku; yoksa/bozuksa boş sözlük (bulgular elenmez)."""
+    try:
+        with open(str(path), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # Hem {"id": "yanlis_alarm"} hem {"kararlar": {...}} biçimini kabul et.
+    inner = data.get("kararlar")
+    return inner if isinstance(inner, dict) else data
+
 def build_delivery_scan_report_text(rows, run_id: str = "") -> str:
     """R2 — Raporlar/teslim_taramasi.txt içeriği. Kırpma yok."""
     findings = _report_finding_rows(rows)
@@ -36437,6 +36492,13 @@ class App(ctk.CTk):
                 # dosyaya yazılıyor.
                 actionable = [f for f in findings if f["guven"] != "bilgi"]
                 informational = [f for f in findings if f["guven"] == "bilgi"]
+                # Önceki koşuda 'yanlış alarm' denmiş bulgular eylem
+                # listesine girmez; aynı gürültüyü her turda yeniden okutmak
+                # doğrudan token maliyeti.
+                decisions = load_finding_decisions(
+                    rep_dir / "bulgu_kararlari.json")
+                actionable, suppressed = apply_finding_decisions(
+                    actionable, decisions)
 
                 def _dump(path, items):
                     atomic_write_text(
@@ -36450,13 +36512,15 @@ class App(ctk.CTk):
                 _dump(findings_path, actionable)
                 if informational:
                     _dump(rep_dir / "bulgular-bilgi.jsonl", informational)
-                by_confidence = Counter(f["guven"] for f in findings)
+                if suppressed:
+                    _dump(rep_dir / "bulgular-kapatilmis.jsonl", suppressed)
+                by_confidence = Counter(f["guven"] for f in actionable)
                 self._log(
                     "Bulgu listesi: %d eylem (%d kesin, %d muhtemel) → %s"
-                    " | %d bilgi satırı ayrı dosyada" % (
+                    " | %d bilgi, %d önceki kararla kapatıldı" % (
                         len(actionable), by_confidence.get("kesin", 0),
                         by_confidence.get("muhtemel", 0), findings_path.name,
-                        len(informational)),
+                        len(informational), len(suppressed)),
                     "info")
             except Exception as exc:
                 self._log(f"Bulgu listesi yazılamadı: {exc}", "warn")
