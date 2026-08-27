@@ -4280,8 +4280,10 @@ def _srt_raw_cue_id_issues(filepath) -> tuple[list, list, list, list]:
         except (TypeError, ValueError):
             continue
         if previous is None:
-            # Baş imza cue'su 0 numarasını taşır ve teslim bütünlük işareti
-            # buna dayanır (`_normalize_delivery_ids`, previous = -1).
+            # ARŞİV kuralı: program artık baş imza yazmıyor (yalnız son imza),
+            # ama 0'dan başlayan eski teslimlerde baş imzanın 0 olması teslim
+            # bütünlük işaretiydi. Yeni dosyalarda ilk cue diyalog olduğu için
+            # bu dal hiç çalışmaz.
             if is_signature and value != 0:
                 signature_id_ids.append(idx)
         else:
@@ -6807,52 +6809,10 @@ def _srt_timestamp_bounds(ts: str) -> tuple[int, int]:
     return _srt_timestamp_ms(parts[0]), _srt_timestamp_ms(parts[1].split()[0])
 
 
-def _delivery_middle_signature_slot(blocks: list):
-    if len(blocks) < 2:
-        return None
-    timed = []
-    for pos, (_idx, ts, _text) in enumerate(blocks):
-        try:
-            start, end = _srt_timestamp_bounds(ts)
-        except ValueError:
-            return None
-        timed.append((pos, start, end))
-    chronological = sorted(timed, key=lambda row: (row[1], row[2], row[0]))
-    first_start = min(row[1] for row in chronological)
-    last_end = max(row[2] for row in chronological)
-    midpoint = (first_start + last_end) / 2
-    candidates = []
-    left = chronological[0]
-    occupied_end = left[2]
-    for right in chronological[1:]:
-        available = right[1] - occupied_end - 2
-        if available < 500:
-            if right[2] > occupied_end:
-                left = right
-                occupied_end = right[2]
-            continue
-        slot_midpoint = (occupied_end + right[1]) / 2
-        candidates.append((
-            abs(slot_midpoint - midpoint), -available,
-            right[0], occupied_end, right[1],
-        ))
-        if right[2] > occupied_end:
-            left = right
-            occupied_end = right[2]
-    if not candidates:
-        return None
-    _distance, neg_available, insert_pos, left_end, right_start = min(candidates)
-    duration = min(2000, -neg_available)
-    gap_start = left_end + 1
-    gap_end = right_start - 1
-    start = max(gap_start, int((gap_start + gap_end - duration) / 2))
-    end = min(gap_end, start + duration)
-    return insert_pos, start, end
-
-
 def _normalize_delivery_ids(blocks: list) -> list:
-    # previous = -1 KASITLIDIR: baş imza cue'su 0 numarasını alır ve teslim
-    # bütünlük işareti buna dayanır (bkz. test_upload_ready_finalization).
+    # previous = -1: imza cue'su öncekinin bir fazlasını alır. Program artık
+    # YALNIZ SON imzayı yazdığı için baş imza dalı yeni tesliminde çalışmaz;
+    # 0'dan başlayan ARŞİV dosyaları yeniden işlenirse diye korunuyor.
     normalized = []
     previous = -1
     for idx, ts, text in blocks:
@@ -7605,63 +7565,24 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         for _idx, _ts, text in cleaned)
     # discord imzası Türkçe teslim konvansiyonudur; yabancı dil çıktısına eklenmez.
     if cleaned and not unresolved and is_turkish:
-        if any(str(idx) == "0" for idx, _ts, _text in cleaned):
-            cleaned = [
-                (str(int(str(idx)) + 1) if str(idx).isdigit() else idx, ts, text)
-                for idx, ts, text in cleaned
-            ]
-        # Baş/son imza sınırı KRONOLOJİK uçlardan alınır. Liste sırası kronolojik
-        # olmayabiliyor (kaynak dosyada cue'lar karışık sırada olabilir); fiziksel
-        # ilk/son cue'yu kullanmak üç imzanın aynı boşluğa düşmesine yol açıyordu
-        # (denetim 2026-08-20, madde 45).
+        # NOT: burada eskiden "kaynakta 0 numaralı cue varsa hepsini bir
+        # kaydır" adımı vardı; amacı 0'ı BAŞ İMZAYA boşaltmaktı. Baş imza
+        # kalkınca o kaydırma teslimdeki bütün numaraları kaynaktan bir
+        # kaydırır hâle geldi, o yüzden kaldırıldı.
+        # İmza YALNIZ SONA konur (kullanıcı kararı 2026-08-27). Eskiden üç
+        # imza vardı: baş, orta, son. Baş ve orta imza izleyicinin ortasına
+        # düşüyordu ve dosya teslimden sonra yeniden numaralandığında sıra
+        # bozulmasının taşıyıcısı da onlardı.
+        # Sınır KRONOLOJİK uçtan alınır: liste sırası kronolojik olmayabilir
+        # (kaynakta cue'lar karışık sırada olabilir).
         _bounds = []
         for _idx, _ts, _text in cleaned:
             try:
                 _bounds.append(_srt_timestamp_bounds(_ts))
             except ValueError:
                 continue
-        first_start = min((start for start, _end in _bounds), default=0)
         last_end = max((end for _start, end in _bounds), default=0)
-        head_block = None
-        if first_start > 1:
-            head_end = first_start - 1
-            head_start = max(0, head_end - 2000)
-            head_block = (
-                "",
-                f"{_srt_ms_timestamp(head_start)} --> {_srt_ms_timestamp(head_end)}",
-                _DELIVERY_SIGNATURE,
-            )
-        else:
-            # SIFIR-BAŞLANGIÇ İSTİSNASI: ilk gerçek cue 00:00:00,000'da başlıyorsa
-            # baş imzaya yer yok sayılıp imza TAMAMEN atlanıyordu (Insomniac 8
-            # bölümün 3'ü 2 imzayla teslim edildi). 1 ms'lik imza yazılır; bu
-            # bilinçli örtüşme teslim denetiminde beyaz listededir.
-            # 1 ms başlangıcı da buraya girer: aksi hâlde head_end == head_start
-            # olup sıfır süreli, ters aralıklı imza üretiliyordu (madde 44).
-            head_block = (
-                "",
-                f"{_srt_ms_timestamp(0)} --> {_srt_ms_timestamp(1)}",
-                _DELIVERY_SIGNATURE,
-            )
-            if log_fn:
-                log_fn(
-                    "Teslim: sıfır-başlangıç istisnası uygulandı "
-                    "(baş imza 00:00:00,000 --> 00:00:00,001)", "info")
-        middle_slot = _delivery_middle_signature_slot(cleaned)
-        if middle_slot:
-            middle_pos, middle_start, middle_end = middle_slot
-            cleaned = [
-                *cleaned[:middle_pos],
-                (
-                    "",
-                    f"{_srt_ms_timestamp(middle_start)} --> "
-                    f"{_srt_ms_timestamp(middle_end)}",
-                    _DELIVERY_SIGNATURE,
-                ),
-                *cleaned[middle_pos:],
-            ]
         cleaned = [
-            *([head_block] if head_block else []),
             *cleaned,
             (
                 "",
@@ -18440,8 +18361,10 @@ def _delivery_ocr_artifact_ids(blocks: list, source_map: dict) -> list[str]:
     return flagged
 
 
-# Sıfır-başlangıç istisnasında baş imzanın bittiği an (ms). Bu pencere
-# diyalogla çakışsa bile teslim denetiminde hata sayılmaz.
+# ARŞİV İSTİSNASI: program baş imza yazmayı bıraktı (imza yalnız sonda), ama
+# eski tesliminde sıfır-başlangıçlı dosyalarda baş imza 1 ms'lik pencereye
+# yazılıyordu. O pencere diyalogla çakışsa bile hata sayılmaz; aksi hâlde
+# arşivdeki her eski dosya yeniden denetlendiğinde sert hata verirdi.
 _ZERO_START_SIGNATURE_END_MS = 1
 
 
@@ -18555,10 +18478,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         if not _DELIVERY_SIGNATURE_RE.fullmatch(output_text.strip()):
             continue
         if start == 0 and end <= _ZERO_START_SIGNATURE_END_MS:
-            # Sıfır-başlangıç istisnası: ilk cue 00:00:00,000'da başlayan
-            # dosyalarda baş imza 1 ms'lik bir pencereye yazılır. Bu BİLİNÇLİ
-            # örtüşmedir; aksi hâlde imza hiç eklenmiyordu (bkz.
-            # _prepare_upload_ready_blocks).
+            # ARŞİV: eski tesliminde sıfır-başlangıçlı dosyalarda baş imza
+            # 1 ms'lik pencereye yazılırdı ve bu bilinçli bir örtüşmeydi.
+            # Yeni teslimde imza yalnız sonda olduğu için bu dal artık
+            # yalnız eski dosyalar yeniden denetlenince çalışır.
             continue
         if any(
                 other_idx != output_idx
@@ -18715,11 +18638,9 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     expected_signatures = 0
     if (output_dialogue and normalize_language_name(
             target_language, allow_auto=False) == "Turkish"):
-        # Baş imza ARTIK HER ZAMAN yazılır: ilk cue 00:00:00,000'da başlasa bile
-        # 1 ms'lik pencereye konur (sıfır-başlangıç istisnası). Eskiden beklenti
-        # 'baş imza yoksa normaldir' diyordu ve eksik imzalı dosyalar FAIL vermiyordu.
-        expected_signatures = (
-            2 + bool(_delivery_middle_signature_slot(output_dialogue)))
+        # Tek imza, dosyanın SONUNDA (kullanıcı kararı 2026-08-27). Beklenti
+        # 'imza yoksa normaldir' diyemez: eksik imzalı dosya FAIL vermeli.
+        expected_signatures = 1
     signature_mismatch = delivery_signatures != expected_signatures
     source_text_by_id = {
         str(idx): str(text or "") for idx, _ts, text in source_rows}

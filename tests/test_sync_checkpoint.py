@@ -502,7 +502,7 @@ class SyncCheckpointTest(unittest.TestCase):
             [(row[1], row[2]) for row in real],
             [(row[1], row[2]) for row in repaired_blocks])
         self.assertEqual(
-            sum(row[2] == "discord: ceviri2" for row in final), 3)
+            sum(row[2] == "discord: ceviri2" for row in final), 1)
         self.assertFalse(partial.exists())
         self.assertTrue(Path(result["archived_partial"]).is_file())
         self.assertIn("Raporlar", Path(result["archived_partial"]).parts)

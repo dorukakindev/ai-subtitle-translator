@@ -111,9 +111,13 @@ class PartialPromotionTest(unittest.TestCase):
 
 
 class ZeroStartSignatureTest(unittest.TestCase):
-    """P0-4: ilk cue 00:00:00,000'da başlayınca baş imza hiç eklenmiyordu."""
+    """P0-4 kapandı: imza artık YALNIZ SONDA, baş imza hiç yazılmıyor.
 
-    def test_head_signature_written_and_audit_passes(self):
+    Sıfır-başlangıç bir istisna olmaktan çıktı; ilk cue 00:00:00,000'da
+    başlasa da imzaya yer aramak gerekmiyor. Denetimin geçmesi hâlâ şart.
+    """
+
+    def test_only_tail_signature_written_and_audit_passes(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root, "src.srt")
             out = Path(root, "out.srt")
@@ -130,8 +134,10 @@ class ZeroStartSignatureTest(unittest.TestCase):
                 blocks, "Turkish", None, source_cues=cues)
             gui.write_srt(str(out), delivery, "Turkish")
             signatures = [b for b in delivery if b[2] == gui._DELIVERY_SIGNATURE]
-            self.assertEqual(len(signatures), 2)
-            self.assertEqual(signatures[0][1], "00:00:00,000 --> 00:00:00,001")
+            self.assertEqual(len(signatures), 1)
+            self.assertEqual(delivery[-1][2], gui._DELIVERY_SIGNATURE)
+            # İlk diyalog 00:00:00,000'da ve hiç kıpırdamamış olmalı
+            self.assertEqual(delivery[0][1], "00:00:00,000 --> 00:00:02,000")
             audit = gui._subtitle_delivery_audit(
                 str(source), str(out), "Turkish", "English")
             self.assertFalse(audit.get("signature_mismatch"))

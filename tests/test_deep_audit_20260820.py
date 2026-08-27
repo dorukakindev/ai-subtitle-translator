@@ -196,17 +196,24 @@ class DeliverySignatureBoundsTest(unittest.TestCase):
                 for begin, end in self._signatures(rows):
                     self.assertLess(begin, end)
 
-    def test_signatures_do_not_overlap_each_other(self):
+    def test_signature_uses_chronological_end_not_list_order(self):
+        """Madde 45 tek imzada da geçerli: sınır KRONOLOJİK uçtan alınır.
+
+        Liste sırası kronolojik değil — fiziksel son cue 00:00:07'de bitiyor
+        ama gerçek son 00:00:12. İmza listenin sonuna değil, ZAMANIN sonuna
+        konmalı, yoksa diyalogla çakışır.
+        """
         rows = [("1", "00:00:10,000 --> 00:00:12,000", "Üçüncü cümle."),
                 ("2", "00:00:01,000 --> 00:00:03,000", "Birinci cümle."),
                 ("3", "00:00:05,000 --> 00:00:07,000", "İkinci cümle.")]
         spans = self._signatures(rows)
-        self.assertEqual(len(spans), 3)
-        for i in range(len(spans)):
-            for j in range(i + 1, len(spans)):
-                with self.subTest(pair=(i, j)):
-                    self.assertFalse(
-                        spans[i][1] > spans[j][0] and spans[j][1] > spans[i][0])
+        self.assertEqual(len(spans), 1)
+        start, end = spans[0]
+        self.assertLess(start, end)
+        dialogue = [g._srt_timestamp_bounds(ts) for _idx, ts, _t in rows]
+        self.assertGreater(start, max(other_end for _s, other_end in dialogue))
+        self.assertFalse(any(start < other_end and other_start < end
+                             for other_start, other_end in dialogue))
 
 
 class NonLatinIdentityLockTest(unittest.TestCase):

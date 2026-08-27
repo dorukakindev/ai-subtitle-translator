@@ -52,21 +52,21 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
 
+        # İmza YALNIZ SONDA: ilk blok diyalogdur, ortada imza yoktur.
         self.assertEqual(result[0], (
-            "0",
-            "00:00:00,999 --> 00:00:02,999",
-            "discord: ceviri2",
+            "1",
+            "00:00:03,000 --> 00:00:04,000",
+            "Hala buradayım.",
         ))
         self.assertEqual(result[-1], (
             "412",
             "00:00:10,001 --> 00:00:12,001",
             "discord: ceviri2",
         ))
-        middle = [
-            block for block in result[1:-1]
-            if block[2] == "discord: ceviri2"]
-        self.assertEqual(len(middle), 1)
-        self.assertEqual(middle[0][0], "50")
+        self.assertEqual(
+            [block for block in result[:-1]
+             if block[2] == "discord: ceviri2"],
+            [])
         by_id = {str(idx): (ts, text) for idx, ts, text in result}
         self.assertEqual(by_id["1"][1], "Hala buradayım.")
         self.assertEqual(by_id["2"][1], "<i>Sarı Çizgili</i>")
@@ -670,24 +670,24 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         self.assertFalse(
             any(text == gui._DELIVERY_SIGNATURE for _idx, _ts, text in result))
 
-    def test_zero_start_still_gets_head_signature(self):
-        """SIFIR-BAŞLANGIÇ İSTİSNASI: ilk cue 00:00:00,000'da başlasa bile baş
-        imza 1 ms'lik pencereye yazılır. Eskiden imza tamamen atlanıyordu ve
-        dosya 3 yerine 2 imzayla teslim ediliyordu (Insomniac 8 bölümün 3'ü);
-        teslim denetimi de bunu FAIL saymıyordu."""
+    def test_zero_start_needs_no_head_signature(self):
+        """İmza yalnız sonda olduğu için sıfır-başlangıç artık özel değil.
+
+        Eskiden ilk cue 00:00:00,000'da başlayınca baş imzaya yer bulunamıyor,
+        1 ms'lik pencere açılıyordu (Insomniac). O istisna kalktı.
+        """
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Başlangıç."),
         ]
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
-        self.assertEqual(result[0][1], "00:00:00,000 --> 00:00:00,001")
-        self.assertEqual(result[0][2], gui._DELIVERY_SIGNATURE)
-        # Diyalog cue'su hiç kıpırdamamalı
-        self.assertEqual(result[1][1], "00:00:00,000 --> 00:00:01,000")
-        self.assertEqual(result[1][2], "Başlangıç.")
+        # Diyalog cue'su hiç kıpırdamamalı ve başta durmalı
+        self.assertEqual(result[0][1], "00:00:00,000 --> 00:00:01,000")
+        self.assertEqual(result[0][2], "Başlangıç.")
+        self.assertEqual(result[-1][2], gui._DELIVERY_SIGNATURE)
         self.assertEqual(sum(text == "discord: ceviri2"
-                             for _idx, _ts, text in result), 2)
+                             for _idx, _ts, text in result), 1)
 
-    def test_existing_zero_id_is_shifted_to_keep_signature_ids_unique(self):
+    def test_existing_zero_id_keeps_signature_id_unique(self):
         blocks = [
             ("0", "00:00:00,000 --> 00:00:01,000", "Başlangıç."),
             ("1", "00:00:01,100 --> 00:00:02,000", "Devam."),
@@ -695,11 +695,12 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
         ids = [idx for idx, _ts, _text in result]
         self.assertEqual(len(ids), len(set(ids)))
-        # Baş imza artık her zaman eklendiği için kimlikler 0'dan başlar
-        self.assertEqual(ids[:4], ["0", "1", "2", "3"])
+        # Baş imza yok: kaynaktaki kimlikler olduğu gibi korunur, imza sona
+        # bir sonraki numarayı alır.
+        self.assertEqual(ids, ["0", "1", "2"])
         self.assertTrue(gui._existing_output_is_complete(result, blocks))
 
-    def test_head_middle_and_tail_signatures_are_added_without_moving_dialogue(self):
+    def test_only_a_tail_signature_is_added_without_moving_dialogue(self):
         blocks = [
             ("1", "00:00:10,000 --> 00:00:12,000", "Bir."),
             ("2", "00:00:12,100 --> 00:00:14,000", "İki."),
@@ -709,13 +710,11 @@ class UploadReadyFinalizationTest(unittest.TestCase):
         result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
         signatures = [block for block in result
                       if block[2] == "discord: ceviri2"]
-        self.assertEqual(len(signatures), 3)
-        self.assertEqual(signatures[0][0], "0")
-        self.assertGreater(gui._srt_timestamp_bounds(signatures[2][1])[0],
+        self.assertEqual(len(signatures), 1)
+        # Tek imza dosyanın SONUNDA ve son diyalogdan sonra
+        self.assertEqual(result[-1][2], "discord: ceviri2")
+        self.assertGreater(gui._srt_timestamp_bounds(signatures[0][1])[0],
                            gui._srt_timestamp_bounds(blocks[-1][1])[1])
-        middle_start, middle_end = gui._srt_timestamp_bounds(signatures[1][1])
-        self.assertGreater(middle_start, gui._srt_timestamp_bounds(blocks[1][1])[1])
-        self.assertLess(middle_end, gui._srt_timestamp_bounds(blocks[2][1])[0])
         delivered_dialogue = [
             (ts, text) for _idx, ts, text in result
             if text != "discord: ceviri2"]
@@ -723,8 +722,13 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             delivered_dialogue,
             [(ts, text) for _idx, ts, text in blocks],
         )
+        # Orta imza kalktığı için teslim kimlikleri KAYNAKLA birebir aynı.
+        self.assertEqual(
+            [idx for idx, _ts, text in result if text != "discord: ceviri2"],
+            [idx for idx, _ts, _text in blocks],
+        )
 
-    def test_middle_signature_round_trip_keeps_auditable_dialogue_timings(self):
+    def test_signed_delivery_round_trip_keeps_auditable_dialogue_timings(self):
         source_blocks = [
             ("1", "00:00:10,000 --> 00:00:12,000", "One."),
             ("2", "00:00:12,100 --> 00:00:14,000", "Two."),
@@ -746,9 +750,9 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             audit = gui._subtitle_delivery_audit(source_path, output_path)
 
         self.assertEqual([idx for idx, _ts, _text in reparsed],
-                         ["0", "1", "2", "3", "4", "5", "6"])
+                         ["1", "2", "3", "4", "5"])
         self.assertEqual(audit["status"], "ok")
-        self.assertEqual(audit["delivery_signatures"], 3)
+        self.assertEqual(audit["delivery_signatures"], 1)
 
     def test_delivery_audit_rejects_missing_required_signatures(self):
         source_blocks = [
@@ -769,7 +773,7 @@ class UploadReadyFinalizationTest(unittest.TestCase):
 
         self.assertEqual(audit["status"], "review")
         self.assertEqual(audit["delivery_signatures"], 0)
-        self.assertEqual(audit["expected_delivery_signatures"], 3)
+        self.assertEqual(audit["expected_delivery_signatures"], 1)
         self.assertTrue(audit["signature_mismatch"])
         self.assertEqual(audit["missing_dialogue_ids"], [])
         self.assertEqual(audit["extra_dialogue_ids"], [])
@@ -801,7 +805,9 @@ class UploadReadyFinalizationTest(unittest.TestCase):
             ("1", source_blocks[0][1], "Bir."),
             ("2", source_blocks[1][1], "İki."),
         ], "Turkish")
-        delivered[0] = ("1", delivered[0][1], delivered[0][2])
+        # İmza artık SONDA: çakışmayı son imzanın kimliğini bozarak kur.
+        self.assertEqual(delivered[-1][2], gui._DELIVERY_SIGNATURE)
+        delivered[-1] = ("1", delivered[-1][1], delivered[-1][2])
 
         with TemporaryDirectory() as root:
             source_path = Path(root, "source.srt")
@@ -1073,14 +1079,19 @@ class DeliveryCreditRegressionTest(unittest.TestCase):
         self.assertTrue(gui._source_cue_is_delivery_removable(
             "Subtitles created by Basti"))
 
-    def test_middle_signature_avoids_out_of_order_overlap(self):
+    def test_tail_signature_avoids_out_of_order_overlap(self):
+        """Cue'lar karışık sıradayken imza yine hiçbir diyalogla çakışmamalı."""
         blocks = [
             ("1", "00:00:00,000 --> 00:00:01,000", "Bir"),
             ("2", "00:00:10,000 --> 00:00:12,000", "İki"),
             ("3", "00:00:09,000 --> 00:00:10,500", "Üç"),
             ("4", "00:00:14,000 --> 00:00:16,000", "Dört"),
         ]
-        _pos, start, end = gui._delivery_middle_signature_slot(blocks)
+        result = gui._prepare_upload_ready_blocks(blocks, "Turkish")
+        signatures = [ts for _idx, ts, text in result
+                      if text == gui._DELIVERY_SIGNATURE]
+        self.assertEqual(len(signatures), 1)
+        start, end = gui._srt_timestamp_bounds(signatures[0])
         dialogue = [gui._srt_timestamp_bounds(ts) for _idx, ts, _text in blocks]
         self.assertFalse(any(start < other_end and other_start < end
                              for other_start, other_end in dialogue))

@@ -641,7 +641,8 @@ class BuildQualityReportTextTest(unittest.TestCase):
             audit = gui._subtitle_delivery_audit(
                 str(source), str(output), target_language="Turkish")
 
-        self.assertEqual(audit["delivery_owner_mismatch_ids"], ["1", "3"])
+        # İmza yalnız sonda olduğu için teslim kimlikleri kaynakla aynı: 1, 2.
+        self.assertEqual(audit["delivery_owner_mismatch_ids"], ["1", "2"])
         self.assertEqual(audit["status"], "review")
         # İçeriğin cue'lar arasında yer değiştirmesi senkron kırılmasıdır:
         # "John arrived."/"Mary waited." çifti ters çevrilmiş. Eskiden yalnız
