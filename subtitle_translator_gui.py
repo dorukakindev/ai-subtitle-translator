@@ -4226,6 +4226,21 @@ def parse_srt(filepath):
     return [(str(i), ts, text) for i, (_idx, ts, text) in enumerate(parsed, 1)]
 
 
+def _delivery_report_dir(out_path) -> Path:
+    """Bu çıktı dosyasının raporlarının gideceği `Raporlar` klasörü.
+
+    Koşu yarım kalınca `out_path` kısmi dosyadır ve zaten
+    `.../Raporlar/Kurtarma/x.partial.srt` altındadır; körlemesine
+    `parent / "Raporlar"` demek raporu `.../Raporlar/Kurtarma/Raporlar/`
+    içine gömüyordu (dizi logu madde 7: bu koşuda 9 bölümde oluştu).
+    Aynı şekli tanıyan bir koruma arşivleme yolunda zaten vardı.
+    """
+    path = Path(out_path)
+    if path.parent.name == "Kurtarma" and path.parent.parent.name == "Raporlar":
+        return path.parent.parent
+    return path.parent / "Raporlar"
+
+
 def _srt_raw_cue_id_issues(filepath) -> tuple[list, list, list, list]:
     """SRT ayrıştırıcısının geriye-dönük yeniden numaralandırmasından önceki ID sorunları.
 
@@ -5374,8 +5389,23 @@ def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
 _MIDWORD_LEGITIMATE_PAIRS = frozenset({
     ("her", "sey"), ("bir", "sey"), ("hic", "kimse"), ("her", "biri"),
     ("her", "gun"), ("bir", "cok"), ("bir", "az"), ("her", "hangi"),
-    ("bir", "kac"), ("hic", "bir'"), ("o", "kadar"), ("su", "an"),
+    ("bir", "kac"), ("o", "kadar"), ("su", "an"),
     ("kiz", "kardes"), ("good", "will"), ("dot", "com"),
+    # 2. kural ("birleşik biçim dosyada ≥2 kez geçiyor") TDK'da AYRI yazılan
+    # sözcükleri de işaretliyordu; teslim arşivinde ölçüldü (dizi logu, m.6):
+    # 165 bulgunun 145'i buradaki çiftlerdi, kalan 20'si gerçek. Sıklıkla
+    # ayırmayı denedim ve tutmadı: `orta çağ` (yanlış) dosyada ortalama 5,8
+    # kez, `dünya nın` (gerçek) 3,0 kez geçiyor.
+    ("orta", "cag"), ("tarih", "oncesi"), ("yasa", "disi"),
+    ("yagli", "boya"), ("anglo", "sakson"), ("bal", "mumu"),
+    ("demir", "yolu"), ("yer", "altinda"), ("dis", "isleri"),
+    # Sayı + birim ('yüz yıl'), bitişik biçimi ('yüzyıl') başka anlam taşır.
+    ("yuz", "yil"), ("yuz", "yildan"), ("yuz", "yilda"),
+    # Birleşik biçimi BAŞKA bir gerçek sözcük olan sıradan dizilimler.
+    ("bak", "sana"), ("bir", "isi"), ("kim", "senin"), ("bar", "bar"),
+    # İki yazımı da doğru olan özel ad; bu sınıfın sahibi kelime ortası
+    # boşluk değil `detect_mixed_term_renderings`.
+    ("ras", "tafari"),
 })
 _MIDWORD_MIN_FILE_HITS = 2
 
@@ -5412,7 +5442,12 @@ def _midword_space_ids(blocks, src_map=None) -> list:
             left, right = left_match.group(), right_match.group()
             if len(left) < 3 or len(right) < 3:
                 continue
-            if re.search(r"['’]", value[left_match.end():right_match.start()]):
+            # Kelime ortasındaki boşluk TAM OLARAK 'sözcük boşluk sözcük'tür.
+            # Araya herhangi bir işaret giriyorsa bölünme değil, normal
+            # noktalamadır: `"gezinti"nin`, `"Büyük Dalga"lar`, `Hiç, bir`.
+            # Eskiden yalnız kesme işareti eleniyordu ve tırnak/virgül
+            # geçenler yanlış alarm üretiyordu (dizi logu, madde 6).
+            if value[left_match.end():right_match.start()].strip():
                 continue
             joined = f"{left}{right}"
             if len(joined) < 6:
@@ -33846,7 +33881,7 @@ class App(ctk.CTk):
                 "status": "not_started", "successful_chunks": 0,
                 "failed_chunks": 0, "total_chunks": 0, "changed": 0,
             })
-        rpath = (Path(out_path).parent / "Raporlar"
+        rpath = (_delivery_report_dir(out_path)
                  / f"{Path(out_path).stem}.geri_ceviri.txt")
         if threading.current_thread() is not threading.main_thread() and getattr(self, "_active_snapshot", None):
             enabled = bool(self._active_snapshot.get("backtrans"))
@@ -33950,10 +33985,10 @@ class App(ctk.CTk):
             analysis_result=None, critic_status=None,
             status_out: dict | None = None) -> int:
         report_path = (
-            Path(out_path).parent / "Raporlar"
+            _delivery_report_dir(out_path)
             / f"{Path(out_path).stem}.derin_teslim_anlam_taramasi.txt")
         risk_path = (
-            Path(out_path).parent / "Raporlar"
+            _delivery_report_dir(out_path)
             / f"{Path(out_path).stem}.anlam_riskleri.jsonl")
         if status_out is not None:
             status_out.clear()
@@ -36831,7 +36866,7 @@ class App(ctk.CTk):
                         and Path(delivery_source_path).is_file()
                         and Path(output_path).is_file()):
                     try:
-                        line_report_dir = Path(output_path).parent / "Raporlar"
+                        line_report_dir = _delivery_report_dir(output_path)
                         line_report_dir.mkdir(parents=True, exist_ok=True)
                         line_report_path = line_report_dir / (
                             f"{Path(output_path).stem}.satir_satir_denetim.txt")
