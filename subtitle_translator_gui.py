@@ -14103,11 +14103,25 @@ def _align_delivery_blocks_to_source(source_blocks: list,
 
 
 def _source_positions_for_delivery_span(source_rows: list, output_bounds: tuple,
-                                        used_positions=None) -> list:
-    """Map one output interval to one or more consecutive source intervals."""
+                                        used_positions=None,
+                                        deprioritized_positions=None) -> list:
+    """Map one output interval to one or more consecutive source intervals.
+
+    `deprioritized_positions`: silinmesi BEKLENEN kaynaklar (SDH, künye).
+    Aynı zaman aralığını bir SDH cue'su ile gerçek bir replik paylaşıyorsa
+    ve yalnız SDH silindiyse, teslimde kalan metin repliktir — ama eşleyici
+    sırayla ilk kullanılmamış kaynağı aldığı için SDH'yi tüketip repliği
+    eşsiz bırakıyor, replik de "eksik diyalog" sayılıyordu. Önce silinmesi
+    beklenmeyen aday denenir.
+    """
     used = set(used_positions or ())
+    skip = set(deprioritized_positions or ())
     out_start, out_end = output_bounds
-    for pos, row in enumerate(source_rows or []):
+    rows = list(source_rows or [])
+    order = [pos for pos in range(len(rows)) if pos not in skip]
+    order += [pos for pos in range(len(rows)) if pos in skip]
+    for pos in order:
+        row = rows[pos]
         if pos in used or not row[3] or row[3][0] != out_start:
             continue
         positions = []
@@ -18247,7 +18261,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     # cue'lar "eksik diyalog" sert hatasına dönüşüyordu. Ölçüm: 92 alarmın
     # 43'ü bu sınıftandı; kapatılınca gerçek üç diyalog kaybı da yerinde
     # kaldı.
-    removable_source_ids |= _delivery_expected_removed_extra_ids(source_rows)
+    sdh_shaped_source_ids = _delivery_expected_removed_extra_ids(source_rows)
     strong_removable_source_ids = _delivery_removable_source_ids(
         source_rows, include_caps_heuristic=False)
     removable_source_ids -= {
@@ -18265,6 +18279,12 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             not _is_delivery_sdh_only(output_text)
             for output_text in output_by_timestamp.get(str(source_ts), ()))
     }
+    # Birlestirme cikarmalardan SONRA: caps-only koruması bir SDH cue'sunu
+    # kaldirilabilir kümesinden çıkarabiliyor ve o cue eşsiz kalınca "eksik
+    # diyalog" oluyordu. Dosya düzeyinde caps sinyaline güvenilmeyen
+    # kaynaklarda `_delivery_expected_removed_extra_ids` zaten SDH demiyor,
+    # yani koruma orada hâlâ geçerli.
+    removable_source_ids |= sdh_shaped_source_ids
     output_dialogue = [
         (str(idx), str(ts), str(text or "")) for idx, ts, text in output
         if not _DELIVERY_SIGNATURE_RE.fullmatch(str(text or "").strip())
@@ -18359,7 +18379,16 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
             output_bounds = None
         positions = (
             _source_positions_for_delivery_span(
-                source_with_bounds, output_bounds, used_source)
+                source_with_bounds, output_bounds, used_source,
+                deprioritized_positions={
+                    pos for pos, (source_idx, _ts, _text, _bounds)
+                    in enumerate(source_with_bounds)
+                    # `removable_source_ids` DEGIL: caps-only koruması bir
+                    # SDH cue'sunu o kümeden çıkarabiliyor ve tam da o
+                    # durumda (aynı aralıkta SDH + replik) önceliklendirme
+                    # kaybolup replik eşsiz kalıyordu.
+                    if source_idx in sdh_shaped_source_ids
+                })
             if output_bounds else [])
         if positions:
             used_source.update(positions)

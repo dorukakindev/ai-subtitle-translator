@@ -80,5 +80,39 @@ class ExpectedRemovedExtraTest(unittest.TestCase):
         self.assertEqual(g._delivery_expected_removed_extra_ids(None), set())
 
 
+class SameTimestampSdhAndDialogueTest(unittest.TestCase):
+    """Aynı aralıkta SDH + replik varsa eşleyici repliği tüketmeli.
+
+    Kaynak #193 `ОН КАШЛЯЕТ` (öksürür) ile #194 gerçek replik aynı
+    `00:15:09,080 --> 00:15:15,920` aralığında; teslimde o aralıkta
+    çevrilmiş replik duruyor. Eşleyici sırayla ilk kullanılmamış kaynağı
+    aldığı için SDH'yi tüketiyor, replik eşsiz kalıyor ve "eksik diyalog"
+    sert hatası oluyordu.
+    """
+
+    SPAN = (909080, 915920)
+
+    def _rows(self):
+        # (idx, ts, text, bounds)
+        return [
+            ("193", "x", "ОН КАШЛЯЕТ", self.SPAN),
+            ("194", "x", "И они даже не замечают,", self.SPAN),
+        ]
+
+    def test_dialogue_is_preferred_over_the_sound_label(self):
+        rows = self._rows()
+        positions = g._source_positions_for_delivery_span(
+            rows, self.SPAN, used_positions=set(),
+            deprioritized_positions={0})
+        self.assertEqual(positions, [1])
+
+    def test_without_the_hint_the_first_row_still_wins(self):
+        # Eski davranış: ipucu verilmezse sıra korunur.
+        rows = self._rows()
+        positions = g._source_positions_for_delivery_span(
+            rows, self.SPAN, used_positions=set())
+        self.assertEqual(positions, [0])
+
+
 if __name__ == "__main__":
     unittest.main()
