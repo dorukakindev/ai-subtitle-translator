@@ -9649,7 +9649,6 @@ _MUSIC_ONLY_RE = re.compile(
 )
 
 
-_SDH_ONLY_SRC_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[♪_\s]+)+$')
 _PARTIAL_ENGLISH_LEAK_RE = re.compile(
     r'\b(?:Egyptian|creation|mythology|Europeans?|Americans?)\b', re.I)
 _PARTIAL_ENGLISH_LEAK_PHRASE_RE = re.compile(
@@ -19373,6 +19372,18 @@ _FINDING_CLASSES = {
 
 _FINDING_CONFIDENCE_ORDER = {"kesin": 0, "muhtemel": 1, "bilgi": 2}
 
+# `cue_no` hangi dosyanın numarasıdır. Denetimdeki listelerin çoğu
+# `output_dialogue` üzerinde dönerek TESLİM kimliği üretir; yalnız bu üçü
+# `source_rows` üzerinde döner. Ayrım kayıtlı değilken zaman damgası önce
+# kaynakta aranıyordu ve teslim taraflı bir kimlik kaynakta da bulunduğu için
+# (numaralar 1..N, ikisinde de var) YANLIŞ cue'nun zamanı yazılıyordu —
+# dizi logu madde 4, "#234 → teslimde #235".
+_SOURCE_SIDE_FINDING_CLASSES = frozenset({
+    "missing_dialogue_ids",
+    "expected_removed_ids",
+    "timestamp_mismatch_ids",
+})
+
 # ── Ham ↔ teslim içerik koruma (B5) ──────────────────────────────────────────
 # Program her dosyanın kalite geçişlerinden ÖNCEKİ hâlini `.ham.srt` olarak
 # saklıyor ve hiçbir zaman ona bakmıyordu. Üç teslim dosyasında gerçek
@@ -19525,9 +19536,21 @@ def build_finding_rows(rows, read_cues=None) -> list:
         output_cues = cues_of(output_path)
         source_by_id = {str(c[0]): (str(c[1]), str(c[2] or ""))
                         for c in source_cues}
+        # Bulgu sınıflarının bir kısmı KAYNAK kimliği taşır (missing_dialogue),
+        # bir kısmı TESLİM kimliği (untranslated_fragment, duplicate_cue...).
+        # Zaman damgası yalnız kaynaktan aranınca teslim taraflı sınıflarda boş
+        # kalıyordu ve kayıt adressiz oluyordu (dizi logu, madde 4).
+        output_by_id = {str(c[0]): (str(c[1]), str(c[2] or ""))
+                        for c in output_cues}
+        source_ids_by_ts = {}
+        for c in source_cues:
+            source_ids_by_ts.setdefault(str(c[1]), []).append(str(c[0]))
         output_by_ts = {}
+        output_ids_by_ts = {}
         for c in output_cues:
             output_by_ts.setdefault(str(c[1]), []).append(str(c[2] or ""))
+            output_ids_by_ts.setdefault(str(c[1]), []).append(str(c[0]))
+        row_start = len(findings)
 
         for block_name in ("delivery_audit", "delivery_scan"):
             block = row.get(block_name)
@@ -19538,9 +19561,28 @@ def build_finding_rows(rows, read_cues=None) -> list:
                 if not meta or not isinstance(ids, (list, tuple)):
                     continue
                 confidence, label, suggestion = meta
+                source_side = field in _SOURCE_SIDE_FINDING_CLASSES
                 for cue_no in ids:
-                    timestamp, source_text = source_by_id.get(
-                        str(cue_no), ("", ""))
+                    if source_side:
+                        timestamp = source_by_id.get(str(cue_no), ("", ""))[0]
+                        if not timestamp:
+                            timestamp = output_by_id.get(
+                                str(cue_no), ("", ""))[0]
+                    else:
+                        timestamp = output_by_id.get(str(cue_no), ("", ""))[0]
+                        if not timestamp:
+                            timestamp = source_by_id.get(
+                                str(cue_no), ("", ""))[0]
+                    source_text = source_by_id.get(str(cue_no), ("", ""))[1]
+                    if not source_side:
+                        # Teslim kimliğinin kaynak karşılığı zaman damgasından
+                        # bulunur; numarayı kaynakta aramak yanlış satırı verir.
+                        by_ts = source_ids_by_ts.get(timestamp, ())
+                        if by_ts:
+                            source_text = source_by_id.get(
+                                by_ts[0], ("", ""))[1]
+                        elif str(cue_no) not in source_by_id:
+                            source_text = ""
                     delivered = " / ".join(output_by_ts.get(timestamp, ()))
                     findings.append({
                         "id": _finding_id(name, field, timestamp, cue_no),
@@ -19605,6 +19647,13 @@ def build_finding_rows(rows, read_cues=None) -> list:
                 "oneri": "Satır düzeni sabit noktaya ulaşmıyor; kırma "
                          "kurallarını incele.",
             })
+
+        # `cue_no` sınıfına göre kaynağı ya da teslimi gösteriyor; bulguyu
+        # okuyan taraf ise TESLİM dosyasını açıyor. Teslimdeki adres zaman
+        # damgasından tek anlamlı olarak çözülür ve ayrı alanda verilir.
+        for finding in findings[row_start:]:
+            delivered_ids = output_ids_by_ts.get(finding.get("zaman") or "", ())
+            finding["teslim_cue_no"] = " / ".join(delivered_ids)
 
     findings.sort(key=lambda f: (
         _FINDING_CONFIDENCE_ORDER.get(f["guven"], 9),

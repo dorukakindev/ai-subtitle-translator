@@ -1315,9 +1315,10 @@ def _is_translation_failure_marker(text: str) -> bool:
 # KENDİSİ, içindeki kelimeler değil. clean_sdh çeviriden SONRA çalıştığı için
 # Türkçeleşmiş etiketleri (ör. "[ÇAN SESLERİ]") beyaz liste tanımayabiliyor;
 # bu yol kaynağa (henüz çevrilmemiş İngilizce metne) bakarak karar verir.
-# subtitle_translator_gui._SDH_ONLY_SRC_RE ile aynı desen (bilinçli tekrar —
-# sdh_cleaner.py, gui modülüne bağımlı olmamalı).
-SFX_ONLY_STRUCTURAL_RE = re.compile(r'^(?:\([^)]*\)|\[[^\]]*\]|[#♪_\s]+)+$')
+# Karakter kümesi baştan sona işaret olduğu için harf içeremez; ¶ burada
+# güvenle nota sayılır (gerekçe: _STRUCTURAL_NOTES_RE'nin üstündeki not).
+SFX_ONLY_STRUCTURAL_RE = re.compile(
+    r'^(?:\([^)]*\)|\[[^\]]*\]|[#¶♪♫♬♩_\s]+)+$')
 _VTT_VOICE_TAG_RE = re.compile(r'(?:<v(?:\s+[^>]*)?>|</v>)', re.IGNORECASE)
 _BARE_FRENCH_SDH_RE = re.compile(
     r"^(?:"
@@ -1859,7 +1860,12 @@ def clean_sdh_blocks(blocks, src_map=None, source_driven=False):
 
 _STRUCTURAL_MARKUP_RE = re.compile(r"<[^>\n]+>|\{[^{}\n]*\}")
 _STRUCTURAL_BRACKETS_RE = re.compile(r"^(?:\s*[\[(][^\[\]()]*[\])]\s*)+$")
-_STRUCTURAL_NOTES_RE = re.compile(r"^[\s\u266a\u266b\u266c\u2669]+$")
+# \u00b6 (\u00b6) KASITLI: EIA-608/SCC k\u00f6kenli altyaz\u0131larda nota karakteri \u00b6 olarak
+# yaz\u0131l\u0131yor ('black market' S01E06: 34 \u00b6, hi\u00e7 \u266a yok). YALNIZ bu "ba\u015ftan sona
+# nota" kal\u0131plar\u0131na eklenir \u2014 \u00b6 genel nota k\u00fcmesine (MUSIC_NOTE_RE) girerse
+# mojibake dosyalarda ger\u00e7ek harf silinir: 'Gy\u00c3\u00b6rgy' i\u00e7indeki \u00b6, \u00f6'n\u00fcn ikinci
+# bayt\u0131d\u0131r (ar\u015fivde \u00f6l\u00e7\u00fcld\u00fc: \u00b6 ge\u00e7en 80 cue'nun 12'si bu \u015fekilde).
+_STRUCTURAL_NOTES_RE = re.compile(r"^[\s\u00b6\u266a\u266b\u266c\u2669]+$")
 
 
 def is_structural_sdh_cue(text, allow_caps_heuristic: bool = True) -> bool:
