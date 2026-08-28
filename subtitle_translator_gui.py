@@ -37188,6 +37188,32 @@ class App(ctk.CTk):
         dlg.protocol("WM_DELETE_WINDOW", cancel)
 
     # ── Senkron mod ───────────────────────────────────────────────────────────
+    def _delivery_scan_for_row(self, source_path: str, output_path: str) -> dict:
+        """Rapor satırı için teslim taraması — akış yapmadıysa burada yapılır.
+
+        Diskteki teslim dosyasından okur; akışın kendi taraması varsa bu hiç
+        çağrılmaz. Okunamayan dosya taramayı boş bırakır, raporu düşürmez.
+        """
+        try:
+            if not output_path or not Path(str(output_path)).is_file():
+                return {}
+            blocks = [(str(cue[0]), str(cue[1]), str(cue[2] or ""))
+                      for cue in parse_subtitle(str(output_path))]
+            if not blocks:
+                return {}
+            source_cues = []
+            if source_path and Path(str(source_path)).is_file():
+                source_cues = list(parse_subtitle(str(source_path)))
+            try:
+                locked = self._get_locked_terms_dict(
+                    source_path, self.tgt_var.get())
+            except Exception:
+                locked = None
+            return _scan_delivery_blocks(blocks, source_cues,
+                                         locked_terms=locked)
+        except Exception:
+            return {}
+
     def _save_quality_report(self, rows: list, output_dir: str):
         """Kalite raporunu çıktı klasörüne ceviri_raporu.txt olarak yazar."""
         if not rows:
@@ -37246,6 +37272,17 @@ class App(ctk.CTk):
                         delivery_source_path, row.get("output_path", ""),
                         self.tgt_var.get(), self._effective_file_source_language(
                             delivery_source_path, self.src_var.get()))
+                # Teslim TARAMASI da denetimle aynı yerde. Eskiden üç akışın
+                # İÇİNE ayrı ayrı serpiştirilmişti ve yapmayan akışta hiç
+                # çalışmıyordu: arşivdeki 493 teslim satırının 261'inde
+                # (%53) `delivery_scan` yok — o dosyalar `cue_id_leak`,
+                # `source_residue`, `broken_italic`, `repetition_collapse`
+                # gibi hiçbir tarama bulgusu almadı. Denetim zaten merkezî
+                # olduğu için tarama da buraya alındı; akışın kendi taraması
+                # varsa ona dokunulmaz.
+                if not isinstance(row.get("delivery_scan"), dict):
+                    row["delivery_scan"] = self._delivery_scan_for_row(
+                        delivery_source_path, row.get("output_path", ""))
                 if (not row.get("delivery_audit_skip") and (
                         _delivery_audit_has_hard_error(row["delivery_audit"])
                         or row.get("delivery_scan_failed"))):
