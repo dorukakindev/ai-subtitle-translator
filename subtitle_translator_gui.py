@@ -14408,10 +14408,20 @@ def _locked_term_residue_plan(blocks: list, src_map: dict,
     by_idx_text = {str(idx): str(text or "") for idx, _ts, text in blocks}
     entries = []
     seen = {}
+    import hybrid_translate as _ht
     for source, target in locked_terms.items():
         src = str(source or "").strip()
         tgt = str(target or "").strip()
         if not src or not tgt or src.casefold() == tgt.casefold():
+            continue
+        # Hedef bir AÇIKLAMA ise metne yazılamaz: kilitli terim listesi
+        # analiz sözlüğünden de beslenebiliyor (`merge_glossary_from_analysis`)
+        # ve orada `hubris → "hybris; ilk kullanımda 'kibir' açıklanmalı"`
+        # gibi girişler var. Prompt yolu bunu sanitizasyonda kırpıyordu ama
+        # bu yol hiç sanitize etmiyordu; aday doğrulayıcısı da gloss'u
+        # "terimin doğru biçimi" saydığı için geçiriyordu.
+        tgt = _ht.glossary_usable_target(tgt) or ""
+        if not tgt or src.casefold() == tgt.casefold():
             continue
         key = src.casefold()
         previous = seen.get(key)

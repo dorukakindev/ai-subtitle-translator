@@ -7357,6 +7357,46 @@ def _identity_lock_is_unsafe(key: str, value: str) -> str:
         return reasons[0]
     return ""
 
+# Noktalı virgüllü gloss'un ön kısmı gerçek bir terim mi. Ölçümle seçildi:
+# tırnak taşıyan ön kısımlar (`Özel ad olarak 'Thales'`, `Genel kullanımda
+# 'kardeşler'`) ve talimat sözcüğü içerenler terim değil, cümledir.
+_GLOSSARY_GLOSS_QUOTE_RE = re.compile(r"[\"“”'’]")
+_GLOSSARY_GLOSS_PROSE_RE = re.compile(
+    r"\b(?:bağlam\w*|baglam\w*|göre|gore|kullanım\w*|kullanim\w*|kullanıl\w*|"
+    r"çevril\w*|cevril\w*|anlamında|anlaminda|olarak|aktar\w*|şaka|saka|"
+    r"tutarlı|tutarli|olmalı|olmali|değil|degil|kaynakta|örtük|ortuk|yerine)\b",
+    re.IGNORECASE | re.UNICODE)
+# Kırpma sınırı 4 ölçümle seçildi: 5'e çıkarınca gelen 7 kırpmanın 6'sı
+# bozuktu (`Koca canavar or iri canavar`, `şişko inek or semiz inek`).
+_GLOSSARY_GLOSS_MAX_WORDS = 4
+
+
+def glossary_usable_target(target: str) -> str | None:
+    """Sözlük hedefinden METNE YAZILABİLİR terimi çıkarır, yoksa None.
+
+    Analiz sözlüğü sık sık açıklama üretiyor:
+    `hubris → "hybris; ilk kullanımda 'kibir' açıklanmalı"`. Prompt yolu
+    bunu kırpıyordu ama KİLİTLİ TERİM yolu hiç sanitize etmiyordu; terim
+    normalizasyonu hedefi doğrudan metne yazıyor ve aday doğrulayıcısı da
+    gloss'u "terimin doğru biçimi" saydığı için geçiriyordu.
+
+    Noktalı virgülden önceki kısım temiz bir terimse o döner (`hybris`),
+    kendisi de düzyazıysa None (`Bağlama göre 'evren'`).
+    """
+    value = str(target or "").strip()
+    if not value:
+        return None
+    head = value.split(";", 1)[0] if ";" in value else value
+    head = _GLOSSARY_GLOSS_QUOTE_RE.sub("", head).strip()
+    if not head or len(head.split()) > _GLOSSARY_GLOSS_MAX_WORDS:
+        return None
+    if _GLOSSARY_GLOSS_PROSE_RE.search(head):
+        return None
+    if "(" in head or ")" in head:
+        return None
+    return head
+
+
 def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = "tr",
                                    log_fn=None) -> dict:
     """Drop glossary targets that would force non-Turkish/Turkic drift into the output.
@@ -7493,6 +7533,20 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
             # yine de kazanır (aşağıdaki "if wqx_hits" kontrolü).
             gloss_dropped_terms[str(key)] = (value_s, gloss_reason)
             continue
+        if ";" in value_s:
+            # BURAYA kadar gelen noktalı virgüllü değer, üstteki guard'ların
+            # hiçbirine takılmamış TIRNAKSIZ gloss demektir:
+            # `Demos; oyunda halkı temsil eden kişileştirme`. Tırnaklı biçimi
+            # en baştaki desen zaten kırpıyor. Bu değer KİLİTLİ TERİM olarak
+            # metne yazılabildiği için (bkz. _locked_term_residue_plan)
+            # olduğu gibi bırakılamaz. Arşiv ölçümü: 11.894 analiz teriminin
+            # 247'sinde bu şekil var, 218'inin ön kısmı temiz bir terim.
+            trimmed = glossary_usable_target(value_s)
+            if not trimmed:
+                gloss_dropped_terms[str(key)] = (
+                    value_s, "terim değil açıklama")
+                continue
+            value_s = trimmed
         cleaned[str(key)] = value_s
 
     whole_drop_threshold = max(2, (len(glossary) + 3) // 4)
