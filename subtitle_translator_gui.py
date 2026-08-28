@@ -9913,11 +9913,36 @@ def _raw_src_map_from_cues(cues) -> dict:
     return out
 
 
-def _restore_tags_blocks(blocks: list, raw_src_map: dict) -> list:
-    """Çeviri bloklarına kaynaktaki biçim etiketlerini ({\\an8}, <i> vb.) geri uygular."""
+def _restore_tags_blocks(blocks: list, raw_src_map: dict,
+                         source_cues=None) -> list:
+    """Çeviri bloklarına kaynaktaki biçim etiketlerini ({\\an8}, <i> vb.) geri uygular.
+
+    Kaynak CUE NUMARASIYLA aranıyor; numara teslimde kayarsa (yeniden
+    numaralama, cue birleştirme) arama boşa düşüyor ve etiket sessizce geri
+    konmuyor. `source_cues` verilirse zaman damgası yedek anahtar olur.
+    Arşivde ölçüldü: kaynağı tam sarmalı olduğu hâlde teslimi italiksiz
+    kalan 32 cue'nun tamamı bu yüzdendi — `restore_format_tags` doğrudan
+    çağrıldığında o cue'ları doğru geri koyuyor.
+    """
     if not raw_src_map:
         return blocks
-    return [(idx, ts, restore_format_tags(raw_src_map.get(str(idx), ""), text))
+    by_ts = {}
+    for cue in source_cues or ():
+        try:
+            if hasattr(cue, "text"):
+                by_ts[f"{cue.start} --> {cue.end}"] = cue.text
+            else:
+                by_ts[str(cue[1])] = cue[2]
+        except Exception:
+            continue
+
+    def _source_for(idx, ts):
+        found = raw_src_map.get(str(idx))
+        if found:
+            return found
+        return by_ts.get(str(ts), "")
+
+    return [(idx, ts, restore_format_tags(_source_for(idx, ts), text))
             for idx, ts, text in blocks]
 
 
@@ -10922,6 +10947,14 @@ _REPAIR_RATIO_MIN_MISSING = 50
 _REPAIR_MAX_MISSING_CUES = 150
 
 
+def _shorten_for_log(text: str, limit: int = 60) -> str:
+    """Log satırına gömülecek cue metnini tek satıra indirip kısaltır."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit - 1].rstrip() + "…"
+
+
 def _repair_budget_exceeded(missing: int, total: int) -> bool:
     """Eksik cue sayisi onarilamayacak kadar buyuk mu?
 
@@ -11105,12 +11138,35 @@ def _repair_untranslated_sync(blocks, raw_src_map, client, src_lang, tgt_lang,
             "unresolved": True,
         } for block_pos, idx, _ts, src in hata_indices)
         if log_fn and not over_budget:
-            ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in hata_indices)
+            # Kimlik listesi KIRPILIR. Kırpma yokken sağlayıcı çökmesinde tek
+            # satır devleşiyordu: 4.473 eksik cue ~30 KB'lık bir log satırı
+            # demek. Kod tabanının başka yerlerinde kimlik listeleri zaten
+            # `[:12]` + `(+N)` biçiminde kırpılıyor.
+            shown = hata_indices[:12]
+            ids = ", ".join(f"#{idx}" for _pos, idx, _ts, _src in shown)
+            more = len(hata_indices) - len(shown)
             log_fn(
                 f"Eksik Cue API Onarımı kapalı: {len(hata_indices)} cue API'ye "
-                f"gönderilmedi; elle incelemeye bırakıldı ({ids}).",
+                f"gönderilmedi; elle incelemeye bırakıldı "
+                f"({ids}{f' (+{more})' if more > 0 else ''}).",
                 "warn",
             )
+            # Kutu açıklaması "cue kimliği, KAYNAK ve MEVCUT metni loga yazar"
+            # diyor ama loga yalnız kimlik gidiyordu; kaynak ve aday
+            # `advisory_reviews`'a, yani rapora gidiyordu. Koşuyu izleyen
+            # kullanıcı logda arıyor — birkaç örnek logda da dursun.
+            for _pos, idx, _ts, src in hata_indices[:3]:
+                current = re.sub(
+                    r"\s+", " ", str(out[_pos][2] or "")).strip()
+                log_fn(
+                    f"   #{idx} kaynak: {_shorten_for_log(src)}"
+                    f" | mevcut: {_shorten_for_log(current)}",
+                    "warn",
+                )
+            if len(hata_indices) > 3:
+                log_fn(
+                    f"   … kalan {len(hata_indices) - 3} cue'nun kaynak ve "
+                    "mevcut metni kalite raporunda.", "warn")
 
     if hata_indices and client and enabled:
         if log_fn:
@@ -11644,7 +11700,7 @@ def _finalize_translation_blocks(blocks, raw_src_map, source_cues=None,
             finalized, source_cues, log_fn=log_fn)
     finalized, marked = _fill_hata_with_source(
         finalized, raw_src_map, log_fn=log_fn)
-    finalized = _restore_tags_blocks(finalized, raw_src_map)
+    finalized = _restore_tags_blocks(finalized, raw_src_map, source_cues)
     if line_breaks and finalized:
         # Satır kırma geçişi QC'den ÖNCE çalışıyor; QC'nin uzattığı satırlar
         # kırılmadan teslim ediliyordu (denetim Part 2, madde 43). Burada
@@ -23184,14 +23240,20 @@ class App(ctk.CTk):
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
         ctk.CTkLabel(
             sb,
+            # Terim Normalizasyonu bu listede DEĞİL: 2026-08-20'de bilerek
+            # ayrı kapıya alındı (doğrulamayı geçen düzeltmeler de çöpe
+            # gidiyordu). Metin güncellenmemişti ve "güvenli mod" olmayan bir
+            # söz veriyordu — kullanıcı Terim Normalizasyonu AÇIK, bu kutu da
+            # AÇIKken metnin değişmeyeceğini sanıyordu.
             text="Varsayılan güvenli mod. Şunları YALNIZ raporlar:\n"
                  "teslim karantinası/taşıma, otomatik yeniden çeviri,\n"
-                 "tutarlılık süpürmesi, Kısaltma, Terim Normalizasyonu\n"
-                 "ve Cue-fill taşıma. Bu geçişler aday bulur ve raporlar,\n"
-                 "ama çıktıyı DEĞİŞTİRMEZ. Sorunlu dosya yüklemeye hazır\n"
-                 "veya tamamlanmış sayılmaz.\n"
-                 "Polish, Native ve QC kendi anahtarlarıyla çalışmayı\n"
-                 "sürdürür.",
+                 "tutarlılık süpürmesi, Kısaltma ve Cue-fill taşıma.\n"
+                 "Bu geçişler aday bulur ve raporlar, ama çıktıyı\n"
+                 "DEĞİŞTİRMEZ. Sorunlu dosya yüklemeye hazır veya\n"
+                 "tamamlanmış sayılmaz.\n"
+                 "Polish, Native, QC ve Terim Normalizasyonu kendi\n"
+                 "anahtarlarıyla çalışmayı sürdürür — terim düzeltmesini\n"
+                 "durdurmak için alttaki '└ Düzeltmeleri uygula'yı kapat.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260).grid(
                 row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
@@ -36173,7 +36235,7 @@ class App(ctk.CTk):
                     _raw_map = _raw_src_map_from_cues(orig_cues)
                     blocks, _ = _fill_hata_with_source(
                         blocks, _raw_map, log_fn=self._log)
-                    blocks = _restore_tags_blocks(blocks, _raw_map)
+                    blocks = _restore_tags_blocks(blocks, _raw_map, orig_cues)
 
                 # Parçalı cue birleştirme (en son — dengeli 2 satır, senkron korunur)
                 # AI segmentasyon seçiliyse onun (anlamsal) sürümü, değilse hızlı algoritma.
