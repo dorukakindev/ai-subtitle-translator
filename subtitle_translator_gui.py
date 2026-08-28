@@ -4236,9 +4236,21 @@ def _delivery_report_dir(out_path) -> Path:
     Aynı şekli tanıyan bir koruma arşivleme yolunda zaten vardı.
     """
     path = Path(out_path)
-    if path.parent.name == "Kurtarma" and path.parent.parent.name == "Raporlar":
+    if (path.parent.name.casefold() == "kurtarma"
+            and path.parent.parent.name.casefold() == "raporlar"):
         return path.parent.parent
     return path.parent / "Raporlar"
+
+
+def _delivery_output_stem(out_path) -> str:
+    """Teslim dosyasının yedeklerde kullanılan kök adı.
+
+    Yarım koşunun çıktısı `<ad>.partial.srt`; ham yedek `_save_raw_backup`
+    tarafından `.partial` eki ATILARAK yazılıyor. Okuyan taraf aynı kuralı
+    uygulamazsa yedeği hiç bulamaz.
+    """
+    stem = Path(out_path).stem
+    return stem[:-8] if stem.endswith(".partial") else stem
 
 
 def _srt_raw_cue_id_issues(filepath) -> tuple[list, list, list, list]:
@@ -5457,6 +5469,15 @@ def _midword_space_ids(blocks, src_map=None) -> list:
                 continue
             joined_key = _shift_token_key(joined)
             if joined_key in source_keys:
+                # Kaynak yazımı hedefteki ÖZEL AD sınırına üstün değildir:
+                # `Paternoster` → `Pater Noster`, `worldwide web` →
+                # `World Wide Web` doğru yazımlardır. İki parça da büyük
+                # harfle başlıyorsa bu çok sözcüklü bir addır, bozuk bölünme
+                # değil — bozuk bölünmede ikinci parça küçük kalır
+                # (`Piram itler`). Tur 8 madde 3: bu dalın güncel iki
+                # bulgusunun ikisi de yanlıştı.
+                if left[:1].isupper() and right[:1].isupper():
+                    continue
                 flagged.append(str(idx))
                 break
             if file_word_counts.get(joined_key, 0) >= _MIDWORD_MIN_FILE_HITS:
@@ -6446,7 +6467,16 @@ _ANY_MARKUP_RE = re.compile(r"<[^>\n]+>|\{[^{}\n]*\}")
 
 
 def _format_coverage_lost_ids(blocks, src_map) -> list:
-    """Kaynağı tamamen sarılı, teslimi çıplak kalan cue kimlikleri."""
+    """Kaynağı tamamen sarılı, teslimi çıplak kalan cue kimlikleri.
+
+    `<font>` ve konum etiketi HARİÇ: teslim hattı ikisini de BİLEREK
+    kaldırıyor (`_strip_delivery_font_tags`, `_strip_delivery_position_tags`).
+    Kaldırılmalarını "kayıp biçim" sayıp "Etiketi geri koy" demek, testle
+    kilitlenmiş teslim politikasının tersini önermek olur. Ölçüm (Tur 10,
+    madde 1): zaman damgasıyla kesin eşleşen 482 kaybın 381'i `<font>`,
+    yani bulguların %79'u yanlış yönlendirmeydi. `<i>/<b>/<u>` korunması
+    amaçlanan etiketlerdir, onların kaybı raporlanmaya devam eder.
+    """
     if not src_map:
         return []
     lost = []
@@ -6457,10 +6487,15 @@ def _format_coverage_lost_ids(blocks, src_map) -> list:
         if _ANY_MARKUP_RE.search(str(text or "")):
             continue
         try:
-            if _match_full_wrap(source.strip()):
-                lost.append(str(idx))
+            wrap = _match_full_wrap(source.strip())
         except Exception:
             continue
+        if not wrap:
+            continue
+        opener = str(wrap[0] or "")
+        if _DELIVERY_FONT_TAG_RE.search(opener) or opener.startswith("{"):
+            continue
+        lost.append(str(idx))
     return lost
 
 
@@ -6696,7 +6731,19 @@ _DELIVERY_TEAM_CREDIT_RE = re.compile(
     r"\b(?:downloaded\s+from|ripped\s+by|synced?\s+(?:and\s+corrected\s+)?by"
     r"|corrected\s+by|subtitles?\s+by|subtitled\s+by|captions?\s+by"
     r"|legendas?\b|traduzido|apresenta|traducción|traduction|sous-titres"
-    r"|übersetzung|vertaling|çeviri\s*:|altyazı\s*:)",
+    r"|übersetzung|vertaling|çeviri\s*:|altyazı\s*:"
+    # Ölçülmüş künye biçimleri (Tur 9, madde 1). Bunlar teslimden DOĞRU
+    # şekilde siliniyordu ama "silinmesi beklenen" sayılmadıkları için
+    # 4 dosyada sert "eksik diyalog" hatasına dönüşüyordu.
+    # Romence: `Traducerea şi adaptarea: Livioi`
+    r"|traducerea\s+(?:[şs]i\s+)?adaptarea"
+    # Sırpça/Hırvatça: `Srpski titl: tplc` — iki nokta ŞART, `titl` tek
+    # başına bir cümlede geçebilir.
+    r"|\btitl\s*:"
+    # OCR küçük l'yi büyük I yapıyor: `SubtitIes by:`, `FiIm`. Tolerans
+    # yalnız bu iki sözcükle sınırlı; genel bir I↔l kuralı değil.
+    r"|subtit[li]es?\s+by"
+    r"|\bf[li]im\s+s\.?r\.?[li]\.?)",
     re.IGNORECASE)
 _DELIVERY_BROADCAST_PROMO_RE = re.compile(
     r"\b(?:to\s+order\s+this\s+(?:program|programme|dvd)"
@@ -19384,8 +19431,35 @@ REPORT_DECISION_TOOLS = {
 }
 
 
-def _report_finding_rows(rows) -> list:
-    """(dosya, anahtar, etiket, sayı) dörtlüleri — KIRPILMADAN."""
+def _report_group_for(key: str) -> str:
+    """Bulgu sınıfının özet/karar tablosundaki grubu.
+
+    Açık eşleme önce gelir; kalanlar `_FINDING_CLASSES` güvenine göre
+    türetilir. Türetme olmadan teslim denetimi sınıfları varsayılan
+    "BİÇİM" kovasına düşüp KRİTİK bulguları gömüyordu.
+    """
+    if key in _REPORT_GROUP_BY_KEY:
+        return _REPORT_GROUP_BY_KEY[key]
+    meta = _FINDING_CLASSES.get(key)
+    if meta and meta[0] != "bilgi":
+        return "KRİTİK"
+    return "BİÇİM"
+
+
+def _report_finding_label(key: str) -> str:
+    meta = _FINDING_CLASSES.get(key)
+    return meta[1] if meta else str(key)
+
+
+def _report_finding_rows(rows, findings=None) -> list:
+    """(dosya, anahtar, etiket, sayı) dörtlüleri — KIRPILMADAN.
+
+    `findings` verilirse (bkz. `build_finding_rows`) teslim denetimi ve ham
+    yedek bulguları da eklenir. Eskiden yalnız `delivery_scan` okunuyordu:
+    özet, karar tablosu ve kapsam doğrulaması aynı dar listeyi kullandığı
+    için birbirini yanlış doğruluyordu ve iki gerçek koşuda 18 eylem
+    satırının 15'i tek giriş noktasında görünmüyordu (Tur 10, madde 2).
+    """
     out = []
     for row in rows or []:
         name = str(row.get("name") or row.get("source_path") or "?")
@@ -19402,6 +19476,17 @@ def _report_finding_rows(rows) -> list:
         missing = int(row.get("hata_count") or 0)
         if missing:
             out.append((name, "missing_translation", "Eksik çeviri", missing))
+    if findings:
+        seen_keys = {(entry[0], entry[1]) for entry in out}
+        extra = {}
+        for finding in findings:
+            key = str(finding.get("sinif") or "")
+            name = str(finding.get("dosya") or "?")
+            if not key or (name, key) in seen_keys:
+                continue
+            extra[(name, key)] = extra.get((name, key), 0) + 1
+        for (name, key), count in sorted(extra.items()):
+            out.append((name, key, _report_finding_label(key), count))
     return out
 
 
@@ -19495,6 +19580,48 @@ def _ham_cue_is_removable(text: str) -> bool:
         return False
 
 
+_LOST_CUE_NEIGHBOUR_MS = 10_000
+# Eşik arşivde ölçüldü: 8/10 iki doğrulanmış yanlış alarmı da eliyor,
+# 12 birini, 14 ikisini birden kaçırıyor; üç bilinen gerçek kayıp hepsinde
+# korunuyor. 10 seçildi — 12'nin altında pay bırakır, 8 kadar gevşek değil.
+_LOST_CUE_MIN_MATCH_CHARS = 10
+
+
+def _lost_cue_match_key(text: str) -> str:
+    """Metin karşılaştırma anahtarı: etiketsiz, NOKTALAMASIZ, tek boşluklu.
+
+    Noktalama dışarıda bırakılır çünkü karşılaştırılan şey bir cümlenin
+    PARÇASIDIR: ham `New York'ta,` birleşince `New York'ta öyle bir şeydi`
+    oluyor ve sondaki virgül kapsamayı bozuyordu.
+    """
+    value = _ANY_MARKUP_RE.sub("", str(text or ""))
+    value = re.sub(r"[^\w\s]+", " ", value, flags=re.UNICODE)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value.casefold()
+
+
+def _text_survives_in_neighbour_cue(timestamp, text, timed_output) -> bool:
+    """Ham metin, yakın bir teslim cue'sunun İÇİNDE aynen duruyor mu.
+
+    Yalnız KUVVETLİ kanıt kabul edilir: normalize ham metnin tamamı komşu
+    cue'nun metninde geçmeli ve yeterince uzun olmalı. Kısa/ortak ifadeler
+    (`Evet.`, `Ne?`) tesadüfen eşleşeceği için eşiğin altında kalır.
+    """
+    key = _lost_cue_match_key(text)
+    if len(key) < _LOST_CUE_MIN_MATCH_CHARS:
+        return False
+    try:
+        start, _end = _srt_timestamp_bounds(str(timestamp))
+    except ValueError:
+        return False
+    for other_start, other_key in timed_output:
+        if abs(other_start - start) > _LOST_CUE_NEIGHBOUR_MS:
+            continue
+        if other_key and key in other_key:
+            return True
+    return False
+
+
 def detect_lost_translated_cues(ham_cues, output_cues,
                                 expected_removed_timestamps=()) -> list:
     """Ham'da çevrilmiş metin var, teslimde o zaman aralığı yok.
@@ -19507,6 +19634,18 @@ def detect_lost_translated_cues(ham_cues, output_cues,
     """
     output_timestamps = {str(c[1]) for c in (output_cues or ())}
     skip = {str(value) for value in (expected_removed_timestamps or ())}
+    # Cue birleştirme/yeniden dağıtma MEŞRU bir son işlemdir: ham zaman
+    # damgası teslimde bulunmasa da metin komşu cue'nun içinde duruyor
+    # olabilir. Eskiden yalnız zaman damgasının yokluğuna bakılıyor ve
+    # "Ham yedekteki çeviriyi geri koy" deniyordu — uygulanırsa zaten var
+    # olan metin ikinci kez eklenirdi (Tur 8, madde 2).
+    timed_output = []
+    for cue in output_cues or ():
+        try:
+            start, _end = _srt_timestamp_bounds(str(cue[1]))
+        except (ValueError, IndexError):
+            continue
+        timed_output.append((start, _lost_cue_match_key(str(cue[2] or ""))))
     lost = []
     for cue in ham_cues or ():
         timestamp = str(cue[1])
@@ -19517,6 +19656,8 @@ def detect_lost_translated_cues(ham_cues, output_cues,
         if timestamp in output_timestamps or timestamp in skip:
             continue
         if _ham_cue_is_removable(text):
+            continue
+        if _text_survives_in_neighbour_cue(timestamp, text, timed_output):
             continue
         lost.append((str(cue[0]), timestamp, visible))
     return lost
@@ -19549,13 +19690,22 @@ def detect_unstable_shape_passes(blocks) -> list:
 
 
 def _ham_backup_path(output_path):
-    """Teslim dosyasının ham yedeği: <bölüm>/Raporlar/Ham/<ad>.<hash>.ham.srt"""
+    """Teslim dosyasının ham yedeği: <bölüm>/Raporlar/Ham/<ad>.<hash>.ham.srt
+
+    Yolu ve kök adı YAZAN tarafla (`_save_raw_backup`) aynı kurallardan
+    çözer. Eskiden ikisi de yapılmıyordu: yarım koşunun çıktısı zaten
+    `.../Raporlar/Kurtarma/<ad>.partial.srt` olduğu için okuyucu var olmayan
+    `.../Raporlar/Kurtarma/Raporlar/Ham` dizinine bakıyor, ayrıca `.partial`
+    ekini de atmıyordu. Sonuç: arşivdeki 127 partial dosyanın 122'sinde ham
+    yedek DURUYORKEN 0'ı bulunuyordu ve kayıp-çeviri denetimi koşulsuz
+    atlanıyordu (Tur 8, madde 1).
+    """
     try:
         target = Path(str(output_path))
-        ham_dir = target.parent / "Raporlar" / "Ham"
+        ham_dir = _delivery_report_dir(target) / "Ham"
         if not ham_dir.is_dir():
             return None
-        stem = target.stem
+        stem = _delivery_output_stem(target)
         matches = sorted(ham_dir.glob(f"{stem}.*.ham.srt"))
         if not matches:
             matches = sorted(ham_dir.glob(f"{stem}.ham.srt"))
@@ -19564,17 +19714,61 @@ def _ham_backup_path(output_path):
         return None
 
 
-def _finding_id(file_name: str, finding_class: str, timestamp: str,
-                cue_no: str) -> str:
+try:
+    _PROJECT_ROOT_FOR_IDS = Path(__file__).resolve().parent
+except (OSError, NameError):
+    _PROJECT_ROOT_FOR_IDS = Path(".").resolve()
+
+
+def _finding_file_key(file_name: str, output_path: str = "") -> str:
+    """Bulgu kimliğinde kullanılan DOSYA kimliği.
+
+    Salt dosya adı bir arşivde benzersiz değil: aynı adlı iki ayrı teslim
+    sürümü aynı kimliği alıyordu ve tek 'yanlış alarm' kararı ikisini
+    birden susturuyordu (Tur 9, madde 2 — ölçümde 6 dosyada 7 çakışma
+    grubu / 14 satır). Mutlak yol da kullanılamaz: sürücü/kök değişince
+    bütün kararlar geçersizleşirdi (bu proje bir kez taşındı).
+
+    Çözüm PROJE KÖKÜNE göre bağıl yol. Son N bileşen denendi ve YETMEDİ:
+    arşivde `HAZIR DİZİLER/...` ile `HAZIR FİLMLER/...` altında son üç
+    bileşeni birebir aynı, içeriği farklı iki gerçek teslim var.
+    """
+    raw = str(output_path or file_name or "")
+    if not raw:
+        return ""
+    try:
+        rel = Path(raw).resolve().relative_to(_PROJECT_ROOT_FOR_IDS)
+        parts = rel.parts
+    except (ValueError, OSError, RuntimeError):
+        # Proje kökü DIŞINDAKİ teslim (ör. masaüstündeki yükleme klasörü):
+        # kök harfi atılır, gerisi olduğu gibi kalır. Son N bileşene
+        # kırpmak burada da çakışma üretiyordu; çakışan karar gerçek bir
+        # bulguyu susturur, kırılan karar yalnız yeniden inceleme maliyeti.
+        path = Path(raw)
+        parts = path.parts[1:] if path.anchor else path.parts
+    return "/".join(os.path.normcase(part) for part in parts)
+
+
+def _finding_id(file_key: str, finding_class: str, timestamp: str,
+                fingerprint: str = "") -> str:
     """Koşular arasında KARARLI bulgu kimliği.
 
     Karar dosyası (bulgu_kararlari.json) bununla eşleşiyor: aynı bulgu
     ikinci koşuda aynı kimliği almalı ki 'yanlış alarm' işareti kalıcı
-    olsun. Cue numarası değişebildiği için zaman damgası da anahtara girer.
+    olsun.
+
+    Anahtarda cue numarası YOK. Fonksiyonun ve `apply_finding_decisions`'ın
+    sözleşmesi kimliğin cue yeniden numaralansa bile aynı kalmasını
+    vaat ediyordu, ama numara anahtara giriyordu ve ölçümde 19/19 bulguda
+    kimlik değişiyordu (Tur 9, madde 3). Numaranın yerini metin parmak izi
+    aldı: aynı zaman damgasını paylaşan iki ayrı cue'yu da ayırır.
     """
     key = "|".join([
-        str(file_name or ""), str(finding_class or ""),
-        str(timestamp or ""), str(cue_no or ""),
+        str(file_key or ""), str(finding_class or ""),
+        str(timestamp or ""),
+        hashlib.sha1(
+            re.sub(r"\s+", " ", str(fingerprint or "")).strip()
+            .casefold().encode("utf-8")).hexdigest()[:8],
     ])
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
@@ -19628,6 +19822,7 @@ def build_finding_rows(rows, read_cues=None) -> list:
         for c in output_cues:
             output_by_ts.setdefault(str(c[1]), []).append(str(c[2] or ""))
             output_ids_by_ts.setdefault(str(c[1]), []).append(str(c[0]))
+        file_key = _finding_file_key(name, output_path)
         row_start = len(findings)
 
         for block_name in ("delivery_audit", "delivery_scan"):
@@ -19663,7 +19858,9 @@ def build_finding_rows(rows, read_cues=None) -> list:
                             source_text = ""
                     delivered = " / ".join(output_by_ts.get(timestamp, ()))
                     findings.append({
-                        "id": _finding_id(name, field, timestamp, cue_no),
+                        "id": _finding_id(
+                            file_key, field, timestamp,
+                            delivered or source_text),
                         "dosya": name,
                         "kaynak_yolu": source_path,
                         "teslim_yolu": output_path,
@@ -19690,8 +19887,8 @@ def build_finding_rows(rows, read_cues=None) -> list:
             for cue_no, timestamp, body in detect_lost_translated_cues(
                     cues_of(str(ham_path)), output_cues, expected_ts):
                 findings.append({
-                    "id": _finding_id(name, "lost_translated_cue",
-                                      timestamp, cue_no),
+                    "id": _finding_id(file_key, "lost_translated_cue",
+                                      timestamp, body),
                     "dosya": name,
                     "kaynak_yolu": source_path,
                     "teslim_yolu": output_path,
@@ -19710,8 +19907,8 @@ def build_finding_rows(rows, read_cues=None) -> list:
         for cue_no, timestamp, first, second in detect_unstable_shape_passes(
                 output_cues):
             findings.append({
-                "id": _finding_id(name, "unstable_shape_pass",
-                                  timestamp, cue_no),
+                "id": _finding_id(file_key, "unstable_shape_pass",
+                                  timestamp, first),
                 "dosya": name,
                 "kaynak_yolu": source_path,
                 "teslim_yolu": output_path,
@@ -19831,12 +20028,12 @@ def build_delivery_scan_report_text(rows, run_id: str = "") -> str:
 
 
 def build_report_index_text(rows, run_id: str = "",
-                            report_files=()) -> str:
+                            report_files=(), findings=None) -> str:
     """R3 — Raporlar/00-OZET.md: tek giriş noktası."""
-    findings = _report_finding_rows(rows)
+    findings = _report_finding_rows(rows, findings)
     totals = {}
     for _name, key, _label, count in findings:
-        group = _REPORT_GROUP_BY_KEY.get(key, "BİÇİM")
+        group = _report_group_for(key)
         totals.setdefault(group, {}).setdefault(key, 0)
         totals[group][key] += count
     lines = [
@@ -19859,6 +20056,8 @@ def build_report_index_text(rows, run_id: str = "",
         label_by_key = dict(_DELIVERY_SCAN_REPORT_FIELDS)
         label_by_key.setdefault("register_mixed", "Hitap dağılımı (bilgi)")
         label_by_key.setdefault("missing_translation", "Eksik çeviri")
+        for _class_key, _class_meta in _FINDING_CLASSES.items():
+            label_by_key.setdefault(_class_key, _class_meta[1])
         for key, count in sorted(bucket.items(), key=lambda kv: -kv[1]):
             lines.append(f"- **{label_by_key.get(key, key)}**: {count}")
         lines.append("")
@@ -19872,9 +20071,9 @@ def build_report_index_text(rows, run_id: str = "",
     return "\n".join(lines) + "\n"
 
 
-def build_decisions_report_text(rows, run_id: str = "") -> str:
+def build_decisions_report_text(rows, run_id: str = "", findings=None) -> str:
     """R4 — Raporlar/KARARLAR.md: her bulgunun yanında karar ve aracı."""
-    findings = _report_finding_rows(rows)
+    findings = _report_finding_rows(rows, findings)
     lines = [
         "# Kararlar",
         "",
@@ -19887,7 +20086,7 @@ def build_decisions_report_text(rows, run_id: str = "") -> str:
         "| --- | --- | --- | ---: | --- | --- |",
     ]
     for name, key, label, count in findings:
-        group = _REPORT_GROUP_BY_KEY.get(key, "BİÇİM")
+        group = _report_group_for(key)
         tool = REPORT_DECISION_TOOLS.get(key, "-")
         safe_name = str(name).replace("|", "/")
         lines.append(
@@ -19897,13 +20096,16 @@ def build_decisions_report_text(rows, run_id: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
-def verify_report_coverage(rows, *texts) -> dict:
+def verify_report_coverage(rows, *texts, findings=None) -> dict:
     """R5 — değişmez: bulunan == dosyaya yazılan.
 
     Her bulgu satırının dosya adı + sayısı üretilen metinlerin EN AZ
     BİRİNDE geçmeli. Geçmiyorsa rapor sessizce kırpılmış demektir.
+
+    `findings` doğrulanan kümeyi genişletir: doğrulama, doğruladığı listeyle
+    aynı yerden beslenmezse kendi körlüğünü onaylar.
     """
-    findings = _report_finding_rows(rows)
+    findings = _report_finding_rows(rows, findings)
     blob = "\n".join(str(text or "") for text in texts)
     missing = []
     for name, key, label, count in findings:
@@ -36915,22 +37117,27 @@ class App(ctk.CTk):
             report_paths = [p]
             # R2-R5: teslim taraması yalnız log'a gidiyordu; log rotasyona
             # giriyor, kullanıcı ise koşu sonunda Raporlar klasörünü okuyor.
+            # Bulgu listesi ÖNCE üretilir: özet, karar tablosu ve kapsam
+            # doğrulaması aynı kanonik listeden beslensin. Eskiden bu üçü
+            # yalnız `delivery_scan`'i gören dar yardımcıyı kullanıyordu ve
+            # teslim denetimi + ham yedek bulgularını hiç görmüyordu.
+            try:
+                canonical_findings = build_finding_rows(report_rows)
+            except Exception:
+                canonical_findings = []
             scan_text = build_delivery_scan_report_text(report_rows, run_id)
-            decisions_text = build_decisions_report_text(report_rows, run_id)
+            decisions_text = build_decisions_report_text(
+                report_rows, run_id, findings=canonical_findings)
             scan_path = rep_dir / "teslim_taramasi.txt"
             decisions_path = rep_dir / "KARARLAR.md"
             atomic_write_text(scan_path, scan_text, encoding="utf-8")
             atomic_write_text(decisions_path, decisions_text, encoding="utf-8")
             report_paths.extend([scan_path, decisions_path])
-            index_text = build_report_index_text(
-                report_rows, run_id,
-                [path.name for path in report_paths])
             index_path = rep_dir / "00-OZET.md"
-            atomic_write_text(index_path, index_text, encoding="utf-8")
-            report_paths.append(index_path)
             # R5 değişmezi: bulunan == dosyaya yazılan.
             coverage = verify_report_coverage(
-                report_rows, scan_text, decisions_text)
+                report_rows, scan_text, decisions_text,
+                findings=canonical_findings)
             if not coverage["ok"]:
                 self._log(
                     f"⚠ Rapor kapsamı eksik: {coverage['found']} bulgunun "
@@ -36958,7 +37165,7 @@ class App(ctk.CTk):
             # bulguyu okuyanın altyazıyı açıp cue numarası eşleştirmesi
             # gerekiyordu — ve o numara teslimde yeniden numaralanıyor.
             try:
-                findings = build_finding_rows(report_rows)
+                findings = canonical_findings
                 # Eyleme geçirilebilir olanlar ayrı dosyada: bir koşuda 204
                 # bulgunun 196'sı "bilinçli silindi" bilgisi oluyor ve bu
                 # dosya doğrudan Codex/Claude'a veriliyor — bilgi satırları
@@ -37043,6 +37250,18 @@ class App(ctk.CTk):
                 })
                 report_paths.append(guard_path)
                 self._log(f"Pass guard kanıt paketi: {guard_path}", "warn")
+            # 00-OZET.md EN SON yazılır. Eskiden karar tablosundan hemen
+            # sonra yazılıyordu; o an `report_paths` yalnız üç dosya
+            # içeriyordu ve JSON, `bulgular*.jsonl`, işlem dökümleri gibi
+            # sonradan üretilen çıktılar "tek giriş noktası"na hiç
+            # girmiyordu — iki gerçek koşuda 4 makine-okunur dosya / 276
+            # bulgu satırı özetten keşfedilemiyordu (Tur 10, madde 3).
+            index_text = build_report_index_text(
+                report_rows, run_id,
+                [path.name for path in report_paths],
+                findings=canonical_findings)
+            atomic_write_text(index_path, index_text, encoding="utf-8")
+            report_paths.append(index_path)
             with self._run_record_lock:
                 active = getattr(self, "_active_run_record", None)
                 if active is not None:
