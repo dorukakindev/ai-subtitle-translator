@@ -880,6 +880,40 @@ def _strip_standalone_music_notes(line: str) -> str:
     return value
 
 
+_MIXED_CAPS_WORD = r"[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ'’]+"
+_MIXED_CAPS_LABEL_RE = re.compile(
+    r"^(?P<dash>[-–—]?\s*)"
+    r"(?P<label>%s(?:\s+%s){0,4})"
+    r"(?::\s+|\s+(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü]))" % (
+        _MIXED_CAPS_WORD, _MIXED_CAPS_WORD))
+_MIXED_CAPS_RESIDUE_RE = re.compile(r"\b[A-ZÇĞİÖŞÜ]{2,}\b")
+
+
+def strip_mixed_caps_label(line: str) -> tuple[str, bool]:
+    """Diyalogla AYNI cue'da duran BÜYÜK HARF ses/konuşmacı etiketini atar.
+
+    `HE WHISTLES She's a smasher.` -> `She's a smasher.`
+    `KUKLA: İn aşağı!`            -> `İn aşağı!`
+
+    Tek başına duran caps cue'ya DOKUNULMAZ: orada etiket ile ekran
+    yazısı/tabela (`SATILIK`, `EUROPCAR CAR RENTAL`) ayırt edilemiyor ve o
+    karar dosya düzeyindeki caps kapısına ait.
+
+    Kalanda başka bir caps sözcük varsa da dokunulmaz: o zaman bu bir etiket
+    değil, karışık düzende yazılmış BAŞLIKTIR (`HER ŞEYİ BİR Gergedan GİBİ`,
+    `VE TAJINDER'İN Nektar Havuzu'NDA`). Ölçüm: bu kayıt olmadan 21 adayın
+    4'ü yanlıştı, kayıtla 17/17 doğru.
+    """
+    value = str(line or "")
+    match = _MIXED_CAPS_LABEL_RE.match(value)
+    if not match:
+        return value, False
+    remainder = value[match.end():].strip()
+    if len(remainder) < 8 or _MIXED_CAPS_RESIDUE_RE.search(remainder):
+        return value, False
+    return (match.group("dash") or "") + remainder, True
+
+
 def _strip_mojibake_music_ornament(text: str) -> str:
     return re.sub(r"^\s*(?:Âª|Aª|ª)\s*(?=[\[(])", "", str(text or ""))
 

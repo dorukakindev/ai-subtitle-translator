@@ -4871,6 +4871,45 @@ _LEADING_APOSTROPHE_CONTRACTION_RE = re.compile(
     r"^\s*'(?:cause|em|tis|twas|round|til|bout)\b", re.IGNORECASE)
 
 
+_DELIVERY_ITALIC_TAG_RE = re.compile(r"</?i\s*>", re.IGNORECASE)
+
+
+def _italic_nesting_is_broken(text: str) -> bool:
+    """Cue'nun italik etiketleri dengesiz ya da iç içe mi.
+
+    Sağlam bir cue'da derinlik 0 ile 1 arasında gider ve 0'da biter.
+    """
+    depth = 0
+    for tag in _DELIVERY_ITALIC_TAG_RE.findall(str(text or "")):
+        if tag.startswith("</"):
+            depth -= 1
+        else:
+            depth += 1
+        if depth < 0 or depth > 1:
+            return True
+    return depth != 0
+
+
+def _normalize_delivery_italics(text: str) -> tuple[str, int]:
+    """Bozuk italik yuvalanmasını TEK dış çifte indirir.
+
+    Gerçek olay (São Bernardo #837/#894): kaynak zaten bozuk (`<i>` içinde
+    ikinci `<i>`, kapanışlar sonda yığılmış), `restore_format_tags` bunu
+    dengesiz bırakıyor (`<i>`×2, `</i>`×4) ve teslim hazırlığı 4 seviyeye
+    çıkarıyordu. SAĞLAM kısmi italik (`dedi ki <i>hayır</i>`) korunur —
+    yalnız dengesiz/iç içe olan cue düzeltilir.
+    """
+    value = str(text or "")
+    if not _DELIVERY_ITALIC_TAG_RE.search(value):
+        return value, 0
+    if not _italic_nesting_is_broken(value):
+        return value, 0
+    stripped = _DELIVERY_ITALIC_TAG_RE.sub("", value)
+    if not stripped.strip():
+        return stripped, 1
+    return f"<i>{stripped}</i>", 1
+
+
 _DELIVERY_FONT_TAG_RE = re.compile(r"</?font\b[^>]*>", re.IGNORECASE)
 
 
@@ -5359,6 +5398,85 @@ def _positional_credit_ids(rows) -> set:
 
 
 _CUE_ID_LEAK_LINE_RE = re.compile(r"^\s*\d{1,4}\s*$")
+
+
+# Çevrilmeden kalan İngilizce duraksama/onaylama sözcükleri. Sınıra tırnak
+# da dahil: `"Los Panchos"um.` aksi hâlde yanlış alarm veriyordu.
+_ENGLISH_FILLER_RE = re.compile(
+    r"(?<![\w'’\"])(um|uh|uh-huh|mm-hm|yeah|okay)(?![\w'’\"])",
+    re.IGNORECASE)
+
+_REPETITION_MIN_HITS = 5
+# 4: kesme işareti `\w+` ile bölündüğü için `I won't go.` dört jetondur
+# (`i won t go`); üst sınır 3 kalırsa kaynağın kendi tekrarı görülmez ve
+# sadık çeviri çöküş sanılır (Warrendale #598 böyle yanlış alarm veriyordu).
+_REPETITION_MAX_NGRAM = 4
+# Ünlem/onaylama ve şarkı hecesi: tekrarı normaldir, çöküş değildir.
+_REPETITION_INTERJECTIONS = frozenset({
+    "la", "na", "ha", "oh", "ah", "ay", "vay", "hey", "yok", "hayır",
+    "evet", "tamam", "hadi", "şey", "aman", "of", "bay", "güle", "şşt",
+    "hı", "hu", "ho", "hi", "ya", "yeah", "no", "yes", "go", "stop",
+})
+
+
+def _repeated_ngram_units(text: str, min_hits: int = 3) -> set:
+    """Metinde `min_hits` kez ARDIŞIK yinelenen n-gram'lar (n = 1..3).
+
+    Kaynak elemesi SÖZCÜK düzeyinde yapılamaz: kaynak `to you, to you,
+    to you` derken tekrar birimi iki sözcüktür ve tek sözcük araması bunu
+    göremez, dolayısıyla meşru çeviriyi çöküş sanar (teslim briefi, madde 1).
+    """
+    words = re.findall(r"\w+", str(text or "").casefold(), flags=re.UNICODE)
+    found = set()
+    for size in range(1, _REPETITION_MAX_NGRAM + 1):
+        if len(words) < size * min_hits:
+            continue
+        for start in range(len(words) - size * min_hits + 1):
+            unit = tuple(words[start:start + size])
+            hits = 1
+            pos = start + size
+            while (pos + size <= len(words)
+                   and tuple(words[pos:pos + size]) == unit):
+                hits += 1
+                pos += size
+            if hits >= min_hits:
+                found.add(unit)
+    return found
+
+
+def _repetition_collapse_ids(blocks, src_map=None) -> list:
+    """Cue içi tekrar çöküşü — model aynı sözcüğü döngüye girip yazmış.
+
+    Gerçek olay (What Happened Was #1770/#1775/#1776): `işte işte işte…`
+    Cue tamamen anlamsız kalıp teslime çıkmış, hiçbir dedektör yakalamamış.
+
+    Ham kural tek başına kullanılamaz — 22 dosyada isabeti %14'tü, 21
+    adayın 18'i kaynağın kendi retorik tekrarıydı. Üç eleme birlikte
+    gerekiyor: ünlem/şarkı hecesi listesi, en az beş tekrar, ve KAYNAKTA
+    aynı birimin tekrarlanmaması (n-gram düzeyinde).
+    """
+    flagged = []
+    for idx, _ts, text in blocks or []:
+        body = _ANY_MARKUP_RE.sub("", str(text or ""))
+        words = re.findall(r"\w+", body.casefold(), flags=re.UNICODE)
+        if len(words) < _REPETITION_MIN_HITS:
+            continue
+        units = _repeated_ngram_units(body, _REPETITION_MIN_HITS)
+        units = {unit for unit in units
+                 if not (len(unit) == 1
+                         and (unit[0] in _REPETITION_INTERJECTIONS
+                              or len(unit[0]) < 2))}
+        if not units:
+            continue
+        # Kaynakta HERHANGİ bir birim tekrarlanıyorsa çeviri sadıktır.
+        # Aynı birimi aramak ANLAMSIZ: kaynak İngilizce, çeviri Türkçe;
+        # `to you, to you, to you` ile `sana, sana, sana` sözlüksel olarak
+        # hiçbir zaman eşleşmez ve meşru çeviri çöküş sanılırdı.
+        source = str((src_map or {}).get(str(idx), ""))
+        if source and _repeated_ngram_units(source, 3):
+            continue
+        flagged.append(str(idx))
+    return flagged
 
 
 def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
@@ -6555,6 +6673,19 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     _leak_ids = _cue_id_leak_ids(blocks)
     stats["cue_id_leak_ids"] = _leak_ids
     stats["cue_id_leak"] = len(_leak_ids)
+    # Dengesiz/iç içe italik: 22 dosyada YALNIZ gerçek iki cue'yu verdi,
+    # yanlış pozitif yok (teslim briefi 2026-08-28, madde 3).
+    _italic_ids = [str(idx) for idx, _ts, text in blocks
+                   if _italic_nesting_is_broken(text)]
+    stats["broken_italic_ids"] = _italic_ids
+    stats["broken_italic"] = len(_italic_ids)
+    _repetition_ids = _repetition_collapse_ids(blocks, src_map)
+    stats["repetition_collapse_ids"] = _repetition_ids
+    stats["repetition_collapse"] = len(_repetition_ids)
+    _filler_ids = [str(idx) for idx, _ts, text in blocks
+                   if _ENGLISH_FILLER_RE.search(str(text or ""))]
+    stats["english_filler_ids"] = _filler_ids
+    stats["english_filler"] = len(_filler_ids)
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     cue_fill = _cue_fill_imbalances(blocks, src_map)
     stats["cue_fill"] = len(cue_fill)
@@ -7594,6 +7725,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     hats_removed = 0
     position_tags_removed = 0
     font_tags_removed = 0
+    italics_normalized = 0
+    caps_labels_removed = 0
     sdh_removed = 0
     typography_fixed = 0
     foreign_terms_fixed = 0
@@ -7610,6 +7743,19 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         position_tags_removed += removed
         value, _font_removed = _strip_delivery_font_tags(value)
         font_tags_removed += _font_removed
+        value, _italics_fixed = _normalize_delivery_italics(value)
+        italics_normalized += _italics_fixed
+        # Diyalogla aynı cue'da duran BÜYÜK HARF ses/konuşmacı etiketi.
+        # Kural dile bağımsız: etiket kaynakta İngilizce kalmışsa da
+        # (`HE WHISTLES She's a smasher.`) modelden Türkçe dönmüşse de
+        # (`KUKLA: İn aşağı!`) aynı yerde yakalanır — teslim briefi madde 2b.
+        _label_lines = []
+        for _line in value.split("\n"):
+            _stripped, _hit = sdh_cleaner.strip_mixed_caps_label(_line)
+            if _hit:
+                caps_labels_removed += 1
+            _label_lines.append(_stripped)
+        value = "\n".join(_label_lines)
         value = _normalize_delivery_ass_style_tags(value)
         source_credit_lines = _delivery_credit_line_indexes(source_text)
         value_lines = value.splitlines()
@@ -7733,6 +7879,8 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 f"{hats_removed} şapkalı harf, "
                 f"{position_tags_removed} konum/döndürme kodu, "
                 f"{font_tags_removed} renk etiketi, "
+                f"{italics_normalized} bozuk italik yuvalanması, "
+                f"{caps_labels_removed} büyük harf SDH etiketi, "
                 f"{sdh_removed} SDH/müzik cue'su temizlendi, "
                 f"{quote_markers_fixed} bozuk OCR tırnak işareti, "
                 f"{typography_fixed} tipografik tırnak/kesme, "
@@ -19523,6 +19671,9 @@ _FINDING_CLASSES = {
     # `source_residue` doğru Türkçeyi de işaretliyor (`PIN'ini`, `ATM'de`),
     # `missing_predicate` ise cue'ya bölünmüş cümlenin ilk yarısını.
     "cue_id_leak_ids": ("kesin", "Metne sızmış cue numarası", "Sızan numarayı sil."),
+    "broken_italic_ids": ("kesin", "Dengesiz/iç içe italik etiketi", "Tek dış <i>…</i> çiftine indir."),
+    "repetition_collapse_ids": ("kesin", "Cue içi tekrar çöküşü", "Kaynaktan yeniden çevir."),
+    "english_filler_ids": ("muhtemel", "Çevrilmemiş İngilizce dolgu", "Türkçe karşılığına çevir (ee/şey)."),
     "source_residue_ids": ("muhtemel", "Türkçe ekli kaynak kalıntısı", "Sözcüğü Türkçeye çevir."),
     "missing_predicate_ids": ("muhtemel", "Yüklemsiz biten cue", "Cümle sonraki cue'da tamamlanıyor mu bak."),
     "introduced_out_of_order_ids": ("muhtemel", "Sıra bozulması (bu koşuda)", "Sırayı düzelt."),
