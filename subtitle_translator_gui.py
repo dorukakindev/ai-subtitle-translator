@@ -9052,6 +9052,20 @@ def _advanced_settings_summary(values: dict) -> tuple[str, str]:
 # kapanmayan bir dizi gerçek bir cümle değildir → dosyada noktalama yok demektir
 # (ör. otomatik üretilmiş altyazı). O durumda frag mantığı güvenilmez; grubu bağımsız
 # bırakırız ki chunk'lama serbestçe bölebilsin (model sürekliliği next_ctx'ten anlar).
+# Cümle grubunu kesen konuşmacı değişimi. Kolondan ÖNCEKİ kısım bir AD gibi
+# görünmeli: en çok üç sözcük ve hepsi büyük harfle başlamalı.
+# Eski desen (`[^\W\d_][^:\n]{0,39}:`) sıradan cümle-içi iki noktayı da
+# konuşmacı sanıyordu ve çok cue'lu cümleyi ORTASINDAN kesiyordu —
+# `But he was wrong: it's not a tower,`, `And it had a name: Shambala.`,
+# `four of the great rivers of Asia rise:`. Kesilen grup hiç etiketlenmediği
+# için model o cümleyi satır satır çeviriyor; SOV bozulmasının doğrudan
+# sebeplerinden biri bu. Ölçüm (84.590 cue): iki desen 2.791 gerçek kesmede
+# aynı, yeni desen fazladan hiçbir yeri kesmiyor.
+_SPEAKER_BREAK_RE = re.compile(
+    r"^\s*(?:[-–—]\s+"
+    r"|[A-ZÇĞİÖŞÜ][\w'’.\-]*(?:\s+[A-ZÇĞİÖŞÜ][\w'’.\-]*){0,2}\s*:\s+)",
+    re.UNICODE)
+
 MAX_FRAG_GROUP   = 30
 MAX_UNPUNCTUATED_FRAG_GROUP = 10
 MAX_FRAG_GROUP_CHARS = 2400
@@ -9178,9 +9192,7 @@ def _tag_fragments_gui(blocks: list, scene_gap_sec: float = None) -> dict:
         if k <= 0:
             return False
         text = _clean_src(blocks[k][2])
-        return bool(re.match(
-            r"^\s*(?:[-–—]\s+|[^\W\d_][^:\n]{0,39}:\s+)",
-            text, re.UNICODE))
+        return bool(_SPEAKER_BREAK_RE.match(text))
 
     # Hibrit ikizle aynı kural: bütünüyle SDH etiketi olan cue cümle açmaz
     # ve cümle grubunu keser. Bkz. hybrid_translate._tag_fragments.

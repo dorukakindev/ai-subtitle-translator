@@ -139,6 +139,14 @@ LOOKAHEAD_LINES = 15  # next-chunk cues sent as read-ahead
 SCENE_GAP_SEC   = 3.0   # gap ≥ this resets rolling context (new scene)
 # Bir çok-satırlı cümle fragman grubu en fazla bu kadar cue sürebilir; daha uzun
 # kapanmayan dizi = noktalamasız dosya (gerçek cümle değil) → bağımsız bırakılır.
+# GUI ikiziyle AYNI desen (subtitle_translator_gui._SPEAKER_BREAK_RE).
+# Kolondan önceki kısım bir AD gibi görünmeli; eski desen cümle-içi iki
+# noktayı da konuşmacı sanıp çok cue'lu cümleyi ortasından kesiyordu.
+_SPEAKER_BREAK_RE = re.compile(
+    r"^\s*(?:[-–—]\s+"
+    r"|[A-ZÇĞİÖŞÜ][\w'’.\-]*(?:\s+[A-ZÇĞİÖŞÜ][\w'’.\-]*){0,2}\s*:\s+)",
+    re.UNICODE)
+
 MAX_FRAG_GROUP  = 30
 MAX_UNPUNCTUATED_FRAG_GROUP = 10
 MAX_FRAG_GROUP_CHARS = 2400
@@ -516,9 +524,7 @@ def _tag_fragments(cues: list, scene_gap_sec: float = None) -> dict:
         if k <= 0:
             return False
         text = _clean_source_text(cues[k].text)
-        return bool(re.match(
-            r"^\s*(?:[-–—]\s+|[^\W\d_][^:\n]{0,39}:\s+)",
-            text, re.UNICODE))
+        return bool(_SPEAKER_BREAK_RE.match(text))
 
     # Bütünüyle SDH etiketi olan cue gramatik cümlenin üyesi olamaz.
     # Nokta ile kapanmadığı için cümle AÇIYOR ve peşindeki gerçek konuşmayı
