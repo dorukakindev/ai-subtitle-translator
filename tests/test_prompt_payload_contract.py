@@ -124,5 +124,56 @@ class PromptPayloadContractTest(unittest.TestCase):
             self.assertIn("sentence_groups", system_message)
 
 
+# Payload ANAHTARLARI yukarida kilitli; bu blok KURALLARIN kendisini kilitler.
+# CLAUDE.md iki promptun "semantik olarak hizali" kalmasini istiyor ama bunu
+# zorlayan bir sey yoktu: biri kural eklerken digerini unutursa sessizce
+# ayrisirlar ve iki akis ayni dosyayi farkli cevirmeye baslar.
+#
+# TUZAK: karsilastirma GERCEK istegin messages[0]'i uzerinden yapilir.
+# `build_system_prompt` ciktisina tek basina bakmak yanlis sonuc verir -
+# bicim/payload blogu `build_batch_requests` icinde ekleniyor. Olculdugunde
+# izole karsilastirma 8 kurali "eksik" gosteriyordu; gercek istekte 0.
+SHARED_PROMPT_RULES = {
+    "ID bütünlüğü": ("ID INTEGRITY",),
+    "diyalog tiresi": ("DIALOGUE DASHES", "TWO different speakers"),
+    "fragment kuralları": ("FRAGMENT RULES", "frag_group"),
+    "ekran yazısı": ("is_ost",),
+    "güvenilmez referans": ("untrusted reference",),
+    "süre anahtarı": ("'d' key", "display duration"),
+    "önceki sahne": ("prev_scene",),
+    "zincirleme bağlam": ("prev_tr",),
+    "cümle grupları": ("sentence_groups",),
+    "somut çeviri örnekleri": ("DETONATÖR",),
+    "şarkı sözü": ("LYRICS",),
+    "sözlük": ("glossary",),
+}
+
+
+class SharedPromptRuleParityTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.sync_system, _ = _sync_request()
+        cls.hybrid_system, _ = _hybrid_request()
+
+    def test_every_shared_rule_is_in_both_prompts(self):
+        for label, needles in SHARED_PROMPT_RULES.items():
+            with self.subTest(rule=label):
+                in_sync = any(n in self.sync_system for n in needles)
+                in_hybrid = any(n in self.hybrid_system for n in needles)
+                self.assertTrue(
+                    in_sync, "%s sync promptunda yok" % label)
+                self.assertTrue(
+                    in_hybrid, "%s hybrid promptunda yok" % label)
+
+    def test_prompts_stay_comparable_in_size(self):
+        """Biri digerinin yarisina duserse bir blok dusmus demektir."""
+        smaller = min(len(self.sync_system), len(self.hybrid_system))
+        larger = max(len(self.sync_system), len(self.hybrid_system))
+        self.assertGreater(
+            smaller / larger, 0.75,
+            "promptlar arasinda buyuk boyut farki: %d vs %d"
+            % (len(self.sync_system), len(self.hybrid_system)))
+
+
 if __name__ == "__main__":
     unittest.main()
