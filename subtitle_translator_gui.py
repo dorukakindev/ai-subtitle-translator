@@ -23272,9 +23272,9 @@ class App(ctk.CTk):
             text="Varsayılan güvenli mod. Şunları YALNIZ raporlar:\n"
                  "teslim karantinası/taşıma, otomatik yeniden çeviri,\n"
                  "tutarlılık süpürmesi, Kısaltma ve Cue-fill taşıma.\n"
-                 "Bu geçişler aday bulur ve raporlar, ama çıktıyı\n"
-                 "DEĞİŞTİRMEZ. Sorunlu dosya yüklemeye hazır veya\n"
-                 "tamamlanmış sayılmaz.\n"
+                 "Bu geçişler aday bulur ve raporlar, ama\n"
+                 "çıktıyı DEĞİŞTİRMEZ. Sorunlu dosya yüklemeye\n"
+                 "hazır veya tamamlanmış sayılmaz.\n"
                  "Polish, Native, QC ve Terim Normalizasyonu kendi\n"
                  "anahtarlarıyla çalışmayı sürdürür — terim düzeltmesini\n"
                  "durdurmak için alttaki '└ Düzeltmeleri uygula'yı kapat.",
