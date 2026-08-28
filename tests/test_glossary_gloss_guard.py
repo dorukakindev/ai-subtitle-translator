@@ -132,5 +132,53 @@ class ValidatorWouldHavePassedTheGlossTest(unittest.TestCase):
         self.assertEqual(reason, "unrelated_text_changed")
 
 
+class TermInsideProperNameTest(unittest.TestCase):
+    """Terim çok sözcüklü bir ADIN parçasıysa çevrilmez.
+
+    `China → Çin` uygulanınca 1949 noir'ındaki mekân adı `China Coast`
+    `Çin Coast` oluyordu; aday doğrulayıcısı bunu geçirir, çünkü terim
+    dışındaki metin aynen duruyor. Ölçüt: terimden sonraki büyük harfli
+    sözcük KAYNAKTA da terimin hemen ardından geliyorsa ikisi tek addır.
+
+    Arşiv ölçümü: 256 plan değişikliğinin 5'i böyleydi ve beşi de gerçek
+    hasardı (`China Coast`, `Texas Two-Step`, `Atlantic Echo`).
+    """
+
+    def test_multi_word_name_is_left_alone(self):
+        for term, translated, source in (
+                ("China", "China Coast?", "Do you know China Coast?"),
+                ("Texas", "Texas Two-Step.", "The Texas Two-Step."),
+                ("Atlantic", "Atlantic Echo?", "The Atlantic Echo?")):
+            with self.subTest(term=term):
+                self.assertTrue(gui._term_is_inside_proper_name(
+                    term, translated, source))
+
+    def test_turkish_continuation_is_not_a_name(self):
+        """`California Üniversitesi` — sonraki sözcük kaynakta yok."""
+        self.assertFalse(gui._term_is_inside_proper_name(
+            "California", "California Üniversitesi",
+            "California State University"))
+
+    def test_ordinary_use_is_not_a_name(self):
+        for term, translated, source in (
+                ("Troy", "Troy şehrine gitti.", "He went to Troy."),
+                ("China", "China gezisi", "a trip to China")):
+            with self.subTest(term=term):
+                self.assertFalse(gui._term_is_inside_proper_name(
+                    term, translated, source))
+
+    def test_plan_skips_the_name_and_keeps_the_rest(self):
+        self.assertEqual(
+            gui._locked_term_residue_plan(
+                [("1", "x", "China Coast, saat 11de.")],
+                {"1": "China Coast at 11."}, {"China": "Çin"}),
+            {})
+        self.assertEqual(
+            gui._locked_term_residue_plan(
+                [("1", "x", "Troy şehrine gitti.")],
+                {"1": "He went to Troy."}, {"Troy": "Truva"}),
+            {"1": [("Troy", "Truva")]})
+
+
 if __name__ == "__main__":
     unittest.main()

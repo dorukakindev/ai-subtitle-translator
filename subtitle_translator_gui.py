@@ -14537,10 +14537,34 @@ def _locked_term_residue_plan(blocks: list, src_map: dict,
             target_re = re.compile(
                 r"(?<!\w)" + re.escape(target) + r"(?!\w)", re.IGNORECASE)
             if not target_re.search(translated):
+                if _term_is_inside_proper_name(source, translated, source_text):
+                    continue
                 fix = (source, target)
                 if fix not in plan.setdefault(str(idx), []):
                     plan[str(idx)].append(fix)
     return plan
+
+
+def _term_is_inside_proper_name(term: str, translated: str,
+                                source_text: str) -> bool:
+    """Terim, ÇOK SÖZCÜKLÜ bir özel adın parçası mı — öyleyse çevrilmez.
+
+    `China Coast` bir mekân adı; `China → Çin` uygulanınca `Çin Coast`
+    çıkıyor. Aday doğrulayıcısı bunu geçirir, çünkü terim dışındaki metin
+    aynen duruyor. Ölçüt: terimden sonraki büyük harfli sözcük KAYNAKTA da
+    terimin hemen ardından geliyorsa, ikisi tek bir addır.
+
+    Arşivde ölçüldü: 256 plan değişikliğinin 5'i böyle — `China Coast`,
+    `Texas Two-Step`, `Atlantic Echo`. Beşi de gerçek hasardı.
+    """
+    match = re.search(
+        r"(?<!\w)" + re.escape(term) + r"\s+([A-ZÇĞİÖŞÜ][\w'’-]*)",
+        str(translated or ""))
+    if not match:
+        return False
+    return bool(re.search(
+        r"(?<!\w)" + re.escape(term) + r"\s+" + re.escape(match.group(1))
+        + r"(?!\w)", str(source_text or ""), re.IGNORECASE))
 
 
 def _season_canon_suspect_ids(blocks: list, src_map: dict,
