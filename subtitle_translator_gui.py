@@ -10089,6 +10089,69 @@ def _src_text_is_all_caps(src_text: str) -> bool:
     return bool(toks) and bool(alpha) and alpha.isupper()
 
 
+# Tırnak içi başlığın KAYNAK DİLDE olduğunu ele veren işlev sözcükleri.
+# Kaynak dilde bir başlık çevrilmelidir; yabancı bir eser adı çevrilmez.
+_CREDIT_TITLE_SOURCE_WORDS = frozenset((
+    "the", "and", "of", "to", "in", "a", "an", "is", "was", "were", "are",
+    "be", "on", "at", "for", "with", "that", "this", "it", "he", "she",
+    "they", "we", "you", "not", "but", "or", "if", "so", "from", "by",
+    "back", "up", "out", "about", "what", "who", "when", "all", "will",
+    "can", "do", "did", "have", "has", "had", "my", "me", "your", "let",
+))
+
+
+def _src_is_credited_work_title(src_text: str) -> bool:
+    """Parantez içi künye + tırnak içi YABANCI eser adı mı?
+
+    `(I DEBUSSY: "Jardins sous la pluie")` gibi bir cue'nun doğru Türkçesi
+    kendisidir; program bunu 'çevrilmemiş' sayıp onarıma sokuyor, onarım da
+    aynı metni üretip `identical_source` diye reddediyor ve cue sonunda
+    `[ÇEVİRİ EKSİK]` oluyordu. Oysa aynı koşuda sözlük guard'ı
+    "tırnak içindeki eser adları çevrilmeyecek" diyor — sistemin iki yanı
+    çelişiyordu. Karar tek kaynakta kalsın diye başlıklar
+    `ht.quoted_work_titles` ile bulunur.
+
+    Kural KASITLI olarak dar: cue'nun TAMAMI parantez/köşeli parantez içinde
+    olmalı. Ölçüm bunu zorunlu kıldı — parantez şartı olmadan kural
+    268.186 kaynak cue'da 225 cue'yu muaf tutuyordu ve içlerinde çevrilmesi
+    şart olan tırnaklı diyaloglar vardı (`"Good morning."`,
+    `"Cut. Take six."`, `"Hey, bud, let's party."`). Parantez şartıyla
+    muafiyet 11 cue'ya, davranış değişikliği 6 cue'ya iniyor ve arşivde
+    tek bir yanlış muafiyet kalmıyor.
+    """
+    text = _ANY_MARKUP_RE.sub(" ", str(src_text or "")).strip()
+    if not re.fullmatch(r"[\(\[].*[\)\]]", text, re.DOTALL):
+        return False
+    try:
+        import hybrid_translate as _ht
+        titles = _ht.quoted_work_titles(text)
+        # Sözcük içi kesme işareti tırnak sanılmasın diye maskelenir;
+        # maske karakteri harf DEĞİL, kalan sözcük taramasını bozmaz.
+        _mask = chr(1)
+        masked = _ht._APOSTROPHE_IN_WORD_RE.sub(_mask, text)
+        spans = [m.group(1)
+                 for m in _ht._QUOTED_TITLE_RE.finditer(masked)]
+    except Exception:
+        return False          # kardeş proje yoksa muafiyet de yok
+    if not titles:
+        return False
+    for title in titles:
+        words = re.findall(r"[^\W\d_]+", title, re.UNICODE)
+        if not words:
+            return False
+        if any(word.casefold() in _CREDIT_TITLE_SOURCE_WORDS
+               for word in words):
+            return False      # başlık kaynak dilde — çevrilmeli
+    remainder = masked
+    for span in spans:
+        remainder = remainder.replace(span, " ")
+    for word in re.findall(r"[^\W\d_]+", remainder, re.UNICODE):
+        if len(word) == 1 or word.isupper():
+            continue          # tek harf ya da künye adı (DEBUSSY)
+        return False
+    return True
+
+
 def _src_is_proper_name_phrase(src_text: str) -> bool:
     text = _clean_src(str(src_text or "")).strip()
     if not text:
@@ -10407,7 +10470,8 @@ def _untranslated_reason(src_text: str, tr_text: str, *, locked_terms=None,
                 if re.search(r"[!?]", str(src_text)):
                     return "identical_all_caps_dialogue"
             elif (not _src_is_proper_name_phrase(src_text)
-                  and not _src_is_scientific_name(src_text)):
+                  and not _src_is_scientific_name(src_text)
+                  and not _src_is_credited_work_title(src_text)):
                 return "identical_source"
     src_words = src_text.split()
     if len(src_words) <= 2:
