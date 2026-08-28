@@ -6780,6 +6780,16 @@ def looks_like_on_screen_text(text: str,
         return True
     if not allow_caps_heuristic:
         return False
+    # NOT: buradaki caps sezgisi SDH ses etiketiyle (`SHE WAILS`,
+    # `CHOIR SINGS`) BİREBİR aynı kalıba uyuyor ve onları da işaretliyor —
+    # 60 gerçek dosyada 140 işaretin örneklenen hepsi SDH'ydi. Ayrımı
+    # burada yapmayı denedim ve YAPILAMADI: `sdh_cleaner`ın üç yordamı da
+    # `POLICE STATION` / `MOUNTING TENSIONS` gibi gerçek tabelaları da SDH
+    # sayıyor, ses-fiili listesiyle kurulan ayırıcı da 15'te 10 yakalayıp
+    # `BREAKING NEWS`i yanlış işaretledi. Bu ayrım caps'ten belirsiz —
+    # dosya düzeyindeki caps kapısının varlık sebebi de bu.
+    # Karar metni GÖREN tarafa bırakıldı: prompt artık `is_ost` işaretli bir
+    # cue ses/konuşmacı betimiyse onu ekran yazısı SAYMAMASINI söylüyor.
     stripped = core.rstrip()
     return bool(
         stripped.isupper()

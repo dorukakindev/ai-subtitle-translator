@@ -134,6 +134,15 @@ JSON_INSTRUCTION = (
     'dialogue. Translate it as written display text: keep it short and label-like, '
     'do not add conversational particles or address forms, and preserve numbers, '
     'dates and proper names exactly.\n'
+    # is_ost caps sezgisiyle bulunuyor ve o kalip SDH ses etiketiyle birebir
+    # ayni (`SHE WAILS`, `CHOIR SINGS`). Ayrim caps'ten belirsiz oldugu icin
+    # kodda yapilamadi; metni goren modele birakildi. Bu cumle olmadan
+    # silinmesi gereken etiket "korunacak tabela" diye tanitiliyordu.
+    'The "is_ost" flag is a hint, not a fact: if the marked text is an audio '
+    'description or a speaker label (a subject with a sound verb, e.g. '
+    '"SHE WAILS", "CHOIR SINGS", "BELL RINGS", "[MUSIC PLAYING]"), it is NOT '
+    'on-screen text - treat it as an SDH label and translate it as such, do '
+    'not present it as a sign.\n'
     "Some 'tr' items have a 'frag' key indicating their role in a multi-line sentence:\n"
     "  frag='start' \u2014 this subtitle begins a sentence that continues in the next line(s)\n"
     "  frag='mid'   \u2014 this subtitle is the middle of a multi-line sentence\n"
