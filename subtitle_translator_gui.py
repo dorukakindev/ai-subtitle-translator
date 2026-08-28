@@ -5472,8 +5472,13 @@ def _repetition_collapse_ids(blocks, src_map=None) -> list:
         # Aynı birimi aramak ANLAMSIZ: kaynak İngilizce, çeviri Türkçe;
         # `to you, to you, to you` ile `sana, sana, sana` sözlüksel olarak
         # hiçbir zaman eşleşmez ve meşru çeviri çöküş sanılırdı.
+        #
+        # KAYNAK YOKSA HİÇ İŞARETLEME. Kuralın bütün isabeti bu elemeden
+        # geliyor; elemesiz hâli %14'lük ham kural. Kaynağı bulunamayan
+        # dosyalarda ölçüldü: 13 bulgunun 11'i yanlıştı (`Bükül! Bükül!`,
+        # `Oo, oo, oo`, `Bill, Bill, Bill` — retorik tekrar ve şarkı sözü).
         source = str((src_map or {}).get(str(idx), ""))
-        if source and _repeated_ngram_units(source, 3):
+        if not source or _repeated_ngram_units(source, 3):
             continue
         flagged.append(str(idx))
     return flagged
@@ -19087,6 +19092,30 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "output_sha256": _file_content_sha256(output_path),
     })
     return audit
+
+
+def _delivery_scan_has_hard_error(scan) -> bool:
+    """Teslim TARAMASININ bulduğu 'kesin' sınıflar da teslimi durdurur.
+
+    Kapı bugüne kadar yalnız DENETİM sözlüğüne bakıyordu; taramanın tek
+    kapı sinyali `delivery_scan_failed`'di ve o da "tarama ÇÖKTÜ" demek,
+    "tarama bir şey BULDU" değil. Sonuç: metnine cue numarası sızmış dosya
+    teslim edilebiliyordu. Arşivde ölçüldü — 616 teslimde 7 sızma, biri
+    (`Dont.Die.Without.Telling.Me.Where` #90) satırın TAMAMINI kaybetmiş,
+    yerinde yalnız `91` yazıyor.
+
+    Sınıf listesi ayrıca tutulmaz, `_FINDING_CLASSES`'taki güven
+    etiketinden türetilir: iki yerde tutulan karar er geç ayrışır.
+    """
+    if not isinstance(scan, dict):
+        return False
+    for key, value in scan.items():
+        meta = _FINDING_CLASSES.get(key)
+        if not meta or meta[0] != "kesin":
+            continue
+        if isinstance(value, (list, tuple)) and value:
+            return True
+    return False
 
 
 def _delivery_audit_has_hard_error(audit: dict) -> bool:
@@ -37285,6 +37314,7 @@ class App(ctk.CTk):
                         delivery_source_path, row.get("output_path", ""))
                 if (not row.get("delivery_audit_skip") and (
                         _delivery_audit_has_hard_error(row["delivery_audit"])
+                        or _delivery_scan_has_hard_error(row.get("delivery_scan"))
                         or row.get("delivery_scan_failed"))):
                     report_only = self._delivery_report_only_enabled()
                     quarantined = self._maybe_quarantine_incomplete_final(
