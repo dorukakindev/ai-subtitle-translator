@@ -12084,7 +12084,9 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
 
     categories = _detect_categories()
     cat_list = "\n".join(_detect_category_lines())
-    hint = f" (from file: {Path(filename).stem})" if filename else ""
+    # Klasör adı türde de sinyal: `black.market.with.michael.k.williams...`
+    # dosyada, sürüm/kaynak bilgisi çoğu kez üst klasörde duruyor.
+    hint = f" (from path: {_path_evidence(filename)})" if filename else ""
     system_msg = (
         "You are a media genre classification assistant with expertise in television, film, "
         "and online content. Given a subtitle sample, determine the single most fitting "
@@ -12195,7 +12197,8 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
                 chosen_confidence = chosen.get("confidence")
                 suffix = (f" (güven %{chosen_confidence * 100:.0f})"
                           if chosen_confidence is not None else "")
-                log_fn(f"İçerik Türü Analizi: '{result}' olarak tespit edildi{suffix}.", "ok")
+                log_fn(f"İçerik Türü Analizi{_detect_log_label(filename)}: "
+                       f"'{result}' olarak tespit edildi{suffix}.", "ok")
             return chosen if return_details else result
         if not ok:
             break
@@ -12216,15 +12219,65 @@ def detect_content_type_with_ai(client, cues, model, log_fn=None, token_callback
             confidence = best_detail.get("confidence")
             suffix = f" (güven %{confidence * 100:.0f})" if confidence is not None else ""
             log_fn(
-                f"İçerik Türü Analizi: ikinci değerlendirme sonuç vermedi; "
+                f"İçerik Türü Analizi{_detect_log_label(filename)}: "
+                f"ikinci değerlendirme sonuç vermedi; "
                 f"ilk eşleşme '{result}' kullanılacak{suffix}.",
                 "warn",
             )
         return best_detail if return_details else result
     if log_fn:
-        log_fn("İçerik türü otomatik tespit edilemedi — Otomatik kullanılacak", "warn")
+        log_fn(f"İçerik türü otomatik tespit edilemedi"
+               f"{_detect_log_label(filename)} — Otomatik kullanılacak", "warn")
     fallback = {"category": "Otomatik", "confidence": None}
     return fallback if return_details else fallback["category"]
+
+
+_GENERIC_FOLDER_RE = re.compile(
+    r"^(?:episode|bolum|bölüm|season|sezon|sub(?:title)?s?|srt|altyaz[ıi]|"
+    r"cd|disc|disk|part)\s*\d*$", re.IGNORECASE)
+
+
+def _detect_log_label(filepath: str) -> str:
+    """Tespit log satırının dosya etiketi: ` [klasör | dosya]`.
+
+    Çok dosyalı koşuda `İçerik Türü Analizi: 'Belgesel'` satırı hangi filme
+    ait olduğunu söylemiyordu; film adı da yalnız altyazı dosyası adıydı,
+    oysa klasör adı çoğu kez asıl tanınan ad.
+    """
+    label = _path_evidence(filepath, depth=1)
+    return f" [{label}]" if label else ""
+
+
+def _path_evidence(filepath: str, depth: int = 2) -> str:
+    """Modele verilecek yol kanıtı: dosya adı + anlamlı üst klasör adları.
+
+    Sürüm klasörü çoğu kez dosya adında olmayan bilgiyi taşıyor
+    (`fast.cheap.out.of.control.(1997).eng.1cd`, `...spa.1cd`) ve hem dil
+    hem tür için sinyaldir. `episode 1` gibi genel adlar atlanır.
+
+    KURAL DEĞİL KANIT: klasör adı tek başına otorite yapılamaz — arşivde
+    ölçüldü, dosya adı sessizken klasörün isabeti %72, ve dosya adıyla
+    çeliştiği yerlerde klasör çoğu kez çok dilli altyazı PAKETİNİ anlatıyor
+    (`Gang.of.Four.1989.FRENCH` dosyası `English` klasöründe). Bu yüzden
+    karar modele bırakılıyor, prompt da baskın diyaloğa güvenmesini söylüyor.
+    """
+    path = Path(str(filepath or ""))
+    parts = [path.name] if path.name else []
+    wanted = max(0, int(depth))
+    for parent in path.parents:
+        if wanted <= 0:
+            break
+        name = parent.name
+        if not name:
+            continue
+        # Genel klasör adı derinlik bütçesini TÜKETMEZ: `episode 1`
+        # bütçeyi yiyince asıl bilgiyi taşıyan sürüm klasörüne hiç
+        # ulaşılamıyordu.
+        if _GENERIC_FOLDER_RE.match(name):
+            continue
+        parts.append(name)
+        wanted -= 1
+    return " | ".join(parts)
 
 
 def _distributed_language_sample(cues, max_lines: int = 30,
@@ -12263,10 +12316,11 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
     prompt = (
         "Detect the dominant spoken language of this subtitle sample. "
         "Ignore names, song titles, credits, uploader text, isolated foreign phrases, markup and SDH labels. "
-        "Treat a filename language tag only as supporting evidence; when it conflicts with the dominant dialogue, trust the dialogue. "
+        "The File line may also carry parent folder names; treat any path language tag "
+        "only as supporting evidence, and when it conflicts with the dominant dialogue, trust the dialogue. "
         f"Choose exactly one supported language from: {language_list}. "
         "Return ONLY JSON in this form: {\"language\": \"English\"}.\n\n"
-        f"File: {Path(filename).name if filename else '(unknown)'}\n"
+        f"File: {_path_evidence(filename) if filename else '(unknown)'}\n"
         f"Subtitle sample:\n{sample}"
     )
     try:
@@ -12362,14 +12416,17 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
     items = []
     id_to_path = {}
     for index, (filepath, cues) in enumerate(file_cues.items()):
-        sample = _distributed_language_sample(cues, max_lines=24, max_chars=2800)
+        # Örnek boyutu TEK DOSYA yoluyla aynı. Toplu yol 24/2800'e kısıyordu:
+        # aynı iş için model dosya başına daha az kanıt görüyordu ve bunun
+        # yazılı bir gerekçesi yoktu.
+        sample = _distributed_language_sample(cues)
         if not sample:
             continue
         item_id = str(index)
         id_to_path[item_id] = filepath
         items.append({
             "id": item_id,
-            "filename": Path(filepath).name,
+            "filename": _path_evidence(filepath),
             "sample": sample,
         })
     results = {filepath: AUTO_LANGUAGE for filepath in file_cues}
@@ -12380,7 +12437,8 @@ def detect_source_languages_batch_with_ai(client, file_cues: dict, model,
     prompt = (
         "Detect the dominant spoken language of every subtitle sample independently. "
         "Ignore names, credits, uploader text, isolated foreign phrases, markup and SDH labels. "
-        "Treat filename language tags only as supporting evidence and trust dominant dialogue on conflict. "
+        "The filename field may also carry parent folder names; treat every path "
+        "language tag only as supporting evidence and trust dominant dialogue on conflict. "
         f"Allowed languages: {', '.join(LANGUAGES)}. "
         "Return ONLY JSON: {\"languages\":{\"0\":\"Spanish\",\"1\":\"Italian\"}}. "
         "Include every supplied id.\n\n"
@@ -24656,7 +24714,19 @@ class App(ctk.CTk):
         if language != AUTO_LANGUAGE:
             return language
         fallback = normalize_language_name(fallback)
-        return fallback if fallback != AUTO_LANGUAGE else "English"
+        if fallback != AUTO_LANGUAGE:
+            return fallback
+        # SESSİZ OLMASIN: buraya düşmek "dosyanın dilini bilmiyoruz ama
+        # İngilizce sayıyoruz" demektir. İspanyolca bir filmi İngilizce
+        # sanıp çevirmek tam da istenmeyen sonuç; onay ekranı bunu önlemek
+        # için var ama atlanabilen her yol için iz bırakılır.
+        try:
+            self._log(
+                "Kaynak dil belirlenemedi, İngilizce varsayılıyor: "
+                f"{_path_evidence(filepath, depth=1)}", "warn")
+        except Exception:
+            pass
+        return "English"
 
     # ── UI Dispatcher & Thread Safety ─────────────────────────────────────────
     _post_ui = _post_ui
@@ -37541,6 +37611,19 @@ class App(ctk.CTk):
         return results
 
     def _apply_detected_source_languages(self, detected: dict):
+        # Tespit sonucu OTURUM LOGUNA yazılır ve dosya adı KLASÖRÜYLE
+        # birlikte görünür: koşu sonrası "hangi dosya ne olarak algılandı"
+        # sorusunun cevabı log'da kalsın, yalnız onay ekranında değil.
+        log = getattr(self, "_log", None)
+        if callable(log):
+            for fp, raw_language in sorted(detected.items()):
+                language = normalize_language_name(raw_language)
+                label = _path_evidence(fp, depth=1) or Path(str(fp)).name
+                if language == AUTO_LANGUAGE:
+                    log(f"Kaynak dil algılanamadı: {label} "
+                        "— onay ekranında elle seçilmeli", "warn")
+                else:
+                    log(f"Kaynak dil algılandı: {label} → {language}", "ok")
         for fp, raw_language in detected.items():
             language = normalize_language_name(raw_language)
             var = getattr(self, "_file_language_vars", {}).get(fp)
