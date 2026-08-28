@@ -17714,6 +17714,35 @@ _PASS_SKIP_REASONS = {
 }
 
 
+def series_memory_missing_line(row) -> str:
+    """Dizi Hafızası kaydı YOKKEN raporun yazacağı satır.
+
+    Dosya teslim kapısını geçemezse dört akış da `continue` ile dosyayı
+    bırakıyor ve Dizi Hafızası kaydı hiç oluşmuyor. Davranış doğru —
+    eksik/bozuk bir bölümden dizi kanonu yazılmamalı — ama rapor bunu
+    "çalışma kaydı yok" diye, yani BİLİNMİYOR gibi yazıyordu. Oysa satırın
+    kendisi nedeni taşıyor. Arşiv ölçümü: 156 "kaydı yok" satırının hepsi
+    hata/inceleme durumundaki dosyalardan, 08-27 koşusunda 50 dosyanın
+    19'u böyleydi.
+    """
+    if not isinstance(row, dict):
+        return "Dizi Hafızası: açık, çalışma kaydı yok"
+    status = str(row.get("run_status") or "done")
+    if status == "review":
+        return ("Dizi Hafızası: atlandı, dosya incelemeye ayrıldı "
+                "(bölüm kanonu yazılmadı)")
+    if status == "error":
+        if int(row.get("hata", 0) or 0) > 0:
+            return ("Dizi Hafızası: atlandı, dosyada eksik çeviri var "
+                    "(bölüm kanonu yazılmadı)")
+        if row.get("delivery_scan_failed"):
+            return ("Dizi Hafızası: atlandı, teslim taraması başarısız "
+                    "(bölüm kanonu yazılmadı)")
+        return ("Dizi Hafızası: atlandı, dosya tamamlanmış sayılmadı "
+                "(bölüm kanonu yazılmadı)")
+    return "Dizi Hafızası: açık, çalışma kaydı yok"
+
+
 def pass_skip_explanation(status_info) -> str:
     """Atlama nedeninin okunur karşılığı; bilinmeyen neden ham basılır."""
     if not isinstance(status_info, dict):
@@ -18486,9 +18515,9 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             }.get(reason, "uygulanmadı")
             lines.append(f"Dizi Hafızası: atlandı, {detail}")
         else:
-            lines.append("Dizi Hafızası: açık, çalışma kaydı yok")
+            lines.append(series_memory_missing_line(row))
     else:
-        lines.append("Dizi Hafızası: açık, çalışma kaydı yok")
+        lines.append(series_memory_missing_line(row))
 
     features = (
         ("Tutarlılık taraması", True, ("Consistency", "Final-Consistency")),
