@@ -385,13 +385,28 @@ def term_in_text(term: str, text_lower: str) -> bool:
         pat_key = ("phrase", key)
         pat = _TERM_RE_CACHE.get(pat_key)
         if pat is None:
+            forms = [re.escape(key)]
+            # Tek sözcükte olduğu gibi çok sözcükte de son sözcüğün ünsüz+y
+            # çoğulu tanınsın: `young lady` ↔ `young ladies`. `lady` ile
+            # `young lady`nin farklı davranması tutarsızlık olurdu.
+            if re.search(r"[^aeiouıöüâîû]y$", key, re.UNICODE):
+                forms.append(re.escape(key[:-1] + "ies"))
             pat = re.compile(
-                r"(?<!\w)" + re.escape(key) + r"(?!\w)", re.UNICODE)
+                r"(?<!\w)(?:" + "|".join(forms) + r")(?!\w)", re.UNICODE)
             _TERM_RE_CACHE[pat_key] = pat
         return pat.search(text_lower) is not None
     pat = _TERM_RE_CACHE.get(key)
     if pat is None:
-        pat = re.compile(r"(?<!\w)" + re.escape(key) + r"(?:'?s)?(?!\w)", re.UNICODE)
+        forms = [re.escape(key) + r"(?:'?s)?"]
+        # İngilizce ünsüz+y çoğulu: `mummy` → `mummies`. Bu biçim düz `-s`
+        # toleransına takılmıyordu ve terim o chunk'a HİÇ enjekte edilmiyordu;
+        # model onu yeniden çevirip terim kaymasına yol açıyor. Arşivde
+        # ölçüldü: 150 kaynak dosyada 117 dosya-terim çifti kaçıyordu
+        # (`lady`, `story`, `memory`, `monastery`, `property`…).
+        if re.search(r"[^aeiouıöüâîû]y$", key, re.UNICODE):
+            forms.append(re.escape(key[:-1] + "ies"))
+        pat = re.compile(
+            r"(?<!\w)(?:" + "|".join(forms) + r")(?!\w)", re.UNICODE)
         _TERM_RE_CACHE[key] = pat
     return pat.search(text_lower) is not None
 
