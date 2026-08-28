@@ -34,7 +34,7 @@ from subtitle_formats import (parse_vtt, parse_ass, get_subtitle_files,
                               is_turkish_suffix_form as _sf_is_tr_suffix_form,
                               TR_ADDRESS_FALSE_STEMS as _SF_TR_ADDRESS_FALSE_STEMS,
                               SENTENCE_CLOSERS as _SF_SENTENCE_CLOSERS,
-                              _match_full_wrap)
+                              _match_full_wrap, _match_prefixed_wrap)
 import credential_store
 import series_memory
 import sdh_cleaner
@@ -5402,6 +5402,62 @@ _CUE_ID_LEAK_LINE_RE = re.compile(r"^\s*\d{1,4}\s*$")
 
 # Çevrilmeden kalan İngilizce duraksama/onaylama sözcükleri. Sınıra tırnak
 # da dahil: `"Los Panchos"um.` aksi hâlde yanlış alarm veriyordu.
+_NOTE_MARK_RE = re.compile(r"[♪♫♬♩]")
+
+
+def _unbalanced_note_ids(blocks, src_map=None) -> list:
+    """Nota işareti TEK sayıda kalmış cue'lar — kapanış düşmüş.
+
+    Gerçek olay (Hoffmann #78): kaynak `<i>♪ … ♪</i>`, teslim
+    `<i>♪ Kleinzach'lı şarkıyı söylemek zorundayız</i>` — kapanış ♪ yok.
+    Yalnız KAYNAĞI çift sayıda olan cue'da bakılır: kaynağın kendisi tek
+    işaretle yazılmışsa çeviri de öyle olacaktır.
+    1.424 cue'luk opera dosyasında bu kural tek aday verdi, o da gerçekti.
+    """
+    flagged = []
+    for idx, _ts, text in blocks or []:
+        hedef = len(_NOTE_MARK_RE.findall(str(text or "")))
+        if hedef == 0 or hedef % 2 == 0:
+            continue
+        source = str((src_map or {}).get(str(idx), ""))
+        if not source:
+            continue
+        kaynak = len(_NOTE_MARK_RE.findall(source))
+        if kaynak and kaynak % 2 == 0:
+            flagged.append(str(idx))
+    return flagged
+
+
+def _inconsistent_repeat_ids(blocks, src_map=None) -> list:
+    """Birebir aynı kaynak dize, dosya içinde farklı Türkçelerle çevrilmiş.
+
+    Opera/tiyatroda aynı nakarat üç ayrı Türkçeyle görünüyor (Hoffmann
+    #676-703 ile #979-988 aynı dizeler, iki ayrı çeviri). Kaynağı BİREBİR
+    aynı olan gruplarda bu kesin bir tutarsızlıktır.
+    """
+    if not src_map:
+        return []
+    gruplar = {}
+    for idx, _ts, text in blocks or []:
+        source = _ANY_MARKUP_RE.sub("", str(src_map.get(str(idx), "")))
+        source = re.sub(r"\s+", " ", source).strip().casefold()
+        # Eşik 30 ölçümle seçildi: 12'de 85 grup, 30'da 57 grup ve
+        # örneklenen hepsi gerçek tutarsızlık. Kısa dizeler ("Evet.",
+        # "Bilmiyorum.") doğal olarak tekrar eder ve farklı çevrilebilir.
+        if len(source) < 30:
+            continue
+        hedef = re.sub(r"\s+", " ", _ANY_MARKUP_RE.sub(
+            "", str(text or ""))).strip()
+        gruplar.setdefault(source, []).append((str(idx), hedef))
+    flagged = []
+    for _source, uyeler in gruplar.items():
+        if len(uyeler) < 2:
+            continue
+        if len({hedef.casefold() for _i, hedef in uyeler if hedef}) > 1:
+            flagged.extend(i for i, _h in uyeler)
+    return sorted(flagged, key=lambda v: (len(v), v))
+
+
 _ENGLISH_FILLER_RE = re.compile(
     r"(?<![\w'’\"])(um|uh|uh-huh|mm-hm|yeah|okay)(?![\w'’\"])",
     re.IGNORECASE)
@@ -6611,6 +6667,12 @@ def _format_coverage_lost_ids(blocks, src_map) -> list:
             continue
         try:
             wrap = _match_full_wrap(source.strip())
+            if not wrap:
+                # ÖNEKLİ sarmalama da kayıptır: `♪ <i>…</i> ♪`, `- <i>…</i>`.
+                # Bu kalıp tek dosyada 1.251 cue italiksiz teslim edilmişti
+                # (The Tales of Hoffmann) ve hiçbir kural görmüyordu.
+                prefixed = _match_prefixed_wrap(source.strip())
+                wrap = (prefixed[0], "", prefixed[1]) if prefixed else None
         except Exception:
             continue
         if not wrap:
@@ -6691,6 +6753,12 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
                    if _ENGLISH_FILLER_RE.search(str(text or ""))]
     stats["english_filler_ids"] = _filler_ids
     stats["english_filler"] = len(_filler_ids)
+    _note_ids = _unbalanced_note_ids(blocks, src_map)
+    stats["unbalanced_note_ids"] = _note_ids
+    stats["unbalanced_note"] = len(_note_ids)
+    _repeat_ids = _inconsistent_repeat_ids(blocks, src_map)
+    stats["inconsistent_repeat_ids"] = _repeat_ids
+    stats["inconsistent_repeat"] = len(_repeat_ids)
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     cue_fill = _cue_fill_imbalances(blocks, src_map)
     stats["cue_fill"] = len(cue_fill)
@@ -19761,6 +19829,8 @@ _FINDING_CLASSES = {
     "broken_italic_ids": ("kesin", "Dengesiz/iç içe italik etiketi", "Tek dış <i>…</i> çiftine indir."),
     "repetition_collapse_ids": ("kesin", "Cue içi tekrar çöküşü", "Kaynaktan yeniden çevir."),
     "english_filler_ids": ("muhtemel", "Çevrilmemiş İngilizce dolgu", "Türkçe karşılığına çevir (ee/şey)."),
+    "unbalanced_note_ids": ("kesin", "Nota işareti tek kalmış", "Kapanış ♪ işaretini geri koy."),
+    "inconsistent_repeat_ids": ("muhtemel", "Aynı dize farklı çevrilmiş", "Tekrarlanan dizeyi tek Türkçeye getir."),
     "source_residue_ids": ("muhtemel", "Türkçe ekli kaynak kalıntısı", "Sözcüğü Türkçeye çevir."),
     "missing_predicate_ids": ("muhtemel", "Yüklemsiz biten cue", "Cümle sonraki cue'da tamamlanıyor mu bak."),
     "introduced_out_of_order_ids": ("muhtemel", "Sıra bozulması (bu koşuda)", "Sırayı düzelt."),

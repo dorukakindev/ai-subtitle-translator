@@ -1188,6 +1188,58 @@ def _match_full_wrap(src_body: str):
     return open_run, inner, close_run
 
 
+# Etiketin ÖNÜNDE/ARKASINDA durabilen yapısal işaretler: nota, diyalog
+# tiresi, SDH konuşmacı etiketi. Bunlar içerik değil işaretçidir; etiket
+# bunların ardında açılıyorsa cue yine "tamamen sarılı" sayılır.
+_WRAP_LEAD_RE = re.compile(
+    r"^(\s*(?:[-–—]\s*)?(?:\[[^\]]*\]\s*)?(?:[♪♫♬♩]+\s*)?(?:\[[^\]]*\]\s*)?)")
+_WRAP_TAIL_RE = re.compile(r"((?:\s*[♪♫♬♩]+)?\s*)$")
+
+
+def _match_prefixed_wrap(src_body: str):
+    """`♪ <i>metin</i> ♪` / `- <i>metin</i>` gibi ÖNEKLİ tam sarmalama.
+
+    Gerçek olay (The Tales of Hoffmann, 1.312 cue): opera filminde kaynağın
+    iki kalıbı var — `<i>♪ metin ♪</i>` korunuyordu, `♪ <i>metin</i> ♪`
+    tamamen düşüyordu. Sebep `_match_full_wrap`'in etiketin BÜTÜN satırı
+    sarmasını istemesi; önünde nota olunca eşleşmiyordu. Aynı kusur diyalog
+    tiresinde ve SDH konuşmacı etiketinde de var (`- [Margaret] <i>…</i>`,
+    Night of the Eagle 7 cue).
+
+    Döner: (open_run, close_run) ya da None.
+    """
+    body = str(src_body or "")
+    lead = _WRAP_LEAD_RE.match(body)
+    start = lead.end() if lead else 0
+    tail = _WRAP_TAIL_RE.search(body)
+    end = tail.start() if tail else len(body)
+    if start >= end:
+        return None
+    core = body[start:end]
+    if core == body:
+        return None  # önek/sonek yok; bu zaten _match_full_wrap'in işi
+    wrap = _match_full_wrap(core.strip())
+    if not wrap:
+        return None
+    open_run, _inner, close_run = wrap
+    return open_run, close_run
+
+
+def _apply_prefixed_wrap(tr_line: str, open_run: str, close_run: str) -> str:
+    """Çevirinin KENDİ önek/sonekini koruyarak gövdesini etiketle sarar."""
+    value = str(tr_line or "")
+    if not value.strip():
+        return value
+    lead = _WRAP_LEAD_RE.match(value)
+    start = lead.end() if lead else 0
+    tail = _WRAP_TAIL_RE.search(value)
+    end = tail.start() if tail else len(value)
+    if start >= end:
+        return value
+    return "%s%s%s%s%s" % (value[:start], open_run, value[start:end],
+                           close_run, value[end:])
+
+
 def restore_format_tags(src_text: str, tr_text: str) -> str:
     """Kaynak satırın biçim etiketlerini çeviriye geri uygular.
 
@@ -1228,6 +1280,20 @@ def restore_format_tags(src_text: str, tr_text: str) -> str:
                     o, c = wraps[0][0], wraps[0][2]
                     out = "\n".join(f"{o}{ln}{c}" if ln.strip() else ln
                                     for ln in out.split("\n"))
+                else:
+                    # ÖNEKLİ sarmalama (`♪ <i>…</i> ♪`, `- <i>…</i>`)
+                    prefixed = [_match_prefixed_wrap(ln) for ln in src_lines]
+                    if all(prefixed) and len(set(prefixed)) == 1:
+                        o, c = prefixed[0]
+                        out = "\n".join(
+                            _apply_prefixed_wrap(ln, o, c)
+                            for ln in out.split("\n"))
+            else:
+                prefixed = _match_prefixed_wrap(src_body)
+                if prefixed:
+                    out = "\n".join(
+                        _apply_prefixed_wrap(ln, prefixed[0], prefixed[1])
+                        for ln in out.split("\n"))
 
     # 3) Konum etiketini başa ekle
     if lead and not out.startswith(lead):
