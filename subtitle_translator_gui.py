@@ -7942,7 +7942,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
         elif unresolved:
             log_fn(
                 "Nihai teslim koruması: eksik çeviri işareti kaldığı için "
-                "baş/son imza eklenmedi",
+                "son imza eklenmedi",
                 "warn",
             )
         elif cleaned:
@@ -29656,8 +29656,19 @@ class App(ctk.CTk):
         # Gerçek kesilmede eksikler chunk'ın SONUNDA toplanır; dağınıksa
         # model cue atlamıştır. İkisi farklı sorun, ayrı adlandırılır.
         recovery_kind = _missing_recovery_kind(all_items, missing)
-        self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
-                  f"{n_requests} küçük istekle tamamlanıyor ({recovery_kind})", "warn")
+        if n_requests:
+            self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
+                      f"{n_requests} küçük istekle tamamlanıyor ({recovery_kind})",
+                      "warn")
+        else:
+            # Eksiklerin HEPSİ kısmi cümle grubunda: tek cue onarımı sağlam
+            # komşuyu bozacağı için hiçbiri gönderilmiyor. Eski metin yine
+            # "tamamlanıyor" diyor, üstelik "0 küçük istekle" — canlı logda
+            # okuyan kişiye bozuk sayaç gibi görünüyordu.
+            self._log(f"  ↺ {req['custom_id']}: {len(missing)} eksik blok "
+                      f"tek cue onarımına uygun değil ({recovery_kind}); "
+                      "hiçbiri gönderilmedi, teslim incelemesine bırakıldı",
+                      "warn")
         if deferred_fragment_ids:
             self._log(
                 f"  ↳ {req['custom_id']}: {_fmt_align_ranges(sorted(deferred_fragment_ids))} "
