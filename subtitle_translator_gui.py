@@ -6991,6 +6991,12 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
         else str(pair)
         for pair in _echo_pairs]
     stats["partial_echo"] = len(_echo_pairs)
+    _gloss_ids = _translator_gloss_ids(blocks, src_map)
+    stats["translator_gloss_ids"] = [str(v) for v in _gloss_ids]
+    stats["translator_gloss"] = len(_gloss_ids)
+    _quote_chain_ids = _quote_chain_open_ids(blocks)
+    stats["quote_chain_ids"] = [str(v) for v in _quote_chain_ids]
+    stats["quote_chain"] = len(_quote_chain_ids)
     _predicate_ids = _missing_predicate_ids(blocks, src_map)
     stats["missing_predicate_ids"] = [str(v) for v in _predicate_ids]
     stats["missing_predicate"] = len(_predicate_ids)
@@ -7954,6 +7960,79 @@ def _normalize_delivery_interruption_dashes(text: str) -> str:
     # Üst üste binen nokta dizisini üçe indir: `......` -> `...`
     value = re.sub(r"\.{4,}", "...", value)
     return value
+
+
+# ── Çevirmen glossu ─────────────────────────────────────────────────────────
+# Kaynakta olmayan, çevirmenin eklediği parantez içi açıklama:
+#   `Schwabing'de (Münih semti).`   <- kaynak `In Schwabing.`
+#   `Film Week'te (Film Haftası)`   <- kaynak `Film Week`
+#   `♫ Demokrat (Demokrat Parti),`  <- kaynak `♫ Democrat, Republican, yuppy`
+# Sonuncusu şarkı sözünün içine açıklama koyuyor; altyazıda okunacak süre yok.
+# 86 filmlik koleksiyonda 82 cue ölçüldü; örneklenen 6 bulgunun 6'sı gerçek.
+# En sık içerikler de tamamen gloss: "ABD'de bir üniversite", "antik Yunan
+# kenti", "tecrit", "mahkûm lakabı".
+#
+# YALNIZ RAPOR: cue'ya dokunulmaz. Açıklamayı silmek anlamı değiştirebilir
+# ve kullanıcının kuralı "cue'ya ancak ÇEVİRİ bozuksa dokunulur".
+_TRANSLATOR_GLOSS_RE = re.compile(r"[(]([^()]{2,60})[)]")
+
+
+def _translator_gloss_ids(blocks, src_map=None) -> list:
+    """Kaynağında parantez YOKKEN teslimde parantez açılan cue'lar."""
+    if not src_map:
+        return []
+    found = []
+    for idx, _ts, text in list(blocks or []):
+        value = str(text or "")
+        if "(" not in value:
+            continue
+        source = str((src_map or {}).get(str(idx), "") or "")
+        if not source or "(" in source:
+            continue
+        if not _TRANSLATOR_GLOSS_RE.search(value):
+            continue
+        found.append(str(idx))
+    return found
+
+
+# ── Alıntı zinciri ──────────────────────────────────────────────────────────
+# İngilizce yayın kuralı uzun bir alıntının HER satırına açılış tırnağı koyar;
+# Türkçede alıntı bir kez açılır, bir kez kapanır. Ölçüt DAR tutulur, çünkü
+# geniş ölçüt (çift tırnak durum makinesi) ölçüldüğünde %60'tan fazla yanlış
+# pozitif verdi — kendi içinde kapanan alıntılar, `"ni"` gibi matematik
+# gösterimi, iç/dış alıntı karışımı.
+#
+# Çalışan ölçüt: cue TEK tırnak taşır + tırnakla BAŞLAR + önceki cue da öyle.
+# 86 filmde 72 zincir bulundu (62'sinin ardından kapanış tırnağı da yok).
+# İki cue'luk zincirler ayrı ayrı kısa alıntı da olabildiği için eşik 3.
+#
+# YALNIZ RAPOR: ölçütsüz yazılan bir düzeltici ilahiyi ve şiiri bozar
+# (denetimde 7 blokun 4'ü meşru çıkmıştı: ilahi, şiir, künye, ekran yazısı).
+_QUOTE_CHAIN_MIN = 3
+
+
+def _quote_chain_open_ids(blocks) -> list:
+    """Her cue'su açılış tırnağıyla başlayan zincirin İLK cue kimliği."""
+    rows = list(blocks or [])
+
+    def opens(text):
+        value = str(text or "").strip()
+        value = value.replace(chr(8220), chr(34)).replace(chr(8221), chr(34))
+        return value.count(chr(34)) == 1 and value.startswith(chr(34))
+
+    found = []
+    pos = 0
+    while pos < len(rows):
+        if not opens(rows[pos][2]):
+            pos += 1
+            continue
+        end = pos
+        while end + 1 < len(rows) and opens(rows[end + 1][2]):
+            end += 1
+        if end - pos + 1 >= _QUOTE_CHAIN_MIN:
+            found.append(str(rows[pos][0]))
+        pos = end + 1
+    return found
 
 
 def _normalize_all_caps_delivery(blocks: list, src_map: dict,
@@ -20419,6 +20498,15 @@ _FINDING_CLASSES = {
     "unbalanced_note_ids": ("kesin", "Nota işareti tek kalmış", "Kapanış ♪ işaretini geri koy."),
     "inconsistent_repeat_ids": ("muhtemel", "Aynı dize farklı çevrilmiş", "Tekrarlanan dizeyi tek Türkçeye getir."),
     "source_residue_ids": ("muhtemel", "Türkçe ekli kaynak kalıntısı", "Sözcüğü Türkçeye çevir."),
+    # Kaynakta parantez yokken teslimde acilan aciklama. 86 filmde 82 cue;
+    # orneklenen 6 bulgunun 6'si gercek (`Schwabing'de (Munih semti)` <-
+    # `In Schwabing.`), biri sarki sozunun icinde. "muhtemel": aciklama
+    # bazen kaynakta baska cue'da bulunabilir.
+    "translator_gloss_ids": ("muhtemel", "Kaynakta olmayan cevirmen aciklamasi", "Kaynakta yoksa parantezi kaldirmayi degerlendir; anlami degistirme."),
+    # Uzun alintinin her cue'sunda acilis tirnagi (Ingilizce yayin kurali).
+    # 86 filmde 72 zincir; esik 3 cue. "bilgi": iki cue'luk zincirler ayri
+    # kisa alintilar olabiliyor ve olcutsuz duzeltici ilahiyi/siiri bozar.
+    "quote_chain_ids": ("bilgi", "Alinti zincirinin her cue'sunda tirnak", "Turkcede alinti bir kez acilir; zinciri gozle oku."),
     "missing_predicate_ids": ("muhtemel", "Yüklemsiz biten cue", "Cümle sonraki cue'da tamamlanıyor mu bak."),
     "introduced_out_of_order_ids": ("muhtemel", "Sıra bozulması (bu koşuda)", "Sırayı düzelt."),
     "expected_removed_ids": ("bilgi", "Bilinçli silinen cue", "Beklenen davranış; kayıt için."),
