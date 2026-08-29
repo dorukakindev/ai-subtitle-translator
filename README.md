@@ -1,5 +1,7 @@
 # Altyazı Çevirisi
 
+*[English README](README.en.md)*
+
 Altyazı dosyalarını (`.srt`, `.vtt`, `.ass`/`.ssa`) OpenAI API'siyle Türkçeye —
 ya da 60 dilden birine — çeviren bir Windows masaüstü uygulaması.
 
@@ -168,6 +170,16 @@ Bu program tek bir kullanım için — altyazı çevirip yayınlamak — yazıld
 kararların çoğu ölçüme dayanıyor. Katkı vermeden önce
 [CONTRIBUTING.md](CONTRIBUTING.md) dosyasını okuyun; özellikle yeni bir tespit
 kuralı ekliyorsanız ölçüm beklentisi orada anlatılıyor.
+
+---
+
+## Lisans
+
+GNU General Public License v3.0 — bkz. [LICENSE](LICENSE).
+
+Programı kullanabilir, değiştirebilir ve ticari olarak da dağıtabilirsiniz;
+tek şart, bu programdan türetip DAĞITTIĞINIZ her şeyin de aynı lisansla
+özgür yazılım olması ve kaynağının erişilebilir kalmasıdır.
 
 ---
 

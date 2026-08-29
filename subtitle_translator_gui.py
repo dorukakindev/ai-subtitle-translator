@@ -1,3 +1,17 @@
+# Altyazı Çevirisi — altyazı dosyalarını OpenAI API'siyle çeviren masaüstü
+# uygulaması.  Copyright (C) 2026  Altyazı Çevirisi katkıcıları
+#
+# Bu program özgür yazılımdır: Free Software Foundation tarafından
+# yayımlanan GNU Genel Kamu Lisansı'nın 3. sürümü ya da (tercihinize bağlı
+# olarak) daha sonraki bir sürümü altında yeniden dağıtabilir ve/veya
+# değiştirebilirsiniz.
+#
+# Bu program yararlı olacağı umuduyla dağıtılmaktadır, ancak HİÇBİR GARANTİ
+# VERİLMEZ; SATILABİLİRLİK ya da BELİRLİ BİR AMACA UYGUNLUK zımni garantisi
+# dahi verilmez. Ayrıntılar için GNU Genel Kamu Lisansı'na bakın.
+#
+# Bu programla birlikte GNU Genel Kamu Lisansı'nın bir kopyasını almış
+# olmalısınız (LICENSE dosyası); almadıysanız <https://www.gnu.org/licenses/>.
 import json
 import contextlib
 import copy
