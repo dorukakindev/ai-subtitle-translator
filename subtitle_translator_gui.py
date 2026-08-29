@@ -4607,6 +4607,10 @@ _DELIVERY_RELEASE_AD_RE = re.compile(
     r"^\s*(?:"
     r"(?:downloaded\s+from|indirildi(?:\s*:)?|official\s+yify\s+movies\s+site\s*:|"
     r"resmi\s+yify\s+film\s+sitesi\s*:?)\s*\n\s*(?:yts(?:\.mx)?|yify)|"
+    # AYNI SATIRDA etiket + site: `Downloaded From www.AllSubs.org`.
+    # Iki satirlik bicim taniniyordu, bu kaciyordu ve cevrilip teslime
+    # giriyordu (`www.AllSubs.org'dan indirildi`).
+    r"downloaded\s+from\s+(?:https?://|www\.)?\S+|"
     r"(?:https?://|www\.)\S+"
     r")\s*$",
     re.IGNORECASE,
@@ -7915,6 +7919,43 @@ def _normalize_delivery_typography(text: str) -> str:
     return value
 
 
+# İngilizce kesinti gösterimi `--` Türkçede `...`tır. 42 filmlik
+# koleksiyonda 83 geçiş / 4 dosya ölçüldü; dağılım tek kuralın yetmediğini
+# gösterdi:
+#   satır/cue sonunda `--`   64   -> `...`
+#   diğer (sözcük arası)      13   -> `...`
+#   `!--` / `?--`             3   -> işaretin kendisi yeter, üç nokta EKLENMEZ
+#   sözcüğün içinde `a--b`      2   -> `...` (kesinti oradadır)
+#   `. --`                    1   -> tek noktaya iner
+#
+# NEWLINE TEHLİKESİ (gerçekten yaşandı, kayda geçti): denetimde `--\s+`
+# deseni kullanıldı ve `\s` satır sonunu da yediği için uygulandığı 43
+# cue'nun 4'ünde (%9) iki replikli cue tek satıra düştü. Buradaki hiçbir
+# desen `\s` kullanmaz; yatay boşluk için `[ \t]` yazılır ve fonksiyon
+# satır sayısını değişmez tutmakla test edilir.
+_DASH_AFTER_MARK_RE = re.compile(r"([!?…])[ \t]*--+")
+_DASH_AFTER_STOP_RE = re.compile(r"\.[ \t]*--+")
+_DASH_REST_RE = re.compile(r"--+")
+
+
+def _normalize_delivery_interruption_dashes(text: str) -> str:
+    """`--` kesinti gösterimini Türkçe üç noktaya indirir.
+
+    Satır yapısına DOKUNMAZ: hiçbir desen satır sonu eşleştirmez."""
+    value = str(text or "")
+    if "--" not in value:
+        return value
+    value = _DASH_AFTER_MARK_RE.sub(r"\1", value)
+    value = _DASH_AFTER_STOP_RE.sub(".", value)
+    # ASCII `...` yazılır, Unicode `…` DEĞİL: koleksiyonda ASCII biçim
+    # 7175 kez / 84 dosya, Unicode 55 kez / 2 dosya. Unicode yazmak aynı
+    # dosyaya iki ayrı üç nokta biçimi sokardı.
+    value = _DASH_REST_RE.sub("...", value)
+    # Üst üste binen nokta dizisini üçe indir: `......` -> `...`
+    value = re.sub(r"\.{4,}", "...", value)
+    return value
+
+
 def _normalize_all_caps_delivery(blocks: list, src_map: dict,
                                  locked_terms=None) -> tuple[list, int]:
     """Kaynağı BAŞTAN SONA büyük harf olan dosyalarda çeviriyi cümle düzenine indirir.
@@ -8025,6 +8066,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
     caps_labels_removed = 0
     sdh_removed = 0
     typography_fixed = 0
+    dashes_fixed = 0
     foreign_terms_fixed = 0
     for idx, ts, text in blocks:
         source_text = (src_map if source_cues else {}).get(str(idx), "")
@@ -8086,6 +8128,12 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 1 for before, after in zip(value, typography_fixed_value)
                 if before != after)
             value = typography_fixed_value
+            # İngilizce `--` kesintisi Türkçede `…`. Tipografiden SONRA
+            # gelir: eğri tırnaklar düzeldikten sonra desen sadeleşir.
+            dash_value = _normalize_delivery_interruption_dashes(value)
+            if dash_value != value:
+                dashes_fixed += 1
+                value = dash_value
         value = value.strip()
         if not value:
             # Kaynağı gerçek diyalogsa boş cue'yu SESSİZCE düşürme: görünür
@@ -8180,6 +8228,7 @@ def _prepare_upload_ready_blocks(blocks: list, target_language="Turkish",
                 f"{sdh_removed} SDH/müzik cue'su temizlendi, "
                 f"{quote_markers_fixed} bozuk OCR tırnak işareti, "
                 f"{typography_fixed} tipografik tırnak/kesme, "
+                f"{dashes_fixed} `--` kesinti işareti, "
                 f"{foreign_terms_fixed} yabancı unvan/yer adı düzeltildi",
                 "ok",
             )
