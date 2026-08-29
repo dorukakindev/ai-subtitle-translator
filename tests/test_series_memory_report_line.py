@@ -73,5 +73,63 @@ class ReportUsesTheHelperTest(unittest.TestCase):
                          window)
 
 
+
+class FlowRecordsTheReasonTest(unittest.TestCase):
+    """Kök neden AKIŞTA kapatıldı: artık satır nedeni kendi taşıyor.
+
+    Rapor tarafındaki çıkarım (`series_memory_missing_line`) eski
+    dosyalar için geri düşüş olarak kalır; yeni koşularda akış zaten
+    `{"status": "skipped", "reason": ...}` yazar.
+    """
+
+    def test_write_results_has_the_missing_else(self):
+        import inspect
+        source = inspect.getsource(gui.App._write_results)
+        marker = source.index("if _hata_n == 0 and _n_filled == 0:")
+        window = source[marker:marker + 900]
+        self.assertIn('"reason": ("unresolved_markers" if _hata_n', window)
+        self.assertIn('else "cue_fill_applied"', window)
+
+    def test_both_gate_paths_record_before_continue(self):
+        import inspect
+        source = inspect.getsource(gui)
+        self.assertEqual(
+            source.count('_pass_status.setdefault("Series-Memory", {'), 3)
+
+    def test_sync_hybrid_separates_its_three_causes(self):
+        import inspect
+        source = inspect.getsource(gui.App._run_sync_hybrid)
+        self.assertIn('"analysis_incomplete" if not _analysis_ok', source)
+        self.assertIn('else "unresolved_markers" if _hata_n', source)
+
+    def test_new_reasons_are_readable(self):
+        for reason, beklenen in (
+                ("unresolved_markers", "eksik çeviri"),
+                ("cue_fill_applied", "cue-fill"),
+                ("delivery_failed", "teslim kapısı"),
+                ("quality_failed", "kalite")):
+            with self.subTest(reason=reason):
+                metin = gui.pass_skip_explanation(
+                    {"status": "skipped", "reason": reason})
+                self.assertIn(beklenen, metin)
+
+    def test_report_line_uses_the_shared_table(self):
+        for reason, beklenen in (
+                ("unresolved_markers", "eksik çeviri işareti"),
+                ("cue_fill_applied", "cue-fill taşıması"),
+                ("delivery_failed", "teslim kapısını geçemedi"),
+                ("quality_failed", "kalite/teslim denetimi"),
+                ("not_series", "dizi bölümü algılanmadı")):
+            with self.subTest(reason=reason):
+                lines = gui._quality_feature_audit(
+                    {"run_status": "error",
+                     "pass_status": {"Series-Memory": {
+                         "status": "skipped", "reason": reason}}},
+                    {"series_memory": True, "mode": "sync"})
+                satir = next(l for l in lines if "Dizi Hafızası" in l)
+                self.assertIn(beklenen, satir)
+                self.assertNotIn("uygulanmadı", satir)
+                self.assertNotIn("çalışma kaydı yok", satir)
+
 if __name__ == "__main__":
     unittest.main()

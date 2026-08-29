@@ -17973,6 +17973,14 @@ _PASS_SKIP_REASONS = {
     "conflicting_id": "yanıttaki cue kimlikleri çelişiyordu",
     "source_changed": "kaynak dosya koşu sırasında değişti",
     "quality_report_only": "yalnız-rapor modu açık",
+    # Dizi Hafızası'nın atlanma nedenleri. Davranış eskiden de doğruydu
+    # (eksik/bozuk bölümden dizi kanonu yazılmamalı) ama HİÇ kaydedilmiyordu:
+    # akışlar `continue` ile dosyayı bırakıyor, satırda anahtar oluşmuyor ve
+    # rapor "açık, çalışma kaydı yok" diyordu.
+    "unresolved_markers": "dosyada eksik çeviri işareti kaldı",
+    "cue_fill_applied": "cue-fill taşıması yapıldı, bölüm kanonu sayılmadı",
+    "delivery_failed": "dosya teslim kapısını geçemedi",
+    "quality_failed": "kalite/teslim denetimi başarısız",
 }
 
 
@@ -18771,10 +18779,14 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
             lines.append("Dizi Hafızası: başarısız")
         elif series_state == "skipped":
             reason = str(series_status.get("reason") or "")
+            # Kendi küçük tablosu vardı ve akışların YENİ nedenlerini
+            # tanımadığı için hepsini "uygulanmadı" diye yazıyordu. Ortak
+            # tablo (`_PASS_SKIP_REASONS`) tek kaynak; yalnız bu iki
+            # nedenin kendi, daha okunur metni korunur.
             detail = {
                 "not_series": "dizi bölümü algılanmadı",
                 "analysis_incomplete": "analiz veya çeviri tamamlanmadı",
-            }.get(reason, "uygulanmadı")
+            }.get(reason) or pass_skip_explanation(series_status) or "uygulanmadı"
             lines.append(f"Dizi Hafızası: atlandı, {detail}")
         else:
             lines.append(series_memory_missing_line(row))
@@ -41850,6 +41862,15 @@ class App(ctk.CTk):
                     or _quality_pass_failed) else "done",
             })
             if _has_missing or _delivery_scan_failed or _quality_pass_failed:
+                # Dosya burada bırakılıyor; Dizi Hafızası bilinçli olarak
+                # çalışmayacak. Kaydı BURADA bırak, yoksa satırda anahtar
+                # hiç oluşmuyor ve rapor nedeni bilmiyor sanıyordu.
+                _pass_status.setdefault("Series-Memory", {
+                    "status": "skipped",
+                    "reason": ("unresolved_markers" if _has_missing
+                               else "delivery_failed"),
+                    "changed": 0,
+                })
                 failed_files.append(filepath)
                 failure_label = (
                     f"Eksik çeviri: {_hata_n}" if _has_missing
@@ -41895,8 +41916,13 @@ class App(ctk.CTk):
                 _pass_status["Series-Memory"] = dict(
                     _series_memory_status)
             else:
+                # Koşul üç şeyi birden kapsıyor (`_analysis_ok`, `_hata_n`,
+                # `_n_filled`); üçünü de "analiz eksik" diye yazmak yanlıştı.
                 _pass_status["Series-Memory"] = {
-                    "status": "skipped", "reason": "analysis_incomplete",
+                    "status": "skipped",
+                    "reason": ("analysis_incomplete" if not _analysis_ok
+                               else "unresolved_markers" if _hata_n
+                               else "cue_fill_applied"),
                     "changed": 0,
                 }
             if self.auto_glossary_var.get():
@@ -43534,6 +43560,14 @@ class App(ctk.CTk):
                                     output_path, _write_path,
                                     reason="eksik çeviri satırı kaldı",
                                     missing=_hata_n_pre, log_fn=self._log)
+                                # Kurtarma yolu da kayıt bırakmalı: burada
+                                # `break` ediliyor ve aşağıdaki Dizi Hafızası
+                                # bloğuna hiç ulaşılmıyordu.
+                                _pass_status.setdefault("Series-Memory", {
+                                    "status": "skipped",
+                                    "reason": "unresolved_markers",
+                                    "changed": 0,
+                                })
                                 terminal = True
                                 if result_out is not None:
                                     result_out["status"] = "failed"
@@ -44519,6 +44553,15 @@ class App(ctk.CTk):
                     or _quality_pass_failed) else "done",
             })
             if _has_missing or _delivery_scan_failed or _quality_pass_failed:
+                # Dosya burada bırakılıyor; Dizi Hafızası bilinçli olarak
+                # çalışmayacak. Kaydı BURADA bırak, yoksa satırda anahtar
+                # hiç oluşmuyor ve rapor nedeni bilmiyor sanıyordu.
+                _pass_status.setdefault("Series-Memory", {
+                    "status": "skipped",
+                    "reason": ("unresolved_markers" if _has_missing
+                               else "delivery_failed"),
+                    "changed": 0,
+                })
                 _failed_files.append(fp)
                 self._record_file_status(fp, (
                     f"Eksik çeviri: {_hata_n}" if _has_missing
@@ -44543,6 +44586,16 @@ class App(ctk.CTk):
                     fp, _tgt_lang, status_out=_series_memory_status)
                 _pass_status["Series-Memory"] = dict(
                     _series_memory_status)
+            else:
+                # Hibrit akışların ikisinde de bu `else` vardı, burada YOKTU:
+                # eksik çeviri ya da cue-fill taşıması olan dosyada anahtar
+                # hiç oluşmuyor ve rapor nedeni "bilinmiyor" sanıyordu.
+                _pass_status["Series-Memory"] = {
+                    "status": "skipped",
+                    "reason": ("unresolved_markers" if _hata_n
+                               else "cue_fill_applied"),
+                    "changed": 0,
+                }
             # Auto-Glossary (düz sync/batch'te de) — Cue nesnesi gerektiğinden kaynağı
             # load_subtitle ile yükle (_src_cues tuple olabilir; build_glossary c.text ister)
             if self.auto_glossary_var.get():
@@ -46237,10 +46290,14 @@ class App(ctk.CTk):
                     _pass_status["Series-Memory"] = dict(
                         _series_memory_status)
                 else:
+                    # `_n_filled` ve kalan eksik işareti de bu dalı tetikliyor;
+                    # ikisini de "analiz eksik" diye yazmak yanlıştı.
                     _pass_status["Series-Memory"] = {
                         "status": "skipped", "reason": (
                             "quality_failed" if _hybrid_quality_failed
-                            else "analysis_incomplete"),
+                            else "cue_fill_applied" if _n_filled
+                            else "analysis_incomplete"
+                            if not analysis_ok else "unresolved_markers"),
                         "changed": 0,
                     }
                 if self.auto_glossary_var.get():
