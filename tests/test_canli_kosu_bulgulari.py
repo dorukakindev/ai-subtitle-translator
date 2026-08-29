@@ -252,5 +252,69 @@ class AsamaCheckpointBudamaTest(unittest.TestCase):
         self.assertEqual(gui._prune_sync_stage_entries({}), 0)
 
 
+class KarakterSeciminiTekYereBaglaTest(unittest.TestCase):
+    """Aynı "ana karakterler kimdir" kararı dört yerde farklı kırpılıyordu.
+
+    Kırpma sınırları 6 / 6 / 5 ve log için 4'tü — bu depoda tekrar eden bug
+    sınıfı tam olarak budur. Ayrıca listeye kişi olmayan girişler sızıyor ve
+    prompt'ta bir slot yiyordu: 4.588 karakter adında 32'si böyleydi, 5'i
+    ilk altı slotta.
+    """
+
+    class _Karakter:
+        def __init__(self, name):
+            self.name = name
+            self.speaking_style = ""
+
+    def _secim(self, adlar):
+        return [c.name for c in ht.prompt_characters(
+            [self._Karakter(a) for a in adlar])]
+
+    def test_kisi_olmayanlar_elenir(self):
+        for ad in ("Song lyrics", "Crowd", "CHORUS", "Koro", "Kalabalık",
+                   "Congregation", "ALL", "BOTH", "NEWSREEL",
+                   "HE SPEAKS IN GREEK", "[LAUGHS] / [SOBS]",
+                   "Şarkı sözleri"):
+            self.assertTrue(ht._is_not_a_person(ad), ad)
+
+    def test_adsiz_ama_GERCEK_konusmacilar_korunur(self):
+        """Raporun açık uyarısı: bunlar eleme listesine GİRMEMELİ."""
+        for ad in ("Doctor", "Princess", "King", "Man", "Woman", "Narrator",
+                   "German-speaking artist", "Alexander"):
+            self.assertFalse(ht._is_not_a_person(ad), ad)
+
+    def test_elenen_slot_gercek_karaktere_gider(self):
+        """Ölçümdeki somut vaka: Alexander ve Neoptolemus kapsam dışıydı."""
+        secim = self._secim([
+            "Song lyrics", "Alexander", "Crowd", "Neoptolemus", "CHORUS",
+            "Doctor", "King", "Narrator", "Rosie", "HE SPEAKS IN GREEK"])
+        self.assertIn("Alexander", secim)
+        self.assertIn("Neoptolemus", secim)
+        self.assertNotIn("Song lyrics", secim)
+        self.assertNotIn("CHORUS", secim)
+
+    def test_sinir_tek_sabitten_gelir(self):
+        secim = self._secim(["K%d" % i for i in range(20)])
+        self.assertEqual(len(secim), ht._PROMPT_CHARACTER_LIMIT)
+
+    def test_hepsi_elenirse_orijinal_kullanilir(self):
+        """Boş karakter listesi prompt'u sessizce fakirleştirirdi."""
+        secim = self._secim(["Crowd", "CHORUS"])
+        self.assertEqual(secim, ["Crowd", "CHORUS"])
+
+    def test_bos_liste_patlamaz(self):
+        self.assertEqual(ht.prompt_characters([]), [])
+        self.assertEqual(ht.prompt_characters(None), [])
+
+    def test_ham_kirpma_kalmadi(self):
+        """Dört ayrı `characters[:N]` yerine tek fonksiyon."""
+        import io as _io
+        with _io.open("hybrid_translate.py", encoding="utf-8") as fh:
+            kaynak = fh.read()
+        for desen in ("characters[:6]", "characters[:5]"):
+            self.assertNotIn(desen, kaynak,
+                             "ham kırpma geri geldi: %s" % desen)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1815,7 +1815,7 @@ def _generate_character_examples(
 
         char_list = "\n".join(
             f"- {c.name}: {c.speaking_style or 'no specific style noted'}"
-            for c in characters[:6]
+            for c in prompt_characters(characters)
         )
         prompt = (
             f"{UNTRUSTED_REFERENCE_RULE}\n"
@@ -1863,7 +1863,7 @@ def _generate_character_examples(
         )
         known_names = {
             _analysis_name_identity(character.name): str(character.name or "").strip()
-            for character in characters[:6]
+            for character in prompt_characters(characters)
             if str(character.name or "").strip()
         }
         examples = {
@@ -1939,10 +1939,10 @@ def _generate_pronoun_map(
         from openai import OpenAI
         client = OpenAI(api_key=helper_api_key, base_url=helper_url)
 
-        chars = [c.name for c in context.characters[:6]]
+        chars = [c.name for c in prompt_characters(context.characters)]
         char_styles = "\n".join(
             f"- {c.name}: {c.speaking_style or '—'}"
-            for c in context.characters[:6]
+            for c in prompt_characters(context.characters)
         )
         setting = context.setting or ""
         summary = context.summary or ""
@@ -3641,7 +3641,7 @@ def analyze_with_helper(
             if progress_fn:
                 progress_fn(done_count, len(chunks))
             if log_fn:
-                chars = ", ".join(c.name for c in memory.characters[:4])
+                chars = ", ".join(c.name for c in memory.characters[:_LOG_CHARACTER_LIMIT])
                 log_fn(f"  Chunk {i+1}: Ton:{memory.tone or '?'} | "
                        f"Karakterler:{chars or '—'} | Terimler:{len(memory.recurring_terms)}", "ok")
 
@@ -3671,7 +3671,7 @@ def analyze_with_helper(
 
     # Generate character few-shot examples + register/dialect classification (single call)
     if log_fn and merged.characters:
-        log_fn(f"Karakter örnekleri oluşturuluyor ({len(merged.characters[:6])} karakter)...", "info")
+        log_fn(f"Karakter örnekleri oluşturuluyor ({len(prompt_characters(merged.characters))} karakter)...", "info")
     examples, character_styles = _retry_failed_analysis_aux(
         "character_examples", "Karakter örnekleri", aux_status, log_fn,
         lambda: _generate_character_examples(
@@ -3806,6 +3806,69 @@ def _analysis_term_identity(source) -> str:
     if text.isupper() and any(char.isalpha() for char in text):
         return f"exact:{text}"
     return f"folded:{text.casefold()}"
+
+
+# Prompt'a giren karakter sayisi. Ayni karar DORT ayri yerde farkli
+# kirpilmisti (6 / 6 / 5 ve log icin 4); bu depoda tekrar eden bug sinifi
+# tam olarak budur - ayni karar iki yerde hesaplanir, kopyalar ayrisir.
+_PROMPT_CHARACTER_LIMIT = 6
+_LOG_CHARACTER_LIMIT = 4
+
+# Karakter listesine sizan KISI OLMAYAN girisler. Bunlar prompt'ta bir
+# slot yiyor ve o slot gercek bir karaktere gitmiyor: 4.588 karakter adi
+# icinde 32'si boyleydi, 5'i ilk alti slottaydi.
+#
+# DIKKAT - elenmemesi gerekenler: `Doctor`, `Princess`, `King`, `Man`,
+# `Woman`, `Narrator` adsiz ama GERCEK konusmacilardir. Ilk olcumde
+# `German-speaking artist` de yanlislikla eleniyordu (bir kisidir);
+# eylem kurali o yuzden TAMAMI BUYUK HARF sartina baglandi.
+_NON_PERSON_CHARACTER_NAMES = frozenset({
+    "song lyrics", "lyrics", "sarki sozleri", "\u015farki s\u00f6zleri",
+    "\u015fark\u0131 s\u00f6zleri", "congregation", "cemaat", "crowd",
+    "kalabalik", "kalabal\u0131k", "koro", "chorus", "choir", "newsreel",
+    "audience", "seyirci", "izleyici", "all", "herkes", "everyone",
+    "both", "ikisi", "group", "grup", "voices", "sesler", "singers",
+    "sarkicilar", "\u015fark\u0131c\u0131lar", "unknown", "bilinmiyor",
+    "n/a", "none", "yok",
+})
+_STAGE_DIRECTION_RE = re.compile(
+    r"(?i)(speaks?|speaking|singing|sings?|shouts?|laughs?|sobs?|"
+    r"whistling|chanting|konu\u015fuyor|ba\u011f\u0131r\u0131yor)")
+_SONG_ENTRY_RE = re.compile(
+    r"(?i)^(\u015fark\u0131|sarki|song|lyrics|\u015fiir|siir)")
+
+
+def _is_not_a_person(name) -> bool:
+    """Karakter listesindeki giris bir KISI degil mi (topluluk/ses/bicim)."""
+    value = " ".join(str(name or "").split())
+    if not value:
+        return True
+    if value.casefold() in _NON_PERSON_CHARACTER_NAMES:
+        return True
+    if _SONG_ENTRY_RE.search(value):
+        return True
+    if value.startswith("["):
+        return True
+    letters = [char for char in value if char.isalpha()]
+    all_upper = bool(letters) and all(char.isupper() for char in letters)
+    return all_upper and bool(_STAGE_DIRECTION_RE.search(value))
+
+
+def prompt_characters(characters, limit: int = None) -> list:
+    """Prompt'a girecek karakterler: kisi olmayanlar elenir, sonra kirpilir.
+
+    Eleme kirpmadan ONCE yapilir; amaci budur - bosa giden slotu gercek
+    bir karaktere birakmak.
+    """
+    rows = list(characters or ())
+    kept = [c for c in rows
+            if not _is_not_a_person(getattr(c, "name", None))]
+    # Hepsi elenirse orijinali kullan: bos karakter listesi promptu
+    # sessizce fakirlestirir, yanlis bir ad ondan iyidir.
+    if not kept:
+        kept = rows
+    top = _PROMPT_CHARACTER_LIMIT if limit is None else int(limit)
+    return kept[:max(0, top)]
 
 
 def _analysis_name_identity(value) -> str:
@@ -5447,7 +5510,7 @@ def quality_check_with_helper(
                     context_parts.append(f"Setting: {context.setting}")
 
                 if context.characters:
-                    char_names = ", ".join(c.name for c in context.characters[:5])
+                    char_names = ", ".join(c.name for c in prompt_characters(context.characters))
                     context_parts.append(f"Characters: {char_names}" +
                                         ("..." if len(context.characters) > 5 else ""))
 
