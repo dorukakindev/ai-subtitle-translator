@@ -1,0 +1,16 @@
+# Altyazı Çevirisi — çalışma bağımlılıkları
+# Kurulum:  pip install -r requirements.txt
+#
+# Sürümler geliştirmede kullanılanlardır; alt sınır olarak yazılmıştır.
+# Python 3.11+ gerekir (3.14 ile geliştirildi).
+
+customtkinter>=5.2.2      # arayüz
+openai>=2.20.0            # OpenAI API istemcisi
+keyring>=25.7.0           # API anahtarlarını Windows Kimlik Bilgisi
+                          # Yöneticisi'nde saklar; erişilemezse program
+                          # şifrelenmiş dosya yedeğine düşer
+tiktoken>=0.14.0          # jeton sayımı — maliyet tahmini ve parça boyutu
+requests>=2.32.0          # üçüncü taraf sağlayıcı çağrıları
+
+# tkinter standart kütüphanededir ama bazı Linux dağıtımlarında ayrı paket
+# olarak gelir (python3-tk). Windows'ta Python ile birlikte kurulur.
