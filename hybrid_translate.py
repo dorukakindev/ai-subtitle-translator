@@ -3164,9 +3164,14 @@ _ANALYSIS_RISK_RE = re.compile(
 def _analysis_sample_for_depth(cues: list, analysis_depth: str = "standard") -> list:
     """Return subtitle samples for the helper analysis prompt.
 
-    Standard keeps the legacy first-250 behavior. Deeper modes spend more tokens
-    by sampling across the whole chunk, with extra attention to scene boundaries
+    Every depth spreads its sample across the whole chunk. What the depth
+    changes is HOW MANY cues are sampled (standard 250, advanced 900,
+    maximum 550), and the deeper modes additionally weight scene boundaries
     and risky slang/idiom-heavy lines.
+
+    Standard used to take the first 250 cues instead, which was not a cost
+    trade -- 250 cues cost the same wherever they come from -- but it meant
+    87.5% of a 2000-cue chunk never reached the analysis at all.
     """
     cfg = _analysis_depth_config(analysis_depth)
     limit = int(cfg["sample_limit"])
@@ -3175,7 +3180,20 @@ def _analysis_sample_for_depth(cues: list, analysis_depth: str = "standard") -> 
 
     depth_key = normalize_analysis_depth(analysis_depth)
     if depth_key == "standard":
-        selected = list(range(min(limit, len(cues))))
+        # YAYILMIŞ örneklem: eskiden ilk `limit` cue alınıyordu ve 2000'lik
+        # bir chunk'ın %87,5'i analize hiç girmiyordu — dosyanın sonundaki
+        # karakterler, terimler ve hitap kararları görülmüyordu. Aynı sayıda
+        # cue, dosyanın tamamına eşit aralıklarla dağıtılarak seçilir;
+        # maliyet DEĞİŞMEZ, kapsam değişir.
+        #
+        # Kullanıcının koşularında bu dal hiç çalışmıyor (derinlik dağılımı
+        # 310 Gelişmiş / 121 Maksimum / 0 Standart), yani latent bir tuzaktı.
+        if len(cues) <= limit:
+            selected = list(range(len(cues)))
+        else:
+            adim = len(cues) / float(limit)
+            selected = sorted({min(len(cues) - 1, int(i * adim))
+                               for i in range(limit)})
     elif len(cues) <= limit:
         selected = list(range(len(cues)))
     else:
@@ -7680,8 +7698,24 @@ def drop_quoted_work_title_terms(glossary: dict | None, source_text: str,
     # tırnaklı 3.230 adayın 778'i (%24) bu sınıftaydı — 'to,', 'beach',
     # 'computer', 'free', 'emocional'. Bunlar için sözlük girdisini düşürmek
     # terim tutarlılığını gereksiz yere kaybettiriyordu.
+    # İkinci daraltma: ifade BÜYÜK HARFLE başlamıyorsa eser adı sayma.
+    # Tırnak içinde anılan kavramlar çok sözcüklü olabiliyor ve yukarıdaki
+    # tek-sözcük kuralına takılmıyordu: `navios de guerra`, `free will`,
+    # `efecto mariposa`, `inflammable air`, `кафейный интеллектуал`.
+    #
+    # İki yönlü ölçüldü (arşivdeki önbellek + kaynak çiftleri): düşen giriş
+    # 313 -> 277, KURTULAN 36. Kurtulanların tamamı ya kavram ya da yerleşik
+    # Türkçe karşılığı olan bir ad (`the Lord of the Rings` ->
+    # `Yüzüklerin Efendisi`) — ikisi de sözlükte KALMALI.
+    #
+    # Neden önemli: guard'ın attığı terim kaynak dilde kalıyor. 36 dosyalık
+    # ölçümde atılanların %18'i kaynak biçiminde kalmışken sözlükte
+    # kalanların yalnız %0,3'ü — yani atmak 60 kat daha riskli.
     def _looks_like_a_title(value: str) -> bool:
-        return " " in value or not value.islower()
+        if not (" " in value or not value.islower()):
+            return False
+        ilk_harf = next((char for char in value if char.isalpha()), "")
+        return bool(ilk_harf) and ilk_harf == ilk_harf.upper()
 
     kept, dropped = {}, []
     for source, target in entries.items():

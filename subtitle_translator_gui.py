@@ -22173,6 +22173,43 @@ def _sync_stage_key(source_path: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
 
 
+# Aşama deposu kardeşinden ÇOK daha ağırdır: her kayıt tam `raw_map`
+# taşır. Gerçek depoda ölçüldü — 82 kayıt / 4,82 MB, kayıt başına ~60 KB.
+# Kardeşin 3000 sınırı burada ~176 MB ederdi; 300 kayıt ~18 MB ve günde ~3
+# kayıt hızıyla ~100 günlük yarım işe karşılık gelir.
+#
+# Eskiden HİÇBİR sınır yoktu: kayıt yalnız dosya BAŞARIYLA bitince
+# siliniyordu, yarım kalan / karantinaya giden / vazgeçilen her dosya
+# kalıcı kalıyordu.
+SYNC_STAGE_CKPT_MAX_ENTRIES = 300
+SYNC_STAGE_CKPT_MAX_AGE_DAYS = 30
+
+
+def _prune_sync_stage_entries(entries: dict) -> int:
+    """Yaş ve sayı sınırına göre budar; düşen kayıt sayısını döner.
+
+    Kardeş depodaki kuralın aynısı: zaman damgası OLMAYAN kayıt yaş
+    kuralından muaftır (0'ı "çok eski" saymak geçerli kurtarma verisini
+    siler), ve sınır aşılırsa EN YENİ kayıtlar tutulur — yarım kalan koşu
+    en yenidir.
+    """
+    if not entries:
+        return 0
+    before = len(entries)
+    cutoff = time.time() - SYNC_STAGE_CKPT_MAX_AGE_DAYS * 86400
+    for key in [k for k, v in entries.items()
+                if float((v or {}).get("updated_at") or 0)
+                and float(v["updated_at"]) < cutoff]:
+        entries.pop(key, None)
+    if len(entries) > SYNC_STAGE_CKPT_MAX_ENTRIES:
+        keep = sorted(entries.items(),
+                      key=lambda kv: float((kv[1] or {}).get("updated_at") or 0),
+                      reverse=True)[:SYNC_STAGE_CKPT_MAX_ENTRIES]
+        entries.clear()
+        entries.update(keep)
+    return before - len(entries)
+
+
 def save_sync_stage_entry_to_store(path: Path, source_path: str,
                                    source_hash: str, fingerprint: str,
                                    run_id: str, raw_map: dict,
@@ -22194,6 +22231,13 @@ def save_sync_stage_entry_to_store(path: Path, source_path: str,
                 "raw_map": {str(k): str(v) for k, v in raw_map.items()},
                 "updated_at": time.time(),
             }
+            dropped = _prune_sync_stage_entries(store["entries"])
+            if dropped and log_fn:
+                log_fn(
+                    "Aşama checkpoint deposu budandı: %d eski kayıt düştü "
+                    "(sınır %d kayıt / %d gün)."
+                    % (dropped, SYNC_STAGE_CKPT_MAX_ENTRIES,
+                       SYNC_STAGE_CKPT_MAX_AGE_DAYS), "info")
             atomic_write_json(path, store)
         return True
     except Exception as exc:

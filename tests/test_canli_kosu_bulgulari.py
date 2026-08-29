@@ -122,5 +122,135 @@ class DilGeriDususuTest(unittest.TestCase):
             gui._dil_ad_etiketine_dus("Le.Dossier.51.FRENCH.srt"), "French")
 
 
+class TirnakGuardDaraltmasiTest(unittest.TestCase):
+    """Tırnak içi ifade eser adı sayılıp sözlükten atılıyordu — fazla geniş.
+
+    Guard'ın attığı terim kaynak dilde kalıyor: 36 dosyalık ölçümde
+    atılanların %18'i kaynak biçiminde kalmışken sözlükte kalanların yalnız
+    %0,3'ü. Atmak 60 kat daha riskli.
+
+    Arşivde ölçüldü: düşen giriş 313 -> 277, kurtulan 36.
+    """
+
+    KAYNAK = ('He read "The Iliad". A "pyrrhic victory" is costly. '
+              'We watched "the Lord of the Rings".')
+
+    def _kalan(self, sozluk):
+        return set(ht.drop_quoted_work_title_terms(sozluk, self.KAYNAK))
+
+    def test_kucuk_harfle_baslayan_kavram_kalir(self):
+        kalan = self._kalan({"pyrrhic victory": "Pirus zaferi"})
+        self.assertIn("pyrrhic victory", kalan)
+
+    def test_kucuk_harfle_baslayan_yerlesik_ad_kalir(self):
+        """`the Lord of the Rings` -> `Yüzüklerin Efendisi` sözlükte kalmalı."""
+        kalan = self._kalan({"the Lord of the Rings": "Yüzüklerin Efendisi"})
+        self.assertIn("the Lord of the Rings", kalan)
+
+    def test_buyuk_harfle_baslayan_eser_adi_hala_dusuyor(self):
+        kalan = self._kalan({"The Iliad": "İlyada"})
+        self.assertNotIn("The Iliad", kalan)
+
+    def test_tirnakta_gecmeyen_terim_etkilenmez(self):
+        kalan = self._kalan({"normal": "sıradan"})
+        self.assertIn("normal", kalan)
+
+    def test_tek_kucuk_sozcuk_kurali_korunuyor(self):
+        """Önceki daraltma bozulmamalı: anılan tek sözcük düşmez."""
+        kaynak = 'You know what "cathartic" means?'
+        kalan = set(ht.drop_quoted_work_title_terms(
+            {"cathartic": "katartik"}, kaynak))
+        self.assertIn("cathartic", kalan)
+
+
+class StandartAnalizOrneklemiTest(unittest.TestCase):
+    """Standart derinlik chunk'ın yalnız İLK 250 cue'sunu okuyordu.
+
+    2000'lik bir chunk'ın %87,5'i analize hiç girmiyordu: dosyanın
+    sonundaki karakterler, terimler ve hitap kararları görülmüyordu.
+    Aynı sayıda cue artık dosyaya YAYILARAK seçilir — maliyet değişmez.
+
+    Kullanıcının koşularında hiç ateşlenmemişti (310 Gelişmiş /
+    121 Maksimum / 0 Standart), yani latent bir tuzaktı.
+    """
+
+    class _Cue:
+        def __init__(self, index):
+            self.index = index
+            self.start = "00:00:01,000"
+            self.end = "00:00:02,000"
+            self.text = "satır %d" % index
+
+    def _kimlikler(self, adet, derinlik="standard"):
+        cues = [self._Cue(i) for i in range(adet)]
+        return [x["id"] for x in
+                ht._analysis_sample_for_depth(cues, derinlik)]
+
+    def test_orneklem_dosyanin_tamamina_yayilir(self):
+        kimlik = self._kimlikler(2000)
+        self.assertGreater(max(kimlik), 1900,
+                           "örneklem dosyanın sonunu görmüyor")
+        self.assertEqual(min(kimlik), 0)
+
+    def test_ornek_sayisi_degismedi(self):
+        self.assertEqual(len(self._kimlikler(2000)), 250)
+
+    def test_kucuk_dosyada_hepsi_alinir(self):
+        self.assertEqual(len(self._kimlikler(100)), 100)
+
+    def test_derin_modlar_etkilenmedi(self):
+        self.assertGreater(len(self._kimlikler(2000, "maximum")), 250)
+
+    def test_kimlikler_artan_ve_tekil(self):
+        kimlik = self._kimlikler(2000)
+        self.assertEqual(kimlik, sorted(kimlik))
+        self.assertEqual(len(kimlik), len(set(kimlik)))
+
+
+class AsamaCheckpointBudamaTest(unittest.TestCase):
+    """Aşama deposunda hiçbir sınır yoktu; kardeş depoda ikisi de var.
+
+    Kayıt yalnız dosya BAŞARIYLA bitince siliniyordu: yarım kalan,
+    karantinaya giden, vazgeçilen her dosya kalıcı kalıyordu.
+    Gerçek depo ölçüldü: 82 kayıt / 4,82 MB, kayıt başına ~60 KB —
+    kardeşin 3000 sınırı burada ~176 MB ederdi.
+    """
+
+    def test_yas_siniri_isliyor(self):
+        import time
+        simdi = time.time()
+        kayitlar = {
+            "yeni": {"updated_at": simdi},
+            "eski": {"updated_at": simdi - 40 * 86400},
+        }
+        dusen = gui._prune_sync_stage_entries(kayitlar)
+        self.assertEqual(dusen, 1)
+        self.assertIn("yeni", kayitlar)
+        self.assertNotIn("eski", kayitlar)
+
+    def test_damgasiz_kayit_YAS_kuralindan_muaf(self):
+        """`updated_at=0` taşıyan göç kaydı 'çok eski' sayılmamalı."""
+        kayitlar = {"damgasiz": {"updated_at": 0}}
+        self.assertEqual(gui._prune_sync_stage_entries(kayitlar), 0)
+        self.assertIn("damgasiz", kayitlar)
+
+    def test_sayi_siniri_en_yenileri_tutar(self):
+        import time
+        simdi = time.time()
+        kayitlar = {"k%d" % i: {"updated_at": simdi - i}
+                    for i in range(gui.SYNC_STAGE_CKPT_MAX_ENTRIES + 40)}
+        gui._prune_sync_stage_entries(kayitlar)
+        self.assertEqual(len(kayitlar), gui.SYNC_STAGE_CKPT_MAX_ENTRIES)
+        self.assertIn("k0", kayitlar)
+
+    def test_sinir_kardes_depodan_KUCUK(self):
+        """Aşama kaydı ~60 KB; kardeşin sınırı burada ~176 MB ederdi."""
+        self.assertLess(gui.SYNC_STAGE_CKPT_MAX_ENTRIES,
+                        gui.SYNC_CKPT_MAX_ENTRIES)
+
+    def test_bos_depo_patlamaz(self):
+        self.assertEqual(gui._prune_sync_stage_entries({}), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

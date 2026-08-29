@@ -18,14 +18,34 @@ class Cue:
 
 
 class AnalysisDepthSamplingTest(unittest.TestCase):
-    def test_standard_depth_keeps_legacy_first_250_sample(self):
-        cues = [Cue(i) for i in range(1, 301)]
+    def test_standard_depth_spreads_its_sample_across_the_file(self):
+        """Standart artik ilk 250 cue'yu DEGIL, yayilmis 250 cue'yu okur.
+
+        Eski davranis (`first 250`) bir maliyet takasi degildi: derinlik
+        farki ORNEK SAYISIDIR (standart 250, gelismis 900, maksimum 550).
+        250 cue'yu bastan mi yoksa dosyaya yayarak mi sectigimiz jeton
+        maliyetini degistirmez — yani eski davranisin tek gerekcesi
+        tarihseldi, ve 2000'lik bir chunk'in %87,5'i analize hic
+        girmiyordu.
+
+        Bu test eskiden `keeps_legacy_first_250_sample` adiyla eski
+        davranisi kilitliyordu; degistirilmesi bilinclidir.
+        """
+        cues = [Cue(i) for i in range(1, 2001)]
 
         sample = ht._analysis_sample_for_depth(cues, "Standart")
+        ids = [item["id"] for item in sample]
 
         self.assertEqual(len(sample), 250)
-        self.assertEqual(sample[0]["id"], 1)
-        self.assertEqual(sample[-1]["id"], 250)
+        self.assertEqual(ids[0], 1)
+        self.assertGreater(ids[-1], 1900, "orneklem dosyanin sonunu gormuyor")
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_standard_depth_takes_everything_when_file_is_small(self):
+        cues = [Cue(i) for i in range(1, 101)]
+        sample = ht._analysis_sample_for_depth(cues, "Standart")
+        self.assertEqual(len(sample), 100)
 
     def test_deeper_depth_samples_start_middle_and_tail(self):
         cues = [Cue(i, f"Regular dialogue line number {i}.") for i in range(1, 1001)]
