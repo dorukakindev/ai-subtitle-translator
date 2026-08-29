@@ -32874,8 +32874,68 @@ class App(ctk.CTk):
             dlg, text="API PROFİLİ", text_color=ACCENT,
             font=ctk.CTkFont("Segoe UI", 13, "bold")).grid(
                 row=0, column=0, sticky="w", padx=24, pady=(22, 10))
+        # ── Hazır sağlayıcı ────────────────────────────────────────────
+        # Program zaten her OpenAI uyumlu adrese bağlanabiliyordu; eksik olan
+        # kullanıcının adresi EZBERE bilmesiydi. Seçince adres ve sağlayıcı
+        # türü kendiliğinden dolar.
+        try:
+            import saglayicilar
+        except Exception:
+            saglayicilar = None
+        if saglayicilar is not None:
+            on_ayar = ctk.CTkFrame(dlg, fg_color=PANEL, corner_radius=12)
+            on_ayar.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 10))
+            on_ayar.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                on_ayar, text="Hazır sağlayıcı", text_color=FG2,
+                font=ctk.CTkFont("Segoe UI", 11)).grid(
+                    row=0, column=0, sticky="w", padx=18, pady=(10, 3))
+            mevcut_sg = saglayicilar.url_ile_bul(current.get("base_url", ""))
+            on_ayar_var = ctk.StringVar(
+                value=mevcut_sg.etiket if mevcut_sg else saglayicilar.OZEL)
+            not_etiketi = ctk.CTkLabel(
+                on_ayar, text="", text_color=FG2, justify="left",
+                wraplength=430, font=ctk.CTkFont("Segoe UI", 10))
+
+            def _on_ayar_secildi(secim=None):
+                ad = on_ayar_var.get()
+                sg = saglayicilar.SAGLAYICILAR.get(ad)
+                if sg is None:
+                    not_etiketi.configure(text="")
+                    return
+                url_var.set(sg.base_url)
+                provider_var.set(
+                    API_PROFILE_PROVIDERS.get(sg.tur, provider_var.get()))
+                if sg.ornek_modeller and not model_var.get().strip():
+                    model_var.set(sg.ornek_modeller[0])
+                if not name_var.get().strip():
+                    name_var.set(sg.etiket)
+                parcalar = []
+                if sg.not_:
+                    parcalar.append(sg.not_)
+                if sg.anahtar_adresi:
+                    parcalar.append("Anahtar: " + sg.anahtar_adresi)
+                elif sg.yerel:
+                    parcalar.append("Anahtar gerekmez.")
+                if sg.ornek_modeller:
+                    parcalar.append(
+                        "Örnek model: " + ", ".join(sg.ornek_modeller[:3]))
+                not_etiketi.configure(text="  ".join(parcalar))
+
+            ctk.CTkComboBox(
+                on_ayar, variable=on_ayar_var,
+                values=[saglayicilar.OZEL] + list(saglayicilar.SAGLAYICI_ADLARI),
+                command=_on_ayar_secildi, state="readonly", height=36,
+                fg_color=CARD, border_color=BORDER, button_color=BORDER,
+                button_hover_color=ACCENT, dropdown_fg_color=CARD,
+                text_color=FG).grid(row=1, column=0, sticky="ew", padx=18)
+            not_etiketi.grid(row=2, column=0, sticky="w", padx=18,
+                             pady=(6, 12))
+            if mevcut_sg:
+                _on_ayar_secildi()
+
         form = ctk.CTkFrame(dlg, fg_color=PANEL, corner_radius=12)
-        form.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 14))
+        form.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 14))
         form.grid_columnconfigure(0, weight=1)
 
         def add_field(label, variable, row, placeholder=""):
@@ -32914,7 +32974,88 @@ class App(ctk.CTk):
             text="Anahtar ekranda veya ayar dosyasında gösterilmez. Sağ tıkla kullanım görevini seçebilirsiniz.",
             text_color=FG2, justify="left", wraplength=460,
             font=ctk.CTkFont("Segoe UI", 10)).grid(
-                row=2, column=0, sticky="w", padx=26, pady=(0, 12))
+                row=3, column=0, sticky="w", padx=26, pady=(0, 12))
+
+        def _modelleri_getir():
+            """Sağlayıcının KENDİ model listesini çekip seçtirir.
+
+            Model adları koda gömülmez: sağlayıcılar model çıkarır ve
+            kaldırır, gömülü liste birkaç ay sonra yalan söyler. Doğrusu
+            listeyi kaynağından sormaktır.
+            """
+            base_url = url_var.get().strip()
+            if not base_url:
+                messagebox.showwarning(
+                    "Adres gerekli",
+                    "Önce API taban adresini girin ya da hazır bir sağlayıcı "
+                    "seçin.", parent=dlg)
+                return
+            anahtar = key_entry.get().strip()
+            if not anahtar and profile_id:
+                anahtar = credential_store.load_key(
+                    "api_profile_%s" % profile_id) or ""
+            if not anahtar:
+                anahtar = "yerel"
+            try:
+                istemci = OpenAI(api_key=anahtar, base_url=base_url)
+                istemci = istemci.with_options(max_retries=0, timeout=30.0)
+                adlar = sorted(_visible_model_ids(istemci.models.list()))
+            except Exception as hata:
+                messagebox.showerror(
+                    "Model listesi alınamadı",
+                    "Sağlayıcı liste vermedi. Adres ve anahtar doğru mu?\n\n%s"
+                    % hata, parent=dlg)
+                return
+            if not adlar:
+                messagebox.showinfo(
+                    "Model bulunamadı",
+                    "Sağlayıcı boş liste döndürdü; model adını elle yazın.",
+                    parent=dlg)
+                return
+            sec = ctk.CTkToplevel(dlg)
+            sec.title("Model seç  (%d)" % len(adlar))
+            sec.geometry("460x520")
+            sec.configure(fg_color=BG)
+            sec.transient(dlg)
+            filtre_var = ctk.StringVar()
+            ctk.CTkEntry(
+                sec, textvariable=filtre_var, height=34, fg_color=CARD,
+                border_color=BORDER, text_color=FG,
+                placeholder_text="Süz: gemma, flash, mini…").pack(
+                    fill="x", padx=16, pady=(16, 8))
+            liste = ctk.CTkScrollableFrame(sec, fg_color=PANEL,
+                                           corner_radius=10)
+            liste.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+
+            def _sec(ad):
+                model_var.set(ad)
+                sec.destroy()
+
+            def _doldur(*_args):
+                for cocuk in list(liste.winfo_children()):
+                    try:
+                        cocuk.destroy()
+                    except Exception:
+                        pass
+                suz = filtre_var.get().strip().casefold()
+                gosterilen = [a for a in adlar if suz in a.casefold()]
+                for ad in gosterilen[:400]:
+                    ctk.CTkButton(
+                        liste, text=ad, anchor="w", height=28, fg_color=CARD,
+                        hover_color=BORDER, text_color=FG,
+                        font=ctk.CTkFont("Consolas", 10),
+                        command=lambda a=ad: _sec(a)).pack(
+                            fill="x", padx=8, pady=2)
+
+            filtre_var.trace_add("write", _doldur)
+            _doldur()
+            sec.bind("<Escape>", lambda _e: sec.destroy())
+
+        ctk.CTkButton(
+            form, text="Modelleri getir", height=30, fg_color=CARD,
+            hover_color=BORDER, font=ctk.CTkFont("Segoe UI", 11),
+            command=_modelleri_getir).grid(
+                row=10, column=0, sticky="w", padx=18, pady=(0, 12))
 
         def save_profile():
             name = name_var.get().strip()
@@ -32942,10 +33083,20 @@ class App(ctk.CTk):
                 messagebox.showwarning("Sağlayıcı ile adres uyuşmuyor",
                                        mismatch, parent=dlg)
                 return
-            if not profile_id and not key:
+            # Yerel sağlayıcıda (Ollama, LM Studio) anahtar YOKTUR; zorunlu
+            # tutmak kullanıcıyı uydurma bir değer yazmaya iterdi.
+            yerel = False
+            try:
+                import saglayicilar as _sg
+                yerel = _sg.yerel_mi(base_url)
+            except Exception:
+                yerel = False
+            if not profile_id and not key and not yerel:
                 messagebox.showwarning(
                     "Eksik bilgi", "Yeni profil için API anahtarı girin.", parent=dlg)
                 return
+            if yerel and not key:
+                key = "yerel"
             pid = profile_id or uuid.uuid4().hex
             if (provider == "anthropic"
                     and self._api_key_assignments.get("main") == pid):

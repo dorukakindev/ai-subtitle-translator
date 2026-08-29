@@ -73,9 +73,29 @@ Program ilk açılışta anahtar ister. Anahtarlar **ayar dosyasına yazılmaz**
 Windows Kimlik Bilgisi Yöneticisi'nde (`keyring`) saklanır. Kimlik deposuna
 erişilemezse şifrelenmiş bir yedek dosya kullanılır.
 
-Bir OpenAI anahtarı yeterlidir. İsteğe bağlı olarak ana çeviriyi OpenAI uyumlu
-üçüncü taraf bir adrese yönlendirebilirsiniz; o alanlar gerçek OpenAI anahtarı
-alanından tamamen ayrıdır ve onu bozamaz.
+### Sağlayıcı seçimi
+
+OpenAI zorunlu değil. **API Anahtarları → Yeni Profil** penceresindeki *Hazır
+sağlayıcı* listesinden seçtiğinizde adres kendiliğinden dolar:
+
+**Google AI Studio** (Gemini Flash, Gemma) · **OpenRouter** (tek anahtarla
+yüzlerce model, `:free` sürümler dahil) · **Groq** · **DeepSeek** · **Mistral**
+· **xAI** · **Together** · **Cerebras** · **Fireworks** · **Nebius** ·
+**Anthropic** · ya da **Ollama / LM Studio** ile modeli kendi bilgisayarınızda
+çalıştırın (ücretsiz, internet gerekmez, veri dışarı çıkmaz).
+
+Model adı koda gömülü değildir: **Modelleri getir** düğmesi sağlayıcının kendi
+listesini çeker, süzüp seçersiniz. Sağlayıcılar model çıkarıp kaldırdığı için
+gömülü bir liste birkaç ay sonra yanlış olurdu.
+
+Her profil ayrı bir **role** atanabilir — ana çeviri, yedek anahtar, yardımcı
+analiz, Critic, Polish, QC. Yani çeviriyi Gemini Flash'a, denetimi GPT'ye
+verebilirsiniz.
+
+Yalnız bir uyarı: **Toplu (Batch) mod yalnız resmi OpenAI'de çalışır**; gerçek
+Batch API'sini başka sağlayıcı sunmuyor.
+
+Anahtarlar hangi sağlayıcıya ait olursa olsun ayar dosyasına yazılmaz.
 
 ---
 

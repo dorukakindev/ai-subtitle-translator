@@ -72,9 +72,29 @@ Keys are **never written to the settings file**. They live in the Windows
 Credential Manager via `keyring`; if that is unavailable the program falls back
 to an obfuscated local file.
 
-One OpenAI key is enough. The main translation can optionally be routed through
-a third-party OpenAI-compatible endpoint; those fields are entirely separate
-from the real OpenAI key field and cannot corrupt it.
+### Choosing a provider
+
+OpenAI is not required. Pick from the *provider preset* list when creating a key
+profile and the endpoint fills itself in:
+
+**Google AI Studio** (Gemini Flash, Gemma) · **OpenRouter** (hundreds of models
+on one key, including `:free` variants) · **Groq** · **DeepSeek** · **Mistral**
+· **xAI** · **Together** · **Cerebras** · **Fireworks** · **Nebius** ·
+**Anthropic** · or run the model on your own machine through **Ollama** or
+**LM Studio** (free, no internet, nothing leaves the computer).
+
+Model names are not baked into the code. A **fetch models** button asks the
+provider for its own list, which you filter and pick from — a hardcoded list
+would be wrong within months.
+
+Each profile is assigned to a **role**: main translation, backup key, analysis,
+critic, polish, QC. So the translation can run on Gemini Flash while the review
+passes run on something else.
+
+One caveat: **batch mode only works on official OpenAI** — no other provider
+offers the real Batch API.
+
+Keys are never written to the settings file, whichever provider they belong to.
 
 ---
 

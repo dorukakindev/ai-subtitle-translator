@@ -128,8 +128,14 @@ HELPER_MODEL_OPTIONS = [
     "GLM-5.2 (OpenCode Go)",
     "Qwen3.7 Max (OpenCode Go)",
     "DeepSeek V4 Flash",
+    "Gemini 3.7 Flash",
+    "Gemini 3.6 Flash",
     "Gemini 3.5 Flash",
+    "Gemini 3.5 Flash Lite",
     "Gemini 2.5 Flash",
+    "Gemma 4 31B",
+    "Gemma 4 26B",
+    "Gemma 3 27B",
     "Bedrock Claude 4.6 Sonnet",
     "Bedrock Claude 3.5 Sonnet",
     "Bedrock Claude 3 Haiku",
@@ -140,6 +146,15 @@ HELPER_MODEL_OPTIONS = [
 ]
 
 _ALIASES = {
+    "gemma": "Gemma 4 31B",
+    "gemma-4": "Gemma 4 31B",
+    "gemma 4": "Gemma 4 31B",
+    "gemma-4-31b-it": "Gemma 4 31B",
+    "gemma-4-26b-a4b-it": "Gemma 4 26B",
+    "gemma-3-27b-it": "Gemma 3 27B",
+    "gemini-3.7-flash": "Gemini 3.7 Flash",
+    "gemini-3.6-flash": "Gemini 3.6 Flash",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
     "deepseek v4 flash": "DeepSeek V4 Flash",
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "deepseek_v4_flash": "DeepSeek V4 Flash",
@@ -240,6 +255,47 @@ _CONFIGS = {
         label="Gemini 2.5 Flash",
         provider="openai",
         model="gemini-2.5-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    # Google AI Studio uzerinden. Model adlari OpenRouter'in canli
+    # katalogundan dogrulandi; Google'in kendi ucunda saglayici on eki
+    # ("google/") KULLANILMAZ.
+    "Gemini 3.7 Flash": HelperModelConfig(
+        label="Gemini 3.7 Flash",
+        provider="openai",
+        model="gemini-3.7-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    "Gemini 3.6 Flash": HelperModelConfig(
+        label="Gemini 3.6 Flash",
+        provider="openai",
+        model="gemini-3.6-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    "Gemini 3.5 Flash Lite": HelperModelConfig(
+        label="Gemini 3.5 Flash Lite",
+        provider="openai",
+        model="gemini-3.5-flash-lite",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    # Gemma acik modellerdir; ayni anahtarla cagrilir. Yerel calistirmak
+    # isteyen Ollama profili kurabilir (bkz. saglayicilar.py).
+    "Gemma 4 31B": HelperModelConfig(
+        label="Gemma 4 31B",
+        provider="openai",
+        model="gemma-4-31b-it",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    "Gemma 4 26B": HelperModelConfig(
+        label="Gemma 4 26B",
+        provider="openai",
+        model="gemma-4-26b-a4b-it",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    ),
+    "Gemma 3 27B": HelperModelConfig(
+        label="Gemma 3 27B",
+        provider="openai",
+        model="gemma-3-27b-it",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
     ),
     "gpt-5.4-mini": HelperModelConfig(
