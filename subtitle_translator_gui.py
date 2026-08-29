@@ -23677,12 +23677,15 @@ class App(ctk.CTk):
             fr = ctk.CTkFrame(sb, fg_color="transparent")
             fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(16, 5))
             fr.grid_columnconfigure(1, weight=1)
+            # Uzun kenar çubuğunda TEK yön bulma işareti bunlar. 10px gri
+            # başlık, alanların 12px etiketlerinden daha SÖNÜKTÜ; başlık
+            # etiketten baskın olmalı ki bölümler tarayarak bulunabilsin.
             ctk.CTkFrame(
-                fr, width=18, height=2, corner_radius=1, fg_color=ACCENT,
-            ).grid(row=0, column=0, sticky="w", padx=(0, 7))
+                fr, width=3, height=13, corner_radius=2, fg_color=ACCENT,
+            ).grid(row=0, column=0, sticky="w", padx=(0, 9))
             ctk.CTkLabel(
-                fr, text=txt, font=ctk.CTkFont("Segoe UI", 10, "bold"),
-                text_color=FG2,
+                fr, text=txt, font=ctk.CTkFont("Segoe UI", 11, "bold"),
+                text_color=FG,
             ).grid(row=0, column=1, sticky="w")
             r += 1
 
@@ -25009,6 +25012,7 @@ class App(ctk.CTk):
         sf.grid(row=0, column=0, sticky="ew", pady=(0,10))
         self._stats_frame = sf
         self._stat_cards = []
+        self._stat_value_labels = {}
 
         stats = [
             ("DOSYA",       "stat_files",  FG),
@@ -25020,28 +25024,34 @@ class App(ctk.CTk):
         ]
         sf.grid_columnconfigure((0,1,2,3,4,5), weight=1)
         for i, (name, attr, color) in enumerate(stats):
-            c = ctk.CTkFrame(
-                sf, fg_color=CARD, border_color=BORDER,
-                border_width=1, corner_radius=8)
+            # Kenarlık YOK: dış panelin kendi çerçevesi zaten var, altı kartı
+            # ayrıca çerçevelemek çift kutu üretiyordu. Kartı zemin farkı
+            # (CARD vs PANEL) ve üstündeki renk çizgisi ayırıyor.
+            c = ctk.CTkFrame(sf, fg_color=CARD, corner_radius=8)
             c.grid(
                 row=0, column=i,
                 padx=(8 if i == 0 else 4, 8 if i == 5 else 4),
-                pady=9, sticky="nsew")
+                pady=6, sticky="nsew")
             c.grid_columnconfigure(0, weight=1)
             self._stat_cards.append(c)
 
+            # İnce renk çizgisi kartın kimliği; kalın olunca sayıyla
+            # yarışıyordu. Sayı kahraman, çizgi yalnız ayırt edici.
             ctk.CTkFrame(
-                c, height=3, corner_radius=2, fg_color=color,
-            ).pack(fill="x", padx=10, pady=(7, 0))
+                c, height=2, corner_radius=1, fg_color=color,
+            ).pack(fill="x", padx=12, pady=(7, 0))
 
             # Store reference for hover effects
             setattr(self, f"{attr}_frame", c)
 
             # Hover effect bindings
+            # Hover YALNIZ zemini değiştirir. Accent çerçeve altı kartta
+            # birden yanıp sönünce gerçek bir durum bildirimi sanılıyordu;
+            # accent bu arayüzde "etkin/seçili" demek.
             def on_hover_enter(e, frame=c, attr=attr):
-                frame.configure(fg_color=CARD_HOVER, border_color=ACCENT)
+                frame.configure(fg_color=CARD_HOVER)
             def on_hover_leave(e, frame=c):
-                frame.configure(fg_color=CARD, border_color=BORDER)
+                frame.configure(fg_color=CARD)
 
             c.bind("<Enter>", on_hover_enter)
             c.bind("<Leave>", on_hover_leave)
@@ -25050,12 +25060,16 @@ class App(ctk.CTk):
             setattr(self, attr+"_var", var)
 
             lbl = ctk.CTkLabel(c, textvariable=var,
-                             font=ctk.CTkFont("Segoe UI", 22, "bold"),
-                             text_color=color)
-            lbl.pack(pady=(5,0))
+                             font=ctk.CTkFont("Segoe UI", 24, "bold"),
+                             text_color=FG_DIS)
+            lbl.pack(pady=(2, 0))
 
             # Store label ref for animation
             setattr(self, f"{attr}_lbl", lbl)
+            # Boşta değer `—`; onu kendi renginde göstermek yanıltıcıydı —
+            # kırmızı bir tire "sıfır hata" mı "veri yok" mu belli olmuyordu.
+            # Sayı gelince `_set_stat` etiketi kendi rengine çevirir.
+            self._stat_value_labels[id(var)] = (lbl, color)
 
             if attr == "stat_tokens":
                 self.stat_tokens_sub_var = ctk.StringVar(value=name)
@@ -25071,8 +25085,8 @@ class App(ctk.CTk):
                 self._token_sparkline_points = []
             else:
                 ctk.CTkLabel(c, text=name,
-                             font=ctk.CTkFont("Consolas", 9, "bold"),
-                             text_color=FG2).pack(pady=(1,10))
+                             font=ctk.CTkFont("Consolas", 10, "bold"),
+                             text_color=FG2).pack(pady=(2, 9))
 
         try:
             self.after_idle(self._refresh_dashboard_layout)
@@ -25107,10 +25121,13 @@ class App(ctk.CTk):
         self._phase_activity_lbl.grid(
             row=0, column=2, sticky="e", padx=(8, 4))
 
+        # Uzun bir koşuda saatlerce izlenen TEK sayı budur; 10px gri hap
+        # olarak durması ona verilen ağırlığa uymuyordu. Kart içindeki en
+        # büyük ikinci sayı olması yeter — istatistik şeridiyle yarışmaz.
         self._progress_pct_lbl = ctk.CTkLabel(
-            pb_top, text="0%", width=48, height=24, corner_radius=6,
-            fg_color=CARD, font=ctk.CTkFont("Consolas", 10, "bold"),
-            text_color=FG2)
+            pb_top, text="0%", width=62, height=26, corner_radius=6,
+            fg_color=CARD, font=ctk.CTkFont("Consolas", 14, "bold"),
+            text_color=FG)
         self._progress_pct_lbl.grid(
             row=0, column=3, sticky="e", padx=(4, 6))
 
@@ -28741,6 +28758,13 @@ class App(ctk.CTk):
         def _upd(v=value):
             try:
                 var.set(v)
+            except Exception:
+                pass
+            try:
+                lbl, color = self._stat_value_labels.get(id(var), (None, None))
+                if lbl is not None:
+                    bos = not str(v).strip() or str(v).strip() in ("—", "-")
+                    lbl.configure(text_color=FG_DIS if bos else color)
             except Exception:
                 pass
         _post_ui(self, _upd)
