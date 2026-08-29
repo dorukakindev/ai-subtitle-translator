@@ -6916,6 +6916,13 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     stats["duplicate_pairs"] = duplicate_pairs
     stats["duplicates"] = len({cue_id for pair in duplicate_pairs
                                for cue_id in pair})
+    # ÇİFTİN İKİ ÜYESİ de adres olur: hangisinin bozuk olduğu önceden
+    # bilinmez. Ölçümde #198'in kaynağı "Is there something" iken teslimi
+    # #206'nın içeriğiydi — yani bazen İLKİ bozuk. Kimlikler kayıtta
+    # olmadığı için bu sınıf rapora yalnız sayı olarak giriyordu.
+    stats["duplicate_translation_ids"] = sorted(
+        {str(cue_id) for pair in duplicate_pairs for cue_id in pair},
+        key=lambda v: (len(v), v))
     src_map = _delivery_source_map(blocks, source_cues) if source_cues else {}
     # Kaynağı BAŞTAN SONA tek bir biçim etiketiyle sarılıyken teslimde hiç
     # etiket taşımayan cue'lar. 202 gerçek teslimde 1.111 böyle cue bulundu
@@ -6957,11 +6964,29 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     _stray_e_ids = _line_initial_stray_e_ids(blocks)
     stats["stray_line_initial_e_ids"] = _stray_e_ids
     stats["stray_line_initial_e"] = len(_stray_e_ids)
-    stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
+    # Cue KİMLİĞİ de saklanır. Eskiden yalnız `len()` alınıyordu; sayı rapora
+    # giriyor ama `bulgular.jsonl`'e giremiyordu, yani bulgu adreslenemiyordu.
+    # Kodun kendi yorumu (yukarıda) bunu KRİTİK sınıflar için düzeltmişti;
+    # bu ikisi atlanmış. Ölçüm: 267 teslim bloğunda sayılan 27.927 bulgunun
+    # 26.906'sı satır yapısı (kullanıcı tercihi gereği düzeltme gerekçesi
+    # değil); kalan 1.021 gerçek sinyalin 746'sı (%73) tam da bu iki sınıftı
+    # ve hiçbir cue'ya bağlanamıyordu.
+    _midword_ids = _midword_space_ids(blocks, src_map)
+    stats["midword_space_ids"] = [str(v) for v in _midword_ids]
+    stats["midword_space"] = len(_midword_ids)
     cue_fill = _cue_fill_imbalances(blocks, src_map)
     stats["cue_fill"] = len(cue_fill)
     stats["cue_fill_details"] = cue_fill
-    stats["partial_echo"] = len(_partial_echo_ids(blocks, src_map))
+    # `_partial_echo_ids` tekil kimlik değil BİTİŞİK cue ÇİFTİ
+    # döndürür ((idx, idx+1)). Adres olarak İLK kimlik yazılır: "a+b" gibi
+    # bileşik bir değer `bulgular.jsonl` üreticisinde `output_by_id`'ye
+    # çözülmez, satır yine adressiz kalırdı. Komşusu zaten sonraki cue'dur.
+    _echo_pairs = _partial_echo_ids(blocks, src_map)
+    stats["partial_echo_ids"] = [
+        str(pair[0]) if isinstance(pair, (tuple, list)) and pair
+        else str(pair)
+        for pair in _echo_pairs]
+    stats["partial_echo"] = len(_echo_pairs)
     _predicate_ids = _missing_predicate_ids(blocks, src_map)
     stats["missing_predicate_ids"] = [str(v) for v in _predicate_ids]
     stats["missing_predicate"] = len(_predicate_ids)
@@ -20302,6 +20327,22 @@ _FINDING_CLASSES = {
     "merged_into_neighbour_ids": ("bilgi", "İçerik komşu cue'ya birleşmiş olabilir", "Önceki cue'yu oku; anlam oradaysa bölüştür, değilse çevir."),
     "stray_line_initial_e_ids": ("kesin", "Satır başında tek başına 'e'", "Bağlama göre 've' yap, sil ya da sonraki sözcüğe ekle."),
     "line_parity_mismatch_ids": ("bilgi", "Satır sayısı kaynaktan farklı", "Kayıt için; geriye dönük onarım istenmiyor."),
+    # Güven dereceleri ÖLÇÜLEREK seçildi, tahminle değil:
+    #   partial_echo  447 bulgu / 222 dosya (%63) — örneklenen 7 bulgunun
+    #                 yalnız 2'si gerçek; kalanı meşru tekrar (`Hare Krishna`,
+    #                 şarkı nakaratı, cümle devamı) -> ~%30 kesinlik.
+    #   midword_space  10 bulgu /   6 dosya — 7 örneğin 3'ü gerçek
+    #                 (`Hiç bir`->`Hiçbir`), kalanı meşru (`Dır dır`,
+    #                 `boş ver`, `200 milyon`) -> ~%43 kesinlik.
+    # İkisini de `kesin` yapmak teslim kapısını sel altında bırakırdı.
+    "partial_echo_ids": ("bilgi", "Komşu cue'da kısmi yankı", "İki cue'yu birlikte oku; tekrar meşru olabilir."),
+    "midword_space_ids": ("bilgi", "Kelime ortası boşluk", "Bitişik yazılmalı mı bak (`Hiç bir`->`Hiçbir`)."),
+    # 359 teslimde 38 çift / 23 dosya — düşük hacim, YÜKSEK değer:
+    # örneklerde gerçek içerik kayması var (#198 kaynağı "Is there
+    # something", teslimi #206'nın cümlesi). Kaynakları farklıyken teslim
+    # aynıysa biri kesin yanlış; ama tıpkı çeviri meşru da olabilir
+    # (Latince/İngilizce aynı dizeyi tekrarlayan kaynak) -> "muhtemel".
+    "duplicate_translation_ids": ("muhtemel", "Yakın cue'larda çeviri tekrarı", "İki cue'nun KAYNAĞINI karşılaştır; farklıysa birini yeniden çevir."),
     "invalid_timestamp_ids": ("kesin", "Geçersiz zaman damgası", "Zaman damgasını düzelt."),
     "reversed_timestamp_ids": ("kesin", "Ters zaman damgası", "Başlangıç bitişten sonra; düzelt."),
     "duplicate_cue_ids": ("kesin", "Yinelenen cue kimliği", "Kimliği tekilleştir."),
