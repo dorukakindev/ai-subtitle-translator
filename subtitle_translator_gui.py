@@ -5398,6 +5398,18 @@ def _positional_credit_ids(rows) -> set:
 
 
 _CUE_ID_LEAK_LINE_RE = re.compile(r"^\s*\d{1,4}\s*$")
+# Numara METNİN İÇİNDE, iki nokta ve boşlukla: `223: biz hiçbir zaman`,
+# `bu 1351: benim başıma gelse`. Chunk sınırında modelin çıktısına sızan
+# sonraki cue numarası bu biçimde geliyor ve "satırın tamamı sayı" ya da
+# "sonda sayı" kalıplarının ikisine de takılmıyordu (teslim denetimi
+# 20260829, 7 cue). Saat (`12:30`) eşleşmesin diye iki noktadan sonra
+# BOŞLUK şart; ayrıca aşağıdaki ±tolerance kapısı da geçerli kalır.
+#
+# EN AZ İKİ HANE: arşiv ölçümünde tek hane numaralı KONUŞMACI ETİKETLERİNİ
+# yakalıyordu — `MAN 1: Oh man.` (#3), `ADAM 2: Tam bir hillbilly cenneti`
+# (#5); küçük numaralı cue'larda etiketin sayısı tolerans penceresine
+# düşüyor. Gerçek sızıntıların hepsi ≥2 hane (223, 186, 389, 1340, 1351).
+_CUE_ID_LEAK_INLINE_RE = re.compile(r"(?<![\d:,.])(\d{2,4}):\s")
 
 
 # Çevrilmeden kalan İngilizce duraksama/onaylama sözcükleri. Sınıra tırnak
@@ -5456,6 +5468,131 @@ def _inconsistent_repeat_ids(blocks, src_map=None) -> list:
         if len({hedef.casefold() for _i, hedef in uyeler if hedef}) > 1:
             flagged.extend(i for i, _h in uyeler)
     return sorted(flagged, key=lambda v: (len(v), v))
+
+
+_REPEAT_ALIGN_SENTENCE_END_RE = re.compile(r"[.!?…]\s*[\"'\)\]]?\s*$")
+_REPEAT_ALIGN_STEM_CHARS = 5
+_REPEAT_ALIGN_MIN_STEM_OVERLAP = 0.8
+
+
+def _repeat_alignment_plan(blocks, src_map=None) -> dict:
+    """Aynı kaynak dizenin SAVRULMUŞ çevirilerini tek kanona bağlar.
+
+    `_inconsistent_repeat_ids` bu tutarsızlığı zaten raporluyor; burada
+    model çağrısı olmadan deterministik düzeltme planı üretilir. Gruplama
+    dedektörle BİREBİR aynı (aynı normalizasyon, aynı 30 karakter eşiği) —
+    karar tek yerde kalsın diye.
+
+    Kanon: en sık geçen çeviri; eşitlikte İLK geçiş.
+
+    Beş guard'ın hepsi gerçek arşivde (349 kaynak/teslim çifti) ölçülerek
+    kondu. Guard'sız kural 250'den fazla cue'yu değiştiriyordu ve DOĞRU
+    çeviriyi bozuyordu:
+
+      GUARD 1 eksik işaretli üye  — yarım çeviriyi kanon yapmasın
+      GUARD 2 italik/satır sayısı — biçimi zorlamasın
+      GUARD 3 uzunluk oranı <0.7  — `bulunmamıştı.` gibi cümle KUYRUĞU
+                                    tam cümleyle ezilmesin
+      GUARD 5 kaynak tam cümle    — iki cue'ya yayılan cümlede ek
+                                    değişikliği komşunun dilbilgisini bozmasın
+      GUARD 4 gövde örtüşmesi     — asıl hasar buydu:
+          kaynak `...get free with your petrol.`
+          doğru  `benzinin yanında bedava alacağın`
+          sık    `petrol alırken bedavaya alacağın`  (YANLIŞ ama çoğunluk)
+        Sıklık doğruluk değildir. Ayrışma yalnız EK/BÜYÜK-KÜÇÜK HARF
+        düzeyindeyse hizalanır; farklı SÖZCÜK seçimi anlam farkıdır,
+        dokunulmaz.
+
+    Beş guard'la arşivde 30 cue / 19 dosya değişiyor ve hepsi aynı repliğin
+    savrulmuş hâli (`izledin mi`->`izlediniz mi`, `dikkatin`->`dikkatiniz`,
+    `inanır`->`inanıyor`). Döner: {cue_id: yeni_metin}.
+    """
+    if not src_map:
+        return {}
+
+    def _norm(value):
+        return re.sub(r"\s+", " ",
+                      _ANY_MARKUP_RE.sub("", str(value or ""))).strip()
+
+    def _stems(value):
+        return Counter(word[:_REPEAT_ALIGN_STEM_CHARS] for word in
+                       re.findall(r"\w+", _norm(value).casefold(), re.UNICODE))
+
+    gruplar = {}
+    for idx, _ts, text in blocks or []:
+        source = _norm(src_map.get(str(idx), "")).casefold()
+        if len(source) < 30:
+            continue
+        gruplar.setdefault(source, []).append((str(idx), str(text or "")))
+
+    plan = {}
+    for source, uyeler in gruplar.items():
+        uyeler = [(i, t) for i, t in uyeler if _norm(t)]
+        if len(uyeler) < 2:
+            continue
+        anahtarlar = {_norm(t).casefold() for _i, t in uyeler}
+        if len(anahtarlar) < 2:
+            continue
+        if any("[ÇEVİRİ EKSİK]" in t or t.startswith("[HATA")
+               for _i, t in uyeler):
+            continue                                        # GUARD 1
+        if len({("<i>" in t, t.count("\n")) for _i, t in uyeler}) > 1:
+            continue                                        # GUARD 2
+        uzunluklar = [len(_norm(t)) for _i, t in uyeler]
+        if min(uzunluklar) < 0.7 * max(uzunluklar):
+            continue                                        # GUARD 3
+        if not _REPEAT_ALIGN_SENTENCE_END_RE.search(source.strip()):
+            continue                                        # GUARD 5
+        temel = _stems(uyeler[0][1])
+        if any(sum((temel & _stems(t)).values())
+               / max(sum(temel.values()), sum(_stems(t).values()), 1)
+               < _REPEAT_ALIGN_MIN_STEM_OVERLAP
+               for _i, t in uyeler[1:]):
+            continue                                        # GUARD 4
+        sayac = Counter(_norm(t).casefold() for _i, t in uyeler)
+        en_cok = max(sayac.values())
+        adaylar = [k for k, v in sayac.items() if v == en_cok]
+        kanon_key = (adaylar[0] if len(adaylar) == 1
+                     else _norm(uyeler[0][1]).casefold())
+        kanon = next(t for _i, t in uyeler
+                     if _norm(t).casefold() == kanon_key)
+        for idx, text in uyeler:
+            if _norm(text).casefold() != kanon_key:
+                plan[idx] = kanon
+    return plan
+
+
+def _src_map_from_cues(cues) -> dict:
+    """{cue_id: kaynak metin} — cue'lar nesne de olabilir tuple da."""
+    out = {}
+    for cue in cues or []:
+        try:
+            if isinstance(cue, (list, tuple)):
+                idx, text = cue[0], cue[-1]
+            else:
+                idx, text = getattr(cue, "index", None), getattr(cue, "text", "")
+            if idx is None:
+                continue
+            out[str(idx)] = _clean_src(str(text or ""))
+        except Exception:
+            continue
+    return out
+
+
+def _apply_repeat_alignment(blocks, plan) -> tuple:
+    """Planı bloklara uygular; (yeni_bloklar, değişen_sayısı) döner."""
+    if not plan:
+        return list(blocks or []), 0
+    out = []
+    changed = 0
+    for idx, ts, text in blocks or []:
+        yeni = plan.get(str(idx))
+        if yeni is not None and str(yeni) != str(text):
+            out.append((idx, ts, yeni))
+            changed += 1
+        else:
+            out.append((idx, ts, text))
+    return out, changed
 
 
 _ENGLISH_FILLER_RE = re.compile(
@@ -5540,6 +5677,63 @@ def _repetition_collapse_ids(blocks, src_map=None) -> list:
     return flagged
 
 
+_LINE_INITIAL_STRAY_E_RE = re.compile(r"\n\s*e\s")
+
+
+def _line_initial_stray_e_ids(blocks) -> list:
+    """Satır başında tek başına küçük `e` kalmış cue'lar.
+
+    Teslim denetimi 20260829, madde 3: satır başındaki `ve`nin `v`si
+    düşüyor (`Seninle konuşacağım\\n e ve beni hiçbir şey durduramayacak`).
+    Arşiv ölçümünde sınıf briefte yazandan GENİŞ çıktı — bazı bulgularda
+    doğru düzeltme `ve` değil, `e`yi tümden silmek ya da sonraki sözcüğe
+    yapıştırmak:
+        `güzel\\n e tuhaf`            -> `ve`
+        `hayal\\n e edebiliyor musun` -> fazladan `e`, silinmeli
+        `matematikçilerin\\n e linde` -> `ellerinde`, bölünmüş sözcük
+    Bu yüzden yalnız İŞARETLENİR; tek tip otomatik düzeltme yanlış olurdu.
+
+    Ölçüm: 2.911 dosya / 2.415.378 cue'da 429 tekil bulgu, meşru kullanım
+    yok (`E,` ünlemi büyük harfli, Euler `e`si de çıkmadı — matematik
+    dosyasındaki bulgu da gerçek kusurdu). Türkçe teslimlerin %3,6'sı
+    (496'da 18) etkileniyor, çoğu tek cue.
+    """
+    hits = []
+    for idx, _ts, text in blocks or []:
+        value = str(text or "")
+        if _LINE_INITIAL_STRAY_E_RE.search(value):
+            hits.append(str(idx))
+    return hits
+
+
+def _line_parity_mismatch_ids(source_rows, output_dialogue) -> list:
+    """Satır sayısı KAYNAKTAN farklı olan teslim cue'ları.
+
+    Kalıcı tercih "satır yapısı kaynaktaki gibi kalır" olduğu için bu bir
+    çıktı sözleşmesi ihlali; ölçümü bedava (`\\n` sayısı). Teslim denetimi
+    20260829: 23 filmde 2.006 cue (%6,7) — 1.643'ü iki satırı bire indirmiş,
+    363'ü tek satırı ikiye bölmüş.
+
+    Yalnız SAYAÇ: `bilgi` düzeyinde kayda geçer, dosyayı tamamlanmamış
+    saymaz ve geriye dönük onarım YAPILMAZ (kullanıcı tercihi). Eşleme cue
+    numarasıyla değil ZAMAN DAMGASIYLA yapılır, çünkü teslim yeniden
+    numaralanabiliyor.
+    """
+    by_ts = {}
+    for _idx, ts, text in (source_rows or []):
+        by_ts.setdefault(str(ts).strip(), str(text or ""))
+    hits = []
+    for idx, ts, text in (output_dialogue or []):
+        source_text = by_ts.get(str(ts).strip())
+        if source_text is None:
+            continue
+        if not source_text.strip() or not str(text or "").strip():
+            continue
+        if source_text.count("\n") != str(text or "").count("\n"):
+            hits.append(str(idx))
+    return hits
+
+
 def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
     """Metnine KENDİ cue numarasının komşusu sızmış cue'ları döner.
 
@@ -5564,6 +5758,7 @@ def _cue_id_leak_ids(blocks, tolerance: int = 3) -> list:
         tail = re.search(r"(?<![\d,.])(\d{1,4})\s*$", value.strip())
         if tail:
             candidates.append(tail.group(1))
+        candidates.extend(_CUE_ID_LEAK_INLINE_RE.findall(value))
         for candidate in candidates:
             try:
                 number = int(candidate)
@@ -6759,6 +6954,9 @@ def _scan_delivery_blocks(blocks, source_cues, log_fn=None,
     _repeat_ids = _inconsistent_repeat_ids(blocks, src_map)
     stats["inconsistent_repeat_ids"] = _repeat_ids
     stats["inconsistent_repeat"] = len(_repeat_ids)
+    _stray_e_ids = _line_initial_stray_e_ids(blocks)
+    stats["stray_line_initial_e_ids"] = _stray_e_ids
+    stats["stray_line_initial_e"] = len(_stray_e_ids)
     stats["midword_space"] = len(_midword_space_ids(blocks, src_map))
     cue_fill = _cue_fill_imbalances(blocks, src_map)
     stats["cue_fill"] = len(cue_fill)
@@ -19270,6 +19468,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         source_rows, output_dialogue)
     for output_id in merged_into_neighbour_ids:
         _add_review_detail("merged_into_neighbour", output_id=output_id)
+    line_parity_mismatch_ids = _line_parity_mismatch_ids(
+        source_rows, output_dialogue)
+    for output_id in line_parity_mismatch_ids:
+        _add_review_detail("line_parity_mismatch", output_id=output_id)
     for output_id, _ts, text in output_dialogue:
         if str(text or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(text or ""):
             _add_review_detail("unresolved_marker", output_id=output_id)
@@ -19351,6 +19553,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "inherited_out_of_order_ids": inherited_out_of_order_ids,
         "signature_overlap_ids": signature_overlap_ids,
         "merged_into_neighbour_ids": merged_into_neighbour_ids,
+        "line_parity_mismatch_ids": line_parity_mismatch_ids,
         "duplicate_cue_ids": duplicate_cue_ids,
         "unnumbered_cue_lines": unnumbered_cue_lines,
         "non_monotonic_cue_ids": non_monotonic_cue_ids,
@@ -20085,6 +20288,8 @@ def _merged_into_neighbour_ids(source_rows, output_dialogue) -> list:
 
 _FINDING_CLASSES = {
     "merged_into_neighbour_ids": ("bilgi", "İçerik komşu cue'ya birleşmiş olabilir", "Önceki cue'yu oku; anlam oradaysa bölüştür, değilse çevir."),
+    "stray_line_initial_e_ids": ("kesin", "Satır başında tek başına 'e'", "Bağlama göre 've' yap, sil ya da sonraki sözcüğe ekle."),
+    "line_parity_mismatch_ids": ("bilgi", "Satır sayısı kaynaktan farklı", "Kayıt için; geriye dönük onarım istenmiyor."),
     "invalid_timestamp_ids": ("kesin", "Geçersiz zaman damgası", "Zaman damgasını düzelt."),
     "reversed_timestamp_ids": ("kesin", "Ters zaman damgası", "Başlangıç bitişten sonra; düzelt."),
     "duplicate_cue_ids": ("kesin", "Yinelenen cue kimliği", "Kimliği tekilleştir."),
@@ -39240,6 +39445,37 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _maybe_align_repeats(self, blocks, src_map, filepath=""):
+        """Tekrar hizalaması — dört akışta da aynı yerden.
+
+        Rapor-yalnız modda ADAY BULUR ama yazmaz; diğer geçişlerle aynı
+        kapıyı kullanır. Planın guard'ları için bkz. `_repeat_alignment_plan`.
+        Döner: (bloklar, değişen_sayısı, aday_sayısı).
+        """
+        try:
+            plan = _repeat_alignment_plan(blocks, src_map)
+        except Exception as exc:
+            self._log(f"Tekrar hizalaması atlandı: {exc}", "warn")
+            return list(blocks or []), 0, 0
+        if not plan:
+            return list(blocks or []), 0, 0
+        rapor_yalniz = bool(App._snap_get(self, "quality_report_only", True))
+        ids = ", ".join(f"#{i}" for i in sorted(
+            plan, key=lambda v: int(v) if str(v).isdigit() else 0)[:12])
+        more = f", +{len(plan) - 12}" if len(plan) > 12 else ""
+        if rapor_yalniz:
+            self._log(
+                f"Tekrar hizalaması [yalnız rapor]: aynı kaynak dizenin "
+                f"savrulmuş {len(plan)} çevirisi bulundu ({ids}{more})",
+                "warn")
+            return list(blocks or []), 0, len(plan)
+        yeni, changed = _apply_repeat_alignment(blocks, plan)
+        if changed:
+            self._log(
+                f"Tekrar hizalaması: {changed} cue aynı repliğin kanonik "
+                f"çevirisine getirildi ({ids}{more})", "ok")
+        return yeni, changed, len(plan)
+
     def _commit_precontext_series_memory(self, fp: str, target_language: str = "tr",
                                          status_out: dict | None = None):
         if status_out is not None:
@@ -41205,6 +41441,12 @@ class App(ctk.CTk):
                 if _final_cons_fixes:
                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
 
+            _before_pass = list(sorted_blocks)
+            sorted_blocks, _repeat_fixes, _repeat_cands = App._maybe_align_repeats(
+                self, sorted_blocks, _src_map_from_cues(cues), filepath)
+            if _repeat_fixes:
+                _record_pass_change(_pass_trace, "Repeat-Align", _before_pass, sorted_blocks, _pass_history)
+
             # Kalite geçişi düzeltmeleri (critic + polish + native değişen satır)
             _pass_fix = sum(1 for b in sorted_blocks
                             if _pre_pass.get(str(b[0])) not in (None, b[2]))
@@ -43048,6 +43290,11 @@ class App(ctk.CTk):
                                 if _final_cons_fixes:
                                     _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp, _pass_history)
                             _before_pass = list(pp)
+                            pp, _repeat_fixes, _repeat_cands = App._maybe_align_repeats(
+                                self, pp, _src_map_from_cues(_orig_cues), output_path)
+                            if _repeat_fixes:
+                                _record_pass_change(_pass_trace, "Repeat-Align", _before_pass, pp, _pass_history)
+                            _before_pass = list(pp)
                             _condense_status = {}
                             pp = self._maybe_condense(
                                 pp,
@@ -43960,6 +44207,11 @@ class App(ctk.CTk):
                             "quality_report_only", True)), tgt_lang=_tgt_lang)
                     if _final_cons_fixes:
                         _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, sorted_blocks, _pass_history)
+                    _before_pass = list(sorted_blocks)
+                    sorted_blocks, _repeat_fixes, _repeat_cands = App._maybe_align_repeats(
+                        self, sorted_blocks, _src_map_from_cues(_src_cues), fp)
+                    if _repeat_fixes:
+                        _record_pass_change(_pass_trace, "Repeat-Align", _before_pass, sorted_blocks, _pass_history)
                 except Exception as e:
                     _pass_status["Post-processing"] = {
                         "status": "failed", "error": str(e)}
@@ -45566,6 +45818,11 @@ class App(ctk.CTk):
                                     "quality_report_only", True)), tgt_lang=tgt)
                             if _final_cons_fixes:
                                 _record_pass_change(_pass_trace, "Final-Consistency", _before_pass, pp_blocks, _pass_history)
+                        _before_pass = list(pp_blocks)
+                        pp_blocks, _repeat_fixes, _repeat_cands = App._maybe_align_repeats(
+                            self, pp_blocks, _src_map_from_cues(cues), filepath)
+                        if _repeat_fixes:
+                            _record_pass_change(_pass_trace, "Repeat-Align", _before_pass, pp_blocks, _pass_history)
                         _before_pass = list(pp_blocks)
                         if self.condense_var.get():
                             self._record_file_status(
