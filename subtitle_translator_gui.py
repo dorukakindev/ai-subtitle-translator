@@ -24115,7 +24115,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(ais_fr, text="AI Akıllı Segmentasyon",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Üstteki birleştirmenin AI'lı sürümü: yardımcı\nmodel cue'ları ANLAMCA gruplar, satırları\nöğe sınırından kırar. Zamanlama/okuma hızı\ndeterministik korunur; kelimeler değişmez.\nAçıksa hızlı birleştirmenin yerine geçer\n(hata/anahtar yoksa ona düşer). (gpt-5.4-mini)",
+        ctk.CTkLabel(sb, text="Üstteki birleştirmenin AI'lı sürümü: yardımcı\nmodel cue'ları ANLAMCA gruplar, satırları\nöğe sınırından kırar. Zamanlama/okuma hızı\ndeterministik korunur; kelimeler değişmez.\nAçıksa hızlı birleştirmenin yerine geçer\n(hata/anahtar yoksa ona düşer). (gpt-5.4-mini)\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak.",
                      font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,8)); r += 1
