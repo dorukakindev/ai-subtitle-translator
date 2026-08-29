@@ -316,5 +316,58 @@ class KarakterSeciminiTekYereBaglaTest(unittest.TestCase):
                              "ham kırpma geri geldi: %s" % desen)
 
 
+class GolgelenenTanimTest(unittest.TestCase):
+    """Aynı modülde aynı adla iki tanım: sonraki öncekini SESSİZCE ezer.
+
+    `_src_map_from_cues` iki kez tanımlıydı; Python son tanımı bağladığı
+    için ilki hiç çalışmıyordu ama okuyan onu gerçek uygulama sanıyordu.
+    İkisi tuple'ı farklı çözüyordu (`cue[-1]` ve `c[2]`).
+    """
+
+    def _modul_tanim_sayisi(self, dosya, ad):
+        import ast
+        import io as _io
+        with _io.open(dosya, encoding="utf-8-sig") as fh:
+            agac = ast.parse(fh.read())
+        return sum(1 for d in agac.body
+                   if isinstance(d, ast.FunctionDef) and d.name == ad)
+
+    def test_src_map_tek_tanim(self):
+        self.assertEqual(
+            self._modul_tanim_sayisi(
+                "subtitle_translator_gui.py", "_src_map_from_cues"), 1)
+
+    def test_hicbir_modulde_golgelenen_tanim_yok(self):
+        import ast
+        import collections
+        import io as _io
+        sorunlar = []
+        for dosya in ("subtitle_translator_gui.py", "hybrid_translate.py",
+                      "subtitle_formats.py", "sdh_cleaner.py",
+                      "helper_models.py", "kilavuz.py", "saglayicilar.py"):
+            with _io.open(dosya, encoding="utf-8-sig") as fh:
+                agac = ast.parse(fh.read())
+            sayim = collections.Counter(
+                d.name for d in agac.body
+                if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef)))
+            for ad, adet in sayim.items():
+                if adet > 1:
+                    sorunlar.append("%s: %s (%d kez)" % (dosya, ad, adet))
+        self.assertEqual(sorunlar, [], "; ".join(sorunlar))
+
+    def test_hayatta_kalan_tuple_ve_nesneyi_dogru_cozer(self):
+        class _Cue:
+            def __init__(self, index, text):
+                self.index = index
+                self.text = text
+        self.assertEqual(
+            gui._src_map_from_cues([_Cue(1, "hello")]), {"1": "hello"})
+        self.assertEqual(
+            gui._src_map_from_cues(
+                [("1", "00:00:01,000 --> 00:00:02,000", "hello")]),
+            {"1": "hello"})
+        self.assertEqual(gui._src_map_from_cues([]), {})
+
+
 if __name__ == "__main__":
     unittest.main()

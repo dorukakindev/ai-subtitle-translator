@@ -5581,23 +5581,6 @@ def _repeat_alignment_plan(blocks, src_map=None) -> dict:
     return plan
 
 
-def _src_map_from_cues(cues) -> dict:
-    """{cue_id: kaynak metin} — cue'lar nesne de olabilir tuple da."""
-    out = {}
-    for cue in cues or []:
-        try:
-            if isinstance(cue, (list, tuple)):
-                idx, text = cue[0], cue[-1]
-            else:
-                idx, text = getattr(cue, "index", None), getattr(cue, "text", "")
-            if idx is None:
-                continue
-            out[str(idx)] = _clean_src(str(text or ""))
-        except Exception:
-            continue
-    return out
-
-
 def _apply_repeat_alignment(blocks, plan) -> tuple:
     """Planı bloklara uygular; (yeni_bloklar, değişen_sayısı) döner."""
     if not plan:
@@ -10220,7 +10203,12 @@ def _raw_map_from_batch_content(content: str) -> dict:
 
 def _src_map_from_cues(cues) -> dict:
     """Cue listesi (obje veya (idx, ts, text) tuple) → {idx_str: temiz kaynak metin}.
-    Polish Pass'in 'en' alanı için kullanılır."""
+    Polish Pass'in 'en' alanı için kullanılır.
+
+    Bu adla İKİ tanım vardı (satır ~5584 ve burası). Python son tanımı
+    bağladığı için önceki HİÇ çalışmıyordu ama okuyan onu gerçek
+    uygulama sanıyordu. Ölü olan kaldırıldı; hayatta kalan zaten daha
+    doğrusuydu — tuple'ın yerleşik `.index` metodu tuzağını biliyor."""
     out = {}
     for c in cues or []:
         try:
