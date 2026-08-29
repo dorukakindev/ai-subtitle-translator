@@ -9402,7 +9402,20 @@ def _normalize_advanced_settings(values: dict) -> dict:
     return normalized
 
 
-def _advanced_settings_summary(values: dict) -> tuple[str, str]:
+def _advanced_settings_summary(values: dict,
+                               chain_ctx: bool | None = None) -> tuple[str, str]:
+    """Gelismis ayarlarin ozeti.
+
+    `chain_ctx` verilirse ve ACIKSA, "paralel isci" yazilmaz: zincirleme
+    baglam chunk'lari SIRALI isler (`for req in batch_reqs`), paralel dal
+    yalnizca zincir kapaliyken calisir. Ozet bunu soylemedigi surece
+    kullanici `max_workers`i buyutup hicbir sey degismedigini goruyordu.
+
+    Olcum (219 dosya, raporlardaki "Ana Ceviri" sureleri): 35,6 saat /
+    195.833 cue, chunk basina ~17,3 sn. Dort isci gercekten paralel olsa
+    ust sinir ~8,9 saatti. Bu bir hata DEGIL, bilincli kalite takasi;
+    hata olan panelin takasi gizlemesiydi.
+    """
     safe = _normalize_advanced_settings(values)
     chunk = safe["_chunk_size"]
     context = safe["_context_lines"]
@@ -9416,9 +9429,13 @@ def _advanced_settings_summary(values: dict) -> tuple[str, str]:
         strength = "Dengeli bağlam"
     else:
         strength = "Sınırlı bağlam"
+    if chain_ctx:
+        isci_metni = "zincirleme bağlam: sıralı"
+    else:
+        isci_metni = f"{workers} paralel işçi"
     headline = (
         f"{chunk} cue / istek  ·  {context} önceki + {lookahead} sonraki  ·  "
-        f"{workers} paralel işçi")
+        f"{isci_metni}")
     detail = (
         f"{strength}  ·  {gap:.1f} sn sahne eşiği  ·  "
         f"{retry} hedefli yanıt denemesi")
@@ -12896,13 +12913,44 @@ def _distributed_language_sample(cues, max_lines: int = 30,
     return "\n".join(texts)[:max(1, int(max_chars))]
 
 
+def _dil_ad_etiketine_dus(filename: str, log_fn=None, sebep: str = "") -> str:
+    """Tespit çökünce dosya adı etiketine düşer — ama SESSİZCE değil.
+
+    Ad etiketi bir OTORİTE DEĞİLDİR ve bu ölçüldü (AI tespiti bilinen 108
+    dosya): etiket vakaların %78'inde hiç yok, bulunduğunda 8'de 1'i AI'nın
+    bulduğu dille ÇELİŞİYOR. Üstelik çelişenlerin üçü de aynı sınıftı —
+    sürüm adındaki `FRENCH` altyazının değil SESİN dili.
+
+    Eskiden yalnız "tespit başarısız" loglanıyordu; hangi dile düşüldüğü ve
+    bunun bir tahmin olduğu yazılmıyordu.
+    """
+    tahmin = infer_source_language_from_filename(filename)
+    if log_fn:
+        ad = Path(filename).name if filename else "?"
+        # `infer_source_language_from_filename` ipucu yokken BOŞ değil
+        # "Otomatik" döner; onu "tahmin ettim" diye sunmak yanıltıcı olurdu.
+        if tahmin and normalize_language_name(tahmin, allow_auto=False):
+            log_fn(
+                "[%s] Kaynak dil TESPİT EDİLEMEDİ%s; dosya adındaki etikete "
+                "göre '%s' TAHMİN edildi. Ad etiketi seslendirme dilini "
+                "gösterebilir — yanlışsa dosya ayarından düzeltin."
+                % (ad, (" (%s)" % sebep) if sebep else "", tahmin), "warn")
+        else:
+            log_fn(
+                "[%s] Kaynak dil TESPİT EDİLEMEDİ%s ve dosya adı da ipucu "
+                "vermiyor; dil ayarını elle seçin."
+                % (ad, (" (%s)" % sebep) if sebep else ""), "warn")
+    return tahmin
+
+
 def detect_source_language_with_ai(client, cues, model, log_fn=None,
                                    token_callback=None, filename: str = "",
                                    cancel_context=None) -> str:
     """Altyazının baskın konuşma dilini desteklenen kaynak dillerden biriyle eşler."""
     sample = _distributed_language_sample(cues)
     if not sample:
-        return infer_source_language_from_filename(filename)
+        return _dil_ad_etiketine_dus(
+            filename, log_fn, "örneklenecek metin yok")
     language_list = ", ".join(LANGUAGES)
     prompt = (
         "Detect the dominant spoken language of this subtitle sample. "
@@ -12946,9 +12994,8 @@ def detect_source_language_with_ai(client, cues, model, log_fn=None,
     except RequestCancelled:
         raise
     except Exception as e:
-        if log_fn:
-            log_fn(f"[{Path(filename).name}] Kaynak dil tespiti başarısız: {e}", "warn")
-    return infer_source_language_from_filename(filename)
+        return _dil_ad_etiketine_dus(filename, log_fn, str(e)[:60])
+    return _dil_ad_etiketine_dus(filename, log_fn, "yanıt eşleşmedi")
 
 
 def parse_source_languages_response(content: str) -> tuple[dict, set]:
@@ -33651,7 +33698,10 @@ class App(ctk.CTk):
             return {name: getattr(self, name) for name in _adv_attrs}
 
         def _update_summary():
-            headline, detail = _advanced_settings_summary(_current_values())
+            headline, detail = _advanced_settings_summary(
+                _current_values(),
+                chain_ctx=bool(App._run_setting(
+                    self, "chain_ctx", "chain_ctx_var", True)))
             summary_title.configure(text=headline)
             summary_detail.configure(text=detail)
 
@@ -35519,7 +35569,11 @@ class App(ctk.CTk):
         try:
             if not self.backup_raw_var.get():
                 return
-        except Exception:
+        except Exception as toggle_error:
+            # Sessizce dönmek, yedeğin HİÇ yazılmadığını da gizliyordu.
+            self._log(
+                "Ham yedek ayarı okunamadı, yedek yazılmadı: %s" % toggle_error,
+                "warn")
             return
         try:
             blk = list(raw_blocks)
@@ -35527,8 +35581,19 @@ class App(ctk.CTk):
                 try:
                     blk, _ = _fill_hata_with_source(blk, raw_map)
                     blk = _restore_tags_blocks(blk, raw_map)
-                except Exception:
-                    pass
+                except Exception as finalize_error:
+                    # Yedek YİNE yazılır — etiketsiz bir yedek, hiç yedek
+                    # olmamasından iyidir. Ama sessiz kalamaz: "ham yedekte
+                    # var, teslimde yok" karşılaştırması diyalog kaybını
+                    # kanıtlama yöntemidir ve etiketsiz bir yedek orada
+                    # yanıltır. Ölçüldü (396 ham/teslim çifti): 9 dosyada
+                    # ham yedek biçim etiketlerini taşımıyordu —
+                    # The.Tales.of.Hoffmann'da ham 101 `<i>`, teslim 1.508.
+                    self._log(
+                        "Ham yedek biçim etiketleri geri konamadı; yedek "
+                        "ETİKETSİZ yazılıyor. Bu dosyada ham↔teslim "
+                        "karşılaştırması biçim açısından güvenilmez: %s"
+                        % finalize_error, "warn")
             out_obj = Path(out_path)
             delivery_parent = out_obj.parent
             if (delivery_parent.name.casefold() == "kurtarma"

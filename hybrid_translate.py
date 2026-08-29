@@ -7400,6 +7400,24 @@ def glossary_usable_target(target: str) -> str | None:
     return head
 
 
+def _tr_bas_harf_buyut(value: str) -> str:
+    """Baş harfi TÜRKÇE kurallarına göre büyütür.
+
+    `"işçi"[:1].upper()` ASCII `I` verir ve sözlük hedefi `Işçi` diye
+    yazılır; doğrusu `İşçi`. Hata sözlükten teslime geçer, üstelik terim
+    normalizasyonu yanlış biçimi "doğru" sayar.
+
+    Ölçüm (2026-08-29): arşivde büyük harfli `Isci/Icin` sözlük hedefi 0,
+    teslimlerde yanlış biçim 0 — yani hata gerçek ama bugüne kadar hiç
+    ateşlenmemiş. Böyle bir terim geldiği gün sessizce bozardı.
+    """
+    value = str(value or "")
+    if not value:
+        return value
+    ilk = value[:1]
+    return ("\u0130" if ilk == "i" else ilk.upper()) + value[1:]
+
+
 def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = "tr",
                                    log_fn=None) -> dict:
     """Drop glossary targets that would force non-Turkish/Turkic drift into the output.
@@ -7460,7 +7478,7 @@ def sanitize_glossary_for_turkish(glossary: dict | None, target_language: str = 
         for wrong, correct in replacements.items():
             value_s = re.sub(
                 rf"(?<!\w){wrong}(?!\w)",
-                lambda match, repl=correct: repl[:1].upper() + repl[1:]
+                lambda match, repl=correct: _tr_bas_harf_buyut(repl)
                 if match.group(0)[:1].isupper() else repl,
                 value_s,
                 flags=re.IGNORECASE,
