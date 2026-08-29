@@ -25443,6 +25443,13 @@ class App(ctk.CTk):
         "linebreak_var", "review_pass_var", "backtrans_var",
         "term_normalize_apply_var", "cue_fill_move_var",
         "semantic_reconcile_var", "merge_cues_var",
+        # `ai_segment_var` AYNI koşulun öbür yarısıdır: `_maybe_merge_cues`
+        # "if not (ai_on or fast_on): return" ile korunur. Yalnız
+        # `merge_cues_var` listedeyken kip AI segmentasyonu kapatmıyordu ve
+        # "metin yeniden yazılmayacak" diyen kipte cue'lar yine birleştirilip
+        # zaman damgaları değişiyordu. Bir geçişi iki kutu koruyorsa ikisi de
+        # aynı sınıfta olmalı.
+        "ai_segment_var",
         "deep_delivery_semantic_var",
     )
     # LLM kipinde AÇIK kalması gerekenler: rapor ayrıntılı olsun ve ham
