@@ -19266,6 +19266,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         _add_review_detail("cue_owner_mismatch", output_id=output_id)
     for output_id in untranslated_fragment_ids:
         _add_review_detail("untranslated_fragment", output_id=output_id)
+    merged_into_neighbour_ids = _merged_into_neighbour_ids(
+        source_rows, output_dialogue)
+    for output_id in merged_into_neighbour_ids:
+        _add_review_detail("merged_into_neighbour", output_id=output_id)
     for output_id, _ts, text in output_dialogue:
         if str(text or "").startswith("[HATA") or "[ÇEVİRİ EKSİK]" in str(text or ""):
             _add_review_detail("unresolved_marker", output_id=output_id)
@@ -19346,6 +19350,7 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "introduced_out_of_order_ids": introduced_out_of_order_ids,
         "inherited_out_of_order_ids": inherited_out_of_order_ids,
         "signature_overlap_ids": signature_overlap_ids,
+        "merged_into_neighbour_ids": merged_into_neighbour_ids,
         "duplicate_cue_ids": duplicate_cue_ids,
         "unnumbered_cue_lines": unnumbered_cue_lines,
         "non_monotonic_cue_ids": non_monotonic_cue_ids,
@@ -19999,7 +20004,87 @@ def _report_finding_rows(rows, findings=None) -> list:
 #   kesin   : yorum gerektirmez, mekanik olarak doğrulanabilir
 #   muhtemel: gerçek sınıf ama ölçülmüş yanlış alarmı var
 #   bilgi   : çoğunlukla doğru davranış, yalnız kayıt için
+_SENTENCE_END_FOR_MERGE_RE = re.compile(r"[.!?…]\s*[\"'\)\]]?\s*$")
+
+
+def _starts_like_a_sentence_tail(text: str) -> bool:
+    """Metin bir cümlenin DEVAMI gibi mi başlıyor (ilk harf küçük)?
+
+    Ölçümde tek gerçek yanlış pozitif kaynağı buydu: önceki kaynak cue'su
+    noktalamasız bittiği için `Buenas noches!` gibi BAĞIMSIZ bir replik
+    devam sanılıyordu. Cümle kuyruğu (`him?`, `forest.`, `majesty?`,
+    `between life and death.`) küçük harfle başlar.
+    """
+    stripped = _ANY_MARKUP_RE.sub(" ", str(text or ""))
+    for char in stripped:
+        if char.isalpha():
+            return char.islower()
+    return False
+
+
+def _merged_into_neighbour_ids(source_rows, output_dialogue) -> list:
+    """İçeriği ÖNCEKİ cue'ya birleşmiş görünen çevrilmemiş cue'lar.
+
+    Yayın altyazılarında bir cümle iki cue'ya bölünür (`...listen to` /
+    `him?`). Türkçe SOV olduğu için model cümlenin tamamını ilk cue'ya
+    yazıp ikincisini boş bırakabiliyor; boru hattı da ikinciyi "eksik
+    çeviri" sayıp dosyayı karantinaya alıyor. Oysa içerik kaybolmadı,
+    yalnız cue'lar arasında yeniden dağıldı.
+
+    İmza dört şart: kaynakta önceki cue cümle sonu noktalaması OLMADAN
+    bitiyor, bu cue'nun kaynağı küçük harfle başlıyor (kuyruk), teslimde
+    önceki cue TAM cümle olarak bitmiş ve bu cue çevrilmemiş.
+
+    Arşiv ölçümü (552 çevrilmemiş cue): küçük harf şartı olmadan 109 cue
+    işaretleniyordu ve `Buenas noches!` gibi BAĞIMSIZ replikler de
+    giriyordu; şartla birlikte 46 cue / 24 dosya kalıyor ve elle bakılan
+    örneklerin tamamı gerçek cümle kuyruğu.
+
+    Güven `bilgi`, çünkü imza "içerik korunmuş" demek DEĞİL: `there was
+    the need` / `for another metaphorical system.` çiftinde komşu tam
+    cümle bitiyor ama anlam gerçekten düşmüş. İddia yalnız şu: bu cue bir
+    cümlenin kuyruğu, önce önceki cue'ya bak. Cue düşürülmez, sert hata
+    kapısı gevşetilmez.
+    """
+    rows = [(str(idx), str(text or "")) for idx, _ts, text in (source_rows or [])]
+    if len(rows) < 2:
+        return []
+    prev_source = {}
+    source_missing = {}
+    for pos in range(1, len(rows)):
+        prev_source[rows[pos][0]] = rows[pos - 1][1]
+        source_missing[rows[pos][0]] = rows[pos][1]
+    out_text = {str(idx): str(text or "") for idx, _ts, text in
+                (output_dialogue or [])}
+    out_order = [str(idx) for idx, _ts, _text in (output_dialogue or [])]
+    prev_output = {}
+    for pos in range(1, len(out_order)):
+        prev_output[out_order[pos]] = out_text.get(out_order[pos - 1], "")
+    hits = []
+    for output_id in out_order:
+        text = out_text.get(output_id, "")
+        if not (text.startswith("[HATA") or "[ÇEVİRİ EKSİK]" in text):
+            continue
+        source_before = prev_source.get(output_id)
+        if source_before is None or not source_before.strip():
+            continue
+        if _SENTENCE_END_FOR_MERGE_RE.search(source_before.strip()):
+            continue                      # kaynakta cümle zaten bitmiş
+        if not _starts_like_a_sentence_tail(source_missing.get(output_id, "")):
+            continue                      # bağımsız cümle, kuyruk değil
+        delivered_before = prev_output.get(output_id, "")
+        stripped = _ANY_MARKUP_RE.sub(" ", delivered_before).strip()
+        if not stripped or stripped.startswith("[HATA") \
+                or "[ÇEVİRİ EKSİK]" in stripped:
+            continue                      # komşu da eksik
+        if not _SENTENCE_END_FOR_MERGE_RE.search(stripped):
+            continue                      # komşu da yarım bitmiş
+        hits.append(output_id)
+    return hits
+
+
 _FINDING_CLASSES = {
+    "merged_into_neighbour_ids": ("bilgi", "İçerik komşu cue'ya birleşmiş olabilir", "Önceki cue'yu oku; anlam oradaysa bölüştür, değilse çevir."),
     "invalid_timestamp_ids": ("kesin", "Geçersiz zaman damgası", "Zaman damgasını düzelt."),
     "reversed_timestamp_ids": ("kesin", "Ters zaman damgası", "Başlangıç bitişten sonra; düzelt."),
     "duplicate_cue_ids": ("kesin", "Yinelenen cue kimliği", "Kimliği tekilleştir."),
