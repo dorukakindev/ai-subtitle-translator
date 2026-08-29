@@ -132,7 +132,7 @@ Implements the two-stage hybrid translation pipeline used by the GUI.
 
 #### External Dependency
 
-This module imports from an external project at `C:\Users\T\Desktop\PROJE\Altyazı Çevirisi` — specifically `subtitle_localizer.srt`, `subtitle_localizer.models`, and `subtitle_localizer.minimax_client`. This is a separate project that provides the `ContextMemory`, `CharacterVoice`, `MiniMaxProvider`, and SRT parsing models.
+This module imports from an external project at `<kardes-proje-yolu>` — specifically `subtitle_localizer.srt`, `subtitle_localizer.models`, and `subtitle_localizer.minimax_client`. This is a separate project that provides the `ContextMemory`, `CharacterVoice`, `MiniMaxProvider`, and SRT parsing models.
 
 ### 6. `.gui_settings.json` — Settings Store
 

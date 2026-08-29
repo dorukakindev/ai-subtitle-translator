@@ -32,7 +32,7 @@ This plan covers all 22 improvements identified in the code review, organized in
 
 ### Task 1.2 — Remove Hardcoded External Path
 
-**Problem:** [`SUBTITLE_PROJECT_PATH`](hybrid_translate.py:12) is hardcoded to `C:\Users\T\Desktop\PROJE\Altyazı Çevirisi`
+**Problem:** [`SUBTITLE_PROJECT_PATH`](hybrid_translate.py:12) is hardcoded to `<kardes-proje-yolu>`
 
 **Steps:**
 1. Add an "External Project Path" field to the GUI sidebar in the MiniMax section

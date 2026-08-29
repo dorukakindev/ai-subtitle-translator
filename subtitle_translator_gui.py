@@ -24167,7 +24167,7 @@ class App(ctk.CTk):
         path_fr = ctk.CTkFrame(hfr, fg_color="transparent")
         path_fr.pack(fill="x", padx=4)
         path_fr.grid_columnconfigure(0, weight=1)
-        self.ext_project_path_var = ctk.StringVar(value=r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi")
+        self.ext_project_path_var = ctk.StringVar(value="")
         ctk.CTkEntry(path_fr, textvariable=self.ext_project_path_var, height=36,
                      font=ctk.CTkFont("Segoe UI", 11),
                      fg_color=CARD, border_color=BORDER,

@@ -17,7 +17,7 @@ Based on my code review, here are the suggested improvements organized by catego
 
 ### 1.2 Hardcoded External Path
 
-**Problem:** [`hybrid_translate.py:12`](hybrid_translate.py:12) has `SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"` hardcoded. This makes the code non-portable and breaks on different machines.
+**Problem:** [`hybrid_translate.py:12`](hybrid_translate.py:12) has `SUBTITLE_PROJECT_PATH = r"<kardes-proje-yolu>"` hardcoded. This makes the code non-portable and breaks on different machines.
 
 **Suggested Fix:**
 - Make this configurable via settings or environment variable

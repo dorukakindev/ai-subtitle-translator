@@ -25,12 +25,15 @@ from subtitle_formats import (clean_translation_source_text,
 from request_cancellation import RequestCancelled
 from provider_retry import ProviderWaitCancelled
 
-_SUBTITLE_PROJECT_PATH = r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"
+# Kardes projenin yolu. Varsayılan BOŞ: eskiden buraya bir kişinin
+# masaüstü yolu gömülüydü — başka makinede diskte yok (ölü değer) ve
+# depo yayınlanınca kullanıcı adını açığa çıkarıyordu. Çözümü
+# `resolve_subtitle_project_path` yapar: önce bu değer, sonra proje
+# kökü, sonra arayüzdeki "External Project Path" alanı.
+_SUBTITLE_PROJECT_PATH = ""
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _KNOWN_SUBTITLE_PROJECT_PATHS = [
     _PROJECT_ROOT,
-    Path(r"C:\Users\T\Desktop\PROJE\Diğer Projeler\Altyazı Çevirisi"),
-    Path(r"C:\Users\T\Desktop\PROJE\Altyazı Çevirisi"),
 ]
 
 _TURKISH_CHARS = set("çÇğĞıİöÖşŞüÜ")
