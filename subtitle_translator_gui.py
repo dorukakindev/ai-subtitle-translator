@@ -963,6 +963,7 @@ def _log_view_at_bottom(yview, tolerance: float = 0.002) -> bool:
 # listeden okur; yeni bir kısayol eklenince ikisi de kendiliğinden güncellenir.
 KEYBOARD_SHORTCUTS = (
     ("F1", "Bu kısayol listesini aç"),
+    ("Shift+F1", "Kullanım kılavuzunu aç"),
     ("Ctrl+Shift+L", "Tüm oturum logunu panoya kopyala"),
     ("Ctrl+Shift+D", "Tanı paketini panoya kopyala"),
     ("Ctrl+Shift+S", "Son çalışma özetini aç"),
@@ -22363,6 +22364,7 @@ class App(ctk.CTk):
         self.bind_all(
             "<Control-Shift-S>", self._shortcut_show_last_summary, add="+")
         self.bind_all("<F1>", self._shortcut_show_shortcuts, add="+")
+        self.bind_all("<Shift-F1>", self._shortcut_show_kilavuz, add="+")
         self._apply_media_mode("Dizi", notify=False)
         self._applying_workflow_profile = True
         try:
@@ -22372,6 +22374,15 @@ class App(ctk.CTk):
         self._bind_workflow_profile_watchers()
         self._apply_startup_geometry()
         self._setup_drag_drop()
+        # Kılavuz ipuçları: anahtarlar TEK TEK düzenlenmez, kurulum bitince
+        # widget ağacı taranıp `kilavuz.py`'deki maddeyle eşlenir. Sonradan
+        # eklenen bir kutu, maddesi yazıldığı anda ipucunu kendiliğinden
+        # alır. Başarısız olursa arayüz yine açılır — ipucu süs değil ama
+        # program onsuz da çalışmalı.
+        try:
+            self._kilavuz_ipuclarini_bagla()
+        except Exception:
+            pass
         self.bind("<Configure>", self._on_window_motion, add="+")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         try:
@@ -23183,6 +23194,262 @@ class App(ctk.CTk):
     def _shortcut_show_shortcuts(self, _event=None):
         self._show_shortcuts_dialog()
         return "break"
+
+    def _shortcut_show_kilavuz(self, _event=None):
+        self._show_kilavuz_dialog()
+        return "break"
+
+    # ── Kılavuz: ipucu ve yardım penceresi ──────────────────────────────
+    # Metinlerin tamamı `kilavuz.py`'den gelir; burada yalnız gösterim var.
+    # Böylece ipucu, yardım penceresi ve yayınlanan KILAVUZ.md aynı cümleyi
+    # söyler ve `tests/test_kilavuz.py` üçünü birden kilitler.
+
+    _IPUCU_GECIKME_MS = 450
+
+    def _ipucu_bagla(self, widget, metin: str):
+        """Widget'ın üstüne gelince küçük bir açıklama kutusu gösterir."""
+        if not metin:
+            return
+        durum = {"pencere": None, "is": None}
+
+        def _kapat(_event=None):
+            if durum["is"] is not None:
+                try:
+                    widget.after_cancel(durum["is"])
+                except Exception:
+                    pass
+                durum["is"] = None
+            pencere = durum["pencere"]
+            durum["pencere"] = None
+            if pencere is not None:
+                try:
+                    pencere.destroy()
+                except Exception:
+                    pass
+
+        def _goster():
+            durum["is"] = None
+            if durum["pencere"] is not None:
+                return
+            try:
+                ust = tk.Toplevel(widget)
+                ust.wm_overrideredirect(True)
+                ust.configure(bg=BORDER)
+                cerceve = tk.Frame(ust, bg=PANEL, padx=10, pady=7)
+                cerceve.pack(padx=1, pady=1)
+                tk.Label(
+                    cerceve, text=metin, justify="left", anchor="w",
+                    bg=PANEL, fg=FG, wraplength=340,
+                    font=("Segoe UI", 9),
+                ).pack()
+                ust.update_idletasks()
+                x = widget.winfo_rootx() + 18
+                y = widget.winfo_rooty() + widget.winfo_height() + 6
+                ekran_alt = widget.winfo_screenheight()
+                if y + ust.winfo_height() > ekran_alt:
+                    y = widget.winfo_rooty() - ust.winfo_height() - 6
+                ust.wm_geometry("+%d+%d" % (x, y))
+                durum["pencere"] = ust
+            except Exception:
+                durum["pencere"] = None
+
+        def _gir(_event=None):
+            _kapat()
+            try:
+                durum["is"] = widget.after(self._IPUCU_GECIKME_MS, _goster)
+            except Exception:
+                pass
+
+        for hedef in (widget,) + tuple(getattr(widget, "winfo_children",
+                                               lambda: ())()):
+            try:
+                hedef.bind("<Enter>", _gir, add="+")
+                hedef.bind("<Leave>", _kapat, add="+")
+                hedef.bind("<Button-1>", _kapat, add="+")
+            except Exception:
+                continue
+
+    def _kilavuz_degisken_haritasi(self) -> dict:
+        """{id(değişken): var_adı} — kılavuzda maddesi olan kutular.
+
+        Tarama adımından AYRI durur: widget ağacını yürümek gerçek
+        CustomTkinter'a bağlıdır ve test stub'ında widget yoktur, ama
+        eşlemenin kendisi saf ve sınanabilir. Kırılabilecek kısım da
+        burasıdır — bir kutu `self` üzerinde başka adla durursa ya da
+        kılavuz maddesi başka ada yazılırsa eşleşme sessizce düşer.
+        """
+        try:
+            import kilavuz
+        except Exception:
+            return {}
+        harita = {}
+        for ad, deger in list(self.__dict__.items()):
+            if ad.endswith("_var") and ad in kilavuz.MADDELER:
+                harita[id(deger)] = ad
+        return harita
+
+    def _kilavuz_ipuclarini_bagla(self):
+        """Arayüzdeki her anahtarı kılavuz maddesiyle eşleyip ipucu takar.
+
+        Anahtarları TEK TEK düzenlemek yerine kurulum sonrası bir tarama
+        yapılır: sonradan eklenen bir kutu, `kilavuz.py`'ye maddesi
+        yazıldığı anda ipucunu kendiliğinden alır (ve maddesi yoksa
+        `tests/test_kilavuz.py` zaten kırılır).
+        """
+        kimlikler = self._kilavuz_degisken_haritasi()
+        if not kimlikler:
+            return 0
+        try:
+            import kilavuz
+        except Exception:
+            return 0
+        baglanan = 0
+        yigin = [self]
+        gorulen = set()
+        while yigin:
+            widget = yigin.pop()
+            if id(widget) in gorulen:
+                continue
+            gorulen.add(id(widget))
+            try:
+                yigin.extend(widget.winfo_children())
+            except Exception:
+                pass
+            degisken = getattr(widget, "_variable", None)
+            ad = kimlikler.get(id(degisken)) if degisken is not None else None
+            if not ad:
+                continue
+            madde = kilavuz.MADDELER.get(ad)
+            if madde is None:
+                continue
+            self._ipucu_bagla(widget, madde.ipucu())
+            baglanan += 1
+        return baglanan
+
+    def _show_kilavuz_dialog(self, aranan: str = ""):
+        """Kullanım kılavuzu: aramalı, bölümlü tek pencere."""
+        try:
+            import kilavuz
+        except Exception:
+            return
+        # `getattr(..., None)` DEĞİL: test stub'ının `__getattr__`'ı her ada
+        # bir lambda döndürüyor ve varsayılan hiç devreye girmiyor. Sözlüğe
+        # doğrudan bakmak hem gerçek arayüzde hem stub'da doğru çalışır.
+        mevcut = self.__dict__.get("_kilavuz_dialog")
+        if mevcut is not None and mevcut.winfo_exists():
+            mevcut.deiconify()
+            mevcut.lift()
+            mevcut.focus_force()
+            return
+        dlg = ctk.CTkToplevel(self)
+        self._kilavuz_dialog = dlg
+        dlg.title("Kullanım Kılavuzu")
+        dlg.configure(fg_color=BG)
+        dlg.geometry("880x620")
+        dlg.transient(self)
+
+        ust = ctk.CTkFrame(dlg, fg_color="transparent")
+        ust.pack(fill="x", padx=18, pady=(16, 8))
+        ctk.CTkLabel(
+            ust, text="Kullanım Kılavuzu",
+            font=ctk.CTkFont("Segoe UI", 15, "bold"), text_color=FG,
+        ).pack(side="left")
+        arama_var = ctk.StringVar(value=str(aranan or ""))
+        arama = ctk.CTkEntry(
+            ust, textvariable=arama_var, width=260, height=30,
+            placeholder_text="Ara: ayar adı ya da geçen bir söz…")
+        arama.pack(side="right")
+
+        govde = ctk.CTkFrame(dlg, fg_color="transparent")
+        govde.pack(fill="both", expand=True, padx=18, pady=(0, 12))
+        sol = ctk.CTkScrollableFrame(
+            govde, width=250, fg_color=PANEL, corner_radius=10)
+        sol.pack(side="left", fill="y", padx=(0, 12))
+        sag = ctk.CTkTextbox(
+            govde, fg_color=PANEL, corner_radius=10, wrap="word",
+            font=ctk.CTkFont("Segoe UI", 12), text_color=FG)
+        sag.pack(side="left", fill="both", expand=True)
+
+        def _yaz(ad):
+            madde = kilavuz.MADDELER.get(ad)
+            if madde is None:
+                return
+            varsayilan = {True: "açık", False: "kapalı",
+                          None: "—"}[madde.varsayilan]
+            satirlar = [madde.baslik, "=" * len(madde.baslik), "",
+                        "Varsayılan: %s" % varsayilan]
+            if madde.maliyet:
+                satirlar.append("Maliyet: %s" % madde.maliyet)
+            satirlar += ["", madde.uzun]
+            if madde.ne_zaman:
+                satirlar += ["", "NE ZAMAN", madde.ne_zaman]
+            if madde.iliskili:
+                adlar = [kilavuz.MADDELER[b].baslik for b in madde.iliskili
+                         if b in kilavuz.MADDELER]
+                if adlar:
+                    satirlar += ["", "İLGİLİ AYARLAR", " · ".join(adlar)]
+            sag.configure(state="normal")
+            sag.delete("1.0", "end")
+            sag.insert("1.0", "\n".join(satirlar))
+            sag.configure(state="disabled")
+
+        def _listeyi_kur(_a=None, _b=None, _c=None):
+            for cocuk in list(sol.winfo_children()):
+                try:
+                    cocuk.destroy()
+                except Exception:
+                    pass
+            sorgu = arama_var.get().strip()
+            if sorgu:
+                bulunan = kilavuz.ara(sorgu)
+                ctk.CTkLabel(
+                    sol, text="%d sonuç" % len(bulunan), anchor="w",
+                    text_color=FG2, font=ctk.CTkFont("Segoe UI", 10),
+                ).pack(fill="x", padx=10, pady=(8, 4))
+                for ad, madde in bulunan:
+                    ctk.CTkButton(
+                        sol, text=madde.baslik, anchor="w", height=28,
+                        fg_color=CARD, hover_color=BORDER, text_color=FG,
+                        font=ctk.CTkFont("Segoe UI", 11),
+                        command=lambda a=ad: _yaz(a),
+                    ).pack(fill="x", padx=8, pady=2)
+                if bulunan:
+                    _yaz(bulunan[0][0])
+                return
+            gruplar = kilavuz.bolume_gore()
+            ilk = None
+            for bolum in kilavuz.BOLUMLER:
+                maddeler = gruplar.get(bolum) or []
+                if not maddeler:
+                    continue
+                ctk.CTkLabel(
+                    sol, text=bolum, anchor="w", text_color=FG2,
+                    font=ctk.CTkFont("Segoe UI", 10, "bold"),
+                ).pack(fill="x", padx=10, pady=(10, 4))
+                for ad, madde in maddeler:
+                    if ilk is None:
+                        ilk = ad
+                    ctk.CTkButton(
+                        sol, text=madde.baslik, anchor="w", height=28,
+                        fg_color=CARD, hover_color=BORDER, text_color=FG,
+                        font=ctk.CTkFont("Segoe UI", 11),
+                        command=lambda a=ad: _yaz(a),
+                    ).pack(fill="x", padx=8, pady=2)
+            if ilk:
+                _yaz(ilk)
+
+        arama_var.trace_add("write", _listeyi_kur)
+        _listeyi_kur()
+
+        ctk.CTkButton(
+            dlg, text="Kapat", height=32, fg_color=CARD,
+            hover_color=BORDER, command=dlg.destroy,
+        ).pack(fill="x", padx=18, pady=(0, 16))
+        dlg.bind("<Escape>", lambda _event: dlg.destroy())
+        try:
+            _center_dialog_on_parent(dlg, self)
+        except Exception:
+            pass
 
     def _show_shortcuts_dialog(self):
         """Klavye kısayollarını listeler.
@@ -25019,6 +25286,11 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 10),
             fg_color=CARD, hover_color=BORDER,
             command=self._show_shortcuts_dialog).grid(row=0, column=6)
+        ctk.CTkButton(
+            log_hdr, text="? Kılavuz", width=72, height=26,
+            font=ctk.CTkFont("Segoe UI", 10),
+            fg_color=CARD, hover_color=BORDER,
+            command=self._show_kilavuz_dialog).grid(row=0, column=7, padx=(4, 0))
 
         self.log_box = ctk.CTkTextbox(log_fr, font=ctk.CTkFont("Consolas", 11),
                                       fg_color=CARD, corner_radius=8,
@@ -25050,6 +25322,9 @@ class App(ctk.CTk):
         self._log_context_menu.add_command(
             label="Klavye kısayolları", accelerator="F1",
             command=self._show_shortcuts_dialog)
+        self._log_context_menu.add_command(
+            label="Kullanım kılavuzu", accelerator="Shift+F1",
+            command=self._show_kilavuz_dialog)
         self.log_box.bind(
             "<Button-3>", self._show_log_context_menu, add="+")
 
