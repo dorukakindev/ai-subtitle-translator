@@ -10297,10 +10297,21 @@ def _restore_tags_blocks(blocks: list, raw_src_map: dict,
             continue
 
     def _source_for(idx, ts):
-        found = raw_src_map.get(str(idx))
+        # ZAMAN DAMGASI ÖNCE gelir. Numara önce denenirse ve teslimde cue
+        # sayısı kaymışsa arama BOŞ dönmez — BAŞKA bir cue'yu bulur, dolu
+        # olduğu için zaman yedeğine hiç düşülmez ve o yabancı cue'nun biçim
+        # etiketi buraya uygulanır.
+        #
+        # Ölçülen vaka (the.possessed, teslim 672 / kaynak 669 cue):
+        #   teslim #459 `tek bağımdı.`
+        #   numarayla  -> `Mr. Bernard?`                       (yanlış cue)
+        #   zamanla    -> `<i>to the world outside my room.</i>` (doğrusu)
+        # Sonuç: italik geri konmuyordu; kayan numara başka bir cue'da
+        # `{\an8}` bulsaydı onu da yanlış yere uygulardı.
+        found = by_ts.get(str(ts))
         if found:
             return found
-        return by_ts.get(str(ts), "")
+        return raw_src_map.get(str(idx), "")
 
     return [(idx, ts, restore_format_tags(_source_for(idx, ts), text))
             for idx, ts, text in blocks]
