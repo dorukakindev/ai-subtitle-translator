@@ -8980,6 +8980,121 @@ def _has_identity_slur_loss(source_text: str, target_text: str) -> bool:
     )
 
 
+# ── Kaynaktaki repliğin teslimde düşmesi ────────────────────────────────────
+# İki replikli bir cue'nun bir yarısı çeviride yok oluyor ve HİÇBİR mevcut
+# doğrulayıcı bunu görmüyor: beş gerçek kayıpta `LENGTH_RATIO_OUTLIER` beş
+# kez False, `_numeric_token_mismatch` de sessiz (sayı yok).
+#
+# Brief'in kuralı 23 dosyada 4/4 doğruydu; 372 dosyaya (310.378 cue)
+# uygulandığında ÜÇ ayrı yanlış alarm sınıfı çıktı ve kural ona göre
+# daraltıldı. Ölçüm: 100 → 15 bulgu / 10 dosya.
+#
+#   A) Parantezsiz BÜYÜK HARFLİ ses etiketi de SDH sayılır. Brief yalnız
+#      `( )` ve `[ ]` tanıyordu; arşivde `- CHEERING`, `- HE SNIFFS`,
+#      `- LOUD METALLIC BANGING` biçimi yaygın. Ayırt edici: küçük harf YOK
+#      ve cümle sonu noktalaması YOK — bağırılan gerçek replik (`- STOP!`)
+#      noktalama taşır.                                        (100 → 95)
+#
+#   B) Kaynakta BİTİŞİK yinelenen replik satırı tek sayılır. Yayın
+#      altyazısında satır tireyle tekrarlanabiliyor:
+#          - to the 4 cardinal points.
+#          - To the 4 cardinal points.
+#      Teslim bunu bir kez çevirir; iki replik beklemek yanlış alarmdır.
+#      Toplama YALNIZ kaynakta yapılır: teslimde de toplarsak iki farklı
+#      kaynak satırı aynı Türkçeye çevrildiğinde bulgu ÜRETİRİZ — ilk
+#      denemede tam bu oldu ve sayı 100'den 131'e ÇIKTI.   (95 → 90)
+#
+#   C) Teslim iki repliği TEK SATIRDA birleştirmiş olabilir
+#      (`- Ne diyorsun? - Tavuklu ramen gibi kokuyor.`) ya da satır başında
+#      tırnak durabilir (`"-Yiyecek bir şey var mı?`). İkisinde de replik
+#      düşmemiştir.                                            (90 → 15)
+_SDH_ONLY_LINE_RE = re.compile(
+    r"^\s*[-\u2013\u2014]?\s*[\(\[].*[\)\]]\s*$")
+_REPLICA_DASHES = ("-", "\u2013", "\u2014")
+_REPLICA_LEADING_NOISE = "\"\u201c\u201d\u00ab\u2039'\u2018\u2019 \t"
+_REPLICA_SENTENCE_END_RE = re.compile(r"[.!?\u2026:]\s*$")
+# Satır içi replik ayırıcı: önünde boşluk olan tire. Ardındaki boşluk
+# ZORUNLU DEĞİL (`-Evet. -Az kalsın` yaygın). Öndeki `\S` şartı sayı
+# aralığını (`5 - 3`) değil, cümle sonrası repliği hedefler.
+_REPLICA_INLINE_SPLIT_RE = re.compile(
+    r"(?<=\S)\s+[-\u2013\u2014]\s*(?=[^\s-])")
+
+
+def _replica_body(line: str) -> str:
+    value = str(line or "").strip().lstrip(_REPLICA_LEADING_NOISE).strip()
+    for dash in _REPLICA_DASHES:
+        if value.startswith(dash):
+            return value[len(dash):].strip()
+    return value
+
+
+def _is_caps_sound_label(body: str) -> bool:
+    """Küçük harf taşımayan, noktalamayla bitmeyen replik satırı."""
+    if not body:
+        return False
+    letters = [char for char in body if char.isalpha()]
+    if not letters or any(char.islower() for char in letters):
+        return False
+    return not _REPLICA_SENTENCE_END_RE.search(body)
+
+
+def _replica_lines(text: str, split_inline: bool = False) -> list:
+    """SDH olmayan, tire ile başlayan konuşmacı satırlarının gövdeleri."""
+    parts = []
+    for line in str(text or "").split("\n"):
+        if split_inline:
+            parts.extend(_REPLICA_INLINE_SPLIT_RE.split(line))
+        else:
+            parts.append(line)
+    found = []
+    for position, part in enumerate(parts):
+        raw = str(part or "").strip()
+        cleaned = raw.lstrip(_REPLICA_LEADING_NOISE).strip()
+        starts_with_dash = cleaned.startswith(_REPLICA_DASHES)
+        # Satır içi ayırmada ilk parça dışındakiler zaten replik sayılır:
+        # ayırıcı tireyi tükettiği için gövde tiresiz başlar.
+        if not starts_with_dash and not (split_inline and position and raw):
+            continue
+        if _SDH_ONLY_LINE_RE.match(cleaned):
+            continue
+        body = _replica_body(part)
+        if _is_caps_sound_label(body):
+            continue
+        found.append(body)
+    return found
+
+
+def _collapse_repeated_source_lines(bodies: list) -> list:
+    """Kaynakta BİTİŞİK yinelenen replik satırlarını tek sayar."""
+    if len(bodies) < 2:
+        return list(bodies)
+    out = [bodies[0]]
+    for body in bodies[1:]:
+        current = re.sub(r"\W+", "", body).casefold()
+        previous = re.sub(r"\W+", "", out[-1]).casefold()
+        if current and previous and (current.startswith(previous[:24])
+                                     or previous.startswith(current[:24])):
+            continue
+        out.append(body)
+    return out
+
+
+def _replica_count(text: str, split_inline: bool = False) -> int:
+    return len(_replica_lines(text, split_inline))
+
+
+def _missing_replica(src_text: str, tr_text: str) -> bool:
+    """Kaynakta iki+ replik varken teslimde daha azı kaldıysa True.
+
+    YALNIZ RAPOR eder; düşen repliği yeniden yazmak model işidir ve karar
+    insanda kalır (Critic 2026-08-16'dan beri yalnız-rapor kipinde).
+    """
+    source = _collapse_repeated_source_lines(_replica_lines(src_text))
+    if len(source) < 2:
+        return False
+    return _replica_count(tr_text, split_inline=True) < len(source)
+
+
 def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                    series_terms: dict = None,
                    scene_gap_sec: float = SCENE_GAP_SEC,
@@ -9143,6 +9258,8 @@ def run_validators(tr_blocks: list, cues: list = None, glossary: dict = None,
                 reasons.append("QUESTION_MARK_MISMATCH")
             if _numeric_token_mismatch(orig_clean, text):
                 reasons.append("NUMBER_MISMATCH")
+            if _missing_replica(orig_clean, text):
+                reasons.append("MISSING_REPLICA")
             if turkish_target and _spelled_number_mismatch(
                     orig_clean, text, src_lang):
                 reasons.append("SPELLED_NUMBER_MISMATCH")
@@ -9344,6 +9461,12 @@ _SEMANTIC_RECONCILIATION_REASONS = (
     "GLOSS_MISS",
     "IDIOM_MISTRANSLATION",
     "LENGTH_RATIO_OUTLIER",
+    # MISSING_REPLICA BILEREK BURADA DEGIL. Bu demet Nihai Anlam
+    # Mutabakati'nin hangi sebeplerde cue'yu YENIDEN YAZACAGINI belirler
+    # (bkz. `triggering` kumesi). Brief bu dogrulayicinin yalniz RAPOR
+    # etmesini istiyor: dusen repligi yeniden yazmak model isidir ve karar
+    # insanda kalir. Sebep `run_validators`ta uretiliyor ve rapora giriyor;
+    # buraya eklemek onu otomatik duzelticiye baglardi.
     "NEGATION_LOSS",
     "NEIGHBOR_ECHO",
     "NEIGHBOR_PREFIX_ECHO",
