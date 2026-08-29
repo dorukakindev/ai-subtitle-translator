@@ -7327,9 +7327,18 @@ def _delivery_removable_source_timestamps(source_cues, removable_ids: set) -> se
 def _restore_source_linebreaks(text: str, source_text: str) -> str:
     value = str(text or "")
     source = str(source_text or "")
-    if "\n" not in value and "\\n" in value and "\\n" not in source:
+    if "\\n" not in value or "\\n" in source:
+        return value
+    if "\n" not in value:
         return value.replace("\\n", "\n")
-    return value
+    # Cue'da ZATEN gerçek satır sonu var: literal olanı da satıra çevirmek
+    # üçüncü satırı açar ve kaynağın satır yapısını bozar. Kalıntı boşluğa
+    # iner. Gerçek vaka: `Güç olmadan⏎adalet\\nacizliktir.` — kaynak iki
+    # satır (`Justice without strength / is inability.`), doğrusu
+    # `Güç olmadan⏎adalet acizliktir.`. Eski koşul (`"\\n" not in value`)
+    # bu cue'ya hiç dokunmuyordu ve kalıntı teslime çıkıyordu.
+    repaired = value.replace("\\n", " ")
+    return re.sub(r"[ \t]{2,}", " ", repaired)
 
 
 def _srt_timestamp_ms(value: str) -> int:
