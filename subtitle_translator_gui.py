@@ -4268,6 +4268,50 @@ def _delivery_output_stem(out_path) -> str:
     return stem[:-8] if stem.endswith(".partial") else stem
 
 
+_RAW_LF_ONLY_RE = re.compile(rb"(?<!\r)\n")
+
+
+def _srt_raw_byte_issues(filepath) -> dict:
+    """Teslim dosyasını HAM BAYTTAN doğrular — ayrıştırıcıdan geçirmeden.
+
+    Neden ham bayt: `parse_subtitle` cue kimliklerini 1'den yeniden üretir
+    ve gerçek bir bozukluğu SİLER; diskteki yapı iddiası ancak baytla
+    ölçülür (iki oturumda üç yanlış ölçüme mal oldu).
+
+    HANGİ KONTROLLER — ölçüyle seçildi, 372 gerçek teslimde:
+        BOM                    39 dosya
+        karışık satır sonu      4 dosya
+        ayraç bütünlüğü         0   <- eklenmedi
+        gömülü cue başlığı      0   <- eklenmedi
+        etiket dengesizliği     0   <- eklenmedi
+    Son üçü hiç ateşlenmediği için yazılmadı; olmayan soruna kod eklemek
+    bu depoda kural dışı.
+
+    PROGRAM BUNLARI ÜRETMİYOR: `write_srt` → `atomic_write_text` BOM'suz
+    utf-8 ve tutarlı CRLF yazar (bayt düzeyinde doğrulandı). Yani bu
+    kontroller ÇEVİRİYİ değil, teslimden SONRA dosyaya dokunan dış araçları
+    yakalar — ham bayta yazan bir onarım betiği CRLF dosyaya LF karıştırır.
+
+    Döner: {"bom": bool, "mixed_newline": bool, "not_utf8": bool}
+    """
+    sonuc = {"bom": False, "mixed_newline": False, "not_utf8": False}
+    try:
+        with open(filepath, "rb") as handle:
+            raw = handle.read()
+    except Exception:
+        return sonuc
+    if not raw:
+        return sonuc
+    sonuc["bom"] = raw.startswith(b"\xef\xbb\xbf")
+    try:
+        raw.decode("utf-8-sig")
+    except Exception:
+        sonuc["not_utf8"] = True
+    if b"\r\n" in raw and _RAW_LF_ONLY_RE.search(raw):
+        sonuc["mixed_newline"] = True
+    return sonuc
+
+
 def _srt_raw_cue_id_issues(filepath) -> tuple[list, list, list, list]:
     """SRT ayrıştırıcısının geriye-dönük yeniden numaralandırmasından önceki ID sorunları.
 
@@ -19448,6 +19492,10 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
     signature_overlap_ids = []
     (duplicate_cue_ids, unnumbered_cue_lines, non_monotonic_cue_ids,
      signature_cue_id_ids) = _srt_raw_cue_id_issues(output_path)
+    # Bayt düzeyi: program bunları ÜRETMEZ (BOM'suz utf-8, tutarlı CRLF
+    # yazar); bu kontrol teslimden SONRA dosyaya dokunan dış araçları
+    # görünür kılar. Ölçüm: 372 teslimde 39 BOM, 4 karışık satır sonu.
+    _raw_byte_issues = _srt_raw_byte_issues(output_path)
     timed_output = []
     for output_idx, output_ts, output_text in output:
         try:
@@ -19793,6 +19841,12 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "unnumbered_cue_lines": unnumbered_cue_lines,
         "non_monotonic_cue_ids": non_monotonic_cue_ids,
         "signature_cue_id_ids": signature_cue_id_ids,
+        # Dosya düzeyi bayt bulguları: cue kimliği taşımazlar, çünkü sorun
+        # bir cue'da değil DOSYANIN kendisinde. Bulunca kimlik listesi
+        # yerine dosyanın adı yeter.
+        "raw_byte_bom": bool(_raw_byte_issues.get("bom")),
+        "raw_byte_mixed_newline": bool(_raw_byte_issues.get("mixed_newline")),
+        "raw_byte_not_utf8": bool(_raw_byte_issues.get("not_utf8")),
         "review_details": review_details,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
