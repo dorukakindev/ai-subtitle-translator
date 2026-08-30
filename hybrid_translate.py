@@ -11733,6 +11733,90 @@ def _has_stem_match(token: str, old_tokens: list[str]) -> bool:
     return any(_share_stem(token, ot) for ot in old_tokens)
 
 
+
+# ── Polish: olumsuzluk polaritesi ──────────────────────────────────────────
+# Türkçede olumsuzluk eki sözcüğün İÇİNDE olduğu için karakter benzerliği
+# anlam değişimini gizler: 'gerekiyor' → 'gerekmiyor' %99 benzer. Ölçüldü,
+# anlam değiştiren altı polish adayının üçü iki guard'dan da geçiyordu.
+#
+# Cümle düzeyinde `_has_turkish_negation` ile karşılaştırma DENENDİ ve
+# kaçan üç vakanın sıfırını yakaladı: 'gitmemiz' gibi fiilimsileri olumsuz
+# saydığı için cümle zaten olumsuz görünüyor ve gerçek dönüş kayboluyor.
+# Hizalı sözcük çiftinde ise aynı yanlış pozitif iki tarafta da çıkıp
+# sadeleşiyor — karşılaştırma o yüzden sözcük düzeyinde.
+#
+# Katlama `_turkish_ascii_fold` ile yapılır, `_ascii_fold` ile DEĞİL:
+# ikincisi NFKD tabanlı ve noktasız ı'nın ASCII karşılığı olmadığı için
+# onu tamamen DÜŞÜRÜYOR ('kalır' → 'kalr', 'hayır' → 'hayr'). Türkçe
+# karşılaştırmada bu sessiz bir sözcük bozulmasıdır.
+#
+# Olumsuzluk SÖZCÜKLERİ katlanarak aranır: aksan onarımı
+# ('degil' → 'değil', 'hic' → 'hiç') meşru bir polish düzeltmesidir ve
+# katlamasız bir küme karşılaştırması onu polarite değişimi sanardı.
+_ASCII_NEGATION_WORDS = frozenset((
+    "degil", "yok", "hayir", "hic", "hicbir", "hicbiri", "hickimse",
+    "asla", "sakin",
+))
+
+
+def _word_is_negative(word: str) -> bool:
+    """Tek sözcük olumsuz mu (ek ya da olumsuzluk sözcüğü).
+
+    Noktalama SOYULUR: ek deseni sözcük sonuna çapalı ve yapışık bir
+    virgül/nokta çapayı kırıyor — 'gerekmiyor' olumsuz görünürken
+    'gerekmiyor.' görünmüyordu, yani kural tam da cümle sonundaki
+    yüklemde, yani her cümlede işlemiyordu.
+    """
+    w = re.sub(r"^[^\w]+|[^\w]+$", "",
+               str(word or "").strip().lower(), flags=re.UNICODE)
+    if not w:
+        return False
+    if _turkish_ascii_fold(w) in _ASCII_NEGATION_WORDS:
+        return True
+    if w in {"tamam", "hamam", "imam"}:
+        return False
+    return bool(_TURKISH_NEGATION_SUFFIX_RE.search(w))
+
+
+def _negation_words(text: str) -> set:
+    """Metindeki olumsuzluk sözcükleri, ASCII katlanmış."""
+    kelimeler = re.findall(r"[^\W\d_]+", str(text or "").lower(), re.UNICODE)
+    return {_turkish_ascii_fold(k) for k in kelimeler
+            if _turkish_ascii_fold(k) in _ASCII_NEGATION_WORDS}
+
+
+def _negation_polarity_changed(old: str, new: str) -> bool:
+    """Polish adayı olumsuzluğu değiştiriyor mu?
+
+    İki ayrı yol:
+      · hizalı sözcük çiftinde ek polaritesi dönmüş
+        ('gerekiyor' → 'gerekmiyor')
+      · olumsuzluk sözcüğü eklenmiş/silinmiş
+        ('hiç düşünmüyorum' → 'düşünmüyorum')
+    """
+    o = _polish_norm(str(old or ""))
+    n = _polish_norm(str(new or ""))
+    if _negation_words(o) != _negation_words(n):
+        return True
+    o_words = o.split()
+    n_words = n.split()
+    if len(o_words) != len(n_words):
+        return False
+    for ow, nw in zip(o_words, n_words):
+        # ASCII'ye katlanınca aynıysa bu bir AKSAN ONARIMIDIR, polarite
+        # değişimi değil. Ayrım yapısal olmalı, çünkü olumsuz ek ailesinin
+        # kendisi Türkçe harf taşıyor ('-eceğ', '-acağ'): aksansız yazılmış
+        # 'yetisemeyecegim' ek desenine takılmıyor ve onarımı polarite
+        # dönüşü sanılıyordu. 443.313 gerçek cue'da bu tek sınıf %2,06
+        # yanlış alarm üretiyordu; katlama eşitliği sınıfı sıfırlıyor ve
+        # gerçek bir dönüşü ('gerekiyor'/'gerekmiyor') maskeleyemez,
+        # çünkü olumsuzluk morfemi katlamadan sağ çıkar.
+        if _turkish_ascii_fold(ow) == _turkish_ascii_fold(nw):
+            continue
+        if _word_is_negative(ow) != _word_is_negative(nw):
+            return True
+    return False
+
 def is_safe_polish_edit(old: str, new: str, tgt_lang: str = "") -> bool:
     """True if the change is a safe surface edit (typo, case, punct) not a rewrite."""
     from difflib import SequenceMatcher
@@ -11748,6 +11832,11 @@ def is_safe_polish_edit(old: str, new: str, tgt_lang: str = "") -> bool:
     new_norm = _polish_norm(n_fixed)
     if old_norm == new_norm:
         return True
+    # Olumsuzluk dönüşü benzerlikten ÖNCE bakılır: 'gerekiyor' →
+    # 'gerekmiyor' %99 benzer olduğu için aşağıdaki eşiklerin hepsini
+    # geçiyor ve anlamı tersine çevirerek final dosyaya giriyordu.
+    if _negation_polarity_changed(o_fixed, n_fixed):
+        return False
     o_words = old_norm.split()
     n_words = new_norm.split()
     if len(o_words) != len(n_words):
