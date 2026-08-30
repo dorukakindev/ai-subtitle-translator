@@ -19851,7 +19851,54 @@ def _subtitle_delivery_audit(source_path: str, output_path: str,
         "source_sha256": _file_content_sha256(source_path),
         "output_sha256": _file_content_sha256(output_path),
     })
+    audit["reading_surface_path"] = _write_reading_surface(
+        source_path, output_path, audit)
     return audit
+
+
+def _reading_surface_findings(audit: dict) -> dict:
+    """{teslim_cue_id: sebep} — okuma yuzeyinin kenar isaretleri.
+
+    Yalniz KAYIT ALTINDAKI siniflar kullanilir (`_FINDING_CLASSES`);
+    boylece isaretin yaninda okunabilir bir sebep ve guven derecesi
+    olur. Isaret metnin onune GECMEZ: bu projede olculdu, teslimdeki
+    anlamsal kusurlarin tarayiciyla bulunma orani %1 — kalintiyi bulan
+    sey okumak. Yuzeyin isi okumayi kolaylastirmak.
+    """
+    bulgular = {}
+    for anahtar, meta in _FINDING_CLASSES.items():
+        degerler = audit.get(anahtar)
+        if not isinstance(degerler, (list, tuple)):
+            continue
+        guven, etiket = meta[0], meta[1]
+        for cue_no in degerler:
+            kimlik = str(cue_no)
+            sebep = "%s (%s)" % (etiket, guven)
+            onceki = bulgular.get(kimlik)
+            bulgular[kimlik] = (onceki + "  ·  " + sebep) if onceki else sebep
+    return bulgular
+
+
+def _write_reading_surface(source_path, output_path, audit: dict):
+    """Kaynak ve teslimi yan yana okunur kilan HTML sayfasini yazar.
+
+    Basarisizlik teslimi DURDURMAZ: bu bir okuma kolayligidir, kalite
+    kapisi degil. Ama sessiz de kalmaz -- audit'e yazilir.
+    """
+    try:
+        import okuma_yuzeyi
+        kaynak = list(parse_subtitle(str(source_path)))
+        teslim = list(parse_subtitle(str(output_path)))
+        if not teslim:
+            return ""
+        hedef = (_delivery_report_dir(output_path)
+                 / ("%s.okuma.html" % _delivery_output_stem(output_path)))
+        return okuma_yuzeyi.yaz(
+            hedef, Path(output_path).stem, kaynak, teslim,
+            _reading_surface_findings(audit))
+    except Exception as hata:
+        audit["reading_surface_error"] = str(hata)[:160]
+        return ""
 
 
 def _delivery_scan_has_hard_error(scan) -> bool:
