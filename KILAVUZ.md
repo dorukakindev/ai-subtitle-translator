@@ -410,7 +410,7 @@ Sorgulama ve tek parçayı yeniden gönderme komut satırından yapılır:
 
 **Ne zaman:** Bir teslimde açıklayamadığınız bir bozukluk gördüğünüzde. Günlük kendiliğinden tutulur, açıp kapatmanız gerekmez.
 
-**İlgili:** Kaynak Ön Kontrolü, Zincirleme Bağlam
+**İlgili:** Kaynak Ön Kontrolü, Pass Kanıt Manifestosu, Zincirleme Bağlam
 
 ### Kaynak Ön Kontrolü
 
@@ -435,6 +435,25 @@ Program arka planda çalışırken bitişi ve önemli hataları haber verir.
 **Ne zaman:** Bilgisayarın başında beklemiyorsanız.
 
 **İlgili:** Bitince Bilgisayarı Kapat
+
+### Pass Kanıt Manifestosu
+
+**Varsayılan:** —
+
+Chunk günlüğü ''bu cue hangi istekte gitti'' sorusunu kapatıyor. İkinci yarısı şuydu: cue ilk çevirisinden sonra Critic, Polish, terim normalizasyonu gibi geçişlerin elinden geçiyor ve bunların kararları hiçbir yerde yazmıyordu.
+
+Artık her karar aynı koşu günlüğüne yazılıyor: hangi geçiş, hangi cue, eski metin, önerilen metin, gerekçe, güven ve sonuç — uygulandı, reddedildi ya da yalnız raporlandı.
+
+REDDEDİLEN öneriler de yazılıyor ve aslında en değerli satırlar onlar: bir korumanın neyi durdurduğu, neyi geçirdiği kadar önemli.
+
+Ayrı bir dosya değil, chunk günlüğünün içinde: bir cue'nun bütün geçmişi tek yerde okunmalı, yoksa iki kayıt arasında hangisinin doğru olduğu yeni bir soru olur.
+
+    python chunk_sorgu.py gecmis 1874
+    python chunk_sorgu.py passlar
+
+**Ne zaman:** Bir satırın neden değiştiğini ya da neden DEĞİŞMEDİĞİNİ anlamak istediğinizde.
+
+**İlgili:** Chunk Adli Günlüğü, Critic (Eleştirmen) Geçişi, Polish (Cilalama) Geçişi
 
 ### Yardımcı Model Rota Yedeklemesi
 

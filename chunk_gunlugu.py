@@ -275,6 +275,73 @@ def ozet(kayitlar) -> dict:
     }
 
 
+def pass_kaydi(pass_adi, cue_id, *, dosya="", zaman_damgasi="", eski="",
+               yeni="", gerekce="", guven="", sonuc="", model="",
+               kaynak_cue_idler=(), zaman=None) -> dict:
+    """Bir pass'in TEK cue uzerindeki karari.
+
+    `sonuc` uc degerden biri: "uygulandi", "reddedildi", "rapor".
+    Reddedilenler en degerlileri — bir guard'in neyi durdurdugu, neyi
+    gecirdigi kadar onemli ve hicbir yerde yazmiyordu.
+    """
+    return {
+        "surum": SURUM,
+        "tip": "pass",
+        "zaman": float(zaman if zaman is not None else time.time()),
+        "pass_adi": str(pass_adi or ""),
+        "dosya": os.path.basename(str(dosya or "")),
+        "cue_id": str(cue_id or ""),
+        "zaman_damgasi": str(zaman_damgasi or ""),
+        "eski": str(eski or ""),
+        "yeni": str(yeni or ""),
+        "gerekce": str(gerekce or ""),
+        "guven": str(guven or ""),
+        "sonuc": str(sonuc or ""),
+        "model": str(model or ""),
+        "kaynak_cue_idler": [str(c) for c in (kaynak_cue_idler or ())],
+    }
+
+
+def passlar(kayitlar) -> list:
+    return [k for k in (kayitlar or ()) if k.get("tip") == "pass"]
+
+
+def cue_gecmisi(kayitlar, cue_id=None, zaman_damgasi=None, dosya="") -> list:
+    """Bir cue'nun butun gecmisi: hangi istekte gitti, sonra kim dokundu.
+
+    Zaman damgasi verildiginde numara dikkate ALINMAZ; teslim yeniden
+    numaralandiginda numara yanlis satira goturur.
+    """
+    hedef_id = None if cue_id is None else str(cue_id)
+    hedef_ts = None if zaman_damgasi is None else str(zaman_damgasi).strip()
+    gecmis = list(cue_ara(kayitlar, cue_id=cue_id,
+                          zaman_damgasi=zaman_damgasi))
+    for kayit in passlar(kayitlar):
+        if dosya and dosya.lower() not in kayit.get("dosya", "").lower():
+            continue
+        if hedef_ts is not None:
+            if str(kayit.get("zaman_damgasi") or "").strip() == hedef_ts:
+                gecmis.append(kayit)
+        elif hedef_id is not None and str(kayit.get("cue_id")) == hedef_id:
+            gecmis.append(kayit)
+    gecmis.sort(key=lambda k: k.get("zaman", 0.0))
+    return gecmis
+
+
+def pass_ozeti(kayitlar) -> dict:
+    """Pass basina: kac oneri, kaci uygulandi, kaci reddedildi."""
+    ozet = {}
+    for kayit in passlar(kayitlar):
+        ad = kayit.get("pass_adi") or "?"
+        hane = ozet.setdefault(
+            ad, {"toplam": 0, "uygulandi": 0, "reddedildi": 0, "rapor": 0})
+        hane["toplam"] += 1
+        sonuc = kayit.get("sonuc") or ""
+        if sonuc in hane:
+            hane[sonuc] += 1
+    return ozet
+
+
 def budan(dizin, sinir=VARSAYILAN_KOSU_SINIRI,
           bayt_siniri=VARSAYILAN_BAYT_SINIRI) -> list:
     """En yeni koşuları tutar; sayı VE boyut sınırının ikisine de uyar.

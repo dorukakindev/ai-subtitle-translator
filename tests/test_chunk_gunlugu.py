@@ -311,5 +311,79 @@ class BoyutSiniriTest(unittest.TestCase):
         self.assertEqual(len(os.listdir(dizin)), 2)
 
 
+class PassManifestoTest(unittest.TestCase):
+    """Chunk günlüğü "hangi İSTEKTE gitti"yi kapattı.
+
+    İkinci yarısı: cue ilk çevirisinden sonra hangi PASS'lerin elinden
+    geçti, her biri ne önerdi, hangisi uygulandı, hangisi reddedildi.
+    Ayrı bir dosya DEĞİL aynı koşu günlüğü — bir cue'nun bütün geçmişi
+    tek yerde okunmalı, yoksa iki kaynak arasında hangisinin doğru
+    olduğu yeni bir problem olur.
+    """
+    TS = "00:01:00,000 --> 00:01:02,000"
+
+    def _kayitlar(self):
+        return [
+            cg.kayit_olustur("a__1", SENKRON_INFO, GOVDE, zaman=1.0,
+                             dosya="ornek.srt"),
+            cg.pass_kaydi("polish", 12, dosya="ornek.srt",
+                          zaman_damgasi=self.TS, eski="Selam.",
+                          yeni="Merhaba.", sonuc="reddedildi",
+                          gerekce="yüzeysel düzeltme değil", zaman=2.0),
+            cg.pass_kaydi("critic", 12, dosya="ornek.srt",
+                          zaman_damgasi=self.TS, eski="Selam.",
+                          yeni="Merhaba.", sonuc="rapor",
+                          guven="muhtemel", zaman=3.0),
+        ]
+
+    def test_cue_gecmisi_ceviriyle_baslar_zaman_sirali(self):
+        gecmis = cg.cue_gecmisi(self._kayitlar(), zaman_damgasi=self.TS)
+        self.assertEqual([k["tip"] for k in gecmis],
+                         ["chunk", "pass", "pass"])
+
+    def test_REDDEDILEN_aday_da_kayitli(self):
+        """Bir guard'ın neyi DURDURDUĞU, neyi geçirdiği kadar önemli ve
+        hiçbir yerde yazmıyordu."""
+        ozet = cg.pass_ozeti(self._kayitlar())
+        self.assertEqual(ozet["polish"]["reddedildi"], 1)
+        self.assertEqual(ozet["critic"]["rapor"], 1)
+
+    def test_gecmis_ZAMAN_DAMGASIYLA_anahtarlanir(self):
+        kayitlar = self._kayitlar()
+        kayitlar.append(cg.pass_kaydi(
+            "polish", 12, dosya="baska.srt",
+            zaman_damgasi="00:09:00,000 --> 00:09:01,000",
+            sonuc="uygulandi", zaman=4.0))
+        gecmis = cg.cue_gecmisi(kayitlar, zaman_damgasi=self.TS)
+        self.assertEqual(len(cg.passlar(gecmis)), 2)
+
+    def test_dosyaya_gore_daraltilir(self):
+        kayitlar = self._kayitlar()
+        kayitlar.append(cg.pass_kaydi("polish", 12, dosya="baska.srt",
+                                      zaman_damgasi=self.TS,
+                                      sonuc="uygulandi", zaman=4.0))
+        gecmis = cg.cue_gecmisi(kayitlar, zaman_damgasi=self.TS,
+                                dosya="ornek")
+        self.assertEqual(len(cg.passlar(gecmis)), 2)
+
+    def test_MALIYET_ALANI_YOK(self):
+        kayit = cg.pass_kaydi("polish", 12)
+        for yasak in ("maliyet", "ucret", "usd", "fiyat", "cost"):
+            self.assertFalse([a for a in kayit if yasak in a.lower()], yasak)
+
+    def test_polish_iki_sonuca_da_bagli(self):
+        with io.open(os.path.join(KOK, "subtitle_translator_gui.py"),
+                     encoding="utf-8") as fh:
+            gui = fh.read()
+        self.assertEqual(gui.count('_pass_gunluge_yaz('), 3)
+        self.assertIn('sonuc="uygulandi", model=helper_model', gui)
+        self.assertIn('sonuc="reddedildi", model=helper_model', gui)
+
+    def test_yazim_cagirani_DUSURMEZ(self):
+        import types
+        import subtitle_translator_gui as g
+        g._pass_gunluge_yaz(types.SimpleNamespace(), "polish", 1)
+
+
 if __name__ == "__main__":
     unittest.main()

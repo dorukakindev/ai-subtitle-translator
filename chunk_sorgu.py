@@ -4,6 +4,7 @@
 Teslimde bozuk bir cue bulundu. Sorular sırasıyla şunlar:
 
     hangi istekte gitti        ->  chunk_sorgu.py bul 1874
+    cue'ya kim dokundu         ->  chunk_sorgu.py gecmis 1874
     o istekte ne vardı         ->  chunk_sorgu.py goster ornek.srt__3
     aynısını göndersem ne olur ->  chunk_sorgu.py replay ornek.srt__3
 
@@ -19,6 +20,8 @@ Kullanım:
     python chunk_sorgu.py kosular
     python chunk_sorgu.py bul <cue-no|zaman-damgasi> [--gunluk YOL]
     python chunk_sorgu.py goster <custom_id> [--gunluk YOL]
+    python chunk_sorgu.py gecmis <cue-no|zaman-damgasi>
+    python chunk_sorgu.py passlar
     python chunk_sorgu.py replay <custom_id> [--gunluk YOL] [--model AD]
 """
 from __future__ import annotations
@@ -247,6 +250,58 @@ def komut_replay(args) -> int:
     return 0
 
 
+def komut_gecmis(args) -> int:
+    """Bir cue'nun tam geçmişi: hangi istekte gitti, sonra kim dokundu."""
+    yol = _gunluk_sec(args.gunluk)
+    kayitlar, _istemler = _yukle(yol)
+    hedef = str(args.hedef).strip()
+    zamanla = ":" in hedef
+    gecmis = chunk_gunlugu.cue_gecmisi(
+        kayitlar,
+        cue_id=None if zamanla else hedef,
+        zaman_damgasi=hedef if zamanla else None,
+        dosya=args.dosya or "")
+    if not gecmis:
+        print("%s için kayıt yok (%s)" % (hedef, os.path.basename(yol)))
+        return 1
+    for kayit in gecmis:
+        if kayit.get("tip") == "chunk":
+            print("ÇEVİRİ   %s   %s" % (kayit["custom_id"], kayit["dosya"]))
+            print("         model %s · yük: %s"
+                  % (kayit.get("model") or "?",
+                     ", ".join(kayit.get("yuk_anahtarlari") or []) or "—"))
+            if kayit.get("bitis_sebebi") or kayit.get("hata"):
+                print("         DİKKAT bitiş=%s hata=%s"
+                      % (kayit.get("bitis_sebebi") or "-",
+                         kayit.get("hata") or "-"))
+        else:
+            print("%-8s %-11s %s"
+                  % (kayit.get("pass_adi", "?").upper()[:8],
+                     kayit.get("sonuc") or "?",
+                     kayit.get("gerekce") or ""))
+            print("         eski: %s" % _kisa(kayit.get("eski"), 300))
+            print("         yeni: %s" % _kisa(kayit.get("yeni"), 300))
+    return 0
+
+
+def komut_passlar(args) -> int:
+    """Pass başına: kaç öneri, kaçı uygulandı, kaçı reddedildi."""
+    yol = _gunluk_sec(args.gunluk)
+    kayitlar, _istemler = _yukle(yol)
+    ozet = chunk_gunlugu.pass_ozeti(kayitlar)
+    if not ozet:
+        print("Bu koşuda pass kaydı yok (%s)" % os.path.basename(yol))
+        return 1
+    print("%-16s %8s %11s %11s %8s" % (
+        "pass", "toplam", "uygulandı", "reddedildi", "rapor"))
+    print("-" * 58)
+    for ad in sorted(ozet):
+        h = ozet[ad]
+        print("%-16s %8d %11d %11d %8d" % (
+            ad, h["toplam"], h["uygulandi"], h["reddedildi"], h["rapor"]))
+    return 0
+
+
 def main(argv=None) -> int:
     ayrac = argparse.ArgumentParser(
         description="Chunk adli günlüğü — sorgula ve yeniden gönder")
@@ -263,6 +318,15 @@ def main(argv=None) -> int:
     p_gos.add_argument("custom_id")
     p_gos.add_argument("--gunluk")
 
+    p_gec = altlar.add_parser(
+        "gecmis", help="Bir cue'ya çeviri dışında kim dokundu")
+    p_gec.add_argument("hedef", help="cue numarası VEYA zaman damgası")
+    p_gec.add_argument("--gunluk")
+    p_gec.add_argument("--dosya", help="dosya adına göre daralt")
+
+    p_pas = altlar.add_parser("passlar", help="Pass başına öneri/red özeti")
+    p_pas.add_argument("--gunluk")
+
     p_rep = altlar.add_parser("replay", help="Chunk'ı yeniden gönder ve karşılaştır")
     p_rep.add_argument("custom_id")
     p_rep.add_argument("--gunluk")
@@ -278,6 +342,8 @@ def main(argv=None) -> int:
         "kosular": komut_kosular,
         "bul": komut_bul,
         "goster": komut_goster,
+        "gecmis": komut_gecmis,
+        "passlar": komut_passlar,
         "replay": komut_replay,
     }[args.komut](args)
 

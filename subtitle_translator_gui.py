@@ -22410,6 +22410,14 @@ def _chunk_gunluge_yaz(app, *args, **kwargs) -> None:
         return
 
 
+def _pass_gunluge_yaz(app, *args, **kwargs) -> None:
+    """Pass kararini yazar; cagirani hicbir kosulda dusurmez."""
+    try:
+        app._pass_gunluk_kaydet(*args, **kwargs)
+    except Exception:
+        return
+
+
 def _chunk_gunluk_geri_cagrisi(app, dosya="", istekler=None):
     """Hibrit batch icin gunluk geri cagrisi; kurulamazsa None.
 
@@ -36818,6 +36826,18 @@ class App(ctk.CTk):
         except Exception:
             return
 
+    def _pass_gunluk_kaydet(self, pass_adi, cue_id, **ek) -> None:
+        """Bir pass kararini koşu günlüğüne yazar; asla çeviriyi düşürmez."""
+        try:
+            import chunk_gunlugu
+            yol = self._chunk_gunluk_yolu()
+            if not yol:
+                return
+            chunk_gunlugu.yaz(
+                yol, chunk_gunlugu.pass_kaydi(pass_adi, cue_id, **ek))
+        except Exception:
+            return
+
     def _chunk_gunluk_batch_fn(self, dosya="", istekler=None):
         """Hibrit batch akışı için `ht.save_results` geri çağrısı.
 
@@ -37173,6 +37193,15 @@ class App(ctk.CTk):
                 changed += 1
                 self._log(f"  ✏ #{idx}  {text!r}", "warn")
                 self._log(f"       → {new_text!r}", "ok")
+                # Pass manifestosu: hangi pass hangi cue'da ne önerdi.
+                # Rapor teslimdeki KUSURU adresliyordu; bu, kusura giden
+                # KARARI adresliyor.
+                _pass_gunluge_yaz(
+                    self, "polish", idx,
+                    dosya=self.__dict__.get("_current_file_path", ""),
+                    zaman_damgasi=ts, eski=text, yeni=new_text,
+                    sonuc="uygulandi", model=helper_model,
+                    gerekce="polish önerisi guard'lardan geçti")
             final.append((idx, ts, new_text))
         total = len(sorted_blocks)
         ratio = changed / total if total > 0 else 0
@@ -37187,12 +37216,21 @@ class App(ctk.CTk):
             # (frag_group) yarısını eski yarısını yeni bırakıp cümleyi
             # bozuyordu: bir üyesi geri alınan grubun TAMAMI geri alınır
             # (denetim Part 2, madde 29).
-            unsafe_ids = {
-                str(idx) for idx, _ts, text in sorted_blocks
-                if result_map.get(str(idx), text) != text
-                and not ht.is_safe_polish_edit(
-                    text, result_map.get(str(idx), text))
-            }
+            unsafe_ids = set()
+            for idx, _ts, text in sorted_blocks:
+                _aday = result_map.get(str(idx), text)
+                if _aday == text or ht.is_safe_polish_edit(text, _aday):
+                    continue
+                unsafe_ids.add(str(idx))
+                # Reddedilen aday manifestonun EN değerli satırı: bir
+                # guard'ın neyi durdurduğu, neyi geçirdiği kadar önemli
+                # ve hiçbir yerde yazılmıyordu.
+                _pass_gunluge_yaz(
+                    self, "polish", idx,
+                    dosya=self.__dict__.get("_current_file_path", ""),
+                    zaman_damgasi=_ts, eski=text, yeni=_aday,
+                    sonuc="reddedildi", model=helper_model,
+                    gerekce="is_safe_polish_edit: yüzeysel düzeltme değil")
             group_members = {}
             for _group in (fragment_groups or []):
                 _members = [str(item) for item in (_group.get("items") or [])]

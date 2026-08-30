@@ -573,7 +573,7 @@ MADDELER: dict[str, Madde] = {
             "    python chunk_sorgu.py replay dosya.srt__3\n\n"
             "`replay` hiçbir dosyaya dokunmaz: eski ve yeni çeviriyi yan yana basar, kararı siz verirsiniz. Karşılaştırma cue numarasıyla değil ZAMAN DAMGASIYLA yapılır — bir cue silindiğinde numaralar kayar ve sonraki her satır sahte olarak değişmiş görünür."),
         ne_zaman="Bir teslimde açıklayamadığınız bir bozukluk gördüğünüzde. Günlük kendiliğinden tutulur, açıp kapatmanız gerekmez.",
-        iliskili=("kaynak_on_kontrol", "chain_ctx_var"),
+        iliskili=("kaynak_on_kontrol", "pass_manifestosu", "chain_ctx_var"),
         maliyet="Yalnız disk: dosya başına ~300 KB. En yeni 20 koşu ve en çok 100 MB tutulur, eskiler silinir.",
         arayuz_kutusu=False,
     ),
@@ -587,6 +587,21 @@ MADDELER: dict[str, Madde] = {
             "KODLAMA — kaynak yanlış kodlamayla okunmuşsa çeviri baştan sona yanlış olur. 386 dosyada bir vaka bulundu. Kural iki karakterlik imzalar arar; tek harfe bakan bir kural İsveççe `Åke` gibi meşru sözcükleri yanlış işaretlerdi."),
         ne_zaman="Kendiliğinden çalışır. Uyarı görürseniz çeviriye başlamadan önce kaynağı düzeltmek neredeyse her zaman daha ucuzdur.",
         iliskili=("chunk_gunlugu",),
+        arayuz_kutusu=False,
+    ),
+    "pass_manifestosu": Madde(
+        baslik="Pass Kanıt Manifestosu",
+        bolum="Çalışma ve Kurtarma",
+        kisa="Bir cue'ya çeviriden SONRA hangi geçişin dokunduğunu, ne önerdiğini ve önerisinin kabul mü red mi edildiğini kaydeder.",
+        uzun=(
+            "Chunk günlüğü ''bu cue hangi istekte gitti'' sorusunu kapatıyor. İkinci yarısı şuydu: cue ilk çevirisinden sonra Critic, Polish, terim normalizasyonu gibi geçişlerin elinden geçiyor ve bunların kararları hiçbir yerde yazmıyordu.\n\n"
+            "Artık her karar aynı koşu günlüğüne yazılıyor: hangi geçiş, hangi cue, eski metin, önerilen metin, gerekçe, güven ve sonuç — uygulandı, reddedildi ya da yalnız raporlandı.\n\n"
+            "REDDEDİLEN öneriler de yazılıyor ve aslında en değerli satırlar onlar: bir korumanın neyi durdurduğu, neyi geçirdiği kadar önemli.\n\n"
+            "Ayrı bir dosya değil, chunk günlüğünün içinde: bir cue'nun bütün geçmişi tek yerde okunmalı, yoksa iki kayıt arasında hangisinin doğru olduğu yeni bir soru olur.\n\n"
+            "    python chunk_sorgu.py gecmis 1874\n"
+            "    python chunk_sorgu.py passlar"),
+        ne_zaman="Bir satırın neden değiştiğini ya da neden DEĞİŞMEDİĞİNİ anlamak istediğinizde.",
+        iliskili=("chunk_gunlugu", "critic_var", "polish_var"),
         arayuz_kutusu=False,
     ),
     "prevent_sleep_var": Madde(
