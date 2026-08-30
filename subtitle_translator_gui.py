@@ -36705,6 +36705,35 @@ class App(ctk.CTk):
                   "ok" if fixed_total else "info")
         return result, fixed_total
 
+    def _kaynak_on_kontrol_uyar(self, filepath, blocks) -> list:
+        """Çeviri BAŞLAMADAN önce kaynağı ölçer ve uyarır.
+
+        İki sınıf da dosya çapında felakettir ve ikisi de ölçülerek
+        eklendi (386 gerçek kaynak):
+          · cümle sonu noktalaması %30 altı  -> 47 dosya (%12,2)
+          · yanlış kodlama (mojibake)        -> 1 dosya
+
+        Program DURMAZ; karar kullanıcınındır. İşi, para harcanmadan
+        önce söylemek — bir dosyanın tamamı yanlış kodlamayla çevrildikten
+        sonra fark edilirse harcanan geri gelmez.
+        """
+        try:
+            import kaynak_on_kontrol
+            metinler = [str(b[2] or "") for b in (blocks or ())]
+            try:
+                ham = read_subtitle_text(str(filepath))
+            except Exception:
+                ham = chr(10).join(metinler)
+            uyarilar = kaynak_on_kontrol.on_kontrol(metinler, ham)
+        except Exception:
+            return []
+        ad = Path(str(filepath)).name
+        for uyari in uyarilar:
+            self._log(
+                "%s — KAYNAK ÖN KONTROLÜ: %s" % (ad, uyari["mesaj"]),
+                "err" if uyari.get("seviye") == "kritik" else "warn")
+        return uyarilar
+
     def _cached_blocks_for(self, fp: str):
         cache = getattr(self, "_block_cache", None)
         if isinstance(cache, dict):
@@ -40786,6 +40815,7 @@ class App(ctk.CTk):
                     fp, "Geçerli altyazı bloğu yok", 100, "skip")
             else:
                 self._block_cache[fp] = blocks
+                self._kaynak_on_kontrol_uyar(fp, blocks)
                 valid_files.append(fp)
                 source_hashes[fp] = after_hash
                 # Hangi dilden çevrildiği log'da yazmıyordu; teşhis sırasında
@@ -42880,6 +42910,7 @@ class App(ctk.CTk):
                     fp, "Geçerli altyazı bloğu yok", 100, "skip")
             else:
                 self._block_cache[fp] = blocks
+                self._kaynak_on_kontrol_uyar(fp, blocks)
                 source_hashes[fp] = after_hash
                 valid_files.append(fp)
         if not valid_files:
