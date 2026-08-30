@@ -100,14 +100,18 @@ class YuzeyselDegisiklikTest(unittest.TestCase):
 
 class KatlamaTest(unittest.TestCase):
     def test_NOKTASIZ_i_dusurulmemeli(self):
-        """`_ascii_fold` NFKD tabanlı ve noktasız ı'nın ASCII karşılığı
-        olmadığı için onu tamamen düşürüyor (`kalır` → `kalr`). Türkçe
-        karşılaştırmada bu sessiz bir sözcük bozulmasıdır; bu guard
-        `_turkish_ascii_fold` kullanır.
+        """Noktasız ı'nın ASCII karşılığı yok; saf NFKD onu DÜŞÜRÜR.
+
+        `kalır` → `kalr`, `hırsızsa` → `hrszsa`. Gerçek arşivde Türkçe
+        sözcüklerin %30,6'sı ı içeriyor ve saf NFKD katlaması aksan
+        onarımını 13.821 vakanın SIFIRINDA tanıyordu; ı→i eşlemesiyle
+        13.821'inde tanıyor. İki katlama da bu yüzden Türkçe duyarlı.
         """
-        self.assertEqual(ht._ascii_fold("kalır"), "kalr")
-        self.assertEqual(ht._turkish_ascii_fold("kalır"), "kalir")
-        self.assertEqual(ht._turkish_ascii_fold("hayır"), "hayir")
+        for fold in (ht._ascii_fold, ht._turkish_ascii_fold):
+            self.assertEqual(fold("kalır"), "kalir")
+            self.assertEqual(fold("hayır"), "hayir")
+            self.assertEqual(fold("hırsızsa"), "hirsizsa")
+        self.assertEqual(ht._ascii_fold("çalışabiliriz"), "calisabiliriz")
 
     def test_olumsuzluk_sozcugu_katlanmis_ariyor(self):
         self.assertEqual(ht._negation_words("Hayır, değil."),

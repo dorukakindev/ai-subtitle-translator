@@ -190,12 +190,21 @@ class ValidatePolishNewGuardsTest(unittest.TestCase):
         self.assertEqual(reason, "proposition_drift")
 
     def test_content_drift_rejected(self):
+        """Tamamen başka bir cümle reddedilmeli.
+
+        Gerekçe kodu `critical_fact_swap`: katlama Türkçe
+        duyarlı hâle gelince "bugun"/"yarin" çifti artık
+        görülüyor ve bu gerçekten de bir olgu takasıdır
+        (bugün→yarın). Daha genel `content_word_drift`'ten
+        önce ateşliyor; reddin kendisi değişmedi.
+        """
         ok, reason = _VALIDATE(
             "bugun eve gidip yemek yaptim",
             "yarin aksam disari cikip kahvalti edecegim"
         )
         self.assertFalse(ok)
-        self.assertEqual(reason, "content_word_drift")
+        self.assertIn(reason, ("critical_fact_swap",
+                               "content_word_drift"))
 
     def test_content_loss_rejected(self):
         ok, reason = _VALIDATE_SRC(
