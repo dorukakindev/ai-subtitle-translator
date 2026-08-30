@@ -45,12 +45,19 @@ class KilavuzArayuzTest(unittest.TestCase):
         """
         harita = self.app._kilavuz_degisken_haritasi()
         eslenen = set(harita.values())
-        eksik = sorted(set(kilavuz.MADDELER) - eslenen)
+        eksik = sorted(set(kilavuz.kutulu_maddeler()) - eslenen)
         self.assertEqual(
             eksik, [],
             "App üzerinde karşılığı bulunamayan madde(ler): %s"
             % ", ".join(eksik))
-        self.assertEqual(len(harita), len(kilavuz.MADDELER))
+        self.assertEqual(len(harita), len(kilavuz.kutulu_maddeler()))
+
+    def test_kutusuz_madde_kutu_ARAMAZ(self):
+        """Kutusuz maddenin arayuzde karsiligi olmamali; olsaydi
+        kutulu olarak isaretlenmesi gerekirdi."""
+        harita = self.app._kilavuz_degisken_haritasi()
+        for ad in kilavuz.kutusuz_maddeler():
+            self.assertNotIn(ad, set(harita.values()), ad)
 
     def test_tarama_patlamadan_calisir(self):
         """Stub'da 0 döner, gerçek arayüzde 35 — ikisinde de hata vermez."""

@@ -389,6 +389,43 @@ Yalnız görünümü etkiler; çeviriye ya da çıktıya hiçbir etkisi yoktur. 
 
 **Ne zaman:** Arayüz takılıyorsa kapatın.
 
+### Chunk Adli Günlüğü
+
+**Varsayılan:** —
+  ·  **Maliyet:** Yalnız disk: dosya başına ~300 KB. En yeni 20 koşu ve en çok 100 MB tutulur, eskiler silinir.
+
+Teslimde bozuk bir satır bulduğunuzda rapor size cue'yu gösterir, ama o cue'nun hangi istekte gittiğini ve o istekte hangi bağlamın bulunduğunu göstermez. Günlük bu boşluğu kapatır.
+
+Koşu başına tek dosya yazılır ve şunları taşır: parçadaki cue numaraları ve zaman damgaları, gönderilen yükün tamamı, hangi bağlam anahtarlarının gerçekten konduğu (ctx, prev_tr, sözlük), model, adres, token sayısı, yanıtın kesilip kesilmediği ve ham yanıt.
+
+Günlükte PARA YOKTUR. Ana rota dinamik faturalandığı için yerelde hesaplanacak bir tutar yanlış olur ve — daha kötüsü — doğru sanılır. Token ölçülen bir büyüklüktür, o kaydedilir.
+
+Sorgulama ve tek parçayı yeniden gönderme komut satırından yapılır:
+    python chunk_sorgu.py kosular
+    python chunk_sorgu.py bul 1874
+    python chunk_sorgu.py goster dosya.srt__3
+    python chunk_sorgu.py replay dosya.srt__3
+
+`replay` hiçbir dosyaya dokunmaz: eski ve yeni çeviriyi yan yana basar, kararı siz verirsiniz. Karşılaştırma cue numarasıyla değil ZAMAN DAMGASIYLA yapılır — bir cue silindiğinde numaralar kayar ve sonraki her satır sahte olarak değişmiş görünür.
+
+**Ne zaman:** Bir teslimde açıklayamadığınız bir bozukluk gördüğünüzde. Günlük kendiliğinden tutulur, açıp kapatmanız gerekmez.
+
+**İlgili:** Kaynak Ön Kontrolü, Zincirleme Bağlam
+
+### Kaynak Ön Kontrolü
+
+**Varsayılan:** —
+
+Kaynak dosya yüklenirken iki ölçüm yapılır ve sonuç kayıt penceresine yazılır. Program DURMAZ; karar sizindir. İşi, para harcanmadan önce söylemektir.
+
+CÜMLE SONU NOKTALAMASI — kaynakta cue'ların %30'undan azı noktalamayla bitiyorsa uyarır. Böyle bir kaynakta model satır satır çevirme eğilimine girer ve çıktının önemli bir kısmı İngilizce söz diziminde kalır. Bu kusur yamayla düzelmez, yeniden çeviri ister — yani dosyanın parası iki kez ödenir. 386 gerçek kaynakta ortanca %70, eşiğin altında kalan 47 dosya (%12) çıktı; on iki dosya hiç cümle bitirmiyordu (kayan altyazılı belgeseller).
+
+KODLAMA — kaynak yanlış kodlamayla okunmuşsa çeviri baştan sona yanlış olur. 386 dosyada bir vaka bulundu. Kural iki karakterlik imzalar arar; tek harfe bakan bir kural İsveççe `Åke` gibi meşru sözcükleri yanlış işaretlerdi.
+
+**Ne zaman:** Kendiliğinden çalışır. Uyarı görürseniz çeviriye başlamadan önce kaynağı düzeltmek neredeyse her zaman daha ucuzdur.
+
+**İlgili:** Chunk Adli Günlüğü
+
 ### Masaüstü Bildirimi
 
 **Varsayılan:** açık

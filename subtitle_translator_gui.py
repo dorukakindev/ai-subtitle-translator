@@ -22395,6 +22395,33 @@ def _json_glossary_store_is_valid(path) -> bool:
     return isinstance(data, dict)
 
 
+def _chunk_gunluge_yaz(app, *args, **kwargs) -> None:
+    """Chunk gunlugune yazar; hicbir kosulda cagirani dusurmez.
+
+    Gunluk bir teshis aracidir: cevirinin dogru bitmesi ona bagli
+    degildir, tersi de dogru olmali. Yazimin kendisi zaten yutuluyordu
+    ama METODUN VAR OLMASI yutulmuyordu -- bu ayrimi bir test yakaladi,
+    ve ayni ayrim canli kosuda da (eksik bir nitelik, yarim kurulmus bir
+    ornek) sessiz kalmasi gerekirken cevirinin ortasinda patlardi.
+    """
+    try:
+        app._chunk_gunluk_kaydet(*args, **kwargs)
+    except Exception:
+        return
+
+
+def _chunk_gunluk_geri_cagrisi(app, dosya="", istekler=None):
+    """Hibrit batch icin gunluk geri cagrisi; kurulamazsa None.
+
+    None gecmek `ht.save_results` icin gecerlidir: gunluk tutulmaz, ceviri
+    normal surer.
+    """
+    try:
+        return app._chunk_gunluk_batch_fn(dosya=dosya, istekler=istekler)
+    except Exception:
+        return None
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -36734,6 +36761,89 @@ class App(ctk.CTk):
                 "err" if uyari.get("seviye") == "kritik" else "warn")
         return uyarilar
 
+    # ── Chunk adli günlüğü ───────────────────────────────────────────────────
+    def _chunk_gunluk_yolu(self):
+        """Bu koşunun günlük dosyası; ilk çağrıda açılır ve eskiler budanır.
+
+        Koşu başına tek dosya: bir teslimdeki kusur tek bir koşuya aittir
+        ve o koşunun bütün istekleri yan yana durmalıdır.
+        """
+        yol = self.__dict__.get("_chunk_gunluk_dosyasi")
+        if yol:
+            return yol
+        try:
+            import chunk_gunlugu
+            dizin = Path(state_path(__file__, "logs")) / "chunk_gunlugu"
+            dizin.mkdir(parents=True, exist_ok=True)
+            yol = str(dizin / (time.strftime("%Y%m%d_%H%M%S") + ".jsonl"))
+            self._chunk_gunluk_dosyasi = yol
+            self._chunk_gunluk_istemleri = set()
+            for silinen in chunk_gunlugu.budan(str(dizin)):
+                _ = silinen
+            return yol
+        except Exception:
+            self._chunk_gunluk_dosyasi = ""
+            return ""
+
+    def _chunk_gunluk_kaydet(self, custom_id, cue_bilgisi, body, ham_yanit,
+                             *, akis="", dosya="", kaynak="api", **ek):
+        """Tek isteği günlüğe yazar. Günlük çeviriyi ASLA düşürmez.
+
+        Sistem istemi chunk başına tekrar edilmez — dosyanın bütün
+        chunk'ları aynı istemi taşır ve istem kilobaytlarcadır; koşuda bir
+        kez başlık satırı olarak yazılır, chunk satırı özetine atıfta
+        bulunur. Yeniden gönderim ikisini birleştirir.
+        """
+        try:
+            import chunk_gunlugu
+            yol = self._chunk_gunluk_yolu()
+            if not yol:
+                return
+            kayit = chunk_gunlugu.kayit_olustur(
+                custom_id, cue_bilgisi, body, akis=akis, dosya=dosya,
+                kaynak=kaynak, ham_yanit=ham_yanit,
+                taban_url=self._main_api_base_url(), **ek)
+            satirlar = []
+            sistem = ""
+            for mesaj in (body or {}).get("messages") or ():
+                if str((mesaj or {}).get("role") or "") in ("system", "developer"):
+                    sistem = str(mesaj.get("content") or "")
+                    break
+            gorulen = self.__dict__.setdefault("_chunk_gunluk_istemleri", set())
+            if kayit["istem_sha"] not in gorulen:
+                gorulen.add(kayit["istem_sha"])
+                satirlar.append(chunk_gunlugu.istem_basligi(sistem))
+            satirlar.append(kayit)
+            chunk_gunlugu.yaz(yol, satirlar)
+        except Exception:
+            return
+
+    def _chunk_gunluk_batch_fn(self, dosya="", istekler=None):
+        """Hibrit batch akışı için `ht.save_results` geri çağrısı.
+
+        Batch çıktısında istek GÖVDESİ yoktur, yalnız yanıt vardır; gövde
+        elde varsa custom_id üzerinden eşlenir. Elde yoksa kayıt yine
+        yazılır — cue kimlikleri, zaman damgaları, kesilme sebebi ve ham
+        yanıt tek başına da "bu cue hangi isteğe aitti" sorusunu
+        cevaplıyor; gövdesizlik kaydı atlamak için gerekçe değil.
+        """
+        govdeler = {}
+        for istek in (istekler or ()):
+            cid = str((istek or {}).get("custom_id") or "")
+            if cid:
+                govdeler[cid] = (istek or {}).get("body") or {}
+
+        def _yaz(cid, info, raw="", finish="", usage=None, hata=""):
+            kullanim = usage if isinstance(usage, dict) else {}
+            self._chunk_gunluk_kaydet(
+                cid, info, govdeler.get(str(cid)) or {}, raw,
+                akis="hybrid_batch", kaynak="batch", dosya=dosya,
+                bitis_sebebi=finish, hata=hata,
+                giris_token=kullanim.get("prompt_tokens") or 0,
+                cikis_token=kullanim.get("completion_tokens") or 0)
+
+        return _yaz
+
     def _cached_blocks_for(self, fp: str):
         cache = getattr(self, "_block_cache", None)
         if isinstance(cache, dict):
@@ -42074,6 +42184,9 @@ class App(ctk.CTk):
             for req in batch_reqs:
                 cid = req.get("custom_id", "")
                 raw = raw_map.get(cid, "")
+                _chunk_gunluge_yaz(
+                    self, cid, fmap.get(cid) or [], req.get("body") or {}, raw,
+                    akis="sync_hybrid", kaynak="api", dosya=filepath)
                 if raw and not _chunk_response_retry_reason(raw, req):
                     src_h = self._chunk_src_hash(
                         req, self._ckpt_fingerprint(), _ckpt_scope)
@@ -43899,7 +44012,8 @@ class App(ctk.CTk):
                                             token_callback=self._update_batch_tokens,
                                             base_url=str(getattr(client, "base_url", "")),
                                             target_language=target_language,
-                                            cancel_check=lambda: self._stop_flag)
+                                            cancel_check=lambda: self._stop_flag,
+                                            journal_fn=_chunk_gunluk_geri_cagrisi(self))
                             _saved_ok = True
                         except Exception as e:
                             self._log(f"Sonuçlar kaydedilemedi: {e}", "err")
@@ -44803,6 +44917,21 @@ class App(ctk.CTk):
         input_dir  = self.input_var.get()
         report_dir = _resolve_report_dir(input_dir, output_dir)
         file_blocks = collect_results(raw_map, file_map, log_fn=self._log)
+        # Üç akış (senkron, batch, batch kurtarma) buradan geçiyor; günlük
+        # tek noktada yazılırsa akışlar arası parite kendiliğinden korunur.
+        for _req in (translation_requests or ()):
+            _cid = str((_req or {}).get("custom_id") or "")
+            if not _cid:
+                continue
+            _info = file_map.get(_cid) or []
+            _chunk_gunluge_yaz(
+                self, _cid, _info, (_req or {}).get("body") or {},
+                raw_map.get(_cid, ""),
+                akis="write_results", kaynak="api",
+                dosya=(_info[0][2] if _info and len(_info[0]) > 2 else ""))
+                # Model adı gövdeden okunur, o anki AYARDAN değil: istek
+                # gönderildikten sonra ayar değişmiş olabilir ve günlüğün
+                # işi ne gittiyse onu söylemektir.
         total_warnings = 0
         model_name = self._main_model_name()
         _tgt_lang  = self.tgt_var.get()
@@ -45735,7 +45864,9 @@ class App(ctk.CTk):
             ht.save_results(openai_key, oid, fmap, combined_stage, self._log,
                             token_callback=self._update_batch_tokens, src_cues=None,
                             base_url=b_url, target_language=target_language,
-                            cancel_check=lambda: self._stop_flag)
+                            cancel_check=lambda: self._stop_flag,
+                            journal_fn=_chunk_gunluk_geri_cagrisi(
+                                self, istekler=requests))
             return combined_stage, [bid]
 
         cids_a = {r.get("custom_id") for r in wave_a}
@@ -45775,7 +45906,9 @@ class App(ctk.CTk):
         ht.save_results(openai_key, [oid_a, oid_b], {**fmap_a, **fmap_b}, combined_stage,
                         self._log, token_callback=self._update_batch_tokens, src_cues=None,
                         base_url=b_url, target_language=target_language,
-                        cancel_check=lambda: self._stop_flag)
+                        cancel_check=lambda: self._stop_flag,
+                        journal_fn=_chunk_gunluk_geri_cagrisi(
+                            self, istekler=list(wave_a) + list(wave_b)))
         # Her iki dalga da yazıldı; A'nın ertelenen sahiplik işareti artık bırakılabilir.
         if not self._stop_flag:
             self._unregister_batch(bid_a)
@@ -46520,7 +46653,9 @@ class App(ctk.CTk):
                                                 token_callback=self._update_batch_tokens,
                                                 src_cues=None, base_url=b_url,
                                                 target_language=tgt,
-                                                cancel_check=lambda: self._stop_flag)
+                                                cancel_check=lambda: self._stop_flag,
+                                                journal_fn=_chunk_gunluk_geri_cagrisi(
+                                                    self, dosya=filepath))
                 _parse_path = str(_stage_path) if _stage_path else out_path
                 self._record_file_status(
                     filepath, "Sonuçları Hazırlama", "running")

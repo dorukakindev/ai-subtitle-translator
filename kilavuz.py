@@ -31,6 +31,10 @@ class Madde:
     ne_zaman: str = ""
     iliskili: tuple = ()
     maliyet: str = ""
+    # Kutusu olmayan madde: hep acik bir davranis, kapatilacak bir
+    # secenegi yok. Kilavuzun "her madde bir kutudur" degismezi
+    # bunlar icin gecmez; ayri kilitlenirler.
+    arayuz_kutusu: bool = True
 
     def ipucu(self) -> str:
         """Kutunun üstüne gelince görünecek metin."""
@@ -554,6 +558,37 @@ MADDELER: dict[str, Madde] = {
         ne_zaman="Üçüncü taraf sağlayıcı kullanıyorsanız açık bırakın.",
         iliskili=("main_custom_var",),
     ),
+    "chunk_gunlugu": Madde(
+        baslik="Chunk Adli Günlüğü",
+        bolum="Çalışma ve Kurtarma",
+        kisa="Her çeviri isteğini kaydeder: hangi cue hangi parçada gitti, o istekte ne vardı, model ne döndü.",
+        uzun=(
+            "Teslimde bozuk bir satır bulduğunuzda rapor size cue'yu gösterir, ama o cue'nun hangi istekte gittiğini ve o istekte hangi bağlamın bulunduğunu göstermez. Günlük bu boşluğu kapatır.\n\n"
+            "Koşu başına tek dosya yazılır ve şunları taşır: parçadaki cue numaraları ve zaman damgaları, gönderilen yükün tamamı, hangi bağlam anahtarlarının gerçekten konduğu (ctx, prev_tr, sözlük), model, adres, token sayısı, yanıtın kesilip kesilmediği ve ham yanıt.\n\n"
+            "Günlükte PARA YOKTUR. Ana rota dinamik faturalandığı için yerelde hesaplanacak bir tutar yanlış olur ve — daha kötüsü — doğru sanılır. Token ölçülen bir büyüklüktür, o kaydedilir.\n\n"
+            "Sorgulama ve tek parçayı yeniden gönderme komut satırından yapılır:\n"
+            "    python chunk_sorgu.py kosular\n"
+            "    python chunk_sorgu.py bul 1874\n"
+            "    python chunk_sorgu.py goster dosya.srt__3\n"
+            "    python chunk_sorgu.py replay dosya.srt__3\n\n"
+            "`replay` hiçbir dosyaya dokunmaz: eski ve yeni çeviriyi yan yana basar, kararı siz verirsiniz. Karşılaştırma cue numarasıyla değil ZAMAN DAMGASIYLA yapılır — bir cue silindiğinde numaralar kayar ve sonraki her satır sahte olarak değişmiş görünür."),
+        ne_zaman="Bir teslimde açıklayamadığınız bir bozukluk gördüğünüzde. Günlük kendiliğinden tutulur, açıp kapatmanız gerekmez.",
+        iliskili=("kaynak_on_kontrol", "chain_ctx_var"),
+        maliyet="Yalnız disk: dosya başına ~300 KB. En yeni 20 koşu ve en çok 100 MB tutulur, eskiler silinir.",
+        arayuz_kutusu=False,
+    ),
+    "kaynak_on_kontrol": Madde(
+        baslik="Kaynak Ön Kontrolü",
+        bolum="Çalışma ve Kurtarma",
+        kisa="Çeviri başlamadan kaynağı ölçer ve dosyanın tamamını götürecek iki kusuru bildirir.",
+        uzun=(
+            "Kaynak dosya yüklenirken iki ölçüm yapılır ve sonuç kayıt penceresine yazılır. Program DURMAZ; karar sizindir. İşi, para harcanmadan önce söylemektir.\n\n"
+            "CÜMLE SONU NOKTALAMASI — kaynakta cue'ların %30'undan azı noktalamayla bitiyorsa uyarır. Böyle bir kaynakta model satır satır çevirme eğilimine girer ve çıktının önemli bir kısmı İngilizce söz diziminde kalır. Bu kusur yamayla düzelmez, yeniden çeviri ister — yani dosyanın parası iki kez ödenir. 386 gerçek kaynakta ortanca %70, eşiğin altında kalan 47 dosya (%12) çıktı; on iki dosya hiç cümle bitirmiyordu (kayan altyazılı belgeseller).\n\n"
+            "KODLAMA — kaynak yanlış kodlamayla okunmuşsa çeviri baştan sona yanlış olur. 386 dosyada bir vaka bulundu. Kural iki karakterlik imzalar arar; tek harfe bakan bir kural İsveççe `Åke` gibi meşru sözcükleri yanlış işaretlerdi."),
+        ne_zaman="Kendiliğinden çalışır. Uyarı görürseniz çeviriye başlamadan önce kaynağı düzeltmek neredeyse her zaman daha ucuzdur.",
+        iliskili=("chunk_gunlugu",),
+        arayuz_kutusu=False,
+    ),
     "prevent_sleep_var": Madde(
         baslik="Çalışırken Uyku Modunu Engelle",
         bolum="Çalışma ve Kurtarma",
@@ -672,6 +707,16 @@ def bulgu_sinifi_maddeleri(siniflar: dict) -> list:
         guven, etiket, oneri = meta[0], meta[1], meta[2]
         uretilen.append((anahtar, str(guven), str(etiket), str(oneri)))
     return uretilen
+
+
+def kutulu_maddeler() -> dict:
+    """Arayuzde kutusu olan maddeler."""
+    return {a: m for a, m in MADDELER.items() if m.arayuz_kutusu}
+
+
+def kutusuz_maddeler() -> dict:
+    """Kutusu olmayan, hep acik davranislar."""
+    return {a: m for a, m in MADDELER.items() if not m.arayuz_kutusu}
 
 
 GUVEN_ACIKLAMASI = {

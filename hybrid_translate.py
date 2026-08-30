@@ -15605,8 +15605,16 @@ def save_results(
     base_url: str = "",
     target_language: str = "Turkish",
     cancel_check=None,
+    journal_fn=None,
 ) -> tuple:
     """Returns (yazılan_satır_sayısı, eksik-çeviri işaretleme_sayısı).
+
+    journal_fn verilirse her chunk sonucu için
+    `journal_fn(cid, info, raw, finish_reason, usage, hata)` çağrılır —
+    hibrit batch akışında ham yanıtlar yalnız burada görünür, ve chunk
+    adli günlüğünün dört akışta da tutulabilmesi buna bağlı. Günlük bir
+    teşhis aracıdır: çağrısı çeviriyi düşürmemeli, o yüzden çağıran taraf
+    kendi içinde yutar.
 
     output_file_id str VEYA list olabilir: iki-dalgalı batch (B3) iki ayrı çıktı
     dosyasının içeriğini TEK birleşik SRT'ye yazmak için liste geçer. file_map her
@@ -15626,6 +15634,16 @@ def save_results(
     token_prompt_sum = 0
     token_completion_sum = 0
     seen_cids = set()
+
+    def _gunluge_yaz(cid, info, raw="", finish="", usage=None, hata=""):
+        # Başarısız chunk'lar adli açıdan en değerlileri; günlüğe yalnız
+        # başarılı yanıtları yazmak, tam da aranan vakayı dışarıda bırakır.
+        if not journal_fn:
+            return
+        try:
+            journal_fn(cid, info, raw, finish, usage, hata)
+        except Exception:
+            pass
 
     for line in content.strip().splitlines():
         try:
@@ -15658,6 +15676,8 @@ def save_results(
                 srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
             if log_fn:
                 log_fn(f"İstek hatası ({cid}): {res['error'].get('message','')}", "err")
+            _gunluge_yaz(cid, info,
+                         hata=str(res["error"].get("message", "") or "istek hatası"))
             continue
 
         response = res.get("response")
@@ -15667,6 +15687,7 @@ def save_results(
                 srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA_MALFORMED_RESPONSE]")
             if log_fn:
                 log_fn(f"{cid}: response/body yapısı geçersiz", "err")
+            _gunluge_yaz(cid, info, hata="malformed_response")
             continue
         finish_reason = ""
         try:
@@ -15678,6 +15699,7 @@ def save_results(
                 log_fn(f"{cid}: yanıt kesildi (finish_reason={finish_reason})", "err")
             for (idx, start, end) in info:
                 srt_blocks[idx] = (str(idx), f"{start} --> {end}", "[HATA]")
+            _gunluge_yaz(cid, info, finish=finish_reason, hata="content_filter")
             continue
         if finish_reason == "length" and log_fn:
             log_fn(f"{cid}: yanıt kesildi; tamamlanan JSON öğeleri kurtarılıyor", "warn")
@@ -15699,6 +15721,8 @@ def save_results(
             raw = content_value.strip() if isinstance(content_value, str) else ""
         except Exception:
             raw = ""
+        _gunluge_yaz(cid, info, raw=raw, finish=finish_reason,
+                     usage=body.get("usage"))
         if not raw:
             if log_fn:
                 log_fn(f"{cid}: boş yanıt", "err")

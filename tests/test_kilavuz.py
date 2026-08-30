@@ -46,11 +46,31 @@ class KilavuzKapsamaTest(unittest.TestCase):
             "kılavuzda karşılığı olmayan kutu(lar): %s" % ", ".join(eksik))
 
     def test_kilavuzda_olmayan_kutu_anlatilmamis(self):
-        """Silinmiş bir kutu kılavuzda kalmasın."""
-        fazla = sorted(set(kilavuz.MADDELER) - set(_kod_varsayilanlari()))
+        """Silinmiş bir kutu kılavuzda kalmasın.
+
+        Kutusuz maddeler bunun dışında: hep açık davranışların
+        kapatılacak bir seçeneği yok ama anlatılmaları gerekiyor.
+        """
+        fazla = sorted(set(kilavuz.kutulu_maddeler())
+                       - set(_kod_varsayilanlari()))
         self.assertEqual(
             fazla, [],
             "kodda bulunmayan madde(ler): %s" % ", ".join(fazla))
+
+    def test_kutusuz_madde_ACIKCA_isaretli(self):
+        """Kutusuz olmak bir muafiyet; unutulup dagilmamali."""
+        kutusuz = kilavuz.kutusuz_maddeler()
+        self.assertTrue(kutusuz)
+        for ad, madde in kutusuz.items():
+            self.assertFalse(madde.arayuz_kutusu, ad)
+            self.assertIsNone(
+                madde.varsayilan,
+                "%s kutusuz ama varsayilan degeri var" % ad)
+            self.assertTrue(madde.uzun.strip(), ad)
+
+    def test_kutulu_madde_sayisi_kutu_sayisiyla_ayni(self):
+        self.assertEqual(
+            len(kilavuz.kutulu_maddeler()), len(_kod_varsayilanlari()))
 
     def test_varsayilanlar_kodla_ayni(self):
         kod = _kod_varsayilanlari()
