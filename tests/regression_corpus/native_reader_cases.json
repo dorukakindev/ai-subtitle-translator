@@ -1,0 +1,363 @@
+[
+  {
+    "id": "B01",
+    "kind": "translationese",
+    "source": "I don't think he will survive this attack.",
+    "current": "Onun bu saldırıyı hayatta kalacağını düşünmüyorum.",
+    "diagnostic": "Yanlış hâl eki ve kaynak söz dizimi",
+    "required_meaning": [
+      "olumsuz düşünce",
+      "saldırıdan sağ çıkma"
+    ]
+  },
+  {
+    "id": "B02",
+    "kind": "translationese",
+    "source": "What I need is a little time.",
+    "current": "İhtiyacım olan şey biraz zamandır.",
+    "diagnostic": "Gereksiz kopula ve kalıp aktarımı",
+    "required_meaning": [
+      "biraz zamana ihtiyaç"
+    ]
+  },
+  {
+    "id": "B03",
+    "kind": "translationese",
+    "source": "She gave me a look.",
+    "current": "Bana bir bakış verdi.",
+    "diagnostic": "Doğal olmayan genel fiil",
+    "required_meaning": [
+      "bakmak",
+      "ima edilen tepki"
+    ]
+  },
+  {
+    "id": "B04",
+    "kind": "translationese",
+    "source": "We need to make a decision.",
+    "current": "Bir karar yapmamız gerekiyor.",
+    "diagnostic": "Yanlış eşdizim",
+    "required_meaning": [
+      "karar vermek"
+    ]
+  },
+  {
+    "id": "B05",
+    "kind": "translationese",
+    "source": "He is believed to have left the city.",
+    "current": "Onun şehri terk etmiş olduğuna inanılmaktadır.",
+    "diagnostic": "Edilgen ve isim-fiil yığını",
+    "required_meaning": [
+      "şehirden ayrılma",
+      "duyum veya belirsizlik"
+    ]
+  },
+  {
+    "id": "B06",
+    "kind": "translationese",
+    "source": "I was wondering if you could help me.",
+    "current": "Bana yardım edip edemeyeceğinizi merak ediyordum.",
+    "diagnostic": "İngilizce rica kalıbının mekanik aktarımı",
+    "required_meaning": [
+      "kibar yardım talebi",
+      "siz hitabı"
+    ]
+  },
+  {
+    "id": "B07",
+    "kind": "translationese",
+    "source": "You can say that again.",
+    "current": "Bunu tekrar söyleyebilirsin.",
+    "diagnostic": "Deyimin kelimesi kelimesine çevrilmesi",
+    "required_meaning": [
+      "güçlü biçimde katılma"
+    ]
+  },
+  {
+    "id": "B08",
+    "kind": "translationese",
+    "source": "That ship has sailed.",
+    "current": "O gemi yelken açtı.",
+    "diagnostic": "Deyimin sahne anlamının kaybı",
+    "required_meaning": [
+      "fırsatın kaçmış olması"
+    ]
+  },
+  {
+    "id": "B09",
+    "kind": "translationese",
+    "source": "It doesn't sit right with me.",
+    "current": "Bu benimle doğru oturmuyor.",
+    "diagnostic": "Deyim ve hâl ilişkisi",
+    "required_meaning": [
+      "içine sinmeme"
+    ]
+  },
+  {
+    "id": "B10",
+    "kind": "translationese",
+    "source": "The plan fell apart at the last minute.",
+    "current": "Plan son dakikada ayrı düştü.",
+    "diagnostic": "Çok anlamlı fiilin yanlış seçimi",
+    "required_meaning": [
+      "planın son anda bozulması"
+    ]
+  },
+  {
+    "id": "B11",
+    "kind": "translationese",
+    "source": "I told him that I would call him.",
+    "current": "Ben ona onu arayacağımı söyledim.",
+    "diagnostic": "Gereksiz zamir tekrarları",
+    "required_meaning": [
+      "erkek kişiye sonra telefon etme sözü"
+    ]
+  },
+  {
+    "id": "B12",
+    "kind": "translationese",
+    "source": "For the purpose of ensuring safety, the door must remain closed.",
+    "current": "Güvenliğin sağlanması amacıyla kapının kapalı tutulması gerekmektedir.",
+    "diagnostic": "Bürokratik isim-fiil zinciri",
+    "required_meaning": [
+      "güvenlik",
+      "kapının kapalı kalması"
+    ]
+  },
+  {
+    "id": "B13",
+    "kind": "translationese",
+    "source": "Why would I do that?",
+    "current": "Neden ben bunu yapardım ki?",
+    "diagnostic": "Odak ve sözcük dizimi",
+    "required_meaning": [
+      "şaşkın veya itiraz eden soru"
+    ]
+  },
+  {
+    "id": "B14",
+    "kind": "translationese",
+    "source": "You were supposed to wait outside.",
+    "current": "Senin dışarıda beklemen varsayılıyordu.",
+    "diagnostic": "Modal yapının mekanik aktarımı",
+    "required_meaning": [
+      "dışarıda bekleme beklentisi",
+      "sitem"
+    ]
+  },
+  {
+    "id": "B15",
+    "kind": "translationese",
+    "source": "Let's call it a day.",
+    "current": "Hadi ona bir gün diyelim.",
+    "diagnostic": "Deyimin kelimesi kelimesine aktarımı",
+    "required_meaning": [
+      "işi bugünlük bırakma"
+    ]
+  },
+  {
+    "id": "B16",
+    "kind": "translationese",
+    "source": "She takes after her mother.",
+    "current": "O, annesinin arkasından alıyor.",
+    "diagnostic": "Phrasal verb anlamı",
+    "required_meaning": [
+      "annesine benzeme"
+    ]
+  },
+  {
+    "id": "B17",
+    "kind": "translationese",
+    "source": "The sooner we leave, the better.",
+    "current": "Daha erken ayrılırız, daha iyi.",
+    "diagnostic": "Karşılaştırmalı yapının mekanik aktarımı",
+    "required_meaning": [
+      "erken ayrılmanın daha iyi olması"
+    ]
+  },
+  {
+    "id": "B18",
+    "kind": "translationese",
+    "source": "I can't help feeling responsible.",
+    "current": "Sorumlu hissetmeye yardım edemiyorum.",
+    "diagnostic": "Can't help kalıbının yanlış aktarımı",
+    "required_meaning": [
+      "kendini sorumlu hissetmekten alamama"
+    ]
+  },
+  {
+    "id": "B19",
+    "kind": "translationese",
+    "source": "There is no point in arguing.",
+    "current": "Tartışmanın içinde hiçbir nokta yok.",
+    "diagnostic": "Kalıp ve gereksiz varlık yapısı",
+    "required_meaning": [
+      "tartışmanın faydasızlığı"
+    ]
+  },
+  {
+    "id": "B20",
+    "kind": "translationese",
+    "source": "He came across as rude.",
+    "current": "Kaba olarak karşıya geldi.",
+    "diagnostic": "Phrasal verb ve izlenim anlamı",
+    "required_meaning": [
+      "kaba görünme veya izlenimi"
+    ]
+  },
+  {
+    "id": "D01",
+    "kind": "positive_control",
+    "source": "Get out of here!",
+    "current": "Defol buradan!",
+    "diagnostic": "Sert ve doğal emir",
+    "required_meaning": [
+      "kovma",
+      "öfke"
+    ]
+  },
+  {
+    "id": "D02",
+    "kind": "positive_control",
+    "source": "I knew you'd come.",
+    "current": "Geleceğini biliyordum.",
+    "diagnostic": "Doğal özne düşürme",
+    "required_meaning": [
+      "geleceğini önceden bilme"
+    ]
+  },
+  {
+    "id": "D03",
+    "kind": "positive_control",
+    "source": "Not a chance.",
+    "current": "İmkânı yok.",
+    "diagnostic": "Kısa doğal ret",
+    "required_meaning": [
+      "kesin ret"
+    ]
+  },
+  {
+    "id": "D04",
+    "kind": "positive_control",
+    "source": "Are you out of your mind?",
+    "current": "Aklını mı kaçırdın?",
+    "diagnostic": "Yerleşik doğal karşılık",
+    "required_meaning": [
+      "şaşkınlık veya öfke"
+    ]
+  },
+  {
+    "id": "D05",
+    "kind": "positive_control",
+    "source": "Professor, could you take a look?",
+    "current": "Hocam, bir bakabilir misiniz?",
+    "diagnostic": "Doğal resmî hitap",
+    "required_meaning": [
+      "siz hitabı",
+      "inceleme ricası"
+    ]
+  },
+  {
+    "id": "D06",
+    "kind": "positive_control",
+    "source": "You first.",
+    "current": "Önden buyurun.",
+    "diagnostic": "Bağlama uygun nezaket",
+    "required_meaning": [
+      "öncelik verme",
+      "resmiyet"
+    ]
+  },
+  {
+    "id": "D07",
+    "kind": "positive_control",
+    "source": "I owe you one.",
+    "current": "Sana bir borcum var.",
+    "diagnostic": "Doğal deyim karşılığı",
+    "required_meaning": [
+      "minnet veya borç"
+    ]
+  },
+  {
+    "id": "D08",
+    "kind": "positive_control",
+    "source": "So this is it.",
+    "current": "Demek buraya kadarmış.",
+    "diagnostic": "Bağlamsal ve doğal kapanış",
+    "required_meaning": [
+      "sona gelme"
+    ]
+  },
+  {
+    "id": "D09",
+    "kind": "positive_control",
+    "source": "Don't push your luck.",
+    "current": "Şansını zorlama.",
+    "diagnostic": "Yerleşik deyim",
+    "required_meaning": [
+      "uyarı"
+    ]
+  },
+  {
+    "id": "D10",
+    "kind": "positive_control",
+    "source": "Me? I didn't touch it.",
+    "current": "Ben mi? Elimi bile sürmedim.",
+    "diagnostic": "Vurgu için gerekli açık özne",
+    "required_meaning": [
+      "inkâr",
+      "vurgu"
+    ]
+  },
+  {
+    "id": "D11",
+    "kind": "positive_control",
+    "source": "Easy. Nice and easy.",
+    "current": "Yavaş. Ağır ağır.",
+    "diagnostic": "Kasıtlı tekrar ve ritim",
+    "required_meaning": [
+      "sakinleştirme veya yavaşlatma"
+    ]
+  },
+  {
+    "id": "D12",
+    "kind": "positive_control",
+    "source": "If only he'd listened...",
+    "current": "Keşke sözümü dinleseydi...",
+    "diagnostic": "Doğal eksiltili replik",
+    "required_meaning": [
+      "pişmanlık",
+      "yarım bırakma"
+    ]
+  },
+  {
+    "id": "D13",
+    "kind": "positive_control",
+    "source": "That's on you.",
+    "current": "O senin sorumluluğun.",
+    "diagnostic": "Doğal sorumluluk ifadesi",
+    "required_meaning": [
+      "sorumluluğu karşıya yükleme"
+    ]
+  },
+  {
+    "id": "D14",
+    "kind": "positive_control",
+    "source": "We good?",
+    "current": "Aramız iyi mi?",
+    "diagnostic": "Konuşma dilinde kısa soru",
+    "required_meaning": [
+      "ilişkiyi yoklama"
+    ]
+  },
+  {
+    "id": "D15",
+    "kind": "positive_control",
+    "source": "You had me at hello.",
+    "current": "Daha merhaba derken beni kazanmıştın.",
+    "diagnostic": "Deyimsel ama anlamı koruyan doğal cümle",
+    "required_meaning": [
+      "ilk anda etkilenme"
+    ]
+  }
+]

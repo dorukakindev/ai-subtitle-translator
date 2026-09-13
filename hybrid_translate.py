@@ -4321,6 +4321,28 @@ def build_system_prompt(
 
 # ── Native Okuyucu Refleks Pass ──────────────────────────────────────────────
 
+TURKISH_NATIVE_SUBTITLE_RULES = (
+    "DOĞAL TÜRKÇE KONTROLÜ:\n"
+    "- Kaynak cümlenin kelime sırasını yamama; önce anlamı çıkar, Türkçeyi o anlamdan yeniden kur.\n"
+    "- Kaynak görünmez olsaydı bir Türkçe konuşur bu anlamı böyle mi söylerdi? Hayırsa yapıyı düzelt.\n"
+    "- Kelime seçiminden önce yan cümle, yüklem, odak, gönderge ve söz dizimini düzelt.\n"
+    "- Gereksiz özne/zamir tekrarını azalt; fakat konuşmacıyı veya vurguyu belirsizleştirme.\n"
+    "- İngilizce edatın izini sürme; Türkçe fiilin istediği hâl ekini ve doğal ilişkiyi kullan.\n"
+    "- İsim-fiil ve edilgenlik yığınlarını, anlam izin veriyorsa doğrudan ve konuşulur bir fiille kur.\n"
+    "- yapmak/etmek/gerçekleştirmek/sağlamak/sunmak gibi genel fiilleri otomatik kullanma; isimle doğal eşleşeni seç.\n"
+    "- Deyimi ve çok anlamlı sözcüğü kelime kelime değil, sahnedeki gerçek anlamıyla söyle.\n"
+    "- Karakterin resmiyetini, yaşını, öfkesini, mizahını ve sen/siz ilişkisini düzleştirme.\n"
+    "- Daha akıcı olmak adına bilgi ekleme, eksiltme, kesinleştirme, yumuşatma veya genelleştirme yapma.\n"
+    "- Doğal Türkçeyi sırf başka türlü de söylenebilir diye değiştirme; açık kazanım yoksa aynen bırak.\n"
+    "- Cue kimliğini, sayısını ve satır sınırını koru; cue birleştirme/bölme yapma. Anlamı yalnız tam frag grubu "
+    "içinde ve bütün grup birlikte döndürülüyorsa yeniden dağıt; konuşmacı veya sahne sınırını asla geçme."
+)
+
+
+def native_reader_style_rules(tgt_lang: str = "Turkish") -> str:
+    """Türkçe Native Reader için kısa, altyazı-güvenli doğallık sözleşmesi."""
+    return TURKISH_NATIVE_SUBTITLE_RULES if is_turkish_target(tgt_lang) else ""
+
 def _native_reader_language_label(tgt_lang: str) -> str:
     """İstemlerde kullanılacak hedef dil adı ('Türkçe' varsayılan)."""
     value = str(tgt_lang or "").strip()
@@ -4353,6 +4375,8 @@ def _verify_native_candidates(
         "ve cümleler arası dağılımı koruyarak açıkça daha doğal hale getiriyor.\n"
         f"İki sürüm de kabul edilebilir {lang} ise değişikliği reddet. Salt üslup tercihini, "
         "eş anlamlı değişimini, daha konuşma dili olsun diye ekleme/çıkarma yapmayı reddet. "
+        "Kaynak metin görünmese ve yalnız anlam bilinse yeni cümle doğal biçimde böyle kurulacak mı diye kontrol et; "
+        "bu test tek başına değişiklik gerekçesi değildir, anlam ve açık doğallık kazanımı da şarttır. "
         "Yazım hatası, anlamsız kalıp, yanlış ek, eksik kelime, şarkı/diyalog satırları "
         "arasında bozulan bütünlük veya komşu cue'dan anlam çalma varsa reddet. "
         "frag alanlı bir cümlede yalnız tek satıra değil tüm komşu frag dizisine bak.\n\n"
@@ -4605,6 +4629,7 @@ def native_reader_pass(
             f"Sen yalnızca {native_lang} okuyan, {native_lang} dilini ana dili gibi bilen "
             "bir film izleyicisisin."
         )
+        style_rules = native_reader_style_rules(tgt_lang)
         prompt = (
             f"{persona}{context_info}\n"
             f"{UNTRUSTED_REFERENCE_RULE}\n"
@@ -4614,6 +4639,7 @@ def native_reader_pass(
             f"- Doğal {native_lang} konuşma sesine kavuştur\n"
             f"- Anlamı değiştirme, sadece doğallığı artır\n"
             f"- Zaten iyi olan satırları değiştirme\n"
+            f"{style_rules}\n"
             f"- Bir 'frag' grubundaki tek satırı değiştiriyorsan grubun TÜM satırlarını "
             f"(değişmeyenler dahil) JSON'da döndür; kısmi frag düzeltmesi yapma\n"
             f"{frag_instruction}\n"
