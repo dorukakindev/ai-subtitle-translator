@@ -22,7 +22,7 @@ class _Var:
 class VideoSubtitleGuiTests(unittest.TestCase):
     def test_same_folder_output_uses_original_video_directory(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = Path(td).resolve()
             video_dir = root / "videos"
             video_dir.mkdir()
             video = video_dir / "Film.mkv"

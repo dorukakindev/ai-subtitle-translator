@@ -1,5 +1,6 @@
 """Tests for actual bugs found in audit, not false positives."""
 import unittest
+from pathlib import Path
 import hybrid_translate as ht
 
 
@@ -25,10 +26,8 @@ class SortKeyMixedIntStrTest(unittest.TestCase):
 
     def test_repair_batches_sort_fixed(self):
         """repair_batches.py sort key uses safe tuple pattern."""
-        import inspect
-        src = inspect.getsource(ht)  # use hybrid_translate context
-        with open(r"D:\Openai Altyazı Çevirisi\repair_batches.py", encoding="utf-8") as f:
-            repair_src = f.read()
+        repair_src = (Path(__file__).resolve().parents[1] / 'repair_batches.py').read_text(
+            encoding='utf-8')
         self.assertIn("(0, int(k))", repair_src)
         self.assertIn("(1, str(k))", repair_src)
 

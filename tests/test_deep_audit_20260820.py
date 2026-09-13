@@ -357,8 +357,9 @@ class PostprocessSourceResolverTest(unittest.TestCase):
         (archive / "Source.srt").write_text(
             source.read_text(encoding="utf-8"), encoding="utf-8")
         source.unlink()
-        self.assertEqual(g._resolve_postprocess_source(output),
-                         archive / "Source.srt")
+        # Windows'ta TEMP kısa (8.3), çözülmüş yol uzun olabilir.
+        self.assertTrue(g._resolve_postprocess_source(output).samefile(
+            archive / "Source.srt"))
 
 class QualityRowSchemaTest(unittest.TestCase):
     """Madde 33, 34, 46: `[null]` cevabı incelenmiş sayılmamalı."""

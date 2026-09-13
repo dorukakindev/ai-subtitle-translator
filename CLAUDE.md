@@ -72,3 +72,13 @@ All subtitle reads go through `subtitle_formats.read_subtitle_text` (utf-8-sig �
 - Tests are plain `unittest`; pure module-level helpers are extracted specifically to be testable without constructing `App` or hitting the network. Prefer adding logic as a pure function + a thin App method over inline code in a flow.
 - UI strings, log messages, and comments are Turkish; code identifiers are English. Internal names like `minimax_*` are legacy (now carry the OpenAI helper config) — renaming them is out of scope, they're just identifiers.
 - `plans/` holds implementation briefs; `Architecture.md` is an older overview (predates rounds of context-aware work — verify against code).
+
+## Zorunlu devir notu
+
+- Bu projedeki her çalışma için `docs/devir/YYYY-MM-DD-HHMM.md` oluştur; tarih/saat Europe/Istanbul olsun. Aynı adlı kayıt varsa üzerine yazma, benzersiz yeni ad seç.
+- Önceki notları silme veya değiştirme. Kökteki `DEVIR-NOTU.md` dosyasını son nota bağlantı veren ve eski kayıtları koruyan bir indeks olarak güncelle.
+- Notta repo, dal, başlangıç ve bitiş kod commit kimlikleri; değişen dosyalar ve amaçları; hata/kök neden/doğrulama kanıtı; özellikler ve kullanım; test komutları ve sonuçları; çalıştırılmayan kontroller; bağımlılıklar, kurulum, ayar/şema değişiklikleri; açık işler ve sonraki adımlar bulunmalı.
+- Commit veya push dışında kalan değişiklikleri açıkça belirt. Önceden mevcut kullanıcı değişikliklerini kendi çalışmana katma.
+- API anahtarı, erişim tokenı, şifre veya kişisel veri ekleme; makineye özgü kişisel yolları ve ham logları yayımlama. Doğrulanmamış işi tamamlanmış gösterme.
+- Kod değişikliklerini commit ederek bitiş kod kimliğini belirle, sonra devir notu/indeks commit'ini oluştur ve ilgili GitHub deposuna push et. Kod değişikliği yoksa başlangıç ve bitiş kod kimlikleri aynı olabilir. Bir commit'in kendi kimliğini kendi içeriğine yazmaya çalışma.
+- Push başarısını ve uzak dal kimliğini doğrulamadan “GitHub’a yüklendi” deme. Son yanıtta repo bağlantısını, tarihli devir notunun doğrudan GitHub bağlantısını ve push edilen son commit kimliğini ver. Push engellenirse bunu ve kalan yerel commit'leri açıkça bildir; force push kullanma.

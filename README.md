@@ -67,6 +67,15 @@ python subtitle_translator_gui.py
 
 ya da `Başlat.bat` dosyasına çift tıklayın.
 
+### Dosya kuyruğu
+
+Üstteki **Dosya ekle** mevcut kuyruğu koruyarak dosya ekler. Sol paneldeki
+**Dosyaları Seç** seçimi değiştirir. Aynı dosya tekrar seçilirse kuyruğa
+ikinci kez eklenmez. Dosya satırındaki **X** yalnızca o dosyayı kuyruktan
+çıkarır; **Temizle** kuyruğu ve giriş klasörü seçimini boşaltır. Bu işlemler
+kaynak dosyaları diskten silmez. Çeviri veya klasör taraması sürerken seçim
+temizlenemez ve dosya listesinden öğe kaldırılamaz.
+
 ### API anahtarı
 
 Program ilk açılışta anahtar ister. Anahtarlar **ayar dosyasına yazılmaz**;
@@ -204,6 +213,37 @@ tek şart, bu programdan türetip DAĞITTIĞINIZ her şeyin de aynı lisansla
 ---
 
 ## Bilinmesi gerekenler
+
+### Deneme, geçiş incelemesi ve onaylı tercihler
+
+Kenar çubuğundaki **Araçlar** bölümünde üç yeni araç bulunur:
+
+- **Deneme çevirisi:** Kaynağın başından, ortasından ve sonundan örnekler seçer.
+  Örnek başına 6, 12, 20 veya 40 satır seçilebilir; kısa dosyalarda satırlar
+  tekrarlanmaz. **Deneme penceresini hazırla** ayrı bir uygulama penceresi açar;
+  bu penceredeki **Başlat** çeviriyi başlatır. Model ve kalite ayarları ana
+  pencereden alınır. Çıktılar, kuyruk ve çalışma hafızası
+  `Raporlar/Deneme/<tarih-saat>/` altında ayrıdır. API anahtarları deneme ayar
+  dosyasına yazılmaz. Yalnız örnekler analiz edilir; bu işlem bütün dosyanın
+  bağlam analizinin yerini tutmaz. Batch modu seçiliyse normal Batch bekleme
+  süresi geçerlidir.
+- **Geçişleri incele:** Yeni çevirilerde rapor klasörünün `Inceleme/` altına
+  yazılan `*.review.json` kaydını açar. Kaynak, ilk kayıtlı çeviri, metni
+  değiştiren kalite geçişleri ve son çıktı görülebilir. Satır veya sahne ilk
+  kayıtlı sürüme alınabilir; bir geçişin sonucu seçilebilir veya metin elle
+  düzenlenebilir. Kaydetmek zaman damgalarını değiştirmez ve önceki dosyanın
+  birebir yedeğini oluşturur. Başka bir işlemde değişmiş çıktıya yazılmaz.
+  Zaman eşlemesi belirsiz satırlarda otomatik geri alma kapalıdır. Eski
+  raporlarda bulunmayan geçiş geçmişi sonradan üretilmez. Elle düzenlenen
+  çıktı önceki kalite raporuyla doğrulanmış sayılmaz.
+- **Onaylı tercihler:** Terim, karakter adı veya hitap tercihini açıkça
+  onaylayarak **Bölüm** ya da **Dizi** kapsamında kaydeder. Hitap için kaynak
+  alanına `konuşan → muhatap`, karşılık alanına `sen` veya `siz` yazılır.
+  Bölüm tercihi dizi tercihinden, onaylı tercihler otomatik hafızadan
+  önceliklidir. Tercihler kaynak/hedef dil çiftine göre ayrılır ve sonraki
+  çevirilerde kullanılır; mevcut çıktıyı kendiliğinden değiştirmez. Dizi
+  kapsamı için dosya adından dizi ve bölümün tanınabilmesi gerekir. Aynı
+  tercihi yeniden kaydetmek önceki onayı günceller.
 
 - Arayüz, log ve raporlar **Türkçedir**. Kod tanımlayıcıları İngilizce.
 - Çeviri kalitesi seçtiğiniz modele bağlıdır. Ucuz modeller uzun dosyalarda

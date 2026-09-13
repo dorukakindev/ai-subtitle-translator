@@ -709,8 +709,8 @@ class RunTraceabilityTest(unittest.TestCase):
 
     def test_log_header_exposes_summary_and_diagnostic_buttons(self):
         source = inspect.getsource(gui.App._build_main)
-        self.assertIn('text="🩺 Tanı Paketi"', source)
-        self.assertIn('text="Son Özet"', source)
+        self.assertIn('text="Tanı paketi"', source)
+        self.assertIn('text="Son özet"', source)
         self.assertIn("command=self._copy_diagnostic_package", source)
 
 

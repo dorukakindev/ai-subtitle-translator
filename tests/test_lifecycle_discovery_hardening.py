@@ -14,7 +14,7 @@ class NestedOutputDiscoveryTest(unittest.TestCase):
             output.mkdir()
             exclusions = gui._nested_output_exclusions(
                 [str(root)], str(output), False)
-            self.assertEqual(exclusions, [str(output.resolve())])
+            self.assertEqual([Path(p).resolve() for p in exclusions], [output.resolve()])
             self.assertEqual(
                 gui._nested_output_exclusions([str(output)], str(output), False),
                 [],

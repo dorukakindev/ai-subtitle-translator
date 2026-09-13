@@ -104,7 +104,7 @@ class StandaloneHardeningTest(unittest.TestCase):
 
             found = standalone.discover_source_srt_files(str(root), str(output))
 
-            self.assertEqual(found, [str(source)])
+            self.assertEqual([Path(p).resolve() for p in found], [source.resolve()])
 
     def test_repair_preserves_existing_final_when_batch_is_partial(self):
         with tempfile.TemporaryDirectory() as td:

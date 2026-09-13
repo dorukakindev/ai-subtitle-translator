@@ -56,7 +56,7 @@ class VideoSubtitleTests(unittest.TestCase):
 
     def test_tool_path_falls_back_to_project_local_binary(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = Path(td).resolve()
             binary = root / "tools" / "ffmpeg" / "ffprobe.exe"
             binary.parent.mkdir(parents=True)
             binary.write_bytes(b"binary")
@@ -105,7 +105,7 @@ class VideoSubtitleTests(unittest.TestCase):
                     which=lambda name: f"{name}.exe")
                 self.assertTrue(output.is_file())
                 self.assertEqual(vs.extracted_video_origin(output), video.resolve())
-                self.assertEqual(vs.logical_subtitle_path(output).parent, video.parent)
+                self.assertEqual(vs.logical_subtitle_path(output).parent.resolve(), video.parent.resolve())
                 self.assertIn("track-3.eng.srt", output.name)
 
     def test_cached_extraction_skips_second_ffmpeg_call(self):

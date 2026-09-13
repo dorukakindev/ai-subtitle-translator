@@ -24,6 +24,7 @@ haiku.txt
 
 # Python derleme/test önbellekleri
 __pycache__/
+.venv/
 *.pyc
 .pytest_cache/
 .ruff_cache/
@@ -105,3 +106,7 @@ cues_align.txt
 cues_check.txt
 cues_output.txt
 salome_check.txt
+
+# Kullanıcının açıkça onayladığı bölüm/dizi tercihleri
+.project_memory.user.*.json*
+.series_memory/*.user.*.json*

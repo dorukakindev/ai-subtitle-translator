@@ -1234,20 +1234,20 @@ try:
 except Exception:
     pass
 
-BG      = "#101012"
-PANEL   = "#17171a"
-CARD    = "#1e1e22"
-CARD_HOVER = "#24242a"
-BORDER  = "#2b2b31"
-BORDER_SOFT = "#242429"
-FG      = "#e6e6e9"
-FG2     = "#96969e"
-FG_DIS  = "#6f6f78"
+BG      = "#0e141e"
+PANEL   = "#151e2b"
+CARD    = "#1c2838"
+CARD_HOVER = "#25364b"
+BORDER  = "#35475e"
+BORDER_SOFT = "#26364a"
+FG      = "#edf3fa"
+FG2     = "#abbcd0"
+FG_DIS  = "#75869c"
 
-ACCENT       = "#4a7ebb"
-ACCENT_HOVER = "#3d6aa3"
-ACCENT_SOFT  = "#1d2a3b"
-INFO_BLUE    = "#668bb5"
+ACCENT       = "#367bcd"
+ACCENT_HOVER = "#2865ad"
+ACCENT_SOFT  = "#203957"
+INFO_BLUE    = "#85b8ee"
 TEAL         = "#4f9993"
 POLISH       = "#8296ad"
 
@@ -18319,11 +18319,16 @@ def _record_pass_change(trace: dict, label: str, before_blocks, after_blocks,
     if n:
         trace[label] = trace.get(label, 0) + n
         if history is not None:
+            before_full = {str(b[0]): b for b in before_blocks}
+            after_full = {str(b[0]): b for b in after_blocks}
             for sid, old, new in changes:
                 history.setdefault(sid, []).append({
                     "pass": label,
                     "before": old,
                     "after": new,
+                    "timestamp": str(before_full[sid][1]),
+                    "before_full": str(before_full[sid][2]),
+                    "after_full": str(after_full[sid][2]),
                 })
     trace.setdefault("__pass_snapshots__", []).append({
         "pass": str(label), "changed": n, "rolled_back": False,
@@ -22430,7 +22435,10 @@ def _chunk_gunluk_geri_cagrisi(app, dosya="", istekler=None):
         return None
 
 
-class App(ctk.CTk):
+from translation_workbench import TranslationWorkbenchMixin
+
+
+class App(TranslationWorkbenchMixin, ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(APP_WINDOW_TITLE)
@@ -23793,16 +23801,68 @@ class App(ctk.CTk):
 
     def _build_ui(self):
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=22, pady=(16, 2))
+        header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            header, text="CC", width=44, height=44, corner_radius=12,
+            fg_color=ACCENT_SOFT, text_color=INFO_BLUE,
+            font=ctk.CTkFont("Segoe UI", 19, "bold"),
+        ).grid(row=0, column=0, rowspan=2, padx=(0, 12))
+        ctk.CTkLabel(
+            header, text="Altyazı Çevirisi", anchor="w", text_color=FG,
+            font=ctk.CTkFont("Segoe UI", 22, "bold"),
+        ).grid(row=0, column=1, sticky="w")
+        ctk.CTkLabel(
+            header, text="Bağlamı koruyan çeviri, özenli altyazılar.",
+            text_color=FG2, font=ctk.CTkFont("Segoe UI", 12),
+        ).grid(row=1, column=1, sticky="w")
+        ctk.CTkButton(
+            header, text="+ Dosya ekle", width=116, height=36,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            font=ctk.CTkFont("Segoe UI", 12, "bold"),
+            command=lambda: self._pick_files(append=True),
+        ).grid(row=0, column=2, rowspan=2, padx=(12, 8))
+        ctk.CTkButton(
+            header, text="Klasör ekle", width=106, height=36,
+            fg_color=CARD, hover_color=CARD_HOVER,
+            border_width=1, border_color=BORDER,
+            command=self._add_folder_files,
+        ).grid(row=0, column=3, rowspan=2)
         self._build_sidebar()
         self._build_main()
 
     # ── Sol panel ─────────────────────────────────────────────────────────────
     def _build_sidebar(self):
-        sb = ctk.CTkScrollableFrame(self, width=290, fg_color=PANEL,
+        shell = ctk.CTkFrame(self, width=330, fg_color=PANEL, corner_radius=14,
+                             border_width=1, border_color=BORDER_SOFT)
+        shell.grid(row=1, column=0, sticky="nsew", padx=(16, 6), pady=(12, 16))
+        shell.grid_propagate(False)
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_rowconfigure(1, weight=1)
+        nav = ctk.CTkFrame(shell, fg_color="transparent")
+        nav.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        nav.grid_columnconfigure((0, 1, 2), weight=1)
+        self._sidebar_sections = {}
+        for index, (label, target) in enumerate([
+            ("Bağlantı", "API AYARLARI"), ("Çeviri", "ÇEVİRİ MODU"),
+            ("Dil", "DİL"), ("Dosyalar", "KLASÖRLER"),
+            ("Kalite", "KALİTE"), ("Araçlar", "ARAÇLAR"),
+        ]):
+            ctk.CTkButton(
+                nav, text=label, width=86, height=30,
+                fg_color=CARD, hover_color=ACCENT_SOFT, text_color=FG,
+                font=ctk.CTkFont("Segoe UI", 11),
+                command=lambda key=target: self._scroll_to_sidebar_section(key),
+            ).grid(row=index // 3, column=index % 3, sticky="ew", padx=2, pady=2)
+        controls = ctk.CTkFrame(shell, fg_color=CARD, corner_radius=10)
+        controls.grid(row=2, column=0, sticky="ew", padx=10, pady=(8, 10))
+        controls.grid_columnconfigure((0, 1), weight=1)
+        sb = ctk.CTkScrollableFrame(shell, width=290, fg_color=PANEL,
                                     scrollbar_button_color=BORDER,
                                     scrollbar_button_hover_color=ACCENT)
-        sb.grid(row=0, column=0, sticky="nsew", padx=(12,6), pady=12)
+        sb.grid(row=1, column=0, sticky="nsew", padx=8)
         sb.grid_columnconfigure(0, weight=1)
         self._sb = sb
 
@@ -23812,6 +23872,7 @@ class App(ctk.CTk):
             nonlocal r
             fr = ctk.CTkFrame(sb, fg_color="transparent")
             fr.grid(row=r, column=0, sticky="ew", padx=4, pady=(16, 5))
+            self._sidebar_sections[txt] = fr
             fr.grid_columnconfigure(1, weight=1)
             # Uzun kenar çubuğunda TEK yön bulma işareti bunlar. 10px gri
             # başlık, alanların 12px etiketlerinden daha SÖNÜKTÜ; başlık
@@ -23894,8 +23955,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(mc_fr, text="Ana Model — Özel Sağlayıcı",
                      font=ctk.CTkFont("Segoe UI", 12),
                      text_color=FG2).grid(row=0, column=1, sticky="w", padx=8)
-        ctk.CTkLabel(sb, text="Açıkken ANA ÇEVİRİ yukarıdaki OpenAI anahtarı yerine\naşağıdaki sağlayıcıyı kullanır (ör. shuaiapi/gpt-5.5).\nOpenAI alanlarına DOKUNULMAZ — kapatınca anında\neskisi gibi OpenAI'ye döner.",
-                     font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
+        ctk.CTkLabel(sb, text="Ana çeviri için ayrı bir sağlayıcı kullanın. Kapatıldığında OpenAI bağlantısı kullanılır.",
+                     font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
                      justify="left", wraplength=260).grid(
                      row=r, column=0, sticky="w", padx=4, pady=(0,4)); r += 1
 
@@ -24054,7 +24115,7 @@ class App(ctk.CTk):
         sep()
         section("KLASÖRLER")
         for lbl_txt, attr, default in [
-            ("Giriş klasörü (.srt)", "input_var",  ""),
+            ("Giriş klasörü (.srt / .vtt / .ass)", "input_var",  ""),
             ("Çıkış klasörü",        "output_var", ""),
         ]:
             is_input = "input" in attr
@@ -24906,33 +24967,33 @@ class App(ctk.CTk):
         # ── Butonlar ──────────────────────────────────────────────────────────
         sep()
         # Başlat + canlı API testi yan yana
-        btn_row = ctk.CTkFrame(sb, fg_color="transparent")
-        btn_row.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
+        btn_row = ctk.CTkFrame(controls, fg_color="transparent")
+        btn_row.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8,6))
         btn_row.grid_columnconfigure(0, weight=3)
         btn_row.grid_columnconfigure(1, weight=0)
         btn_row.grid_columnconfigure(2, weight=0)
         self.start_btn = ctk.CTkButton(
-            btn_row, text="▶  ÇEVİRİYİ BAŞLAT", height=46,
+            btn_row, text="▶  Çeviriyi başlat", height=42,
             font=ctk.CTkFont("Segoe UI", 13, "bold"),
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
             border_width=1,
             border_color=_mix_hex_color(ACCENT, FG, 0.18),
             command=self._start)
-        self.start_btn.grid(row=0, column=0, sticky="ew", padx=(0,4))
+        self.start_btn.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         self.test_btn = ctk.CTkButton(
-            btn_row, text="🧪 API", height=44, width=66,
-            font=ctk.CTkFont("Segoe UI", 16),
+            btn_row, text="API testi", height=30, width=90,
+            font=ctk.CTkFont("Segoe UI", 11),
             fg_color=CARD, hover_color=CARD_HOVER,
             border_width=1, border_color=BORDER,
             command=self._show_api_translation_test_dialog)
-        self.test_btn.grid(row=0, column=1, padx=(0,4), sticky="ew")
+        self.test_btn.grid(row=1, column=0, padx=(0,4), sticky="ew")
 
         ctk.CTkButton(
-            btn_row, text="💲 Maliyet", height=44, width=60,
-            font=ctk.CTkFont("Segoe UI", 13, "bold"),
+            btn_row, text="Maliyet tahmini", height=30, width=130,
+            font=ctk.CTkFont("Segoe UI", 11),
             fg_color=ACCENT_SOFT, hover_color=ACCENT_HOVER,
             border_width=1, border_color=INFO_BLUE,
-            command=self._show_cost_estimate).grid(row=0, column=2, sticky="ew")
+            command=self._show_cost_estimate).grid(row=1, column=1, columnspan=2, sticky="ew")
 
         options_card = ctk.CTkFrame(
             sb, fg_color=PANEL, corner_radius=10,
@@ -25036,6 +25097,15 @@ class App(ctk.CTk):
             font=ctk.CTkFont("Segoe UI", 11), text_color=FG2,
         ).grid(row=0, column=1, sticky="w", padx=8)
 
+        section("ARAÇLAR")
+        for caption, callback in (("Deneme çevirisi", self._open_pilot_dialog),
+                                  ("Geçişleri incele", self._open_translation_review),
+                                  ("Onaylı tercihler", self._open_preferences_dialog)):
+            ctk.CTkButton(sb, text=caption, height=38, fg_color=CARD,
+                          hover_color=CARD_HOVER, border_width=1,
+                          border_color=BORDER_SOFT, command=callback).grid(
+                              row=r, column=0, sticky="ew", padx=4, pady=(0, 6))
+            r += 1
         self.resume_btn = ctk.CTkButton(
             sb, text="↺  Batch'i Devam Ettir", height=38,
             font=ctk.CTkFont("Segoe UI", 12),
@@ -25086,12 +25156,12 @@ class App(ctk.CTk):
         self.pm_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.pause_btn = ctk.CTkButton(
-            sb, text="\u23f8  Duraklat", height=38,
+            controls, text="\u23f8  Duraklat", height=32, width=130,
             font=ctk.CTkFont("Segoe UI", 12),
             fg_color=CARD, hover_color=BORDER,
             state="disabled",
             command=self._toggle_pause_between_files)
-        self.pause_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
+        self.pause_btn.grid(row=1, column=0, sticky="ew", padx=(8,4), pady=(0,8))
 
         self.skip_pass_btn = ctk.CTkButton(
             sb, text="\u21b7  Bu Pass'i Atla", height=38,
@@ -25114,12 +25184,12 @@ class App(ctk.CTk):
             row=r, column=0, sticky="ew", padx=4, pady=(0,6)); r += 1
 
         self.stop_btn = ctk.CTkButton(
-            sb, text="■  Durdur", height=38,
+            controls, text="■  Durdur", height=32, width=130,
             font=ctk.CTkFont("Segoe UI", 12),
             fg_color=DANGER_BG, hover_color=DANGER_HOVER,
             text_color=RED, state="disabled",
             command=self._stop)
-        self.stop_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,12)); r += 1
+        self.stop_btn.grid(row=1, column=1, sticky="ew", padx=(4,8), pady=(0,8))
 
         self.api_keys_btn = ctk.CTkButton(
             sb, text="🔑  API Anahtarları", height=38,
@@ -25127,6 +25197,29 @@ class App(ctk.CTk):
             fg_color=CARD, hover_color=BORDER,
             command=self._show_api_keys_panel)
         self.api_keys_btn.grid(row=r, column=0, sticky="ew", padx=4, pady=(0,12)); r += 1
+
+        # Uzun açıklamalar dar kenar çubuğunu yatayda büyütmesin.
+        self._wrap_sidebar_descriptions(sb)
+
+    def _wrap_sidebar_descriptions(self, parent):
+        for widget in parent.winfo_children() or ():
+            if isinstance(widget, ctk.CTkLabel):
+                text = str(widget.cget("text") or "")
+                if len(text) > 38:
+                    siblings = widget.master.winfo_children() or ()
+                    has_switch = any(isinstance(item, ctk.CTkSwitch) for item in siblings)
+                    widget.configure(wraplength=210 if has_switch else 268, justify="left")
+            elif isinstance(widget, ctk.CTkFrame):
+                self._wrap_sidebar_descriptions(widget)
+
+    def _scroll_to_sidebar_section(self, key):
+        """Bölümün güncel konumuna git; gizlenen ayarlar konumu değiştirebilir."""
+        target = self._sidebar_sections.get(key)
+        if target is None:
+            return
+        self.update_idletasks()
+        canvas = self._sb._parent_canvas
+        canvas.yview_moveto(max(0, target.winfo_y() - 8) / max(1, self._sb.winfo_height()))
 
     # ── Sağ panel ─────────────────────────────────────────────────────────────
     def _build_main(self):
@@ -25136,7 +25229,7 @@ class App(ctk.CTk):
             scrollbar_button_color=BORDER,
             scrollbar_button_hover_color=ACCENT)
         self._main_frame = main
-        main.grid(row=0, column=1, sticky="nsew", padx=(6,12), pady=12)
+        main.grid(row=1, column=1, sticky="nsew", padx=(6,16), pady=(12,16))
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(4, weight=1)
         _stretch_scrollable_to_canvas(main)
@@ -25158,7 +25251,7 @@ class App(ctk.CTk):
             ("TM VURUŞ",    "stat_tm",     INFO_BLUE),
             ("TOKEN",       "stat_tokens", YELLOW),
         ]
-        sf.grid_columnconfigure((0,1,2,3,4,5), weight=1)
+        sf.grid_columnconfigure((0,1,2,3,4,5), weight=1, uniform="stats")
         for i, (name, attr, color) in enumerate(stats):
             # Kenarlık YOK: dış panelin kendi çerçevesi zaten var, altı kartı
             # ayrıca çerçevelemek çift kutu üretiyordu. Kartı zemin farkı
@@ -25214,7 +25307,7 @@ class App(ctk.CTk):
                              text_color=FG2).pack(pady=(1,2))
                 # Canvas for sparkline under token card
                 import tkinter as tk
-                self.stat_tokens_canvas = tk.Canvas(c, width=200, height=14,
+                self.stat_tokens_canvas = tk.Canvas(c, width=1, height=14,
                                                    bg=CARD, highlightthickness=0,
                                                    relief="flat", bd=0)
                 self.stat_tokens_canvas.pack(padx=8, pady=(0,7), fill="x")
@@ -25288,7 +25381,8 @@ class App(ctk.CTk):
         self.progress_lbl = ctk.CTkLabel(
                                          pb_fr,
                                          text="Dosya veya klasör ekleyerek başlayın.",
-                                         font=ctk.CTkFont("Segoe UI", 11),
+                                         font=ctk.CTkFont("Segoe UI", 12),
+                                         wraplength=420, justify="left",
                                          text_color=FG2, anchor="w")
         self.progress_lbl.grid(row=1, column=0, sticky="ew", padx=20, pady=(0,4))
 
@@ -25312,7 +25406,7 @@ class App(ctk.CTk):
             stage_no.grid(row=0, column=0, padx=(7, 2), pady=5)
             stage_name = ctk.CTkLabel(
                 stage_fr, text=stage_label.upper(), anchor="w",
-                font=ctk.CTkFont("Segoe UI", 9, "bold"), text_color=FG2)
+                font=ctk.CTkFont("Segoe UI", 10, "bold"), text_color=FG2)
             stage_name.grid(row=0, column=1, sticky="ew", padx=(2, 7), pady=5)
             self._pipeline_stage_widgets.append(
                 {"frame": stage_fr, "number": stage_no, "label": stage_name})
@@ -25479,50 +25573,55 @@ class App(ctk.CTk):
         log_fr.grid_columnconfigure(0, weight=1)
         log_fr.grid_rowconfigure(1, weight=1)
 
-        log_hdr = ctk.CTkFrame(log_fr, fg_color="transparent", height=40)
+        log_hdr = ctk.CTkFrame(log_fr, fg_color="transparent")
         log_hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(10,0))
         log_hdr.grid_columnconfigure(0, weight=1)
-        log_hdr.grid_propagate(False)
         log_hdr.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(log_hdr, text="OTURUM LOGU",
-                     font=ctk.CTkFont("Consolas", 10, "bold"),
+        ctk.CTkLabel(log_hdr, text="Oturum günlüğü",
+                     font=ctk.CTkFont("Segoe UI", 14, "bold"),
                      text_color=INFO_BLUE).grid(row=0, column=0, sticky="w")
-        ctk.CTkButton(log_hdr, text="⬇ Alta git", width=82, height=26,
+        log_tools = ctk.CTkFrame(log_hdr, fg_color="transparent")
+        log_tools.grid(row=1, column=0, sticky="ew", pady=(6, 4))
+        self._log_toolbar = log_tools
+        ctk.CTkButton(log_tools, text="Alta git", width=82, height=30,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
                       command=self._pin_log_bottom).grid(row=0, column=1, padx=(0,4))
         self._copy_log_btn = ctk.CTkButton(
-            log_hdr, text="📋 Logları Kopyala", width=112, height=26,
+            log_tools, text="Kopyala", width=90, height=30,
             font=ctk.CTkFont("Segoe UI", 10),
             fg_color=CARD, hover_color=BORDER,
             command=self._copy_complete_log_to_clipboard)
         self._copy_log_btn.grid(row=0, column=2, padx=(0,4))
         self._diagnostic_btn = ctk.CTkButton(
-            log_hdr, text="🩺 Tanı Paketi", width=94, height=26,
+            log_tools, text="Tanı paketi", width=90, height=30,
             font=ctk.CTkFont("Segoe UI", 10),
             fg_color=CARD, hover_color=BORDER,
             command=self._copy_diagnostic_package)
         self._diagnostic_btn.grid(row=0, column=3, padx=(0,4))
         ctk.CTkButton(
-            log_hdr, text="Son Özet", width=68, height=26,
+            log_tools, text="Son özet", width=80, height=30,
             font=ctk.CTkFont("Segoe UI", 10),
             fg_color=CARD, hover_color=BORDER,
             command=self._show_last_run_summary).grid(
                 row=0, column=4, padx=(0,4))
-        ctk.CTkButton(log_hdr, text="Temizle", width=70, height=26,
+        ctk.CTkButton(log_tools, text="Temizle", width=70, height=30,
                       font=ctk.CTkFont("Segoe UI", 10),
                       fg_color=CARD, hover_color=BORDER,
                       command=self._clear_log).grid(row=0, column=5, padx=(0,4))
         ctk.CTkButton(
-            log_hdr, text="⌨ F1", width=52, height=26,
+            log_tools, text="Kısayollar", width=80, height=30,
             font=ctk.CTkFont("Segoe UI", 10),
             fg_color=CARD, hover_color=BORDER,
             command=self._show_shortcuts_dialog).grid(row=0, column=6)
         ctk.CTkButton(
-            log_hdr, text="? Kılavuz", width=72, height=26,
+            log_tools, text="Kılavuz", width=72, height=30,
             font=ctk.CTkFont("Segoe UI", 10),
             fg_color=CARD, hover_color=BORDER,
             command=self._show_kilavuz_dialog).grid(row=0, column=7, padx=(4, 0))
+        self._log_toolbar_buttons = list(log_tools.winfo_children() or ())
+        log_tools.bind("<Configure>", self._layout_log_toolbar, add="+")
+        self._layout_log_toolbar()
 
         self.log_box = ctk.CTkTextbox(log_fr, font=ctk.CTkFont("Consolas", 11),
                                       fg_color=CARD, corner_radius=8,
@@ -25574,6 +25673,20 @@ class App(ctk.CTk):
             scrollbar_bind("<B1-Motion>", self._on_log_manual_scroll)
             scrollbar_bind("<ButtonRelease-1>", self._on_log_manual_scroll)
 
+    def _layout_log_toolbar(self, event=None):
+        """Dar pencerede günlük araçlarını ikinci satıra geçir."""
+        toolbar = self._log_toolbar
+        width = event.width if event is not None else toolbar.winfo_width()
+        columns = 7 if width and width >= 680 else 4
+        if getattr(self, "_log_toolbar_columns", None) == columns:
+            return
+        self._log_toolbar_columns = columns
+        for column in range(8):
+            toolbar.grid_columnconfigure(column, weight=1 if column < columns else 0)
+        for index, button in enumerate(self._log_toolbar_buttons):
+            row, column = divmod(index, columns)
+            button.grid_configure(row=row, column=column, sticky="ew", padx=2, pady=2)
+
     def _after_dpi_scaling(self):
         if getattr(self, "_is_shutting_down", False):
             return
@@ -25620,7 +25733,8 @@ class App(ctk.CTk):
         try:
             for column in range(6):
                 stats_frame.grid_columnconfigure(
-                    column, weight=1 if column < columns else 0)
+                    column, weight=1 if column < columns else 0,
+                    uniform="stats" if column < columns else "")
             for index, card in enumerate(cards):
                 row, column = divmod(index, columns)
                 card.grid_configure(
@@ -25749,12 +25863,13 @@ class App(ctk.CTk):
                 self._file_rows_frame, fg_color=CARD, corner_radius=6,
                 border_width=1, border_color=BORDER_SOFT)
             row_fr.pack(fill="x", padx=2, pady=(0, 3))
-            row_fr.grid_columnconfigure(0, weight=1)
+            row_fr.grid_columnconfigure(3, weight=1)
             name = display_file_name(fp)
             ctk.CTkLabel(row_fr, text=name,
                          font=ctk.CTkFont("Segoe UI", 11),
-                         text_color=FG, anchor="w").grid(
-                         row=0, column=0, sticky="ew", padx=(10,4), pady=5)
+                         text_color=FG, anchor="w", wraplength=420,
+                         justify="left").grid(
+                         row=0, column=0, columnspan=4, sticky="ew", padx=(10,4), pady=5)
             lang_var = self._file_language_vars.get(fp)
             if lang_var is None:
                 lang_var = ctk.StringVar(
@@ -25768,7 +25883,7 @@ class App(ctk.CTk):
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
                               dropdown_fg_color=CARD, text_color=FG,
-                              ).grid(row=0, column=1, padx=(4, 2), pady=4)
+                              ).grid(row=1, column=0, padx=(10, 2), pady=(0, 8))
             var = self._file_schema_vars.get(fp)
             if var is None:
                 var = ctk.StringVar(
@@ -25782,7 +25897,7 @@ class App(ctk.CTk):
                               fg_color=BORDER, button_color=BORDER,
                               button_hover_color=ACCENT,
                               dropdown_fg_color=CARD, text_color=FG,
-                              ).grid(row=0, column=2, padx=(4, 2), pady=4)
+                              ).grid(row=1, column=1, padx=(4, 2), pady=(0, 8))
             depth_var = self._file_analysis_depth_vars.get(fp)
             if depth_var is None:
                 depth_var = ctk.StringVar(value="Varsayılan")
@@ -25795,7 +25910,7 @@ class App(ctk.CTk):
                 fg_color=BORDER, button_color=BORDER,
                 button_hover_color=ACCENT,
                 dropdown_fg_color=CARD, text_color=FG,
-            ).grid(row=0, column=3, padx=(4, 2), pady=4)
+            ).grid(row=1, column=2, padx=(4, 2), pady=(0, 8))
             # Dosya silme butonu
             ctk.CTkButton(row_fr, text="X", width=26, height=26,
                           font=ctk.CTkFont("Segoe UI", 11, "bold"),
@@ -25834,8 +25949,14 @@ class App(ctk.CTk):
 
     def _remove_file_from_list(self, filepath: str):
         """Seçili dosyayı listeden kaldır."""
-        if filepath in self._selected_files:
-            self._selected_files.remove(filepath)
+        if getattr(self, "_is_running", False) or getattr(self, "_folder_scan_busy", False):
+            self._log("Çeviri veya klasör taraması sürerken dosya kaldırılamaz.", "warn")
+            return
+        # Klasör kipinde _selected_files boştur; görünen kuyruğu önce sabitle.
+        files = self._get_srt_files()
+        if filepath not in files:
+            return
+        self._selected_files = [path for path in files if path != filepath]
         self._file_schema_vars.pop(filepath, None)
         getattr(self, "_file_language_vars", {}).pop(filepath, None)
         getattr(self, "_file_analysis_depth_vars", {}).pop(filepath, None)
@@ -25843,6 +25964,8 @@ class App(ctk.CTk):
         if remaining:
             self._refresh_selected_files_ui(f"Dosya listeden çıkarıldı: {Path(filepath).name}")
         else:
+            # Son dosya kaldırılınca klasörü yeniden tarayıp geri ekleme.
+            self.input_var.set("")
             self._clear_selected_files()
 
     def _dedupe_paths(self, paths: list) -> list:
@@ -25850,7 +25973,9 @@ class App(ctk.CTk):
         seen = set()
         out = []
         for p in paths:
-            key = os.path.normcase(os.path.abspath(str(p)))
+            # Kısa Windows yolu veya bağlantı üzerinden eklenen aynı dosya
+            # ikinci kez çevrilmesin; ilk seçimin yazılışını koru.
+            key = os.path.normcase(os.path.realpath(str(p)))
             if key in seen:
                 continue
             seen.add(key)
@@ -31212,9 +31337,12 @@ class App(ctk.CTk):
         self._run_folder_scan(
             _work, _finish)
 
-    def _pick_files(self):
+    def _pick_files(self, append=False):
         if getattr(self, "_is_running", False):
             self._log("Çeviri çalışırken dosya seçilemez.", "warn")
+            return
+        if getattr(self, "_folder_scan_busy", False):
+            self._log("Dosya seçmeden önce klasör taramasının bitmesini bekleyin.", "warn")
             return
         with App._dialog_topmost(self):
             paths = filedialog.askopenfilenames(
@@ -31228,10 +31356,12 @@ class App(ctk.CTk):
                 ])
         if not paths:
             return
+        previous = self._get_srt_files() if append else []
         self._content_type_preflight_done = False
         self._input_folder_explicitly_selected = False
-        self._selected_folder_roots = []
-        self._selected_files = self._dedupe_paths(list(paths))
+        if not append:
+            self._selected_folder_roots = []
+        self._selected_files = self._dedupe_paths(previous + list(paths))
         self._pm = None
         n = len(self._selected_files)
         self._refresh_selected_files_ui(
@@ -32435,6 +32565,17 @@ class App(ctk.CTk):
             c_frame.pack_forget()
 
     def _clear_selected_files(self):
+        if getattr(self, "_is_running", False) or getattr(self, "_folder_scan_busy", False):
+            self._log("Çeviri veya klasör taraması sürerken seçim temizlenemez.", "warn")
+            return
+        # Eski tahmin bitince temizlenen listenin sayılarını geri yazmasın.
+        cancel = getattr(self, "_estimate_cancel", None)
+        if cancel is not None:
+            cancel.set()
+        self._estimate_token = None
+        self._estimate_cancel = None
+        self._estimate_pending = None
+        self._estimate_busy = False
         self._selected_files = []
         self._selected_folder_roots = []
         self._file_list_files = []
@@ -32454,14 +32595,18 @@ class App(ctk.CTk):
         outer = getattr(self, "_file_list_outer", None)
         if outer is not None:
             _grid_hide(outer)
-        self._input_folder_explicitly_selected = True
+        self.input_var.set("")
+        self._input_folder_explicitly_selected = False
         self._content_type_preflight_done = False
         self._language_preflight_done = False
         self.file_info_var.set("")
+        self._set_stat(self.stat_files_var, "0")
+        self._set_stat(self.stat_blocks_var, "0")
+        self._show_log_grip(False)
         _grid_hide(self.clear_files_btn)
         _grid_hide(self.clear_info_btn)
         App._update_readiness_card(self)
-        self._log("Dosya seçimi temizlendi — klasör modu aktif", "info")
+        self._log("Dosya kuyruğu temizlendi.", "info")
 
     @contextlib.contextmanager
     def _dialog_topmost(self):
@@ -34579,6 +34724,10 @@ class App(ctk.CTk):
         messagebox.showinfo("Tahmini Maliyet Hesabı", "\n".join(details))
 
     def _start(self):
+        pilot = self.__dict__.get("_pilot_process")
+        if pilot is not None and pilot.poll() is None:
+            messagebox.showinfo("Deneme çevirisi", "Önce deneme penceresini kapatın.", parent=self)
+            return
         # Yeni çalışma, önceki koşudan kalan otomatik kapanışı iptal eder
         # (denetim 2026-08-20, madde 27).
         App._cancel_pending_auto_shutdown(self)
@@ -35652,9 +35801,12 @@ class App(ctk.CTk):
         return context
 
     def _series_hint_for(self, fp: str) -> str:
+        from translation_review import preference_hint
+        preferences_fn = getattr(self, '_approved_preferences_for', None)
+        approved_hint = preference_hint(preferences_fn(fp) if callable(preferences_fn) else {})
         sm_obj, season, ep = self._series_mem_for(fp)
         if not sm_obj:
-            return ""
+            return approved_hint
         import hybrid_translate as ht
         snap_get = getattr(self, "_snap_get", None)
         if callable(snap_get):
@@ -35663,7 +35815,7 @@ class App(ctk.CTk):
             target_language = (
                 getattr(self, "_active_snapshot", {}) or {}
             ).get("tgt_lang", "Turkish")
-        return sm_obj.build_hint(
+        automatic_hint = sm_obj.build_hint(
             before_episode=(season, ep),
             term_filter=lambda terms: ht.sanitize_glossary_for_turkish(
                 terms,
@@ -35671,6 +35823,7 @@ class App(ctk.CTk):
                 log_fn=getattr(self, "_log", None),
             ),
         )
+        return "\n\n".join(part for part in (automatic_hint, approved_hint) if part)
 
     def _estimate_async(self, files, label_fn):
         """estimate_tokens'i arka planda çalıştırır — klasör/dosya seçince UI donmaz.
@@ -36384,11 +36537,20 @@ class App(ctk.CTk):
                         f"Sabit terimler güvenlik denetiminden geçemedi; bu dosyada "
                         f"sözlük devre dışı bırakıldı: {exc}", "warn")
                 terms = {}
+            from translation_review import preference_terms
+            preferences_fn = getattr(self, '_approved_preferences_for', None)
+            approved = preference_terms(preferences_fn(fp, tgt)) if fp and callable(preferences_fn) else {}
+            approved_identities = {unicodedata.normalize('NFC', key).casefold() for key in approved}
+            terms = {key: value for key, value in terms.items()
+                     if unicodedata.normalize('NFC', str(key)).casefold() not in approved_identities}
+            terms.update(approved)
             return {
                 str(source).strip(): str(target).strip()
                 for source, target in terms.items()
                 if source and target
                 and (
+                    source in approved
+                    or
                     str(source).strip().casefold() != str(target).strip().casefold()
                     or not str(source).strip().islower()
                 )
@@ -39074,6 +39236,9 @@ class App(ctk.CTk):
                 "unknown_cost_tokens": unknown_cost_tokens,
                 "files": report_rows,
             }
+            review_writer = getattr(self, '_save_translation_reviews', None)
+            if callable(review_writer):
+                review_writer(report_rows, rep_dir)
             json_path = rep_dir / "ceviri_raporu.json"
             atomic_write_json(json_path, json_payload)
             report_paths.append(json_path)
@@ -45803,6 +45968,11 @@ class App(ctk.CTk):
         btn_fr = ctk.CTkFrame(dlg, fg_color="transparent")
         btn_fr.pack(fill="x", padx=12, pady=(4, 12))
         btn_fr.grid_columnconfigure((0, 1, 2), weight=1)
+
+        ctk.CTkButton(btn_fr, text="Geçiş geçmişini aç / düzenle",
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=self._open_translation_review).grid(
+                          row=1, column=0, columnspan=3, padx=4, pady=(8, 0), sticky="ew")
 
         def _open_folder():
             import subprocess
