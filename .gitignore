@@ -81,6 +81,10 @@ Raporlar/
 .tmp_*/
 tools/.tmp_*/
 
+# Yerel rapor ve tam proje yedekleri (kaynak kod degil)
+Altyazı/
+yedekler/
+
 # ---- Çalışma zamanı (pid ekli biçimler) ----
 active_run.*.json
 
