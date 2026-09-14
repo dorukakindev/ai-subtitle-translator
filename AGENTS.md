@@ -3,7 +3,17 @@
 This file provides guidance to Codex when working with code in this repository.
 It is kept in sync with CLAUDE.md — change both, or neither.
 
-## What this is
+## Yeni oturumda çalışma düzeni ve kullanıcı yetkisi
+
+- Sohbet geçmişi olmadan başlıyorsan önce bu dosyayı, [yeni kurulum ve çalışma rehberini](docs/YENI-KURULUM-VE-CALISMA.md), `DEVIR-NOTU.md` indeksini ve son tarihli notu oku. Bu depodaki kullanıcı tercihleri oturum sıfırlansa da geçerlidir; daha yeni açık kullanıcı talimatı varsa onu izle.
+- Kullanıcı, bu proje için gerekli geliştirme araçlarını ve bağımlılıkları indirip kurmana izin verdi. Eksik Python/Git, proje paketleri ve gerekli test araçları için tekrar genel izin isteme; güvenilir/resmî kaynakları kullan, önce mevcut kurulumu denetle, Python paketlerini `.venv` içine kur ve yaptıklarını devir notuna yaz. Bu yetki ücretli API çağrısı, satın alma, format atma, kullanıcı dosyası silme veya hesap güvenliğini değiştirme yetkisi değildir.
+- Kullanıcının düzeltme/geliştirme isteğini uygula; yalnız plan verip bırakma. Türkçe iletişim kur, ilgili akışları ve regresyonları kontrol et, geri alınabilir olağan adımlarda gereksiz tekrar onayı isteme.
+- Her tamamlanan mantıksal düzeltme/geliştirme sonrası: ilgili testler → yalnız kendi dosyalarını stage et → kod/değişiklik commit'i → yeni tarihli devir notu ve indeks → not commit'i → mevcut ilgili dala normal push → uzak commit doğrulaması. Kullanıcı commit/push yapma derse veya hedef dalı açıkça değiştirirse o talimatı uygula.
+- `git status`, dal, HEAD ve remote'u başta kaydet. Kullanıcının mevcut değişikliklerini koru; `git add -A`, `reset --hard`, `clean -fd` ve force push ile işi kolaylaştırma. Uzak dal ilerlediyse farkı incele, çalışmalarını kaybetmeden bütünleştir; hatayı aşmak için uzaktaki geçmişi ezme.
+- Yeni bilgisayarda yol, Git oturumu, API kimlik bilgileri, kardeş proje ve yerel verilerin mevcut olduğunu varsayma. Gereken hesap girişini kullanıcı kendi güvenli arayüzünde yapar; sohbetten anahtar/şifre isteme. Kimlik doğrulama engelinde notu ve yerel commit'i hazır tut, push yapılmadığını açıkça söyle.
+
+
+## Proje özeti
 
 A Windows desktop app (CustomTkinter, Turkish UI) that translates subtitle files (`.srt`/`.vtt`/`.ass`) via the OpenAI API. The translation pipeline is heavily engineered for **context-aware quality**: the model sees surrounding lines, prior translations, file-level analysis, and content-genre rules — not just isolated cues.
 

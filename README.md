@@ -2,6 +2,8 @@
 
 *[English README](README.en.md)*
 
+**Format sonrası / yeni Codex oturumu:** [Kurulum ve çalışma rehberi](docs/YENI-KURULUM-VE-CALISMA.md) · [Güncel devir notu](DEVIR-NOTU.md). Geliştirme talimatları için önce `AGENTS.md` okunur.
+
 Altyazı dosyalarını (`.srt`, `.vtt`, `.ass`/`.ssa`) OpenAI API'siyle Türkçeye —
 ya da 60 dilden birine — çeviren bir Windows masaüstü uygulaması.
 
