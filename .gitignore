@@ -75,6 +75,8 @@ HAZIR DİZİLER/
 HAZIR FİLMLER/
 Raporlar/
 ÇEVRİLEN FİLMLER.txt
+ÇEVRİLEN FİLMLER.pre-*.txt.bak
+girdi_style_glossary.txt
 
 # ---- Ajan/denetim ara klasörleri ----
 .audit_sources/
@@ -88,6 +90,7 @@ yedekler/
 
 # ---- Çalışma zamanı (pid ekli biçimler) ----
 active_run.*.json
+active_run.*.json.lock
 
 # ---- Tek seferlik onarım/inceleme betikleri ----
 check_cues.py

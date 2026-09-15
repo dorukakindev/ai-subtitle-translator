@@ -1,176 +1,124 @@
-# Altyazı Çevirisi — Subtitle Translator
+# Subtitle Translator
 
-*[Türkçe README](README.md)*
+[Türkçe](README.md) · [User guide (Turkish)](KILAVUZ.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
 
-A Windows desktop application that translates subtitle files (`.srt`, `.vtt`,
-`.ass`/`.ssa`) through the OpenAI API — into Turkish, or any of 60 languages.
+A Turkish-language Windows desktop application that translates `.srt`, `.vtt`,
+`.ass`, and `.ssa` subtitles through OpenAI or OpenAI-compatible providers
+while preserving context across cues.
 
-Most tools translate a subtitle line at a time. This one is built around a
-single observation: **a subtitle line does not mean anything on its own.** How
-you translate "Get him." depends on who is saying it to whom, what was said two
-lines earlier, and whether this character has been addressed formally since the
-beginning of the film. The program shows the model all of it.
+Instead of treating cues as isolated strings, the application can supply nearby
+dialogue, scene transitions, prior translation decisions, character relations,
+and project terminology to the model. Output still requires human review; this
+is an assistant, not a replacement for a professional translator.
 
-The interface, logs and reports are in **Turkish**. The code is not.
+## Highlights
 
-<!-- Add a screenshot here: docs/screenshot.png -->
+- 60 language choices and 74 content-type schemas
+- Encoding-aware SRT, WebVTT, and ASS/SSA support
+- Chained context carrying earlier translations into later chunks
+- Optional character, register, terminology, and scene analysis
+- Approved term, name, and formal/informal address preferences
+- Local translation memory plus Critic, Polish, Native Reader, and QC passes
+- 39 addressable semantic and structural finding classes
+- Source-preserving backups, recovery records, and report-only operation
+- Optional OpenAI Batch API and embedded-subtitle extraction through FFmpeg
+- Pilot translation and per-pass review/rollback tools
 
----
+## Requirements
 
-## What it does
+- Windows 10 or 11
+- A stable Python 3.11 or newer release with Tk support
+- An account/key for each remote provider, or a running local Ollama/LM Studio server
+- FFmpeg and ffprobe only for subtitle extraction from video files
 
-**Translates with context.** Each chunk is sent with the lines before it, the
-lines after it (read-ahead), a bridge across scene cuts, and — most
-importantly — **how the previous lines were actually translated**. That last
-one is why a character's name or a form of address does not change at a chunk
-boundary.
+CI runs on Python 3.11 and 3.13. The local development environment has also
+been verified with Python 3.13.
 
-**Reads the file first.** An optional pre-pass analyses the whole subtitle:
-who the characters are, who addresses whom formally, which terms recur, the
-emotional register of each scene. That analysis is then injected into every
-translation prompt.
+## Installation
 
-**Knows the genre.** 74 content-type schemas (documentary, anime, tabletop RPG,
-comedy, history…), each with its own translation rules — narrator register for
-a documentary, honorifics for anime, military terminology for a war film. An
-"automatic" option detects the genre from the file itself.
+Run in PowerShell:
 
-**Remembers a series.** Decisions made in one episode — how a name is spelled,
-what a term maps to, who addresses whom formally — carry into later episodes.
-An optional end-of-season pass looks for drift between episodes.
-
-**Audits its own output.** The delivered file is compared against the source
-and searched for **39 classes of finding**: missing dialogue, untranslated
-fragments, garbled words, cue numbers leaked into the text, residual
-hearing-impaired tags, foreign scripts, an echo between neighbouring cues, a
-translator's gloss the source never had. Every finding is addressed by cue
-number and timestamp — the report tells you which line to look at.
-
-**Says what it did.** Every run produces a quality report and a findings log:
-which passes ran, what they changed, what they skipped and why.
-
-**Tries not to break things.** Because quality passes can rewrite text, the
-state before those passes is backed up separately, and the content difference
-between the backup and the delivery is audited on its own. In "report only"
-mode no automatic corrector touches the delivered text — findings are written
-down and the decision is yours.
-
----
-
-## Install
-
-Requires **Windows** and **Python 3.11+** (developed on 3.14).
-
-```bash
-pip install -r requirements.txt
-python subtitle_translator_gui.py
+```powershell
+git clone https://github.com/dorukakindev/openai-altyazi-cevirisi.git
+cd openai-altyazi-cevirisi
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe subtitle_translator_gui.py
 ```
 
-### API key
+Use `Başlat.bat` for later launches. It does not install packages at runtime;
+it stops with an installation command if a required dependency is missing.
+For video subtitle extraction, put `ffmpeg.exe` and `ffprobe.exe` on PATH or
+under `tools/ffmpeg/`. FFmpeg is not needed for normal subtitle translation.
 
-Keys are **never written to the settings file**. They live in the Windows
-Credential Manager via `keyring`; if that is unavailable the program falls back
-to an obfuscated local file.
+## First run
 
-### Choosing a provider
+1. Create a provider profile under **API Anahtarları → Yeni Profil**.
+2. Select profiles and models for the main and optional helper roles.
+3. Add files or a folder and choose source and target languages.
+4. Select a content type or keep automatic detection enabled.
+5. Review the estimate, start translation, and inspect the quality report.
 
-OpenAI is not required. Pick from the *provider preset* list when creating a key
-profile and the endpoint fills itself in:
+Removing a queue item never deletes its source file from disk.
 
-**Google AI Studio** (Gemini Flash, Gemma) · **OpenRouter** (hundreds of models
-on one key, including `:free` variants) · **Groq** · **DeepSeek** · **Mistral**
-· **xAI** · **Together** · **Cerebras** · **Fireworks** · **Nebius** ·
-**Anthropic** · or run the model on your own machine through **Ollama** or
-**LM Studio** (free, no internet, nothing leaves the computer).
+## Providers and modes
 
-Model names are not baked into the code. A **fetch models** button asks the
-provider for its own list, which you filter and pick from — a hardcoded list
-would be wrong within months.
+Presets cover OpenAI, Google AI Studio, OpenRouter, Groq, DeepSeek, Mistral,
+xAI, Together, Cerebras, Fireworks, Nebius, and Anthropic, with custom
+OpenAI-compatible endpoints plus local Ollama and LM Studio profiles. Model
+lists are fetched dynamically.
 
-Each profile is assigned to a **role**: main translation, backup key, analysis,
-critic, polish, QC. So the translation can run on Gemini Flash while the review
-passes run on something else.
+| Mode | Intended use | Important note |
+| --- | --- | --- |
+| Synchronous | Normal translation | Uses the complete chained-context flow. |
+| Batch | Large queues | Official OpenAI Batch API only. |
+| Assisted analysis | Quality first | Runs enabled analysis and quality passes. |
 
-One caveat: **batch mode only works on official OpenAI** — no other provider
-offers the real Batch API.
+Each helper role may use a different profile. A local main model does not make
+the entire workflow local when Critic, Polish, QC, or another helper role uses
+a remote provider.
 
-Keys are never written to the settings file, whichever provider they belong to.
+## Privacy and credentials
 
----
+Subtitle text, context, and enabled analysis data may be sent to selected remote
+providers. Batch mode uploads a request file to OpenAI. Read [PRIVACY.md](PRIVACY.md)
+before processing confidential material.
 
-## Three modes
+Keys are normally stored in Windows Credential Manager through `keyring`. If
+that service is unavailable, the application falls back to a user-restricted
+but merely **obfuscated** local file. This is not cryptographic encryption. Do
+not use the fallback for sensitive keys on a shared computer.
 
-| mode | when | note |
-|---|---|---|
-| **Synchronous** | Normal use | Best consistency; chained context works fully |
-| **Batch** | Many files, no hurry | 50% cheaper, can take hours |
-| **Assisted analysis** | Quality first | Pre-analysis plus quality passes |
+Report vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
 
-An interrupted batch is not lost — the batch id is recorded and the program
-offers to resume on startup. The same is true after a crash or a power cut:
-unfinished files are queued rather than retranslated from scratch.
+## Local data
 
----
+The application may retain subtitle text or run information in
+`translation_memory.db`, `.context_cache/`, `.precontext.json`, `Raporlar/`,
+`logs/`, and recovery records. These are excluded from Git. Remove personal
+content before attaching diagnostics to a public issue.
 
-## Settings
+## Settings, development, and tests
 
-The in-app **Help** window documents every setting: what it does, its default,
-and when to turn it on. Hovering a switch shows a one-line version.
+The full settings reference is [KILAVUZ.md](KILAVUZ.md) in Turkish.
 
-Full reference: [KILAVUZ.md](KILAVUZ.md) (Turkish). That file is generated from
-`kilavuz.py` and is not edited by hand.
-
-Three worth knowing:
-
-- **Report only** (default on) — automatic correctors do not modify the
-  delivered text, they only report. Keep this on if a human or another model
-  will review the translation.
-- **Chained context** (default on) — the single strongest tool for consistency.
-- **Raw translation backup** (default on) — the state before quality passes. If
-  a pass damages a line, the good version is still there.
-
----
-
-## Tests
-
-376 test modules, roughly 4,800 tests. No network access required.
-
-```bash
-python -m unittest discover -s tests
+```powershell
+.\.venv\Scripts\python.exe belge_uret.py --kontrol
+.\.venv\Scripts\python.exe -m py_compile subtitle_translator_gui.py hybrid_translate.py subtitle_formats.py
+.\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Most tests exercise pure functions and run without constructing the interface —
-a deliberate choice that keeps the logic separate and testable.
+Tests require no paid API calls. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before contributing.
 
-Some tests lock the **false-positive rate** of a detection rule. In this project
-a detection rule is not added until it has been measured against real delivered
-files in both directions: what it catches *and* what it wrongly flags.
+## Limitations
 
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) (Turkish). The three rules that matter:
-measure a detector in both directions before adding it, guard anything that
-rewrites text with an invariant, and never compute one decision in two places.
-Each of those comes from a bug this repository actually shipped.
-
----
+The interface and reports are in Turkish. Quality depends on selected models,
+and automated checks cannot detect every meaning error. Human review is needed
+before publishing subtitles.
 
 ## Licence
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
-
-You may use, modify and redistribute this program, including commercially, but
-anything you distribute that is derived from it must also be free software
-under the same licence, with source available.
-
----
-
-## Worth knowing
-
-- Translation quality depends on the model you choose. Cheaper models drift on
-  terminology and can desynchronise on long files; the program catches much of
-  that but cannot repair all of it.
-- This is a **translation assistant**, not a translator. Work intended for
-  publication is expected to be reviewed — the reports exist for exactly that.
+[GNU General Public License v3.0](LICENSE). GPLv3 source-availability
+requirements apply to distributed derivatives.

@@ -1,0 +1,48 @@
+name: Hata bildirimi
+description: Tekrarlanabilir bir uygulama hatasını bildirin.
+title: "[Hata] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Gerçek API anahtarı, özel altyazı veya ham log eklemeyin. Güvenlik açığı için SECURITY.md dosyasını izleyin."
+  - type: input
+    id: version
+    attributes:
+      label: Commit veya sürüm
+      placeholder: ör. abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Çalışma kipi
+      options: [Eşzamanlı, Toplu Batch, Yardımcı Analiz, Arayüz veya diğer]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Sentetik yeniden üretim adımları
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Beklenen ve gerçekleşen davranış
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Ortam
+      description: Windows ve Python sürümü; sağlayıcı/model adını anahtarsız yazın.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Gizlilik kontrolü
+      options:
+        - label: Eklerden anahtarları, kişisel yolları ve özel altyazı içeriğini temizledim.
+          required: true

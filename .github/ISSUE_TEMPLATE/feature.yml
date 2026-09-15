@@ -1,0 +1,23 @@
+name: Özellik önerisi
+description: Projeye uygun, sınanabilir bir geliştirme önerin.
+title: "[Öneri] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Çözülen sorun
+      description: Günlük kullanımda hangi somut sorunu yaşıyorsunuz?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Önerilen davranış
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Altyazı bütünlüğü ve maliyet etkisi
+      description: Zaman kodu, cue sınırı, gizlilik veya API maliyeti nasıl etkilenir?
