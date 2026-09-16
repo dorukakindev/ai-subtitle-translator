@@ -1,23 +1,23 @@
-name: Özellik önerisi
-description: Projeye uygun, sınanabilir bir geliştirme önerin.
-title: "[Öneri] "
+name: Feature request
+description: Propose a focused, testable improvement.
+title: "[Feature] "
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Çözülen sorun
-      description: Günlük kullanımda hangi somut sorunu yaşıyorsunuz?
+      label: Problem to solve
+      description: What concrete problem occurs in normal use?
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Önerilen davranış
+      label: Proposed behavior
     validations:
       required: true
   - type: textarea
     id: safety
     attributes:
-      label: Altyazı bütünlüğü ve maliyet etkisi
-      description: Zaman kodu, cue sınırı, gizlilik veya API maliyeti nasıl etkilenir?
+      label: Subtitle integrity, privacy, and cost impact
+      description: How would this affect timestamps, cue boundaries, privacy, or API cost?

@@ -9,8 +9,7 @@ series, and a stack of quality passes that run after the translation itself.
 
 > **Scope note.** This file describes structure and intent. Exact thresholds,
 > regexes and pass ordering live in the code and change often — read the code
-> for those. `CLAUDE.md` / `AGENTS.md` carry the working rules for editing this
-> repository; this file explains how the parts fit together.
+> for those. This document explains how the major parts fit together.
 
 ---
 
@@ -202,4 +201,3 @@ untranslated-line marker exists partly to guard that.
   findings, in the same run.
 - UI strings, log messages and comments are Turkish; identifiers are English.
   Names like `minimax_*` are legacy and now carry the OpenAI helper config.
-- `plans/` holds implementation briefs.

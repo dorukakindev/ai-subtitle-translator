@@ -1,112 +1,71 @@
-# Katkı
+# Contributing
 
-Bu program tek bir iş için yazıldı: altyazı çevirip yayınlamak. Kararların
-çoğu tahminle değil **ölçümle** verildi ve depo o alışkanlığı korumaya
-çalışıyor. Katkı vermeden önce buradaki üç kuralı okuyun; kodun kendisinden
-daha önemliler.
+Thank you for improving AI Subtitle Translator. The project values measured,
+reproducible changes over broad claims. Please keep subtitle integrity, privacy,
+and API cost in mind throughout a contribution.
 
-## 1. Tespit kuralı ölçülmeden eklenmez
+## Before opening a pull request
 
-Yeni bir "şunu yakalayan kural" öneriyorsanız, onu **gerçek altyazı
-dosyalarına karşı** koşun ve iki sayıyı birden verin:
+1. Open an issue for substantial behavior or architecture changes.
+2. Use synthetic or redistributable subtitle samples. Never commit API keys,
+   private subtitles, personal paths, raw user logs, caches, or databases.
+3. Keep the Turkish interface and reports in Turkish; use English identifiers.
+4. Preserve cue IDs, timestamps, cue boundaries, formatting tags, and source
+   backups unless the change explicitly targets one of those structures.
+5. Apply shared behavior to every relevant translation flow and keep the sync
+   and assisted-analysis prompts semantically aligned.
 
-- kaç gerçek bulgu buldu (isabet)
-- kaç yanlış alarm üretti (yanlış pozitif)
+## Detection rules
 
-Tek yönlü ölçüm yeterli değildir. Bu depoda, yanlış alarmı düşürdüğü için
-kabul edilecek gibi görünen bir kural ölçüldüğünde **bilinen gerçek bir
-bulguyu kaçırdığı** ortaya çıktı. Aynı koşuda ikisine birden bakın.
+A new detector must be measured on representative subtitle data. Report both
+true findings and false positives. Do not raise a finding to a blocking severity
+without evidence that its precision justifies blocking delivery.
 
-Ölçülüp **elenmiş** kurallar da kayıtlıdır (kod yorumlarında ve
-`plans/` altında). Bir fikri yeniden önermeden önce daha önce denenip
-denenmediğine bakın — birkaçı iki kez denendi.
+## Automatic text changes
 
-Güven derecesi (`kesin` / `muhtemel` / `bilgi`) de ölçümle seçilir. Kesinliği
-%30 olan bir kuralı `kesin` yapmak teslim kapısını boşuna kapatır.
+Any code that rewrites subtitle text needs:
 
-## 2. Otomatik düzeltici yazıyorsanız
+- a narrow scope or allowlist;
+- an invariant such as stable cue count, timestamps, and line boundaries;
+- tests for legitimate text that resembles the targeted error;
+- human-readable before/after examples.
 
-Metni **değiştiren** her kod için:
+Avoid computing the same decision independently in several flows. Extract a
+shared pure helper where practical, then add a thin call site to each flow.
 
-- Beyaz liste düşünün. Bu depoda yazılmış bir otomatik düzeltici, meşru
-  sözcükleri (`dövme`, `gövde`) bozdu ve teslime girdi.
-- Bir **değişmez** doğrulayın. Örneğin satır sayısı: bir düzeltici `--\s+`
-  deseni kullandı, `\s` satır sonunu da yedi ve dokunduğu 43 cue'nun 4'ünde
-  iki repliği tek satıra düşürdü. Testler artık satır sayısının değişmediğini
-  ayrıca doğruluyor.
-- Değişiklikleri **gözle okuyun**. Sayı yeterli değil.
+## Development setup
 
-## 3. Aynı karar iki yerde hesaplanmasın
-
-Bu depodaki tekrar eden bug sınıfı budur: aynı karar iki ayrı yerde
-hesaplanır, kopyalar zamanla ayrışır ve biri sessizce zayıf kalır.
-
-Bir geçişi iki ayrı ayar açabiliyorsa ikisi de aynı listede olmalı. Bir kaynak
-eşlemesi yapıyorsanız anahtar **her yerde** zaman damgası olmalı, cue numarası
-yalnızca yedek — numara teslimde kayar ve boş dönmez, **başka bir cue'yu**
-bulur.
-
-Test, adı değil **şekli** kilitlesin: "şu geçişin kapısındaki bütün
-değişkenler şu listede mi" diye sorun; böylece sonradan eklenen üçüncü bir
-değişken aynı şekilde sızamaz.
-
----
-
-## Geliştirme
-
-```bash
-pip install -r requirements.txt
-python subtitle_translator_gui.py
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe subtitle_translator_gui.py
 ```
 
-Testler (ağ gerektirmez):
+Run the offline checks:
 
-```bash
-python -m unittest discover -s tests
+```powershell
+.\.venv\Scripts\python.exe belge_uret.py --kontrol
+.\.venv\Scripts\python.exe -m py_compile subtitle_translator_gui.py hybrid_translate.py subtitle_formats.py
+.\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Tek modül:
+After a GUI change, also run the headless smoke test when no live translation is
+using the same working directory:
 
-```bash
-python -m unittest tests.test_kilavuz
+```powershell
+.\.venv\Scripts\python.exe -c "import subtitle_translator_gui as g; a=g.App(); a.update_idletasks(); a.destroy(); print('OK')"
 ```
 
-Derleme kontrolü (linter yapılandırılmamıştır):
+The generated Turkish user guide is sourced from `kilavuz.py`. Do not edit
+`KILAVUZ.md` by hand; regenerate it with `python belge_uret.py`.
 
-```bash
-python -m py_compile subtitle_translator_gui.py hybrid_translate.py subtitle_formats.py
-```
+## Pull request checklist
 
-Arayüzde değişiklik yaptıysanız başsız duman testi:
+- Explain the user-visible problem and root cause.
+- List the affected translation flows and settings.
+- Include tests and the exact commands/results.
+- State any checks you could not run.
+- Keep the pull request focused; do not mix unrelated cleanup.
 
-```bash
-python -c "import subtitle_translator_gui as g; a=g.App(); a.update_idletasks(); a.destroy(); print('OK')"
-```
-
-> **Dikkat:** testler canlı uygulamayla proje kökünü paylaşır (`batch_id.txt`,
-> `logs/`). Bir çeviri koşarken `App()` kuran test **çalıştırmayın** — bir kez
-> canlı bir toplu işe karşı modal pencere açtı ve koşu logunu rotasyonla sildi.
-
-## Kılavuz
-
-Bir ayar eklerseniz `kilavuz.py`'ye maddesini de ekleyin. `tests/test_kilavuz.py`
-her kutunun belgelendiğini ve kılavuzdaki "varsayılan" iddiasının koddaki
-gerçek varsayılana eşit olduğunu doğrular — eklemezseniz test kırılır.
-
-`KILAVUZ.md` elle düzenlenmez:
-
-```bash
-python belge_uret.py            # yeniden üret
-python belge_uret.py --kontrol  # güncel mi (0/1 döner)
-```
-
-## Üslup
-
-- Arayüz metinleri, log ve raporlar **Türkçe**; kod tanımlayıcıları İngilizce.
-- Mantığı saf fonksiyon olarak yazın, `App` metodu ince kalsın — testler
-  arayüz kurmadan koşabilsin.
-- Bir davranışı **neden** öyle yaptığınızı yoruma yazın, özellikle ölçtüyseniz.
-  Bu depodaki yorumların çoğu "şu ölçüldü, sonuç şuydu" der; bir sonraki kişi
-  aynı yolu ikinci kez denemesin.
-- Altyazı okumaları **her zaman** `subtitle_formats.read_subtitle_text`
-  üzerinden. Windows-1254 Türkçe dosyalar doğrudan `utf-8` ile açılırsa çöker.
+By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).

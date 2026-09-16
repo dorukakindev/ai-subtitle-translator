@@ -1,49 +1,49 @@
-# Gizlilik Bildirimi
+# Privacy Notice
 
-Bu uygulama yerel çalışan bir masaüstü istemcisidir. Proje geliştiricisi
-altyazıları merkezi bir sunucuda toplamaz; ancak seçtiğiniz model sağlayıcıları
-ile yerel çalışma dosyaları veri işleyebilir.
+AI Subtitle Translator is a locally run desktop client. The project maintainer
+does not operate a central service that collects your subtitles. However, the
+model providers you select and files retained on your computer may process or
+store data.
 
-## Uzak sağlayıcılara gönderilebilen veriler
+## Data that may be sent to remote providers
 
-Etkin ayarlara ve rol profillerine göre aşağıdakiler ana çeviri, analiz,
-Critic, Polish, Native Reader veya QC sağlayıcısına gönderilebilir:
+Depending on enabled settings and role profiles, the following may be sent to
+the main translation, analysis, Critic, Polish, Native Reader, or QC provider:
 
-- çevrilecek altyazı metni ve cue kimlikleri;
-- önceki/sonraki replikler ile sahne bağlamı;
-- önceki çeviriler, sözlük ve onaylı terminoloji;
-- karakter, hitap, ton, sahne ve tutarlılık analizleri;
-- kalite denetimi için kaynak ve çeviri parçaları.
+- subtitle text and cue identifiers;
+- surrounding dialogue and scene context;
+- earlier translations, glossaries, and approved terminology;
+- character, address, tone, scene, and consistency analyses;
+- source and translated excerpts used for quality review.
 
-Toplu kipte istek dosyası resmi OpenAI Batch API'ye yüklenir. Her yardımcı rol
-ayrı profil kullanabildiğinden yalnız ana modeli yerel seçmek bütün veri akışını
-yerel yapmaz. Gizli içerikte bütün rollerin profil ve anahtarlarını kontrol edin.
-Sağlayıcının saklama, eğitim ve gizlilik koşulları kendi politikasına tabidir.
+Batch mode uploads a request file to the official OpenAI Batch API. Each helper
+role can use a separate provider profile, so selecting a local main model does
+not make the whole workflow local. Review every enabled role before processing
+confidential material. Provider retention, training, and privacy practices are
+governed by that provider's terms.
 
-## Yerelde saklanan veriler
+## Data stored locally
 
-Uygulama aşağıdaki türlerde dosya oluşturabilir:
+The application may create:
 
-- API anahtarı içermeyen arayüz ayarları;
-- Windows Kimlik Bilgisi Yöneticisi kayıtları;
-- keyring yoksa kullanıcıya özel izinlerle korunan karartılmış anahtar dosyası;
-- kaynak/çeviri çiftleri içeren SQLite çeviri belleği;
-- analiz önbellekleri, raporlar, loglar, yedekler ve kurtarma kayıtları;
-- bölüm/dizi tercihleri ve onaylı terminoloji.
+- interface settings that do not contain API keys;
+- credentials in Windows Credential Manager;
+- a user-restricted obfuscated credential file if keyring is unavailable;
+- a SQLite translation-memory database containing source/translation pairs;
+- analysis caches, reports, logs, backups, and recovery records;
+- series/project preferences and approved terminology.
 
-Karartılmış anahtar dosyası kriptografik şifreleme değildir. Paylaşılan bir
-bilgisayarda güvenli kimlik deposu olmadan hassas anahtar saklamayın.
+The fallback credential file is obfuscated, not cryptographically encrypted.
+Do not rely on it for sensitive credentials on a shared computer.
 
-## Kullanıcının kontrolü
+## Your controls
 
-- Uzak aktarımı azaltmak için Ollama/LM Studio profilleri kullanın ve bütün
-  yardımcı rolleri de yerel seçin veya kapatın.
-- Çeviri belleği, rapor, log ve önbellekleri paylaşmadan önce inceleyin.
-- Bir sağlayıcı anahtarının sızdığından şüpheleniyorsanız sağlayıcı panelinden
-  hemen iptal edip yenileyin.
-- Uygulamayı ve etkin yazma işlemlerini kapatmadan SQLite dosyalarını elle
-  taşımayın veya silmeyin.
+- To reduce remote transfer, use Ollama or LM Studio and select local profiles
+  for every helper role, or disable those roles.
+- Review translation memory, reports, logs, and caches before sharing them.
+- Revoke and rotate a provider key immediately if you suspect exposure.
+- Close the application and active writes before manually moving or deleting
+  SQLite files.
 
-Bu belge hukuki gizlilik taahhüdü değil, uygulamanın veri akışını açıklayan
-teknik bir özettir. Davranışla belge arasında fark bulursanız
-[SECURITY.md](SECURITY.md) üzerinden bildirin.
+This document is a technical summary of application data flow, not a legal
+privacy agreement. Report discrepancies through [SECURITY.md](SECURITY.md).

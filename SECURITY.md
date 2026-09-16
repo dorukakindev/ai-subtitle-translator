@@ -1,44 +1,42 @@
-# Güvenlik Politikası
+# Security Policy
 
-## Desteklenen sürüm
+## Supported version
 
-Proje henüz kararlı sürüm etiketleri yayımlamıyorsa yalnız varsayılan dalın en
-son commit'i güvenlik düzeltmeleri alır. Eski commitler için destek garantisi
-yoktur.
+Until stable releases are published, only the latest commit on the default
+branch receives security fixes. Older commits are not guaranteed support.
 
-## Açık bildirme
+## Reporting a vulnerability
 
-API anahtarı sızıntısı, keyfi dosya yazma/okuma, kişisel altyazı veya log
-ifşası, komut çalıştırma ya da sağlayıcı yönlendirme açığını herkese açık issue
-olarak yayımlamayın.
+Do not open a public issue for API-key exposure, arbitrary file access, private
+subtitle or log disclosure, command execution, or provider-routing flaws.
 
-GitHub deposundaki **Security → Report a vulnerability** düğmesiyle özel bir
-güvenlik bildirimi gönderin. Özel bildirim seçeneği kullanılamıyorsa ayrıntıyı
-ve gerçek kimlik bilgisini issue'ya koymayın; yalnız depo sahibinin GitHub
-profili üzerinden özel iletişim kanalı isteyin.
+Use the repository's **Security → Report a vulnerability** action to submit a
+private security advisory. If private reporting is unavailable, do not place
+sensitive details or real credentials in an issue; contact the repository owner
+through GitHub and request a private channel.
 
-Raporda şunlar yeterlidir:
+A useful report contains:
 
-- etkilenen commit/sürüm ve işletim sistemi;
-- güvenli, mümkünse sentetik yeniden üretim adımları;
-- beklenen ve gerçekleşen davranış;
-- olası etki;
-- önerilen düzeltme varsa kısa açıklama.
+- affected commit/version and operating system;
+- safe, preferably synthetic reproduction steps;
+- expected and actual behavior;
+- likely impact;
+- a short mitigation suggestion, if known.
 
-Gerçek API anahtarı, özel altyazı, ham kullanıcı yolu veya kişisel log
-göndermeyin. Kanıtı sentetik değerlerle küçültün.
+Never send a real API key, private subtitle, personal path, or raw personal log.
+Minimize the proof with synthetic values.
 
-## Kimlik bilgisi olayı
+## Credential incidents
 
-Gerçek bir anahtar repoya, issue'ya veya loga girdiyse geçmişten silinmesini
-beklemeden önce sağlayıcı panelinden iptal edin/yenileyin. Ardından GitHub
-secret-scanning uyarılarını ve ilgili geçmişi ayrıca inceleyin.
+If a real key enters a repository, issue, or log, revoke and rotate it in the
+provider dashboard immediately; do not wait for history cleanup. Then review
+GitHub secret-scanning alerts and the affected history separately.
 
-## Güvenlik sınırları
+## Security boundaries
 
-- Windows Credential Manager/keyring tercih edilen anahtar deposudur.
-- Yerel fallback yalnız karartmadır; kriptografik şifreleme değildir.
-- OpenAI uyumlu özel base URL, altyazı ve anahtarın gideceği sunucuyu belirler;
-  güvenmediğiniz bir adresi kullanmayın.
-- Uygulama çıktılarının doğruluğunu veya üçüncü taraf sağlayıcıların kesintisiz
-  çalışmasını güvenlik garantisi olarak sunmaz.
+- Windows Credential Manager/keyring is the preferred credential store.
+- The local fallback is obfuscation, not cryptographic encryption.
+- A custom OpenAI-compatible base URL controls where subtitle text and the key
+  are sent; use only endpoints you trust.
+- The project does not guarantee model-output accuracy or uninterrupted service
+  from third-party providers.

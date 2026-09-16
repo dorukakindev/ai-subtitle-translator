@@ -1,14 +1,14 @@
-# Davranış Kuralları
+# Code of Conduct
 
-Bu projeye katılan herkesin saygılı, açık ve teknik konuya odaklı davranması
-beklenir.
+Everyone participating in this project is expected to be respectful, open, and
+focused on the technical subject.
 
-Kabul edilen davranışlar; yapıcı geri bildirim vermek, farklı deneyimlere
-saygı göstermek, hatayı kişiselleştirmeden kanıtla tartışmak ve kullanıcı
-verisini korumaktır. Taciz, aşağılama, tehdit, kişisel bilgi yayımlama,
-ayrımcı dil ve tartışmayı sabote eden davranışlar kabul edilmez.
+Constructive feedback, respect for different experience levels, evidence-based
+discussion, and protection of user data are welcome. Harassment, insults,
+threats, discriminatory language, publishing personal information, and
+behavior intended to derail discussion are not acceptable.
 
-Güvenlik açığı veya kişisel veri içeren olaylar herkese açık tartışmaya
-taşınmamalı; [SECURITY.md](SECURITY.md) izlenmelidir. Diğer davranış ihlallerini
-repo sahibine GitHub üzerinden bildirin. Proje sahibi gerektiğinde içeriği
-kaldırabilir veya katılımı sınırlayabilir.
+Do not discuss vulnerabilities or incidents containing personal data in public.
+Follow [SECURITY.md](SECURITY.md) instead. Report other conduct concerns to the
+repository owner through GitHub. The maintainer may remove content or restrict
+participation when necessary to protect the community.

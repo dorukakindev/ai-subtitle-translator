@@ -203,7 +203,7 @@ class SettingsPersistenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / ".gui_settings.json"
             settings_path.write_text(json.dumps({
-                "input": r"C:\Users\K",
+                "input": r"C:\Users\Example",
                 "output": r"C:\old-output",
             }), encoding="utf-8")
             app = _SettingsOnlyApp(settings_path)

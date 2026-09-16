@@ -219,9 +219,9 @@ class ProductionFolderAppendTest(unittest.TestCase):
         self.assertEqual(gui.App._get_srt_files(app_invalid), [])
 
     def test_focus_in_without_change_does_not_set_explicit_flag(self):
-        app = self._app(r"C:\Users\K", input_selected=False)
+        app = self._app(r"C:\Users\Example", input_selected=False)
         gui.App._on_input_entry_focus_in(app)
-        self.assertEqual(app._input_entry_focus_val, r"C:\Users\K")
+        self.assertEqual(app._input_entry_focus_val, r"C:\Users\Example")
 
         # FocusOut without changing text
         gui.App._on_input_entry_edited(app)
@@ -233,8 +233,8 @@ class ProductionFolderAppendTest(unittest.TestCase):
             new_folder = Path(root, "new_folder")
             new_folder.mkdir()
             (new_folder / "sub.srt").write_text("", encoding="utf-8")
-            val_ref = [r"C:\Users\K"]
-            app = self._app(r"C:\Users\K", input_selected=False)
+            val_ref = [r"C:\Users\Example"]
+            app = self._app(r"C:\Users\Example", input_selected=False)
             app.input_var.get = lambda: val_ref[0]
 
             gui.App._on_input_entry_focus_in(app)
@@ -246,13 +246,13 @@ class ProductionFolderAppendTest(unittest.TestCase):
             self.assertEqual([Path(p).name for p in files], ["sub.srt"])
 
     def test_focus_in_value_changed_and_restored_keeps_flag_false(self):
-        val_ref = [r"C:\Users\K"]
-        app = self._app(r"C:\Users\K", input_selected=False)
+        val_ref = [r"C:\Users\Example"]
+        app = self._app(r"C:\Users\Example", input_selected=False)
         app.input_var.get = lambda: val_ref[0]
 
         gui.App._on_input_entry_focus_in(app)
         val_ref[0] = r"C:\Temp"
-        val_ref[0] = r"C:\Users\K"  # restored
+        val_ref[0] = r"C:\Users\Example"  # restored
         gui.App._on_input_entry_edited(app)
 
         self.assertFalse(app._input_folder_explicitly_selected)

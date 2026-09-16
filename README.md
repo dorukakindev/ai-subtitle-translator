@@ -1,119 +1,109 @@
-# Altyazı Çevirisi
+# AI Subtitle Translator
 
-[English](README.en.md) · [Kullanım kılavuzu](KILAVUZ.md) · [Gizlilik](PRIVACY.md) · [Güvenlik](SECURITY.md)
+[![Tests](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
 
-OpenAI ve OpenAI uyumlu sağlayıcılarla `.srt`, `.vtt`, `.ass` ve `.ssa`
-altyazılarını bağlamı koruyarak çeviren, Türkçe arayüzlü bir Windows masaüstü
-uygulaması.
+[Türkçe README](README.tr.md) · [User guide (Turkish)](KILAVUZ.md) · [Architecture](Architecture.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
 
-Program replikleri birbirinden kopuk çevirmek yerine yakın diyalogları, sahne
-geçişlerini, daha önce verilmiş çeviri kararlarını, karakter ilişkilerini ve
-proje sözlüğünü birlikte değerlendirir. Çıktı yine de insan denetimi isteyen
-bir taslaktır; uygulama profesyonel çevirmenin yerine geçmez.
+A Turkish-language Windows desktop application that translates `.srt`, `.vtt`,
+`.ass`, and `.ssa` subtitles through OpenAI or OpenAI-compatible providers
+while preserving context across cues.
 
-## Öne çıkanlar
+Instead of treating cues as isolated strings, the application can supply nearby
+dialogue, scene transitions, prior translation decisions, character relations,
+and project terminology to the model. Output still requires human review; this
+is an assistant, not a replacement for a professional translator.
 
-- 60 dil seçeneği ve 74 içerik türü şeması
-- Kodlama ve biçim etiketlerini koruyan SRT, WebVTT ve ASS/SSA desteği
-- Önceki çevirileri sonraki parçalara taşıyan zincirleme bağlam
-- Karakter, hitap, ton, terim ve sahne analizi yapan yardımcı akış
-- Bölüm/dizi kapsamında onaylı terim, ad ve `sen`/`siz` tercihleri
-- Yerel çeviri belleği; Critic, Polish, Native Reader ve QC geçişleri
-- Eksik diyalog ve yapısal bozulma dahil 39 adreslenebilir bulgu sınıfı
-- Kaynağı değiştirmeyen yedekleme, kurtarma ve yalnız-raporla çalışma
-- İsteğe bağlı OpenAI Batch API ve FFmpeg ile gömülü altyazı çıkarma
-- Deneme çevirisi, geçiş geçmişi inceleme ve kontrollü geri alma
+## Highlights
 
-## Gereksinimler
+- 60 language choices and 74 content-type schemas
+- Encoding-aware SRT, WebVTT, and ASS/SSA support
+- Chained context carrying earlier translations into later chunks
+- Optional character, register, terminology, and scene analysis
+- Approved term, name, and formal/informal address preferences
+- Local translation memory plus Critic, Polish, Native Reader, and QC passes
+- 39 addressable semantic and structural finding classes
+- Source-preserving backups, recovery records, and report-only operation
+- Optional OpenAI Batch API and embedded-subtitle extraction through FFmpeg
+- Pilot translation and per-pass review/rollback tools
 
-- Windows 10 veya 11
-- Tk destekli Python 3.11 veya daha yeni kararlı sürüm
-- Kullanılacak uzak sağlayıcı için API hesabı/anahtarı veya çalışan bir yerel
-  Ollama/LM Studio sunucusu
-- Yalnız video içinden altyazı çıkarılacaksa FFmpeg ve ffprobe
+## Requirements
 
-CI, Python 3.11 ve 3.13 üzerinde çalışır. Yerel geliştirme ortamı Python 3.13
-ile doğrulanmıştır.
+- Windows 10 or 11
+- A stable Python 3.11 or newer release with Tk support
+- An account/key for each remote provider, or a running local Ollama/LM Studio server
+- FFmpeg and ffprobe only for subtitle extraction from video files
 
-## Kurulum
+CI runs on Python 3.11 and 3.13. The local development environment has also
+been verified with Python 3.13.
 
-PowerShell'de:
+## Installation
+
+Run in PowerShell:
 
 ```powershell
-git clone https://github.com/dorukakindev/openai-altyazi-cevirisi.git
-cd openai-altyazi-cevirisi
+git clone https://github.com/dorukakindev/ai-subtitle-translator.git
+cd ai-subtitle-translator
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe subtitle_translator_gui.py
 ```
 
-Sonraki açılışlarda `Başlat.bat` kullanılabilir. Başlatıcı çalışma anında paket
-indirmez; bağımlılık eksikse kurulum komutunu gösterip durur.
+Use `Başlat.bat` for later launches. It does not install packages at runtime;
+it stops with an installation command if a required dependency is missing.
+For video subtitle extraction, put `ffmpeg.exe` and `ffprobe.exe` on PATH or
+under `tools/ffmpeg/`. FFmpeg is not needed for normal subtitle translation.
 
-Video altyazısı çıkarmak için `ffmpeg.exe` ve `ffprobe.exe` PATH üzerinde veya
-proje kökündeki `tools/ffmpeg/` klasöründe bulunmalıdır. Normal altyazı çevirisi
-için FFmpeg gerekmez.
+## First run
 
-## İlk kullanım
+1. Create a provider profile under **API Anahtarları → Yeni Profil**.
+2. Select profiles and models for the main and optional helper roles.
+3. Add files or a folder and choose source and target languages.
+4. Select a content type or keep automatic detection enabled.
+5. Review the estimate, start translation, and inspect the quality report.
 
-1. **API Anahtarları → Yeni Profil** ile sağlayıcı profilini oluşturun.
-2. Ana çeviri ve isteğe bağlı yardımcı roller için profil/model seçin.
-3. Dosya veya klasör ekleyip kaynak ve hedef dili belirleyin.
-4. İçerik türünü seçin veya **Otomatik** bırakın.
-5. Maliyet tahminini inceleyip çeviriyi başlatın.
-6. Çıktıyla oluşan kalite raporunu kontrol edin.
+Removing a queue item never deletes its source file from disk.
 
-Kuyruktan bir öğeyi kaldırmak kaynak dosyayı diskten silmez.
+## Providers and modes
 
-## Sağlayıcılar ve çalışma kipleri
+Presets cover OpenAI, Google AI Studio, OpenRouter, Groq, DeepSeek, Mistral,
+xAI, Together, Cerebras, Fireworks, Nebius, and Anthropic, with custom
+OpenAI-compatible endpoints plus local Ollama and LM Studio profiles. Model
+lists are fetched dynamically.
 
-OpenAI dışında Google AI Studio, OpenRouter, Groq, DeepSeek, Mistral, xAI,
-Together, Cerebras, Fireworks, Nebius, Anthropic ve OpenAI uyumlu özel uç
-noktalar kullanılabilir. Ollama ve LM Studio için yerel profiller de vardır.
-Model listesi sağlayıcıdan dinamik alınır.
-
-| Kip | Kullanım | Önemli not |
+| Mode | Intended use | Important note |
 | --- | --- | --- |
-| Eşzamanlı | Normal çeviri | Zincirleme bağlamın tamamını kullanır. |
-| Toplu (Batch) | Büyük kuyruklar | Yalnız resmi OpenAI Batch API ile çalışır. |
-| Yardımcı Analiz | Kalite öncelikli | Etkin analiz ve kalite geçişlerini çalıştırır. |
+| Synchronous | Normal translation | Uses the complete chained-context flow. |
+| Batch | Large queues | Official OpenAI Batch API only. |
+| Assisted analysis | Quality first | Runs enabled analysis and quality passes. |
 
-Her yardımcı rol farklı bir sağlayıcı profiline bağlanabilir. Ana çeviri yerel
-modelde olsa bile Critic veya QC uzak profildeyse ilgili metin o sağlayıcıya
-gönderilir.
+Each helper role may use a different profile. A local main model does not make
+the entire workflow local when Critic, Polish, QC, or another helper role uses
+a remote provider.
 
-## Gizlilik ve API anahtarları
+## Privacy and credentials
 
-Altyazı metni, bağlam ve etkin analiz verileri seçtiğiniz uzak sağlayıcılara
-gönderilebilir. Batch kipinde istek dosyası OpenAI'a yüklenir. Gizli içerik
-işlemeden önce [PRIVACY.md](PRIVACY.md) dosyasını okuyun.
+Subtitle text, context, and enabled analysis data may be sent to selected remote
+providers. Batch mode uploads a request file to OpenAI. Read [PRIVACY.md](PRIVACY.md)
+before processing confidential material.
 
-Anahtarlar normalde Windows Kimlik Bilgisi Yöneticisi'nde `keyring` ile
-saklanır. Bu kullanılamazsa uygulama kullanıcıya özel dosya izinleriyle
-korunan, fakat yalnızca **karartılmış (obfuscated)** bir yerel dosyaya düşer.
-Bu yedek kriptografik şifreleme değildir. Paylaşılan bilgisayarda güvenli
-kimlik deposu olmadan anahtar saklamayın.
+Keys are normally stored in Windows Credential Manager through `keyring`. If
+that service is unavailable, the application falls back to a user-restricted
+but merely **obfuscated** local file. This is not cryptographic encryption. Do
+not use the fallback for sensitive keys on a shared computer.
 
-Güvenlik açığını herkese açık issue yerine [SECURITY.md](SECURITY.md) içindeki
-yolla bildirin.
+Report vulnerabilities through [SECURITY.md](SECURITY.md), not a public issue.
 
-## Yerel veriler
+## Local data
 
-Uygulama aşağıdaki dosyalarda altyazı metni veya çalışma bilgisi tutabilir;
-bunlar `.gitignore` ile kaynak deposundan ayrılır:
+The application may retain subtitle text or run information in
+`translation_memory.db`, `.context_cache/`, `.precontext.json`, `Raporlar/`,
+`logs/`, and recovery records. These are excluded from Git. Remove personal
+content before attaching diagnostics to a public issue.
 
-- `translation_memory.db`: kaynak/çeviri eşleşmeleri
-- `.context_cache/` ve `.precontext.json`: analiz önbellekleri
-- `Raporlar/` ve `logs/`: kalite bulguları ve çalışma kayıtları
-- Batch ve eşzamanlı kurtarma kayıtları
+## Settings, development, and tests
 
-Sorun raporuna ham dosya eklemeden önce kişisel içeriği temizleyin.
-
-## Ayarlar, geliştirme ve test
-
-Önemli ayarlar: **Yalnız Raporla**, **Zincirleme Bağlam** ve **Ham Çeviri
-Yedeği**. Bütün ayarlar için [KILAVUZ.md](KILAVUZ.md) kullanılmalıdır.
+The full settings reference is [KILAVUZ.md](KILAVUZ.md) in Turkish.
 
 ```powershell
 .\.venv\Scripts\python.exe belge_uret.py --kontrol
@@ -121,17 +111,16 @@ Yedeği**. Bütün ayarlar için [KILAVUZ.md](KILAVUZ.md) kullanılmalıdır.
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Testler ücretli API çağrısı gerektirmez. Katkı yapmadan önce
-[CONTRIBUTING.md](CONTRIBUTING.md) ve [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-dosyalarını okuyun.
+Tests require no paid API calls. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before contributing.
 
-## Sınırlamalar
+## Limitations
 
-Arayüz ve raporlar Türkçedir. Kalite seçilen modellere bağlıdır; otomatik
-kontroller her anlam hatasını yakalayamaz. Yayınlanacak altyazılar insan
-tarafından gözden geçirilmelidir.
+The interface and reports are in Turkish. Quality depends on selected models,
+and automated checks cannot detect every meaning error. Human review is needed
+before publishing subtitles.
 
-## Lisans
+## Licence
 
-[GNU General Public License v3.0](LICENSE). Dağıtılan türev çalışmalar için
-GPLv3 kaynak sağlama yükümlülükleri geçerlidir.
+[GNU General Public License v3.0](LICENSE). GPLv3 source-availability
+requirements apply to distributed derivatives.

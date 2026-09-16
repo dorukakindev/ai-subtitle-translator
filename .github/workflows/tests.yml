@@ -1,4 +1,4 @@
-name: Testler
+name: Tests
 
 on:
   push:
@@ -20,11 +20,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Bağımlılıkları kur
+      - name: Install dependencies
         run: python -m pip install -r requirements.txt
-      - name: Üretilmiş kılavuzu kontrol et
+      - name: Verify generated guide
         run: python belge_uret.py --kontrol
-      - name: Python derleme kontrolü
+      - name: Compile-check Python modules
         run: python -m py_compile subtitle_translator_gui.py hybrid_translate.py subtitle_formats.py
-      - name: Testleri çalıştır
+      - name: Run test suite
         run: python -m unittest discover -s tests

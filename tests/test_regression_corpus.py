@@ -75,7 +75,7 @@ class RegressionCorpusTest(unittest.TestCase):
         if not cases:
             self.skipTest(
                 "regresyon corpus henüz üretilmedi — "
-                "python tools/build_regression_corpus.py çalıştır")
+                "regression corpus fixtures are missing")
 
         by_cat_total = defaultdict(int)
         by_cat_caught = defaultdict(int)

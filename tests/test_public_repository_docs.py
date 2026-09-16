@@ -1,4 +1,4 @@
-"""Public depo belgeleri ve kurulum sözleşmesi için çevrimdışı kontroller."""
+"""Offline checks for the public repository documentation contract."""
 
 from pathlib import Path
 import re
@@ -12,13 +12,13 @@ class PublicRepositoryDocsTest(unittest.TestCase):
     def test_required_public_files_exist(self):
         for relative in (
             "README.md",
-            "README.en.md",
+            "README.tr.md",
             "LICENSE",
             "CONTRIBUTING.md",
             "CODE_OF_CONDUCT.md",
             "PRIVACY.md",
             "SECURITY.md",
-            "PUBLIC_RELEASE_CHECKLIST.md",
+            "Architecture.md",
             ".github/workflows/tests.yml",
             ".github/ISSUE_TEMPLATE/bug.yml",
             ".github/ISSUE_TEMPLATE/feature.yml",
@@ -27,7 +27,7 @@ class PublicRepositoryDocsTest(unittest.TestCase):
                 self.assertTrue((ROOT / relative).is_file())
 
     def test_local_readme_links_resolve(self):
-        for name in ("README.md", "README.en.md"):
+        for name in ("README.md", "README.tr.md"):
             text = (ROOT / name).read_text(encoding="utf-8-sig")
             for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
                 if "://" in target or target.startswith("#"):
@@ -37,12 +37,26 @@ class PublicRepositoryDocsTest(unittest.TestCase):
                     self.assertTrue((ROOT / local).exists())
 
     def test_credentials_are_not_described_as_encrypted(self):
-        for name in ("README.md", "README.en.md", "PRIVACY.md"):
-            text = (ROOT / name).read_text(encoding="utf-8-sig").lower()
-            self.assertNotIn("şifrelenmiş bir yedek", text)
-            self.assertNotIn("encrypted fallback", text)
-            marker = "obfus" if name == "README.en.md" else "karart"
-            self.assertIn(marker, text)
+        english = (ROOT / "README.md").read_text(encoding="utf-8-sig").lower()
+        turkish = (ROOT / "README.tr.md").read_text(encoding="utf-8-sig").lower()
+        privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8-sig").lower()
+        self.assertIn("obfus", english)
+        self.assertIn("karart", turkish)
+        self.assertIn("obfus", privacy)
+        self.assertNotIn("encrypted fallback", english)
+
+    def test_public_tree_excludes_internal_working_material(self):
+        for relative in (
+            "AGENTS.md",
+            "CLAUDE.md",
+            "DEVIR-NOTU.md",
+            "plans",
+            "docs/devir",
+            "HARİÇ TUTULANLAR",
+            "YENİDEN ÇEVRİLECEK",
+        ):
+            with self.subTest(relative=relative):
+                self.assertFalse((ROOT / relative).exists())
 
     def test_drag_drop_is_installed_during_setup_not_launch(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8-sig")

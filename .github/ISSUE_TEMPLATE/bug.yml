@@ -1,48 +1,48 @@
-name: Hata bildirimi
-description: Tekrarlanabilir bir uygulama hatasını bildirin.
-title: "[Hata] "
+name: Bug report
+description: Report a reproducible application defect.
+title: "[Bug] "
 labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: "Gerçek API anahtarı, özel altyazı veya ham log eklemeyin. Güvenlik açığı için SECURITY.md dosyasını izleyin."
+      value: "Do not attach real API keys, private subtitles, personal paths, or raw logs. Follow SECURITY.md for vulnerabilities."
   - type: input
     id: version
     attributes:
-      label: Commit veya sürüm
-      placeholder: ör. abc1234
+      label: Commit or version
+      placeholder: e.g. abc1234
     validations:
       required: true
   - type: dropdown
     id: mode
     attributes:
-      label: Çalışma kipi
-      options: [Eşzamanlı, Toplu Batch, Yardımcı Analiz, Arayüz veya diğer]
+      label: Workflow
+      options: [Synchronous, OpenAI Batch, Assisted analysis, Interface or other]
     validations:
       required: true
   - type: textarea
     id: reproduce
     attributes:
-      label: Sentetik yeniden üretim adımları
+      label: Synthetic reproduction steps
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Beklenen ve gerçekleşen davranış
+      label: Expected and actual behavior
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
-      label: Ortam
-      description: Windows ve Python sürümü; sağlayıcı/model adını anahtarsız yazın.
+      label: Environment
+      description: Include Windows and Python versions plus provider/model names, but no credentials.
     validations:
       required: true
   - type: checkboxes
     id: privacy
     attributes:
-      label: Gizlilik kontrolü
+      label: Privacy check
       options:
-        - label: Eklerden anahtarları, kişisel yolları ve özel altyazı içeriğini temizledim.
+        - label: I removed credentials, personal paths, and private subtitle content from all attachments.
           required: true
