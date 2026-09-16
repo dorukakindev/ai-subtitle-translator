@@ -4,9 +4,10 @@
 
 [Türkçe README](README.tr.md) · [User guide (Turkish)](KILAVUZ.md) · [Architecture](Architecture.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
 
-A Turkish-language Windows desktop application that translates `.srt`, `.vtt`,
-`.ass`, and `.ssa` subtitles through OpenAI or OpenAI-compatible providers
-while preserving context across cues.
+A Windows desktop application that translates `.srt`, `.vtt`, `.ass`, and `.ssa`
+subtitles through OpenAI or OpenAI-compatible providers while preserving context
+across cues. The interface defaults to English and can be switched to Turkish
+from the language control in the header.
 
 Instead of treating cues as isolated strings, the application can supply nearby
 dialogue, scene transitions, prior translation decisions, character relations,
@@ -15,7 +16,8 @@ is an assistant, not a replacement for a professional translator.
 
 ## Highlights
 
-- 60 language choices and 74 content-type schemas
+- English-first interface with a persistent English/Türkçe switch
+- 60 translation-language choices and 74 content-type schemas
 - Encoding-aware SRT, WebVTT, and ASS/SSA support
 - Chained context carrying earlier translations into later chunks
 - Optional character, register, terminology, and scene analysis
@@ -116,8 +118,9 @@ Tests require no paid API calls. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
 
 ## Limitations
 
-The interface and reports are in Turkish. Quality depends on selected models,
-and automated checks cannot detect every meaning error. Human review is needed
+The interface is available in English and Turkish. Translation reports and some
+diagnostic output remain Turkish. Quality depends on selected models, and
+automated checks cannot detect every meaning error. Human review is needed
 before publishing subtitles.
 
 ## Licence

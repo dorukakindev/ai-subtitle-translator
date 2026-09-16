@@ -1,6 +1,6 @@
 # Subtitle Translator — Architecture Overview
 
-A Windows desktop application (CustomTkinter, Turkish UI) that translates
+A Windows desktop application (CustomTkinter, English-first bilingual UI) that translates
 subtitle files through the OpenAI API. Where a naive translator sends each cue
 in isolation, this one spends most of its code keeping the model informed:
 surrounding lines, how earlier lines were already translated, a file-level

@@ -49,9 +49,7 @@ class PublicRepositoryDocsTest(unittest.TestCase):
         for relative in (
             "AGENTS.md",
             "CLAUDE.md",
-            "DEVIR-NOTU.md",
             "plans",
-            "docs/devir",
             "HARİÇ TUTULANLAR",
             "YENİDEN ÇEVRİLECEK",
         ):

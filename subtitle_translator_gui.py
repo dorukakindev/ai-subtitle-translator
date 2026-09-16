@@ -74,6 +74,10 @@ from provider_retry import (ProviderWaitCancelled, SHUAI_API_ROUTE_OPTIONS,
                             reset_shuai_route_metrics,
                             shuai_api_route_label)
 import video_subtitles as video_tracks
+from ui_localization import (
+    DEFAULT_UI_LANGUAGE, UI_LANGUAGES, normalize_ui_language,
+    translate_ui_text,
+)
 
 # Tahmini 1M Token fiyatları (Input/Output $)
 ESTIMATED_PRICES = {
@@ -22441,6 +22445,9 @@ from translation_workbench import TranslationWorkbenchMixin
 class App(TranslationWorkbenchMixin, ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.ui_language_var = ctk.StringVar(value=DEFAULT_UI_LANGUAGE)
+        self._ui_language = DEFAULT_UI_LANGUAGE
+        self._ui_localize_after_id = None
         self.title(APP_WINDOW_TITLE)
         self.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.configure(fg_color=BG)
@@ -22578,6 +22585,8 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
         self._project_memories = {}
 
         self._build_ui()
+        self._apply_ui_language(DEFAULT_UI_LANGUAGE, persist=False)
+        self.bind_all("<Map>", self._on_ui_widget_mapped, add="+")
         self.bind_all(
             "<Control-Shift-L>", self._shortcut_copy_complete_log, add="+")
         self.bind_all(
@@ -22594,6 +22603,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             self._load_settings()
         finally:
             self._applying_workflow_profile = False
+        self._apply_ui_language(self.ui_language_var.get(), persist=False)
         self._bind_workflow_profile_watchers()
         self._apply_startup_geometry()
         self._setup_drag_drop()
@@ -23799,6 +23809,100 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
         except Exception:
             pass
 
+    def _queue_ui_relocalize(self):
+        if self.__dict__.get("_ui_localize_after_id") is not None:
+            return
+        try:
+            self._ui_localize_after_id = self.after(30, self._flush_ui_relocalize)
+        except Exception:
+            pass
+
+    def _flush_ui_relocalize(self):
+        self._ui_localize_after_id = None
+        self._localize_widget_tree(self)
+    def _on_ui_widget_mapped(self, event=None):
+        """Localize newly opened dialogs without rebuilding application state."""
+        widget = getattr(event, "widget", None)
+        try:
+            top = widget.winfo_toplevel() if widget is not None else self
+        except Exception:
+            top = self
+        try:
+            self.after_idle(lambda: self._localize_widget_tree(top))
+        except Exception:
+            self._localize_widget_tree(top)
+
+    def _localize_widget_tree(self, root=None):
+        """Translate presentation text while preserving stable internal values."""
+        language = normalize_ui_language(
+            self.ui_language_var.get() if hasattr(self, "ui_language_var")
+            else DEFAULT_UI_LANGUAGE)
+        root = root or self
+        stack = [root]
+        seen = set()
+        while stack:
+            widget = stack.pop()
+            if id(widget) in seen:
+                continue
+            seen.add(id(widget))
+            try:
+                stack.extend(widget.winfo_children() or ())
+            except Exception:
+                pass
+            try:
+                current = widget.cget("text")
+            except Exception:
+                current = None
+            if isinstance(current, str):
+                source = getattr(widget, "_ui_source_text", None)
+                expected = (translate_ui_text(source, self._ui_language)
+                            if isinstance(source, str) else None)
+                if source is None or (current != source and current != expected):
+                    source = current
+                    try:
+                        widget._ui_source_text = source
+                    except Exception:
+                        pass
+                translated = translate_ui_text(source, language)
+                if translated != current:
+                    try:
+                        widget.configure(text=translated)
+                    except Exception:
+                        pass
+        try:
+            current_title = root.title()
+            source_title = getattr(root, "_ui_source_title", None)
+            old_expected = (translate_ui_text(source_title, self._ui_language)
+                            if isinstance(source_title, str) else None)
+            if source_title is None or (current_title != source_title
+                                        and current_title != old_expected):
+                source_title = current_title
+                root._ui_source_title = source_title
+            root.title(translate_ui_text(source_title, language))
+        except Exception:
+            pass
+
+    def _apply_ui_language(self, language, persist=True):
+        language = normalize_ui_language(language)
+        self.ui_language_var.set(language)
+        previous = getattr(self, "_ui_language", DEFAULT_UI_LANGUAGE)
+        self._ui_language = previous
+        self._localize_widget_tree(self)
+        self._ui_language = language
+        try:
+            for child in self.winfo_children() or ():
+                if isinstance(child, (ctk.CTkToplevel, tk.Toplevel)):
+                    self._localize_widget_tree(child)
+        except Exception:
+            pass
+        if persist and hasattr(self, "model_var"):
+            try:
+                self._save_settings(save_credentials=False)
+            except Exception:
+                pass
+
+    def _on_ui_language_change(self, language):
+        self._apply_ui_language(language, persist=True)
     def _build_ui(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -23830,6 +23934,21 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             border_width=1, border_color=BORDER,
             command=self._add_folder_files,
         ).grid(row=0, column=3, rowspan=2)
+        language_box = ctk.CTkFrame(header, fg_color="transparent")
+        language_box.grid(row=0, column=4, rowspan=2, padx=(10, 0), sticky="e")
+        self.ui_language_label = ctk.CTkLabel(
+            language_box, text="Arayüz", text_color=FG2,
+            font=ctk.CTkFont("Segoe UI", 10),
+        )
+        self.ui_language_label.pack(anchor="w", pady=(0, 2))
+        self.ui_language_menu = ctk.CTkOptionMenu(
+            language_box, variable=self.ui_language_var,
+            values=list(UI_LANGUAGES), width=112, height=30,
+            fg_color=CARD, button_color=BORDER,
+            button_hover_color=ACCENT, text_color=FG,
+            command=self._on_ui_language_change,
+        )
+        self.ui_language_menu.pack(fill="x")
         self._build_sidebar()
         self._build_main()
 
@@ -24575,10 +24694,10 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
         ).grid(row=r, column=0, sticky="ew", padx=4, pady=(0, 4)); r += 1
         ctk.CTkLabel(
             sb,
-            text="Final altyazıyı kaynakla; cümle/fragment,\n\n\nLLM'e vereceksen KAPALI bırak — düzeltmeyi o yapacak."
-                 "komşu cue ve sahne bağlamında inceler. Özne-nesne,\n"
-                 "kip/olumsuzluk, eksik-tekrar anlam ve Critic bozmasını\n"
-                 "cue numarasıyla raporlar; metni asla değiştirmez.\n"
+            text="Final altyazıyı kaynakla; LLM'e vereceksen KAPALI bırak.\n"
+                 "Cümle/fragment, komşu cue ve sahne bağlamında inceler.\n"
+                 "Özne-nesne, kip/olumsuzluk, eksik-tekrar anlam ve Critic\n"
+                 "bozmasını cue numarasıyla raporlar; metni asla değiştirmez.\n"
                  "Ekonomik yaklaşık %35, Tam %100 kapsamdır.",
             font=ctk.CTkFont("Segoe UI", 10), text_color=FG2,
             justify="left", wraplength=260,
@@ -26205,6 +26324,10 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             if time.monotonic() - started >= UI_DISPATCH_BUDGET_SECONDS:
                 break
 
+        if count:
+            relocalize = getattr(self, "_queue_ui_relocalize", None)
+            if callable(relocalize):
+                relocalize()
         if not getattr(self, "_is_shutting_down", False):
             try:
                 delay = 1 if not self._ui_queue.empty() else 20
@@ -28936,7 +29059,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
         self._window_title_value = title
         title_setter = getattr(self, "title", None)
         if callable(title_setter):
-            title_setter(title)
+            title_setter(translate_ui_text(title, self.ui_language_var.get()))
 
     def _set_phase(self, phase: str, detail: str = ""):
         """Büyük faz etiketini günceller. phase = 'analiz'|'çeviri'|'critic'|..."""
@@ -28953,7 +29076,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                 self._motion_activity_text = (
                     "" if key in {"hazır", "tamam"} else "ÇALIŞIYOR")
                 self._motion_step = 0
-                self._phase_lbl.configure(text=phase, text_color=color)
+                self._phase_lbl.configure(text=translate_ui_text(phase, self.ui_language_var.get()), text_color=color)
                 self._phase_dot.configure(text="●", text_color=color)
                 self._phase_card.configure(
                     border_width=1,
@@ -28961,7 +29084,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                 self.progress.configure(progress_color=color)
                 self._phase_activity_lbl.configure(
                     text="" if key in {"hazır", "tamam"} else "ÇALIŞIYOR ·")
-                self.progress_lbl.configure(text=visible_detail)
+                self.progress_lbl.configure(text=translate_ui_text(visible_detail, self.ui_language_var.get()))
                 App._update_pipeline_rail(self, phase, color)
                 App._refresh_progress_window_title(self)
                 App._ensure_motion_animation(self)
@@ -28974,7 +29097,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
         def _upd():
             try:
                 self._motion_activity_started_at = time.monotonic()
-                self.progress_lbl.configure(text=msg)
+                self.progress_lbl.configure(text=translate_ui_text(msg, self.ui_language_var.get()))
             except Exception:
                 pass
         _post_ui(self, _upd)
@@ -31041,6 +31164,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             self._toggle_hybrid()
         finally:
             self._applying_workflow_profile = False
+        self._apply_ui_language(self.ui_language_var.get(), persist=False)
         self._log(f"Çalışma profili uygulandı: {profile_name}", "info")
 
     def _apply_media_mode(self, media_mode: str, *, notify=True):
@@ -32363,6 +32487,10 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             getattr(self, "_api_key_profiles", {}))
         data = {
             "quality_profile_version": QUALITY_PROFILE_VERSION,
+            "ui_language": normalize_ui_language(
+                getattr(getattr(self, "ui_language_var", None), "get",
+                        lambda: DEFAULT_UI_LANGUAGE)()
+            ),
             "model": self.model_var.get(), "src_lang": self.src_var.get(),
             "tgt_lang": self.tgt_var.get(), "mode": self.mode_var.get(),
             "hybrid": self.hybrid_var.get(),
@@ -32767,6 +32895,9 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
         try:
             with open(p, encoding="utf-8") as f:
                 d = json.load(f)
+            if hasattr(self, "ui_language_var"):
+                self.ui_language_var.set(
+                    normalize_ui_language(d.get("ui_language")))
             self._api_key_profiles = _sanitize_api_key_profiles(
                 d.get("api_key_profiles"))
             self._api_key_assignments = _sanitize_api_key_assignments(

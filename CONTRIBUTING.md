@@ -9,7 +9,8 @@ and API cost in mind throughout a contribution.
 1. Open an issue for substantial behavior or architecture changes.
 2. Use synthetic or redistributable subtitle samples. Never commit API keys,
    private subtitles, personal paths, raw user logs, caches, or databases.
-3. Keep the Turkish interface and reports in Turkish; use English identifiers.
+3. Update both the English UI catalog and its Turkish source copy for user-facing
+   interface changes; keep code identifiers in English.
 4. Preserve cue IDs, timestamps, cue boundaries, formatting tags, and source
    backups unless the change explicitly targets one of those structures.
 5. Apply shared behavior to every relevant translation flow and keep the sync

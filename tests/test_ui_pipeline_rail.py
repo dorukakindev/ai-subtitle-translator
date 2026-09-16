@@ -143,7 +143,7 @@ class PipelineRailStateTest(unittest.TestCase):
 
     def test_phase_setter_updates_detail_and_rail(self):
         source = inspect.getsource(gui.App._set_phase)
-        self.assertIn("progress_lbl.configure(text=visible_detail)", source)
+        self.assertIn("progress_lbl.configure(text=translate_ui_text(visible_detail", source)
         self.assertIn("App._update_pipeline_rail(self, phase, color)", source)
 
     def test_progress_percentage_badge_tracks_target(self):

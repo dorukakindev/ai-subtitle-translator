@@ -3,8 +3,8 @@
 [English](README.md) · [Kullanım kılavuzu](KILAVUZ.md) · [Gizlilik](PRIVACY.md) · [Güvenlik](SECURITY.md)
 
 OpenAI ve OpenAI uyumlu sağlayıcılarla `.srt`, `.vtt`, `.ass` ve `.ssa`
-altyazılarını bağlamı koruyarak çeviren, Türkçe arayüzlü bir Windows masaüstü
-uygulaması.
+altyazılarını bağlamı koruyarak çeviren bir Windows masaüstü uygulamasıdır.
+Arayüz İngilizce açılır; üst bölümdeki dil seçicisinden Türkçeye çevrilebilir.
 
 Program replikleri birbirinden kopuk çevirmek yerine yakın diyalogları, sahne
 geçişlerini, daha önce verilmiş çeviri kararlarını, karakter ilişkilerini ve
