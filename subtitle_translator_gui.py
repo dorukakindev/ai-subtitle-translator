@@ -34561,8 +34561,10 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             # görülmedi; her koşuda ücretli bir istek eklemenin anlamı yok.
             return True
         now = time.monotonic()
-        passed_at = getattr(self, "_provider_live_check_ok_at", 0.0) or 0.0
-        if now - passed_at < App._PROVIDER_LIVE_CHECK_TTL:
+        # monotonic() önyüklemeden beri sayar; "hiç geçmedi" değeri 0.0
+        # olamaz — uptime < TTL iken sahte bir geçiş sayılırdı.
+        passed_at = getattr(self, "_provider_live_check_ok_at", None)
+        if passed_at is not None and now - passed_at < App._PROVIDER_LIVE_CHECK_TTL:
             self._log(
                 f"Canlılık kontrolü: {int(now - passed_at)} sn önce geçmişti, "
                 "tekrar sorulmadı.", "info")
