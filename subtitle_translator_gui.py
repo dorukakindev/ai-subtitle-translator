@@ -47673,14 +47673,25 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                         "changed": 0,
                     }
                 if self.auto_glossary_var.get():
-                    self._record_file_status(
-                        filepath, "Auto-Glossary", "running")
-                    _auto_glossary_status = {}
-                    self._run_auto_glossary(
-                        cues, _final_blocks, filepath,
-                        status_out=_auto_glossary_status)
-                    _pass_status["Auto-Glossary"] = dict(
-                        _auto_glossary_status)
+                    if _hybrid_quality_failed:
+                        # Başarısız dosyadan sözlük önerisi üretme: ücretli
+                        # yardımcı istek harcanır, diyalog işçiyi bloklar ve
+                        # hatalı teslimden öğrenilen terim onaylanırsa kalıcı
+                        # sözlüğe girerdi. İki-dalgalı/düz akışlar da
+                        # başarısızda bu geçişi atlıyor.
+                        _pass_status["Auto-Glossary"] = {
+                            "status": "skipped", "reason": "quality_failed",
+                            "changed": 0,
+                        }
+                    else:
+                        self._record_file_status(
+                            filepath, "Auto-Glossary", "running")
+                        _auto_glossary_status = {}
+                        self._run_auto_glossary(
+                            cues, _final_blocks, filepath,
+                            status_out=_auto_glossary_status)
+                        _pass_status["Auto-Glossary"] = dict(
+                            _auto_glossary_status)
 
                 # Rapor satırı ([HATA]: kalan + save_results'ın doldurduğu).
                 # Sayım diske yazılan teslim bloklarından yapılır (bkz. _run_sync).
