@@ -146,6 +146,22 @@ class LiveCheckTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertTrue(any("tekrar sorulmadı" in msg for _lvl, msg in app.logs))
 
+    def test_a_fresh_boot_is_not_a_recent_pass(self):
+        # time.monotonic() önyüklemeden beri sayar: uptime < TTL iken
+        # 0.0 varsayılanı geçilmiş bir kontrol gibi görünürdü ve kapı
+        # ölü sağlayıcıyı bile sorgusuz geçerdi.
+        app = _app()
+        calls = []
+
+        def _fake(*_a, **_k):
+            calls.append(1)
+            return {"ok": False, "detail": "ölü", "attempts": 4, "failures": 4}
+        with mock.patch.object(pr, "probe_api_key", _fake), \
+                mock.patch.object(gui.time, "monotonic", return_value=60.0):
+            self.assertFalse(gui.App._provider_live_check(app, "Çeviri"))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(any(level == "err" for level, _msg in app.logs))
+
     def test_a_broken_probe_does_not_block_the_run(self):
         app = _app()
         with mock.patch.object(pr, "probe_api_key",
