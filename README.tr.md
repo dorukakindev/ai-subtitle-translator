@@ -18,7 +18,7 @@ bir taslaktır; uygulama profesyonel çevirmenin yerine geçmez.
 - [Öne çıkanlar](#öne-çıkanlar)
 - [Gereksinimler](#gereksinimler)
 - [Kurulum](#kurulum)
-- [İlk kullanım](#i̇lk-kullanım)
+- [Başlangıç](#başlangıç)
 - [Sağlayıcılar ve çalışma kipleri](#sağlayıcılar-ve-çalışma-kipleri)
 - [Ortam değişkenleri](#ortam-değişkenleri)
 - [Gizlilik ve API anahtarları](#gizlilik-ve-api-anahtarları)
@@ -73,7 +73,7 @@ Video altyazısı çıkarmak için `ffmpeg.exe` ve `ffprobe.exe` PATH üzerinde 
 proje kökündeki `tools/ffmpeg/` klasöründe bulunmalıdır. Normal altyazı çevirisi
 için FFmpeg gerekmez.
 
-## İlk kullanım
+## Başlangıç
 
 1. **API Anahtarları → Yeni Profil** ile sağlayıcı profilini oluşturun.
 2. Ana çeviri ve isteğe bağlı yardımcı roller için profil/model seçin.
