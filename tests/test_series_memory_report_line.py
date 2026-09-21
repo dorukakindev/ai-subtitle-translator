@@ -93,8 +93,13 @@ class FlowRecordsTheReasonTest(unittest.TestCase):
     def test_both_gate_paths_record_before_continue(self):
         import inspect
         source = inspect.getsource(gui)
-        self.assertEqual(
-            source.count('_pass_status.setdefault("Series-Memory", {'), 3)
+        # Kapı yolları nedeni artık paylaşılan yardımcıya kaydediyor —
+        # 4 akış sitesi (_write_results, _run_sync_hybrid,
+        # _wait_batch_hybrid, _run_hybrid) hepsi yardımcıyı çağırır
+        # (+1 = yardımcının kendi tanım satırı).
+        self.assertGreaterEqual(
+            source.count("_note_skipped_side_effects("), 5)
+        self.assertIn('setdefault("Series-Memory", {', source)
 
     def test_sync_hybrid_separates_its_three_causes(self):
         import inspect

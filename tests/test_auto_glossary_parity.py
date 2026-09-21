@@ -56,13 +56,18 @@ class AutoGlossaryParityTest(unittest.TestCase):
             govde = _fonksiyon_govdesi(ad)
             idx = govde.find("_run_auto_glossary")
             self.assertNotEqual(idx, -1, "%s için test eskimiş" % ad)
-            # Çağrıdan önce kalite-başarısızlık dalı `continue` ile çıkıyor.
+            # Çağrıdan önce kalite-başarısızlık dalı `continue` ile çıkıyor ve
+            # atlama kaydı paylaşılan yardımcıya bırakılıyor.
             oncesi = govde[:idx]
             self.assertIn("continue", oncesi,
                           "%s başarısız dalı artık continue ile çıkmıyor" % ad)
             self.assertIn("_record_file_status", oncesi)
-            self.assertIn('_pass_status.setdefault("Auto-Glossary"', oncesi)
-            self.assertIn('"quality_failed"', oncesi)
+            self.assertIn("_note_skipped_side_effects", oncesi)
+        # Neden üçlüsü (unresolved_markers/delivery_failed/quality_failed)
+        # yardımcının içinde yaşar.
+        yardimci = _fonksiyon_govdesi("_note_skipped_side_effects")
+        self.assertIn('setdefault("Auto-Glossary"', yardimci)
+        self.assertIn('"quality_failed"', yardimci)
 
 
 if __name__ == "__main__":
