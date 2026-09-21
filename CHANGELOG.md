@@ -8,6 +8,12 @@ current state. Entries are grouped by merge date.
 
 ## [Unreleased]
 
+### Fixed
+
+- Auto-Glossary skips now carry the real delivery or quality failure reason in
+  every translation flow, instead of appearing as either an unexplained run or
+  the misleading "no source/translation pairs" case.
+
 ## 2026-09-21
 
 ### Fixed

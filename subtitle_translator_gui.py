@@ -19013,7 +19013,9 @@ def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
                 f"{int(auto_status.get('suggested', 0) or 0)} öneri, "
                 f"{int(auto_status.get('written', 0) or 0)} terim eklendi")
         elif auto_state == "skipped":
-            lines.append("Auto-Glossary: incelenecek çift olmadığı için atlandı")
+            detail = (pass_skip_explanation(auto_status)
+                      or "incelenecek çift olmadığı için")
+            lines.append(f"Auto-Glossary: atlandı, {detail}")
         elif auto_state in {"failed", "partial", "cancelled"}:
             auto_text = {
                 "failed": "başarısız", "partial": "kısmi tamamlandı",
@@ -43217,6 +43219,15 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                                else "delivery_failed"),
                     "changed": 0,
                 })
+                if self.auto_glossary_var.get():
+                    _pass_status.setdefault("Auto-Glossary", {
+                        "status": "skipped",
+                        "reason": ("unresolved_markers" if _has_missing
+                                   else "delivery_failed"
+                                   if _delivery_scan_failed
+                                   else "quality_failed"),
+                        "changed": 0,
+                    })
                 failed_files.append(filepath)
                 failure_label = (
                     f"Eksik çeviri: {_hata_n}" if _has_missing
@@ -45925,6 +45936,15 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                                else "delivery_failed"),
                     "changed": 0,
                 })
+                if self.auto_glossary_var.get():
+                    _pass_status.setdefault("Auto-Glossary", {
+                        "status": "skipped",
+                        "reason": ("unresolved_markers" if _has_missing
+                                   else "delivery_failed"
+                                   if _delivery_scan_failed
+                                   else "quality_failed"),
+                        "changed": 0,
+                    })
                 _failed_files.append(fp)
                 self._record_file_status(fp, (
                     f"Eksik çeviri: {_hata_n}" if _has_missing

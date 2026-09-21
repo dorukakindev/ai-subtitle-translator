@@ -8,10 +8,10 @@ Auto-Glossary'yi atlar. `_run_hybrid` (batch+hibrit) ise koşulsuz
 ve `_wait_for_dialog_event` işçiyi 5 dakikaya kadar bloklayabiliyordu.
 """
 import ast
-import io
 import os
 import sys
 import unittest
+from pathlib import Path
 
 KOK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, KOK)
@@ -20,7 +20,7 @@ KAYNAK = os.path.join(KOK, "subtitle_translator_gui.py")
 
 
 def _fonksiyon_govdesi(ad):
-    metin = io.open(KAYNAK, encoding="utf-8-sig").read()
+    metin = Path(KAYNAK).read_text(encoding="utf-8-sig")
     satirlar = metin.split("\n")
     for node in ast.walk(ast.parse(metin)):
         if isinstance(node, ast.FunctionDef) and node.name == ad:
@@ -49,7 +49,7 @@ class AutoGlossaryParityTest(unittest.TestCase):
         aralik = govde[kapi:idx]
         self.assertIn('"quality_failed"', aralik)
 
-    def test_duz_ve_iki_dalgali_da_baarisizda_atlar(self):
+    def test_duz_ve_iki_dalgali_da_basarisizda_atlar_ve_nedeni_kaydeder(self):
         """Kardeş akışların başarısız dosyada Auto-Glossary'ye hiç
         ulaşmadığını sabitle — referans davranış bu."""
         for ad in ("_write_results", "_run_sync_hybrid"):
@@ -61,6 +61,8 @@ class AutoGlossaryParityTest(unittest.TestCase):
             self.assertIn("continue", oncesi,
                           "%s başarısız dalı artık continue ile çıkmıyor" % ad)
             self.assertIn("_record_file_status", oncesi)
+            self.assertIn('_pass_status.setdefault("Auto-Glossary"', oncesi)
+            self.assertIn('"quality_failed"', oncesi)
 
 
 if __name__ == "__main__":

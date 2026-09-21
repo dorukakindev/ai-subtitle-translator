@@ -455,6 +455,25 @@ class BuildQualityReportTextTest(unittest.TestCase):
         self.assertIn(
             "Auto-Glossary: çalıştı, 4 öneri, 2 terim eklendi", audit)
 
+    def test_auto_glossary_failure_reports_the_real_skip_reason(self):
+        for reason, expected in (
+                ("unresolved_markers", "eksik çeviri işareti"),
+                ("delivery_failed", "teslim kapısını geçemedi"),
+                ("quality_failed", "kalite/teslim denetimi başarısız")):
+            with self.subTest(reason=reason):
+                audit = gui._quality_feature_audit({
+                    "run_status": "error",
+                    "pass_status": {"Auto-Glossary": {
+                        "status": "skipped", "reason": reason,
+                        "changed": 0,
+                    }},
+                }, {"auto_glossary": True})
+
+                line = next(row for row in audit
+                            if row.startswith("Auto-Glossary:"))
+                self.assertIn(expected, line)
+                self.assertNotIn("incelenecek çift olmadığı için", line)
+
     def test_series_memory_save_failure_is_visible(self):
         audit = gui._quality_feature_audit({
             "run_status": "done",
