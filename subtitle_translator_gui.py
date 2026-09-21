@@ -18736,6 +18736,31 @@ def _quality_pass_has_hard_failure(pass_status: dict | None) -> bool:
     return False
 
 
+def _note_skipped_side_effects(pass_status: dict, *, has_missing: bool,
+                               delivery_scan_failed: bool = False,
+                               auto_glossary_enabled: bool = False) -> None:
+    """Teslim/kalite hatasında bilinçli atlanan yan-etki geçişlerini rapor satırına işle.
+
+    Dört akışın ortak kuralı: dosya başarısız bırakıldığında Series-Memory ve
+    (açıksa) ücretli Auto-Glossary ÇALIŞMAZ; rapor "çalışma kaydı yok" demesin
+    diye `skipped` + neden yazılır. `setdefault` kullanılır: geçiş zaten bir
+    kayıt ürettiyse (ör. kendi içinde failed işaretlendiyse) ezilmez.
+    """
+    pass_status.setdefault("Series-Memory", {
+        "status": "skipped",
+        "reason": "unresolved_markers" if has_missing else "delivery_failed",
+        "changed": 0,
+    })
+    if auto_glossary_enabled:
+        pass_status.setdefault("Auto-Glossary", {
+            "status": "skipped",
+            "reason": ("unresolved_markers" if has_missing
+                       else "delivery_failed" if delivery_scan_failed
+                       else "quality_failed"),
+            "changed": 0,
+        })
+
+
 def _quality_feature_audit(row: dict, snapshot: dict = None) -> list[str]:
     snapshot = snapshot or {}
     trace = row.get("pass_trace") or {}
@@ -39242,8 +39267,16 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                         or _delivery_scan_has_hard_error(row.get("delivery_scan"))
                         or row.get("delivery_scan_failed"))):
                     report_only = self._delivery_report_only_enabled()
-                    quarantined = self._maybe_quarantine_incomplete_final(
-                        row.get("output_path", ""))
+                    try:
+                        quarantined = self._maybe_quarantine_incomplete_final(
+                            row.get("output_path", ""))
+                    except Exception as _qerr:
+                        # Karantina taşıması patlarsa raporun geri kalanı (ve
+                        # diğer dosyaların satırları) yazılabilsin.
+                        quarantined = None
+                        self._log_exc(
+                            f"{row.get('name', 'altyazı')}: çıktı karantinası",
+                            _qerr)
                     row["run_status"] = "review" if report_only else "error"
                     row["delivery_quarantined_path"] = str(quarantined or "")
                     if report_only:
@@ -43082,25 +43115,35 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             _has_missing = _hata_n > 0
             _write_path = _partial_output_path(out_path) if _has_missing else out_path
             self._record_file_status(filepath, "Dosya Yazımı", "running")
-            write_srt(_write_path, _delivery_blocks, tgt)
-            if _has_missing:
-                _write_unfinished_run_marker(
-                    out_path, _write_path, reason="eksik çeviri satırı kaldı",
-                    missing=_hata_n, log_fn=self._log)
-            else:
-                _clear_unfinished_run_marker(out_path)
-            _quarantined = (
-                self._maybe_quarantine_incomplete_final(out_path)
-                if _has_missing else None)
-            _fingerprint_ok = _write_output_source_fingerprint(
-                report_dir, _write_path, _expected_source_hash,
-                source_path=filepath)
+            # Tek dosyanın teslim I/O hatası tüm koşuyu öldürmemeli (_write_results
+            # ile aynı sınırlama): satır 'error' ile rapora düşer, döngü devam eder.
+            _delivery_io_failed = False
+            try:
+                write_srt(_write_path, _delivery_blocks, tgt)
+                if _has_missing:
+                    _write_unfinished_run_marker(
+                        out_path, _write_path, reason="eksik çeviri satırı kaldı",
+                        missing=_hata_n, log_fn=self._log)
+                else:
+                    _clear_unfinished_run_marker(out_path)
+                _quarantined = (
+                    self._maybe_quarantine_incomplete_final(out_path)
+                    if _has_missing else None)
+                _fingerprint_ok = _write_output_source_fingerprint(
+                    report_dir, _write_path, _expected_source_hash,
+                    source_path=filepath)
+                self._save_raw_backup(
+                    _write_path, _raw_backup_blocks, _raw_map, tgt)
+            except Exception as _write_err:
+                _delivery_io_failed = True
+                _fingerprint_ok = False
+                _quarantined = None
+                self._log_exc(f"{fname}: teslim dosyası yazımı", _write_err)
+                self._record_file_status(filepath, "Dosya Yazımı", "error")
             if not _fingerprint_ok:
                 self._log(
                     f"{fname}: kaynak arşivi/parmak izi yazılamadı; "
                     "dosya tamamlandı sayılmayacak.", "err")
-            self._save_raw_backup(
-                _write_path, _raw_backup_blocks, _raw_map, tgt)
             if _has_missing:
                 self._log(
                     f"{fname}: {_hata_n} eksik çeviri kaldı; kısmi çıktı "
@@ -43113,7 +43156,7 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                         f"{_quarantined.name}",
                         "warn",
                     )
-            else:
+            elif not _delivery_io_failed:
                 self._log(f"Geçici nihai çıktı yazıldı: {out_path}", "info")
             # Kalite taraması (çeviri sonrası uyarılar) — diğer akışlarla paritede
             _w = 0
@@ -43157,7 +43200,11 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                     "tamamlanamadı; dosya tamamlandı sayılmayacak.", "err")
             if not _has_missing and (
                     _delivery_scan_failed or _quality_pass_failed):
-                quarantined = self._maybe_quarantine_incomplete_final(out_path)
+                try:
+                    quarantined = self._maybe_quarantine_incomplete_final(out_path)
+                except Exception as _qerr:
+                    quarantined = None
+                    self._log_exc(f"{fname}: çıktı karantinası", _qerr)
                 if quarantined:
                     _write_path = quarantined
                     self._log(
@@ -43213,21 +43260,10 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                 # Dosya burada bırakılıyor; Dizi Hafızası bilinçli olarak
                 # çalışmayacak. Kaydı BURADA bırak, yoksa satırda anahtar
                 # hiç oluşmuyor ve rapor nedeni bilmiyor sanıyordu.
-                _pass_status.setdefault("Series-Memory", {
-                    "status": "skipped",
-                    "reason": ("unresolved_markers" if _has_missing
-                               else "delivery_failed"),
-                    "changed": 0,
-                })
-                if self.auto_glossary_var.get():
-                    _pass_status.setdefault("Auto-Glossary", {
-                        "status": "skipped",
-                        "reason": ("unresolved_markers" if _has_missing
-                                   else "delivery_failed"
-                                   if _delivery_scan_failed
-                                   else "quality_failed"),
-                        "changed": 0,
-                    })
+                _note_skipped_side_effects(
+                    _pass_status, has_missing=_has_missing,
+                    delivery_scan_failed=_delivery_scan_failed,
+                    auto_glossary_enabled=bool(self.auto_glossary_var.get()))
                 failed_files.append(filepath)
                 failure_label = (
                     f"Eksik çeviri: {_hata_n}" if _has_missing
@@ -43285,9 +43321,14 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             if self.auto_glossary_var.get():
                 self._record_file_status(filepath, "Auto-Glossary", "running")
                 _auto_glossary_status = {}
-                self._run_auto_glossary(
-                    cues, sorted_blocks, filepath,
-                    status_out=_auto_glossary_status)
+                try:
+                    self._run_auto_glossary(
+                        cues, sorted_blocks, filepath,
+                        status_out=_auto_glossary_status)
+                except Exception as _ag_e:
+                    _auto_glossary_status.update({
+                        "status": "failed", "error": str(_ag_e)})
+                    self._log(f"Auto-Glossary atlandı: {_ag_e}", "warn")
                 _pass_status["Auto-Glossary"] = dict(_auto_glossary_status)
             self._update_file_progress(filepath,
                 f"Tamamlandı  {len(sorted_blocks)} satır", 100, "done")
@@ -44922,11 +44963,8 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                                 # Kurtarma yolu da kayıt bırakmalı: burada
                                 # `break` ediliyor ve aşağıdaki Dizi Hafızası
                                 # bloğuna hiç ulaşılmıyordu.
-                                _pass_status.setdefault("Series-Memory", {
-                                    "status": "skipped",
-                                    "reason": "unresolved_markers",
-                                    "changed": 0,
-                                })
+                                _note_skipped_side_effects(
+                                    _pass_status, has_missing=True)
                                 terminal = True
                                 if result_out is not None:
                                     result_out["status"] = "failed"
@@ -45812,20 +45850,35 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             if _has_missing:
                 _write_path = _partial_output_path(out_path)
             self._record_file_status(fp, "Dosya Yazımı", "running")
-            write_srt(_write_path, _delivery_blocks, _tgt_lang)
-            if _has_missing:
-                _write_unfinished_run_marker(
-                    out_path, _write_path, reason="eksik çeviri satırı kaldı",
-                    missing=_hata_n, log_fn=self._log)
-            else:
-                _clear_unfinished_run_marker(out_path)
-            _quarantined = (
-                self._maybe_quarantine_incomplete_final(out_path)
-                if _has_missing else None)
-            _fingerprint_ok = _write_output_source_fingerprint(
-                report_dir, _write_path,
-                expected_source_hash or _file_content_sha256(fp),
-                source_path=fp)
+            # Tek dosyanın teslim I/O hatası tüm koşuyu öldürmemeli: kalan
+            # dosyaların rapor satırı ve ceviri_raporu.txt yazılsın diye
+            # hatayı dosyayla sınırla (batch hibrit akışının yaptığı gibi).
+            _delivery_io_failed = False
+            try:
+                write_srt(_write_path, _delivery_blocks, _tgt_lang)
+                if _has_missing:
+                    _write_unfinished_run_marker(
+                        out_path, _write_path, reason="eksik çeviri satırı kaldı",
+                        missing=_hata_n, log_fn=self._log)
+                else:
+                    _clear_unfinished_run_marker(out_path)
+                _quarantined = (
+                    self._maybe_quarantine_incomplete_final(out_path)
+                    if _has_missing else None)
+                _fingerprint_ok = _write_output_source_fingerprint(
+                    report_dir, _write_path,
+                    expected_source_hash or _file_content_sha256(fp),
+                    source_path=fp)
+                if not _has_missing:
+                    self._save_raw_backup(
+                        out_path, _raw_backup_blocks, _raw_map, _tgt_lang)
+            except Exception as _write_err:
+                _delivery_io_failed = True
+                _fingerprint_ok = False
+                _quarantined = None
+                self._log_exc(
+                    f"{Path(fp).name}: teslim dosyası yazımı", _write_err)
+                self._record_file_status(fp, "Dosya Yazımı", "error")
             if not _fingerprint_ok:
                 self._log(
                     f"{Path(fp).name}: kaynak arşivi/parmak izi yazılamadı; "
@@ -45842,10 +45895,8 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                         f"{_quarantined.name}",
                         "warn",
                     )
-            else:
+            elif not _delivery_io_failed:
                 self._log(f"Kaydedildi: {out_path}", "ok")
-                self._save_raw_backup(
-                    out_path, _raw_backup_blocks, _raw_map, _tgt_lang)
             # Post-write quality scan (önceden parse edilen kaynağı kullanır — disk okumaz)
             self._record_file_status(fp, "Nihai Teslim Denetimi", "running")
             _delivery_scan_failed = not _fingerprint_ok
@@ -45883,7 +45934,12 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
             _quality_pass_failed = _quality_pass_has_hard_failure(_pass_status)
             if not _has_missing and (
                     _delivery_scan_failed or _quality_pass_failed):
-                quarantined = self._maybe_quarantine_incomplete_final(out_path)
+                try:
+                    quarantined = self._maybe_quarantine_incomplete_final(out_path)
+                except Exception as _qerr:
+                    quarantined = None
+                    self._log_exc(
+                        f"{Path(fp).name}: çıktı karantinası", _qerr)
                 if quarantined:
                     _write_path = quarantined
                     self._log(
@@ -45930,21 +45986,10 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                 # Dosya burada bırakılıyor; Dizi Hafızası bilinçli olarak
                 # çalışmayacak. Kaydı BURADA bırak, yoksa satırda anahtar
                 # hiç oluşmuyor ve rapor nedeni bilmiyor sanıyordu.
-                _pass_status.setdefault("Series-Memory", {
-                    "status": "skipped",
-                    "reason": ("unresolved_markers" if _has_missing
-                               else "delivery_failed"),
-                    "changed": 0,
-                })
-                if self.auto_glossary_var.get():
-                    _pass_status.setdefault("Auto-Glossary", {
-                        "status": "skipped",
-                        "reason": ("unresolved_markers" if _has_missing
-                                   else "delivery_failed"
-                                   if _delivery_scan_failed
-                                   else "quality_failed"),
-                        "changed": 0,
-                    })
+                _note_skipped_side_effects(
+                    _pass_status, has_missing=_has_missing,
+                    delivery_scan_failed=_delivery_scan_failed,
+                    auto_glossary_enabled=bool(self.auto_glossary_var.get()))
                 _failed_files.append(fp)
                 self._record_file_status(fp, (
                     f"Eksik çeviri: {_hata_n}" if _has_missing
@@ -47590,6 +47635,12 @@ class App(TranslationWorkbenchMixin, ctk.CTk):
                         "translation_chunks": len(fmap),
                         "tm_hits": self._tm.hit_count_session(),
                     })
+                    # Dosya burada bırakılıyor; Dizi Hafızası/Auto-Glossary
+                    # bilinçli çalışmayacak — diğer akışlarla aynı kayıt.
+                    _note_skipped_side_effects(
+                        _pass_status, has_missing=True,
+                        auto_glossary_enabled=bool(
+                            self.auto_glossary_var.get()))
                     self._record_batch_terminal_state(
                         ht, session, filepath, "failed")
                     self._record_file_status(
