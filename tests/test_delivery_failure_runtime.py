@@ -1006,7 +1006,7 @@ class BatchFlowTest(_FlowCase):
 
 class BatchHybridFlowTest(_FlowCase):
     def _drive(self, client, auto_glossary=False, report_only=False,
-               names=("bolum.srt",)):
+               extra=None, names=("bolum.srt",)):
         self._tmp_obj = tempfile.TemporaryDirectory()
         tmp = self._tmp_obj.name
         if True:
@@ -1018,6 +1018,8 @@ class BatchHybridFlowTest(_FlowCase):
             self.app._selected_files = list(fps)
             self.app._input_folder_explicitly_selected = True
             run = _instrument(self.app)
+            if extra:
+                extra(self.app, fp)
             cached = ht.empty_analysis_result("en")
             with patch.object(gui, "OpenAI", lambda *a, **k: client), \
                  patch.object(openai, "OpenAI", lambda *a, **k: client), \
@@ -1064,6 +1066,53 @@ class BatchHybridFlowTest(_FlowCase):
         self.assertEqual(
             (ps.get("Auto-Glossary") or {}).get("reason"), "unresolved_markers",
             "batch hibrit eksik-işaret dalı Auto-Glossary atlamasını kaydetmiyor")
+
+    def test_batch_hybrid_write_error_isolates_file_others_survive(self):
+        # Teslim yazımı tek dosyada patlarsa koşu ölmemeli; patlayan dosya
+        # 'error' + Series-Memory/Auto-Glossary 'skipped/delivery_failed'
+        # satırıyla rapora düşmeli, sağlam dosya teslim edilmeli.
+        with patch.object(gui, "write_srt",
+                          _write_srt_patch_factory(fail_prefixes=("bh1",))):
+            run = self._drive(FakeClient(), auto_glossary=True,
+                              names=("bh1.srt", "bh2.srt"))
+        self.assertEqual(run.errors, [])
+        rows = _rows_by_name(run)
+        bad = rows.get("bh1.srt")
+        self.assertIsNotNone(bad, "patlayan dosya raporda satır üretmeli")
+        self.assertEqual(bad["run_status"], "error")
+        self.assertEqual(rows["bh2.srt"]["run_status"], "done")
+        self.assertTrue(Path(rows["bh2.srt"]["output_path"]).exists())
+        ps = bad.get("pass_status") or {}
+        self.assertEqual(
+            (ps.get("Series-Memory") or {}).get("reason"), "delivery_failed",
+            "yazım hatasında Series-Memory atlaması rapora düşmeli")
+        self.assertEqual(
+            (ps.get("Auto-Glossary") or {}).get("reason"), "delivery_failed",
+            "yazım hatasında Auto-Glossary atlaması rapora düşmeli")
+        self.assertEqual(run.calls["glossary_api"], 1,
+                         "ücretli sözlük yalnız sağlam dosyada çağrılmalı")
+        self.assertEqual(run.calls["tm_store"], 1,
+                         "yalnız sağlam dosya TM'e yazmalı")
+        self.assertTrue(run.report_file.exists())
+
+    def test_batch_hybrid_auto_glossary_raise_is_isolated(self):
+        # İsteğe bağlı sözlük patlaması başarılı teslimi 'error'a çevirmemeli;
+        # satır 'done' + Auto-Glossary 'failed' ile rapora düşmeli.
+        def _boom_glossary(*a, **k):
+            raise RuntimeError("glossary patladi (fake)")
+
+        run = self._drive(
+            FakeClient(), auto_glossary=True,
+            extra=lambda app, fp: patch.object(
+                app, "_run_auto_glossary", _boom_glossary).start())
+        self.assertEqual(run.errors, [])
+        row = _rows_by_name(run)[run.fname]
+        self.assertEqual(row["run_status"], "done",
+                         "sözlük istisnası başarılı teslimi bozmamalı")
+        ag = (row.get("pass_status") or {}).get("Auto-Glossary") or {}
+        self.assertEqual(ag.get("status"), "failed")
+        self.assertTrue(Path(row["output_path"]).exists())
+        self.assertTrue(run.report_file.exists())
 
     def test_batch_hybrid_auto_glossary_only_on_success(self):
         # PR#2 regresyon bekçisi (çalışma-zamanı): başarılı dosyada ücretli
