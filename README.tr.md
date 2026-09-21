@@ -1,5 +1,7 @@
 # Altyazı Çevirisi
 
+[![Testler](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml) [![Lisans: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+
 [English](README.md) · [Kullanım kılavuzu](KILAVUZ.md) · [Gizlilik](PRIVACY.md) · [Güvenlik](SECURITY.md)
 
 OpenAI ve OpenAI uyumlu sağlayıcılarla `.srt`, `.vtt`, `.ass` ve `.ssa`
@@ -10,6 +12,20 @@ Program replikleri birbirinden kopuk çevirmek yerine yakın diyalogları, sahne
 geçişlerini, daha önce verilmiş çeviri kararlarını, karakter ilişkilerini ve
 proje sözlüğünü birlikte değerlendirir. Çıktı yine de insan denetimi isteyen
 bir taslaktır; uygulama profesyonel çevirmenin yerine geçmez.
+
+## İçindekiler
+
+- [Öne çıkanlar](#öne-çıkanlar)
+- [Gereksinimler](#gereksinimler)
+- [Kurulum](#kurulum)
+- [İlk kullanım](#i̇lk-kullanım)
+- [Sağlayıcılar ve çalışma kipleri](#sağlayıcılar-ve-çalışma-kipleri)
+- [Ortam değişkenleri](#ortam-değişkenleri)
+- [Gizlilik ve API anahtarları](#gizlilik-ve-api-anahtarları)
+- [Yerel veriler](#yerel-veriler)
+- [Ayarlar, geliştirme ve test](#ayarlar-geliştirme-ve-test)
+- [Sınırlamalar](#sınırlamalar)
+- [Lisans](#lisans)
 
 ## Öne çıkanlar
 
@@ -33,7 +49,9 @@ bir taslaktır; uygulama profesyonel çevirmenin yerine geçmez.
 - Yalnız video içinden altyazı çıkarılacaksa FFmpeg ve ffprobe
 
 CI, Python 3.11 ve 3.13 üzerinde çalışır. Yerel geliştirme ortamı Python 3.13
-ile doğrulanmıştır.
+ile doğrulanmıştır. Tk destekli bir Python (`python3-tk`) ile Linux/X'te de
+açılır, ancak desteklenen hedef Windows'tur — sürükle-bırak ve kimlik
+deposu davranışı farklılık gösterebilir.
 
 ## Kurulum
 
@@ -83,6 +101,16 @@ Her yardımcı rol farklı bir sağlayıcı profiline bağlanabilir. Ana çeviri
 modelde olsa bile Critic veya QC uzak profildeyse ilgili metin o sağlayıcıya
 gönderilir.
 
+## Ortam değişkenleri
+
+API anahtarları ortam yerine sağlayıcı profillerinde (kimlik deposunda)
+saklanır. Uygulama yalnızca birkaç isteğe bağlı değişken okur:
+
+| Ad | Gerekli | Varsayılan | Açıklama |
+| --- | --- | --- | --- |
+| `SUBTITLE_TRANSLATOR_STATE_DIR` | hayır | depo dizini | Ayarların, önbelleklerin ve bellek dosyalarının tutulduğu dizini değiştirir. Testler ve pilot koşular kullanır. |
+| `AWS_DEFAULT_REGION` / `AWS_REGION` | hayır | `eu-north-1` | AWS Bedrock yardımcı profillerinin bölgesi. |
+
 ## Gizlilik ve API anahtarları
 
 Altyazı metni, bağlam ve etkin analiz verileri seçtiğiniz uzak sağlayıcılara
@@ -127,9 +155,10 @@ dosyalarını okuyun.
 
 ## Sınırlamalar
 
-Arayüz ve raporlar Türkçedir. Kalite seçilen modellere bağlıdır; otomatik
-kontroller her anlam hatasını yakalayamaz. Yayınlanacak altyazılar insan
-tarafından gözden geçirilmelidir.
+Arayüz İngilizce açılır ve üst bölümden Türkçeye çevrilebilir; çeviri
+raporları ve bazı tanı çıktıları Türkçe kalır. Kalite seçilen modellere
+bağlıdır; otomatik kontroller her anlam hatasını yakalayamaz. Yayınlanacak
+altyazılar insan tarafından gözden geçirilmelidir.
 
 ## Lisans
 
