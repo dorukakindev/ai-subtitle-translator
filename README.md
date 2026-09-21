@@ -14,6 +14,20 @@ dialogue, scene transitions, prior translation decisions, character relations,
 and project terminology to the model. Output still requires human review; this
 is an assistant, not a replacement for a professional translator.
 
+## Contents
+
+- [Highlights](#highlights)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [First run](#first-run)
+- [Providers and modes](#providers-and-modes)
+- [Environment variables](#environment-variables)
+- [Privacy and credentials](#privacy-and-credentials)
+- [Local data](#local-data)
+- [Settings, development, and tests](#settings-development-and-tests)
+- [Limitations](#limitations)
+- [Licence](#licence)
+
 ## Highlights
 
 - English-first interface with a persistent English/Türkçe switch
@@ -36,7 +50,9 @@ is an assistant, not a replacement for a professional translator.
 - FFmpeg and ffprobe only for subtitle extraction from video files
 
 CI runs on Python 3.11 and 3.13. The local development environment has also
-been verified with Python 3.13.
+been verified with Python 3.13. The app also starts on Linux/X with a
+Tk-enabled Python (`python3-tk`), but Windows is the supported target —
+Tkinterdnd2 drag-and-drop and credential storage behave differently there.
 
 ## Installation
 
@@ -82,6 +98,16 @@ lists are fetched dynamically.
 Each helper role may use a different profile. A local main model does not make
 the entire workflow local when Critic, Polish, QC, or another helper role uses
 a remote provider.
+
+## Environment variables
+
+API keys belong in provider profiles (stored in the credential store), not the
+environment. The app reads only a few optional variables:
+
+| Name | Required | Default | Description |
+| --- | --- | --- | --- |
+| `SUBTITLE_TRANSLATOR_STATE_DIR` | no | repo directory | Redirects where settings, caches, and memory files are kept. Used by tests and pilot runs. |
+| `AWS_DEFAULT_REGION` / `AWS_REGION` | no | `eu-north-1` | Region for AWS Bedrock helper profiles. |
 
 ## Privacy and credentials
 

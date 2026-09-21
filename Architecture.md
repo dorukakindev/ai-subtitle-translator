@@ -17,25 +17,31 @@ series, and a stack of quality passes that run after the translation itself.
 
 | Module | Lines | Role |
 |---|---:|---|
-| `subtitle_translator_gui.py` | ~43k | The application: UI, all four translation flows, quality passes, delivery gate, reporting |
-| `hybrid_translate.py` | ~15k | Analysis pre-pass, prompt building, validators, quality-pass implementations |
-| `provider_retry.py` | ~2.4k | Retry ladder, circuit breaker, route rotation, key fallback, response checkpoints |
-| `subtitle_formats.py` | ~1.9k | Reading/parsing `.srt` / `.vtt` / `.ass`, encoding detection, Turkish morphology helpers |
-| `sdh_cleaner.py` | ~1.7k | Removing sound / speaker / language labels |
-| `helper_models.py` | 760 | Resolving which model and endpoint each helper role uses |
-| `series_memory.py` | 753 | Cross-episode canon: term and character decisions carried between episodes |
+| `subtitle_translator_gui.py` | ~48k | The application: UI, all four translation flows, quality passes, delivery gate, reporting |
+| `hybrid_translate.py` | ~16k | Analysis pre-pass, prompt building, validators, quality-pass implementations |
+| `provider_retry.py` | ~2.5k | Retry ladder, circuit breaker, route rotation, key fallback, response checkpoints |
+| `subtitle_formats.py` | ~2k | Reading/parsing `.srt` / `.vtt` / `.ass`, encoding detection, Turkish morphology helpers |
+| `sdh_cleaner.py` | ~2k | Removing sound / speaker / language labels |
+| `series_memory.py` | 849 | Cross-episode canon: term and character decisions carried between episodes |
+| `helper_models.py` | 816 | Resolving which model and endpoint each helper role uses (incl. Bedrock) |
+| `kilavuz.py` | 741 | Source of the in-app Turkish guide; `belge_uret.py` renders `KILAVUZ.md` from it |
 | `translation_memory.py` | 718 | SQLite exact + fuzzy translation memory |
 | `subtitle_batch_translate.py` | 590 | Standalone CLI batch translator |
+| `translation_workbench.py` | 398 | Workbench mixin: pilot launch, per-pass review entry points, approved preferences |
 | `credential_store.py` | 384 | API keys in the Windows credential store, with an obfuscated-file fallback |
 | `video_subtitles.py` | 370 | Extracting a subtitle track from a video file |
 | `project_memory.py` | 354 | Per-folder glossary and character memory |
+| `prompt_constants.py` | 353 | Shared prompt fragments, so flows cannot drift apart |
 | `repair_batches.py` | 317 | CLI repair of an already-delivered batch output |
-| `prompt_constants.py` | 273 | Shared prompt fragments, so flows cannot drift apart |
-| `response_integrity.py` | 167 | Validating and recovering a model response payload |
+| `translation_review.py` | 242 | Per-pass diff review, scene grouping, preference persistence, apply/rollback |
+| `response_integrity.py` | 201 | Validating and recovering a model response payload |
+| `ui_localization.py` | 196 | English-first UI string catalog with the Turkish overlay |
 | `app_state.py` | 155 | Atomic writes and cross-process locks |
 | `request_cancellation.py` | 152 | Cooperative cancellation contract |
+| `folder_picker.py` | 127 | Native folder-picker helper |
+| `pilot_runner.py` | 76 | Pilot-mode entry: replays a run with a captured settings payload |
 
-Tests: ~305 modules under `tests/`, plain `unittest`, no pytest.
+Tests: ~400 modules under `tests/`, plain `unittest`, no pytest.
 
 ---
 
