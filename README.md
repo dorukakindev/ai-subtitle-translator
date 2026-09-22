@@ -1,8 +1,24 @@
+<div align="center">
+
+![AI Subtitle Translator — banner](docs/media/banner.png)
+
 # AI Subtitle Translator
 
-[![Tests](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml) [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+**Context-aware subtitle translation for `.srt`, `.vtt`, and `.ass` files —
+powered by OpenAI-compatible providers.**
 
-[Türkçe README](README.tr.md) · [User guide (Turkish)](KILAVUZ.md) · [Architecture](Architecture.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
+[![Tests](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4.svg)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+[Türkçe README](README.tr.md) · [User guide (Turkish)](KILAVUZ.md) ·
+[Architecture](Architecture.md) · [Privacy](PRIVACY.md) · [Security](SECURITY.md)
+
+<img src="docs/media/app-screenshot.png" alt="AI Subtitle Translator — English interface" width="880">
+
+</div>
 
 A Windows desktop application that translates `.srt`, `.vtt`, `.ass`, and `.ssa`
 subtitles through OpenAI or OpenAI-compatible providers while preserving context

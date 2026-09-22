@@ -1,8 +1,24 @@
+<div align="center">
+
+![Altyazı Çevirisi — banner](docs/media/banner.png)
+
 # Altyazı Çevirisi
 
-[![Testler](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml) [![Lisans: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+**`.srt`, `.vtt` ve `.ass` dosyaları için bağlam-duyarlı altyazı çevirisi —
+OpenAI uyumlu sağlayıcılarla.**
 
-[English](README.md) · [Kullanım kılavuzu](KILAVUZ.md) · [Gizlilik](PRIVACY.md) · [Güvenlik](SECURITY.md)
+[![Testler](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml/badge.svg)](https://github.com/dorukakindev/ai-subtitle-translator/actions/workflows/tests.yml)
+[![Lisans: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4.svg)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+[English](README.md) · [Kullanım kılavuzu](KILAVUZ.md) ·
+[Gizlilik](PRIVACY.md) · [Güvenlik](SECURITY.md)
+
+<img src="docs/media/app-screenshot.png" alt="Altyazı Çevirisi — İngilizce arayüz" width="880">
+
+</div>
 
 OpenAI ve OpenAI uyumlu sağlayıcılarla `.srt`, `.vtt`, `.ass` ve `.ssa`
 altyazılarını bağlamı koruyarak çeviren bir Windows masaüstü uygulamasıdır.
