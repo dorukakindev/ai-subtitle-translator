@@ -720,7 +720,12 @@ def call_anthropic_messages(model_id: str, messages: list, temperature: float = 
     }
     if api_key_str:
         url_check = (base_url or "https://api.anthropic.com/v1").lower().rstrip("/")
-        is_anthropic_native = url_check.endswith("/v1") or "api.anthropic.com" in url_check or url_check.endswith("/messages") or "opencode.ai" in url_check
+        # '/v1' son eki native işareti sayılamaz: OpenAI-uyumlu relay'ler de
+        # /v1 ile biter ve Bearer bekler. Native yalnız Anthropic'in kendi
+        # adresi, bilinen relay veya açık /messages uç noktasıdır.
+        is_anthropic_native = ("api.anthropic.com" in url_check
+                               or url_check.endswith("/messages")
+                               or "opencode.ai" in url_check)
         if is_anthropic_native:
             headers["x-api-key"] = api_key_str
         else:

@@ -483,7 +483,7 @@ def process_results(output_file_id, file_map, srt_files, *,
                     continue
             except Exception:
                 pass
-            translated_text = source_text or "[ÇEVIRI HATASI]"
+            translated_text = source_text or "[HATA]"
         else:
             translated_text = translations[cid]
         file_blocks.setdefault(filepath, {})[block_i] = (idx, timestamp, translated_text)

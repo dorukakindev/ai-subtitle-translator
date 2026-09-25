@@ -46,6 +46,20 @@ class PublicRepositoryDocsTest(unittest.TestCase):
         self.assertNotIn("encrypted fallback", english)
 
     def test_public_tree_excludes_internal_working_material(self):
+        # Çalışma ağacında yerel dizinler (ör. plans/ denetim raporları,
+        # YENİDEN ÇEVRİLECEK/ kullanıcı kuyruğu) meşru olarak bulunabilir;
+        # sözleşme bunların depoya GİRMEMESİ — tracked liste denetlenir,
+        # git yoksa dışa aktarılmış ağaçta fiziksel varlığa düşülür.
+        tracked = None
+        try:
+            import subprocess
+            listing = subprocess.run(
+                ["git", "ls-files"], cwd=ROOT, capture_output=True,
+                text=True, check=True, timeout=30)
+            tracked = {line.strip() for line in listing.stdout.splitlines()
+                       if line.strip()}
+        except Exception:
+            pass
         for relative in (
             "AGENTS.md",
             "CLAUDE.md",
@@ -54,7 +68,12 @@ class PublicRepositoryDocsTest(unittest.TestCase):
             "YENİDEN ÇEVRİLECEK",
         ):
             with self.subTest(relative=relative):
-                self.assertFalse((ROOT / relative).exists())
+                if tracked is None:
+                    self.assertFalse((ROOT / relative).exists())
+                else:
+                    self.assertFalse(any(
+                        path == relative or path.startswith(relative + "/")
+                        for path in tracked))
 
     def test_drag_drop_is_installed_during_setup_not_launch(self):
         requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8-sig")

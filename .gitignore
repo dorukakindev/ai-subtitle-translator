@@ -83,6 +83,7 @@ girdi_style_glossary.txt
 .codex-*/
 .tmp_*/
 tools/.tmp_*/
+plans/
 
 # Yerel rapor ve tam proje yedekleri (kaynak kod degil)
 Altyazı/
